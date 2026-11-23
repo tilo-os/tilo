@@ -302,6 +302,3 @@ aarch64 = 917504
 x86_64 = 1245184
 aarch64 = 1245184
 
-[apps."so.tilo.word-processor"]
-x86_64 = 2097152
-aarch64 = 1900544

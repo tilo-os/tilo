@@ -424,9 +424,9 @@ mod tests {
         {
             // The shipped manifests are the source of truth for which app opens
             // which file type, so the decode must survive a *real* one.
-            let m = read_manifest(&repo().join("apps/word-processor/tilo-app.toml"))
+            let m = read_manifest(&repo().join("apps/sheets/tilo-app.toml"))
                 .expect("the word processor's manifest decodes");
-            assert_eq!(m.package_id, "so.tilo.word-processor");
+            assert_eq!(m.package_id, "so.tilo.sheets");
             for ext in ["odt", "docx", "md", "rtf"] {
                 assert!(
                     m.opens_ext.iter().any(|e| e == ext),

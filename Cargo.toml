@@ -198,7 +198,6 @@ members = [
     "apps/video-editor",
     "apps/weather",
     "apps/windows",
-    "apps/word-processor",
 
     # Agent
     "crates/agent/agent-session",

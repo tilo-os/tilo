@@ -1,4 +1,4 @@
-app so.tilo.writer "Writer" (
+app so.tilo.word-processor "Writer" (
     icon: .file_text,
     category: .office,
     tagline: "Formatted documents you write alone or together",

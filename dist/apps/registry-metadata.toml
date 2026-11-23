@@ -113,5 +113,3 @@ description = "Arrange clips, sound, and stories in a native video editor."
 description = "Check current conditions and forecasts without the clutter."
 [apps.windows]
 description = "Run supported Windows applications in a contained Tilo experience."
-[apps.word-processor]
-description = "Write rich documents that are ready for focused or shared work."

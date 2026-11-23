@@ -1574,7 +1574,6 @@ doc = false
 "wire-frame" = { path = "../../crates/platform/wire-frame", default-features = false, features = ["postcard", "tokio"] }
 "wl-clipboard-rs-0_9_5" = { package = "wl-clipboard-rs", version = "^0.9.5", default-features = false, features = [] }
 "wnaf-0_14_1" = { package = "wnaf", version = "^0.14.1", default-features = false, features = [] }
-"word-processor" = { path = "../../apps/word-processor", default-features = false, features = [] }
 "write-fonts-0_48_1" = { package = "write-fonts", version = "^0.48.1", default-features = false, features = ["default"] }
 "write16-1_0_0" = { package = "write16", version = "^1.0.0", default-features = false, features = ["alloc"] }
 "writeable-0_6_4" = { package = "writeable", version = "^0.6.4", default-features = false, features = ["alloc"] }
@@ -4211,7 +4210,6 @@ doc = false
 "winnow-1_0_3" = { package = "winnow", version = "^1.0.3", default-features = false, features = ["alloc", "ascii", "binary", "default", "parser", "std"] }
 "wire-frame" = { path = "../../crates/platform/wire-frame", default-features = false, features = ["postcard", "tokio"] }
 "wnaf-0_14_1" = { package = "wnaf", version = "^0.14.1", default-features = false, features = [] }
-"word-processor" = { path = "../../apps/word-processor", default-features = false, features = [] }
 "write-fonts-0_48_1" = { package = "write-fonts", version = "^0.48.1", default-features = false, features = ["default"] }
 "write16-1_0_0" = { package = "write16", version = "^1.0.0", default-features = false, features = ["alloc"] }
 "writeable-0_6_4" = { package = "writeable", version = "^0.6.4", default-features = false, features = ["alloc"] }
