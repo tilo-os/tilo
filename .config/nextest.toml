@@ -224,6 +224,7 @@ command = [
     "bash", "tools/build-sibling-binaries.sh",
     "tilo-runtime:tilo-runtime",
     "passwords:passwords", "model-providers:model-providers", "launcher:tilo-launcher",
+    "tilolang-process:tilolang-process=app-launch",
 ]
 
 [[profile.default.scripts]]
@@ -316,6 +317,13 @@ test-group = "gpu-golden"
 # run the CI makes prints the table too.
 [[profile.default.overrides]]
 filter = 'package(tilolang-process) and binary(window) and test(=hosted::cost::what_the_interactions_a_person_feels_cost)'
+success-output = "final"
+
+# Every app's budget and the work its open took, idle and loaded, printed on a
+# pass too: a drift upward toward a budget shows in every run's log before a run
+# crosses it.
+[[profile.default.overrides]]
+filter = 'package(tilo-session) and binary(it) and test(app_open_budget::)'
 success-output = "final"
 
 # A company's workspace at real size: a thousand notes and five hundred issues

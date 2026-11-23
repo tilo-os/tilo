@@ -52,6 +52,9 @@ pub fn print_file(header: Option<&AppHeader>, items: &[Item], comments: &[Commen
             [one] => options.push(format!("previously: {one}")),
             many => options.push(format!("previously: [{}]", many.join(", "))),
         }
+        if let Some(ms) = app.splash_budget {
+            options.push(format!("splash_budget: {ms}"));
+        }
         if app.own_resources {
             options.push("resources: .own".to_owned());
         }

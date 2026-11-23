@@ -4,6 +4,7 @@ app so.tilo.tube "YouTube" (
     tagline: "Browses and plays YouTube videos",
     keywords: ["youtube", "video", "videos", "streaming", "watch", "channel", "channels", "subscriptions", "creators", "trending", "filme", "videos ansehen", "kanäle", "kanaele", "kanal", "schauen", "mediathek", "anschauen", "abos", "videoportal"],
     schemes: "tube",
+    splash_budget: 250,
 )
 
 use so.tilo.playback as playback

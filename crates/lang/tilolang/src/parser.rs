@@ -205,6 +205,7 @@ struct AppOptions {
     own_resources: bool,
     web: Vec<String>,
     engine: Option<String>,
+    splash_budget: Option<u32>,
 }
 
 /// The launcher categories an app declares (`category: .office`), in lower case.
@@ -449,8 +450,8 @@ impl<'a> Parser<'a> {
                 break;
             }
             let key = self.ident(
-                "`icon`, `category`, `tagline`, `keywords`, `previously`, `resources`, `web`, \
-                 `schemes` or `engine`",
+                "`icon`, `category`, `tagline`, `keywords`, `previously`, `splash_budget`, \
+                 `resources`, `web`, `schemes` or `engine`",
             )?;
             self.expect(&Tok::Colon)?;
             if key.name == "tagline" {
@@ -539,6 +540,30 @@ impl<'a> Parser<'a> {
                     "the runtime bundle the app shows a page with, such as \
                      \"tilo-runtime/2026.10.23-chromium\"",
                 )?);
+            } else if key.name == "splash_budget" {
+                if out.splash_budget.is_some() {
+                    return self.fail(key.span, "`splash_budget:` is given twice".to_owned());
+                }
+                let span = self.span();
+                let value = self.bump();
+                let Tok::Int(ms) = value.tok else {
+                    return self.fail(
+                        span,
+                        "`splash_budget:` is the milliseconds a person may wait for the app's \
+                         first frame, such as `splash_budget: 250`"
+                            .to_owned(),
+                    );
+                };
+                let Some(ms) = u32::try_from(ms).ok().filter(|ms| *ms > 0) else {
+                    return self.fail(
+                        span,
+                        format!(
+                            "`splash_budget: {ms}` is no budget: it is a positive number of \
+                             milliseconds"
+                        ),
+                    );
+                };
+                out.splash_budget = Some(ms);
             } else if key.name == "previously" {
                 if std::mem::replace(&mut seen_previously, true) {
                     return self.fail(key.span, "`previously:` is given twice".to_owned());
@@ -566,8 +591,8 @@ impl<'a> Parser<'a> {
                         key.span,
                         format!(
                             "an app has an `icon:`, a `category:`, a `tagline:`, `keywords:`, \
-                             `previously:`, `resources:`, `web:`, `schemes:` and `engine:`, \
-                             not `{}:`",
+                             `previously:`, `splash_budget:`, `resources:`, `web:`, `schemes:` \
+                             and `engine:`, not `{}:`",
                             key.name
                         ),
                     );
@@ -611,7 +636,8 @@ impl<'a> Parser<'a> {
                             key.span,
                             format!(
                                 "an app has an `icon:`, a `category:`, a `tagline:`, `keywords:`, \
-                                 `previously:`, `resources:` and `web:`, not `{other}:`"
+                                 `previously:`, `splash_budget:`, `resources:` and `web:`, not \
+                                 `{other}:`"
                             ),
                         );
                     }
@@ -837,6 +863,7 @@ impl<'a> Parser<'a> {
                 tagline: options.tagline,
                 keywords: options.keywords,
                 previously: options.previously,
+                splash_budget: options.splash_budget,
                 own_resources: options.own_resources,
                 web: options.web,
                 schemes: options.schemes,
@@ -888,6 +915,7 @@ impl<'a> Parser<'a> {
                         tagline: options.tagline,
                         keywords: options.keywords,
                         previously: options.previously,
+                        splash_budget: options.splash_budget,
                         own_resources: options.own_resources,
                         web: options.web,
                         schemes: options.schemes,

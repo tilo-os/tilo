@@ -4,6 +4,7 @@ app so.tilo.chat "Chat" (
     tagline: "Workspaces for messages, calls and shared work",
     keywords: ["messenger", "instant messaging", "conversation"],
     previously: so.tilo.lang.chat,
+    splash_budget: 250,
 )
 
 /// The workspace's conversations in the sidebar's order: channels outside any category, the

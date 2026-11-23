@@ -273,8 +273,21 @@ fn build_into(dir: &Path) {
 /// # Panics
 /// A package does not compile, the store refuses one, or a file cannot be written.
 pub fn install(store: &Path, _scratch: &Path) -> Vec<String> {
+    let all: Vec<&str> = built().apps.iter().map(|(app, _)| app.as_str()).collect();
+    install_named(store, &all)
+}
+
+/// Install the apps of [`APPS`] that `apps` names, by package id, from the run's build
+/// ([`built`]): what a session's tests install when they open some of the apps and not all.
+///
+/// # Panics
+/// The store refuses one, or a file cannot be written.
+pub fn install_named(store: &Path, apps: &[&str]) -> Vec<String> {
     let mut installed: Vec<String> = Vec::new();
     for (app, tapp) in &built().apps {
+        if !apps.contains(&app.as_str()) {
+            continue;
+        }
         let package = std::fs::File::open(tapp).expect("the built .tapp reads");
         let source = tapp.display().to_string();
         package_store::PackageStore::at(store)

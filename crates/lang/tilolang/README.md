@@ -36,6 +36,11 @@ its subdomains, not `rss.org` itself. A request to any other host is refused as 
 package that declares no hosts reaches none. The grant is part of the manifest an install shows,
 and the workspace may revoke a host.
 
+An app promises how long a person waits for its window: `app so.tilo.chat "Chat"
+(splash_budget: 250)` is the milliseconds from asking for the window to its first frame, which
+becomes the manifest's `[entrypoint] splash-budget`. The session holds each open to that budget,
+counted as the work the open took. An app that declares none keeps the manifest's own default.
+
 A package migrates its own records when its schema changes shape. The field the type no longer
 uses stays as an ordinary field: its values stay in the records, and a migration reads them. A
 `migration action` on the type moves what a field held to where the type keeps it now:

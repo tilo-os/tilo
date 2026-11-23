@@ -373,7 +373,7 @@ tilo-fs = "optional@{services}"
 runtime = {tilolang}
 bin = {bin}
 type = "gui"
-{window}{origins}
+{splash}{window}{origins}
 {accessibility}[providers]
 mime = [{providers_mime}]
 ext = [{providers_ext}]
@@ -398,6 +398,11 @@ schemes = [{providers_schemes}]
         .join(", "),
         bin = toml_string(RUNTIME_BIN),
         window = window,
+        // The promise the app's header made (`splash_budget:`), or nothing where it made none,
+        // so the manifest's own default stands rather than an invented budget.
+        splash = meta
+            .splash_budget
+            .map_or_else(String::new, |ms| format!("splash-budget = {ms}\n")),
         invokes = invokes,
         services = runtime_portal::RUNTIME_INTERFACE_VERSION,
         capabilities = capabilities,

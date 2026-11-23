@@ -3,6 +3,7 @@ app so.tilo.notes "Notes" (
     category: .office,
     tagline: "Notes you write alone or together",
     keywords: ["note", "memo", "memos", "notebook", "journal", "markdown", "notepad", "textedit", "apple notes", "google keep", "onenote", "obsidian", "notiz", "notizbuch", "aufzeichnungen", "zettel", "merkzettel", "tagebuch", "notizen machen"],
+    splash_budget: 250,
 )
 
 use so.tilo.lang.discussion as discussion

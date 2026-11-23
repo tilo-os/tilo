@@ -102,6 +102,12 @@ pub struct PackageMeta {
     /// its records, grants and windows under them as the app's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub previously: Vec<String>,
+    /// The milliseconds a person may wait between asking for the app's window and its first frame
+    /// (`splash_budget: 250`): the manifest's `[entrypoint] splash-budget`, which the session
+    /// holds the app's open to. Absent when the app declares none, so an install keeps the
+    /// manifest's own default rather than a promise the app never made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub splash_budget: Option<u32>,
     /// Each member keeps the app's records in their own workspace (`resources: .own`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub own_resources: bool,

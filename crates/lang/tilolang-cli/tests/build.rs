@@ -356,6 +356,55 @@ fn the_launcher_runs_a_built_app_on_the_runtime_binary_over_its_payload() {
     );
 }
 
+/// The app header's `splash_budget` is the manifest's `[entrypoint] splash-budget`, and a header
+/// that declares none leaves the manifest without one rather than inventing a promise.
+#[test]
+fn the_splash_budget_a_header_declares_is_the_manifests_entrypoint_budget() {
+    let scratch = tempfile::tempdir().unwrap();
+    let identity = tilolang_cli::identity_at(&scratch.path().join("publisher.json")).unwrap();
+    let build = |dir: &Path| {
+        let options = BuildOptions {
+            dir: dir.to_path_buf(),
+            search: Vec::new(),
+            out: scratch.path().join("out"),
+            tilo_runtime: "tilo-runtime/2026.07".into(),
+            tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.into(),
+            version: "0.1.0".into(),
+        };
+        let apps = package::build(&options, &identity).unwrap();
+        apps.last().expect("the app").manifest.clone()
+    };
+    let declared = scratch.path().join("tl/declared");
+    std::fs::create_dir_all(&declared).unwrap();
+    std::fs::write(
+        declared.join("app.tl"),
+        "app t.budget \"Budget\" (category: .utility, splash_budget: 250)\n\ntype Note {\n    title: Text\n}\n\nroot note: Note\n",
+    )
+    .unwrap();
+    let manifest = build(&declared);
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    assert!(text.contains("splash-budget = 250"), "{text}");
+    let parsed = Manifest::from_toml_str(&text).unwrap();
+    assert_eq!(
+        parsed.entrypoint.expect("an entrypoint").splash_budget_ms,
+        250
+    );
+
+    let plain = scratch.path().join("tl/plain");
+    std::fs::create_dir_all(&plain).unwrap();
+    std::fs::write(
+        plain.join("app.tl"),
+        "app t.plain \"Plain\" (category: .utility)\n\ntype Note {\n    title: Text\n}\n\nroot note: Note\n",
+    )
+    .unwrap();
+    let manifest = build(&plain);
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    assert!(
+        !text.contains("splash-budget"),
+        "a header that promises no budget leaves the manifest's default: {text}"
+    );
+}
+
 /// Write a Fluent comment large enough to push a tilolang package's `.tapp`
 /// archive past [`tilo_app_package::MAX_APP_TAPP_BYTES`] without touching its
 /// manifest or breaking compilation.

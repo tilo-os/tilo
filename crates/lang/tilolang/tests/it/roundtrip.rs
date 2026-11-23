@@ -221,6 +221,19 @@ tilo_test_env::scenario! {
         assert_eq!(print_module(&module), several);
     }
 
+    phase the_app_header_declares_the_splash_budget_and_it_reaches_the_metadata;
+    {
+        let src = "app so.tilo.chat \"Chat\" (category: .network, splash_budget: 250)\n\ntype N {\n    a: Int\n}\n";
+        let module = parse(src).expect("parses");
+        assert_eq!(module.app.splash_budget, Some(250));
+        assert_eq!(print_module(&module), src);
+        let compiled = crate::common::compile_with(src, &[]).expect("compiles");
+        assert_eq!(compiled.meta.splash_budget, Some(250));
+        let plain = crate::common::compile_with("app t.x \"X\"\ntype N {\n    a: Int\n}\n", &[])
+            .expect("compiles");
+        assert_eq!(plain.meta.splash_budget, None);
+    }
+
     phase the_app_header_names_its_icon_and_category_and_they_reach_the_metadata;
     {
         let src = "app so.tilo.notes \"Notes\" (icon: .file_text, category: .office)\n\ntype N {\n    a: Int\n}\n";

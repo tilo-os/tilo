@@ -48,6 +48,10 @@ pub struct AppHeader {
     /// `(previously: so.tilo.old)`: the ids the app was published under before; its resources,
     /// grants and windows under them are the app's, when the same publisher signed both.
     pub previously: Vec<String>,
+    /// `(splash_budget: 250)`: the milliseconds a person may wait between asking for the app's
+    /// window and its first frame. It becomes the manifest's `[entrypoint] splash-budget`, which
+    /// the session holds the app's open to.
+    pub splash_budget: Option<u32>,
     /// Each member keeps the app's records in their own workspace (`resources: .own`).
     pub own_resources: bool,
     /// `(web: ["example.com", "*.rss.org"])`: the hosts `uses web` requests may reach; any other is

@@ -3,6 +3,7 @@ app so.tilo.tasks "Tasks" (
     category: .office,
     tagline: "Issues of the workspace, on a list and a board",
     keywords: ["tasks", "issues", "issue tracker", "kanban", "board", "to-do", "todo", "tickets", "projects", "agent tasks"],
+    splash_budget: 250,
 )
 
 use so.tilo.contacts as contacts

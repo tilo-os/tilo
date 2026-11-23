@@ -3,6 +3,7 @@ app so.tilo.mail "Mail" (
     category: .office,
     tagline: "Email over IMAP and SMTP",
     keywords: ["email", "e-mail", "mail", "inbox", "mailbox", "gmail", "imap", "smtp", "apple mail", "evolution", "geary", "kmail", "kontact", "emails", "post", "posteingang", "briefe", "postfach", "mailprogramm", "elektronische post", "e-mails"],
+    splash_budget: 250,
 )
 
 use so.tilo.contacts as contacts

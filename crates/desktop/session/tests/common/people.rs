@@ -1015,6 +1015,7 @@ impl Person {
             announced: None,
             session: None,
             seeds: std::cell::Cell::new(false),
+            extra_env: Vec::new(),
         }
     }
 }
@@ -1151,6 +1152,7 @@ impl Person {
                 announced: None,
                 session: None,
                 seeds: std::cell::Cell::new(source.seeds.get()),
+                extra_env: Vec::new(),
             },
             *branched,
         )
@@ -1247,6 +1249,10 @@ pub struct Device {
     /// Whether its session serves the development session's tilolang apps it installed
     /// ([`Self::install_dev_apps`]).
     seeds: std::cell::Cell<bool>,
+    /// Variables this device's session starts with beside the ones every test device has, set by
+    /// [`Self::env`]: what a session needs to find the runtimes and the publishers its installed
+    /// apps name.
+    extra_env: Vec<(String, std::ffi::OsString)>,
 }
 
 impl Device {
@@ -1268,6 +1274,13 @@ impl Device {
     /// as an installed session does.
     pub fn run_session(&mut self, program: PathBuf) {
         self.session = Some(program);
+    }
+
+    /// Start this device's session with `key` in its environment, beside the variables every test
+    /// device's session carries: what a session reads to find runtime bundles and the publishers
+    /// it trusts, which it forwards to the apps and the launcher it starts.
+    pub fn env(&mut self, key: &str, value: impl Into<std::ffi::OsString>) {
+        self.extra_env.push((key.to_owned(), value.into()));
     }
 
     /// The process of the session this device runs, while it runs.
@@ -1507,6 +1520,9 @@ impl Device {
             .env_remove("TILO_SHELL_JOIN_ADMINISTRATOR")
             .env_remove("WAYLAND_DISPLAY")
             .env_remove("DISPLAY");
+        for (key, value) in &self.extra_env {
+            command.env(key, value);
+        }
         // The share periods a test shortened ([`share_view_periods`]): the session renews a
         // viewer's ask that often, and keeps the sharing device's streams up that long after the
         // last one.

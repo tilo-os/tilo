@@ -7,12 +7,13 @@
 //! number written here.
 //!
 //! What it holds to the budget is the work of the open, not the time it took: the CPU the session
-//! and the open's own processes (the launcher, the sandbox and the app) ran from the window asked
-//! for to the app's first presented frame, read from the kernel's scheduler statistics for each of
-//! their threads. A test job shares its node, so the wall clock of an open mostly measures how long
-//! its threads waited for a core; the time they waited, and the wall time, are reported beside the
-//! work for whoever reads a failure. The session, the apps and the launcher are optimised builds, as
-//! they are on a person's machine (t.toml's `starts`).
+//! and the open's own processes (the launcher, the sandbox, the app, and for a tilolang app its
+//! host and window) ran from the window asked for to the app's first presented frame, read from
+//! the kernel's scheduler statistics for each of their threads. A test job shares its node, so the
+//! wall clock of an open mostly measures how long its threads waited for a core; the time they
+//! waited, and the wall time, are reported beside the work for whoever reads a failure. The
+//! session, the apps, the launcher and the tilolang runtime are optimised builds, as they are on
+//! a person's machine (t.toml's `starts`).
 //!
 //! Each app opens twice: once on an idle machine and once while one busy thread per core
 //! saturates the job, so an app whose open does more work under contention (a spin, a retry, a
@@ -21,8 +22,13 @@
 //! The failure names each app over budget with its work, its waits and the phases the session and
 //! the app spent them in, so its owner can say where the time went.
 //!
-//! The tilolang apps are not here yet: opening one needs the tilo runtime bundle on the machine,
-//! which a test's own app store does not carry.
+//! The seeded tilolang apps are here beside them: each is an installed package the session opens
+//! through the tilolang host it starts, whose instance the host runs and whose window the tilolang
+//! runtime draws. Their budgets are the `splash_budget` their `app` headers declare, which
+//! `tilolang build` writes as their manifest's `splash-budget`; an app that declares none fails
+//! this test rather than passing at the manifest's default, since a shipped app owes a person the
+//! promise. The host and the window are optimised builds too, and a test carries the signed
+//! runtime bundles they name as a device does.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -52,6 +58,24 @@ use crate::common::people::{Device, Person};
 /// a session.
 const APPS: [&str; 2] = ["so.tilo.passwords", "so.tilo.model-providers"];
 
+/// The seeded tilolang apps this test opens, by package id: the apps of `apps/tl` a device
+/// carries in place of the Rust apps they replaced, each an installed package of its own.
+const TL_APPS: [&str; 5] = [
+    "so.tilo.notes",
+    "so.tilo.tasks",
+    "so.tilo.chat",
+    "so.tilo.mail",
+    "so.tilo.tube",
+];
+
+/// How an app is installed and opened: a Rust app's own package opens a process of its own, and a
+/// tilolang app's opens through the tilolang host the session starts for it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Native,
+    Tl,
+}
+
 /// Where the session asks for an app's window, as a person opening it from their applications
 /// does.
 fn install(device: &Device, app: &str) {
@@ -60,6 +84,26 @@ fn install(device: &Device, app: &str) {
         "so.tilo.model-providers" => device.install_model_providers(),
         other => panic!("no install for {other}, which this test names in APPS"),
     }
+}
+
+/// Install every seeded tilolang app this test opens into `device`'s store, the way a device that
+/// carries them holds them: signed packages from the run's build, as `tilolang run` installs a
+/// development session's.
+fn install_tl(device: &Device) {
+    let installed = crate::common::dev_apps::install_named(device.store(), &TL_APPS);
+    assert_eq!(
+        installed.len(),
+        TL_APPS.len(),
+        "every seeded tilolang app this test opens is installed: {installed:?}"
+    );
+}
+
+/// Take the runtime bundles a device with the seeded tilolang apps carries into `device`'s store of
+/// runtimes, and answer the publishers its launcher trusts. A sold device has both in its image; a
+/// test bakes them from the programs its run built (`common::dev_apps`).
+fn install_runtimes(device: &Device) -> PathBuf {
+    crate::common::dev_apps::install_runtimes(&device.directory().join("data/tilo-runtime"));
+    crate::common::dev_apps::runtimes().trusted.clone()
 }
 
 /// Start `device`'s session and wait until it shows a workspace: what the applications action
@@ -73,24 +117,43 @@ fn start_showing_a_workspace(device: &mut Device) {
 
 /// The splash budget `app`'s installed package declares, read from the manifest this device's
 /// store registers for it.
-fn budget_ms(device: &Device, app: &str) -> u32 {
+fn budget_ms(device: &Device, app: &str, kind: Kind) -> u32 {
     let registry = std::fs::read_to_string(device.store().join("registry.toml"))
         .unwrap_or_else(|error| panic!("{}'s app registry: {error}", device.label));
     let manifest_path = registered_manifest(&registry, app)
         .unwrap_or_else(|| panic!("{app} is installed in {}", device.store().display()));
-    let manifest = Manifest::from_toml_str(
-        &std::fs::read_to_string(&manifest_path).unwrap_or_else(|error| {
-            panic!(
-                "{app}'s installed manifest at {}: {error}",
-                manifest_path.display()
-            )
-        }),
-    )
-    .unwrap_or_else(|error| panic!("{app}'s installed manifest: {error}"));
-    manifest
+    let text = std::fs::read_to_string(&manifest_path).unwrap_or_else(|error| {
+        panic!(
+            "{app}'s installed manifest at {}: {error}",
+            manifest_path.display()
+        )
+    });
+    if kind == Kind::Tl && !declares_splash_budget(&text) {
+        panic!(
+            "{app} declares no splash budget: add `splash_budget: <milliseconds>` to its `app` \
+             header, in `apps/tl`, as every seeded tilolang app does, so its manifest promises a \
+             person how long its open may take"
+        );
+    }
+    Manifest::from_toml_str(&text)
+        .unwrap_or_else(|error| panic!("{app}'s installed manifest: {error}"))
         .entrypoint
         .unwrap_or_else(|| panic!("{app}'s manifest declares the entrypoint it opens with"))
         .splash_budget_ms
+}
+
+/// Whether a manifest declares its own `[entrypoint] splash-budget`, rather than leaving the
+/// field's default: a tilolang app owes the promise, so its absence is a failure this test names.
+fn declares_splash_budget(manifest: &str) -> bool {
+    let mut entrypoint = false;
+    for line in manifest.lines().map(str::trim) {
+        if line.starts_with('[') {
+            entrypoint = line == "[entrypoint]";
+        } else if entrypoint && line.starts_with("splash-budget") {
+            return true;
+        }
+    }
+    false
 }
 
 /// The manifest path the registry holds for the entry `app`, as an install wrote it: the rows are
@@ -584,15 +647,23 @@ fn every_installed_app_opens_within_the_budget_its_manifest_declares() {
     let _settled = ui::motion::testing::settled();
     let (_programs, session) = session_beside_launcher();
     let ada = Person::new("Ada");
+    let apps: Vec<&str> = APPS.iter().chain(TL_APPS.iter()).copied().collect();
 
     let mut idle = ada.device("Ada's laptop");
     idle.run_session(session.clone());
     for app in APPS {
         install(&idle, app);
     }
+    install_tl(&idle);
+    let trusted = install_runtimes(&idle);
+    idle.env("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE", trusted);
     start_showing_a_workspace(&mut idle);
-    let budgets: Vec<u32> = APPS.iter().map(|app| budget_ms(&idle, app)).collect();
-    let idle_opens: Vec<Open> = APPS.iter().map(|app| open_and_time(&idle, app)).collect();
+    let budgets: Vec<u32> = APPS
+        .iter()
+        .map(|app| budget_ms(&idle, app, Kind::Native))
+        .chain(TL_APPS.iter().map(|app| budget_ms(&idle, app, Kind::Tl)))
+        .collect();
+    let idle_opens: Vec<Open> = apps.iter().map(|app| open_and_time(&idle, app)).collect();
     idle.stop();
 
     let mut loaded = ada.device("Ada's busy laptop");
@@ -600,18 +671,31 @@ fn every_installed_app_opens_within_the_budget_its_manifest_declares() {
     for app in APPS {
         install(&loaded, app);
     }
+    install_tl(&loaded);
+    let trusted = install_runtimes(&loaded);
+    loaded.env("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE", trusted);
     start_showing_a_workspace(&mut loaded);
     let load = Load::start();
-    let loaded_opens: Vec<Open> = APPS.iter().map(|app| open_and_time(&loaded, app)).collect();
+    let loaded_opens: Vec<Open> = apps.iter().map(|app| open_and_time(&loaded, app)).collect();
     drop(load);
     loaded.stop();
 
     let mut over = Vec::new();
-    for ((app, budget), (idle_open, loaded_open)) in APPS
+    for ((app, budget), (idle_open, loaded_open)) in apps
         .iter()
         .zip(&budgets)
         .zip(idle_opens.iter().zip(&loaded_opens))
     {
+        // A drift upward toward a budget shows in a passing run's log as it does in a failing
+        // one's: the budget and the work each open took.
+        println!(
+            "{app}: budget {budget} ms of work; idle {:.0} ms of work, {:.0} ms wall; loaded \
+             {:.0} ms of work, {:.0} ms wall",
+            idle_open.work_ms(),
+            idle_open.total_ms,
+            loaded_open.work_ms(),
+            loaded_open.total_ms,
+        );
         if idle_open.work_ms() > f64::from(*budget) || loaded_open.work_ms() > f64::from(*budget) {
             let pad = " ".repeat(9);
             over.push(format!(
