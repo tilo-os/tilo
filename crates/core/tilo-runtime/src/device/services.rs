@@ -139,6 +139,13 @@ pub struct Daemon {
     /// The device's lock, when this daemon took it itself: one started under the lock the
     /// daemon's device part keeps ([`Self::start_locked`]) holds none of its own.
     _lock: Option<advisory_lock::FileLock>,
+    /// The socket the person's session hands this device's tilolang processes its windows'
+    /// instances on, while the daemon runs ([`crate::apps::Apps::processes`] runs them).
+    #[cfg(target_os = "linux")]
+    _processes: Option<(
+        Arc<super::processes::Processes>,
+        super::processes::Listening,
+    )>,
 }
 
 /// The services a profile is served as: the person's own runtime, or the same
@@ -769,6 +776,8 @@ impl Daemon {
         }
         start_agents(&broker, &workspaces);
         start_triggers(&broker, &workspaces);
+        #[cfg(target_os = "linux")]
+        let processes = listen_for_processes(sockets, &place, &apps, &workspaces);
         let replicas = take_work_files(
             &TakenFiles {
                 root,
@@ -845,6 +854,8 @@ impl Daemon {
             agents: super::serve::Agents::default(),
             place,
             _lock: lock,
+            #[cfg(target_os = "linux")]
+            _processes: processes,
         })
     }
 }
@@ -853,6 +864,45 @@ impl Daemon {
 fn person_workspace(person: &[u8; 32]) -> WorkspaceId {
     WorkspaceId::parse(&tilo_server_protocol::servers::person_workspace_id(person))
         .expect("a person's workspace id is a workspace id")
+}
+
+/// The socket in the daemon's `sockets` its tilolang `processes` take the person's shell's
+/// hand-overs on: its windows' instances, for the workspaces this device holds for them.
+#[cfg(target_os = "linux")]
+fn listen_for_processes(
+    sockets: &Path,
+    place: &DaemonPlace,
+    apps: &Arc<apps::Apps>,
+    workspaces: &Arc<ServiceWorkspaces>,
+) -> Option<(Arc<super::processes::Processes>, super::processes::Listening)> {
+    use tilo_peer_state::workspace_documents::DeviceDocuments as _;
+    let processes = match apps.processes() {
+        Ok(processes) => processes,
+        Err(why) => {
+            tracing::warn!(%why, "no tilolang process can start on this device");
+            return None;
+        }
+    };
+    let documents =
+        tilo_workspace_service::device_documents::ServiceDocuments::of(workspaces.copies().clone());
+    let callers = super::processes::Callers {
+        person: workspaces.device_cert().user_public_key,
+        admission: tilo_api::daemon::admission::here(|| rustix::process::geteuid().as_raw()),
+        holds: Box::new(move |workspace| {
+            documents.workspaces().iter().any(|held| held == workspace)
+        }),
+    };
+    match processes.listen(
+        &sockets.join(runtime_portal::device_processes::SOCKET),
+        place.socket_mode(),
+        callers,
+    ) {
+        Ok(listening) => Some((processes, listening)),
+        Err(error) => {
+            tracing::error!(%error, "the tilolang processes take no hand-over from the shell");
+            None
+        }
+    }
 }
 
 /// The systemd credential that fixes the UDP port this device's endpoint binds, for a device

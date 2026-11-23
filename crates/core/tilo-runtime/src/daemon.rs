@@ -49,6 +49,7 @@ pub(crate) fn sockets(profile: &Path) -> io::Result<PathBuf> {
         COLLAB_SOCKET,
         IDENTITY_SOCKET,
         BLOB_SOCKET,
+        runtime_portal::device_processes::SOCKET,
     ] {
         tilo_api::daemon::socket_fits(&dir.join(name)).map_err(io::Error::other)?;
     }

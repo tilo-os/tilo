@@ -13,6 +13,7 @@ use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
 use crate::platform::surfaces::{ShellDesktop, WidgetSurface};
+use runtime_portal::device_processes::{Device as DeviceProcesses, HandedFds, HandedInstance};
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, Caller, InvokeArgument, InvokeRequest,
     RemoteActionTarget, application_open_target, application_provider, provider_workspace,
@@ -202,9 +203,15 @@ struct State {
     /// What wakes the session's loop: a delivery completes on the broker's own runtime, and the
     /// loop reads its answer on its next pass.
     wake: Option<tilo_service::Wake>,
-    /// The tilolang processes, once the session lent its links: one per workspace and author, running
-    /// the instances of the tilolang apps' windows.
-    processes: Option<Arc<tilo_runtime::device::processes::Processes>>,
+    /// The device's tilolang processes, once the session lent its links: the daemon runs one per
+    /// workspace and app, and the session hands each tilolang window's instance to it. `Err` says
+    /// why this session reaches no daemon.
+    processes: Option<Result<DeviceProcesses, String>>,
+    /// What starts an agent task's host, once the session lent its links ([`Apps::processes`]).
+    task_hosts: Option<Arc<tilo_runtime::device::processes::Processes>>,
+    /// Whether this session handed the daemon an instance: only then do processes run its windows,
+    /// whose people's access it says again when the workspace's policy changes.
+    handed_over: bool,
     /// The connectors of the apps' outside services: what a hosted instance reaches its origin by.
     connectors: Option<Rc<crate::connectors::ConnectorHost>>,
     /// This session's tools service, once it lent it: what a tilolang app's `File.open` asks, on a
@@ -393,6 +400,8 @@ impl Apps {
                 broker: None,
                 wake,
                 processes: None,
+                handed_over: false,
+                task_hosts: None,
                 connectors: None,
                 tools: None,
                 documents: None,
@@ -634,10 +643,11 @@ impl Apps {
         Ok(())
     }
 
-    /// The tilolang processes this session runs, once it lent its window links: what starts every
-    /// tilolang process here, an agent task's host among them.
+    /// What starts an agent task's host here, once the session lent its window links. A task's
+    /// programs run against this session's own catalogue, so its host is still started from
+    /// the session; every app instance runs in the device's daemon.
     pub fn processes(&self) -> Option<Arc<tilo_runtime::device::processes::Processes>> {
-        self.state.borrow().processes.clone()
+        self.state.borrow().task_hosts.clone()
     }
 
     /// The window links the session keeps for the apps it starts: from here on the first launch of
@@ -645,8 +655,8 @@ impl Apps {
     /// opens in that process.
     ///
     /// A tilolang app's windows hold none of its data: each window's instance runs in the
-    /// tilolang host of its workspace and author, reaching its outside service through
-    /// `connectors`.
+    /// tilolang process the device's daemon runs for its workspace and app, which the session
+    /// hands it to with the connections it opened, its outside service's through `connectors`.
     pub fn lend_links(
         self: &Rc<Self>,
         links: Rc<Links>,
@@ -660,10 +670,19 @@ impl Apps {
         }));
         let mut state = self.state.borrow_mut();
         state.me = Rc::downgrade(self);
-        state.processes = state
+        state.task_hosts = state
             .launcher
             .clone()
             .map(tilo_runtime::device::processes::Processes::new);
+        state.processes = state.launcher.is_some().then(|| {
+            tilo_api::daemon::this_computer().map(|daemon| {
+                DeviceProcesses::at(
+                    daemon
+                        .sockets()
+                        .join(runtime_portal::device_processes::SOCKET),
+                )
+            })
+        });
         state.links = Some(links);
         state.connectors = Some(connectors);
     }
@@ -674,15 +693,27 @@ impl Apps {
         self.state.borrow_mut().tools = Some(tools);
     }
 
-    /// The person's region formats or language changed: every tilolang host running here is
-    /// told, so the instances it runs write the dates, clocks and weeks their windows show again
+    /// The person's region formats or language changed: every tilolang process the device's
+    /// daemon runs is told, so the instances it runs write the dates, clocks and weeks their windows show again
     /// in the new formats ([`crate::formats`]), and their windows read their words in the
     /// language ([`crate::i18n`]).
     pub fn locale_changed(&self) {
         let processes = self.state.borrow().processes.clone();
-        if let Some(processes) = processes {
-            processes.locale_changed(&Self::person_locale());
+        if let Some(Ok(processes)) = processes
+            && let Err(error) = processes.locale_changed(Self::person_locale())
+        {
+            tracing::warn!(%error, "the tilolang processes were not told the person's formats or language");
         }
+    }
+
+    /// The device's tilolang processes, which this session hands its tilolang windows' instances
+    /// to, or why it reaches none.
+    fn device_processes(&self) -> Result<DeviceProcesses, String> {
+        self.state
+            .borrow()
+            .processes
+            .clone()
+            .unwrap_or_else(|| Err("no tilolang host can start here".to_owned()))
     }
 
     /// The person's formats and language, as this session resolved them: what every tilolang
@@ -803,20 +834,22 @@ impl Apps {
     /// with the connections an instance holds: who is at it, its identity service and its app's
     /// origin connector, when the app has one.
     fn host_window(&self, hosted: tilo_app_launch::HostedWindow) {
-        let processes = self.state.borrow().processes.clone();
         let (app, workspace, instance) = (
             hosted.app.clone(),
             hosted.workspace.clone(),
             hosted.instance,
         );
-        let Some(processes) = processes else {
-            tracing::error!(
-                app,
-                instance,
-                why = "no tilolang host can start here",
-                "a tilolang window's instance runs nowhere"
-            );
-            return;
+        let processes = match self.device_processes() {
+            Ok(processes) => processes,
+            Err(why) => {
+                tracing::error!(
+                    app,
+                    instance,
+                    why,
+                    "a tilolang window's instance runs nowhere"
+                );
+                return;
+            }
         };
         let resources = match self.app_connections(&app, &workspace) {
             Ok(resources) => resources,
@@ -831,12 +864,7 @@ impl Apps {
             }
         };
         let link_home = self.link_home(&workspace);
-        processes.hand_over(tilo_runtime::device::processes::Instance {
-            access: resources.access,
-            app,
-            workspace,
-            instance,
-            person: resources.person,
+        let fds = HandedFds {
             patch: Some(hosted.patch),
             collaboration: hosted.collaboration,
             identity: resources.identity,
@@ -845,6 +873,13 @@ impl Apps {
             chooser: resources.chooser,
             clipboard: resources.clipboard,
             tools: resources.tools,
+        };
+        let handed = HandedInstance {
+            access: resources.access,
+            app,
+            workspace,
+            instance,
+            person: resources.person,
             document: hosted.opens.record,
             reveal: hosted.opens.reveal,
             open: hosted
@@ -864,7 +899,24 @@ impl Apps {
                 }),
             locale: Self::person_locale(),
             link_home,
-        });
+        };
+        self.state.borrow_mut().handed_over = true;
+        // The daemon verifies the package and may start the process: never on the session's
+        // loop.
+        let handing = std::thread::Builder::new()
+            .name("tilolang-handover".into())
+            .spawn(move || {
+                if let Err(error) = processes.hand_over(handed, fds) {
+                    tracing::error!(
+                        %error,
+                        instance,
+                        "a tilolang window's instance was not handed to its process"
+                    );
+                }
+            });
+        if let Err(error) = handing {
+            tracing::error!(%error, instance, "a tilolang window's instance could not be handed over");
+        }
     }
 
     /// The connector of `app` for `origin` in `workspace`, planned as the app's own launch with
@@ -1109,21 +1161,30 @@ impl Apps {
             return;
         };
         let revision = desktop.with_policy(|policy| policy.handle().revision());
-        let processes = {
+        {
             let state = self.state.borrow();
-            let hosted = state
-                .processes
-                .as_ref()
-                .is_some_and(|processes| !processes.instances().is_empty());
-            if (state.authority.is_empty() && !hosted) || state.authority_at == Some(revision) {
+            if (state.authority.is_empty() && !state.handed_over)
+                || state.authority_at == Some(revision)
+            {
                 return;
             }
-            state.processes.clone()
-        };
+        }
         self.state.borrow_mut().authority_at = Some(revision);
+        // The processes running this session's windows' instances, as the daemon runs them.
+        let handed_over = self.state.borrow().handed_over;
+        let hosting = handed_over
+            .then(|| self.device_processes().ok())
+            .flatten()
+            .and_then(|processes| match processes.running() {
+                Ok(running) => Some((processes, running)),
+                Err(error) => {
+                    tracing::warn!(%error, "the tilolang processes running are not known");
+                    None
+                }
+            });
         let mut named = self.state.borrow().authority.workspaces();
-        if let Some(processes) = &processes {
-            named.extend(processes.instances().into_iter().map(|(id, ..)| id));
+        if let Some((_, running)) = &hosting {
+            named.extend(running.iter().map(|process| process.workspace.clone()));
             named.sort();
             named.dedup();
         }
@@ -1132,11 +1193,23 @@ impl Apps {
             if let Err(error) = self.state.borrow().authority.refresh(&workspace) {
                 tracing::warn!(%id, %error, "the person's authority there was not published");
             }
-            // The windows whose instances a tilolang host runs are told on its link.
-            if let Some(processes) = &processes {
-                processes.policy_changed(&workspace.id, |app| {
-                    tilo_app_launch::authority::access(&workspace, app)
-                });
+            // The windows whose instances a tilolang process runs are told on its link.
+            let Some((processes, running)) = &hosting else {
+                continue;
+            };
+            let apps: Vec<_> = running
+                .iter()
+                .filter(|process| process.workspace == workspace.id)
+                .map(|process| runtime_portal::process_link::AppAccess {
+                    access: tilo_app_launch::authority::access(&workspace, &process.app),
+                    app: process.app.clone(),
+                })
+                .collect();
+            if apps.is_empty() {
+                continue;
+            }
+            if let Err(error) = processes.access_changed(&workspace.id, apps) {
+                tracing::warn!(%id, %error, "the tilolang processes were not told what the person may now do");
             }
         }
     }
@@ -2110,7 +2183,7 @@ impl Apps {
         }
         planned
             .args
-            .push(tilo_runtime::device::processes::PROCESS_ARG.to_owned());
+            .push(runtime_portal::device_processes::PROCESS_ARG.to_owned());
         Ok(())
     }
 
@@ -2149,11 +2222,8 @@ impl Apps {
     /// app. The instance gets the connections and grants a window's instance gets, and its
     /// collaboration connection is attested windowless, so the broker never hands it an `open`.
     fn start_with_no_view(&self, app: &str, workspace: &Workspace) -> Result<(), ApiError> {
-        let (processes, links) = {
-            let state = self.state.borrow();
-            (state.processes.clone(), state.links.clone())
-        };
-        let (Some(processes), Some(links)) = (processes, links) else {
+        let links = self.state.borrow().links.clone();
+        let (Ok(processes), Some(links)) = (self.device_processes(), links) else {
             return Err(ApiError::Failed(format!(
                 "{app}'s instance runs in no tilolang host here"
             )));
@@ -2170,27 +2240,32 @@ impl Apps {
                     "{app} could not reach its workspace with no window"
                 ))
             })?;
+        self.state.borrow_mut().handed_over = true;
         processes
-            .hand_over_now(tilo_runtime::device::processes::Instance {
-                access: resources.access,
-                app: app.to_owned(),
-                workspace: workspace.id.clone(),
-                instance,
-                person: resources.person,
-                patch: None,
-                collaboration,
-                identity: resources.identity,
-                origin: resources.origin,
-                content: resources.content,
-                chooser: resources.chooser,
-                clipboard: resources.clipboard,
-                tools: resources.tools,
-                document: None,
-                reveal: None,
-                open: None,
-                locale: Self::person_locale(),
-                link_home: self.link_home(&workspace.id),
-            })
+            .hand_over(
+                HandedInstance {
+                    access: resources.access,
+                    app: app.to_owned(),
+                    workspace: workspace.id.clone(),
+                    instance,
+                    person: resources.person,
+                    document: None,
+                    reveal: None,
+                    open: None,
+                    locale: Self::person_locale(),
+                    link_home: self.link_home(&workspace.id),
+                },
+                HandedFds {
+                    patch: None,
+                    collaboration,
+                    identity: resources.identity,
+                    origin: resources.origin,
+                    content: resources.content,
+                    chooser: resources.chooser,
+                    clipboard: resources.clipboard,
+                    tools: resources.tools,
+                },
+            )
             .map_err(|error| ApiError::Failed(error.to_string()))?;
         Ok(())
     }

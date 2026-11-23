@@ -1,13 +1,17 @@
 //! Tilolang processes: one process per workspace and app, which runs that app's code in that
 //! workspace, each view's call in it (`docs/designs/app-language/app-window.md`).
 //!
-//! The device holds them, as it holds the rest of its work; the desktop session is a client that
-//! hands each window's instance over, and a device with no desktop starts them the same way.
+//! The device's daemon runs them, as it runs the rest of its work: one [`Processes`] per daemon,
+//! started with it whether or not anyone is signed in at a desktop. A desktop session is a client
+//! that hands each window's instance over on the daemon's socket for them
+//! (`runtime_portal::device_processes`, [`Processes::listen`]), and the daemon starts the process
+//! of a call that shows nothing the same way ([`Processes::hand_over_now`]).
 //!
 //! A tilolang app's window is a launched process of its own, with its own launch identity for its
 //! surface and accessibility, started as its window alone (no `--tilolang-process`: the launcher gives
 //! it no collaboration connection). The session hands each window's instance to the process of its
-//! workspace and app ([`Processes::hand_over`]):
+//! workspace and app, and the daemon takes it from the person's shell alone, for a workspace the
+//! device holds for them:
 //!
 //! - the process's end of the window's patch connection, whose other end the window took on its
 //!   link (`runtime_portal::process_link::ToProcess::Patch`);
@@ -45,9 +49,10 @@ use std::sync::{Arc, Mutex};
 
 use launcher::run::tilolang_process::VerifiedInstance;
 use tilo_lock::MutexRecover as _;
+use runtime_portal::device_processes::{FromDevice, HandedFds, HandedInstance, Running, ToDevice};
 use runtime_portal::process_link::{
-    AppBuild, FromProcess, InstanceFds, InstanceRequest, MediaCommand, MediaView, OpenRequest,
-    Packet as _, TaskFds, TaskRequest, ToProcess,
+    AppAccess, AppBuild, FromProcess, InstanceFds, InstanceRequest, MediaCommand, MediaView,
+    OpenRequest, Packet as _, TaskFds, TaskRequest, ToProcess,
 };
 
 use super::package_runs::{installed_apps, runs_in_process, verified_installed};
@@ -65,9 +70,6 @@ fn send_instance(
     }
     .send(socket)
 }
-
-/// The launcher's flag for a window whose instance a tilolang process runs.
-pub const PROCESS_ARG: &str = "--tilolang-process";
 
 /// The app that keeps each person's own views (`apps/tl/views`): views they, their agents or
 /// others wrote, which read whatever the workspace has installed.
@@ -109,7 +111,7 @@ struct HostKey {
 
 /// A running process.
 struct Host {
-    /// The session's end of its socket.
+    /// The daemon's end of its socket.
     socket: Arc<OwnedFd>,
     /// The windows whose instances it runs, each with its app.
     instances: HashMap<u64, String>,
@@ -170,6 +172,77 @@ pub struct Instance {
     /// the instance's host mints a resource's `share-link` under
     /// ([`runtime_portal::process_link::InstanceRequest::link_home`]).
     pub link_home: Option<String>,
+}
+
+impl Instance {
+    /// The instance a session handed over, with the connections it opened for it.
+    fn handed(instance: HandedInstance, fds: HandedFds) -> Self {
+        Self {
+            app: instance.app,
+            workspace: instance.workspace,
+            instance: instance.instance,
+            person: instance.person,
+            patch: fds.patch,
+            collaboration: fds.collaboration,
+            identity: fds.identity,
+            origin: fds.origin,
+            content: fds.content,
+            chooser: fds.chooser,
+            clipboard: fds.clipboard,
+            tools: fds.tools,
+            document: instance.document,
+            reveal: instance.reveal,
+            open: instance.open,
+            access: instance.access,
+            locale: instance.locale,
+            link_home: instance.link_home,
+        }
+    }
+}
+
+/// Who may hand this device's processes an instance: the device's person, from the account the
+/// daemon runs as or one signed in on this computer as them, and only for a workspace the device
+/// holds for them.
+pub(crate) struct Callers {
+    /// The person's root key.
+    pub(crate) person: [u8; 32],
+    /// Which accounts act as the device, and which as the people signed in.
+    pub(crate) admission: &'static tilo_api::daemon::admission::Admission,
+    /// Whether the device holds the workspace of this id.
+    pub(crate) holds: Box<dyn Fn(&str) -> bool + Send + Sync>,
+}
+
+impl Callers {
+    /// Whether the process `pid` of the account `uid` may hand over, or why not.
+    fn admit(&self, uid: u32, pid: u32) -> Result<(), String> {
+        use tilo_api::daemon::admission::Admitted;
+        let person = match self.admission.admit(uid) {
+            Admitted::Device => true,
+            Admitted::Person(person) => person == self.person,
+            Admitted::Stranger => false,
+        };
+        if !person {
+            return Err(format!(
+                "process {pid} of account {uid} is not signed in on this computer as the \
+                 device's person"
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// The daemon's socket for its processes, while it listens: closed and removed once dropped.
+pub(crate) struct Listening {
+    path: PathBuf,
+    /// A duplicate of the listener: shutting it down ends the accepting thread.
+    listener: OwnedFd,
+}
+
+impl Drop for Listening {
+    fn drop(&mut self) {
+        let _ = rustix::net::shutdown(&self.listener, rustix::net::Shutdown::Both);
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 /// How an installed app is verified for a process: the workspace it is installed in, and the app.
@@ -328,7 +401,7 @@ impl Processes {
 
     /// The processes running now, each by its workspace and app, with the calls it runs.
     #[must_use]
-    pub fn instances(&self) -> Vec<(String, String, Vec<u64>)> {
+    pub fn instances(&self) -> Vec<Running> {
         let mut processes: Vec<_> = self
             .running()
             .iter()
@@ -336,7 +409,11 @@ impl Processes {
             .map(|(key, process)| {
                 let mut instances: Vec<u64> = process.instances.keys().copied().collect();
                 instances.sort_unstable();
-                (key.workspace.clone(), key.app.clone(), instances)
+                Running {
+                    workspace: key.workspace.clone(),
+                    app: key.app.clone(),
+                    instances,
+                }
             })
             .collect();
         processes.sort();
@@ -363,25 +440,20 @@ impl Processes {
         }
     }
 
-    /// Say on every process running in `workspace` what the person may now do in each app it runs,
-    /// `access` of the app, from the workspace's policy as the caller holds it now: a role given
-    /// or taken back enables or disables what the windows already open offer. A process started
-    /// later is handed it with each instance.
-    pub fn policy_changed(
-        &self,
-        workspace: &str,
-        access: impl Fn(&str) -> Option<tilo_action_policy::MemberAccess>,
-    ) {
+    /// Say on every process running an app of `apps` in `workspace` what the person may now do in
+    /// it, from the workspace's policy as the caller holds it now: a role given or taken back
+    /// enables or disables what the windows already open offer. A process started later is handed
+    /// it with each instance.
+    pub fn policy_changed(&self, workspace: &str, apps: &[AppAccess]) {
         for (key, process) in self.running().iter() {
             if key.workspace != workspace || key.alone.is_some() {
                 continue;
             }
-            let app = key.app.clone();
-            let access = runtime_portal::process_link::AppAccess {
-                access: access(&app),
-                app: app.clone(),
+            let Some(access) = apps.iter().find(|access| access.app == key.app) else {
+                continue;
             };
-            if let Err(error) = ToProcess::Access(access).send(&process.socket) {
+            let app = key.app.clone();
+            if let Err(error) = ToProcess::Access(access.clone()).send(&process.socket) {
                 // Its follow thread reads the end of the socket and forgets it: the next
                 // instance starts another.
                 tracing::warn!(
@@ -394,31 +466,123 @@ impl Processes {
         }
     }
 
-    /// Hand `instance` to the process of its workspace and app, starting the process when none runs.
-    /// Done off the caller's thread: it verifies the package and may start the process.
-    pub fn hand_over(self: &Arc<Self>, instance: Instance) {
-        let processes = Arc::clone(self);
-        let started = std::thread::Builder::new()
-            .name("tilolang-handover".into())
+    /// Take what the person's shell asks of the processes on a socket listening at `path`, made
+    /// with `mode`, each connection on a thread of its own and from `callers` alone, until the
+    /// [`Listening`] answered is dropped.
+    ///
+    /// # Errors
+    /// The socket could not be made at `path`.
+    pub(crate) fn listen(
+        self: &Arc<Self>,
+        path: &Path,
+        mode: u32,
+        callers: Callers,
+    ) -> std::io::Result<Listening> {
+        use std::os::unix::fs::PermissionsExt as _;
+        // The daemon holds the device's lock: a socket left at the path is an earlier start's.
+        match std::fs::remove_file(path) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
+            _ => {}
+        }
+        let listener = runtime_portal::packet::listen(path)?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+        let accepting = listener.try_clone()?;
+        let (processes, callers) = (Arc::clone(self), Arc::new(callers));
+        std::thread::Builder::new()
+            .name("tilolang-handovers".into())
             .spawn(move || {
-                let (app, window) = (instance.app.clone(), instance.instance);
-                if let Err(error) = processes.hand_over_now(instance) {
-                    tracing::error!(
-                        %error,
-                        app,
-                        instance = window,
-                        "a tilolang window's instance was not handed to its process"
-                    );
+                loop {
+                    let connection = match runtime_portal::packet::accept(&accepting) {
+                        Ok(connection) => connection,
+                        Err(error) => {
+                            tracing::debug!(%error, "the processes' socket takes no more hand-overs");
+                            return;
+                        }
+                    };
+                    let (processes, callers) = (Arc::clone(&processes), Arc::clone(&callers));
+                    let answering = std::thread::Builder::new()
+                        .name("tilolang-handover".into())
+                        .spawn(move || processes.answer(&connection, &callers));
+                    if let Err(error) = answering {
+                        tracing::error!(%error, "a hand-over to the processes was not answered");
+                    }
                 }
-            });
-        if let Err(error) = started {
-            tracing::error!(%error, "a tilolang window's instance could not be handed over");
+            })?;
+        Ok(Listening {
+            path: path.to_owned(),
+            listener,
+        })
+    }
+
+    /// Answer the one ask on `connection`, when `callers` admit who made it.
+    fn answer(self: &Arc<Self>, connection: &OwnedFd, callers: &Callers) {
+        let admitted = runtime_portal::packet::peer(connection)
+            .map_err(|error| format!("its credentials do not read: {error}"))
+            .and_then(|(uid, pid)| callers.admit(uid, pid));
+        if let Err(refusal) = admitted {
+            tracing::warn!(%refusal, "refused a hand-over to the processes");
+            return;
+        }
+        let asked = match ToDevice::receive(connection) {
+            Ok(Some(asked)) => asked,
+            Ok(None) => return,
+            Err(error) => {
+                tracing::warn!(%error, "a hand-over to the processes does not read");
+                return;
+            }
+        };
+        let answer = match asked {
+            ToDevice::Instance { instance, fds } => {
+                FromDevice::Handed(self.take_handed(*instance, fds, callers))
+            }
+            ToDevice::Locale(locale) => {
+                self.locale_changed(&locale);
+                FromDevice::Told
+            }
+            ToDevice::Access { workspace, apps } => {
+                if (callers.holds)(&workspace) {
+                    self.policy_changed(&workspace, &apps);
+                }
+                FromDevice::Told
+            }
+            ToDevice::Running => FromDevice::Running(self.instances()),
+        };
+        if let Err(error) = answer.send(connection) {
+            tracing::warn!(%error, "a hand-over to the processes was not answered");
         }
     }
 
-    /// [`Self::hand_over`] on this thread. Whether it started the process. An [`Instance`] with no
-    /// patch shows nothing: the host runs the app's code for the call and draws nothing, till the
-    /// session ends it.
+    /// Run the instance a session handed over, in a workspace `callers` may use: whether its
+    /// process started for it, or why it runs nowhere.
+    fn take_handed(
+        self: &Arc<Self>,
+        instance: HandedInstance,
+        fds: HandedFds,
+        callers: &Callers,
+    ) -> Result<bool, String> {
+        if !(callers.holds)(&instance.workspace) {
+            return Err(format!(
+                "this device holds no workspace {} of yours",
+                instance.workspace
+            ));
+        }
+        let (app, window) = (instance.app.clone(), instance.instance);
+        self.hand_over_now(Instance::handed(instance, fds))
+            .map_err(|error| {
+                tracing::error!(
+                    %error,
+                    app,
+                    instance = window,
+                    "a tilolang instance was not handed to its process"
+                );
+                error.to_string()
+            })
+    }
+
+    /// Hand `instance` to the process of its workspace and app, starting the process when none
+    /// runs: whether it started the process. It verifies the package and may start the process, so
+    /// it runs off any thread that must not wait. An [`Instance`] with no patch shows nothing: the
+    /// host runs the app's code for the call and draws nothing, till its caller ends it.
     ///
     /// # Errors
     /// The app does not verify, its module cannot be sealed, or no process takes the instance.
@@ -919,7 +1083,7 @@ impl Processes {
         };
         if let Some(process) = closed {
             // The process reads the end of its socket and ends once it runs nothing.
-            // SAFETY: shutting down the writing half of a socket the session owns.
+            // SAFETY: shutting down the writing half of a socket the daemon owns.
             let _ = unsafe { libc::shutdown(process.socket.as_raw_fd(), libc::SHUT_WR) };
         }
     }
@@ -986,7 +1150,7 @@ fn hash(module: &[u8]) -> u64 {
 /// A process's error output, read on a thread of its own: its last lines once it has ended.
 type Said = Option<std::io::Result<std::thread::JoinHandle<VecDeque<String>>>>;
 
-/// Relay each line `stderr` says to the session's log under `tag`, and answer the last ones once
+/// Relay each line `stderr` says to the daemon's log under `tag`, and answer the last ones once
 /// it ends.
 fn last_lines(mut stderr: impl std::io::Read, tag: &str) -> VecDeque<String> {
     let mut last = VecDeque::with_capacity(SAID_LINES);
@@ -1020,7 +1184,7 @@ fn last_lines(mut stderr: impl std::io::Read, tag: &str) -> VecDeque<String> {
     last
 }
 
-/// Why a process ended that did not say so itself: how it ended, as the session saw it, and the last
+/// Why a process ended that did not say so itself: how it ended, as the daemon saw it, and the last
 /// lines of its error output.
 fn seen_end(status: &std::io::Result<std::process::ExitStatus>, last: &VecDeque<String>) -> String {
     use std::os::unix::process::ExitStatusExt as _;
@@ -1086,6 +1250,291 @@ mod tests {
             PathBuf::from("/nonexistent"),
             Box::new(|_, _| Err("no package store here".to_owned())),
         )
+    }
+
+    /// The variable that makes this test binary the process the test launcher starts, and the
+    /// pipe it says what it was handed on.
+    const LAUNCHED_ENV: &str = "TILO_TEST_TILOLANG_PROCESS_SAYS";
+    const LAUNCHED_TEST: &str = "device::processes::tests::the_process_the_tests_launcher_starts";
+    const WORKSPACE: &str = "7a110d00-0000-4000-8000-0000000000a1";
+    const ELSEWHERE: &str = "7a110d00-0000-4000-8000-0000000000a2";
+
+    /// What the process the test launcher started was handed: the launcher's arguments, the
+    /// instance, and which of its connections came with it.
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct Handed {
+        args: String,
+        request: InstanceRequest,
+        window: bool,
+        content: bool,
+    }
+
+    /// Run as the process the test launcher starts: read the first message on the link the
+    /// daemon handed it, and say what it held on the pipe its test reads.
+    #[test]
+    fn the_process_the_tests_launcher_starts() {
+        use std::os::fd::AsFd as _;
+        let Some(says) = std::env::var_os(LAUNCHED_ENV) else {
+            return;
+        };
+        let link = std::io::stdin().as_fd().try_clone_to_owned().unwrap();
+        let Some(ToProcess::Instance { request, fds }) = ToProcess::receive(&link).unwrap() else {
+            panic!("the process is handed an instance first");
+        };
+        let handed = Handed {
+            args: std::env::var("TILO_TEST_LAUNCHER_ARGS").unwrap(),
+            request: *request,
+            window: fds.window.is_some(),
+            content: fds.content.is_some(),
+        };
+        std::fs::write(says, serde_json::to_vec(&handed).unwrap()).unwrap();
+    }
+
+    /// A device whose launcher starts this test binary as each process, which says on a pipe what
+    /// it was handed, and that runs `NOTES` alone: any other app does not verify.
+    struct Device {
+        dir: tempfile::TempDir,
+        processes: Arc<Processes>,
+        _launcher: tilo_test_env::StandIn,
+    }
+
+    impl Device {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let says = dir.path().join("says");
+            let pipe = std::ffi::CString::new(says.as_os_str().as_encoded_bytes()).unwrap();
+            // SAFETY: a NUL-terminated path this test owns.
+            assert_eq!(unsafe { libc::mkfifo(pipe.as_ptr(), 0o600) }, 0);
+            let launcher = tilo_test_env::stand_in(
+                dir.path().join("tilo-launcher"),
+                &format!(
+                    "export TILO_TEST_LAUNCHER_ARGS=\"$*\" {LAUNCHED_ENV}='{says}'\nexec '{exe}' --exact {LAUNCHED_TEST} --nocapture --quiet\n",
+                    says = says.display(),
+                    exe = std::env::current_exe().unwrap().display(),
+                ),
+            )
+            .unwrap();
+            let processes = Processes::with(
+                dir.path().join("data"),
+                launcher.path().to_owned(),
+                Box::new(|_, app| {
+                    if app != NOTES {
+                        return Err(format!("{app} is not installed here"));
+                    }
+                    Ok(VerifiedInstance {
+                        runtime: "tilolang@1".to_owned(),
+                        app_runtime: "tilo@1".to_owned(),
+                        publisher: [7; 32],
+                        module: runtime_portal::process_link::Module::default(),
+                    })
+                }),
+            );
+            Self {
+                dir,
+                processes,
+                _launcher: launcher,
+            }
+        }
+
+        /// What the process its launcher started says it was handed, once it says it.
+        fn handed(&self) -> Handed {
+            let says = self.dir.path().join("says");
+            let (told, telling) = std::sync::mpsc::channel();
+            std::thread::spawn(move || told.send(std::fs::read(says)));
+            let said = telling
+                .recv_timeout(std::time::Duration::from_secs(120))
+                .expect("the process says what it was handed")
+                .unwrap();
+            serde_json::from_slice(&said).unwrap()
+        }
+
+        /// The daemon's socket for its processes, taking hand-overs from this account's shell in
+        /// [`WORKSPACE`] alone.
+        fn listening(&self) -> (Listening, runtime_portal::device_processes::Device) {
+            let socket = self
+                .dir
+                .path()
+                .join(runtime_portal::device_processes::SOCKET);
+            let listening = self
+                .processes
+                .listen(
+                    &socket,
+                    0o600,
+                    Callers {
+                        person: [1; 32],
+                        admission: tilo_api::daemon::admission::here(|| {
+                            rustix::process::geteuid().as_raw()
+                        }),
+                        holds: Box::new(|workspace| workspace == WORKSPACE),
+                    },
+                )
+                .unwrap();
+            (
+                listening,
+                runtime_portal::device_processes::Device::at(socket),
+            )
+        }
+    }
+
+    fn connection() -> (OwnedFd, OwnedFd) {
+        runtime_portal::process_link::pair().unwrap()
+    }
+
+    fn handed(app: &str, workspace: &str) -> (HandedInstance, HandedFds, Vec<OwnedFd>) {
+        let (patch, patch_peer) = connection();
+        let (collaboration, collaboration_peer) = connection();
+        let (identity, identity_peer) = connection();
+        let (content, content_peer) = connection();
+        let instance = HandedInstance {
+            app: app.to_owned(),
+            workspace: workspace.to_owned(),
+            instance: 7,
+            person: "ada".to_owned(),
+            document: None,
+            reveal: None,
+            open: None,
+            access: None,
+            locale: runtime_portal::process_link::Locale::default(),
+            link_home: None,
+        };
+        let fds = HandedFds {
+            patch: Some(patch),
+            collaboration,
+            identity,
+            origin: None,
+            content: Some(content),
+            chooser: None,
+            clipboard: None,
+            tools: None,
+        };
+        (
+            instance,
+            fds,
+            vec![patch_peer, collaboration_peer, identity_peer, content_peer],
+        )
+    }
+
+    /// A window's instance the session hands over on the daemon's socket runs in the process the
+    /// daemon starts for its workspace and app, with the window's connections, and the daemon
+    /// lists that process as running it.
+    #[test]
+    fn a_window_instance_the_session_hands_over_runs_in_the_daemons_process() {
+        let device = Device::new();
+        let (_listening, daemon) = device.listening();
+        let (instance, fds, _peers) = handed(NOTES, WORKSPACE);
+        assert!(
+            daemon.hand_over(instance, fds).unwrap(),
+            "the daemon starts the process of the workspace and app"
+        );
+        assert_eq!(
+            daemon.running().unwrap(),
+            vec![Running {
+                workspace: WORKSPACE.to_owned(),
+                app: NOTES.to_owned(),
+                instances: vec![7],
+            }],
+            "the daemon's process runs the window's instance"
+        );
+        let handed = device.handed();
+        assert!(
+            handed.args.starts_with("tilolang-process ")
+                && handed.args.contains(&format!("{WORKSPACE}/{NOTES}")),
+            "the launcher starts a tilolang process with the storage of the workspace and app: {}",
+            handed.args
+        );
+        assert_eq!(
+            (
+                handed.request.app.as_str(),
+                handed.request.workspace.as_str(),
+                handed.request.instance,
+                handed.request.person.as_str(),
+                handed.request.shows,
+            ),
+            (
+                NOTES,
+                WORKSPACE,
+                7,
+                "ada",
+                runtime_portal::process_link::Shows::View
+            ),
+            "the process runs the window's instance, for the person at it"
+        );
+        assert!(
+            handed.window && handed.content,
+            "the window's own connections reach the process"
+        );
+    }
+
+    /// A daemon no desktop session asks starts a process the same way: a call that shows nothing
+    /// runs in the process of its workspace and app.
+    #[test]
+    fn a_process_starts_on_a_daemon_with_no_session() {
+        let device = Device::new();
+        let (collaboration, _collaboration) = connection();
+        let (identity, _identity) = connection();
+        let started = device
+            .processes
+            .hand_over_now(Instance {
+                app: NOTES.to_owned(),
+                workspace: WORKSPACE.to_owned(),
+                instance: 9,
+                person: "ada".to_owned(),
+                patch: None,
+                collaboration,
+                identity,
+                origin: None,
+                content: None,
+                chooser: None,
+                clipboard: None,
+                tools: None,
+                document: None,
+                reveal: None,
+                open: None,
+                access: None,
+                locale: runtime_portal::process_link::Locale::default(),
+                link_home: None,
+            })
+            .unwrap();
+        assert!(started, "the daemon starts the process itself");
+        let handed = device.handed();
+        assert_eq!(
+            (
+                handed.request.workspace.as_str(),
+                handed.request.app.as_str(),
+                handed.request.instance,
+                handed.request.shows,
+            ),
+            (
+                WORKSPACE,
+                NOTES,
+                9,
+                runtime_portal::process_link::Shows::Nothing
+            ),
+            "the call runs in its workspace's process and shows nothing"
+        );
+        assert!(!handed.window, "a call that shows nothing has no window");
+    }
+
+    /// A hand-over for a workspace the device holds none of the person's, or for an app that does
+    /// not verify there, is refused, naming why, and starts nothing.
+    #[test]
+    fn a_hand_over_the_caller_may_not_make_is_refused() {
+        let device = Device::new();
+        let (_listening, daemon) = device.listening();
+        for (app, workspace, why) in [
+            (NOTES, ELSEWHERE, "holds no workspace"),
+            ("so.tilo.unknown", WORKSPACE, "is not installed here"),
+        ] {
+            let (instance, fds, _peers) = handed(app, workspace);
+            let refused = daemon.hand_over(instance, fds).unwrap_err();
+            assert_eq!(
+                refused.kind(),
+                std::io::ErrorKind::PermissionDenied,
+                "{refused}"
+            );
+            assert!(refused.to_string().contains(why), "{refused}");
+        }
+        assert!(daemon.running().unwrap().is_empty(), "nothing started");
     }
 
     /// A process reads what an earlier version of its app kept of the person's workspace, and
@@ -1258,7 +1707,13 @@ mod tests {
             (app == NOTES)
                 .then(|| tilo_action_policy::MemberAccess::person(Arc::clone(&policy), "ada"))
         };
-        processes.policy_changed(WORKSPACE, access);
+        processes.policy_changed(
+            WORKSPACE,
+            &[AppAccess {
+                app: NOTES.to_owned(),
+                access: access(NOTES),
+            }],
+        );
         let handed = ToProcess::receive(&theirs).unwrap();
         let Some(ToProcess::Access(said)) = handed else {
             panic!("the workspace's process is told the person's access: {handed:?}");

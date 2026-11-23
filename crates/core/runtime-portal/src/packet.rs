@@ -384,6 +384,113 @@ pub fn pair() -> io::Result<(Descriptor, Descriptor)> {
     ))
 }
 
+/// A packet socket listening at `path`, which must not exist yet.
+///
+/// # Errors
+/// The system's error, or [`io::ErrorKind::Unsupported`] off Linux.
+pub fn listen(path: &std::path::Path) -> io::Result<Descriptor> {
+    #[cfg(target_os = "linux")]
+    {
+        use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType, socket_with};
+        let listener = socket_with(
+            AddressFamily::UNIX,
+            SocketType::SEQPACKET,
+            SocketFlags::CLOEXEC,
+            None,
+        )?;
+        rustix::net::bind(&listener, &SocketAddrUnix::new(path)?)?;
+        rustix::net::listen(&listener, 64)?;
+        Ok(listener)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = path;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "packet sockets listen on Linux only",
+        ))
+    }
+}
+
+/// The next connection to `listener`, waited for.
+///
+/// # Errors
+/// The system's error: the listener was shut down, or [`io::ErrorKind::Unsupported`] off Linux.
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "off Unix a descriptor has no values, and its callers hold a reference to one"
+)]
+pub fn accept(listener: &Descriptor) -> io::Result<Descriptor> {
+    #[cfg(target_os = "linux")]
+    {
+        Ok(rustix::net::accept_with(
+            listener,
+            rustix::net::SocketFlags::CLOEXEC,
+        )?)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = listener;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "packet sockets listen on Linux only",
+        ))
+    }
+}
+
+/// A connection to the packet socket listening at `path`.
+///
+/// # Errors
+/// The system's error: nothing listens there, or [`io::ErrorKind::Unsupported`] off Linux.
+pub fn connect(path: &std::path::Path) -> io::Result<Descriptor> {
+    #[cfg(target_os = "linux")]
+    {
+        use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType, socket_with};
+        let connection = socket_with(
+            AddressFamily::UNIX,
+            SocketType::SEQPACKET,
+            SocketFlags::CLOEXEC,
+            None,
+        )?;
+        rustix::net::connect(&connection, &SocketAddrUnix::new(path)?)?;
+        Ok(connection)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = path;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "packet sockets connect on Linux only",
+        ))
+    }
+}
+
+/// The account and process at the other end of `connection`, as the kernel names them.
+///
+/// # Errors
+/// The system's error, or [`io::ErrorKind::Unsupported`] off Linux.
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "off Unix a descriptor has no values, and its callers hold a reference to one"
+)]
+pub fn peer(connection: &Descriptor) -> io::Result<(u32, u32)> {
+    #[cfg(target_os = "linux")]
+    {
+        let credentials = rustix::net::sockopt::socket_peercred(connection)?;
+        let pid = u32::try_from(credentials.pid.as_raw_nonzero().get())
+            .map_err(|_| io::Error::other("a peer's process id is out of range"))?;
+        Ok((credentials.uid.as_raw(), pid))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = connection;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "packet sockets name their peer on Linux only",
+        ))
+    }
+}
+
 #[cfg(all(test, target_os = "linux"))]
 #[allow(clippy::unwrap_used, reason = "test fixtures")]
 mod tests {
