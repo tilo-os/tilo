@@ -93,6 +93,7 @@ mod issue_work;
 mod learned;
 mod mail;
 mod mail_connect;
+mod narration;
 mod shares;
 mod steps;
 mod sub_agents;
@@ -2966,7 +2967,7 @@ impl tilo_agent_turn::Doing<McpServer<WorkspaceActionProvider>> for Answering<'_
             // Waited for, as it always was: handed on, it would stand in front of the tool's
             // own action on the workspace's thread, inside what the tool waits for that action.
             self.noted.lock_recover().1 = None;
-            at.1.doing(&call.name).await;
+            at.1.doing(&narration::said(call)).await;
             timed.noted();
         }
         // The view tool writes on the reply itself.

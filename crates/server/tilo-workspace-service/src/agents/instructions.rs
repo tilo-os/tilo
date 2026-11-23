@@ -60,9 +60,23 @@ pub(super) fn for_turn(turn: &Turn) -> String {
          person asks you to share that guidance with the workspace."
     };
     format!(
-        "{every}{view}{skills}{}{}{}{told}",
-        shares::told(turn),
-        learned::told_how(turn),
-        sub_agents::told(turn)
+        "{every}{view}{skills}{clock}{shares}{learned}{sub}{told}",
+        clock = clock(),
+        shares = shares::told(turn),
+        learned = learned::told_how(turn),
+        sub = sub_agents::told(turn),
+    )
+}
+
+/// The day and the moment the person asks at, as the model reads them: a request about "today"
+/// or "tonight" is about their day, not the server's, and an answer that names a date names
+/// theirs.
+fn clock() -> String {
+    let now = ui::clock::local_now();
+    let today = now.date();
+    format!(
+        " Today is {} where the person is ({today}); it is {} there now.",
+        ui::format::day_heading(today, true),
+        now.datetime().strftime("%H:%M")
     )
 }
