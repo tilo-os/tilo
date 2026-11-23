@@ -47,8 +47,6 @@ fn the_reading_is_the_policy_and_what_holds_the_machine_awake() {
             power_key: PowerAction::Lock,
             held_awake: false,
             holds: Vec::new(),
-            profile: None,
-            profiles: Vec::new(),
         }
     );
     let ticket = link.keep_awake("a long download");
@@ -257,11 +255,10 @@ fn the_power_key_and_the_lid_are_actions_too() {
     assert_eq!(none.value, None, "an ignored lid does nothing");
 }
 
-/// The `power:sleep` resource still reads the daemon's power profiles for now,
-/// while switching the profile lives exclusively on `power#set-power-mode` so
-/// `power:sleep` offers no duplicate action.
+/// The `power:sleep` resource carries only sleep policy and holds — never power
+/// profiles or a duplicate `set-profile` action, both of which live on `power`.
 #[test]
-fn the_sleep_reading_follows_power_profiles_without_a_duplicate_action() {
+fn the_sleep_resource_carries_no_power_profiles_or_duplicate_action() {
     let link = PowerLink::new(quiet());
     let mut service = SessionPower::without_daemons(link.clone()).expect("service");
     let sleep = service
@@ -279,8 +276,7 @@ fn the_sleep_reading_follows_power_profiles_without_a_duplicate_action() {
             .collect::<Vec<_>>()
     );
 
-    // The daemon answers after the session first read the service, which says
-    // its reading moved, once.
+    // Power-profile updates on the bridge belong to `power`, not `power:sleep`.
     assert!(!service.poll(), "nothing moved yet");
     link.bridge().note_profiles(vec![
         "performance".into(),
@@ -288,17 +284,17 @@ fn the_sleep_reading_follows_power_profiles_without_a_duplicate_action() {
         "power-saver".into(),
     ]);
     assert!(
-        service.poll(),
-        "the profiles the daemon offers move the reading"
+        !service.poll(),
+        "power profiles do not move the power:sleep reading"
     );
-    assert!(!service.poll(), "and only once");
     link.bridge().note_active_profile("balanced");
-    assert!(service.poll(), "so does the profile in force");
-    assert_eq!(
-        link.sleep().profiles,
-        ["performance", "balanced", "power-saver"]
+    assert!(
+        !service.poll(),
+        "the active power profile does not move the power:sleep reading"
     );
-    assert_eq!(link.sleep().profile.as_deref(), Some("balanced"));
+    let reading = service.read(SLEEP).expect("the sleep reading");
+    assert_eq!(reading.get("profile"), None, "{reading}");
+    assert_eq!(reading.get("profiles"), None, "{reading}");
 
     let Value::Object(arguments) = serde_json::json!({ "profile": "power-saver" }) else {
         panic!("arguments are an object")
@@ -311,6 +307,27 @@ fn the_sleep_reading_follows_power_profiles_without_a_duplicate_action() {
         "the retired set-profile action is unknown on power:sleep"
     );
     assert!(link.bridge().drain_commands().is_empty());
+}
+
+#[test]
+fn a_published_sleep_reading_omits_power_profiles() {
+    let link = PowerLink::new(quiet());
+    let service = SessionPower::without_daemons(link.clone()).expect("service");
+    link.bridge().note_profiles(vec![
+        "performance".into(),
+        "balanced".into(),
+        "power-saver".into(),
+    ]);
+    link.bridge().note_active_profile("balanced");
+
+    let reading = service.read(SLEEP).expect("the sleep reading");
+    assert_eq!(reading.get("profile"), None, "{reading}");
+    assert_eq!(reading.get("profiles"), None, "{reading}");
+    assert_eq!(reading["blank_minutes"], serde_json::json!(10));
+    assert_eq!(reading["lock_minutes"], serde_json::json!(5));
+    assert_eq!(reading["lock_on_sleep"], serde_json::json!(true));
+    assert_eq!(reading["held_awake"], serde_json::json!(false));
+    assert_eq!(reading["holds"], serde_json::json!([]));
 }
 
 /// A pack in memory: the limit its driver would offer, and the writes it

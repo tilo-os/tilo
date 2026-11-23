@@ -817,6 +817,12 @@ mod tests {
             0,
             "the system service never polled System::power()"
         );
+
+        let sleep = session
+            .read(tilo_session_power::SLEEP)
+            .expect("sleep reading");
+        assert_eq!(sleep.get("profile"), None, "{sleep}");
+        assert_eq!(sleep.get("profiles"), None, "{sleep}");
     }
 
     /// What `power` lists as `modes` is exactly what `power#set-power-mode` accepts,

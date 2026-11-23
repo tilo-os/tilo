@@ -448,8 +448,6 @@ mod tests {
             power_key: PowerAction::Suspend,
             held_awake: true,
             holds: vec!["Video Player".into()],
-            profile: None,
-            profiles: Vec::new(),
         };
         let wire = tilo_service::reading(&sleep);
         assert_eq!(wire.get("profile"), None, "{wire}");

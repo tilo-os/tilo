@@ -984,6 +984,9 @@ fn a_dbus_profile_change_reaches_the_sessions_power_reading_live() {
                     && power["modes"] == serde_json::json!(["balanced", "saver"])
             })
     });
+    let sleep = session.read(SLEEP).expect("sleep reading");
+    assert_eq!(sleep.get("profile"), None, "{sleep}");
+    assert_eq!(sleep.get("profiles"), None, "{sleep}");
 
     emit_active_profile(&runtime, &server, "power-saver");
     until(&mut session, |session| {

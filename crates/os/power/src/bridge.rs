@@ -72,9 +72,8 @@ struct BridgeInner {
     /// Whether the machine runs on battery, as the service last saw it; `None`
     /// before it first looked.
     on_battery: Option<bool>,
-    /// How often what the session's power readings show moved: the profiles
-    /// offered, the active one, the battery. The session reads them again when
-    /// it changes.
+    /// How often what the power service's own readings show moved (the battery).
+    /// The session reads them again when it changes.
     moved: u64,
 }
 
@@ -166,7 +165,6 @@ impl PowerBridge {
         if inner.active_profile.as_deref() != Some(profile) {
             inner.active_profile = Some(profile.to_owned());
             drop(inner);
-            self.reading_moved();
             self.profiles_moved.fetch_add(1, Ordering::Release);
             self.wake_profiles();
         }
@@ -184,7 +182,6 @@ impl PowerBridge {
         if inner.profiles != profiles {
             inner.profiles = profiles;
             drop(inner);
-            self.reading_moved();
             self.profiles_moved.fetch_add(1, Ordering::Release);
             self.wake_profiles();
         }
@@ -409,10 +406,12 @@ mod tests {
         }));
         service.note_profiles(vec!["balanced".into(), "power-saver".into()]);
         assert_eq!(compositor.profiles_moved(), 1);
+        assert_eq!(compositor.readings_moved(), 0);
         assert_eq!(profile_woken.load(Ordering::SeqCst), 1);
 
         service.note_active_profile("power-saver");
         assert_eq!(compositor.profiles_moved(), 2);
+        assert_eq!(compositor.readings_moved(), 0);
         assert_eq!(profile_woken.load(Ordering::SeqCst), 2);
         assert_eq!(
             compositor.profiles_snapshot(),
