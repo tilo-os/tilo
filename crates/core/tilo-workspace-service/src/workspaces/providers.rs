@@ -72,7 +72,7 @@ impl Reach {
 #[derive(Clone)]
 pub struct Registered {
     /// The provider id a call names.
-    pub provider: &'static str,
+    pub provider: Arc<str>,
     /// The application whose grants decide its actions.
     pub app: &'static str,
     /// How far it reaches.
@@ -93,10 +93,10 @@ pub struct Providers(Arc<Inner>);
 
 #[derive(Default)]
 struct Inner {
-    provided: std::sync::RwLock<BTreeMap<&'static str, Registered>>,
+    provided: std::sync::RwLock<BTreeMap<Arc<str>, Registered>>,
     /// Which registered provider took each invocation another device asked for, so its
     /// observations and its cancellation reach that provider.
-    taken: std::sync::Mutex<HashMap<InvocationId, &'static str>>,
+    taken: std::sync::Mutex<HashMap<InvocationId, Arc<str>>>,
 }
 
 impl Providers {
@@ -110,8 +110,9 @@ impl Providers {
         answers: Arc<dyn ActionProvider + Send + Sync>,
     ) {
         let published = answers.published();
+        let provider: Arc<str> = Arc::from(provider);
         self.0.provided.write_recover().insert(
-            provider,
+            Arc::clone(&provider),
             Registered {
                 provider,
                 app,
@@ -146,6 +147,52 @@ impl Providers {
             .values()
             .filter_map(|registered| ProvidedPackage::of(&registered.published))
             .collect()
+    }
+
+    /// Answer the calls that name `provider` with `answers` while it serves them, decided by the
+    /// grants of the application `app` and reaching as far as `reach`: a provider a program
+    /// serves over its connection, which goes with it ([`Self::withdraw`]). Refused where another
+    /// provider is registered under that name: a program never takes over one.
+    ///
+    /// # Errors
+    /// Another provider answers under `provider`.
+    pub fn serve(
+        &self,
+        provider: &str,
+        app: &'static str,
+        reach: Reach,
+        answers: Arc<dyn ActionProvider + Send + Sync>,
+    ) -> Result<(), String> {
+        let mut provided = self.0.provided.write_recover();
+        if let Some(registered) = provided.get(provider)
+            && !Arc::ptr_eq(&registered.answers, &answers)
+        {
+            return Err(format!("{provider} is served on this device already"));
+        }
+        let provider: Arc<str> = Arc::from(provider);
+        provided.insert(
+            Arc::clone(&provider),
+            Registered {
+                provider,
+                app,
+                reach,
+                published: answers.published(),
+                answers,
+            },
+        );
+        Ok(())
+    }
+
+    /// Answer no more calls of `provider` with `answers`: a call that names it from now on finds
+    /// no provider. A provider registered since under that name by another is left as it is.
+    pub fn withdraw(&self, provider: &str, answers: &Arc<dyn ActionProvider + Send + Sync>) {
+        let mut provided = self.0.provided.write_recover();
+        if provided
+            .get(provider)
+            .is_some_and(|registered| Arc::ptr_eq(&registered.answers, answers))
+        {
+            provided.remove(provider);
+        }
     }
 
     /// The provider registered under `provider`, or under the app a record provider names
@@ -206,8 +253,8 @@ impl Providers {
     }
 
     fn taker(&self, id: &InvocationId) -> Option<Arc<dyn ActionProvider + Send + Sync>> {
-        let name = *self.0.taken.lock_recover().get(id)?;
-        self.get(name).map(|registered| registered.answers)
+        let name = self.0.taken.lock_recover().get(id)?.clone();
+        self.get(&name).map(|registered| registered.answers)
     }
 
     /// What the provider `query` names offers another device's `caller`; `None` when no provider
@@ -264,7 +311,7 @@ impl Providers {
                 if taken.len() >= TAKEN_KEPT {
                     taken.clear();
                 }
-                taken.insert(request.invocation, registered.provider);
+                taken.insert(request.invocation, Arc::clone(&registered.provider));
             }
             let receipt = registered.answers.invoke(&caller, request).await;
             completer.complete(receipt.unwrap_or(Err(ActionCallError::Unanswered)));

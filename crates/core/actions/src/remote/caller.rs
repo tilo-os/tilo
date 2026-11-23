@@ -681,7 +681,7 @@ impl Caller {
     /// the call again for it after a restart ([`KeptCaller`]). The execution it ran in is not
     /// kept: it ended with the process.
     #[must_use]
-    pub(crate) fn kept(&self) -> KeptCaller {
+    pub fn kept(&self) -> KeptCaller {
         KeptCaller {
             acting: self.acting.clone(),
             user_public_key: self.user_public_key,
@@ -703,9 +703,10 @@ impl Caller {
 }
 
 /// A [`Caller`] as a host keeps it in its own state, beside a call that waits for its
-/// person's yes: everything the transport admitted of it but the execution it ran in. Only
-/// this crate makes a caller of it again ([`KeptCaller::restored`]), for the call it was kept
-/// with, so a payload still cannot say who sent it.
+/// person's yes: everything the transport admitted of it but the execution it ran in. A caller
+/// is made of it again only for the call it was kept with ([`KeptCaller::restored`]), or by the
+/// person's shell for a call its own device's daemon hands it on the link the daemon made for it
+/// ([`KeptCaller::carried`]), so a payload from anyone else still cannot say who sent it.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct KeptCaller {
@@ -727,6 +728,13 @@ pub struct KeptCaller {
 }
 
 impl KeptCaller {
+    /// The caller the device's daemon admitted a call of a provider the shell serves for, as the
+    /// daemon says it on the shell's link: the one place a shell reads who called it.
+    #[must_use]
+    pub fn carried(self) -> Caller {
+        self.restored()
+    }
+
     /// The caller this was kept from, with no execution of its own.
     pub(crate) fn restored(self) -> Caller {
         Caller {

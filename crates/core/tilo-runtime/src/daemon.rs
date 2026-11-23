@@ -162,6 +162,45 @@ pub struct Running {
     listener: UnixListener,
     accepting: Option<std::thread::JoinHandle<()>>,
     serving: Option<std::thread::JoinHandle<io::Result<()>>>,
+    /// The person's services while they run: what starts their shell.
+    person: Arc<Person>,
+}
+
+/// The person's services, while they run, for whoever waits for them to.
+#[derive(Default)]
+struct Person {
+    services: Mutex<std::sync::Weak<Daemon>>,
+    started: Condvar,
+}
+
+impl Person {
+    /// `services` run from now on, or (`None`) no longer.
+    fn set(&self, services: Option<&Arc<Daemon>>) {
+        *self.services.lock_recover() = services.map_or_else(std::sync::Weak::new, Arc::downgrade);
+        self.started.notify_all();
+    }
+
+    /// The person's services once they run, waiting up to `within` for them to start.
+    fn within(&self, within: Duration) -> io::Result<Arc<Daemon>> {
+        let deadline = Instant::now() + within;
+        let mut services = self.services.lock_recover();
+        loop {
+            if let Some(services) = services.upgrade() {
+                return Ok(services);
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "the person's services did not start",
+                ));
+            }
+            services = self
+                .started
+                .wait_timeout(services, left)
+                .map_or_else(|poisoned| poisoned.into_inner().0, |(services, _)| services);
+        }
+    }
 }
 
 impl Running {
@@ -214,11 +253,12 @@ impl Running {
         };
         tracing::info!("answering this device's actions on its native endpoint");
         let stop = crate::device::serve::Stop::default();
+        let person = Arc::new(Person::default());
         let serving = {
-            let (profile, stop) = (profile.to_owned(), stop.clone());
+            let (profile, stop, person) = (profile.to_owned(), stop.clone(), Arc::clone(&person));
             std::thread::Builder::new()
                 .name("tilo-daemon".into())
-                .spawn(move || serve_device(&profile, dev, device, &native, &stop))?
+                .spawn(move || serve_device(&profile, dev, device, &native, &stop, &person))?
         };
         Ok(Self {
             native: path,
@@ -226,7 +266,19 @@ impl Running {
             listener,
             accepting: Some(accepting),
             serving: Some(serving),
+            person,
         })
+    }
+
+    /// Start `command` as the person's shell, handed the link the daemon made for it, once the
+    /// person's services run, waiting up to `within` for them to start
+    /// ([`Daemon::start_shell`]).
+    ///
+    /// # Errors
+    /// The person's services did not start in time, or the shell did not.
+    #[cfg(target_os = "linux")]
+    pub fn start_shell(&self, command: Command, within: Duration) -> io::Result<std::process::Child> {
+        self.person.within(within)?.start_shell(command)
     }
 
     /// Where the daemon's native endpoint listens.
@@ -277,6 +329,77 @@ impl Drop for Running {
     }
 }
 
+/// This computer's daemon with the person's shell started over its link, as a sign-in starts
+/// them: the one way a test starts a session that is the daemon's shell. The daemon runs in this
+/// process ([`Running`]); the shell is the program `shell` starts, handed the link
+/// ([`Daemon::start_shell`]). Dropping it stops both.
+#[cfg(target_os = "linux")]
+pub struct ShellSession {
+    shell: Option<std::process::Child>,
+    running: Option<Running>,
+}
+
+#[cfg(target_os = "linux")]
+impl ShellSession {
+    /// Start the daemon over `profile` and, once the person's services run (within `within`),
+    /// `shell` as their shell. The profile's person is founded already, as a device a person
+    /// signed in on is.
+    ///
+    /// # Errors
+    /// The daemon did not start, its person's services did not within `within`, or the shell did
+    /// not start.
+    pub fn start(profile: &Path, shell: Command, within: Duration) -> io::Result<Self> {
+        let running = Running::start(profile)?;
+        let shell = running.start_shell(shell, within)?;
+        Ok(Self {
+            shell: Some(shell),
+            running: Some(running),
+        })
+    }
+
+    /// Where the daemon's native endpoint listens: what the person's programs, the CLI and the
+    /// SDKs reach the session's actions at.
+    #[must_use]
+    pub fn native_socket(&self) -> &Path {
+        self.running
+            .as_ref()
+            .map_or_else(|| Path::new(""), Running::native_socket)
+    }
+
+    /// The shell's process.
+    pub fn shell(&mut self) -> &mut std::process::Child {
+        self.shell.as_mut().expect("the shell runs until the session stops")
+    }
+
+    /// Stop the shell, then the daemon, and return once both ended.
+    ///
+    /// # Errors
+    /// The daemon could not serve.
+    pub fn stop(mut self) -> io::Result<()> {
+        self.end_shell();
+        self.running.take().map_or(Ok(()), Running::stop)
+    }
+
+    /// Ask the shell to end, as a sign-out does, and wait for it.
+    fn end_shell(&mut self) {
+        if let Some(mut shell) = self.shell.take() {
+            if let Ok(pid) = i32::try_from(shell.id())
+                && let Some(pid) = rustix::process::Pid::from_raw(pid)
+            {
+                let _ = rustix::process::kill_process(pid, rustix::process::Signal::TERM);
+            }
+            let _ = shell.wait();
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for ShellSession {
+    fn drop(&mut self) {
+        self.end_shell();
+    }
+}
+
 /// Serve `device` over `profile` with `native` as its endpoint until `stop` is told: its person
 /// found or awaited, their services started, and the device held.
 fn serve_device(
@@ -285,6 +408,7 @@ fn serve_device(
     device: crate::device::unclaimed::ThisDevice,
     native: &Native,
     stop: &crate::device::serve::Stop,
+    person: &Person,
 ) -> io::Result<()> {
     // Before a person's certificate names this computer's key, it is served with the key alone:
     // a ticket it was handed is spent on the way, and the person's services start once a
@@ -323,10 +447,12 @@ fn serve_device(
             .serve(Arc::new(PersonShells(Arc::downgrade(&session))));
         native.serve_the_person(the_persons(&session, search));
         native.serve_keys(key_endpoint(&session, native.answers.clone()));
+        person.set(Some(&session));
         // The device is served until the daemon is told to stop, another takes the device over,
         // or this computer logs in with a ticket: its person's part starts again as that device,
         // the device's own part (the native endpoint, the device's lock) staying up meanwhile.
         let held = crate::device::hold(&session, stop);
+        person.set(None);
         native.forget_the_person();
         drop(session);
         match held.map_err(|error| io::Error::other(format!("{error:#}")))? {

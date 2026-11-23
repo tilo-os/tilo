@@ -724,3 +724,13 @@ reason = "spoken only on a live certification connection, never stored, and its 
 file = "crates/server/tilo-server-protocol/src/certify.rs"
 enum = "ApproverReply"
 reason = "spoken only on a live certification connection, never stored, and its ALPN moved to tilo-device-certify/2 when the questions left it: a peer of the old protocol is not answered, so no bytes of another layout are read"
+
+[[break]]
+file = "crates/core/runtime-collab/src/wire/shell.rs"
+enum = "ShellCall"
+reason = "the shell link joins a daemon to the shell it started itself, over a connection it opened for that shell alone: a daemon of another build has its own processes and hands out its own links, so no bytes of an older link are ever read"
+
+[[break]]
+file = "crates/core/runtime-collab/src/wire/shell.rs"
+enum = "ShellReply"
+reason = "the daemon's half of the same link: written only to the shell that daemon started, which reads it in the same build, and never kept"

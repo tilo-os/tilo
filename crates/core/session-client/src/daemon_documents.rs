@@ -12,7 +12,9 @@ use std::sync::Arc;
 
 use runtime_collab::ShellClient;
 use runtime_collab::wire::shell::{DocumentWritten, ShellCall, ShellReply, ShellWrite};
-use tilo_actions::remote::{InvokeRequest, RemoteActionMessage, ResourceReadRequest};
+use tilo_actions::remote::{
+    InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage, ResourceReadRequest,
+};
 use tilo_peer_state::owner::{AppWrite, WriteRefusal};
 use tilo_peer_state::workspace_documents::{
     DeviceDocuments, DeviceWrites, DocumentRead, DocumentServing, DocumentWrite, DocumentWriting,
@@ -188,19 +190,36 @@ impl Inner {
 
 /// `message` as the shell link carries it.
 fn dispatched(workspace: Option<&str>, message: &RemoteActionMessage) -> Result<ShellCall, String> {
-    Ok(ShellCall::Invoke {
+    Ok(ShellCall::Action {
         workspace: workspace.map(str::to_owned),
-        message: serde_json::to_string(message)
+        frame: RemoteActionFrame::new(message.clone())
+            .encode()
             .map_err(|error| format!("a call does not encode: {error}"))?,
     })
 }
 
-/// The JSON the dispatch answered with, or why it refused.
+/// The JSON the dispatch answered with: the readings of a read, or the output of an action that
+/// settled; or why it refused.
 fn answered(reply: ShellReply) -> Result<serde_json::Value, String> {
-    match reply {
-        ShellReply::Invoked(answer) => serde_json::from_str(&answer?)
-            .map_err(|error| format!("the dispatch's answer does not read: {error}")),
-        other => Err(unexpected(&other)),
+    let ShellReply::Action(frame) = reply else {
+        return Err(unexpected(&reply));
+    };
+    let message = RemoteActionFrame::decode(&frame)
+        .map_err(|error| format!("the dispatch's answer does not read: {error}"))?
+        .message;
+    match message {
+        RemoteActionMessage::ResourceReading { result, .. } => {
+            serde_json::from_str(&result.map_err(|error| error.to_string())?)
+                .map_err(|error| format!("the dispatch's answer does not read: {error}"))
+        }
+        RemoteActionMessage::Receipt(receipt) => match receipt.status {
+            ReceiptStatus::Completed { output } => serde_json::to_value(&output)
+                .map_err(|error| format!("the answer does not encode: {error}")),
+            ReceiptStatus::Rejected { error } => Err(error.to_string()),
+            ReceiptStatus::Failed { error } => Err(error.message),
+            status => Err(format!("the action did not settle: {status:?}")),
+        },
+        other => Err(format!("the dispatch answered something else: {other:?}")),
     }
 }
 

@@ -1243,6 +1243,11 @@ fn broker_services(
         std::sync::Arc::new(initiative.clone()).register(&providers);
     }
     if let Some(actions) = session_actions {
+        // The device's dispatch reaches them over the shell's link too: what the daemon's own
+        // endpoint and its agents ask of the layout, the windows and the notices.
+        if let Ok(link) = &daemon {
+            actions.serve_on(link.clone());
+        }
         actions.register(&providers);
     }
     if let Some(settings) = settings_steps {

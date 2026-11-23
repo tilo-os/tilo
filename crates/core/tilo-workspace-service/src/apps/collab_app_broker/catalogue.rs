@@ -353,7 +353,7 @@ impl AppBrokerState {
         for (provider, app_id, actions) in task_steps {
             offer(runtime_collab::BrokerActionSurface {
                 peer_id: 0,
-                provider: Some(provider.to_owned()),
+                provider: Some(provider.to_string()),
                 app_id,
                 cluster_id: cluster_id.to_owned(),
                 document_id: String::new(),

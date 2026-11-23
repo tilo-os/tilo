@@ -55,6 +55,10 @@ pub(crate) struct SessionActions {
     /// Where the API stood when the rows were last read
     /// ([`tilo_session_core::surfaces::Surfaces::revision`]).
     read_at: std::sync::Mutex<Vec<(usize, u64)>>,
+    /// How many times the rows changed: the revision of the catalogue the daemon is handed.
+    generation: std::sync::atomic::AtomicU64,
+    /// Told each time the rows changed, for the daemon to be handed them.
+    moved: tokio::sync::Notify,
 }
 
 impl SessionActions {
@@ -66,6 +70,8 @@ impl SessionActions {
             programs,
             rows: std::sync::RwLock::default(),
             read_at: std::sync::Mutex::default(),
+            generation: std::sync::atomic::AtomicU64::new(0),
+            moved: tokio::sync::Notify::new(),
         }
     }
 
@@ -85,6 +91,12 @@ impl SessionActions {
         let mut held = self.rows.write_recover();
         let changed = *held != rows;
         *held = rows;
+        drop(held);
+        if changed {
+            self.generation
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            self.moved.notify_one();
+        }
         changed
     }
 
@@ -97,6 +109,69 @@ impl SessionActions {
     /// that turn: the layout, its undo, the windows and the notices.
     pub(crate) fn register(self: Arc<Self>, providers: &Providers) {
         providers.provide(wire::PROVIDER, wire::PROVIDER, Reach::Turns, self);
+    }
+
+    /// Serve them on the device's dispatch too, over the shell's link `shell`, for as long as it
+    /// lasts: offering the rows the session's last pass read, and the rows again each time a pass
+    /// reads other ones.
+    #[cfg(unix)]
+    pub(crate) fn serve_on(self: &Arc<Self>, shell: runtime_collab::ShellClient) {
+        let runtime = match tilo_rt::try_app() {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                tracing::warn!(%error, "the device's dispatch reaches none of the session's own actions");
+                return;
+            }
+        };
+        let actions = Arc::clone(self);
+        runtime.spawn(async move {
+            let provided = match shell
+                .provide(
+                    wire::PROVIDER,
+                    &actions.page(),
+                    Arc::clone(&actions) as Arc<dyn ActionProvider + Send + Sync>,
+                )
+                .await
+            {
+                Ok(provided) => provided,
+                Err(error) => {
+                    tracing::warn!(%error, "the device's dispatch reaches none of the session's own actions");
+                    return;
+                }
+            };
+            loop {
+                actions.moved.notified().await;
+                if let Err(error) = provided.publish(&actions.page()).await {
+                    tracing::debug!(%error, "the daemon is handed the session's actions no more");
+                    return;
+                }
+            }
+        });
+    }
+
+    /// Every step the session offers now, as the daemon lists them.
+    #[cfg(unix)]
+    fn page(&self) -> CataloguePage {
+        let revision = self
+            .generation
+            .load(std::sync::atomic::Ordering::Acquire)
+            .to_string();
+        CataloguePage {
+            revision,
+            rows: self
+                .rows()
+                .into_iter()
+                .map(|placed| {
+                    tilo_actions::remote::CatalogueRow::for_placed_action(
+                        wire::PROVIDER,
+                        wire::PROVIDER,
+                        placed,
+                    )
+                })
+                .collect(),
+            exhausted: true,
+            ..CataloguePage::default()
+        }
     }
 }
 

@@ -1024,16 +1024,27 @@ async fn shell_reads(
         on_behalf_of: None,
         read: resource_read(workspace, app, resource),
     };
-    let ShellReply::Invoked(Ok(readings)) = shell_asks(
+    let ShellReply::Action(frame) = shell_asks(
         shell,
-        ShellCall::Invoke {
+        ShellCall::Action {
             workspace: None,
-            message: serde_json::to_string(&message).unwrap(),
+            frame: tilo_actions::remote::RemoteActionFrame::new(message)
+                .encode()
+                .unwrap(),
         },
     )
     .await
     else {
         panic!("the daemon answers the shell's read");
+    };
+    let tilo_actions::remote::RemoteActionMessage::ResourceReading {
+        result: Ok(readings),
+        ..
+    } = tilo_actions::remote::RemoteActionFrame::decode(&frame)
+        .unwrap()
+        .message
+    else {
+        panic!("the daemon answers the shell's read with its readings");
     };
     let readings: serde_json::Value = serde_json::from_str(&readings).unwrap();
     let document = readings["records"][0]["document"].as_str()?;
@@ -1266,15 +1277,16 @@ async fn shell_helper(role: &str) {
         signed: None,
     };
     let asks = [
-        ShellCall::Invoke {
+        ShellCall::Action {
             workspace: None,
-            message: serde_json::to_string(
-                &tilo_actions::remote::RemoteActionMessage::ResourceRead {
+            frame: tilo_actions::remote::RemoteActionFrame::new(
+                tilo_actions::remote::RemoteActionMessage::ResourceRead {
                     correlation: 0,
                     on_behalf_of: None,
                     read: resource_read(&workspace, "so.tilo.desktop", ""),
                 },
             )
+            .encode()
             .unwrap(),
         },
         ShellCall::Write {
@@ -1286,12 +1298,18 @@ async fn shell_helper(role: &str) {
             snapshot: true,
             changes: automerge::AutoCommit::new().save(),
         },
-        ShellCall::Invoke {
+        ShellCall::Action {
             workspace: None,
-            message: serde_json::to_string(&tilo_actions::remote::RemoteActionMessage::Invoke(
-                membership,
-            ))
+            frame: tilo_actions::remote::RemoteActionFrame::new(
+                tilo_actions::remote::RemoteActionMessage::Invoke(membership),
+            )
+            .encode()
             .unwrap(),
+        },
+        // Nor does it serve a provider on the device's dispatch.
+        ShellCall::Provide {
+            provider: "session.asks".to_owned(),
+            catalogue: "{}".to_owned(),
         },
     ];
     for ask in asks {

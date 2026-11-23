@@ -38,6 +38,7 @@ use journal_commit::*;
 use routing::*;
 mod session;
 mod shell;
+mod shell_served;
 use catalogue::*;
 use session::*;
 use socket::*;
@@ -801,6 +802,7 @@ fn wire_answerer(
                     .await
                     .and_then(|found| serde_json::to_string(&found).map_err(|e| e.to_string()))
                     .map(Answer::Resolution),
+                Ask::Action { .. } => Err("an app's directory serves no provider".to_owned()),
             };
             let _ = answer.send(answered);
         }

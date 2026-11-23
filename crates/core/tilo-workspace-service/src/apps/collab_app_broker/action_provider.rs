@@ -1259,13 +1259,13 @@ impl AppBrokerState {
                     // were asked for (a query asking only who publishes builds none), so a caller
                     // finds it by its app.
                     providers.push(CatalogueProvider {
-                        provider: registered.provider.to_owned(),
+                        provider: registered.provider.to_string(),
                         app_id: registered.app.to_owned(),
                         workspace: workspace_id.clone(),
                         document_id: String::new(),
                         browsable: true,
                     });
-                    if scope.wants(registered.provider) && scope.wants_app(registered.app) {
+                    if scope.wants(&registered.provider) && scope.wants_app(registered.app) {
                         Self::registered_rows(
                             (&workspace, &policy, now),
                             registered,
@@ -1487,7 +1487,7 @@ impl AppBrokerState {
                     })
                 })
                 .map(|row| CatalogueRow {
-                    provider: registered.provider.to_owned(),
+                    provider: registered.provider.to_string(),
                     app_id: registered.app.to_owned(),
                     ..row
                 }),

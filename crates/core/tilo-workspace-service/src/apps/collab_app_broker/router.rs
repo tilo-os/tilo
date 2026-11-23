@@ -747,6 +747,17 @@ impl Router {
                 action,
                 local_document,
             },
+            Ask::Action {
+                channel,
+                frame,
+                caller,
+                typed,
+            } => Ask::Action {
+                channel: self.app_handle(side, channel),
+                frame,
+                caller,
+                typed,
+            },
         };
         self.tell_app(HostFrame::Ask { id: asked, ask });
     }

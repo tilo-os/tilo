@@ -30,6 +30,12 @@ type Descriptors = Option<runtime_portal::descriptors::DescriptorSender>;
 #[cfg(not(unix))]
 type Descriptors = Option<std::convert::Infallible>;
 
+#[cfg(unix)]
+#[path = "shell_dispatch.rs"]
+mod shell_dispatch;
+#[cfg(unix)]
+pub use shell_dispatch::{Provided, ShellDispatch};
+
 pub(crate) fn failure(failure: Failure) -> NotAvailable {
     match failure {
         Failure::Refused(reason) => NotAvailable::Refused(reason),

@@ -107,7 +107,7 @@ pub(super) fn rows_of(
 ) -> Vec<tilo_actions::remote::CatalogueRow> {
     let mut rows = Vec::new();
     let mut query = tilo_actions::remote::CatalogueQuery {
-        provider: Some(registered.provider.to_owned()),
+        provider: Some(registered.provider.to_string()),
         max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
         ..tilo_actions::remote::CatalogueQuery::default()
     };
@@ -1244,7 +1244,7 @@ mod identity_admin_tests {
                         let asked = &asked;
                         let worker = scope.spawn(move || {
                             let registered = crate::workspaces::providers::Registered {
-                                provider: identity_admin::PROVIDER,
+                                provider: identity_admin::PROVIDER.into(),
                                 app: "so.tilo.settings",
                                 reach: Reach::ThisDevice,
                                 answers: steps as Arc<dyn ActionProvider + Send + Sync>,

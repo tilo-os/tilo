@@ -731,6 +731,8 @@ impl Daemon {
         stage("starting the collaboration broker");
         #[cfg(unix)]
         let shell_links = Arc::default();
+        #[cfg(unix)]
+        let shell_dispatch: Arc<super::shell::Dispatching> = Arc::default();
         let invocations: Arc<Invocations> = Arc::default();
         let (policy_origin, broker) = start_broker(
             BrokerParts {
@@ -744,6 +746,8 @@ impl Daemon {
                 files: Arc::clone(&files_daemons),
                 #[cfg(unix)]
                 shell_links: &shell_links,
+                #[cfg(unix)]
+                shell_dispatch: &shell_dispatch,
             },
             brokers,
             fanout,
@@ -818,7 +822,7 @@ impl Daemon {
             identity_socket.clone(),
             (actor.clone(), identity.key.verifying_key().to_bytes()),
         );
-        Ok(Self {
+        let daemon = Self {
             _files_tree: files_tree,
             policy_origin,
             broker,
@@ -846,7 +850,14 @@ impl Daemon {
             agents: super::serve::Agents::default(),
             place,
             _lock: lock,
-        })
+        };
+        // The person's shell reaches the one dispatch their own runs do, as them.
+        #[cfg(unix)]
+        match daemon.person() {
+            Ok(person) => shell_dispatch.serve(person),
+            Err(error) => tracing::warn!(%error, "this daemon's shell reaches no dispatch"),
+        }
+        Ok(daemon)
     }
 }
 
@@ -984,6 +995,9 @@ struct BrokerParts<'a> {
     /// The links of the shells this daemon starts.
     #[cfg(unix)]
     shell_links: &'a Arc<tilo_workspace_service::apps::shell::ShellLinks>,
+    /// The dispatch those shells' calls reach, once the broker serves.
+    #[cfg(unix)]
+    shell_dispatch: &'a Arc<super::shell::Dispatching>,
 }
 
 /// Start the collaboration broker over this profile's services.
@@ -1109,7 +1123,9 @@ fn broker_services(
         #[cfg(unix)]
         shell: Some(Arc::new(super::shell::services(
             parts.workspaces,
-            parts.apps,
+            parts.shell_links,
+            parts.sockets.join(COLLAB_SOCKET),
+            Arc::clone(parts.shell_dispatch),
         ))),
         // The providers registered on this device ([`Daemon::provide`]): a call made here reaches
         // them through the same registry another device's call does.
@@ -1229,33 +1245,73 @@ impl Daemon {
     /// # Errors
     /// The workspace is not one this device may act in, or its admission cannot be opened.
     fn provider_for(&self, workspace: &str) -> io::Result<RuntimeActionProvider> {
+        self.person()?.provider(workspace)
+    }
+
+    /// The one dispatch the person's own calls on this device reach, as them.
+    fn person(&self) -> io::Result<PersonDispatch> {
+        Ok(PersonDispatch {
+            workspaces: Arc::clone(&self.workspaces),
+            actor: self.actor.clone(),
+            broker: self
+                .broker
+                .app_action_broker()
+                .ok_or_else(|| io::Error::other("the action broker is unavailable"))?,
+            apps: Arc::clone(&self.apps),
+            policy_time: self.policy_origin.capture().map_err(io::Error::other)?,
+            tickets: Arc::clone(&self.tickets),
+            invocations: Arc::clone(&self.invocations),
+            who_is_here: Arc::clone(&self.who_is_here),
+        })
+    }
+}
+
+/// The one dispatch the person's own calls on this device reach (`tilo do`, their shell), in any
+/// workspace it holds: admitted as the person, and decided by what they may do there.
+#[derive(Clone)]
+pub(super) struct PersonDispatch {
+    workspaces: Arc<ServiceWorkspaces>,
+    actor: String,
+    broker: AppActionBroker,
+    apps: Arc<apps::Apps>,
+    policy_time: tilo_workspace_service::apps::policy_clock::PolicyTime,
+    tickets: Arc<Tickets>,
+    invocations: Arc<Invocations>,
+    who_is_here: Arc<who_is_here::WhoIsHere>,
+}
+
+impl PersonDispatch {
+    /// Who the person's calls in `workspace` are made as.
+    pub(super) fn caller(&self, workspace: &str) -> Caller {
+        Caller::local_person(&self.actor).in_workspace(workspace)
+    }
+
+    /// The dispatch the person's calls in `workspace` reach.
+    pub(super) fn provider(&self, workspace: &str) -> io::Result<RuntimeActionProvider> {
         let workspaces = Arc::clone(&self.workspaces);
         let actor = self.actor.clone();
         let named = workspace.to_owned();
         let admission =
             block_on_owned(async move { workspaces.admit_execution(&named, &actor).await })
                 .map_err(io::Error::other)?;
-        let broker = self
+        let provider = self
             .broker
-            .app_action_broker()
-            .ok_or_else(|| io::Error::other("the action broker is unavailable"))?;
-        let provider = broker
             .certified_local_action_provider(admission.caller(), admission.presentation())
             .map_err(io::Error::other)?;
         admission
             .check(self.workspaces.copies())
             .map_err(io::Error::other)?;
         Ok(RuntimeActionProvider {
-            broker,
+            broker: self.broker.clone(),
             workspace: workspace.to_owned(),
             workspaces: Arc::clone(&self.workspaces),
             apps: Some(Arc::clone(&self.apps)),
             session: Some(Arc::new(AdmittedRuntimeSession {
-                policy_time: self.policy_origin.capture().map_err(io::Error::other)?,
+                policy_time: self.policy_time.clone(),
                 provider,
                 admission,
                 agent: None,
-                projection: Some(Caller::local_person(&self.actor).in_workspace(workspace)),
+                projection: Some(self.caller(workspace)),
             })),
             tickets: Some(Arc::clone(&self.tickets)),
             invocations: Arc::clone(&self.invocations),
