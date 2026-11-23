@@ -138,6 +138,19 @@ windows and outside effects (sending a mail, calling an API, declared by the
 action and carried out by the system under the workspace's grants) are the
 system's. An app is its resource types, its actions' code and its views.
 
+There is no ceiling on what an app can be, and no step down that loses the
+model. An app climbs in steps:
+
+- a tilolang view;
+- a tilolang app with its own components;
+- a Rust app on the SDK;
+- Rust that draws its own UI (a game, a 3D scene, a CAD canvas), declaring how
+  it maps to resources, actions and views.
+
+Every step keeps actions callable from anywhere and tied to views, history
+and undo, identity, permissions, views that can be shown elsewhere, the
+shared components, theme and motion. They are the default, never opted into.
+
 ### Agents and automations
 
 An agent is not a person. It is shown as itself: its name, the person it
@@ -458,6 +471,11 @@ used.
 - **One recovery format**: the 24 words. No server keeps a copy of the root,
   wrapped by a passkey or otherwise; a new browser is added with a ticket from
   any of the person's devices, or restored from the words.
+- **One login.** The identity is the person's login everywhere, tilo.sh
+  included, with no separate account or password there. Other accounts a
+  person has (mail, cloud storage, calendars) are connections of a
+  workspace, used to bring data over or to keep using them, never a second
+  identity.
 - **One sign-in proof**, `SignInProof`. The greeter, the web page, the API
   and `tilo login` all prove the same thing (a current device of this
   identity) and differ only in how the person approves it.

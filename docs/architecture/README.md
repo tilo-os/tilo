@@ -35,7 +35,10 @@ workspace held by one person's PC is complete; servers add reachability,
 copies and compute, never a requirement. Tilo works with no server at all;
 tilo.sh is our cloud offering of such devices for people who want one.
 Your identity certifies, revokes and configures each of your devices, and every
-device it certifies gets your workspaces.
+device it certifies gets your workspaces. It is also your login at tilo.sh;
+there is no separate account. The accounts a person already has (mail, cloud
+storage, calendars and others) connect to a workspace, to bring their data
+over or to keep using them there.
 
 **Devices sync over iroh, end to end encrypted.** Devices reach the other
 devices of a workspace directly or through any device that stores it. Content
@@ -67,6 +70,18 @@ the framework gives every app the same things for free:
   same actions the buttons do.
 
 [Build an app](../app-development.md) shows this in code.
+
+**These are the default, at every level of customization.** Apps climb a
+ladder from a tilolang view to fully hand-written Rust. Each step allows more
+customization, and every step keeps the list above, views that can be shown
+elsewhere, coherent UX and good animation. There is no ceiling: a Minecraft
+launcher or a CAD program is a Tilo app too.
+
+**The default apps are real.** Files, Writer, Ebooks, Settings, a video editor
+and the rest are enough for 95% of people, not proofs of concept. Their UX is
+polished: Settings, Writer, the video editor and the rest have custom
+interactive animations and visualizations on their pages. Tilo is fast, and
+its apps are small. None of this is optional.
 
 **Every actor uses the same actions, and every action can be seen.** People,
 agents, scripts and automations invoke the same typed actions. An action belongs
