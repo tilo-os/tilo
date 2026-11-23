@@ -36,7 +36,7 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
 # Directory names under apps/. The session installs these or a subset.
 # TILO_NESTED_APPS builds fewer (a list of the same names, possibly empty):
 # `tilolang run` needs none of them, only the runtime and the tilolang binary.
-apps=${TILO_NESTED_APPS-"code-editor word-processor chat settings sheets tasks file-explorer browser terminal pdf-viewer activity photos calendar"}
+apps=${TILO_NESTED_APPS-"code-editor word-processor chat settings sheets tasks file-explorer browser terminal pdf-viewer activity photos calendar shortcuts imager"}
 if [[ ${1:-} == --apps ]]; then
     printf '%s\n' "$apps"
     exit 0
@@ -103,7 +103,7 @@ host_profile=nested
 # admitted agent runs against the staged build without building its own.
 host_bins=(tilo-session tilo-runtime tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle
            tilo-model-gateway tilo-ush tilo-control tilolang-process tilolang nested-session-bus
-           tilo-quick-settings fs)
+           tilo-quick-settings fs projector-stand-in fake-model-providers)
 build_host() {
     local args
     mapfile -t args < <(profile_args "$host_profile")
@@ -125,6 +125,8 @@ build_host() {
         -p tilo-control --bin tilo-control \
         -p tilo-quick-settings --bin tilo-quick-settings \
         -p tilo-fs --bin fs \
+        -p projector-stand-in --bin projector-stand-in \
+        -p fake-model-providers --bin fake-model-providers \
         -p nested-session-bus --bin nested-session-bus || return 1
     # The stand-in mail server a user story rehearses connecting a mail account against: the
     # example a tilo.sh stack starts as mail-stand-in, so a story in a shell can start it beside

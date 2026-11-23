@@ -402,5 +402,40 @@ class CountingAnOpenWindowsFrames(unittest.TestCase):
             self.walker(self.Session(app_id="so.tilo.notes")).op_window_frames(True)
 
 
+class FindingAnAction(unittest.TestCase):
+    ROWS = [
+        {"provider": "so.tilo.session", "app_id": "so.tilo.session",
+         "action": {"address": {"resource": "desktop:chrome", "action": "new-strip"}}},
+        {"provider": "workspace:w1", "app_id": "so.tilo.shortcuts",
+         "action": {"address": {"resource": "shortcuts", "action": "create"}}},
+        {"provider": "workspace:w1", "app_id": "so.tilo.shortcuts",
+         "resource": {"id": "app.shortcuts"}},
+    ]
+
+    def test_the_row_is_found_by_what_it_does_not_by_who_lists_it(self):
+        found = walk.row_for(self.ROWS, "shortcuts", "create")
+        self.assertEqual(found["provider"], "workspace:w1")
+
+    def test_a_resource_row_with_no_action_is_not_an_action(self):
+        self.assertIsNone(walk.row_for(self.ROWS, "app.shortcuts", "open"))
+
+    def test_an_action_the_desktop_does_not_list_is_none(self):
+        self.assertIsNone(walk.row_for(self.ROWS, "shortcuts", "delete"))
+
+
+class ReadingAStandInsAddresses(unittest.TestCase):
+    def test_each_printed_address_is_named_by_its_line(self):
+        said = ("OPENAI_ISSUER=http://127.0.0.1:9/auth\n"
+                "CHATGPT_BACKEND=http://127.0.0.1:9/backend-api/codex\n"
+                "OPENAI_API=http://127.0.0.1:9/openai/v1\n"
+                "ANTHROPIC_API=http://127.0.0.1:9/anthropic/v1\n")
+        self.assertEqual(walk.provider_addresses(said), {
+            "openai-issuer": "http://127.0.0.1:9/auth",
+            "chatgpt-backend": "http://127.0.0.1:9/backend-api/codex",
+            "openai-api": "http://127.0.0.1:9/openai/v1",
+            "anthropic-api": "http://127.0.0.1:9/anthropic/v1",
+        })
+
+
 if __name__ == "__main__":
     unittest.main()

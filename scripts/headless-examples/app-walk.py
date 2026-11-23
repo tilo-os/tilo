@@ -49,6 +49,7 @@ import argparse
 import contextlib
 import json
 import os
+import select
 import shutil
 import signal
 import subprocess
@@ -240,6 +241,16 @@ def app_action(session: Session, app: str, operation: str, resource: str | None 
     return None
 
 
+def row_for(rows: list[dict], resource: str, action: str) -> dict | None:
+    """The catalogue row offering `resource`'s `action`, whichever provider lists
+    it: a workspace's actions are published under the workspace's own provider
+    id, which is not the same string on the next run, so a walk names the
+    resource and the action and lets the desktop say who lists them. Should two
+    providers offer it, the one whose request is answered first wins — the walk
+    called it, so what it does is one thing."""
+    return next((row for row in rows if address(row) == (resource, action)), None)
+
+
 def value_of(answer: dict | str):
     try:
         return answer["Completed"]["output"]["value"]
@@ -395,6 +406,24 @@ def control(session: Session, selector) -> dict | None:
     return None
 
 
+def provider_addresses(said: str) -> dict:
+    """The addresses a fake model provider server prints, by the name each line
+    gives them (`OPENAI_API=…` becomes `openai-api`)."""
+    found = {}
+    for line in said.splitlines():
+        name, _, value = line.partition("=")
+        if name and value:
+            found[name.strip().lower().replace("_", "-")] = value.strip()
+    return found
+
+
+def session_env(state: Path) -> dict:
+    """What a walk's session is told about the stand-ins beside it: where the
+    wireless display broker listens, so the display sheet finds the walk's
+    stand-in rather than a service this machine does not run."""
+    return {"TILO_PROJECTOR_RUNTIME_DIR": str(state / "projector")}
+
+
 def drawn(target: dict) -> bool:
     """Whether `target` is drawn anywhere: a control a window holds open but does
     not show — a menu's items while its menu is closed — stands nowhere, and a
@@ -466,6 +495,9 @@ class Walk:
         self.mail: MailStandIn | None = None
         # The frames a step's window drew when its `window_frames` first ran.
         self.frames_seen: dict[str, int] = {}
+        # The stand-in services this walk started beside the session (op `serve`),
+        # stopped when its session goes.
+        self.services: list = []
 
     def targets(self) -> list[dict]:
         """The controls the desktop offers now, as the walk records them where a
@@ -1047,6 +1079,95 @@ class Walk:
             raise Failed(f"{resource}#{action} answered {json.dumps(answer)[:500]}")
         return {"did": f"{resource}#{action}"}
 
+    def op_act(self, value) -> dict:
+        """Run the action `resource#action` the desktop lists now, with `args`,
+        whichever provider lists it: `["shortcuts", "create", {...}]`, its
+        answer kept as the step found it. For a workspace's own actions, whose
+        provider id is the workspace's and not the same on the next run. A
+        refusal fails the step, as a person's own press that does nothing is
+        the finding."""
+        resource, action = (pick(item, self.variant) for item in value[:2])
+        args = pick(value[2], self.variant) if len(value) > 2 else None
+        row = until_value(f"the action {resource}#{action}",
+                          lambda: row_for(self.session.actions(""), resource, action), 30)
+        answer = self.session.invoke_row(row, args)
+        if isinstance(answer, dict) and ("Failed" in answer or "Refused" in answer):
+            raise Failed(f"{resource}#{action} answered {json.dumps(answer)[:500]}")
+        try:
+            found = value_of(answer)
+        except Failed:
+            found = None
+        return {"acted": f"{resource}#{action}", "provider": row.get("provider"),
+                **({"value": found} if found is not None else {})}
+
+    def op_serve(self, value) -> dict:
+        """Start the stand-in service the capability under test speaks to, for a
+        machine that has neither a projector nor a model provider of its own:
+        `{"projector": true}` answers the display sheet on the wireless display
+        broker's control socket, under the runtime directory the walk gives the
+        session; `{"model-providers": true}` serves the loopback model providers
+        and answers their addresses, for the walk to configure the person's
+        provider with. It runs until this walk's session stops."""
+        if value.get("projector"):
+            socket = self.state / "projector" / "control.sock"
+            self.service("projector-stand-in", ["--socket", str(socket)], wait=lambda: socket.exists())
+            return {"projector": str(socket)}
+        if value.get("model-providers"):
+            out = self.service("fake-model-providers", ["--listen", "127.0.0.1:0"], lines=4)
+            return provider_addresses(out)
+        raise Failed(f"the step names a stand-in this walk does not know: {json.dumps(value)}")
+
+    def service(self, binary: str, args: list[str], wait=None, lines: int = 0) -> str:
+        """Start `binary` of the session build beside the session, with its own
+        log, and answer what it said on its first `lines` lines once it is up."""
+        path = BUILD / "bin" / binary
+        if not path.is_file():
+            raise Failed(f"the session build has no {binary} ({path})")
+        self.out.mkdir(parents=True, exist_ok=True)
+        log_path = self.out / f"{binary}-{self.variant}.log"
+        log = log_path.open("wb")
+        if not lines:
+            proc = subprocess.Popen([str(path), *args], stdout=log, stderr=subprocess.STDOUT,
+                                    start_new_session=True)
+            self.services.append((proc, log))
+            until_value(f"{binary} to be up (see {log_path})", wait or (lambda: True), 30)
+            return ""
+        proc = subprocess.Popen([str(path), *args], stdout=subprocess.PIPE, stderr=log,
+                                start_new_session=True)
+        self.services.append((proc, log))
+        said: list[str] = []
+        deadline = time.monotonic() + 20
+        while len(said) < lines and time.monotonic() < deadline:
+            ready, _w, _x = select.select([proc.stdout], [], [], 0.2)
+            if not ready:
+                if proc.poll() is not None:
+                    break
+                continue
+            line = proc.stdout.readline().decode().strip()
+            if line:
+                said.append(line)
+        log.write(("\n".join(said) + "\n").encode())
+        if len(said) < lines:
+            raise Failed(f"{binary} said {said} and no more (see {log_path})")
+        return "\n".join(said)
+
+    def stop_services(self) -> None:
+        """Stop the stand-ins this walk started: their sessions are the walk's."""
+        for proc, log in self.services:
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            log.close()
+        self.services.clear()
+
     def op_windows(self, value) -> dict:
         """How many windows the desktop holds must be `value` (or at least
         `{"at_least": n}`), within ten seconds."""
@@ -1452,7 +1573,8 @@ class Walk:
             began = time.monotonic()
             self.session.start(apps=apps_of(spec, self.variant),
                                fresh=True, out=self.out / "logs", tag=self.variant,
-                               tapps=tapps, session_args=self.v.get("session_args"))
+                               tapps=tapps, session_args=self.v.get("session_args"),
+                               env=session_env(self.state))
             started = round((time.monotonic() - began) * 1000)
             print(f"==> {self.variant}: session up in {started} ms", file=sys.stderr)
         began = time.monotonic()
@@ -1479,6 +1601,7 @@ class Walk:
                 self.mail = None
             if not self.shared:
                 self.session.stop()
+            self.stop_services()
         return found
 
     def reset(self) -> None:
@@ -1927,7 +2050,8 @@ def main() -> int:
                 session = Session(state)
                 began = time.monotonic()
                 session.start(apps=apps, fresh=True, out=out / "logs", tag=variant, tapps=tapps,
-                              session_args=first[variant].get("session_args"))
+                              session_args=first[variant].get("session_args"),
+                              env=session_env(state))
                 started = round((time.monotonic() - began) * 1000)
                 print(f"==> {name}: the {variant} session up in {started} ms", file=sys.stderr)
             try:
