@@ -1623,6 +1623,9 @@ impl Workspaces {
         // The servers the person's document names hold the workspaces it
         // says they do, on every device of theirs that holds it.
         self.follow_servers();
+        // A server of the person keeps every workspace of their list it is
+        // not told to leave.
+        self.follow_person_list();
     }
 
     /// Stop taking work under leases until this process ends: the server is
@@ -1676,7 +1679,9 @@ impl Workspaces {
     /// Stop governing and serving `workspace`: its workspace admits nobody from
     /// now on, which ends its sessions here, and the host leaves it closed
     /// when it opens again. Its files stay on disk. A device releases a
-    /// workspace after moving it to another host, whose hints its members follow.
+    /// workspace after moving it to another host, whose hints its members follow,
+    /// and a server lets go of one its entry no longer keeps
+    /// ([`servers::keeping`]); a member copy stops syncing.
     ///
     /// # Errors
     ///
@@ -1699,6 +1704,8 @@ impl Workspaces {
         self.inner.workspaces.lock().await.remove(workspace);
         self.inner.readings.forget(workspace);
         self.inner.direct.release(governed.workspace_id());
+        // A member copy stops syncing with the device serving it.
+        self.let_go_member(governed.workspace_id());
         // Its sessions to the other holders end with it.
         drop(std::mem::take(&mut governed.holders));
         // Nobody lists a workspace this host serves no more.

@@ -67,6 +67,7 @@ use super::person_workspace::{NAME as PERSON_WORKSPACE_NAME, holds_person_worksp
 
 pub mod attach;
 pub mod device;
+pub mod keeping;
 pub mod machine;
 pub mod plan;
 mod refound;
@@ -145,6 +146,9 @@ pub struct Server {
     /// What the person asked of it, newest last: the operation and, once it
     /// ran, what it answered.
     pub asked: Collection<Asked>,
+    /// The workspaces of the person's list it does not keep, by id: it keeps
+    /// every other one ([`keeping`]).
+    pub keeps_not: Vec<String>,
 }
 
 /// One operation the person asked of a server, and what it answered.
@@ -288,6 +292,13 @@ fn as_plan(server: &Server) -> Result<WaitingPlan, String> {
 }
 
 impl Server {
+    /// Whether it keeps `workspace` when its person's list names it: every one
+    /// but those its entry turned keeping off for.
+    #[must_use]
+    pub fn keeps(&self, workspace: &str) -> bool {
+        !self.keeps_not.iter().any(|not| not == workspace)
+    }
+
     /// The operations still to do here, oldest first: what the person asked
     /// and this server did not answer yet.
     pub fn pending(&self) -> impl Iterator<Item = (&Id, &Asked)> {
@@ -618,6 +629,31 @@ impl Servers {
             .get_mut(&Id::from_raw(workspace))
             .ok_or_else(|| Refusal::new("its plan has it hold no such workspace"))?;
         planned.handed = true;
+        Ok(())
+    }
+
+    /// Have a server keep `workspace` of its person's list, or not: one it
+    /// keeps it enters as a device of theirs, and one it keeps no longer it
+    /// lets go of.
+    #[action(external)]
+    pub fn set_keeping(
+        &mut self,
+        device: Id,
+        workspace: String,
+        keeps: bool,
+    ) -> Result<(), Refusal> {
+        let workspace = tilo_server_protocol::WorkspaceId::parse(workspace.trim())
+            .ok_or_else(|| Refusal::new("a workspace is named by its id"))?
+            .to_string();
+        let server = self.server(&device)?;
+        let listed = server.keeps_not.iter().position(|not| *not == workspace);
+        match (keeps, listed) {
+            (true, Some(at)) => {
+                server.keeps_not.remove(at);
+            }
+            (false, None) => server.keeps_not.push(workspace),
+            _ => {}
+        }
         Ok(())
     }
 

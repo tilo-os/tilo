@@ -833,6 +833,8 @@ impl Workspaces {
             let keys = self.device_keys();
             let mut governed = if path.exists() {
                 let governed = GovernedWorkspace::open(path.clone(), keys.as_ref())?;
+                // A copy let go of here is kept again: it opens with the service once more.
+                let _ = std::fs::remove_file(path.with_extension(super::RELEASED));
                 let mut peer = governed.peer().clone();
                 take_governance(&mut peer, bootstrap, now)?;
                 *governed.peer.lock() = peer;
@@ -875,6 +877,25 @@ impl Workspaces {
         self.inner.member.held.notify_waiters();
         tracing::info!(%name, workspace_id = %workspace, "holding a workspace this device joined as a member");
         Ok(workspace)
+    }
+
+    /// Stop syncing the member copy `workspace`, which this device let go of: its link, its wait
+    /// for the group's keys and its answers end with it.
+    pub(super) fn let_go_member(&self, workspace: WorkspaceId) {
+        if let Ok(mut all) = self.inner.member.syncing.lock()
+            && let Some(syncing) = all.remove(&workspace)
+        {
+            syncing.abort();
+        }
+        if let Ok(mut links) = self.inner.member.links.lock() {
+            links.remove(&workspace);
+        }
+        if let Ok(mut ups) = self.inner.member.up.lock() {
+            ups.remove(&workspace);
+        }
+        if let Ok(mut materials) = self.inner.member.materials.lock() {
+            materials.remove(&workspace);
+        }
     }
 
     /// The material a run admitted to `workspace`, a member copy, is pinned

@@ -12,6 +12,7 @@ tilo-servers-answer-machine-choice = Answer a question its machine asked
 tilo-servers-finish-install = Its machine finished installing
 tilo-servers-rename-server = Rename server
 tilo-servers-hand-planned-workspace = Hand a server a workspace its plan names
+tilo-servers-set-keeping = Keep a workspace or not
 tilo-servers-set-appetite = Set what it offers
 tilo-servers-set-updates = Set the updates a server follows
 tilo-servers-set-relay-url = Say where its packet relay is reached

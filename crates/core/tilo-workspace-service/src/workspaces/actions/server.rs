@@ -9,7 +9,8 @@
 //! that, read live for the operations that read (its health and a service's
 //! journal).
 //!
-//! Naming a server (`server.rename`) and taking it out of service
+//! Naming a server (`server.rename`), choosing which workspaces of the
+//! person's list it keeps (`server.keep`) and taking it out of service
 //! (`server.retire`) are actions on the same entry. Retiring carries the
 //! revocation of the server's device key the person's root signed: the server
 //! takes it and lets go of everything it holds, and once its entry is retired
@@ -41,6 +42,9 @@ pub(super) struct ServerVerb {
 const RENAME: &str = "rename";
 /// Taking a server out of service with its root-signed revocation.
 const RETIRE: &str = "retire";
+/// Having a server keep a workspace of the person's list, or not: a change to
+/// its entry, which the server keeps or lets go of the workspace by.
+const KEEP: &str = "keep";
 
 /// How long an action that asks a server waits for its answer: longer than a
 /// server waits for its own root helper to carry a restart out, so a slow
@@ -54,7 +58,7 @@ const ANSWER_TICK: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// What a person asks of a server, in catalogue order: each is one operation
 /// on that server's entry in the workspace.
-pub(super) const SERVER_VERBS: [ServerVerb; 12] = [
+pub(super) const SERVER_VERBS: [ServerVerb; 13] = [
     asking(
         "server.status",
         "status",
@@ -133,6 +137,13 @@ pub(super) const SERVER_VERBS: [ServerVerb; 12] = [
         rename_params,
     ),
     asking(
+        "server.keep",
+        KEEP,
+        "Choose whether a server keeps a workspace",
+        roles::GOVERNANCE_KIND,
+        keep_params,
+    ),
+    asking(
         "server.retire",
         RETIRE,
         "Take a server out of service",
@@ -206,6 +217,22 @@ fn rename_params() -> Vec<ActionParam> {
             "name",
             ParamType::Text,
             "The server's new name, one line of 1 to 80 bytes.",
+        ),
+    ]
+}
+
+fn keep_params() -> Vec<ActionParam> {
+    vec![
+        server_param(),
+        ActionParam::required(
+            "workspace",
+            ParamType::Text,
+            "The workspace of your list, by its id.",
+        ),
+        ActionParam::required(
+            "keeps",
+            ParamType::Boolean,
+            "Whether the server keeps it: true to keep it, false to let go of it.",
         ),
     ]
 }
@@ -298,6 +325,18 @@ impl Workspaces {
                 .await
                 .map_err(ActionCallError::refused)?;
                 return Ok(serde_json::json!({ "name": name.trim() }));
+            }
+            KEEP => {
+                let kept = args.required_text("workspace")?.trim().to_owned();
+                let keeps = args.flag("keeps")?;
+                servers::apply_on(
+                    self,
+                    &workspace,
+                    servers::Servers::SET_KEEPING.with((Id::from_raw(server), kept.clone(), keeps)),
+                )
+                .await
+                .map_err(ActionCallError::refused)?;
+                return Ok(serde_json::json!({ "workspace": kept, "keeps": keeps }));
             }
             RETIRE => {
                 return self

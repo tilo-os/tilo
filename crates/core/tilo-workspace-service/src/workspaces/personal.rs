@@ -52,7 +52,7 @@ use super::person_workspace::devices::{self, Devices};
 
 /// The resource of the person's own workspace their list of workspaces is
 /// kept in, as their sessions read and write it.
-const WORKSPACES: (&str, &str) = ("so.tilo.identity", "identity.workspaces");
+pub(super) const WORKSPACES: (&str, &str) = ("so.tilo.identity", "identity.workspaces");
 
 /// The resource of the person's own workspace each browser's tab keys are
 /// kept in: a page naming its tabs says which keys are one browser's.
