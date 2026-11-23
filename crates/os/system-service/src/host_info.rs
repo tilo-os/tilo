@@ -91,6 +91,8 @@ pub fn facts_from(
         cpu,
         memory,
         unknown,
+        pending: Vec::new(),
+        problem: None,
     }
 }
 

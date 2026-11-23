@@ -28,6 +28,12 @@ pub struct HostInfo {
     /// What this machine last reported as missing, when a fact could not be read.
     #[serde(default)]
     pub unknown: bool,
+    /// Actions taken and not landed yet, by the action's id.
+    #[serde(default)]
+    pub pending: Vec<String>,
+    /// Why the last read did not happen, until the next one.
+    #[serde(default)]
+    pub problem: Option<String>,
 }
 
 /// The `host-info` resource's actions.

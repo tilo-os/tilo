@@ -6,7 +6,6 @@
 //! service read them; a change on the printer bus makes the service read again.
 
 use tilo_actions::ResourceSpec;
-use tilo_resource::Effect as _;
 use tilo_service::{offer, unavailable};
 use tilo_system_resources::printers::{PRINTERS, PrintAction, Printers};
 

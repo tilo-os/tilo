@@ -6,20 +6,20 @@ use settings_store::day_schedule::Location;
 use tilo_actions::ApiError;
 use tilo_service::{Service, Services, Started, Wake};
 
-use tilo_system_resources::printers::{
-    DiscoveredPrinter, JobState, PrintJob, PrinterQueue, Printers, QueueState,
-};
 use tilo_system_resources::codec_pack::{CodecPack, CodecState, HardwareVideo};
 use tilo_system_resources::disk_unlock::{DiskUnlock, Sealing, UnlockVolume};
-use tilo_system_resources::firmware::{Firmware, FirmwareUpdate};
-use tilo_system_resources::windows_compat::{WindowsCompat, WindowsState};
-use tilo_system_resources::host_info::HostInfo;
 use tilo_system_resources::drives::{
     Drive, DriveMode, Drives, Placement, RememberOffer, RememberedDrive,
+};
+use tilo_system_resources::firmware::{Firmware, FirmwareUpdate};
+use tilo_system_resources::host_info::HostInfo;
+use tilo_system_resources::printers::{
+    DiscoveredPrinter, JobState, PrintJob, PrinterQueue, Printers, QueueState,
 };
 use tilo_system_resources::storage::{CategoryUsage, DiskUsage, Storage, StoredItem};
 use tilo_system_resources::update::Deployment;
 use tilo_system_resources::users::{LocalAccount, Users};
+use tilo_system_resources::windows_compat::{WindowsCompat, WindowsState};
 
 use crate::device::{
     Change, CodecChange, DiskUnlockChange, DriveChange, FirmwareChange, PowerProfiles, PrintChange,
@@ -319,17 +319,20 @@ impl System for Fake {
                 }
             }
             PrintChange::Remove(printer) => printers.queues.retain(|q| q.name != *printer),
-            PrintChange::Add { uri: _, name } => printers.queues.push(PrinterQueue {
-                name: name.clone(),
-                state: QueueState::Ready,
-                default: printers.queues.is_empty(),
-                accepting: true,
-                reason: None,
-                supplies: Vec::new(),
-                reachable: true,
-                media: Vec::new(),
-                default_media: None,
-            }),
+            PrintChange::Add { uri: _, name } => {
+                let empty = printers.queues.is_empty();
+                printers.queues.push(PrinterQueue {
+                    name: name.clone(),
+                    state: QueueState::Ready,
+                    default: empty,
+                    accepting: true,
+                    reason: None,
+                    supplies: Vec::new(),
+                    reachable: true,
+                    media: Vec::new(),
+                    default_media: None,
+                });
+            }
         }
         Ok(())
     }
@@ -346,7 +349,9 @@ impl System for Fake {
         let mut users = self.users.lock().unwrap();
         match change {
             UserChange::Add {
-                username, full_name, ..
+                username,
+                full_name,
+                ..
             } => users.accounts.push(LocalAccount {
                 username: username.clone(),
                 full_name: full_name.clone(),
@@ -496,7 +501,10 @@ impl System for Fake {
     }
 
     fn change_disk_unlock(&self, change: &DiskUnlockChange) -> Result<(), String> {
-        self.disk_unlock_changes.lock().unwrap().push(change.clone());
+        self.disk_unlock_changes
+            .lock()
+            .unwrap()
+            .push(change.clone());
         if let Some(reason) = self.disk_unlock_refusal.lock().unwrap().clone() {
             return Err(reason);
         }
@@ -1281,7 +1289,10 @@ fn the_printers_resource_reads_the_queues_and_jobs_and_takes_their_actions() {
         "cancel-job",
         "retry-job",
     ] {
-        assert!(actions.contains(&action), "{action} is published: {actions:?}");
+        assert!(
+            actions.contains(&action),
+            "{action} is published: {actions:?}"
+        );
     }
 
     assert_eq!(
@@ -1458,7 +1469,10 @@ fn the_users_resource_reads_the_accounts_and_takes_their_actions() {
         .map(|action| action.id.as_str())
         .collect();
     for action in ["add", "set-admin", "set-automatic-login", "remove"] {
-        assert!(actions.contains(&action), "{action} is published: {actions:?}");
+        assert!(
+            actions.contains(&action),
+            "{action} is published: {actions:?}"
+        );
     }
     let add = published
         .actions
@@ -1513,7 +1527,10 @@ fn the_users_resource_reads_the_accounts_and_takes_their_actions() {
         .unwrap();
     service.settle();
     let users = service.read(USERS).unwrap();
-    assert_eq!(users["problem"], json!("account change was refused: polkit"));
+    assert_eq!(
+        users["problem"],
+        json!("account change was refused: polkit")
+    );
     assert_eq!(users["pending"], json!([]));
 }
 
@@ -1579,8 +1596,7 @@ fn rollback_goes_back_to_the_previous_system_and_refuses_without_the_grant() {
 
     // The person at the machine, in wheel, is allowed by polkit; anyone else is refused, and
     // nothing is restarted.
-    *fake.rollback_refusal.lock().unwrap() =
-        Some("Interactive authentication required.".into());
+    *fake.rollback_refusal.lock().unwrap() = Some("Interactive authentication required.".into());
     assert_eq!(
         service.invoke(SYSTEM_UPDATE, "rollback", &Map::new()),
         Ok(Started::Accepted)
@@ -1682,7 +1698,10 @@ fn the_drives_resource_reads_the_volumes_and_opens_them() {
         .map(|action| action.id.as_str())
         .collect();
     for action in ["refresh", "mount", "unmount", "forget", "set-mode"] {
-        assert!(actions.contains(&action), "{action} is published: {actions:?}");
+        assert!(
+            actions.contains(&action),
+            "{action} is published: {actions:?}"
+        );
     }
 
     assert_eq!(
@@ -1693,10 +1712,7 @@ fn the_drives_resource_reads_the_volumes_and_opens_them() {
         ),
         Ok(Started::Accepted)
     );
-    assert_eq!(
-        service.read(DRIVES).unwrap()["pending"],
-        json!(["mount"])
-    );
+    assert_eq!(service.read(DRIVES).unwrap()["pending"], json!(["mount"]));
     service.settle();
     assert_eq!(
         fake.drive_changes(),
@@ -1708,16 +1724,15 @@ fn the_drives_resource_reads_the_volumes_and_opens_them() {
     );
     let drives = service.read(DRIVES).unwrap();
     assert_eq!(drives["pending"], json!([]));
-    assert_eq!(drives["drives"][0]["mounted"]["path"], json!("/run/media/ada/Windows"));
+    assert_eq!(
+        drives["drives"][0]["mounted"]["path"],
+        json!("/run/media/ada/Windows")
+    );
 
     // The service refuses a drive it does not know, and the reading says why.
     *fake.drive_refusal.lock().unwrap() = Some("This drive needs checking first".into());
     service
-        .invoke(
-            DRIVES,
-            "unmount",
-            &arguments(json!({"drive": "sdb1:7"})),
-        )
+        .invoke(DRIVES, "unmount", &arguments(json!({"drive": "sdb1:7"})))
         .unwrap();
     service.settle();
     let drives = service.read(DRIVES).unwrap();
@@ -1792,7 +1807,10 @@ fn the_storage_resource_reads_the_disk_and_clears_the_cache() {
     let mut service = service(&fake);
     let storage = service.read(STORAGE).unwrap();
     assert_eq!(storage["scanned"], json!(true));
-    assert_eq!(storage["disk"]["total_bytes"], json!(512_u64 * 1024 * 1024 * 1024));
+    assert_eq!(
+        storage["disk"]["total_bytes"],
+        json!(512_u64 * 1024 * 1024 * 1024)
+    );
     assert_eq!(storage["categories"][0]["category"], json!("Cache"));
     assert_eq!(storage["largest"][0]["owner"], json!("notes"));
     assert_eq!(storage["cache_bytes"], json!(7_300_000));
@@ -1825,8 +1843,7 @@ fn the_storage_resource_reads_the_disk_and_clears_the_cache() {
     assert_eq!(storage["cache_bytes"], json!(0));
 
     // A cache an item changed under is refused, and the reading says why.
-    *fake.storage_refusal.lock().unwrap() =
-        Some("cleanup target changed after preview".into());
+    *fake.storage_refusal.lock().unwrap() = Some("cleanup target changed after preview".into());
     service.invoke(STORAGE, "clear-cache", &Map::new()).unwrap();
     service.settle();
     let storage = service.read(STORAGE).unwrap();
@@ -1960,6 +1977,8 @@ fn changing_the_unlocking_without_the_grant_is_refused() {
 fn the_host_resource_reads_the_devices_facts_and_refreshes_them() {
     let fake = Fake::new();
     *fake.host_info.lock().unwrap() = HostInfo {
+        pending: Vec::new(),
+        problem: None,
         pretty_name: "Tilo Linux 44".into(),
         kernel: "6.18.58".into(),
         uptime: "3d 4h 12m".into(),
@@ -1993,7 +2012,10 @@ fn the_host_resource_reads_the_devices_facts_and_refreshes_them() {
         service.invoke(HOST_INFO, "refresh", &Map::new()),
         Ok(Started::Accepted)
     );
-    assert_eq!(service.read(HOST_INFO).unwrap()["pending"], json!(["refresh"]));
+    assert_eq!(
+        service.read(HOST_INFO).unwrap()["pending"],
+        json!(["refresh"])
+    );
     service.settle();
     let host = service.read(HOST_INFO).unwrap();
     assert_eq!(host["uptime"], json!("3d 4h 13m"));
@@ -2043,15 +2065,24 @@ fn the_codec_pack_resource_installs_removes_and_refuses() {
         .map(|action| action.id.as_str())
         .collect();
     for action in ["install", "remove", "refresh"] {
-        assert!(actions.contains(&action), "{action} is published: {actions:?}");
+        assert!(
+            actions.contains(&action),
+            "{action} is published: {actions:?}"
+        );
     }
     assert_eq!(
         service.invoke(CODEC_PACK, "install", &Map::new()),
         Ok(Started::Accepted)
     );
     service.settle();
-    assert_eq!(fake.codec_changes.lock().unwrap().clone(), [CodecChange::Install]);
-    assert_eq!(service.read(CODEC_PACK).unwrap()["state"], json!("installed"));
+    assert_eq!(
+        fake.codec_changes.lock().unwrap().clone(),
+        [CodecChange::Install]
+    );
+    assert_eq!(
+        service.read(CODEC_PACK).unwrap()["state"],
+        json!("installed")
+    );
 
     *fake.codec_refusal.lock().unwrap() = Some("the helper refused".into());
     service.invoke(CODEC_PACK, "remove", &Map::new()).unwrap();
@@ -2090,7 +2121,9 @@ fn the_windows_compat_resource_installs_and_refuses_without_the_grant() {
     );
 
     *fake.windows_refusal.lock().unwrap() = Some("authentication was refused".into());
-    service.invoke(WINDOWS_COMPAT, "remove", &Map::new()).unwrap();
+    service
+        .invoke(WINDOWS_COMPAT, "remove", &Map::new())
+        .unwrap();
     service.settle();
     let windows = service.read(WINDOWS_COMPAT).unwrap();
     assert_eq!(windows["problem"], json!("authentication was refused"));
@@ -2140,8 +2173,7 @@ fn the_firmware_resource_reads_the_updates_and_installs_them() {
     );
     assert_eq!(service.read(FIRMWARE).unwrap()["updates"], json!([]));
 
-    *fake.firmware_refusal.lock().unwrap() =
-        Some("connect power before updating firmware".into());
+    *fake.firmware_refusal.lock().unwrap() = Some("connect power before updating firmware".into());
     service.invoke(FIRMWARE, "install", &Map::new()).unwrap();
     service.settle();
     let firmware = service.read(FIRMWARE).unwrap();

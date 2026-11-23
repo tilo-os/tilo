@@ -253,7 +253,7 @@ impl SystemService {
             live_profiles,
             print_watch: None,
         };
-        refresh(&service.worker.jobs(), Arc::clone(&live_active));
+        refresh(&service.worker.jobs(), live_active.clone());
         service.follow_printers(system, wake, live_active);
         // The first scan runs where the worker does, so the machine's start waits for no disk
         // scan; the reading arrives when it answers.
@@ -274,7 +274,8 @@ impl SystemService {
         };
         let jobs = self.worker.jobs();
         let reread = move || {
-            jobs.run(move |system| {
+            let live_active = live_active.clone();
+            jobs.clone().run(move |system| {
                 Landed::Read(Box::new(read(system, is_live(live_active.as_ref()))))
             });
             wake();

@@ -611,7 +611,7 @@ impl System for OsSystem {
 }
 
 /// The queues CUPS lists, as the `printers` resource reads them.
-fn queues_reading(queues: Vec<os_actions::printing::PrinterQueue>) -> Vec<PrintQueue> {
+fn queues_reading(queues: Vec<os_actions::printing::PrinterQueue>) -> Vec<PrinterQueue> {
     use os_actions::printing::QueueState;
     queues
         .into_iter()
@@ -631,7 +631,7 @@ fn queues_reading(queues: Vec<os_actions::printing::PrinterQueue>) -> Vec<PrintQ
                     )
                 },
             );
-            PrintQueue {
+            PrinterQueue {
                 name: queue.name,
                 state: match queue.state {
                     QueueState::Ready => PrintQueueState::Ready,

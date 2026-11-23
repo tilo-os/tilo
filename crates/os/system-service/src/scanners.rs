@@ -9,7 +9,6 @@
 use std::time::Duration;
 
 use tilo_actions::ResourceSpec;
-use tilo_resource::Effect as _;
 use tilo_service::{offer, unavailable};
 use tilo_system_resources::scanners::{SCANNERS, ScanAction, ScannerShown, Scanners};
 
