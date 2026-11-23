@@ -4,13 +4,30 @@
 view shortcuts_pane() {
     state shortcut: Text = "search"
     state chord: Text = ""
+    let table = settings.shortcuts_table
     ui.Section("The desktop's shortcuts") {
-        for id in shortcut_ids() {
-            ui.ListRow(shortcut_label(id), secondary: id, icon: .command)
+        for binding in table.bindings {
+            ui.ListRow(
+                shortcut_label(binding.id),
+                secondary: if binding.chord != "" { binding.chord } else { "No keys" },
+                icon: .command,
+            )
+        }
+    }
+    ui.Section("Chords that run an action") {
+        if table.actions.is_empty() {
+            ui.Text(
+                "No action is on a chord of its own yet.",
+                role: .caption,
+                secondary: true,
+            )
+        }
+        for action in table.actions {
+            ui.ListRow(action.label, secondary: action.chord, icon: .zap)
         }
     }
     ui.Section("Change one") {
-        ui.Dropdown(bind: shortcut, options: shortcut_ids(), caption: "The shortcut")
+        ui.Dropdown(bind: shortcut, options: table.bindings.map(b -> b.id), caption: "The shortcut")
         ui.ShortcutRecorder(bind: chord, label: "The keys it stands on")
         row(gap: .related, align: .center, wrap: true) {
             ui.Button("Put it on these keys", role: .primary) {
@@ -35,77 +52,6 @@ view shortcuts_pane() {
             on press: settings.reset_all(settings.shortcuts)
         }
     }
-}
-
-/// The id each desktop shortcut is known by, as its section rebinds it.
-fn shortcut_ids() -> List<Text> {
-    [
-        "search",
-        "workspace-overview",
-        "lock",
-        "quick-settings",
-        "shortcut-help",
-        "focus-previous-window",
-        "focus-next-window",
-        "previous-tab",
-        "next-tab",
-        "tab-menu",
-        "previous-strip",
-        "next-strip",
-        "previous-workspace",
-        "next-workspace",
-        "toggle-maximize",
-        "maximize-window",
-        "restore-window",
-        "detach-tab",
-        "attach-tab-left",
-        "attach-tab-right",
-        "move-group-left",
-        "move-group-right",
-        "move-group-to-previous-strip",
-        "move-group-to-next-strip",
-        "move-group-to-previous-display",
-        "move-group-to-next-display",
-        "resize-narrower",
-        "resize-wider",
-        "reopen-closed-tab",
-        "focus-group-1",
-        "focus-group-2",
-        "focus-group-3",
-        "focus-group-4",
-        "focus-group-5",
-        "focus-group-6",
-        "focus-group-7",
-        "focus-group-8",
-        "focus-group-9",
-        "focus-strip-1",
-        "focus-strip-2",
-        "focus-strip-3",
-        "focus-strip-4",
-        "focus-strip-5",
-        "focus-strip-6",
-        "focus-strip-7",
-        "focus-strip-8",
-        "focus-strip-9",
-        "open-files",
-        "open-terminal",
-        "clipboard-history",
-        "notifications",
-        "toggle-fullscreen",
-        "toggle-magnifier",
-        "magnifier-zoom-in",
-        "magnifier-zoom-out",
-        "power-menu",
-        "next-input-source",
-        "emoji-picker",
-        "ask-agent",
-        "say-something",
-        "report-problem",
-        "dictation-toggle",
-        "dictation-finish",
-        "dictation-cancel",
-        "toggle-float",
-    ]
 }
 
 /// What a shortcut is called, in words.

@@ -127,6 +127,13 @@ const SETTINGS_ROOTS: &[(&str, &str, &str)] = &[
         "AgentModels",
         "settings:settings.agent-models",
     ),
+    // The shortcuts table as a reading beside its section: every desktop shortcut's id and
+    // chord, and every action chord (`shortcuts-surface.json`).
+    (
+        "shortcuts_table",
+        "ShortcutsTable",
+        "settings:settings.shortcuts-table",
+    ),
     // Every other section the person's settings keep: each published as its record, with the
     // fields a view shows and the verbs that change it as its own actions.
     (
@@ -233,6 +240,7 @@ const PUBLISHED: &[Published] = &[
         files: &[
             include_str!("../../../../apps/settings/surface.toml"),
             include_str!("../../../session/settings-service/agent-models-surface.json"),
+            include_str!("../../../session/settings-service/shortcuts-surface.json"),
         ],
         described: false,
     },

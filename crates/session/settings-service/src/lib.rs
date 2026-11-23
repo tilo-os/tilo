@@ -22,6 +22,7 @@
 pub mod agent_models;
 pub mod effects;
 mod i18n;
+pub mod shortcuts_table;
 
 use serde_json::{Map, Value};
 use settings_store::index::{self, Change, Setting};
@@ -195,6 +196,7 @@ impl SettingsService {
         let index = self.index(&resources);
         resources.push(index);
         resources.push(agent_models::Served::resource());
+        resources.push(self.shortcuts_table());
         resources
     }
 
@@ -202,6 +204,24 @@ impl SettingsService {
     #[must_use]
     pub fn stored(&self, kind: &str) -> Option<Value> {
         self.records.stored(kind)
+    }
+
+    /// The person's shortcuts table, published as a reading beside its section: every desktop
+    /// shortcut's id and chord, and every action chord.
+    fn shortcuts_table(&self) -> ResourceSpec {
+        tilo_resource::typed_resource::<shortcuts_table::ShortcutsTableReading>(
+            shortcuts_table::RESOURCE,
+            crate::i18n::t("settings-shortcuts-table"),
+        )
+    }
+
+    /// The shortcuts table read from the section as it is stored now.
+    fn shortcuts_stored(&self) -> Value {
+        let stored = self
+            .records
+            .stored("settings.shortcuts")
+            .unwrap_or(Value::Null);
+        serde_json::to_value(shortcuts_table::ShortcutsTable::of(&stored)).unwrap_or(Value::Null)
     }
 
     /// The published section `kind` among `sections`.
@@ -479,6 +499,9 @@ impl Service for SettingsService {
     fn read(&self, resource: &str) -> Option<Value> {
         if resource == agent_models::RESOURCE {
             return self.agent_models.read(resource);
+        }
+        if resource == shortcuts_table::RESOURCE {
+            return Some(self.shortcuts_stored());
         }
         let kind = resource.strip_prefix(SECTION_PREFIX)?;
         self.stored(kind)

@@ -458,3 +458,24 @@ fn the_agent_models_surface_file_is_what_this_crate_publishes() {
          publishes; regenerate it with UPDATE_SNAPSHOTS=1"
     );
 }
+
+/// The shortcuts table's reading, as a view of another language reads it: written beside
+/// this crate for `tilolang-tilo` to publish. `UPDATE_SNAPSHOTS=1` writes it.
+#[test]
+fn the_shortcuts_surface_file_is_what_this_crate_publishes() {
+    let published = super::shortcuts_table::surface();
+    let text = serde_json::to_string_pretty(&serde_json::json!({ "resources": [published] }))
+        .expect("a surface writes as JSON");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shortcuts-surface.json");
+    let committed = std::fs::read_to_string(&path).ok();
+    if std::env::var_os("UPDATE_SNAPSHOTS").is_some_and(|value| value == "1") {
+        std::fs::write(&path, &text).expect("the surface file is written");
+        return;
+    }
+    assert_eq!(
+        committed.as_deref(),
+        Some(text.as_str()),
+        "crates/session/settings-service/shortcuts-surface.json is not what this crate \
+         publishes; regenerate it with UPDATE_SNAPSHOTS=1"
+    );
+}

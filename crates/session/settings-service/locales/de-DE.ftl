@@ -15,3 +15,5 @@ so-tilo-settings-setting-switch = Einstellung ein- oder ausschalten
 so-tilo-settings-agent-models-use-model = Modell verwenden
 so-tilo-settings-agent-models-undo-model = Modellwahl zurücknehmen
 so-tilo-settings-agent-models-redo-model = Modell erneut wählen
+
+settings-shortcuts-table = Tastenkürzel
