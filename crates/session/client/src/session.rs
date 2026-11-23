@@ -1325,7 +1325,6 @@ impl Task {
                 tracing::warn!(%error, "sealed histories stay uncompacted");
             }
         }
-        self.renew_ownership().await;
         // What this device's ownership still owes the host goes as its queue takes it:
         // every answer from the host, every command, every tick is a
         // chance to hand it more.

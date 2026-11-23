@@ -440,7 +440,7 @@ impl Engine {
         identity: DeviceIdentity,
         state: Option<&Path>,
         workspaces: impl IntoIterator<Item = WorkspaceId>,
-        _ownership: Arc<dyn MembershipCheck>,
+        ownership: Arc<dyn MembershipCheck>,
     ) -> Result<Self, String> {
         let state = state.ok_or("this session keeps no state, so it holds no workspace")?;
         let path = owner_path(state)?;
@@ -452,7 +452,7 @@ impl Engine {
             owner,
             shown,
             identity,
-            _ownership,
+            ownership,
             Arc::new(Founders::default()),
         );
         engine.service_root = Some(state.join("tilo").join("workspace-service"));
@@ -465,11 +465,11 @@ impl Engine {
     pub fn for_this_device(
         state: Option<&Path>,
         workspaces: impl IntoIterator<Item = WorkspaceId>,
-        _ownership: Arc<dyn MembershipCheck>,
+        ownership: Arc<dyn MembershipCheck>,
     ) -> Result<Self, String> {
         let identity = identity::device_identity()
             .ok_or("this computer has no identity yet, so it holds no workspace")?;
-        Self::open(identity, state, workspaces, _ownership)
+        Self::open(identity, state, workspaces, ownership)
     }
 
     /// Where this device's own workspace service keeps its workspaces; `None` for an engine that

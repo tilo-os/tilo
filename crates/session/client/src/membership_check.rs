@@ -492,8 +492,8 @@ impl Sending {
         &mut self,
         owner: &NativeWorkspaceOwner,
         workspace: WorkspaceId,
-        mut sent: impl FnMut(&[u8]) -> Result<(), String>,
-        mut send: impl FnMut(Outgoing<'_>) -> bool,
+        mut took: impl FnMut(&[u8]) -> Result<(), String>,
+        mut deliver: impl FnMut(Outgoing<'_>) -> bool,
     ) -> Result<bool, String> {
         let frames = owner.frames(workspace);
         if frames.is_empty() {
@@ -514,10 +514,9 @@ impl Sending {
             entries.push((*blake3::hash(bytes).as_bytes(), channel, retention));
         }
         self.held = 0;
-        let queued: Vec<[u8; 32]> = entries.iter().map(|(id, ..)| *id).collect();
         let mut written = None;
-        let took = self.pass(
-            queued.into_iter(),
+        let delivered = self.pass(
+            entries.iter().map(|(id, ..)| *id),
             entries
                 .iter()
                 .zip(&frames)
@@ -529,10 +528,10 @@ impl Sending {
                 }),
             |write| {
                 let bytes = write.bytes;
-                if !send(write) {
+                if !deliver(write) {
                     return false;
                 }
-                if let Err(error) = sent(bytes) {
+                if let Err(error) = took(bytes) {
                     written = Some(error);
                 }
                 true
@@ -540,7 +539,7 @@ impl Sending {
         );
         match written {
             Some(error) => Err(error),
-            None => Ok(took),
+            None => Ok(delivered),
         }
     }
 

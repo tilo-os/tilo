@@ -400,10 +400,9 @@ impl Task {
                     None,
                     written.envelope,
                 ) {
-                    Publishing::Owned => Some(Ok(())),
-                    // Kept until its record or this device's signature comes: the route stays
-                    // one this session waits on, so a barrier asked after it waits too.
-                    Publishing::Waiting => Some(Ok(())),
+                    // Owned, or kept until its record or this device's signature comes: the
+                    // route stays one this session waits on, so a barrier asked after it waits.
+                    Publishing::Owned | Publishing::Waiting => Some(Ok(())),
                     // Kept as a signed write until its record is compacted: the route stays one
                     // this session waits on, so a barrier asked after it waits too.
                     Publishing::History => {
@@ -815,13 +814,6 @@ impl Task {
             }
         }));
         kept
-    }
-
-    /// Renew this device's sealed writes that expired held while its host was away, so
-    /// they still go; a barrier owed the original is owed nothing more for it, as the renewal
-    /// carries the same change.
-    pub(super) async fn renew_ownership(&mut self) {
-        // A frame of this device's own is sent as it was signed; nothing renews it.
     }
 
     /// Move each held barrier whose routes hold nothing any more on to the
