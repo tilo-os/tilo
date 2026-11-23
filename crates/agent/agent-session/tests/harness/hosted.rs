@@ -130,8 +130,28 @@ impl Hosted {
         )
         .await
         .unwrap();
-        let mut page =
-            crate::harness::page::Page::open_at(&self.server, &laptop, &self.host, workspace).await;
+        // The host's own person enters the workspace as its administrator; anyone else was
+        // admitted by an invitation and joins as a member does.
+        let mut page = if root.verifying_key() == self.root.verifying_key() {
+            crate::harness::page::Page::open_at(&self.server, &laptop, &self.host, workspace).await
+        } else {
+            let peer = crate::support::start_peer(
+                tilo_server_client::ServerAddress::at(self.server.node_addr()),
+                laptop.cert.clone(),
+                self.host.cert.clone(),
+                laptop.key.clone(),
+            );
+            let events = peer.events();
+            tilo_session_client::Outbox::send(
+                &peer,
+                tilo_session_client::Cmd::Join(
+                    tilo_server_protocol::WorkspaceId::parse(workspace).unwrap(),
+                ),
+            )
+            .unwrap();
+            crate::support::ready(&[&peer]).await;
+            crate::harness::page::Page::joined((peer, events), &laptop, &self.host, workspace)
+        };
         let workspace_id = tilo_server_protocol::WorkspaceId::parse(workspace).unwrap();
         let keeper = root.verifying_key().to_bytes();
         let link = self.server.agent_link();
