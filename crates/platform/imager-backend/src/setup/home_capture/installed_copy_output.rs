@@ -23,7 +23,10 @@ use sha2::{Digest, Sha256};
 use std::{
     fs::File,
     io::{self},
-    os::{fd::AsRawFd, unix::fs::MetadataExt},
+    os::{
+        fd::{AsFd, AsRawFd},
+        unix::fs::MetadataExt,
+    },
     path::Path,
     sync::{
         Arc, Mutex,
@@ -806,21 +809,14 @@ impl InstalledVerifiedExport {
             if &before != original {
                 return Err(refused("Installed output changed before sealing"));
             }
-            let name = std::ffi::CString::new(leaf).map_err(io::Error::other)?;
             // Both dirs are held and the destination is a fresh root-private child.
             // No replacement, copying of unbounded bytes, or path reopening occurs.
-            if unsafe {
-                libc::renameat2(
-                    self.output.as_raw_fd(),
-                    name.as_ptr(),
-                    directory.file.as_raw_fd(),
-                    name.as_ptr(),
-                    libc::RENAME_NOREPLACE,
-                )
-            } < 0
-            {
-                return Err(io::Error::last_os_error());
-            }
+            host_fs::rename_noreplace_at(
+                self.output.as_fd(),
+                std::ffi::OsStr::new(leaf),
+                directory.file.as_fd(),
+                std::ffi::OsStr::new(leaf),
+            )?;
             if unsafe { libc::fchown(held.as_raw_fd(), 0, 0) } < 0
                 || unsafe { libc::fchmod(held.as_raw_fd(), 0o600) } < 0
             {
