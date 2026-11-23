@@ -804,7 +804,6 @@ doc = false
 "phf_shared-0_12_1" = { package = "phf_shared", version = "^0.12.1", default-features = false, features = [] }
 "phf_shared-0_13_1" = { package = "phf_shared", version = "^0.13.1", default-features = false, features = ["std"] }
 "phf_shared-0_14_0" = { package = "phf_shared", version = "^0.14.0", default-features = false, features = ["std"] }
-"photos" = { path = "../../apps/photos", default-features = false, features = ["samples"] }
 "pic-scale-0_7_12" = { package = "pic-scale", version = "^0.7.12", default-features = false, features = ["avx", "neon", "rdm", "sse"] }
 "pico-args-0_5_0" = { package = "pico-args", version = "^0.5.0", default-features = false, features = ["default", "eq-separator"] }
 "pim-lines" = { path = "../../crates/engines/pim-lines", default-features = false, features = [] }
@@ -1257,6 +1256,7 @@ doc = false
 "tilo-identity-authority" = { path = "../../crates/session/identity-authority", default-features = false, features = [] }
 "tilo-identity-client" = { path = "../../crates/runtime/tilo-identity-client", default-features = false, features = [] }
 "tilo-image-codec" = { path = "../../crates/engines/tilo-image-codec", default-features = false, features = [] }
+"tilo-image-info" = { path = "../../crates/engines/tilo-image-info", default-features = false, features = [] }
 "tilo-image-policy-check" = { path = "../../crates/os/image-policy-check", default-features = false, features = [] }
 "tilo-innertube" = { path = "../../crates/integrations/tilo-innertube", default-features = false, features = [] }
 "tilo-input-context" = { path = "../../crates/platform/tilo-input-context", default-features = false, features = ["client"] }
@@ -1384,8 +1384,7 @@ doc = false
 "tilo-vello-shaders-0_9_0" = { package = "tilo-vello-shaders", path = "../../vendor/vello_shaders", default-features = false, features = ["cpu", "default", "wgsl"] }
 "tilo-video-render" = { path = "../../crates/engines/video-render", default-features = false, features = ["default", "helper"] }
 "tilo-view" = { path = "../../crates/platform/tilo-view", default-features = false, features = [] }
-"tilo-vision" = { path = "../../crates/engines/vision", default-features = false, features = [] }
-"tilo-vision-service" = { path = "../../crates/session/vision-service", default-features = false, features = [] }
+"tilo-vision-service" = { path = "../../crates/services/vision", default-features = false, features = [] }
 "tilo-vm" = { path = "../../tools/tilo-vm", default-features = false, features = [] }
 "tilo-wake" = { path = "../../crates/platform/tilo-wake", default-features = false, features = [] }
 "tilo-wallpapers" = { path = "../../crates/platform/tilo-wallpapers", default-features = false, features = [] }
@@ -3467,7 +3466,6 @@ doc = false
 "phf_shared-0_12_1" = { package = "phf_shared", version = "^0.12.1", default-features = false, features = [] }
 "phf_shared-0_13_1" = { package = "phf_shared", version = "^0.13.1", default-features = false, features = ["std"] }
 "phf_shared-0_14_0" = { package = "phf_shared", version = "^0.14.0", default-features = false, features = ["std"] }
-"photos" = { path = "../../apps/photos", default-features = false, features = ["samples"] }
 "pic-scale-0_7_12" = { package = "pic-scale", version = "^0.7.12", default-features = false, features = ["avx", "neon", "rdm", "sse"] }
 "pico-args-0_5_0" = { package = "pico-args", version = "^0.5.0", default-features = false, features = ["default", "eq-separator"] }
 "pim-lines" = { path = "../../crates/engines/pim-lines", default-features = false, features = [] }
@@ -3920,6 +3918,7 @@ doc = false
 "tilo-identity-authority" = { path = "../../crates/session/identity-authority", default-features = false, features = [] }
 "tilo-identity-client" = { path = "../../crates/runtime/tilo-identity-client", default-features = false, features = [] }
 "tilo-image-codec" = { path = "../../crates/engines/tilo-image-codec", default-features = false, features = [] }
+"tilo-image-info" = { path = "../../crates/engines/tilo-image-info", default-features = false, features = [] }
 "tilo-image-policy-check" = { path = "../../crates/os/image-policy-check", default-features = false, features = [] }
 "tilo-innertube" = { path = "../../crates/integrations/tilo-innertube", default-features = false, features = [] }
 "tilo-input-context" = { path = "../../crates/platform/tilo-input-context", default-features = false, features = ["client"] }
@@ -4047,8 +4046,7 @@ doc = false
 "tilo-vello-shaders-0_9_0" = { package = "tilo-vello-shaders", path = "../../vendor/vello_shaders", default-features = false, features = ["cpu", "default", "wgsl"] }
 "tilo-video-render" = { path = "../../crates/engines/video-render", default-features = false, features = ["default", "helper"] }
 "tilo-view" = { path = "../../crates/platform/tilo-view", default-features = false, features = [] }
-"tilo-vision" = { path = "../../crates/engines/vision", default-features = false, features = [] }
-"tilo-vision-service" = { path = "../../crates/session/vision-service", default-features = false, features = [] }
+"tilo-vision-service" = { path = "../../crates/services/vision", default-features = false, features = [] }
 "tilo-vm" = { path = "../../tools/tilo-vm", default-features = false, features = [] }
 "tilo-wake" = { path = "../../crates/platform/tilo-wake", default-features = false, features = [] }
 "tilo-wallpapers" = { path = "../../crates/platform/tilo-wallpapers", default-features = false, features = [] }

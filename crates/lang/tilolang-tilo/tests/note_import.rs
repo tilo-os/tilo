@@ -67,8 +67,8 @@ impl BlobHost for Device {
         self.content.borrow().get(hash).cloned()
     }
 
-    fn choose(&self, _request: &FileRequest) -> Result<Option<FileValue>, String> {
-        Ok(None)
+    fn choose(&self, _request: &FileRequest) -> Result<Vec<FileValue>, String> {
+        Ok(Vec::new())
     }
 
     /// Nothing a test exports leaves this device: what an export writes is the person's own

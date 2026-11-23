@@ -67,6 +67,8 @@ tilo-files = { path = "../../platform/tilo-files" }
 # What a file is called, and the most it may hold: one reading of a file's media type and size,
 # shared with the window that hands a dropped file over.
 tilo-content-types = { version = "0.1.0", path = "../../system/content-types" }
+# The one image codec: what a file's pixels are decoded and encoded with, on the device.
+tilo-image-codec = { version = "0.1.0", path = "../../engines/tilo-image-codec" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Native targets only: wasmtime maps executable memory, which no browser has.

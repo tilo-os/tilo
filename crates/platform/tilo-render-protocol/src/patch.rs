@@ -53,7 +53,7 @@ pub const VERSION: u16 = 2;
 /// rows travel in the tree.
 #[must_use]
 pub fn is_virtual_list(kind: &str) -> bool {
-    matches!(kind, "ui.VirtualList" | "ui.TreeView")
+    matches!(kind, "ui.VirtualList" | "ui.TreeView" | "ui.MediaGrid")
 }
 
 /// One window's two views: the app's root, and the view of the resource `open(r)` (or a

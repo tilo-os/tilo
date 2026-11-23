@@ -18231,473 +18231,6 @@
         ],
         "description": ""
       },
-      "photos.library.import-photo.Arguments": {
-        "type": "object",
-        "properties": {
-          "image": {
-            "additionalProperties": false,
-            "properties": {
-              "content": {
-                "oneOf": [
-                  {
-                    "items": {
-                      "maximum": 255,
-                      "minimum": 0,
-                      "type": "integer"
-                    },
-                    "type": "array"
-                  },
-                  {
-                    "content": true,
-                    "pattern": "^tilo\\.content:[0-9a-f]{64}(\\.[A-Za-z0-9_-]{43})?$",
-                    "type": "string"
-                  },
-                  {
-                    "pattern": "^blake3:[0-9a-f]{64}:[0-9]+(:[0-9a-f]{64}\\.[A-Za-z0-9_-]{43})?$",
-                    "type": "string"
-                  },
-                  {
-                    "properties": {
-                      "inline": {
-                        "type": "array"
-                      }
-                    },
-                    "type": "object"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "height": {
-                "maximum": 4294967295,
-                "minimum": 0,
-                "type": "integer"
-              },
-              "name": {
-                "type": "string"
-              },
-              "width": {
-                "maximum": 4294967295,
-                "minimum": 0,
-                "type": "integer"
-              }
-            },
-            "required": [
-              "name",
-              "width",
-              "height",
-              "content"
-            ],
-            "type": "object"
-          },
-          "captured_at": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "location": {
-            "additionalProperties": false,
-            "properties": {
-              "label": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "latitude": {
-                "type": "number"
-              },
-              "longitude": {
-                "type": "number"
-              },
-              "provenance": {
-                "additionalProperties": false,
-                "properties": {
-                  "scope": {
-                    "type": "string"
-                  },
-                  "source": {
-                    "type": "string"
-                  }
-                },
-                "type": "object"
-              }
-            },
-            "required": [
-              "latitude",
-              "longitude"
-            ],
-            "type": [
-              "object",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "image"
-        ],
-        "description": ""
-      },
-      "photos.library.refresh-imported-metadata.Arguments": {
-        "type": "object",
-        "properties": {
-          "photo": {
-            "type": "string"
-          },
-          "captured_at": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "location": {
-            "additionalProperties": false,
-            "properties": {
-              "label": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "latitude": {
-                "type": "number"
-              },
-              "longitude": {
-                "type": "number"
-              },
-              "provenance": {
-                "additionalProperties": false,
-                "properties": {
-                  "scope": {
-                    "type": "string"
-                  },
-                  "source": {
-                    "type": "string"
-                  }
-                },
-                "type": "object"
-              }
-            },
-            "required": [
-              "latitude",
-              "longitude"
-            ],
-            "type": [
-              "object",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "photo"
-        ],
-        "description": ""
-      },
-      "photos.library.remove-photo.Arguments": {
-        "type": "object",
-        "properties": {
-          "photo": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "photo"
-        ],
-        "description": ""
-      },
-      "photos.library.rotate-right.Arguments": {
-        "type": "object",
-        "properties": {
-          "photo": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "photo"
-        ],
-        "description": ""
-      },
-      "photos.library.rotate-left.Arguments": {
-        "type": "object",
-        "properties": {
-          "photo": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "photo"
-        ],
-        "description": ""
-      },
-      "photos.library.crop.Arguments": {
-        "type": "object",
-        "properties": {
-          "photo": {
-            "type": "string"
-          },
-          "region": {
-            "additionalProperties": false,
-            "properties": {
-              "h": {
-                "maximum": 1,
-                "minimum": 0,
-                "type": "number"
-              },
-              "w": {
-                "maximum": 1,
-                "minimum": 0,
-                "type": "number"
-              },
-              "x": {
-                "maximum": 1,
-                "minimum": 0,
-                "type": "number"
-              },
-              "y": {
-                "maximum": 1,
-                "minimum": 0,
-                "type": "number"
-              }
-            },
-            "required": [
-              "x",
-              "y",
-              "w",
-              "h"
-            ],
-            "type": "object"
-          }
-        },
-        "required": [
-          "photo",
-          "region"
-        ],
-        "description": ""
-      },
-      "photos.library.merge-image-analysis.Arguments": {
-        "type": "object",
-        "properties": {
-          "photo": {
-            "type": "string"
-          },
-          "analysis": {
-            "additionalProperties": false,
-            "properties": {
-              "description": {
-                "type": "string"
-              },
-              "objects": {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "ocr_provenance": {
-                "additionalProperties": false,
-                "properties": {
-                  "content": {
-                    "type": "string"
-                  },
-                  "engine": {
-                    "type": "string"
-                  },
-                  "language": {
-                    "type": "string"
-                  },
-                  "model_id": {
-                    "type": "string"
-                  },
-                  "model_revision": {
-                    "type": "string"
-                  },
-                  "scope": {
-                    "type": "string"
-                  },
-                  "source": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "model_id",
-                  "model_revision",
-                  "content"
-                ],
-                "type": [
-                  "object",
-                  "null"
-                ]
-              },
-              "ocr_text": {
-                "type": "string"
-              },
-              "pets": {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "provenance": {
-                "additionalProperties": false,
-                "properties": {
-                  "content": {
-                    "type": "string"
-                  },
-                  "engine": {
-                    "type": "string"
-                  },
-                  "language": {
-                    "type": "string"
-                  },
-                  "model_id": {
-                    "type": "string"
-                  },
-                  "model_revision": {
-                    "type": "string"
-                  },
-                  "scope": {
-                    "type": "string"
-                  },
-                  "source": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "model_id",
-                  "model_revision",
-                  "content"
-                ],
-                "type": "object"
-              },
-              "vision_provenance": {
-                "additionalProperties": false,
-                "properties": {
-                  "content": {
-                    "type": "string"
-                  },
-                  "engine": {
-                    "type": "string"
-                  },
-                  "language": {
-                    "type": "string"
-                  },
-                  "model_id": {
-                    "type": "string"
-                  },
-                  "model_revision": {
-                    "type": "string"
-                  },
-                  "scope": {
-                    "type": "string"
-                  },
-                  "source": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "model_id",
-                  "model_revision",
-                  "content"
-                ],
-                "type": [
-                  "object",
-                  "null"
-                ]
-              }
-            },
-            "type": "object"
-          }
-        },
-        "required": [
-          "photo",
-          "analysis"
-        ],
-        "description": ""
-      },
-      "photos.library.set-person-membership.Arguments": {
-        "type": "object",
-        "properties": {
-          "person": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          },
-          "photos": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "person",
-          "photos"
-        ],
-        "description": ""
-      },
-      "photos.library.rename-person.Arguments": {
-        "type": "object",
-        "properties": {
-          "person": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          },
-          "to": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          }
-        },
-        "required": [
-          "person",
-          "to"
-        ],
-        "description": ""
-      },
-      "photos.library.remove-person.Arguments": {
-        "type": "object",
-        "properties": {
-          "person": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          }
-        },
-        "required": [
-          "person"
-        ],
-        "description": ""
-      },
-      "photos.library.remove-album.Arguments": {
-        "type": "object",
-        "properties": {
-          "album": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "album"
-        ],
-        "description": ""
-      },
-      "photos.library.make-thumbnails.Arguments": {
-        "type": "object",
-        "properties": {
-          "photos": {
-            "items": {
-              "content": true,
-              "type": "string"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "photos"
-        ],
-        "description": ""
-      },
       "so.tilo.poker.table.sit.Arguments": {
         "type": "object",
         "properties": {
@@ -31251,6 +30784,842 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.photos.Photo.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.photos.Photo.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "name",
+              "picture",
+              "thumb",
+              "edited",
+              "captured_at",
+              "folder",
+              "location",
+              "description"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.photos.Photo.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "favorite"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.photos.Photo.toggle_favorite.Arguments": {
+        "type": "object",
+        "properties": {
+          "favorite": {
+            "type": "boolean"
+          }
+        },
+        "required": [],
+        "description": "Marks a photo as a favorite, or takes that back."
+      },
+      "tl.so.tilo.photos.Photo.rotate_right.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Turns the photograph a quarter clockwise, as its person sees it: the window draws the original\nturned, and a save writes what it draws."
+      },
+      "tl.so.tilo.photos.Photo.rotate_left.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Turns the photograph a quarter anticlockwise."
+      },
+      "tl.so.tilo.photos.Photo.reset_edits.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Puts the photograph back as it came, taking the person's own turns off it."
+      },
+      "tl.so.tilo.photos.Photo.tag.Arguments": {
+        "type": "object",
+        "properties": {
+          "t": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "t"
+        ],
+        "description": "Gives a photo a tag."
+      },
+      "tl.so.tilo.photos.Photo.untag.Arguments": {
+        "type": "object",
+        "properties": {
+          "t": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "t"
+        ],
+        "description": "Takes a tag off a photo."
+      },
+      "tl.so.tilo.photos.Photo.share.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The link that reaches a photo's picture: the address of its bytes, which every device of the\nworkspace reads from the content store."
+      },
+      "tl.so.tilo.photos.Photo.set_place.Arguments": {
+        "type": "object",
+        "properties": {
+          "at": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "at"
+        ],
+        "description": "Sets the place a photo was taken from where the person points on the map: the picker reports\nthe point as its latitude then its longitude."
+      },
+      "tl.so.tilo.photos.Photo.clear_place.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Takes the place off a photo."
+      },
+      "tl.so.tilo.photos.Photo.export_photo.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The original picture as a file, to save where the person says."
+      },
+      "tl.so.tilo.photos.Album.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.photos.Album.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "name"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.photos.Album.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.photos.Album.add_selected_to_album.Arguments": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "description": "Puts each named photo in an album."
+      },
+      "tl.so.tilo.photos.Album.rename_album.Arguments": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "to"
+        ],
+        "description": "Renames an album."
+      },
+      "tl.so.tilo.photos.Album.album_contains_toggle.Arguments": {
+        "type": "object",
+        "properties": {
+          "p": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.photos.Photo",
+            "type": "object"
+          }
+        },
+        "required": [
+          "p"
+        ],
+        "description": "Puts a photo in an album, or takes it out of one when it is already in it."
+      },
+      "tl.so.tilo.photos.Person.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.photos.Person.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "name"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.photos.Person.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.photos.Library.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.photos.Library.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.photos.Library.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.photos.Library.import_photo.Arguments": {
+        "type": "object",
+        "properties": {
+          "file": {}
+        },
+        "required": [
+          "file"
+        ],
+        "description": "Imports a photograph the person picks: the library keeps the address of its bytes, the name it\ncame in with, what its own container says of it (when and where it was taken) and a small\npreview the grid draws. A picture whose bytes the window already holds reads at once."
+      },
+      "tl.so.tilo.photos.Library.import_photo_meta.Arguments": {
+        "type": "object",
+        "properties": {
+          "file": {},
+          "captured_at": {
+            "type": "string"
+          },
+          "location": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "description": "Imports a photograph a caller already knows the capture time and place of (the camera's\nhandoff). It opens no file kind of its own: the `opens` action above is what Files and the\nperson's own file system hand a picture to."
+      },
+      "tl.so.tilo.photos.Library.import_dropped.Arguments": {
+        "type": "object",
+        "properties": {
+          "files": {
+            "items": {},
+            "type": "array"
+          }
+        },
+        "required": [
+          "files"
+        ],
+        "description": "Imports the pictures a person drops on the window or picks a folder of: each picture file\nbecomes a photo, with the folder it came in, and a file that is no picture is left alone."
+      },
+      "tl.so.tilo.photos.Library.favorite_selected.Arguments": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "description": "Marks each named photo a favorite."
+      },
+      "tl.so.tilo.photos.Library.remove_selected.Arguments": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "description": "Takes each named photo out of the library."
+      },
+      "tl.so.tilo.photos.Library.remove.Arguments": {
+        "type": "object",
+        "properties": {
+          "p": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.photos.Photo",
+            "type": "object"
+          }
+        },
+        "required": [
+          "p"
+        ],
+        "description": "Takes a photo out of the library. The file it came from is not touched."
+      },
+      "tl.so.tilo.photos.Library.new_album.Arguments": {
+        "type": "object",
+        "properties": {
+          "p": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.photos.Photo",
+            "type": "object"
+          }
+        },
+        "required": [],
+        "description": "Starts an album, and puts the photo it is started from in it."
+      },
+      "tl.so.tilo.photos.Library.remove_album.Arguments": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.photos.Album",
+            "type": "object"
+          }
+        },
+        "required": [
+          "a"
+        ],
+        "description": "Deletes an album. Its photos stay in the library."
+      },
+      "tl.so.tilo.photos.Library.add_person.Arguments": {
+        "type": "object",
+        "properties": {
+          "p": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.photos.Photo",
+            "type": "object"
+          },
+          "person": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "p",
+          "person"
+        ],
+        "description": "Names a person on a photo, and puts the photo on that person when the library knows them."
+      },
+      "tl.so.tilo.photos.Library.remove_person.Arguments": {
+        "type": "object",
+        "properties": {
+          "p": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.photos.Photo",
+            "type": "object"
+          },
+          "person": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "p",
+          "person"
+        ],
+        "description": "Takes a person off a photo, and the photo off that person."
+      },
+      "tl.so.tilo.photos.Library.rename_person.Arguments": {
+        "type": "object",
+        "properties": {
+          "person": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.photos.Person",
+            "type": "object"
+          },
+          "to": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "person",
+          "to"
+        ],
+        "description": "Names a person: the photos they are on say the new name too."
+      },
+      "tl.so.tilo.photos.Library.new_person.Arguments": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "photos": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "photos"
+        ],
+        "description": "Starts a person the library knows, with the photos it already has of them."
+      },
+      "tl.so.tilo.photos.Library.merge_people.Arguments": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.photos.Person",
+            "type": "object"
+          },
+          "into": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.photos.Person",
+            "type": "object"
+          }
+        },
+        "required": [
+          "from",
+          "into"
+        ],
+        "description": "Merges one person into another: their photos come together under the name kept, and the name\nmerged away leaves every photo it was on."
+      },
+      "tl.so.tilo.photos.Library.split_photo.Arguments": {
+        "type": "object",
+        "properties": {
+          "person": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.photos.Person",
+            "type": "object"
+          },
+          "photo": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "person",
+          "photo"
+        ],
+        "description": "Takes one photo off a person, and the person off that photo."
+      },
+      "tl.so.tilo.photos.Library.remove_person_resource.Arguments": {
+        "type": "object",
+        "properties": {
+          "person": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.photos.Person",
+            "type": "object"
+          }
+        },
+        "required": [
+          "person"
+        ],
+        "description": "Forgets a person: their name leaves every photo they were on."
+      },
       "tl.so.tilo.shell.Shell.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -38293,78 +38662,6 @@
       "arguments": "#/components/schemas/pdf.signature-profile.set-strokes.Arguments"
     },
     {
-      "app": "so.tilo.photos",
-      "resource": "photos.library",
-      "action": "import-photo",
-      "arguments": "#/components/schemas/photos.library.import-photo.Arguments"
-    },
-    {
-      "app": "so.tilo.photos",
-      "resource": "photos.library",
-      "action": "refresh-imported-metadata",
-      "arguments": "#/components/schemas/photos.library.refresh-imported-metadata.Arguments"
-    },
-    {
-      "app": "so.tilo.photos",
-      "resource": "photos.library",
-      "action": "remove-photo",
-      "arguments": "#/components/schemas/photos.library.remove-photo.Arguments"
-    },
-    {
-      "app": "so.tilo.photos",
-      "resource": "photos.library",
-      "action": "rotate-right",
-      "arguments": "#/components/schemas/photos.library.rotate-right.Arguments"
-    },
-    {
-      "app": "so.tilo.photos",
-      "resource": "photos.library",
-      "action": "rotate-left",
-      "arguments": "#/components/schemas/photos.library.rotate-left.Arguments"
-    },
-    {
-      "app": "so.tilo.photos",
-      "resource": "photos.library",
-      "action": "crop",
-      "arguments": "#/components/schemas/photos.library.crop.Arguments"
-    },
-    {
-      "app": "so.tilo.photos",
-      "resource": "photos.library",
-      "action": "merge-image-analysis",
-      "arguments": "#/components/schemas/photos.library.merge-image-analysis.Arguments"
-    },
-    {
-      "app": "so.tilo.photos",
-      "resource": "photos.library",
-      "action": "set-person-membership",
-      "arguments": "#/components/schemas/photos.library.set-person-membership.Arguments"
-    },
-    {
-      "app": "so.tilo.photos",
-      "resource": "photos.library",
-      "action": "rename-person",
-      "arguments": "#/components/schemas/photos.library.rename-person.Arguments"
-    },
-    {
-      "app": "so.tilo.photos",
-      "resource": "photos.library",
-      "action": "remove-person",
-      "arguments": "#/components/schemas/photos.library.remove-person.Arguments"
-    },
-    {
-      "app": "so.tilo.photos",
-      "resource": "photos.library",
-      "action": "remove-album",
-      "arguments": "#/components/schemas/photos.library.remove-album.Arguments"
-    },
-    {
-      "app": "so.tilo.photos",
-      "resource": "photos.library",
-      "action": "make-thumbnails",
-      "arguments": "#/components/schemas/photos.library.make-thumbnails.Arguments"
-    },
-    {
       "app": "so.tilo.poker",
       "resource": "so.tilo.poker.table",
       "action": "sit",
@@ -42077,6 +42374,264 @@
       "resource": "tl.so.tilo.notes.Found",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.notes.Found.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tilolang.personal",
+      "action": "view-state",
+      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tilolang.personal",
+      "action": "seen",
+      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tilolang.personal",
+      "action": "seen-runs",
+      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Photo",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Photo.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Photo",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Photo.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Photo",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Photo.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Photo",
+      "action": "toggle_favorite",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Photo.toggle_favorite.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Photo",
+      "action": "rotate_right",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Photo.rotate_right.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Photo",
+      "action": "rotate_left",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Photo.rotate_left.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Photo",
+      "action": "reset_edits",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Photo.reset_edits.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Photo",
+      "action": "tag",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Photo.tag.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Photo",
+      "action": "untag",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Photo.untag.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Photo",
+      "action": "share",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Photo.share.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Photo",
+      "action": "set_place",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Photo.set_place.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Photo",
+      "action": "clear_place",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Photo.clear_place.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Photo",
+      "action": "export_photo",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Photo.export_photo.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Album",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Album.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Album",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Album.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Album",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Album.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Album",
+      "action": "add_selected_to_album",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Album.add_selected_to_album.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Album",
+      "action": "rename_album",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Album.rename_album.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Album",
+      "action": "album_contains_toggle",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Album.album_contains_toggle.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Person",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Person.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Person",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Person.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Person",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Person.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Library",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Library.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Library",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Library.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Library",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Library.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Library",
+      "action": "import_photo",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Library.import_photo.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Library",
+      "action": "import_photo_meta",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Library.import_photo_meta.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Library",
+      "action": "import_dropped",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Library.import_dropped.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Library",
+      "action": "favorite_selected",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Library.favorite_selected.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Library",
+      "action": "remove_selected",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Library.remove_selected.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Library",
+      "action": "remove",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Library.remove.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Library",
+      "action": "new_album",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Library.new_album.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Library",
+      "action": "remove_album",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Library.remove_album.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Library",
+      "action": "add_person",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Library.add_person.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Library",
+      "action": "remove_person",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Library.remove_person.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Library",
+      "action": "rename_person",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Library.rename_person.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Library",
+      "action": "new_person",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Library.new_person.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Library",
+      "action": "merge_people",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Library.merge_people.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Library",
+      "action": "split_photo",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Library.split_photo.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Library",
+      "action": "remove_person_resource",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Library.remove_person_resource.Arguments"
     },
     {
       "app": "so.tilo.shell",

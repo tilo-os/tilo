@@ -32,8 +32,14 @@ pub const THEN_ACTION: &str = "$then";
 pub const SHORTCUT_ACTION: &str = "$shortcut";
 
 /// The action of `file.choose(a)`: ask the person for a file, and run `a` with it as the
-/// argument it still needs. Its arguments are `a` and the media types it may be.
+/// argument it still needs. Its arguments are `a` and the media types it may be. A parameter of
+/// `List<File>` takes every file the person chose.
 pub const CHOOSE_ACTION: &str = "$choose";
+
+/// The action of `file.choose_folder(a)`: ask the person for a folder, and run `a` with the
+/// files it holds, each with its path inside the folder, as the argument it still needs. Its
+/// arguments are `a` and the media types of the files kept.
+pub const CHOOSE_FOLDER_ACTION: &str = "$choose-folder";
 
 /// The action of `file.save(a, name: n)`: run `a`, and put what it made — text, or a file —
 /// where the person says, under the name `n`. Its arguments are `a` and the name.
@@ -318,7 +324,7 @@ impl Core {
     /// argument it still needs. The chooser is the device's ([`crate::blob::BlobHost`]), and
     /// what it answers is what the action is invoked with: its invocation records the file's
     /// address, so history, replay and undo carry it.
-    fn act_choose(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+    fn act_choose(&self, a: &Args<'_>, action_name: &str) -> HResult<Option<Wasm>> {
         let action = self.val(a.h(0)?)?;
         if !matches!(action, Value::Action(_)) {
             return trap(format!(
@@ -340,7 +346,7 @@ impl Core {
         };
         let author = Some(self.module_of_frame()?);
         self.ret_h(Value::Action(ActionRef {
-            action: CHOOSE_ACTION.to_owned(),
+            action: action_name.to_owned(),
             args: vec![action, Value::List(accept)],
             author,
             from: None,
@@ -607,7 +613,8 @@ impl Core {
             Imp::UiBindState => self.bind_state(a),
             Imp::ActSet => self.act_set(a),
             Imp::ActThen => self.act_then(a),
-            Imp::ActChoose => self.act_choose(a),
+            Imp::ActChoose => self.act_choose(a, CHOOSE_ACTION),
+            Imp::ActChooseFolder => self.act_choose(a, CHOOSE_FOLDER_ACTION),
             Imp::ActSave => self.act_save(a),
             Imp::ActMadeFrom => self.act_made_from(a),
             Imp::ActMany => self.act_many(a),

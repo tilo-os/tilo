@@ -37,7 +37,9 @@ use crate::{FilePicker, answered};
 pub const SERVICE: &str = "chooser";
 pub const FD_ENV: &str = "TILO_SVC_CHOOSER_FD";
 pub const PROTOCOL: u16 = 1;
-pub const MAX_FRAME_BYTES: usize = 64 * 1024;
+/// The largest frame either end writes: a folder of many files answers with one grant each, so
+/// a choice of ten thousand small files fits on one line.
+pub const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
 
 const NOBODY_TO_CHOOSE_APP: &str = "nobody is at this computer to choose an app";
 const OUT_OF_TURN: &str = "the session's shell answered out of turn";
@@ -88,7 +90,9 @@ pub struct FilePortalGrant {
 
 pub const MAX_CONTENT_BYTES: u64 = 64 * 1024 * 1024;
 pub const CONTENT_CHUNK_BYTES: u32 = 8192;
-pub const MAX_CONTENT_FILES: usize = 16;
+/// The most files one contents pick hands over: a folder a person chooses may hold a shelf of
+/// photographs, and the byte bound still keeps what is read bounded.
+pub const MAX_CONTENT_FILES: usize = 10_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -109,6 +113,10 @@ pub enum Request {
     PickContents {
         id: u64,
         multiple: bool,
+        /// Whether the person chooses a folder, whose files the service walks and hands over
+        /// with their paths inside it.
+        #[serde(default)]
+        directory: bool,
         title: String,
         accept_label: String,
         filters: Vec<Filter>,
@@ -640,7 +648,9 @@ fn read_contents(connection: &Connection, grants: Vec<FilePortalGrant>) -> Conte
                 name: grant.name.clone(),
                 media_type: None,
                 bytes,
-                location: None,
+                // What the person chose: a path inside the folder, or the file's name. Never a
+                // host path, which the sandbox does not give the app.
+                location: Some(std::path::PathBuf::from(&grant.name)),
             });
         }
         Ok(files)
@@ -656,9 +666,9 @@ fn read_contents(connection: &Connection, grants: Vec<FilePortalGrant>) -> Conte
 
 impl FilePicker for ShellChooser {
     fn pick_contents(&self, request: PickRequest) -> ContentsChannel {
-        if !request.is_open() {
+        if !request.is_open() && !request.is_directory() {
             return answered(ContentsOutcome::Failed(
-                "only an Open chooser delivers contents".to_owned(),
+                "only an Open or a folder chooser delivers contents".to_owned(),
             ));
         }
         let (deliver, rx) = channel();
@@ -667,11 +677,13 @@ impl FilePicker for ShellChooser {
         let title = request.title.clone();
         let accept_label = request.accept_label.clone();
         let multiple = request.is_multiple();
+        let directory = request.is_directory();
         let filters = request.filters.iter().map(Filter::from_portal).collect();
         self.link.connection().ask(
             move |id| Request::PickContents {
                 id,
                 multiple,
+                directory,
                 title,
                 accept_label,
                 filters,

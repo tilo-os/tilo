@@ -31,20 +31,29 @@ pub fn read(store: &ContentStore, hash: &str) -> Option<Vec<u8>> {
     store.read(hash)
 }
 
-/// Ask the person for a file and take it into the content store: what `file.choose` runs.
+/// Ask the person for files and take them into the content store: what `file.choose` and
+/// `file.choose_folder` run. One file, several, or the files of a folder, as `request` asks;
+/// what comes back is an empty list when the person dismissed the chooser.
 ///
 /// # Errors
 ///
-/// Why there is no file: no chooser answers here, the chooser refused, or the content could not
-/// be kept.
+/// Why there are no files: no chooser answers here, the chooser refused, or the content could
+/// not be kept.
 pub fn choose(
     store: &ContentStore,
     chooser: &dyn FilePicker,
     request: &FileRequest,
-) -> Result<Option<FileValue>, String> {
+) -> Result<Vec<FileValue>, String> {
     // The confirm button keeps the chooser's own word (Open): the types it offers name its
     // filter, never what pressing the button does.
-    let mut pick = PickRequest::open(&request.title, "")
+    let pick = if request.folder {
+        PickRequest::directory(&request.title, "")
+    } else if request.multiple {
+        PickRequest::open_multiple(&request.title, "")
+    } else {
+        PickRequest::open(&request.title, "")
+    };
+    let mut pick = pick
         .max_contents_bytes(MAX_CHOSEN)
         .thread_name("tilolang-choose-file");
     if !request.accept.is_empty() {
@@ -55,31 +64,48 @@ pub fn choose(
         pick = pick.filter(filter);
     }
     let chosen = match wait(&chooser.pick_contents(pick))? {
-        ContentsOutcome::Cancelled => return Ok(None),
+        ContentsOutcome::Cancelled => return Ok(Vec::new()),
         ContentsOutcome::Failed(why) => return Err(why),
         ContentsOutcome::Picked(files) => files,
     };
-    let Some(file) = chosen.into_iter().next() else {
-        return Ok(None);
-    };
-    let media = file
-        .media_type
-        .clone()
-        .unwrap_or_else(|| media_of(&file.name));
-    if !accepts(&request.accept, &media) || file.bytes.len() > MAX_CHOSEN {
-        // The chooser filters by type and reads no more than the limit; a host that answers
-        // another file anyhow is answered for here, before anything is kept.
-        return Err(format!("`{}` is not a file this asks for", file.name));
+    let mut kept = Vec::with_capacity(chosen.len());
+    for file in chosen {
+        let media = file
+            .media_type
+            .clone()
+            .unwrap_or_else(|| media_of(&file.name));
+        if !accepts(&request.accept, &media) || file.bytes.len() > MAX_CHOSEN {
+            // The chooser filters by type and reads no more than the limit; a host that answers
+            // another file anyhow is answered for here, before anything is kept.
+            return Err(format!("`{}` is not a file this asks for", file.name));
+        }
+        let hash = store
+            .put(&file.bytes)
+            .map_err(|error| format!("`{}` could not be kept: {error}", file.name))?;
+        // Where the file stands in what the person chose, and what it is called there. A
+        // chooser that answers a host path names only the file: a sandboxed app has no way to
+        // use the directory it is in.
+        let relative = file
+            .location
+            .as_ref()
+            .and_then(|path| path.to_str())
+            .filter(|path| !path.is_empty() && !std::path::Path::new(path).is_absolute());
+        let name = relative
+            .and_then(|path| std::path::Path::new(path).file_name())
+            .and_then(std::ffi::OsStr::to_str)
+            .map_or_else(|| file.name.clone(), str::to_owned);
+        let path = relative.map_or_else(|| name.clone(), str::to_owned);
+        kept.push(
+            FileValue::new(
+                name,
+                media,
+                i64::try_from(file.bytes.len()).unwrap_or(i64::MAX),
+                hash,
+            )
+            .with_path(path),
+        );
     }
-    let hash = store
-        .put(&file.bytes)
-        .map_err(|error| format!("`{}` could not be kept: {error}", file.name))?;
-    Ok(Some(FileValue::new(
-        file.name,
-        media,
-        i64::try_from(file.bytes.len()).unwrap_or(i64::MAX),
-        hash,
-    )))
+    Ok(kept)
 }
 
 /// Keep `bytes` in the content store as a file called `name`: what a program that holds bytes
@@ -109,6 +135,63 @@ pub fn keep(
         i64::try_from(bytes.len()).unwrap_or(i64::MAX),
         hash,
     ))
+}
+
+/// A preview of `file` no larger than `size` pixels a side, kept in the content store: what
+/// `File.thumbnail` answers, generated once by the device's shared cache and byte for byte the
+/// same on every call. `None` for a file that has no preview, which is no image (a badge is what
+/// its list shows instead).
+///
+/// # Errors
+///
+/// Why there is no preview: a file that is not addressed content, or a preview that did not
+/// encode or could not be kept.
+pub fn thumbnail(
+    store: &ContentStore,
+    thumbnails: &thumbnail::ThumbnailService,
+    file: &FileValue,
+    size: u32,
+) -> Result<Option<FileValue>, String> {
+    let category = thumbnail::category_for_path(std::path::Path::new(&file.name));
+    if !category.has_preview() {
+        return Ok(None);
+    }
+    let edge = size.clamp(1, 4096);
+    let dimension = thumbnail::ThumbSize::edge(edge);
+    let Some(key) = thumbnail::ThumbKey::of_address(&file.hash, dimension) else {
+        return Err(format!(
+            "`{}` is not the address of content this device holds",
+            file.name
+        ));
+    };
+    let state = thumbnails.request(thumbnail::ThumbRequest::load(key, category, {
+        let store = store.clone();
+        let hash = file.hash.clone();
+        move || store.read(&hash)
+    }));
+    let preview = match state {
+        thumbnail::ThumbState::Ready(preview) => Some(preview),
+        thumbnail::ThumbState::Badge(_) => None,
+        thumbnail::ThumbState::Loading => {
+            // The cache generates on its own workers; a preview is ready before the call
+            // answers, as a file read is. One that never settles answers no preview.
+            thumbnails.block_until_idle(Duration::from_secs(30));
+            thumbnails
+                .peek(&key)
+                .and_then(|state| state.ready().cloned())
+        }
+    };
+    let Some(preview) = preview else {
+        return Ok(None);
+    };
+    let png = thumbnail::encode_png(&preview)
+        .ok_or_else(|| format!("the preview of `{}` did not encode", file.name))?;
+    let stem = std::path::Path::new(&file.name)
+        .file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or("preview");
+    keep(store, &format!("{stem}-{edge}.png"), "image/png", &png).map(Some)
 }
 
 /// Put `content` where the person says: what `file.save` runs.
@@ -175,14 +258,17 @@ mod tests {
     /// A chooser that answers every contents pick with `name` and `bytes`: the person picking a
     /// file, without a desktop.
     struct Picks(
-        &'static str,
-        &'static [u8],
+        Vec<(&'static str, &'static [u8])>,
         std::sync::Mutex<Option<PickRequest>>,
     );
 
     impl Picks {
         fn new(name: &'static str, bytes: &'static [u8]) -> Self {
-            Self(name, bytes, std::sync::Mutex::new(None))
+            Self(vec![(name, bytes)], std::sync::Mutex::new(None))
+        }
+
+        fn several(files: Vec<(&'static str, &'static [u8])>) -> Self {
+            Self(files, std::sync::Mutex::new(None))
         }
     }
 
@@ -204,14 +290,19 @@ mod tests {
         }
 
         fn pick_contents(&self, request: PickRequest) -> ContentsChannel {
-            *self.2.lock().unwrap() = Some(request);
+            *self.1.lock().unwrap() = Some(request);
             let (sender, receiver) = std::sync::mpsc::channel();
-            let _ = sender.send(ContentsOutcome::Picked(vec![PickedContents {
-                name: self.0.to_owned(),
-                media_type: Some(media_of(self.0)),
-                bytes: self.1.to_vec(),
-                location: None,
-            }]));
+            let files = self
+                .0
+                .iter()
+                .map(|(name, bytes)| PickedContents {
+                    name: (*name).to_owned(),
+                    media_type: Some(media_of(name)),
+                    bytes: bytes.to_vec(),
+                    location: Some(std::path::PathBuf::from(name)),
+                })
+                .collect();
+            let _ = sender.send(ContentsOutcome::Picked(files));
             receiver
         }
     }
@@ -227,14 +318,17 @@ mod tests {
                 title: "Import Markdown".to_owned(),
                 name: String::new(),
                 accept: vec!["text/markdown".to_owned()],
+                ..FileRequest::default()
             },
         )
-        .expect("the chooser answered")
-        .expect("a file was chosen");
+        .expect("the chooser answered");
+        assert_eq!(chosen.len(), 1, "one file was chosen");
+        let chosen = &chosen[0];
         assert_eq!(chosen.name, "Lisbon.md");
+        assert_eq!(chosen.path, "Lisbon.md", "the file's own name is its path");
         assert_eq!(chosen.media, "text/markdown");
         let asked = chooser
-            .2
+            .1
             .lock()
             .unwrap()
             .take()
@@ -262,6 +356,7 @@ mod tests {
                 title: "Import Markdown".to_owned(),
                 name: String::new(),
                 accept: vec!["text/markdown".to_owned()],
+                ..FileRequest::default()
             },
         );
         assert_eq!(
@@ -271,6 +366,92 @@ mod tests {
         assert!(
             !store.has(&tilo_content::hash_bytes(b"\x89PNG")),
             "nothing was kept"
+        );
+    }
+
+    #[test]
+    fn several_files_and_a_folders_files_are_kept_with_their_paths() {
+        let store = ContentStore::memory();
+        let chooser = Picks::several(vec![
+            ("trip/one.md", b"# One\n"),
+            ("trip/two.md", b"# Two\n"),
+        ]);
+        let chosen = choose(
+            &store,
+            &chooser,
+            &FileRequest {
+                title: "Import notes".to_owned(),
+                accept: vec!["text/markdown".to_owned()],
+                multiple: true,
+                ..FileRequest::default()
+            },
+        )
+        .expect("the chooser answered");
+        assert_eq!(
+            chosen
+                .iter()
+                .map(|file| (file.name.as_str(), file.path.as_str()))
+                .collect::<Vec<_>>(),
+            [("one.md", "trip/one.md"), ("two.md", "trip/two.md")],
+            "each file keeps its name and its path inside what the person chose"
+        );
+        let asked = chooser.1.lock().unwrap().take().expect("asked");
+        assert!(asked.is_multiple(), "the person may choose several");
+
+        let chooser = Picks::several(vec![("trip/photo.png", b"png")]);
+        let chosen = choose(
+            &store,
+            &chooser,
+            &FileRequest {
+                title: "Import a folder".to_owned(),
+                accept: vec!["image/*".to_owned()],
+                folder: true,
+                ..FileRequest::default()
+            },
+        )
+        .expect("the chooser answered");
+        assert_eq!(chosen.len(), 1);
+        let asked = chooser.1.lock().unwrap().take().expect("asked");
+        assert!(asked.is_directory(), "the person chooses a folder");
+    }
+
+    #[test]
+    fn a_preview_comes_from_the_devices_cache_and_keeps_a_file_of_its_own() {
+        let image = thumbnail::RgbaThumb {
+            rgba: [20_u8, 40, 60, 255].repeat(32 * 16),
+            width: 32,
+            height: 16,
+        };
+        let png = thumbnail::encode_png(&image).expect("the fixture encodes");
+        let store = ContentStore::memory();
+        let hash = store.put(&png).expect("the fixture is kept");
+        let file = FileValue::new(
+            "photo.png",
+            "image/png",
+            i64::try_from(png.len()).unwrap_or(i64::MAX),
+            hash,
+        );
+        let service = thumbnail::ThumbnailService::ephemeral(1);
+        let preview = thumbnail(&store, &service, &file, 16)
+            .expect("the preview generated")
+            .expect("an image has a preview");
+        assert_eq!(preview.name, "photo-16.png");
+        assert_eq!(preview.media, "image/png");
+        let bytes = store.read(&preview.hash).expect("the preview is kept");
+        let decoded = thumbnail::decode_png(&bytes).expect("the preview is a PNG");
+        assert_eq!(decoded.width.max(decoded.height), 16);
+
+        // A file that is no image has none: its list shows a badge instead.
+        let text = FileValue::new(
+            "plan.md",
+            "text/markdown",
+            4,
+            store.put(b"# P\n").expect("the text is kept"),
+        );
+        assert!(
+            thumbnail(&store, &service, &text, 16)
+                .expect("no preview is no error")
+                .is_none()
         );
     }
 

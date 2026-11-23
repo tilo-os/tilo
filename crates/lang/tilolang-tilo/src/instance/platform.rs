@@ -316,15 +316,15 @@ pub trait Platform {
         None
     }
 
-    /// Ask the person for a file, taking what they pick into the content store. `None` when
-    /// they dismiss the chooser; the error says why a file could not be taken in (its size,
-    /// its media type, the store's failure). A platform without a chooser answers the error
-    /// saying so.
+    /// Ask the person for files, taking what they pick into the content store: one, several,
+    /// or the files of a folder, as `request` asks. An empty list when they dismiss the
+    /// chooser; the error says why the files could not be taken in (a size, a media type, the
+    /// store's failure). A platform without a chooser answers the error saying so.
     ///
     /// # Errors
     ///
-    /// Why there is no file: there is no chooser, or the one there is refused it.
-    fn choose_file(&self, request: &FileRequest) -> Result<Option<FileValue>, String> {
+    /// Why there are no files: there is no chooser, or the one there is refused it.
+    fn choose_files(&self, request: &FileRequest) -> Result<Vec<FileValue>, String> {
         let _ = request;
         Err("this host chooses no files".to_owned())
     }
@@ -350,6 +350,18 @@ pub trait Platform {
     fn keep_content(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
         let _ = (name, media, bytes);
         Err("this host keeps no files".to_owned())
+    }
+
+    /// A preview of `file` no larger than `size` pixels a side, kept as a file of its own: what
+    /// `File.thumbnail` answers. `None` when the file has no preview (it is no image); a
+    /// platform that keeps no preview cache answers the error saying so.
+    ///
+    /// # Errors
+    ///
+    /// Why there is no preview.
+    fn thumbnail(&self, file: &FileValue, size: u32) -> Result<Option<FileValue>, String> {
+        let _ = (file, size);
+        Err("this host keeps no previews".to_owned())
     }
 
     /// Offer `bytes` of `mime` (`text/plain` or an image type) as what the person copied: what
@@ -397,8 +409,8 @@ impl BlobHost for PlatformBlobs {
         self.0.read_content(hash)
     }
 
-    fn choose(&self, request: &FileRequest) -> Result<Option<FileValue>, String> {
-        self.0.choose_file(request)
+    fn choose(&self, request: &FileRequest) -> Result<Vec<FileValue>, String> {
+        self.0.choose_files(request)
     }
 
     fn save(&self, request: &SaveRequest, content: &[u8]) -> Result<(), String> {
@@ -407,6 +419,10 @@ impl BlobHost for PlatformBlobs {
 
     fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
         self.0.keep_content(name, media, bytes)
+    }
+
+    fn thumbnail(&self, file: &FileValue, size: u32) -> Result<Option<FileValue>, String> {
+        self.0.thumbnail(file, size)
     }
 }
 

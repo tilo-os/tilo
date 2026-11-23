@@ -318,7 +318,6 @@ tilo-clock = { path = "../../platform/tilo-clock", features = ["local", "test-su
 tilo-thumbnail = { path = "../../engines/thumbnail" }
 # The app that publishes it, whose handler is its local run, and the content
 # store that handler keeps its outputs in.
-photos = { path = "../../../apps/photos" }
 tilo-content = { path = "../../system/content" }
 tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-automerge = { workspace = true, features = ["heap-probe"] }

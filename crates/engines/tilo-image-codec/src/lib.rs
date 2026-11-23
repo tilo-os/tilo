@@ -6,6 +6,9 @@
 //! [`DecodeImage::decode_native`] decodes the source before resizing.
 //! [`AdmissionLimits`] is a preflight check on a returned image, never an
 //! implicit restriction on the native path.
+//!
+//! [`decode_upright`] and [`decode_upright_now`] also turn the pixels the way
+//! the container's EXIF orientation says they are shown.
 mod codec;
 mod format;
 mod pixels;
@@ -19,8 +22,13 @@ mod backend;
 #[path = "web.rs"]
 mod backend;
 
-pub use codec::{EncodeError, Encoding, decode, decode_now, encode, encode_now};
+pub use codec::{
+    EncodeError, Encoding, decode, decode_now, decode_upright, decode_upright_now, encode,
+    encode_now,
+};
 pub use format::{Format, dimensions, sniff};
+/// What an image's own metadata says, read from its bytes before they are decoded.
+pub use tilo_image_info as info;
 
 pub struct DecodeImage<'a> {
     pub encoded: &'a [u8],

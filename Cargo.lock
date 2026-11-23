@@ -12551,37 +12551,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "photos"
-version = "0.1.0"
-dependencies = [
- "agent-provider-config",
- "image",
- "kamadak-exif",
- "photos",
- "runtime-dylib",
- "serde",
- "serde_json",
- "taffy",
- "tempfile",
- "tilo-actions",
- "tilo-app",
- "tilo-automerge-fork",
- "tilo-content",
- "tilo-files",
- "tilo-ocr",
- "tilo-paths",
- "tilo-reference",
- "tilo-test-env",
- "tilo-thumbnail",
- "tilo-vello",
- "tilo-vello-encoding",
- "tilo-vision",
- "tilo-winit",
- "tracing",
- "workspace-hack",
-]
-
-[[package]]
 name = "pic-scale"
 version = "0.7.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -17462,7 +17431,6 @@ dependencies = [
  "neighbour-wire",
  "passwords",
  "pdf-viewer",
- "photos",
  "poker",
  "postcard",
  "rustls",
@@ -19818,9 +19786,19 @@ dependencies = [
  "imagesize",
  "js-sys",
  "send_wrapper",
+ "tilo-image-info",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-image-info"
+version = "0.1.0"
+dependencies = [
+ "imagesize",
+ "kamadak-exif",
  "workspace-hack",
 ]
 
@@ -21757,7 +21735,6 @@ dependencies = [
  "linux-vm",
  "neighbour-wire",
  "package-store",
- "photos",
  "postcard",
  "rand 0.10.3",
  "rcgen",
@@ -23088,34 +23065,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-vision"
+name = "tilo-vision-service"
 version = "0.1.0"
 dependencies = [
  "agent-provider-config",
  "base64 0.22.1",
  "hex",
  "image",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "thiserror 2.0.21",
- "tilo-image-codec",
- "tilo-model-client",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-vision-service"
-version = "0.1.0"
-dependencies = [
- "agent-provider-config",
  "launcher",
  "runtime-portal",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.21",
  "tilo-actions",
  "tilo-content",
  "tilo-content-device",
+ "tilo-desktop-search",
  "tilo-image-codec",
  "tilo-lock",
  "tilo-model-client",
@@ -23123,7 +23089,6 @@ dependencies = [
  "tilo-resource",
  "tilo-service",
  "tilo-test-env",
- "tilo-vision",
  "tracing",
  "workspace-hack",
 ]
@@ -23800,6 +23765,7 @@ dependencies = [
  "tilo-resource-store",
  "tilo-startup-metrics",
  "tilo-test-env",
+ "tilo-thumbnail",
  "tilo-ui",
  "tilo-wake",
  "tilolang",
@@ -23837,6 +23803,7 @@ dependencies = [
  "tilo-doc",
  "tilo-doc-codecs",
  "tilo-files",
+ "tilo-image-codec",
  "tilo-recurrence",
  "tilo-reference",
  "tilo-resource",
@@ -28762,7 +28729,6 @@ dependencies = [
  "phf_shared 0.12.1",
  "phf_shared 0.13.1",
  "phf_shared 0.14.0",
- "photos",
  "pic-scale",
  "pico-args",
  "pim-lines",
@@ -29250,6 +29216,7 @@ dependencies = [
  "tilo-identity-authority",
  "tilo-identity-client",
  "tilo-image-codec",
+ "tilo-image-info",
  "tilo-image-policy-check",
  "tilo-innertube",
  "tilo-input-context",
@@ -29380,7 +29347,6 @@ dependencies = [
  "tilo-video-render",
  "tilo-view",
  "tilo-view-macros",
- "tilo-vision",
  "tilo-vision-service",
  "tilo-vm",
  "tilo-wake",

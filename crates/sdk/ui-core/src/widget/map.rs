@@ -203,6 +203,17 @@ pub struct MapProps {
     /// does on it ("Click anywhere and say what you want"). Drawn only while it holds no pin,
     /// and read to assistive technology as the map's description.
     pub hint: Option<String>,
+    /// The latitude the map is centred on, with `longitude`: the place at its middle when the
+    /// view sets it, so a map of places opens on a place. `None` leaves it a canvas.
+    pub latitude: Option<f64>,
+    /// The longitude the map is centred on, with `latitude`.
+    pub longitude: Option<f64>,
+    /// The zoom the map opens at, about its centre (`latitude`, `longitude`).
+    pub zoom: Option<f64>,
+    /// The pointer pressed the map's empty surface and let go there, a click: carries the place
+    /// under it, its latitude then its longitude, for a map centred on a place.
+    #[component(event(value = Vec<f64>))]
+    pub at: Event,
 }
 
 /// One pin of a map, as an instance gives it: its key, its place and the view it shows.
@@ -218,6 +229,11 @@ pub struct MapPinProps {
     pub x: Option<i64>,
     /// The canvas y of its top-leading corner, in canvas pixels.
     pub y: Option<i64>,
+    /// The latitude of the place the pin stands on, with `longitude`: the map projects it onto
+    /// the canvas, so a pin stands on its place at every zoom. Given, `x` and `y` are not read.
+    pub latitude: Option<f64>,
+    /// The longitude of the place the pin stands on.
+    pub longitude: Option<f64>,
     /// How wide it stands, in canvas pixels.
     pub width: Option<i64>,
     /// How tall it stands, in canvas pixels; without it, as tall as its view asks.
@@ -430,6 +446,16 @@ pub struct Map {
     /// What a hugging pin reports as its view comes to a height of its own: the pin's key and its
     /// drawn height in canvas pixels, once each time that height changes.
     drawn: Event,
+    /// What a press on a map centred on a place reports: the place it landed on, its latitude
+    /// then its longitude. A canvas has no place, so it reports nothing here.
+    at: Event,
+    /// The place the map is centred on, if it is a map of places: its latitude and longitude.
+    /// The camera centres it when the view sets it, never after the person pans or zooms.
+    focus: Option<(f64, f64)>,
+    /// The zoom the map opens at about `focus`: `None` keeps the camera's own.
+    focus_zoom: Option<f64>,
+    /// The view set a new centre since the map was last laid out: centre it once, next layout.
+    recentre: bool,
     /// The edge or corner being dragged, until it is let go.
     edge_drag: Option<EdgeDrag>,
     /// The rectangle the view points at, in canvas pixels, drawn as a light outline.
@@ -568,6 +594,10 @@ impl Map {
             resize: Event::None,
             seen: Event::None,
             drawn: Event::None,
+            at: Event::None,
+            focus: None,
+            focus_zoom: None,
+            recentre: false,
             edge_drag: None,
             outline: None,
             key: String::new(),
@@ -613,6 +643,28 @@ impl Map {
             self.camera = camera;
             self.invalidation.invalidate();
         }
+    }
+
+    /// Centre the camera on the place the view set, at the zoom it set: once, on the first
+    /// layout after the view changed it. The person's own pan and zoom stand after that.
+    fn centre_on_focus(&mut self) {
+        if !self.recentre {
+            return;
+        }
+        let Some((latitude, longitude)) = self.focus else {
+            return;
+        };
+        let size = self.rect.size();
+        if size.width <= 0.0 || size.height <= 0.0 {
+            return;
+        }
+        let zoom = self.focus_zoom.map_or(self.camera.zoom, |zoom| {
+            zoom.clamp(MAP_ZOOM_MIN, MAP_ZOOM_MAX)
+        });
+        let centre = mercator_project(latitude, longitude);
+        let origin = centre - (size.to_vec2() * 0.5) / zoom.max(f64::EPSILON);
+        self.set_camera(MapCamera { origin, zoom });
+        self.recentre = false;
     }
 
     /// Take over what the person was looking at from the map this one is built in place of (a
@@ -1159,6 +1211,10 @@ impl Described for Map {
             drawn,
             outline,
             hint,
+            latitude,
+            longitude,
+            zoom,
+            at,
         } = props;
         let mut map = Self::new();
         map.hint = hint.filter(|hint| !hint.trim().is_empty());
@@ -1173,10 +1229,21 @@ impl Described for Map {
         map.press = press;
         map.frame = frame;
         map.context = context;
+        map.at = at;
+        map.focus = latitude.zip(longitude);
+        map.focus_zoom = zoom;
+        map.recentre = map.focus.is_some();
         for pin in pins {
+            let (x, y) = match (pin.latitude, pin.longitude) {
+                (Some(latitude), Some(longitude)) => {
+                    let at = mercator_project(latitude, longitude);
+                    (at.x, at.y)
+                }
+                _ => (pin.x.unwrap_or(0) as f64, pin.y.unwrap_or(0) as f64),
+            };
             let place = PinPlace {
-                x: pin.x.unwrap_or(0) as f64,
-                y: pin.y.unwrap_or(0) as f64,
+                x,
+                y,
                 width: (pin.width.unwrap_or(360) as f64).max(1.0),
                 height: pin.height.map(|height| (height as f64).max(1.0)),
                 band: band_of(pin.band),
@@ -1216,6 +1283,10 @@ impl Described for Map {
             drawn,
             outline,
             hint,
+            latitude,
+            longitude,
+            zoom,
+            at,
         } = props;
         let hint = hint.filter(|hint| !hint.trim().is_empty());
         if hint != self.hint {
@@ -1234,6 +1305,13 @@ impl Described for Map {
         self.press = press;
         self.frame = frame;
         self.context = context;
+        self.at = at;
+        let focus = latitude.zip(longitude);
+        if focus != self.focus || zoom != self.focus_zoom {
+            self.focus = focus;
+            self.focus_zoom = zoom;
+            self.recentre = focus.is_some();
+        }
         if pins.len() != self.pins.len()
             || pins
                 .iter()
@@ -1248,9 +1326,16 @@ impl Described for Map {
             if let Some(item) = pin.item.filter(|item| !item.is_empty()) {
                 self.items.insert(key.clone(), item);
             }
+            let (x, y) = match (pin.latitude, pin.longitude) {
+                (Some(latitude), Some(longitude)) => {
+                    let at = mercator_project(latitude, longitude);
+                    (at.x, at.y)
+                }
+                _ => (pin.x.unwrap_or(0) as f64, pin.y.unwrap_or(0) as f64),
+            };
             *held = PinPlace {
-                x: pin.x.unwrap_or(0) as f64,
-                y: pin.y.unwrap_or(0) as f64,
+                x,
+                y,
                 width: (pin.width.unwrap_or(360) as f64).max(1.0),
                 height: pin.height.map(|height| (height as f64).max(1.0)),
                 band: band_of(pin.band),
@@ -1902,6 +1987,13 @@ impl Map {
                         crate::component::Value::Int(from.x.round() as i64),
                         crate::component::Value::Int(from.y.round() as i64),
                     ])));
+                    if self.focus.is_some() {
+                        let (latitude, longitude) = mercator_unproject(from);
+                        self.at.fire(Some(crate::component::Value::List(vec![
+                            crate::component::Value::Float(latitude),
+                            crate::component::Value::Float(longitude),
+                        ])));
+                    }
                 }
                 self.dirty = true;
                 *ctx.handled = true;
@@ -2077,6 +2169,7 @@ impl Widget for Map {
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.parts.apply_layout(tree, node, origin);
         self.rect = crate::widget::layout_rect(tree, node, origin);
+        self.centre_on_focus();
         // The answer the person asked for stands whole in view as it grows: laid out now, the
         // camera follows it to where it has grown, the least it takes.
         self.keep_answer();
@@ -2358,3 +2451,106 @@ mod canvas_tests;
 #[cfg(test)]
 #[path = "map_answer_tests.rs"]
 mod answer_tests;
+
+/// The width a map projects the world into, in canvas pixels at scale 1: a Web Mercator plane
+/// `MERCATOR_WORLD` wide, the equator at half its height. A map's camera pans and zooms over it,
+/// so a latitude and longitude reach the same screen point at every zoom. It is `2^20`: at the
+/// camera's widest zoom a window shows a degree or so of the world, and at its closest a city.
+pub const MERCATOR_WORLD: f64 = 1_048_576.0;
+
+/// The latitude Web Mercator stops at: the projection runs to infinity at the poles, so every
+/// map of it stops here (the square the tile servers use).
+pub const MERCATOR_MAX_LAT: f64 = 85.051_128_779_806_6;
+
+/// The canvas point `latitude`, `longitude` projects to on a Web Mercator map: the longitude
+/// across the world, the latitude down it, in [`MERCATOR_WORLD`] canvas pixels. Latitudes past
+/// [`MERCATOR_MAX_LAT`] clamp to it, so a pole stands on the map's top or bottom edge.
+#[must_use]
+pub fn mercator_project(latitude: f64, longitude: f64) -> Point {
+    let lat = latitude
+        .clamp(-MERCATOR_MAX_LAT, MERCATOR_MAX_LAT)
+        .to_radians();
+    let x = (longitude + 180.0) / 360.0 * MERCATOR_WORLD;
+    let sine = lat.sin();
+    let y = (0.5 - (((1.0 + sine) / (1.0 - sine)).ln() / (4.0 * std::f64::consts::PI)))
+        * MERCATOR_WORLD;
+    Point::new(x, y)
+}
+
+/// The latitude and longitude the canvas point `at` stands for on a Web Mercator map: the
+/// inverse of [`mercator_project`], so a press on the map says the place it landed on.
+#[must_use]
+pub fn mercator_unproject(at: Point) -> (f64, f64) {
+    let longitude = at.x / MERCATOR_WORLD * 360.0 - 180.0;
+    let n = std::f64::consts::PI * (1.0 - 2.0 * at.y / MERCATOR_WORLD);
+    let latitude = n.sinh().atan().to_degrees();
+    (latitude, longitude)
+}
+
+#[cfg(test)]
+mod mercator_tests {
+    use super::{MERCATOR_MAX_LAT, MERCATOR_WORLD, Point, mercator_project, mercator_unproject};
+
+    /// A place on the map and back is the place it was, at the equator, the tropics, the
+    /// mid-latitudes and the projection's own edges, east and west.
+    #[test]
+    fn a_place_projects_and_unprojects_to_itself() {
+        for latitude in [
+            0.0,
+            23.436,
+            45.0,
+            -45.0,
+            60.5,
+            -60.5,
+            80.0,
+            -80.0,
+            MERCATOR_MAX_LAT,
+            -MERCATOR_MAX_LAT,
+        ] {
+            for longitude in [-179.9, -90.0, 0.0, 13.405, 179.9] {
+                let at = mercator_project(latitude, longitude);
+                assert!(
+                    at.x >= 0.0 && at.x <= MERCATOR_WORLD,
+                    "x in the world: {at:?}"
+                );
+                assert!(
+                    at.y >= 0.0 && at.y <= MERCATOR_WORLD,
+                    "y in the world: {at:?}"
+                );
+                let (lat, lon) = mercator_unproject(at);
+                assert!((lat - latitude).abs() < 1e-9, "lat {latitude} -> {lat}");
+                assert!((lon - longitude).abs() < 1e-9, "lon {longitude} -> {lon}");
+            }
+        }
+    }
+
+    /// The world's corners: the equator crosses the middle, the projection's edges reach the
+    /// world's edges, and a pole clamps to the edge rather than running off it.
+    #[test]
+    fn the_world_is_the_projection_square() {
+        let middle = mercator_project(0.0, 0.0);
+        assert!((middle.x - MERCATOR_WORLD / 2.0).abs() < 1e-9);
+        assert!((middle.y - MERCATOR_WORLD / 2.0).abs() < 1e-9);
+        let top = mercator_project(90.0, 0.0);
+        let edge = mercator_project(MERCATOR_MAX_LAT, 0.0);
+        assert!((top.y - edge.y).abs() < 1e-9, "a pole clamps to the edge");
+        assert!(top.y.abs() < 1e-6);
+    }
+
+    /// A map centred on a place stands that place at its middle: the camera the view's centre
+    /// and zoom make places it there, so a press at the middle unprojects to the centre.
+    #[test]
+    fn a_centred_map_stands_its_place_at_the_middle() {
+        use super::MapCamera;
+        use crate::kurbo::Rect;
+        let rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let zoom = 2.0;
+        let centre = mercator_project(52.52, 13.405);
+        let origin = centre - (rect.size().to_vec2() * 0.5) / zoom;
+        let camera = MapCamera { origin, zoom };
+        let middle = Point::new(rect.center().x, rect.center().y);
+        let (latitude, longitude) = mercator_unproject(camera.to_canvas(rect.origin(), middle));
+        assert!((latitude - 52.52).abs() < 1e-9, "lat {latitude}");
+        assert!((longitude - 13.405).abs() < 1e-9, "lon {longitude}");
+    }
+}

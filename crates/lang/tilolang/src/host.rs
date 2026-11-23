@@ -577,6 +577,35 @@ pub const VALUE_TYPES: &[ValueType] = &[
             ),
         ],
     },
+    ValueType {
+        name: "ImageInfo",
+        id: "host-image-info",
+        doc: "What an image's own container says, as `File.image_info()` reads it: its upright size, when it was taken, which way it is turned, and where it was taken.",
+        fields: &[
+            (
+                "width",
+                "Int",
+                "Its upright width: the stored width, swapped with the height when the orientation turns the picture on its side.",
+            ),
+            ("height", "Int", "Its upright height."),
+            (
+                "captured_at",
+                "Option<Text>",
+                "When the camera says it took the picture, as EXIF stores it (`2026:07:12 18:16:00`).",
+            ),
+            (
+                "orientation",
+                "Option<Int>",
+                "Its EXIF orientation, 1 to 8, when the container states a valid one.",
+            ),
+            (
+                "latitude",
+                "Option<Float>",
+                "Where the camera says it took it, in WGS-84 degrees.",
+            ),
+            ("longitude", "Option<Float>", "The longitude of that place."),
+        ],
+    },
 ];
 
 /// The type that stands for any resource, of whatever app: what `find` and `grep` answer when they read

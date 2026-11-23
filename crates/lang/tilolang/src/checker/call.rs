@@ -415,7 +415,9 @@ impl Checker<'_> {
         let trailing_none = |rest: &[Option<Ex>]| rest.iter().all(Option::is_none);
         let filled_by_a_chooser = |at: usize| {
             choosing
-                && params.get(at).is_some_and(|p| p.ty == Ty::File)
+                && params
+                    .get(at)
+                    .is_some_and(|p| p.ty == Ty::File || p.ty == Ty::List(Box::new(Ty::File)))
                 && slots.get(at..).is_some_and(trailing_none)
         };
         let asked = |at: usize| {
@@ -424,8 +426,12 @@ impl Checker<'_> {
                     .get(at..)
                     .is_some_and(|rest| rest.iter().all(Option::is_none))
                 && params.get(at..).is_some_and(|rest| {
-                    rest.iter()
-                        .all(|p| p.default.is_some() || p.ty.asked_by_form() || p.ty == Ty::File)
+                    rest.iter().all(|p| {
+                        p.default.is_some()
+                            || p.ty.asked_by_form()
+                            || p.ty == Ty::File
+                            || p.ty == Ty::List(Box::new(Ty::File))
+                    })
                 })
         };
         let missing: Vec<&str> = params
@@ -453,9 +459,9 @@ impl Checker<'_> {
             .map(|(_, (p, _))| p)
             .collect();
         if let Some(param) = unaskable.first() {
-            let said = if param.ty == Ty::File {
+            let said = if param.ty == Ty::File || param.ty == Ty::List(Box::new(Ty::File)) {
                 format!(
-                    "`{name}` cannot be asked for `{}`: a file is the person's to choose, so the action run from a control with `file.choose({name}(…))` gets it, and a call written as it is must give it one",
+                    "`{name}` cannot be asked for `{}`: a file is the person's to choose, so the action run from a control with `file.choose({name}(…))` (or `file.choose_folder(…)` for the files of a folder) gets it, and a call written as it is must give it one",
                     param.name
                 )
             } else {
@@ -1430,17 +1436,18 @@ impl Checker<'_> {
             return Ex::error();
         }
         let choosing = match name.name.as_str() {
-            "choose" => true,
+            "choose" | "choose_folder" => true,
             "save" => false,
             other => {
                 self.err(
                     "E026",
                     name.span,
-                    format!("`file` has `choose` and `save`, not `{other}`"),
+                    format!("`file` has `choose`, `choose_folder` and `save`, not `{other}`"),
                 );
                 return Ex::error();
             }
         };
+        let folder = name.name == "choose_folder";
         let mut action = None;
         let mut accept = None;
         let mut called = None;
@@ -1511,7 +1518,12 @@ impl Checker<'_> {
             let accept = accept.unwrap_or_else(|| {
                 Ex::host(Imp::ListNew, Vec::new(), Ty::List(Box::new(Ty::Text)))
             });
-            Ex::host(Imp::ActChoose, vec![action, accept], Ty::Action)
+            let imp = if folder {
+                Imp::ActChooseFolder
+            } else {
+                Imp::ActChoose
+            };
+            Ex::host(imp, vec![action, accept], Ty::Action)
         } else {
             let called = match called {
                 Some(called) => called,
@@ -2522,6 +2534,163 @@ impl Checker<'_> {
                 vec![r],
                 Ty::Result(Box::new(Ty::List(Box::new(Ty::File))), Box::new(Ty::Text)),
             ),
+            // A file's pixels: what its container says, and the crop, turn, resize and encode a
+            // program applies. All of them reach the device's codec, so the action declares
+            // `uses image`; a view, drawn again from what it is shown, works on no pixels.
+            (Ty::File, "image_info") if args.is_empty() => {
+                self.reads(crate::effects::Effect::Image, span, "`image_info`");
+                Ex::host(
+                    Imp::FileImageInfo,
+                    vec![r],
+                    Ty::Option(Box::new(super::platform::host_ty("ImageInfo"))),
+                )
+            }
+            (Ty::File, "cropped") => {
+                self.reads(crate::effects::Effect::Image, span, "`cropped`");
+                let form = "cropped(x, y, width, height)`: the region of the picture kept, each \
+                            a fraction of it from 0 to 1";
+                let [x, y, width, height] = args else {
+                    self.err("E022", span, format!("`.{form}`"));
+                    for a in args {
+                        let _ = self.expr(&a.value, None);
+                    }
+                    return Ex::error();
+                };
+                let mut parts = Vec::with_capacity(4);
+                for argument in [x, y, width, height] {
+                    if let Some(named) = &argument.name {
+                        self.err(
+                            "E022",
+                            named.span,
+                            format!("`.{form}` takes its region by position"),
+                        );
+                    }
+                    parts.push(self.expr_as(&argument.value, &Ty::Float));
+                }
+                let files = Ty::Result(Box::new(Ty::File), Box::new(Ty::Text));
+                Ex::host(
+                    Imp::FileCrop,
+                    std::iter::once(r).chain(parts).collect(),
+                    files,
+                )
+            }
+            (Ty::File, "turned") => {
+                self.reads(crate::effects::Effect::Image, span, "`turned`");
+                let [quarters] = args else {
+                    self.err(
+                        "E022",
+                        span,
+                        "`.turned(quarters)`: how many times a quarter turn clockwise the picture \
+                         is turned",
+                    );
+                    for a in args {
+                        let _ = self.expr(&a.value, None);
+                    }
+                    return Ex::error();
+                };
+                if let Some(named) = &quarters.name {
+                    self.err(
+                        "E022",
+                        named.span,
+                        "`.turned` takes its quarter turns by position: `.turned(1)`",
+                    );
+                }
+                let quarters = self.expr_as(&quarters.value, &Ty::Int);
+                let files = Ty::Result(Box::new(Ty::File), Box::new(Ty::Text));
+                Ex::host(Imp::FileTurn, vec![r, quarters], files)
+            }
+            (Ty::File, "resized") => {
+                self.reads(crate::effects::Effect::Image, span, "`resized`");
+                let form = "resized(width, height)`: the pixels the picture is scaled to";
+                let [width, height] = args else {
+                    self.err("E022", span, format!("`.{form}`"));
+                    for a in args {
+                        let _ = self.expr(&a.value, None);
+                    }
+                    return Ex::error();
+                };
+                let mut parts = Vec::with_capacity(2);
+                for argument in [width, height] {
+                    if let Some(named) = &argument.name {
+                        self.err(
+                            "E022",
+                            named.span,
+                            format!("`.{form}` takes its size by position"),
+                        );
+                    }
+                    parts.push(self.expr_as(&argument.value, &Ty::Int));
+                }
+                let files = Ty::Result(Box::new(Ty::File), Box::new(Ty::Text));
+                Ex::host(
+                    Imp::FileResize,
+                    std::iter::once(r).chain(parts).collect(),
+                    files,
+                )
+            }
+            (Ty::File, "thumbnail") => {
+                self.reads(crate::effects::Effect::Image, span, "`thumbnail`");
+                let [size] = args else {
+                    self.err(
+                        "E022",
+                        span,
+                        "`.thumbnail(size)` takes how large a side of the preview may be, in pixels",
+                    );
+                    for a in args {
+                        let _ = self.expr(&a.value, None);
+                    }
+                    return Ex::error();
+                };
+                if let Some(named) = &size.name {
+                    self.err(
+                        "E022",
+                        named.span,
+                        "`.thumbnail` takes its size by position: `.thumbnail(512)`",
+                    );
+                }
+                let size = self.expr_as(&size.value, &Ty::Int);
+                Ex::host(
+                    Imp::FileThumbnail,
+                    vec![r, size],
+                    Ty::Option(Box::new(Ty::File)),
+                )
+            }
+            (Ty::File, "encoded") => {
+                self.reads(crate::effects::Effect::Image, span, "`encoded`");
+                let mut format = None;
+                let mut quality = None;
+                for argument in args {
+                    match argument.name.as_ref().map(|name| name.name.as_str()) {
+                        Some("format") => {
+                            format = Some(self.expr_as(&argument.value, &Ty::Text));
+                        }
+                        Some("quality") => {
+                            quality = Some(self.expr_as(&argument.value, &Ty::Int));
+                        }
+                        _ => {
+                            self.err(
+                                "E022",
+                                argument.value.span,
+                                "`.encoded(format: \"png\", quality: 90)` names its format, and \
+                                 its quality for a lossy one",
+                            );
+                            let _ = self.expr(&argument.value, None);
+                            return Ex::error();
+                        }
+                    }
+                }
+                let Some(format) = format else {
+                    self.err(
+                        "E022",
+                        span,
+                        "`.encoded` says what it writes: `.encoded(format: \"png\")`, or \
+                         `\"jpeg\"` or `\"webp\"`",
+                    );
+                    return Ex::error();
+                };
+                let quality = quality.unwrap_or_else(|| Ex::new(Ek::Int(90), Ty::Int));
+                let files = Ty::Result(Box::new(Ty::File), Box::new(Ty::Text));
+                Ex::host(Imp::FileEncode, vec![r, format, quality], files)
+            }
             // A map read as a value: its keys, the value one key holds, and — in the code that
             // runs — the entry put there or taken out.
             (Ty::Map(t), "get" | "keys" | "put" | "remove") => {

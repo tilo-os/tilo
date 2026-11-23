@@ -817,7 +817,7 @@ inputs = [
   "apps/contacts/surface.toml",
   "apps/settings/surface.toml",
   "crates/session/settings-service/agent-models-surface.json",
-  "crates/session/vision-service/surface.json",
+  "crates/services/vision/surface.json",
 ]
 readers = [
   "crates/lang/tilolang-tilo/examples/write_rate.rs",

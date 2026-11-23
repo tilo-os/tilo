@@ -24,6 +24,9 @@ pub enum Effect {
     Notify,
     /// The person's clipboard: a copy reaches their device, and a paste reads what is on it now.
     Clipboard,
+    /// An image's pixels: its container's metadata, the crop, turn, resize and encode a program
+    /// applies, and the preview cache this device keeps. Decoded and encoded off the frame.
+    Image,
 }
 
 impl Effect {
@@ -33,6 +36,7 @@ impl Effect {
         Self::Time,
         Self::Notify,
         Self::Clipboard,
+        Self::Image,
     ];
 
     pub const fn word(self) -> &'static str {
@@ -42,6 +46,7 @@ impl Effect {
             Self::Time => "time",
             Self::Notify => "notify",
             Self::Clipboard => "clipboard",
+            Self::Image => "image",
         }
     }
 
@@ -52,6 +57,7 @@ impl Effect {
             Self::Time => "the clock and the person's zone",
             Self::Notify => "telling a person something",
             Self::Clipboard => "the person's clipboard",
+            Self::Image => "the device's image decoders and its preview cache",
         }
     }
 

@@ -281,8 +281,9 @@ fn a_choice_of_contents_is_only_the_bytes_the_person_chose() {
     assert_eq!(files[0].name, "Lisbon.md");
     assert_eq!(files[0].bytes, markdown.as_bytes());
     assert_eq!(
-        files[0].location, None,
-        "the app never learns where the file is"
+        files[0].location,
+        Some(std::path::PathBuf::from("Lisbon.md")),
+        "the app learns where it stands in what the person chose, never the host path"
     );
 }
 
@@ -344,4 +345,93 @@ impl tilo_dialogs::UriOpener for Elsewhere {
         self.0.lock().unwrap().push(uri.to_owned());
         Ok(())
     }
+}
+
+#[test]
+fn a_folder_choice_hands_over_its_files_with_their_paths_inside_it() {
+    let Rig {
+        directory,
+        questions,
+        link,
+        ..
+    } = rig();
+
+    let library = directory.path().join("library");
+    let album = library.join("album");
+    std::fs::create_dir_all(&album).unwrap();
+    let count = 10_000;
+    for at in 0..count {
+        std::fs::write(album.join(format!("f{at:05}.txt")), b"x").unwrap();
+    }
+
+    let picker = link.picker(tilo_dialogs::unavailable_picker());
+    let started = std::time::Instant::now();
+    let picking = picker.pick_contents(PickRequest::directory("Import a folder", "Import"));
+    let question = pending(&questions);
+    assert_eq!(question.details["title"], "Import a folder");
+    assert!(questions.answer(
+        &question.handle,
+        tilo_service::Answer {
+            uris: vec![url::Url::from_file_path(&library).unwrap().to_string()],
+            ..tilo_service::Answer::default()
+        }
+    ));
+    let ContentsOutcome::Picked(files) = picking.recv_timeout(answer()).unwrap() else {
+        panic!("the app was not given the folder's files");
+    };
+    let elapsed = started.elapsed();
+    assert_eq!(
+        files.len(),
+        count,
+        "every file of the folder is handed over"
+    );
+    assert!(
+        files.iter().all(
+            |file| file.location == Some(std::path::PathBuf::from(&file.name))
+                && file.name.starts_with("album/f")
+        ),
+        "each file says where it stands in the folder, never the host path"
+    );
+    assert!(
+        elapsed < answer(),
+        "a folder of {count} files is answered within the wait an app allows: {elapsed:?}"
+    );
+}
+
+#[test]
+fn several_files_chosen_at_once_are_all_handed_over() {
+    let Rig {
+        directory,
+        questions,
+        link,
+        ..
+    } = rig();
+
+    let one = directory.path().join("one.txt");
+    let two = directory.path().join("two.txt");
+    std::fs::write(&one, "one").unwrap();
+    std::fs::write(&two, "two").unwrap();
+    let picker = link.picker(tilo_dialogs::unavailable_picker());
+    let picking = picker.pick_contents(PickRequest::open_multiple("Import notes", "Import"));
+    let question = pending(&questions);
+    assert!(questions.answer(
+        &question.handle,
+        tilo_service::Answer {
+            uris: vec![
+                url::Url::from_file_path(&one).unwrap().to_string(),
+                url::Url::from_file_path(&two).unwrap().to_string(),
+            ],
+            ..tilo_service::Answer::default()
+        }
+    ));
+    let ContentsOutcome::Picked(files) = picking.recv_timeout(answer()).unwrap() else {
+        panic!("the app was not given the files");
+    };
+    assert_eq!(
+        files
+            .iter()
+            .map(|file| (file.name.as_str(), file.bytes.as_slice()))
+            .collect::<Vec<_>>(),
+        [("one.txt", &b"one"[..]), ("two.txt", &b"two"[..])]
+    );
 }

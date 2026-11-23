@@ -194,7 +194,7 @@ tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-ide
 [target.'cfg(target_os = "linux")'.dependencies]
 # The device's image model as the session's actions: its model gateway connection and the
 # library analysis search reads, which only a Linux desktop session hosts.
-tilo-vision-service = { path = "../vision-service" }
+tilo-vision-service = { path = "../../services/vision" }
 # The apps the session runs itself keep their resources in the workspace's store, whose
 # commands are answered by this device's own workspace service.
 tilo-resource-store = { version = "0.1.0", path = "../../collab/resource-store" }

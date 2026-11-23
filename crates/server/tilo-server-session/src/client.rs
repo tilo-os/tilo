@@ -940,6 +940,7 @@ impl ServerClient {
     /// The same session, signing every invocation it sends as `cert` with `signer`: the key a
     /// person's root certified for one of their agents, over a connection this device opened, so
     /// the host checks each call as that agent's rather than as the device's.
+    #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     #[cfg(not(target_arch = "wasm32"))]
     pub fn signing_invocations_as(

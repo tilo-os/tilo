@@ -439,3 +439,76 @@ tilo_test_env::scenario! {
         assert_eq!(codes(view), ["E121"], "a view is drawn again from what it is shown");
     }
 }
+
+tilo_test_env::scenario! {
+    /// `uses image`: an image's pixels are the device's to decode, encode and preview, so the
+    /// action says so, and a view works on no pixels.
+    fn an_images_pixels_are_declared_with_uses_image;
+
+    phase an_action_that_reads_or_makes_pixels_declares_uses_image;
+    {
+        let read = "type N {\n    t: Text\n}\naction look(n: N, f: File) {\n    if let info = f.image_info() {\n        n.t = \"{info.width}\"\n    }\n}\n";
+        assert_eq!(codes(read), ["E121"]);
+        let declared = "type N {\n    t: Text\n}\naction look(n: N, f: File) uses image {\n    if let info = f.image_info() {\n        n.t = \"{info.width}\"\n    }\n}\n";
+        assert_eq!(codes(declared), Vec::<String>::new());
+
+        let crop = "type N {\n    t: Text\n}\naction cut(n: N, f: File) {\n    let out = f.cropped(0.0, 0.0, 0.5, 1.0)\n}\n";
+        assert_eq!(codes(crop), ["E121"]);
+        let turn = "type N {\n    t: Text\n}\naction spin(n: N, f: File) {\n    let out = f.turned(1)\n}\n";
+        assert_eq!(codes(turn), ["E121"]);
+        let resize = "type N {\n    t: Text\n}\naction fit(n: N, f: File) {\n    let out = f.resized(2, 2)\n}\n";
+        assert_eq!(codes(resize), ["E121"]);
+        let encode = "type N {\n    t: Text\n}\naction write(n: N, f: File) {\n    let out = f.encoded(format: \"png\")\n}\n";
+        assert_eq!(codes(encode), ["E121"]);
+        let thumbnail = "type N {\n    t: Text\n}\naction preview(n: N, f: File) {\n    let out = f.thumbnail(64)\n}\n";
+        assert_eq!(codes(thumbnail), ["E121"]);
+    }
+
+    phase a_view_works_on_no_pixels;
+    {
+        let view = "type N {\n    t: Text\n    f: Option<File> = .none\n}\nview look(n: N) {\n    if let file = n.f {\n        let info = file.image_info()\n    }\n}\n";
+        assert_eq!(codes(view), ["E121"], "a view is drawn again from what it is shown");
+        let preview = "type N {\n    t: Text\n    f: Option<File> = .none\n}\nview look(n: N) {\n    if let file = n.f {\n        let thumb = file.thumbnail(64)\n    }\n}\n";
+        assert_eq!(codes(preview), ["E121"]);
+    }
+
+    phase the_operations_name_what_they_take;
+    {
+        let not_four = "type N {\n    t: Text\n}\naction cut(n: N, f: File) uses image {\n    let out = f.cropped(0.0, 0.0)\n}\n";
+        assert_eq!(codes(not_four), ["E022"]);
+        let unnamed = "type N {\n    t: Text\n}\naction write(n: N, f: File) uses image {\n    let out = f.encoded(png: \"png\")\n}\n";
+        assert_eq!(codes(unnamed), ["E022"]);
+    }
+}
+
+tilo_test_env::scenario! {
+    /// A file is the person's to choose: `file.choose` fills one, or the several a `List<File>`
+    /// takes, and `file.choose_folder` fills the files of a folder. Both stand on a control.
+    fn a_chooser_fills_a_file_or_the_files_of_a_folder;
+
+    phase a_list_of_files_and_a_folder_are_filled_by_a_chooser;
+    {
+        let many = "type N {\n    t: Text\n}\naction take(n: N, files: List<File>) {\n    n.t = \"{files.len()}\"\n}\nview look(n: N) {\n    stack {\n        button(file.choose(take(n)))\n    }\n}\n";
+        assert_eq!(codes(many), Vec::<String>::new());
+        let folder = "type N {\n    t: Text\n}\naction take(n: N, files: List<File>) {\n    n.t = \"{files.len()}\"\n}\nview look(n: N) {\n    stack {\n        button(file.choose_folder(take(n)))\n    }\n}\n";
+        assert_eq!(codes(folder), Vec::<String>::new());
+        let one = "type N {\n    t: Text\n}\naction take(n: N, f: File) {\n    n.t = f.name\n}\nview look(n: N) {\n    stack {\n        button(file.choose(take(n)))\n    }\n}\n";
+        assert_eq!(codes(one), Vec::<String>::new());
+    }
+
+    phase a_parameter_a_chooser_cannot_fill_says_so;
+    {
+        let text = "type N {\n    t: Text\n}\naction take(n: N, words: List<Text>) {\n    n.t = \"{words.len()}\"\n}\nview look(n: N) {\n    stack {\n        button(file.choose(take(n)))\n    }\n}\n";
+        let got = codes(text);
+        assert!(
+            got.iter().any(|code| code == "E022"),
+            "a chooser fills no list of text: {got:?}"
+        );
+    }
+
+    phase a_chooser_stands_on_a_control_not_in_an_action;
+    {
+        let src = "type N {\n    t: Text\n}\naction take(n: N, files: List<File>) {\n    n.t = \"x\"\n}\naction go(n: N) {\n    let a = file.choose(take(n))\n}\n";
+        assert_eq!(codes(src), ["E067"]);
+    }
+}

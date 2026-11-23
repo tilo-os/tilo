@@ -266,6 +266,10 @@ pub struct TilolangProcess {
     task: Option<task::Task>,
     /// The later builds of each app it runs, which its instances of the app follow.
     builds: std::collections::HashMap<String, Arc<LaterBuilds>>,
+    /// The device's preview cache, opened the first time a preview is asked for and then shared
+    /// by every instance of this host: what `File.thumbnail` answers, so work is done once
+    /// across windows.
+    thumbnails: Arc<std::sync::OnceLock<Arc<thumbnail::ThumbnailService>>>,
     /// What an earlier version of the host's app kept on this device ([`Self::reading_earlier`]):
     /// the directory the session granted read-only, and the copy read from it once it was read
     /// whole.
@@ -347,6 +351,7 @@ impl TilolangProcess {
             ended: Vec::new(),
             task: None,
             builds: std::collections::HashMap::new(),
+            thumbnails: Arc::new(std::sync::OnceLock::new()),
             earlier: None,
         }
     }
@@ -413,6 +418,7 @@ impl TilolangProcess {
             content: None,
             chooser: None,
             clipboard: None,
+            thumbnails: Some(Arc::clone(&self.thumbnails)),
         }
     }
 
@@ -818,6 +824,7 @@ impl TilolangProcess {
         kept.content = opening.content.take();
         kept.chooser = opening.chooser.take();
         kept.clipboard = opening.clipboard.take();
+        kept.thumbnails = Some(Arc::clone(&self.thumbnails));
         let _scope = self.scope.enter();
         let connection = connection::Connection::new(manager).map_err(AdmitError::Open)?;
         let store = tilolang_tilo::resources::ResourceStore::new(Rc::new(

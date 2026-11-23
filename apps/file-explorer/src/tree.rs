@@ -1679,7 +1679,7 @@ mod tests {
         let catalogue = [
             ("so.tilo.notes", "md,markdown,txt", tilo),
             ("so.tilo.pdf-viewer", "pdf", tilo),
-            ("so.tilo.lang.photos", "png", tilo),
+            ("so.tilo.photos", "png", tilo),
         ];
         let apps = advertised(&catalogue);
         assert_eq!(
@@ -1696,7 +1696,7 @@ mod tests {
         );
         assert_eq!(
             opening_app(b"\x89PNG\r\n\x1a\n....", "shot.txt", &apps).as_deref(),
-            Some("so.tilo.lang.photos"),
+            Some("so.tilo.photos"),
             "a picture called `.txt` is a picture"
         );
         assert_eq!(opening_app(&[0_u8, 1, 2, 3], "blob.bin", &apps), None);

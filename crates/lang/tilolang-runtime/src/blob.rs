@@ -6,11 +6,12 @@
 //! is taken in, and the record keeps the address: an action's argument is the address, so
 //! history, replay and undo carry the file without carrying a picture.
 //!
-//! Four things need the device, and only these: taking a chosen file in ([`BlobHost::choose`]),
-//! reading a file's content as text (`.text()`, bounded by [`MAX_TEXT`]) or as the files an
-//! archive holds (`.files()`, bounded by [`MAX_ARCHIVE_FILES`]), and putting what an action made
-//! where the person wants it ([`BlobHost::save`]). A host that holds no content store answers
-//! that it holds no files; the types and the records work all the same.
+//! What needs the device, and only this: taking the files a person chose in
+//! ([`BlobHost::choose`], one, several, or a folder's), reading a file's content as text
+//! (`.text()`, bounded by [`MAX_TEXT`]) or as the files an archive holds (`.files()`, bounded by
+//! [`MAX_ARCHIVE_FILES`]), a preview of it ([`BlobHost::thumbnail`]), and putting what an action
+//! made where the person wants it ([`BlobHost::save`]). A host that holds no content store
+//! answers that it holds no files; the types and the records work all the same.
 //!
 //! An action makes a file of what it holds (`File.of_text`, `File.of_bytes`, `File.at`,
 //! `File.zip`): its bytes are kept in the content store, under a name the app chooses, and the
@@ -71,7 +72,7 @@ const ARCHIVE: bounded_zip::ZipLimits = bounded_zip::ZipLimits {
 };
 
 /// A file's content as the store holds it: its name, the media type it was taken as, how many
-/// bytes it is, and the hash of its content.
+/// bytes it is, the hash of its content, and where it stands in what the person chose.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct FileValue {
     /// What the person's file is called, extension included (`Q3 plan.md`).
@@ -82,6 +83,11 @@ pub struct FileValue {
     pub size: i64,
     /// The hash of its content in the device's content store.
     pub hash: String,
+    /// Where it stands in what the person chose: a path inside the folder they chose, or the
+    /// file's own name when they chose it alone. Never a host path, which a sandboxed app has
+    /// no way to use.
+    #[serde(default)]
+    pub path: String,
 }
 
 impl FileValue {
@@ -98,7 +104,15 @@ impl FileValue {
             media: media.into(),
             size,
             hash: hash.into(),
+            path: String::new(),
         }
+    }
+
+    /// [`Self::new`] with where the file stands in what the person chose.
+    #[must_use]
+    pub fn with_path(mut self, path: impl Into<String>) -> Self {
+        self.path = path.into();
+        self
     }
 
     /// Where its bytes are: the address a picture takes (`![](tilo-blob://…)`).
@@ -122,9 +136,9 @@ pub const UNSTATED_SIZE: i64 = -1;
 /// - `url`: the address a picture takes, `tilo-blob://<reference>`.
 ///
 /// One of the three names the bytes; a `File` that names none has none. `name` is what the
-/// file is called, `media` its media type (read from the name when left out), and `size` how
-/// many bytes it is — [`UNSTATED_SIZE`] when the caller names none, which reads the content
-/// when an action asks.
+/// file is called, `media` its media type (read from the name when left out), `path` where it
+/// stands in what the person chose, and `size` how many bytes it is — [`UNSTATED_SIZE`] when the
+/// caller names none, which reads the content when an action asks.
 ///
 /// Naming a reference grants nothing: the bytes stay where they are, and an action that reads
 /// what this device does not hold is told so. A caller names content its workspace holds, as
@@ -165,13 +179,14 @@ pub fn file_from_json(json: &serde_json::Value) -> Result<FileValue, String> {
         .filter(|name| !name.trim().is_empty())
         .ok_or_else(|| "a file names what it is called (`name`)".to_owned())?;
     let media = text("media").map_or_else(|| media_of(name), str::to_owned);
+    let path = text("path").unwrap_or_default();
     let size = match fields.get("size") {
         None => UNSTATED_SIZE,
         Some(size) => size.as_i64().filter(|size| *size >= 0).ok_or_else(|| {
             format!("a file's `size` is how many bytes it is, and {size} is none")
         })?,
     };
-    Ok(FileValue::new(name, media, size, hash))
+    Ok(FileValue::new(name, media, size, hash).with_path(path))
 }
 
 /// What a person is asked for when they choose a file: what it is for (the chooser's title, in
@@ -185,6 +200,12 @@ pub struct FileRequest {
     /// The media types it may be (`image/png`, or `image/*` for any of a kind); any file when
     /// it is empty.
     pub accept: Vec<String>,
+    /// Whether the person may choose more than one file: what an action whose parameter is a
+    /// `List<File>` fills.
+    pub multiple: bool,
+    /// Whether the person chooses a folder: its files come as a list, each with its path inside
+    /// it.
+    pub folder: bool,
 }
 
 /// What a person is asked for when they save a file: what it is called and what it holds, so
@@ -206,15 +227,17 @@ pub trait BlobHost {
     /// The content at `hash`, when this device holds it.
     fn read(&self, hash: &str) -> Option<Vec<u8>>;
 
-    /// Ask the person for a file, taking in what they pick. The bytes are the host's to keep
-    /// (its content store holds them at the hash the value names); a file larger than
-    /// [`MAX_CHOSEN`], or of a media type `request` does not accept, is refused with the reason.
+    /// Ask the person for files, taking in what they pick: one, several, or the files of a
+    /// folder, as `request` asks. The bytes are the host's to keep (its content store holds them
+    /// at the hash each value names); a file larger than [`MAX_CHOSEN`], or of a media type
+    /// `request` does not accept, is refused with the reason. An empty list is a chooser the
+    /// person dismissed.
     ///
     /// # Errors
     ///
-    /// Why the file could not be taken in (its size, its type, the store's failure). Nothing
-    /// was stored.
-    fn choose(&self, request: &FileRequest) -> Result<Option<FileValue>, String>;
+    /// Why the files could not be taken in (a size, a type, the store's failure). Nothing was
+    /// stored.
+    fn choose(&self, request: &FileRequest) -> Result<Vec<FileValue>, String>;
 
     /// Put `content` in a file the person names, offering `request`'s name.
     ///
@@ -234,6 +257,18 @@ pub trait BlobHost {
     fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
         let _ = (name, media, bytes);
         Err("this host keeps no files".to_owned())
+    }
+
+    /// A preview of `file` no larger than `size` pixels a side, kept as a file of its own: what
+    /// `File.thumbnail` answers. `None` when the file has no preview (it is no image), and the
+    /// error when this host keeps no preview cache.
+    ///
+    /// # Errors
+    ///
+    /// Why there is no preview.
+    fn thumbnail(&self, file: &FileValue, size: u32) -> Result<Option<FileValue>, String> {
+        let _ = (file, size);
+        Err("this host keeps no previews".to_owned())
     }
 }
 
@@ -276,6 +311,13 @@ impl Core {
                     0 => file.name.clone(),
                     1 => file.media.clone(),
                     2 => file.url(),
+                    3 => {
+                        if file.path.is_empty() {
+                            file.name.clone()
+                        } else {
+                            file.path.clone()
+                        }
+                    }
                     other => return trap(format!("a file has no part {other}")),
                 };
                 self.ret_h(Value::text(part))
@@ -608,6 +650,16 @@ mod tests {
             // The address a picture takes names the same content.
             let as_url = serde_json::json!({"name": "fox.png", "url": file.url()});
             assert_eq!(file_from_json(&as_url).expect("an address names it").hash, file.hash);
+            // Where it stands in what the person chose comes back with the file.
+            let in_a_folder = serde_json::json!({
+                "name": "fox.png",
+                "path": "trip/fox.png",
+                "hash": file.hash,
+            });
+            assert_eq!(
+                file_from_json(&in_a_folder).expect("a path names it").path,
+                "trip/fox.png"
+            );
         }
 
         phase no_content_or_no_name_is_refused_with_why;

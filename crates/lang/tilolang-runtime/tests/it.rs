@@ -58,6 +58,8 @@ mod filters;
 mod foreign_readings;
 #[path = "held_records.rs"]
 mod held_records;
+#[path = "image.rs"]
+mod image;
 #[path = "interpolation.rs"]
 mod interpolation;
 #[path = "json.rs"]

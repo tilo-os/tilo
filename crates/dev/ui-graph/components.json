@@ -2839,6 +2839,13 @@
           "type": {
             "option": "float"
           }
+        },
+        {
+          "name": "zoom",
+          "doc": "How far the picture is zoomed, 1 being the whole picture: what a view's own zoom controls set. The person's scroll and drag change it too, within the picture, and the view keeps the value it shows.",
+          "type": {
+            "option": "float"
+          }
         }
       ],
       "semantics": {
@@ -3175,6 +3182,27 @@
           "type": {
             "option": "text"
           }
+        },
+        {
+          "name": "latitude",
+          "doc": "The latitude the map is centred on, with `longitude`: the place at its middle when the view sets it, so a map of places opens on a place. `None` leaves it a canvas.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "longitude",
+          "doc": "The longitude the map is centred on, with `latitude`.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "zoom",
+          "doc": "The zoom the map opens at, about its centre (`latitude`, `longitude`).",
+          "type": {
+            "option": "float"
+          }
         }
       ],
       "parts": [
@@ -3241,6 +3269,13 @@
           "at": {
             "list": "int"
           }
+        },
+        {
+          "name": "at",
+          "doc": "The pointer pressed the map's empty surface and let go there, a click: carries the place under it, its latitude then its longitude, for a map centred on a place.",
+          "value": {
+            "list": "float"
+          }
         }
       ],
       "semantics": {
@@ -3277,7 +3312,7 @@
       "parts": [
         {
           "name": "items",
-          "doc": "The cards, in order.",
+          "doc": "The cards, in order: given whole, or built by the host as the grid shows them, so a library of ten thousand photographs costs the cards on screen.",
           "accepts": {
             "component": "MediaCard"
           },
@@ -5122,6 +5157,44 @@
       "semantics": {
         "role": "Slider",
         "label": "label"
+      }
+    },
+    {
+      "name": "Slideshow",
+      "doc": "A picture shown large in the window for its time, then the next asked for: a presentation a view opens, with the slide it shows kept by the view.",
+      "props": [
+        {
+          "name": "image",
+          "doc": "The picture on screen now.",
+          "type": "picture",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "alt",
+          "doc": "What the picture is, as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          },
+          "required": true
+        },
+        {
+          "name": "seconds",
+          "doc": "How long it stays before the next is asked for, in seconds.",
+          "type": {
+            "option": "float"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "next",
+          "doc": "The picture has been shown its time: the view asks for the next."
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "alt"
       }
     },
     {
@@ -7620,6 +7693,20 @@
           "doc": "The canvas y of its top-leading corner, in canvas pixels.",
           "type": {
             "option": "int"
+          }
+        },
+        {
+          "name": "latitude",
+          "doc": "The latitude of the place the pin stands on, with `longitude`: the map projects it onto the canvas, so a pin stands on its place at every zoom. Given, `x` and `y` are not read.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "longitude",
+          "doc": "The longitude of the place the pin stands on.",
+          "type": {
+            "option": "float"
           }
         },
         {

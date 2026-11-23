@@ -500,6 +500,9 @@ struct HostPlatform {
     chooser: Option<std::sync::Arc<dyn tilo_dialogs::FilePicker>>,
     /// The person's clipboard, which the session opened for this instance.
     clipboard: Option<std::sync::Arc<tilo_clipboard::service::Connected>>,
+    /// The device's preview cache, shared with every other instance of this host and opened the
+    /// first time one is asked for.
+    thumbnails: Option<std::sync::Arc<std::sync::OnceLock<Arc<thumbnail::ThumbnailService>>>>,
     /// What a person asking for a file is told when the session opened no chooser.
     no_chooser: String,
 }
@@ -597,10 +600,10 @@ impl Platform for HostPlatform {
         crate::files::read(self.content.as_ref()?, hash)
     }
 
-    fn choose_file(
+    fn choose_files(
         &self,
         request: &tilolang_tilo::runtime::blob::FileRequest,
-    ) -> Result<Option<tilolang_tilo::runtime::blob::FileValue>, String> {
+    ) -> Result<Vec<tilolang_tilo::runtime::blob::FileValue>, String> {
         let Some(store) = self.content.as_ref() else {
             return Err(crate::files::NO_CONTENT_STORE.to_owned());
         };
@@ -632,6 +635,28 @@ impl Platform for HostPlatform {
             .as_ref()
             .ok_or_else(|| crate::files::NO_CONTENT_STORE.to_owned())?;
         crate::files::keep(store, name, media, bytes)
+    }
+
+    /// `File.thumbnail(size)`: a preview no larger than `size` pixels a side, from the device's
+    /// shared cache; `None` for a file that has no preview.
+    fn thumbnail(
+        &self,
+        file: &tilolang_tilo::runtime::blob::FileValue,
+        size: u32,
+    ) -> Result<Option<tilolang_tilo::runtime::blob::FileValue>, String> {
+        let Some(store) = self.content.as_ref() else {
+            return Err(crate::files::NO_CONTENT_STORE.to_owned());
+        };
+        let Some(shared) = self.thumbnails.as_ref() else {
+            return Err("this host keeps no previews".to_owned());
+        };
+        let thumbnails = shared.get_or_init(|| {
+            Arc::new(
+                thumbnail::ThumbnailService::open_default(1)
+                    .unwrap_or_else(|_| thumbnail::ThumbnailService::ephemeral(1)),
+            )
+        });
+        crate::files::thumbnail(store, thumbnails, file, size)
     }
 
     /// `clipboard.copy` and `clipboard.copy_image`: the person's copy, offered on the selection
@@ -692,6 +717,9 @@ pub struct Kept {
     pub chooser: Option<std::sync::Arc<dyn tilo_dialogs::FilePicker>>,
     /// The person's clipboard, when the session opened one for this instance.
     pub clipboard: Option<std::sync::Arc<tilo_clipboard::service::Connected>>,
+    /// The device's preview cache, shared with every instance of this host and opened the first
+    /// time one is asked for.
+    pub thumbnails: Option<std::sync::Arc<std::sync::OnceLock<Arc<thumbnail::ThumbnailService>>>>,
 }
 
 /// What the actions of the rows a window shows answered, by resource and action: a window asks
@@ -982,6 +1010,7 @@ impl Hosted {
             content: kept.content.clone(),
             chooser: kept.chooser.clone(),
             clipboard: kept.clipboard.clone(),
+            thumbnails: kept.thumbnails.clone(),
             no_chooser: crate::files::NO_CHOOSER.to_owned(),
         };
         let mut instance = Instance::new(

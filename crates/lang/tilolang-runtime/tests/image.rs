@@ -1,0 +1,362 @@
+//! A file's pixels and the files a person chooses, end to end: `File.image_info`, the crop,
+//! turn, resize and encode a program applies, `File.thumbnail`, and `file.choose` /
+//! `file.choose_folder` filling the parameter an action still needs.
+
+#[cfg(test)]
+mod cases {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::rc::Rc;
+
+    use crate::common::*;
+    use tilo_image_codec::{DecodedImage, Encoding};
+    use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
+    use tilolang_runtime::{AmStore, InvokeOutcome, Runtime, SimpleAuthority, Value};
+
+    const SOURCE: &str = r#"app so.tilo.images "Images"
+
+type Shelf {
+    note: Text
+}
+
+action read(s: Shelf, f: File) uses image {
+    let said = match f.image_info() {
+        .some(info) => "{info.width}x{info.height}"
+        .none => "none"
+    }
+    s.note = said
+}
+
+action crop(s: Shelf, f: File) uses image {
+    let said = match f.cropped(0.0, 0.0, 0.5, 1.0) {
+        .ok(out) => "{out.name} {out.url}",
+        .err(why) => why
+    }
+    s.note = said
+}
+
+action turn(s: Shelf, f: File) uses image {
+    let said = match f.turned(1) {
+        .ok(out) => "{out.name} {out.url}",
+        .err(why) => why
+    }
+    s.note = said
+}
+
+action resize(s: Shelf, f: File) uses image {
+    let said = match f.resized(1, 1) {
+        .ok(out) => "{out.name} {out.url}",
+        .err(why) => why
+    }
+    s.note = said
+}
+
+action encode(s: Shelf, f: File) uses image {
+    let said = match f.encoded(format: "webp") {
+        .ok(out) => "{out.media} {out.url}",
+        .err(why) => why
+    }
+    s.note = said
+}
+
+action huge(s: Shelf, f: File) uses image {
+    let out = f.thumbnail(99999)
+}
+
+action nothing(s: Shelf, f: File) uses image {
+    let said = match f.resized(0, 0) {
+        .ok(out) => out.name,
+        .err(why) => why
+    }
+    s.note = said
+}
+
+action thumb(s: Shelf, f: File) uses image {
+    let said = match f.thumbnail(64) {
+        .some(preview) => preview.name,
+        .none => "none"
+    }
+    s.note = said
+}
+
+action imported(s: Shelf, files: List<File>) (label: "Import many") {
+    let first = match files.first() {
+        .some(file) => file.path,
+        .none => ""
+    }
+    s.note = "{files.len()} {first}"
+}
+
+action imported_one(s: Shelf, f: File) (label: "Import one") {
+    s.note = f.path
+}
+
+action imported_folder(s: Shelf, files: List<File>) (label: "Import folder") {
+    let first = match files.first() {
+        .some(file) => file.path,
+        .none => ""
+    }
+    s.note = "{files.len()} {first}"
+}
+
+view shelf(s: Shelf) {
+    stack {
+        button(file.choose(imported(s)))
+        button(file.choose(imported_one(s)))
+        button(file.choose_folder(imported_folder(s)))
+    }
+}
+"#;
+
+    /// A 3x2 PNG of one colour: what a photograph in the store is.
+    fn photo_png() -> Vec<u8> {
+        let image = DecodedImage::filled(3, 2, [10, 20, 30, 255]);
+        tilo_image_codec::encode_now(&image, Encoding::Png).expect("the fixture encodes")
+    }
+
+    /// The device's content store and chooser: what a test keeps, and what the person answers.
+    #[derive(Clone, Default)]
+    struct Device {
+        files: Rc<RefCell<HashMap<String, Vec<u8>>>>,
+        chosen: Rc<RefCell<Vec<FileRequest>>>,
+        picked: Rc<RefCell<Vec<FileValue>>>,
+    }
+
+    impl Device {
+        fn keeping(&self, name: &str, media: &str, bytes: &[u8]) -> FileValue {
+            let hash = blake3::hash(bytes).to_hex().to_string();
+            self.files.borrow_mut().insert(hash.clone(), bytes.to_vec());
+            FileValue::new(
+                name,
+                media,
+                i64::try_from(bytes.len()).unwrap_or(i64::MAX),
+                hash,
+            )
+        }
+
+        fn bytes_at(&self, url: &str) -> Vec<u8> {
+            let hash = url
+                .strip_prefix(tilolang_runtime::blob::SCHEME)
+                .expect("a file's address");
+            self.files.borrow()[hash].clone()
+        }
+    }
+
+    impl BlobHost for Device {
+        fn read(&self, hash: &str) -> Option<Vec<u8>> {
+            self.files.borrow().get(hash).cloned()
+        }
+
+        fn choose(&self, request: &FileRequest) -> Result<Vec<FileValue>, String> {
+            self.chosen.borrow_mut().push(request.clone());
+            Ok(self.picked.borrow().clone())
+        }
+
+        fn save(&self, _: &SaveRequest, _: &[u8]) -> Result<(), String> {
+            Err("this test writes no files out".to_owned())
+        }
+
+        fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
+            Ok(self.keeping(name, media, bytes))
+        }
+
+        fn thumbnail(&self, file: &FileValue, size: u32) -> Result<Option<FileValue>, String> {
+            if file.media != "image/png" {
+                return Ok(None);
+            }
+            let stem = file.name.split('.').next().unwrap_or("preview");
+            Ok(Some(self.keeping(
+                &format!("{stem}-{size}.png"),
+                "image/png",
+                &photo_png(),
+            )))
+        }
+    }
+
+    struct Bench {
+        rt: Runtime,
+        app: App,
+        shelf: tilolang_runtime::ResourceRef,
+        device: Device,
+        me: tilolang_runtime::Actor,
+    }
+
+    impl Bench {
+        fn new() -> Self {
+            let app = App::compile(SOURCE, &[]);
+            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            app.load(&rt);
+            let device = Device::default();
+            rt.set_blobs(device.clone());
+            let shelf = rt.create("Shelf").unwrap();
+            Self {
+                rt,
+                app,
+                shelf,
+                device,
+                me: me(),
+            }
+        }
+
+        fn photo(&self) -> FileValue {
+            self.device.keeping("photo.png", "image/png", &photo_png())
+        }
+
+        fn note(&self) -> String {
+            match self.rt.read(&self.shelf, "note").unwrap() {
+                Value::Text(text) => text,
+                other => panic!("the note is {other:?}"),
+            }
+        }
+
+        fn call(&self, action: &str, file: &FileValue) -> String {
+            let out = self
+                .rt
+                .invoke_action(
+                    &self.me,
+                    (
+                        action,
+                        vec![Value::resource(&self.shelf), Value::file(file.clone())],
+                    ),
+                )
+                .unwrap();
+            assert!(matches!(out, InvokeOutcome::Done(_)), "{out:?}");
+            self.note()
+        }
+
+        fn press(&self, label: &str) -> String {
+            let view = self
+                .rt
+                .open_view(
+                    &self.me,
+                    &self.app.view("shelf"),
+                    vec![Value::resource(&self.shelf)],
+                )
+                .unwrap();
+            let button = of_kind(view.tree(), "ui.Button")
+                .into_iter()
+                .find(|button| {
+                    matches!(button.props.get("label"), Some(Value::Text(text)) if text == label)
+                })
+                .unwrap_or_else(|| panic!("no {label} control in\n{}", dump(view.tree())))
+                .key
+                .clone();
+            let out = view.press(&button).unwrap();
+            assert!(matches!(out, InvokeOutcome::Done(_)), "{out:?}");
+            self.note()
+        }
+    }
+
+    #[test]
+    fn an_image_states_its_size_and_is_cropped_turned_resized_and_encoded() {
+        let bench = Bench::new();
+        let photo = bench.photo();
+        assert_eq!(bench.call("read", &photo), "3x2");
+
+        for (action, name, dimensions) in [
+            ("crop", "photo-cropped.png", (2, 2)),
+            ("turn", "photo-turned.png", (2, 3)),
+            ("resize", "photo-resized.png", (1, 1)),
+        ] {
+            let said = bench.call(action, &photo);
+            let (produced, url) = said.split_once(' ').expect("a file's name and address");
+            assert_eq!(produced, name);
+            let image = tilo_image_codec::decode_upright_now(&bench.device.bytes_at(url), None)
+                .expect("the produced file decodes");
+            assert_eq!(
+                (image.width, image.height),
+                dimensions,
+                "{action} moved the pixels it names"
+            );
+        }
+
+        let said = bench.call("encode", &photo);
+        let (media, url) = said
+            .split_once(' ')
+            .expect("the file's media type and address");
+        assert_eq!(media, "image/webp");
+        assert!(bench.device.bytes_at(url).starts_with(b"RIFF"));
+    }
+
+    #[test]
+    fn a_thumbnail_comes_from_the_devices_preview_cache_or_is_none() {
+        let bench = Bench::new();
+        let photo = bench.photo();
+        assert_eq!(bench.call("thumb", &photo), "photo-64.png");
+        let not_an_image = bench.device.keeping("plan.md", "text/markdown", b"# Plan");
+        assert_eq!(bench.call("thumb", &not_an_image), "none");
+    }
+
+    #[test]
+    fn a_chooser_fills_a_list_of_files_or_the_one_file_an_action_asks_for() {
+        let bench = Bench::new();
+        let one = bench
+            .device
+            .keeping("a.png", "image/png", &photo_png())
+            .with_path("trip/a.png");
+        let two = bench
+            .device
+            .keeping("b.png", "image/png", &photo_png())
+            .with_path("trip/b.png");
+        *bench.device.picked.borrow_mut() = vec![one.clone(), two];
+
+        assert_eq!(bench.press("Import many"), "2 trip/a.png");
+        let asked = bench.device.chosen.borrow().last().cloned().unwrap();
+        assert!(asked.multiple, "a `List<File>` may take several");
+        assert!(!asked.folder);
+
+        *bench.device.picked.borrow_mut() = vec![one];
+        assert_eq!(bench.press("Import one"), "trip/a.png");
+        let asked = bench.device.chosen.borrow().last().cloned().unwrap();
+        assert!(!asked.multiple, "a `File` takes the one file chosen");
+
+        let one = bench
+            .device
+            .keeping("a.png", "image/png", &photo_png())
+            .with_path("trip/a.png");
+        let two = bench
+            .device
+            .keeping("b.png", "image/png", &photo_png())
+            .with_path("trip/b.png");
+        *bench.device.picked.borrow_mut() = vec![one, two];
+        assert_eq!(bench.press("Import folder"), "2 trip/a.png");
+        let asked = bench.device.chosen.borrow().last().cloned().unwrap();
+        assert!(asked.folder, "a folder chooser asks for a folder");
+    }
+
+    #[test]
+    fn an_oversized_preview_or_resize_is_refused() {
+        let bench = Bench::new();
+        let photo = bench.photo();
+        let out = bench.rt.invoke_action(
+            &bench.me,
+            (
+                "huge",
+                vec![Value::resource(&bench.shelf), Value::file(photo.clone())],
+            ),
+        );
+        assert!(out.is_err(), "an oversized preview is refused: {out:?}");
+        let said = bench.call("nothing", &photo);
+        assert!(
+            said.contains("is refused"),
+            "a resize to no pixels is refused with why: {said}"
+        );
+        let not_an_image = bench.device.keeping("plan.md", "text/markdown", b"# Plan");
+        let said = bench.call("crop", &not_an_image);
+        assert!(
+            said.contains("is no image this device opens"),
+            "a file that is no image is refused with why: {said}"
+        );
+    }
+
+    #[test]
+    fn a_dismissed_chooser_runs_nothing() {
+        let bench = Bench::new();
+        assert_eq!(bench.press("Import many"), "");
+        assert_eq!(
+            bench.device.chosen.borrow().len(),
+            1,
+            "the chooser was asked"
+        );
+    }
+}

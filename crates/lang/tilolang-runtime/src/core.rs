@@ -20,22 +20,23 @@ use crate::store::Store;
 use crate::value::Value;
 
 use Imp::{
-    Abort, ActChoose, ActMadeFrom, ActMany, ActOpen, ActRef, ActSave, ActSet, ActThen, ActUndo,
-    Actions, ActorEq, ActorKind, ActorName, ActorRole, AgentNamed, ArgAt, BytesLength, CallFn,
-    ChangeView, ClipboardCopyImage, ClipboardCopyText, ClipboardPasteImage, ClipboardPasteText,
-    CollCount, CollCounted, CollEmpty, CollInsert, CollInsertAs, CollInsertKeyed, CollMove,
-    CollMoveAmong, CollMoveTo, CollOrdered, CollPlace, CollRelatives, CollRemove, CollWhere,
-    CollWhereWith, CountBy, DateShow, DayParse, DayPart, DayShift, DayStartOfWeek, DayWeekday,
-    Describe, DescribeRef, DurationText, Earlier, EditField, EntryParts, EnumGetF, EnumGetH,
-    EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, FieldChanged,
-    FileAt, FileFiles, FileOfBytes, FileOfText, FilePart, FileSize, FileText, FileZip, FilterLit,
-    Filters, Find, FirstUnseen, FloatAbs, FloatCeil, FloatCeilTo, FloatClamp, FloatFloor,
-    FloatFloorTo, FloatMax, FloatMin, FloatRound, FloatRoundTo, FloatToStr, ForeignRef, Grep,
-    GroupBy, IdentPart, IntAbs, IntClamp, IntMax, IntMin, IntToStr, InvocationPop, InvocationPush,
-    Invoke, Invoker, IsError, IsSome, JsonDecode, JsonEncode, JsonParse, Keep, Lenses, Links,
-    ListAvg, ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew, ListPrevious,
-    ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI, MadeFrom,
-    MapGetH, MapGetValue, MapKeys, MapKeysValue, MapNew, MapPut, MapPutValue, MapRemove,
+    Abort, ActChoose, ActChooseFolder, ActMadeFrom, ActMany, ActOpen, ActRef, ActSave, ActSet,
+    ActThen, ActUndo, Actions, ActorEq, ActorKind, ActorName, ActorRole, AgentNamed, ArgAt,
+    BytesLength, CallFn, ChangeView, ClipboardCopyImage, ClipboardCopyText, ClipboardPasteImage,
+    ClipboardPasteText, CollCount, CollCounted, CollEmpty, CollInsert, CollInsertAs,
+    CollInsertKeyed, CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollPlace, CollRelatives,
+    CollRemove, CollWhere, CollWhereWith, CountBy, DateShow, DayParse, DayPart, DayShift,
+    DayStartOfWeek, DayWeekday, Describe, DescribeRef, DurationText, Earlier, EditField,
+    EntryParts, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI,
+    EventPart, EventValue, FieldChanged, FileAt, FileCrop, FileEncode, FileFiles, FileImageInfo,
+    FileOfBytes, FileOfText, FilePart, FileResize, FileSize, FileText, FileThumbnail, FileTurn,
+    FileZip, FilterLit, Filters, Find, FirstUnseen, FloatAbs, FloatCeil, FloatCeilTo, FloatClamp,
+    FloatFloor, FloatFloorTo, FloatMax, FloatMin, FloatRound, FloatRoundTo, FloatToStr, ForeignRef,
+    Grep, GroupBy, IdentPart, IntAbs, IntClamp, IntMax, IntMin, IntToStr, InvocationPop,
+    InvocationPush, Invoke, Invoker, IsError, IsSome, JsonDecode, JsonEncode, JsonParse, Keep,
+    Lenses, Links, ListAvg, ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew,
+    ListPrevious, ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI,
+    MadeFrom, MapGetH, MapGetValue, MapKeys, MapKeysValue, MapNew, MapPut, MapPutValue, MapRemove,
     MapRemoveValue, MapSetAdd, MapSetRemove, MatchGroup, MayRead, Me, Members, Mentions, MetaOf,
     MissingV, ModelCall, NoneV, Notify, Now, OfType, Outside, OutsideAt, PersonNamed, Phrase,
     Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice, RandomFloat, RandomId,
@@ -548,6 +549,9 @@ impl Core {
             | WebText | BytesLength => self.web_import(imp, a),
             FilePart | FileSize | FileText | FileFiles => self.file_import(imp, a),
             FileOfText | FileOfBytes | FileAt | FileZip => self.file_make(imp, a),
+            FileImageInfo | FileCrop | FileTurn | FileResize | FileEncode | FileThumbnail => {
+                self.image_import(imp, a)
+            }
             ClipboardCopyText | ClipboardCopyImage | ClipboardPasteText | ClipboardPasteImage => {
                 self.clipboard_import(imp, a)
             }
@@ -555,7 +559,9 @@ impl Core {
             UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiOn
             | UiAnchor | SpaceI | SpaceF | RowOpen | UiBindState | StateGet | StateAt | ArgAt
             | ActSet | ActThen | ActMadeFrom | ActMany | ActOpen | ActUndo | ChangeView
-            | UiActions | UiAction | ActChoose | ActSave => self.ui_import(imp, a),
+            | UiActions | UiAction | ActChoose | ActChooseFolder | ActSave => {
+                self.ui_import(imp, a)
+            }
             EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions | Links
             | RunChanges | Unseen | FirstUnseen | SeenBy | Mentions | Steps | VersionEnd
             | FieldChanged | Phrase | Word | EntryParts | Viewer => self.platform_import(imp, a),

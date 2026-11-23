@@ -76,8 +76,8 @@ mod cases {
             self.held.borrow().get(hash).cloned()
         }
 
-        fn choose(&self, _request: &FileRequest) -> Result<Option<FileValue>, String> {
-            Ok(None)
+        fn choose(&self, _request: &FileRequest) -> Result<Vec<FileValue>, String> {
+            Ok(Vec::new())
         }
 
         fn save(&self, _request: &SaveRequest, _content: &[u8]) -> Result<(), String> {

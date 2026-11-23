@@ -196,12 +196,14 @@ struct Connection {
     asking: Mutex<Vec<tokio::sync::oneshot::Sender<()>>>,
 }
 
-/// A selected file the app may read the bytes of.
+/// A selected file the app may read the bytes of. The path stays in this session: the app holds
+/// only the grant's token, and a folder of ten thousand files leaves no handle open between
+/// reads.
 struct Held {
     request: u64,
     name: String,
     size: u64,
-    file: Arc<File>,
+    path: PathBuf,
 }
 
 #[allow(
@@ -325,6 +327,7 @@ fn pick_question(request: Request) -> Option<(u64, FileChooserQuestion, Handing)
         Request::PickContents {
             id,
             multiple,
+            directory,
             title,
             accept_label,
             filters,
@@ -332,7 +335,8 @@ fn pick_question(request: Request) -> Option<(u64, FileChooserQuestion, Handing)
             id,
             FileChooserQuestion {
                 title,
-                multiple,
+                multiple: multiple && !directory,
+                directory,
                 accept_label: Some(accept_label).filter(|label| !label.is_empty()),
                 filters: filters.iter().map(picker_filter).collect(),
                 ..FileChooserQuestion::default()
@@ -435,6 +439,7 @@ impl Connection {
             return connection.say(&Reply::Nobody { id });
         };
         let kind = tilo_portal::file_chooser::kind_of(&question);
+        let directory = question.directory;
         let handle = format!("chooser:{}:{id}", connection.number);
         let (taken_down, gone) = tokio::sync::oneshot::channel();
         connection.asking.lock_recover().push(taken_down);
@@ -465,7 +470,7 @@ impl Connection {
                                 paths: exports.into_iter().map(|export| export.app_path).collect(),
                             }
                         }
-                        None => answering.contents(id, &paths),
+                        None => answering.contents(id, &paths, directory),
                     },
                     Some(Err(Ended::Cancelled)) => Reply::Cancelled { id },
                     Some(Err(Ended::Failed)) => failed(id, DOES_NOT_FIT),
@@ -487,7 +492,13 @@ impl Connection {
 
     /// The contents of what the person chose, `paths`: opened here, and only their bytes handed on,
     /// on this connection.
-    fn contents(&self, id: u64, paths: &[PathBuf]) -> Reply {
+    fn contents(&self, id: u64, paths: &[PathBuf], directory: bool) -> Reply {
+        if directory {
+            let Some(root) = paths.first() else {
+                return failed(id, TOO_LARGE);
+            };
+            return self.folder(id, root);
+        }
         if paths.len() > MAX_CONTENT_FILES {
             return failed(id, TOO_LARGE);
         }
@@ -508,15 +519,75 @@ impl Connection {
             if total > MAX_CONTENT_BYTES {
                 return failed(id, TOO_LARGE);
             }
-            opened.push((name, size, file));
+            opened.push((name, size, path.clone(), file));
         }
+        self.granted(id, opened)
+    }
+
+    /// The files of the folder `root`, each under its path inside it: what a folder choice hands
+    /// the app, so it reads a library as it would have chosen the files one by one. Symlinks are
+    /// skipped, the walk is bounded, and a folder that cannot be read refuses the whole choice
+    /// rather than handing over a part of it.
+    fn folder(&self, id: u64, root: &Path) -> Reply {
+        let mut opened = Vec::new();
+        let mut total = 0_u64;
+        let mut stack = vec![(root.to_path_buf(), PathBuf::new())];
+        while let Some((folder, relative)) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&folder) else {
+                let name = folder.to_string_lossy();
+                return failed(
+                    id,
+                    &format!("“{name}” can't be read. Choose another folder."),
+                );
+            };
+            let mut entries: Vec<_> = entries.filter_map(Result::ok).collect();
+            entries.sort_by_key(std::fs::DirEntry::file_name);
+            for entry in entries {
+                if opened.len() >= MAX_CONTENT_FILES {
+                    return failed(id, TOO_LARGE);
+                }
+                let Ok(kind) = entry.file_type() else {
+                    continue;
+                };
+                let inside = relative.join(entry.file_name());
+                if kind.is_dir() {
+                    stack.push((entry.path(), inside));
+                    continue;
+                }
+                // Only a regular file is a file the person chose; a link or a pipe is not.
+                if !kind.is_file() {
+                    continue;
+                }
+                let Ok(file) = tilo_dialogs::portal::open_regular_file(&entry.path()) else {
+                    continue;
+                };
+                let Ok(size) = file.metadata().map(|metadata| metadata.len()) else {
+                    continue;
+                };
+                total = total.saturating_add(size);
+                if total > MAX_CONTENT_BYTES {
+                    return failed(id, TOO_LARGE);
+                }
+                let path = inside.to_string_lossy().replace('\\', "/");
+                opened.push((path, size, entry.path(), file));
+            }
+        }
+        if opened.is_empty() {
+            return failed(id, "That folder holds no files to read.");
+        }
+        self.granted(id, opened)
+    }
+
+    /// The grants for the files a choice hands over, named by where they stand in what the
+    /// person chose.
+    fn granted(&self, id: u64, opened: Vec<(String, u64, PathBuf, File)>) -> Reply {
         let mut held = self.held.lock_recover();
         if held.len().saturating_add(opened.len()) > MAX_HELD {
             return failed(id, TOO_LARGE);
         }
         let grants = opened
             .into_iter()
-            .map(|(name, size, file)| {
+            .map(|(name, size, path, _file)| {
                 let token = uuid::Uuid::new_v4().to_string();
                 held.insert(
                     token.clone(),
@@ -524,7 +595,7 @@ impl Connection {
                         request: id,
                         name: name.clone(),
                         size,
-                        file: Arc::new(file),
+                        path,
                     },
                 );
                 FilePortalGrant {
@@ -636,18 +707,24 @@ fn read_contents(
             .filter(|held| {
                 held.request == grant.request && held.size == grant.size && held.name == grant.name
             })
-            .map(|held| (Arc::clone(&held.file), held.size))
+            .map(|held| (held.path.clone(), held.size))
     };
-    let Some((file, size)) = held else {
+    let Some((path, size)) = held else {
         return failed(id, GONE);
     };
     if offset > size {
         return failed(id, GONE);
     }
+    let Ok(file) = tilo_dialogs::portal::open_regular_file(&path) else {
+        return failed(id, GONE);
+    };
+    // A file that changed since it was chosen is no longer the one the person chose.
+    if !file.metadata().is_ok_and(|metadata| metadata.len() == size) {
+        return failed(id, GONE);
+    }
     let room = size.saturating_sub(offset);
     let want = u64::from(max_bytes.min(CONTENT_CHUNK_BYTES)).min(room);
     let mut bytes = vec![0; usize::try_from(want).unwrap_or(0)];
-    // A file that shrank since it was chosen is no longer the one the person chose.
     if file.read_exact_at(&mut bytes, offset).is_err() {
         return failed(id, GONE);
     }

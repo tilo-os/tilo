@@ -80,8 +80,8 @@ action paste_picture(b: Board) uses clipboard {
             self.0.borrow().get(hash).cloned()
         }
 
-        fn choose(&self, _: &FileRequest) -> Result<Option<FileValue>, String> {
-            Ok(None)
+        fn choose(&self, _: &FileRequest) -> Result<Vec<FileValue>, String> {
+            Ok(Vec::new())
         }
 
         fn save(&self, _: &SaveRequest, _: &[u8]) -> Result<(), String> {

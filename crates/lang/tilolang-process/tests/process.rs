@@ -2402,6 +2402,7 @@ fn a_window_opened_with_a_markdown_file_imports_it_into_notes() {
         content: Some(content.clone()),
         chooser: None,
         clipboard: None,
+        thumbnails: None,
     };
     let connection = Connection::new(manager).expect("the connection joined its route");
     let store = ResourceStore::new(Rc::new(connection.port(None)));

@@ -319,9 +319,8 @@ fn photos_argument(hashes: &[String]) -> serde_json::Map<String, serde_json::Val
 /// over `hashes`, as the action API builds one from an admitted invocation's
 /// arguments.
 fn make_thumbnails_request(workspace: &str, hashes: &[String]) -> OffloadRequest {
-    use tilo_resource::Effect as _;
-    let spec = photos::actions::PhotosEffect::spec("make-thumbnails")
-        .expect("Photos publishes make-thumbnails");
+    let spec = <fixture::TestEffect as tilo_resource::Effect>::spec("make-thumbnails")
+        .expect("the test's action publishes make-thumbnails");
     OffloadRequest {
         workspace: workspace.into(),
         app_id: PHOTOS.into(),
@@ -464,7 +463,7 @@ async fn a_phone_asks_and_the_server_that_offers_compute_runs_the_action() {
         .collect();
     let mut here_named = held.clone();
     here_named.push(held[0].clone());
-    let here = photos::actions::make_thumbnails(&here_named, &app_content).unwrap();
+    let here = fixture::make_thumbnails(&here_named, &app_content).unwrap();
     assert_eq!(here.resources.len(), IMAGES, "one thumbnail per photograph");
 
     // Once its entry offers compute, the server claims the turn, runs the
@@ -574,4 +573,95 @@ async fn a_server_refuses_a_job_it_does_not_keep_the_inputs_for() {
         panic!("a job over content the server does not keep is refused: {ran:?}");
     };
     assert!(reason.contains("the job did not run"), "{reason}");
+}
+
+/// The offloadable action this test drives, kept beside the test that runs it: a batch of
+/// thumbnails, offloaded to the `thumbnail-batch` package, answered byte for byte on the device
+/// and on a server. It is the shape an app declares; nothing here imports an app.
+mod fixture {
+    use tilo_resource::Bytes;
+
+    #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+    #[effect(operation = "test.offloadable", catalogue = "tests/locales")]
+    pub enum TestEffect {
+        /// Make thumbnails: a small PNG of each picture, in order, the same bytes whichever of
+        /// the person's devices makes them.
+        #[effect(
+            content,
+            idempotent,
+            kind = "read",
+            offload(
+                app = "so.tilo.thumbnails",
+                entrypoint = "thumbnail-batch",
+                cpu_ms = 120000,
+                memory_mb = 1024,
+                output_mb = 16
+            )
+        )]
+        MakeThumbnails {
+            #[param(content, "The pictures' content, in order")]
+            photos: Vec<Bytes>,
+        },
+    }
+
+    fn content_hex(hash: &[u8; 32]) -> String {
+        hash.iter()
+            .fold(String::with_capacity(64), |mut hex, byte| {
+                let _ = std::fmt::Write::write_fmt(&mut hex, format_args!("{byte:02x}"));
+                hex
+            })
+    }
+
+    fn failure(photo: &str, reason: &str) -> serde_json::Value {
+        serde_json::json!({"photo": photo, "reason": reason})
+    }
+
+    pub fn make_thumbnails(
+        photos: &[Bytes],
+        store: &tilo_content::ContentStore,
+    ) -> Result<tilo_actions::ActionOutput, String> {
+        use std::collections::BTreeSet;
+        let mut distinct = BTreeSet::new();
+        let mut named: Vec<(String, &Bytes)> = Vec::with_capacity(photos.len());
+        for photo in photos {
+            let hash = photo.hash();
+            if distinct.insert(hash) {
+                named.push((content_hex(&hash), photo));
+            }
+        }
+        let mut inputs = Vec::with_capacity(named.len());
+        let mut failed = Vec::new();
+        for (photo, content) in &named {
+            match content.read(store) {
+                Some(bytes) => inputs.push((photo.as_str(), bytes)),
+                None => failed.push(failure(photo, "is not on this device")),
+            }
+        }
+        let distinct: Vec<Vec<u8>> = inputs.iter().map(|(_, bytes)| bytes.clone()).collect();
+        let mut resources = Vec::with_capacity(inputs.len());
+        for ((photo, _), outcome) in inputs
+            .iter()
+            .zip(thumbnail::batch::thumbnail_batch(&distinct))
+        {
+            match outcome {
+                Ok(thumbnail) => {
+                    let hash = store.put(&thumbnail).map_err(|error| {
+                        tracing::warn!(%error, "a thumbnail could not be stored");
+                        "a thumbnail could not be stored".to_string()
+                    })?;
+                    resources.push(tilo_actions::content_resource(&hash).ok_or_else(|| {
+                        "the content provider returned an invalid address".to_string()
+                    })?);
+                }
+                Err(error) => {
+                    tracing::warn!(%photo, %error, "a picture made no thumbnail");
+                    failed.push(failure(photo, "is not an image"));
+                }
+            }
+        }
+        Ok(tilo_actions::ActionOutput {
+            value: (!failed.is_empty()).then(|| serde_json::json!({ "failed": failed })),
+            resources,
+        })
+    }
 }

@@ -1241,16 +1241,15 @@ fn services(
     let mut services: Vec<Box<dyn tilo_session::Service>> = Vec::new();
     let mut following: Following = Vec::new();
     services.push(Box::new(tilo_settings_service::SettingsService::new()));
-    // The device's image model, and the library analysis whose results search reads: the
-    // model gateway connection is this session's own, as Activity's is.
+    // The device's image model, and the library analysis whose words join each picture's entry in
+    // the system index. The service holds its own model-gateway connection (as `so.tilo.vision`,
+    // the package it answers as) and finds its pictures through the index search reads.
     services.push(Box::new(tilo_vision_service::VisionService::new(
-        std::sync::Arc::new(tilo_vision_service::LocalVision::new(
-            tilo_vision_service::LocalVision::gateway(),
-        )),
-        std::sync::Arc::new(tilo_session::vision_index::VisionIndexSource(
+        std::sync::Arc::new(tilo_vision_service::LocalVision::local()),
+        std::sync::Arc::new(tilo_vision_service::index::VisionIndexSource(
             std::sync::Arc::clone(&content),
         )),
-        std::sync::Arc::new(tilo_session::vision_index::VisionIndexSink(content)),
+        std::sync::Arc::new(tilo_vision_service::index::VisionIndexSink(content)),
         wake.handle(),
     )));
     // What this session ran into: the list as the resource's reading and each record's text as its

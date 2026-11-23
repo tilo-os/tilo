@@ -21,8 +21,8 @@ use crate::catalogue::{package_of, parse_surfaces};
 pub const DEVICE_APP: &str = "so.tilo.device";
 /// Settings' app, whose sections the session keeps and publishes.
 pub use tilo_app_id::apps::SETTINGS as SETTINGS_APP;
-/// The session's image model app: the device's model as actions, and the
-/// library analysis run (`tilo_vision_service`). It is a platform package,
+/// The device's image model app: the picture bounded and sent to the model, as
+/// actions, and the library analysis run (`tilo_vision_service`). It is a platform package,
 /// not an installed app, so it has no first-party app id.
 pub const VISION_APP: &str = "so.tilo.vision";
 
@@ -72,7 +72,7 @@ const AGENT_MODELS_SURFACE: &str =
     include_str!("../../../session/settings-service/agent-models-surface.json");
 /// The image model service's resources, the surface its own test writes
 /// beside it (`surface.json`), as `agent-models-surface.json` is.
-const VISION_SURFACE: &str = include_str!("../../../session/vision-service/surface.json");
+const VISION_SURFACE: &str = include_str!("../../../services/vision/surface.json");
 
 /// Each published resource a view names, by package: the name a view reads it by
 /// (`device.sound`), its type there, and the resource the session publishes it as.

@@ -122,9 +122,10 @@ pages are two actions.
 ## Effects
 
 An effect is something a replay cannot compute again: a draw, the time, a service outside
-Tilo, a person told something. The action that uses one declares it (`uses random`,
-`uses time`, `uses web`, `uses notify`) and the compiler refuses it anywhere else (E121); a
-view never reads one, since it is drawn again from what it is shown.
+Tilo, a person told something, an image's pixels decoded on the device. The action that uses one
+declares it (`uses random`, `uses time`, `uses web`, `uses notify`, `uses image`) and the compiler
+refuses it anywhere else (E121); a view never reads one, since it is drawn again from what it is
+shown.
 
 ```
 action roll(die: Die) uses random {
@@ -160,6 +161,20 @@ they made in an app. A paste reads what is on the clipboard now, as an `Option<T
 `Option<File>` — an image the device keeps for the app once pasted. An action that copies or
 pastes declares `uses clipboard`; a view does neither, since it is drawn again from what it is
 shown.
+
+`file.image_info()` says what an image's own container states: its upright width and height, the
+capture time, the EXIF orientation, and the place the camera recorded. `file.cropped(x, y, width,
+height)`, `file.turned(quarters)`, `file.resized(width, height)` and `file.encoded(format: "png")`
+work on its pixels and answer a new `File` kept in the content store. The decode turns the picture
+upright first, so a crop fraction and a size are of the picture a viewer shows, and a turn is
+clockwise. An action that reads or makes pixels declares `uses image`; a view does not, since it is
+drawn again from what it is shown.
+
+`file.choose(a, accept: [...])` asks the person for files and runs `a` with what they chose: the one
+file the next parameter takes, or every file when it is a `List<File>`. `file.choose_folder(a,
+accept: [...])` asks for a folder and runs `a` with the files it holds, each with the path it stands
+at inside it (`file.path`); `file.path` is that path, or the file's own name when one file was
+chosen, and never a host path. Both stand on a control, since they ask the person at the window.
 
 ```
 action remind(t: Task) uses notify {
