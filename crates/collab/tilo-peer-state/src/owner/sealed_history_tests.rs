@@ -234,5 +234,8 @@ async fn a_write_is_kept_as_the_frame_a_link_carries() {
         panic!("a write is a document write")
     };
     assert!(envelope.encryption.is_some(), "the frame is sealed");
-    assert_eq!(open(&keys, &envelope).unwrap(), changes);
+    let frame = collab_types::DocumentMutation::Incremental(changes)
+        .encode()
+        .unwrap();
+    assert_eq!(open(&keys, &envelope).unwrap(), frame);
 }
