@@ -91,7 +91,7 @@ tilo_test_env::scenario! {
             store
                 .with(&checkout.id, |doc| {
                     doc.put(automerge::ROOT, field, value).unwrap();
-                    doc.commit_edit("test.note", field).unwrap()
+                    doc.commit_edit("test.note", field, &[1; 32]).unwrap()
                 })
                 .unwrap()
         };
@@ -167,7 +167,7 @@ tilo_test_env::scenario! {
             store
                 .with(&checkout.id, |doc| {
                     doc.put(automerge::ROOT, field, value).unwrap();
-                    doc.commit_edit("test.note", field).unwrap()
+                    doc.commit_edit("test.note", field, &[1; 32]).unwrap()
                 })
                 .unwrap()
         };

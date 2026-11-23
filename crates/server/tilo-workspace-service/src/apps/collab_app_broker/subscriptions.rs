@@ -699,8 +699,11 @@ mod tests {
         ) -> crate::apps::collab_inbound::Delivery {
             use crate::apps::collab_inbound::{RemoteDocument, deliver};
             use tilo_action_policy::{MemberAccess, Role, WorkspacePolicy};
+            let editor = tilo_action_policy::PersonId::from_root(EDITOR);
             let mut policy = WorkspacePolicy::new(&self.workspace, "owner");
-            policy.members.insert("editor".into(), Role::Editor);
+            policy
+                .members
+                .insert(editor.as_str().to_owned(), Role::Editor);
             deliver(
                 &self.channels,
                 &self.fanout,
@@ -708,7 +711,7 @@ mod tests {
                     app_id: CHAT.into(),
                     cluster_id: self.workspace.clone(),
                     document_id: record.into(),
-                    author: MemberAccess::person(policy, "editor"),
+                    author: MemberAccess::person(policy, editor),
                     replayed: false,
                     envelope,
                 },
@@ -716,11 +719,14 @@ mod tests {
         }
     }
 
+    /// The root key of the person whose device a peer's edits are signed by.
+    const EDITOR: [u8; 32] = [5; 32];
+
     /// A peer's `sequence`-th edit of `record` in `workspace`, setting its title.
     fn edit(workspace: &str, record: &str, sequence: u64, title: &str) -> SignedOp {
         use collab_types::{OpKind, field_edit_mutation, sign_op};
         let key = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
-        let (mutation, _) = field_edit_mutation("note", "title", title).unwrap();
+        let (mutation, _) = field_edit_mutation("note", "title", title, &EDITOR).unwrap();
         let mut op = SignedOp::new_unsigned(
             mutation.encode().unwrap(),
             document_artifact_id(CHAT, workspace, record),

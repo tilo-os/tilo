@@ -372,13 +372,17 @@ mod tests {
     /// The workspace every fixture writes in, by the id a workspace is known by.
     const WORKSPACE: &str = "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b";
 
+    /// The root key of the person whose device the edits are signed for.
+    const EDITOR: [u8; 32] = [5; 32];
+
     /// An editor of the workspace the ops are written in.
     fn editor() -> MemberAccess {
+        let person = tilo_action_policy::PersonId::from_root(EDITOR);
         let mut policy = tilo_action_policy::WorkspacePolicy::new(WORKSPACE, "owner");
         policy
             .members
-            .insert("editor".into(), tilo_action_policy::Role::Editor);
-        MemberAccess::person(policy, "editor")
+            .insert(person.as_str().to_owned(), tilo_action_policy::Role::Editor);
+        MemberAccess::person(policy, person)
     }
 
     /// The check of a workspace that requires encryption: its group's, which
@@ -396,7 +400,7 @@ mod tests {
         {
             let key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
             let an_hour_ago = tilo_clock::wall() - Duration::from_secs(3600);
-            let (mutation, _) = collab_types::field_edit_mutation("note", "title", "old").unwrap();
+            let (mutation, _) = collab_types::field_edit_mutation("note", "title", "old", &EDITOR).unwrap();
             let mut op = SignedOp::new_unsigned(
                 mutation.encode().unwrap(),
                 document_artifact_id("notes", WORKSPACE, "record"),
@@ -438,7 +442,8 @@ mod tests {
         {
             let key = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
             let op = |title: &str| {
-                let (mutation, _) = collab_types::field_edit_mutation("note", "title", title).unwrap();
+                let (mutation, _) =
+                collab_types::field_edit_mutation("note", "title", title, &EDITOR).unwrap();
                 let mut op = SignedOp::new_unsigned(
                     mutation.encode().unwrap(),
                     document_artifact_id("notes", WORKSPACE, "record"),
@@ -603,7 +608,8 @@ mod tests {
         let [sealed, _] = two_sealed_writes(&ed25519_dalek::SigningKey::from_bytes(&[6; 32]));
         let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
         let clear = |seq: u64, title: &str| {
-            let (mutation, _) = collab_types::field_edit_mutation("note", "title", title).unwrap();
+            let (mutation, _) =
+                collab_types::field_edit_mutation("note", "title", title, &EDITOR).unwrap();
             let mut op = SignedOp::new_unsigned(
                 mutation.encode().unwrap(),
                 document_artifact_id("notes", WORKSPACE, "record"),

@@ -44,6 +44,8 @@ pub(crate) fn persons_workspace(person: &[u8; 32]) -> String {
 pub(crate) struct Record {
     doc: Arc<Mutex<AutoCommit>>,
     wake: tilo_service::Wake,
+    /// The person the settings are: who every write of them is by.
+    person: [u8; 32],
 }
 
 impl settings_store::RoamingSettings for Record {
@@ -79,7 +81,7 @@ impl settings_store::RoamingSettings for Record {
                 doc.put(automerge::ROOT, key.as_str(), text)
                     .map_err(|error| error.to_string())?;
             }
-            doc.commit_edit(CHANGE_KIND, &key);
+            doc.commit_edit(CHANGE_KIND, &key, &self.person);
         }
         drop(doc);
         (self.wake)();
@@ -130,6 +132,7 @@ impl SettingsSync {
             store.keep_roaming_in(Some(Arc::new(Record {
                 doc: Arc::clone(&self.record),
                 wake: records.wake(),
+                person: *person,
             })));
             *self.kept.borrow_mut() = Some(workspace.clone());
             *self.seen.borrow_mut() = None;
@@ -146,7 +149,7 @@ impl SettingsSync {
             // What this device kept before it had the person's record (chosen as it was set up,
             // or before it held the workspace) is the person's where the record holds nothing of
             // it yet.
-            let offered = offer(&mut self.lock(), &document);
+            let offered = offer(&mut self.lock(), &document, person);
             if offered {
                 records.write();
             }
@@ -165,7 +168,7 @@ impl SettingsSync {
 
 /// Write into `doc` each setting `document` holds that the person holds and the record does not.
 /// Whether anything was written.
-fn offer(doc: &mut AutoCommit, document: &Map<String, Value>) -> bool {
+fn offer(doc: &mut AutoCommit, document: &Map<String, Value>, person: &[u8; 32]) -> bool {
     let stored = values(doc);
     let mut wrote = false;
     for (key, value) in personal_leaves(document) {
@@ -183,7 +186,7 @@ fn offer(doc: &mut AutoCommit, document: &Map<String, Value>) -> bool {
             tracing::warn!(%error, %key, "a setting did not reach the person's record");
             continue;
         }
-        doc.commit_edit(CHANGE_KIND, &key);
+        doc.commit_edit(CHANGE_KIND, &key, person);
         wrote = true;
     }
     wrote

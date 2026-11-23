@@ -20,11 +20,21 @@ fn incremental(
     ));
     let heads = doc.get_heads();
     doc.put(ROOT, name, name).unwrap();
-    doc.commit_edit("fixture", "fixture");
+    doc.commit_edit("fixture", "fixture", &person(author, key));
     author
         .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), key, now)
         .unwrap()
+}
+
+/// The person whose certified device `key` is in `peer`'s workspace.
+fn person(peer: &StatePeer, key: &SigningKey) -> [u8; 32] {
+    let device = key.verifying_key().to_bytes();
+    peer.certificates()
+        .into_iter()
+        .find(|cert| cert.device_public_key == device)
+        .expect("the workspace holds the device's certificate")
+        .user_public_key
 }
 
 /// `message` as `key`'s write at `seq`: signed by a device the workspace never

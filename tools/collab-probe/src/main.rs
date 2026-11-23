@@ -248,8 +248,9 @@ async fn write(workspace_id: &str, text: &str) -> ExitCode {
         eprintln!("probe: FAIL building the document: {e}");
         return ExitCode::from(6);
     }
-    // Every change names the action it ran: here, an edit of the text.
-    doc.commit_edit(RECORD_KIND, FIELD);
+    // Every change names the action it ran and the person whose certified
+    // device signs it: here, an edit of the text.
+    doc.commit_edit(RECORD_KIND, FIELD, &identity.metadata().group_public_key());
     let bytes = doc.save_incremental();
     let signed = match signed_incremental(&identity, workspace_id, bytes) {
         Ok(signed) => signed,
@@ -402,7 +403,7 @@ mod tests {
     fn signed_change(workspace_id: &str, text: &str) -> Vec<u8> {
         let mut doc = AutoCommit::new();
         doc.put(&ROOT, FIELD, text).unwrap();
-        doc.commit_edit(RECORD_KIND, FIELD);
+        doc.commit_edit(RECORD_KIND, FIELD, &[1; 32]);
         let payload = DocumentMutation::Incremental(doc.save_incremental())
             .encode()
             .unwrap();

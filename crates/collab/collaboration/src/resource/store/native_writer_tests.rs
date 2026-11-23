@@ -25,7 +25,7 @@ fn a_change_taken_back_replaces_the_writer_the_record_saved() {
         store
             .with(&checkout.id, |doc| {
                 doc.put(automerge::ROOT, "title", "kept").unwrap();
-                doc.commit_edit("test.note", "title").unwrap()
+                doc.commit_edit("test.note", "title", &[1; 32]).unwrap()
             })
             .unwrap();
         // The change the workspace refuses, made under the writer the record
@@ -34,7 +34,7 @@ fn a_change_taken_back_replaces_the_writer_the_record_saved() {
             .with(&checkout.id, |doc| {
                 let heads = doc.get_heads();
                 doc.put(automerge::ROOT, "body", "refused").unwrap();
-                let refused = doc.commit_edit("test.note", "body").unwrap();
+                let refused = doc.commit_edit("test.note", "body", &[1; 32]).unwrap();
                 let seq = doc.get_changes(&heads)[0].seq();
                 (refused, seq)
             })
@@ -71,7 +71,7 @@ fn a_change_taken_back_replaces_the_writer_the_record_saved() {
         .with(&checkout.id, |doc| {
             let heads = doc.get_heads();
             doc.put(automerge::ROOT, "title", "written on").unwrap();
-            doc.commit_edit("test.note", "title").unwrap();
+            doc.commit_edit("test.note", "title", &[1; 32]).unwrap();
             let changes = doc.get_changes(&heads);
             let kept = doc
                 .get_changes(&[])

@@ -24,7 +24,7 @@ async fn a_device_that_may_not_write_refuses_its_own_change_and_files_why() {
         let mut chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
         let before = chat.get_heads();
         chat.put(ROOT, "topic", topic).unwrap();
-        let change = chat.commit_edit("chat", "topic");
+        let change = chat.commit_edit("chat", "topic", &crate::owner::testing::member_person());
         let frame = collab_types::DocumentMutation::Incremental(chat.save_after(&before))
             .encode()
             .map_err(|error| error.to_string())?;

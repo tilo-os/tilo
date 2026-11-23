@@ -21,6 +21,16 @@ fn genesis(
     )
 }
 
+/// The person whose certified device `key` is in `peer`'s workspace.
+fn person(peer: &StatePeer, key: &ed25519_dalek::SigningKey) -> [u8; 32] {
+    let device = key.verifying_key().to_bytes();
+    peer.certificates()
+        .into_iter()
+        .find(|cert| cert.device_public_key == device)
+        .expect("the workspace holds the device's certificate")
+        .user_public_key
+}
+
 fn first_state(peer: &StatePeer) -> Option<String> {
     let doc = AutoCommit::load(&peer.document(OPENED, "")?).ok()?;
     doc.get(ROOT, "title")
@@ -153,7 +163,7 @@ async fn an_admitted_member_creates_an_apps_empty_record() {
     // The app's first state is the member's own change onto the genesis.
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "title", "First note").unwrap();
-    doc.commit_edit("fixture", "title");
+    doc.commit_edit("fixture", "title", &member.cert.user_public_key);
     let bootstrap = member_peer
         .publication_mut()
         .publish_incremental(
@@ -193,7 +203,7 @@ async fn an_admitted_member_creates_an_apps_empty_record() {
         let mut doc = AutoCommit::load(&peer.document(OPENED, "").unwrap()).unwrap();
         let heads = doc.get_heads();
         doc.put(ROOT, "title", title).unwrap();
-        doc.commit_edit("fixture", "title");
+        doc.commit_edit("fixture", "title", &person(peer, key));
         peer.publication_mut()
             .publish_incremental(OPENED, "", doc.save_after(&heads), key, SystemTime::now())
             .unwrap()

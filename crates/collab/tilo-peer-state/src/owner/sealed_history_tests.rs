@@ -2,7 +2,7 @@
 //! wherever it writes: alone, offline or linked, so a change is never refused
 //! for how long its record's history grew.
 use super::*;
-use crate::owner::testing::{governed_fixture_at, member_key};
+use crate::owner::testing::{governed_fixture_at, member_key, member_person};
 use crate::owner::{NativeCommittedView, SealedHistoryKeys, WriteRefusal};
 use automerge::{ActorId, ChangeHash};
 use collab_types::{ContentRetention, DocumentMutation, EncryptionMetadata, OpKind, SignedOp};
@@ -88,7 +88,7 @@ impl Typist {
     fn put(&mut self, key: &str, value: &str) -> Vec<u8> {
         let before: Vec<ChangeHash> = self.0.get_heads();
         self.0.put(ROOT, key, value).unwrap();
-        self.0.commit_edit("fixture", "topic");
+        self.0.commit_edit("fixture", "topic", &member_person());
         self.0.save_after(&before)
     }
 }

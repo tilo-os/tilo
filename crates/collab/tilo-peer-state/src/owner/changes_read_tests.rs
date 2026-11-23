@@ -13,7 +13,7 @@ fn commit(joined: &Enrolled, edit: impl FnOnce(&mut AutoCommit)) {
             let mut chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
             let before = chat.get_heads();
             edit(&mut chat);
-            chat.commit_edit("fixture", "edit");
+            chat.commit_edit("fixture", "edit", &crate::owner::testing::member_person());
             let message = view.peer().clone().publication_mut().publish_incremental(
                 APP,
                 "",
@@ -231,7 +231,7 @@ tilo_test_env::scenario! {
         commit(&joined, |chat| {
             let body = chat.put_object(ROOT, "body", ObjType::Text).unwrap();
             let line_characters = LARGE_CHARACTERS / LARGE_EDITS;
-            chat.commit_edit("fixture", "body");
+            chat.commit_edit("fixture", "body", &crate::owner::testing::member_person());
             for edit in 0..LARGE_EDITS {
                 let mut line = format!("{edit:04} {:x} ", edit.wrapping_mul(7919));
                 while line.len() < line_characters.saturating_sub(1) {
@@ -243,7 +243,7 @@ tilo_test_env::scenario! {
                 line.push('\n');
                 let end = chat.length(&body);
                 chat.splice_text(&body, end, 0, &line).unwrap();
-                chat.commit_edit("fixture", "line");
+                chat.commit_edit("fixture", "line", &crate::owner::testing::member_person());
             }
         });
         let held = full(&joined, member);

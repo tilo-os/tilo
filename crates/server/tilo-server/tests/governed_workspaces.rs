@@ -176,17 +176,19 @@ fn publish(session: &ServerCoeditSession, message: &NeighbourMsg) {
     .unwrap();
 }
 
-/// Set `key` to `value` in `peer`'s copy of the record and sign the change.
+/// Set `key` to `value` in `peer`'s copy of the record and sign the change,
+/// made by the person whose root key is `person`.
 fn write(
     peer: &mut StatePeer,
     key: &str,
     value: &str,
     key_pair: &ed25519_dalek::SigningKey,
+    person: &[u8; 32],
 ) -> NeighbourMsg {
     let mut doc = AutoCommit::load(&peer.document(APP, "").unwrap()).unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, key, value).unwrap();
-    doc.commit_edit("fixture", key);
+    doc.commit_edit("fixture", key, person);
     peer.publication_mut()
         .publish_incremental(APP, "", doc.save_after(&heads), key_pair, SystemTime::now())
         .unwrap()
@@ -361,7 +363,7 @@ async fn an_invited_person_joins_a_governed_workspace_edits_sees_presence_and_is
     // Alice writes; Bob's replica verifies and applies it.
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "topic", "from Alice").unwrap();
-    doc.commit_edit("fixture", "topic");
+    doc.commit_edit("fixture", "topic", &laptop.cert.user_public_key);
     let message = alice_peer
         .publication_mut()
         .publish_incremental(APP, "", doc.save_after(&[]), &laptop.sk, SystemTime::now())
@@ -380,7 +382,7 @@ async fn an_invited_person_joins_a_governed_workspace_edits_sees_presence_and_is
     let mut doc = AutoCommit::load(&bob_peer.document(APP, "").unwrap()).unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "reply", "from Bob").unwrap();
-    doc.commit_edit("fixture", "reply");
+    doc.commit_edit("fixture", "reply", &phone.cert.user_public_key);
     let message = bob_peer
         .publication_mut()
         .publish_incremental(
@@ -406,7 +408,13 @@ async fn an_invited_person_joins_a_governed_workspace_edits_sees_presence_and_is
         let said = format!("Alice {turn}");
         publish(
             &alice_session,
-            &write(&mut alice_peer, "turn", &said, &laptop.sk),
+            &write(
+                &mut alice_peer,
+                "turn",
+                &said,
+                &laptop.sk,
+                &laptop.cert.user_public_key,
+            ),
         );
         receive_until(
             "Alice's turn at Bob",
@@ -419,7 +427,13 @@ async fn an_invited_person_joins_a_governed_workspace_edits_sees_presence_and_is
         let said = format!("Bob {turn}");
         publish(
             &bob_session,
-            &write(&mut bob_peer, "turn", &said, &phone.sk),
+            &write(
+                &mut bob_peer,
+                "turn",
+                &said,
+                &phone.sk,
+                &phone.cert.user_public_key,
+            ),
         );
         receive_until(
             "Bob's turn at Alice",
@@ -672,7 +686,7 @@ type = "String"
     // An edit of a field the app publishes reaches Bob.
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "topic", "from Alice").unwrap();
-    doc.commit_edit("fixture", "topic");
+    doc.commit_edit("fixture", "topic", &laptop.cert.user_public_key);
     let message = alice_peer
         .publication_mut()
         .publish_incremental(APP, "", doc.save_after(&[]), &laptop.sk, SystemTime::now())
@@ -755,7 +769,7 @@ params = []
     // Alice's chat: the record exists before Bob writes to it.
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "topic", "from Alice").unwrap();
-    doc.commit_edit("fixture", "topic");
+    doc.commit_edit("fixture", "topic", &laptop.cert.user_public_key);
     let created = alice_peer
         .publication_mut()
         .publish_incremental(APP, "", doc.save_after(&[]), &laptop.sk, SystemTime::now())
@@ -796,7 +810,7 @@ params = []
     // An edit of the topic: published by the app, not granted to a commenter.
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "topic", "from Bob").unwrap();
-    doc.commit_edit("fixture", "topic");
+    doc.commit_edit("fixture", "topic", &phone.cert.user_public_key);
     publish(&bob_session, &sign(&mut doc, 1_000));
     // A comment: theirs to make.
     let mut doc = AutoCommit::new();

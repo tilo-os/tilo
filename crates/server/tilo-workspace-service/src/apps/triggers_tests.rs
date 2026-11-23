@@ -227,7 +227,9 @@ async fn a_record_write_fires_the_shortcut_watching_it_once() {
                     },
                     stamp: Stamp {
                         verb: "add".into(),
-                        invoker: hex::encode(cert.user_public_key),
+                        invoker: Stamp::by(&tilo_action_policy::Actor::Member(
+                            tilo_action_policy::MemberId::person(hex::encode(cert.user_public_key)),
+                        )),
                         invocation: id.into(),
                         ..Stamp::default()
                     },

@@ -91,7 +91,7 @@ fn fixture_with_documents_and_expiry(
             document
                 .put(ROOT, "value", format!("value-{index:02}"))
                 .unwrap();
-            document.commit_edit("fixture", "fixture");
+            document.commit_edit("fixture", "fixture", &root.verifying_key().to_bytes());
             SeedDocument {
                 app_id: APP.into(),
                 document_id: format!("tab-{index:02}"),
@@ -372,6 +372,7 @@ tilo_test_env::scenario! {
 fn durable_generation_growth(documents: usize, generations: u64) -> (usize, usize, usize) {
     use automerge::ScalarValue;
     let (key, mut peer, now) = fixture_with_documents(documents);
+    let person = peer.owner_certificates()[0].user_public_key;
     peer.publication_mut()
         .durable_bootstrap_messages(&key, now, 1)
         .unwrap();
@@ -394,7 +395,7 @@ fn durable_generation_growth(documents: usize, generations: u64) -> (usize, usiz
         let heads = doc.get_heads();
         doc.put(ROOT, "value", format!("edit-{generation}"))
             .unwrap();
-        doc.commit_edit("fixture", "value");
+        doc.commit_edit("fixture", "value", &person);
         peer.publication_mut()
             .publish_incremental(
                 APP,
@@ -419,7 +420,7 @@ fn durable_generation_growth(documents: usize, generations: u64) -> (usize, usiz
                 ScalarValue::Bytes(postcard::to_allocvec(&coverage).unwrap()),
             )
             .unwrap();
-        whole_map.commit_edit("fixture", "fixture");
+        whole_map.commit_edit("fixture", "fixture", &person);
         whole_map
             .put(
                 ROOT,
@@ -427,7 +428,7 @@ fn durable_generation_growth(documents: usize, generations: u64) -> (usize, usiz
                 ScalarValue::Bytes(postcard::to_allocvec(&receipts).unwrap()),
             )
             .unwrap();
-        whole_map.commit_edit("fixture", "fixture");
+        whole_map.commit_edit("fixture", "fixture", &person);
         whole_map_bytes += whole_map
             .get_changes(&heads)
             .iter()

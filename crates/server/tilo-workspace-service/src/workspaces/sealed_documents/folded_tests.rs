@@ -98,7 +98,7 @@ fn send_member_field(
 ) {
     let ((), message) = member.seal(workspace, |document| {
         document.put(ROOT, field, line).unwrap();
-        document.commit_edit("fixture", field);
+        document.commit_edit("fixture", field, &member.person());
     });
     send_sealed(client, workspace_id, key, &message);
 }

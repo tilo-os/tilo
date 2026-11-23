@@ -68,7 +68,7 @@ async fn a_write_the_server_committed_survives_a_hard_stop_before_the_governor_k
     // Alice's first write makes the record, and the governor holds it.
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "topic", "welcome").unwrap();
-    doc.commit_edit("fixture", "topic");
+    doc.commit_edit("fixture", "topic", &laptop.cert.user_public_key);
     let message = alice_peer
         .publication_mut()
         .publish_incremental(APP, "", doc.save_after(&[]), &laptop.sk, SystemTime::now())
@@ -86,7 +86,13 @@ async fn a_write_the_server_committed_survives_a_hard_stop_before_the_governor_k
     // Bob's page commits a write and is told it is committed; the server is
     // stopped hard at that moment, before the governor's copy is kept.
     let bob_client: ServerClient = bob_session.into_client();
-    let write = write(&mut bob_peer, "reply", "committed", &phone.sk);
+    let write = write(
+        &mut bob_peer,
+        "reply",
+        "committed",
+        &phone.sk,
+        &phone.cert.user_public_key,
+    );
     super::shared_desktop::commit(&bob_client, &phone, workspace.workspace_id, &write)
         .await
         .expect("the server commits Bob's write");

@@ -34,7 +34,7 @@ fn selective_publication_covers_foreign_metadata_only_admission_and_new_records(
     ));
     let heads = doc.get_heads();
     doc.put(ROOT, "foreign", "original effect").unwrap();
-    doc.commit_edit("fixture", "foreign");
+    doc.commit_edit("fixture", "foreign", &person(&governor, &b));
     let change = doc.save_after(&heads);
     let original = governor
         .publication_mut()
@@ -87,7 +87,7 @@ fn selective_publication_covers_foreign_metadata_only_admission_and_new_records(
     before = governor.clone();
     let mut new = AutoCommit::new();
     new.put(ROOT, "created", true).unwrap();
-    new.commit_edit("fixture", "created");
+    new.commit_edit("fixture", "created", &person(&governor, &a));
     governor
         .publication_mut()
         .publish_document("new.app", "new-record", new.save(), &a, now)
@@ -179,6 +179,16 @@ fn selective_publication_covers_foreign_metadata_only_admission_and_new_records(
     );
 }
 
+/// The person whose certified device `key` is in `peer`'s workspace.
+fn person(peer: &StatePeer, key: &SigningKey) -> [u8; 32] {
+    let device = key.verifying_key().to_bytes();
+    peer.certificates()
+        .into_iter()
+        .find(|cert| cert.device_public_key == device)
+        .expect("the workspace holds the device's certificate")
+        .user_public_key
+}
+
 /// The change `device` makes to the document `app` keeps under `named`,
 /// adding `value`, as an incremental over it as `peer` holds it.
 fn written_by(
@@ -194,7 +204,7 @@ fn written_by(
     ));
     let heads = doc.get_heads();
     doc.put(ROOT, value, true).unwrap();
-    doc.commit_edit("fixture", value);
+    doc.commit_edit("fixture", value, &person(peer, device));
     doc.save_after(&heads)
 }
 

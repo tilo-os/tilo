@@ -89,6 +89,8 @@ pub async fn plaintext_document(
 /// record sealed, as a page does once a key holder admitted it.
 pub struct SealingMember {
     key: SigningKey,
+    /// The root key of the person whose device this is.
+    person: [u8; 32],
     keys: ContentKeys,
     route: (String, String),
     /// The app surface the member's writes name, as its page names it.
@@ -117,17 +119,21 @@ impl SealingMember {
             .await
             .unwrap()
             .unwrap();
+        let peer = workspaces.workspace(workspace).await.unwrap();
+        let peer = peer.lock().await;
         // The surface a member's write names: the one its replica signs with.
-        let surface = workspaces
-            .workspace(workspace)
-            .await
-            .unwrap()
-            .lock()
-            .await
+        let surface = peer.peer().signed_surface(app);
+        let person = peer
             .peer()
-            .signed_surface(app);
+            .certificates()
+            .into_iter()
+            .find(|cert| cert.device_public_key == key.verifying_key().to_bytes())
+            .expect("the workspace holds the member's certificate")
+            .user_public_key;
+        drop(peer);
         let member = Self {
             key,
+            person,
             keys,
             route: (app.into(), record.into()),
             surface,
@@ -154,6 +160,7 @@ impl SealingMember {
             .unwrap();
         Self {
             key: self.key.clone(),
+            person: self.person,
             keys,
             route: (self.route.0.clone(), record.into()),
             surface: self.surface,
@@ -437,6 +444,7 @@ impl SealingMember {
         let actor = self.document.lock().unwrap().get_actor().clone();
         let page = Self {
             key: self.key.clone(),
+            person: self.person,
             keys: self.keys.clone(),
             route: self.route.clone(),
             surface: self.surface,
@@ -447,6 +455,12 @@ impl SealingMember {
         };
         page.catch_up(workspaces, workspace).await;
         page
+    }
+
+    /// The person whose certified device this member is.
+    #[must_use]
+    pub fn person(&self) -> [u8; 32] {
+        self.person
     }
 
     /// The member's next write of the record, `change` made to its replica,

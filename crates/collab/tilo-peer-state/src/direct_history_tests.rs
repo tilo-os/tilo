@@ -73,11 +73,12 @@ fn join(parts: usize) -> (u64, u64, usize) {
     // The parts as the host wrote them: each started with its text, then
     // changed an item at a time, every change kept at the host's store.
     let mut written = Vec::new();
+    let person = governor.owner_certificates()[0].user_public_key;
     for part in 0..parts {
         let record = format!("part:{part}");
         let mut document = AutoCommit::new();
         document.put(ROOT, "text", text(part)).unwrap();
-        document.commit_edit("issues", "text");
+        document.commit_edit("issues", "text", &person);
         written.push(
             governor
                 .publication_mut()
@@ -89,7 +90,7 @@ fn join(parts: usize) -> (u64, u64, usize) {
             document
                 .put(ROOT, format!("issue {change}"), "a title")
                 .unwrap();
-            document.commit_edit("issues", "items");
+            document.commit_edit("issues", "items", &person);
             written.push(
                 governor
                     .publication_mut()
@@ -170,7 +171,11 @@ async fn a_link_does_not_report_a_frame_it_could_not_keep() {
     let mut heard = link.0.heard.subscribe();
     let mut document = AutoCommit::new();
     document.put(ROOT, "text", "first").unwrap();
-    document.commit_edit("issues", "text");
+    document.commit_edit(
+        "issues",
+        "text",
+        &governor.owner_certificates()[0].user_public_key,
+    );
     let keys = key_group::KeyGroup::create(
         WorkspaceId::parse(WORKSPACE).unwrap(),
         key_group::MemberKey::generate("link-test").unwrap(),

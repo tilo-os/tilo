@@ -1,6 +1,6 @@
 //! A sealed document read again over what its last read merged reads as one read of its whole
 //! history does, whatever came between: more writes, none, or a compaction of them.
-use super::sealed_compaction_tests::{APP, RECORD as RESOURCE, fixture, open, sealer};
+use super::sealed_compaction_tests::{APP, RECORD as RESOURCE, fixture, open, person, sealer};
 use super::*;
 use collab_types::CommitNamed as _;
 
@@ -21,7 +21,7 @@ fn written(
     let mut document = AutoCommit::load(&bytes).unwrap();
     let heads = document.get_heads();
     document.put(automerge::ROOT, key, value).unwrap();
-    document.commit_edit("fixture", key);
+    document.commit_edit("fixture", key, &person(peer, signer));
     peer.publication_mut()
         .publish_sealed_incremental(
             APP,

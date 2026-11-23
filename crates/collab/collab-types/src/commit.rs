@@ -959,7 +959,7 @@ mod tests {
 
         phase a_field_edit_is_a_commit_too;
         {
-            let (mutation, claims) = field_edit_mutation("tasks", "title", "write").unwrap();
+            let (mutation, claims) = field_edit_mutation("tasks", "title", "write", &[1; 32]).unwrap();
             let commit =
                 WorkspaceCommit::of_mutation(WORKSPACE, "tasks", "", &author([3; 32]), &mutation)
                     .unwrap()
@@ -1027,7 +1027,7 @@ mod tests {
 
         phase a_document_frame_carries_its_commit_and_old_frames_still_decode;
         {
-            let (mutation, _) = field_edit_mutation("tasks", "title", "write").unwrap();
+            let (mutation, _) = field_edit_mutation("tasks", "title", "write", &[1; 32]).unwrap();
             let frame = mutation.encode_frames().unwrap().remove(0);
             assert!(matches!(
                 DocumentFrame::decode(&frame),

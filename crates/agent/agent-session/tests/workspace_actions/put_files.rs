@@ -781,7 +781,7 @@ async fn an_editor_founds_a_public_workspace_tree_and_a_viewer_does_not() {
     // The viewer's computer mounts the workspace first: what it founds stays its own.
     let viewer_laptop =
         super::resource_support::open_admitted_peer(&hosted, &viewing, &serving, &workspace).await;
-    let mut theirs = tilo_fs::Namespace::new(hex::encode(viewing.cert.device_public_key)).unwrap();
+    let mut theirs = super::resource_support::computer_folder(&viewing.cert);
     theirs
         .create_file(tilo_fs::ROOT_INO, "notes.txt", None, 0, 1)
         .unwrap();
@@ -798,7 +798,7 @@ async fn an_editor_founds_a_public_workspace_tree_and_a_viewer_does_not() {
     // The editor's computer founds it with a file in it, and the file lands.
     let editor_laptop =
         super::resource_support::open_admitted_peer(&hosted, &editing, &serving, &workspace).await;
-    let mut folder = tilo_fs::Namespace::new(hex::encode(editing.cert.device_public_key)).unwrap();
+    let mut folder = super::resource_support::computer_folder(&editing.cert);
     folder
         .create_file(tilo_fs::ROOT_INO, "contract.txt", None, 0, 1)
         .unwrap();

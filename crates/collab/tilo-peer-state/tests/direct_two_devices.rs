@@ -22,7 +22,12 @@ const RECORD: &str = "tab:1";
 
 /// Write `value` into the test record as `key`'s device, and answer the heads
 /// the record holds afterwards.
-fn edit(peer: &DirectSync, key: &SigningKey, value: &str) -> Option<Vec<automerge::ChangeHash>> {
+fn edit(
+    peer: &DirectSync,
+    key: &SigningKey,
+    person: &[u8; 32],
+    value: &str,
+) -> Option<Vec<automerge::ChangeHash>> {
     let mut edit =
         AutoCommit::load(&peer.read(|peer| peer.document(APP, RECORD)).unwrap()).unwrap();
     edit.set_actor(automerge::ActorId::from(
@@ -30,7 +35,7 @@ fn edit(peer: &DirectSync, key: &SigningKey, value: &str) -> Option<Vec<automerg
     ));
     let heads = edit.get_heads();
     edit.put(ROOT, "value", value).unwrap();
-    edit.commit_edit("fixture", "value");
+    edit.commit_edit("fixture", "value", person);
     let change = edit.save_after(&heads);
     peer.publish(|peer| {
         peer.publication_mut()
@@ -72,7 +77,7 @@ async fn two_devices_of_one_person_converge_directly() {
     a.select_exact_admissions().unwrap();
     let mut document = AutoCommit::new();
     document.put(ROOT, "value", "from a").unwrap();
-    document.commit_edit("fixture", "value");
+    document.commit_edit("fixture", "value", &a_cert.user_public_key);
     a.install_seed(
         SeedState {
             workspace_changes: seed_workspace(WORKSPACE, &a_cert, &roster).unwrap(),
@@ -114,7 +119,7 @@ async fn two_devices_of_one_person_converge_directly() {
     );
 
     // B edits the document; A converges to B's edit.
-    let edited = edit(&b, &b_key, "from b");
+    let edited = edit(&b, &b_key, &root.verifying_key().to_bytes(), "from b");
     until(&a, "A holds B's edit", |a| {
         a.document_heads(APP, RECORD) == edited
     })
@@ -174,7 +179,7 @@ async fn a_second_device_is_entered_by_the_first_and_content_crosses_both_ways()
     a.select_exact_admissions().unwrap();
     let mut document = AutoCommit::new();
     document.put(ROOT, "value", "from a").unwrap();
-    document.commit_edit("fixture", "value");
+    document.commit_edit("fixture", "value", &a_cert.user_public_key);
     a.install_seed(
         SeedState {
             workspace_changes: seed_workspace(WORKSPACE, &a_cert, std::slice::from_ref(&a_cert))
@@ -239,12 +244,12 @@ async fn a_second_device_is_entered_by_the_first_and_content_crosses_both_ways()
     );
 
     // What B writes reaches A, and A's next write reaches B.
-    let edited = edit(&b, &b_key, "from b");
+    let edited = edit(&b, &b_key, &root.verifying_key().to_bytes(), "from b");
     until(&a, "A holds the edit", |a| {
         a.document_heads(APP, RECORD) == edited
     })
     .await;
-    let edited = edit(&a, &a_key, "from a again");
+    let edited = edit(&a, &a_key, &root.verifying_key().to_bytes(), "from a again");
     until(&b, "B holds the edit", |b| {
         b.document_heads(APP, RECORD) == edited
     })
@@ -275,7 +280,7 @@ async fn a_device_that_hosts_its_own_workspace_syncs_with_it_in_process() {
     made.select_exact_admissions().unwrap();
     let mut document = AutoCommit::new();
     document.put(ROOT, "value", "from the host").unwrap();
-    document.commit_edit("fixture", "value");
+    document.commit_edit("fixture", "value", &cert.user_public_key);
     made.install_seed(
         SeedState {
             workspace_changes: seed_workspace(WORKSPACE, &cert, &roster).unwrap(),
@@ -306,7 +311,12 @@ async fn a_device_that_hosts_its_own_workspace_syncs_with_it_in_process() {
     })
     .await;
     // The member writes as the device the host serves: its own.
-    let edited = edit(&member, &key, "from the member");
+    let edited = edit(
+        &member,
+        &key,
+        &root.verifying_key().to_bytes(),
+        "from the member",
+    );
     until(&host, "the host holds the member's edit", |host| {
         host.document_heads(APP, RECORD) == edited
     })
@@ -316,7 +326,7 @@ async fn a_device_that_hosts_its_own_workspace_syncs_with_it_in_process() {
 
 /// Device A seeded with the test record, and device B knowing only the roster, each as a direct
 /// link, with their keys.
-fn two_devices() -> (DirectSync, SigningKey, DirectSync, SigningKey) {
+fn two_devices() -> (DirectSync, SigningKey, DirectSync, SigningKey, [u8; 32]) {
     let root = SigningKey::from_bytes(&[1; 32]);
     let (a_key, a_cert) = device(&root, 2);
     let (b_key, b_cert) = device(&root, 3);
@@ -333,7 +343,7 @@ fn two_devices() -> (DirectSync, SigningKey, DirectSync, SigningKey) {
     a.select_exact_admissions().unwrap();
     let mut document = AutoCommit::new();
     document.put(ROOT, "value", "from a").unwrap();
-    document.commit_edit("fixture", "value");
+    document.commit_edit("fixture", "value", &a_cert.user_public_key);
     a.install_seed(
         SeedState {
             workspace_changes: seed_workspace(WORKSPACE, &a_cert, &roster).unwrap(),
@@ -354,6 +364,7 @@ fn two_devices() -> (DirectSync, SigningKey, DirectSync, SigningKey) {
         a_key,
         DirectSync::new(b, b_key.clone()),
         b_key,
+        root.verifying_key().to_bytes(),
     )
 }
 
@@ -361,7 +372,7 @@ fn two_devices() -> (DirectSync, SigningKey, DirectSync, SigningKey) {
 /// writer's ownership names it: the hash of the frame it published.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_device_dialled_answers_each_write_it_takes_in() {
-    let (a, a_key, b, b_key) = two_devices();
+    let (a, a_key, b, b_key, person) = two_devices();
     let a_endpoint = localhost_endpoint(&a_key).await;
     let _a_router = iroh::protocol::Router::builder(a_endpoint.clone())
         .accept(DIRECT_ALPN, a.clone())
@@ -381,7 +392,7 @@ async fn the_device_dialled_answers_each_write_it_takes_in() {
     ));
     let heads = written.get_heads();
     written.put(ROOT, "value", "from b").unwrap();
-    written.commit_edit("fixture", "value");
+    written.commit_edit("fixture", "value", &person);
     let change = written.save_after(&heads);
     let message = b
         .publish(|peer| {

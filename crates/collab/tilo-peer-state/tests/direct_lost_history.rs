@@ -66,7 +66,7 @@ impl Linked {
         a.select_exact_admissions().unwrap();
         let mut document = AutoCommit::new();
         document.put(ROOT, "value", "first").unwrap();
-        document.commit_edit("fixture", "value");
+        document.commit_edit("fixture", "value", &a_cert.user_public_key);
         a.install_seed(
             SeedState {
                 workspace_changes: seed_workspace(WORKSPACE, &a_cert, &devices).unwrap(),
@@ -120,13 +120,20 @@ impl Linked {
 
 /// The record's change setting `value`, made on `a`'s copy as `key`'s device.
 fn document_change(a: &DirectSync, key: &SigningKey, value: &str) -> Vec<u8> {
+    let person = a.read(|peer| {
+        peer.certificates()
+            .into_iter()
+            .find(|cert| cert.device_public_key == key.verifying_key().to_bytes())
+            .expect("the workspace holds the device's certificate")
+            .user_public_key
+    });
     let mut edit = AutoCommit::load(&a.read(|a| a.document(APP, RECORD)).unwrap()).unwrap();
     edit.set_actor(automerge::ActorId::from(
         key.verifying_key().to_bytes().to_vec(),
     ));
     let heads = edit.get_heads();
     edit.put(ROOT, "value", value).unwrap();
-    edit.commit_edit("fixture", "value");
+    edit.commit_edit("fixture", "value", &person);
     edit.save_after(&heads)
 }
 

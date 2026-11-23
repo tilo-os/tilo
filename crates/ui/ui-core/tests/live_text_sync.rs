@@ -33,7 +33,7 @@ fn live_text_edit_propagates_through_broker() {
 
     // Late-join handshake: alice ships a full snapshot; bob adopts it.
     a.send(CollabRequest::document_snapshot(a_doc.save()));
-    a_doc.commit_edit("fixture", "text");
+    a_doc.commit_edit("fixture", "text", &[1; 32]);
     let _ = a_doc.save_incremental(); // re-baseline incremental after full save
 
     let mut b_doc = AutoCommit::new();
@@ -55,7 +55,7 @@ fn live_text_edit_propagates_through_broker() {
 
     // Alice "types": incremental edit -> bob applies it.
     a_doc.splice_text(&t, 5, 0, " world").unwrap();
-    a_doc.commit_edit("fixture", "text");
+    a_doc.commit_edit("fixture", "text", &[1; 32]);
     let delta = a_doc.save_incremental();
     assert!(!delta.is_empty(), "the edit must produce a delta");
     a.send(CollabRequest::document_incremental(delta));

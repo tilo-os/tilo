@@ -175,7 +175,7 @@ async fn a_sealed_picture_a_record_names_reaches_the_host_and_outlives_its_write
         ),
     )
     .unwrap();
-    doc.commit_edit("fixture", "photo");
+    doc.commit_edit("fixture", "photo", &phone.cert.user_public_key);
     let message = peer
         .publication_mut()
         .publish_incremental(
@@ -361,7 +361,7 @@ async fn an_unanswered_ask_is_asked_again(process: tilo_clock::testing::OwnProce
         .unwrap();
         pictures.push((address.clone(), store.read(&address).unwrap()));
     }
-    doc.commit_edit("fixture", "pictures");
+    doc.commit_edit("fixture", "pictures", &phone.cert.user_public_key);
     let created = peer
         .publication_mut()
         .publish_document(

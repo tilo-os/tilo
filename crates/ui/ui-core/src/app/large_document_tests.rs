@@ -81,7 +81,7 @@ fn a_change_larger_than_one_frame_reaches_the_broker_before_the_frontier_moves()
             automerge::ScalarValue::Bytes(body.clone()),
         )
         .unwrap();
-    app.state.doc.commit_edit("fixture", "fixture");
+    app.state.doc.commit_edit("fixture", "fixture", &[1; 32]);
     assert!(
         app.pending_primary_document()
             .unwrap()
@@ -123,7 +123,7 @@ fn a_change_larger_than_one_frame_reaches_the_broker_before_the_frontier_moves()
             automerge::ScalarValue::Bytes(edited.clone()),
         )
         .unwrap();
-    app.state.doc.commit_edit("fixture", "fixture");
+    app.state.doc.commit_edit("fixture", "fixture", &[1; 32]);
     assert!(
         app.pending_primary_document()
             .unwrap()
@@ -178,7 +178,7 @@ fn an_over_limit_change_is_reported_and_kept_without_disconnecting() {
             automerge::ScalarValue::Bytes(bytes(collab_types::MAX_DOCUMENT_TRANSFER_BYTES + 1, 5)),
         )
         .unwrap();
-    app.state.doc.commit_edit("fixture", "fixture");
+    app.state.doc.commit_edit("fixture", "fixture", &[1; 32]);
 
     app.broadcast_doc_delta();
 

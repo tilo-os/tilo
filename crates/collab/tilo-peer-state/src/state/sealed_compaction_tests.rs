@@ -45,6 +45,16 @@ pub(super) fn device(root: u8, seed: u8) -> (SigningKey, DeviceCert) {
     (key, cert)
 }
 
+/// The person whose certified device `key` is in `peer`'s workspace.
+pub(super) fn person(peer: &StatePeer, key: &SigningKey) -> [u8; 32] {
+    let device = key.verifying_key().to_bytes();
+    peer.certificates()
+        .into_iter()
+        .find(|cert| cert.device_public_key == device)
+        .expect("the workspace holds the device's certificate")
+        .user_public_key
+}
+
 pub(super) fn fixture() -> Fixture {
     let (owner, authority) = device(1, 2);
     let (other, other_cert) = device(1, 3);
@@ -2119,7 +2129,7 @@ tilo_test_env::scenario! {
         let mut document = AutoCommit::load(&sealing.document(APP, RECORD).unwrap()).unwrap();
         let heads = document.get_heads();
         document.put(ROOT, "value", "sealed").unwrap();
-        document.commit_edit("fixture", "value");
+        document.commit_edit("fixture", "value", &person(&sealing, &f.owner));
         let message = sealing
             .publication_mut()
             .publish_sealed_incremental(
@@ -2173,7 +2183,7 @@ tilo_test_env::scenario! {
         let keys = group.content_keys().unwrap();
         let mut genesis = AutoCommit::new();
         genesis.put(ROOT, "value", "born sealed").unwrap();
-        genesis.commit_edit("fixture", "value");
+        genesis.commit_edit("fixture", "value", &person(&f.replica, &f.owner));
         let mut host = f.replica.clone();
         host.publication_mut()
             .publish_document(APP, record, AutoCommit::new().save(), &f.owner, f.now)
@@ -2262,7 +2272,7 @@ tilo_test_env::scenario! {
         let mut named = |key: &str, value: &str| {
             let heads = author.0.get_heads();
             author.0.put(ROOT, key, value).unwrap();
-            author.0.commit_edit("fixture", key);
+            author.0.commit_edit("fixture", key, &person(&f.replica, &f.owner));
             DocumentMutation::Incremental(author.0.save_after(&heads))
                 .encode()
                 .unwrap()

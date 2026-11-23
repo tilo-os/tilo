@@ -154,7 +154,7 @@ fn edit_from_view(
     let mut chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
     let before = chat.get_heads();
     chat.put(ROOT, "topic", topic).unwrap();
-    chat.commit_edit("fixture", "topic");
+    chat.commit_edit("fixture", "topic", &crate::owner::testing::member_person());
     let message = view.peer().clone().publication_mut().publish_incremental(
         APP,
         "",
@@ -562,7 +562,7 @@ fn unordered_edit(joined: &Enrolled, topic: &str) -> OwnerCommitRequest {
             let mut chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
             let before = chat.get_heads();
             chat.put(ROOT, "topic", topic).unwrap();
-            chat.commit_edit("fixture", "topic");
+            chat.commit_edit("fixture", "topic", &crate::owner::testing::member_person());
             Ok(chat.save_after(&before))
         })
         .unwrap();
@@ -1465,7 +1465,7 @@ async fn a_draft_under_a_write_its_device_sent_meanwhile_is_saved() {
                 let mut chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
                 let before = chat.get_heads();
                 chat.put(ROOT, "topic", "drafted before").unwrap();
-                chat.commit_edit("fixture", "topic");
+                chat.commit_edit("fixture", "topic", &crate::owner::testing::member_person());
                 let mutation = if whole {
                     collab_types::DocumentMutation::Snapshot(chat.save())
                 } else {

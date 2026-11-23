@@ -280,7 +280,7 @@ fn peers_co_edit_converge_share_carets_and_check_signed_edits() {
         // Late-join handshake: A ships a full snapshot, B adopts it. This is
         // exactly the document snapshot path the App drives on join.
         a.send(CollabRequest::document_snapshot(a_doc.save()));
-        a_doc.commit_edit("fixture", "text");
+        a_doc.commit_edit("fixture", "text", &[1; 32]);
         let _ = a_doc.save_incremental(); // re-baseline incremental after full save
 
         let mut b_doc = AutoCommit::new();
@@ -308,7 +308,7 @@ fn peers_co_edit_converge_share_carets_and_check_signed_edits() {
         );
 
         a_doc.splice_text(&a_text, 4, 0, "-EDIT").unwrap();
-        a_doc.commit_edit("fixture", "text");
+        a_doc.commit_edit("fixture", "text", &[1; 32]);
         let delta = a_doc.save_incremental();
         assert!(!delta.is_empty(), "the edit must produce a delta");
         a.send(CollabRequest::document_incremental(delta));
@@ -428,7 +428,8 @@ fn peers_co_edit_converge_share_carets_and_check_signed_edits() {
         let (writer_sk, writer_pub) = generate_keypair();
         let (viewer_sk, viewer_pub) = generate_keypair();
         let artifact = ArtifactId::new();
-        let grants = presets();
+        // The people the two writes name as their invokers.
+        let (writer, viewer) = ([2; 32], [3; 32]);
 
         let mut state = InboundState::default();
         state.artifacts.insert(artifact, ArtifactKind::Note);
@@ -445,7 +446,7 @@ fn peers_co_edit_converge_share_carets_and_check_signed_edits() {
         writer_doc.set_actor(automerge::ActorId::from(b"writer".as_slice()));
         let wt = text_obj(&writer_doc).unwrap();
         writer_doc.splice_text(&wt, 4, 0, "-WROTE").unwrap();
-        writer_doc.commit_edit("fixture", "text");
+        writer_doc.commit_edit("fixture", "text", &writer);
         let writer_delta = writer_doc.save_incremental();
         let writer_op = sign_delta(&writer_sk, writer_pub, artifact, writer_delta, 1);
 
@@ -454,7 +455,7 @@ fn peers_co_edit_converge_share_carets_and_check_signed_edits() {
         viewer_doc.set_actor(automerge::ActorId::from(b"viewer".as_slice()));
         let vt = text_obj(&viewer_doc).unwrap();
         viewer_doc.splice_text(&vt, 4, 0, "-HACKED").unwrap();
-        viewer_doc.commit_edit("fixture", "text");
+        viewer_doc.commit_edit("fixture", "text", &viewer);
         let viewer_delta = viewer_doc.save_incremental();
         let viewer_op = sign_delta(&viewer_sk, viewer_pub, artifact, viewer_delta, 1);
 
@@ -464,7 +465,7 @@ fn peers_co_edit_converge_share_carets_and_check_signed_edits() {
         let skew = StdDuration::from_secs(30);
         match validate_admitted_inbound_op(
             &viewer_op,
-            &author(&grants, Role::Viewer),
+            &member(viewer, Role::Viewer),
             &mut state,
             now,
             skew,
@@ -485,7 +486,7 @@ fn peers_co_edit_converge_share_carets_and_check_signed_edits() {
         // `load_incremental` path the App uses for incremental document events.
         validate_admitted_inbound_op(
             &writer_op,
-            &author(&grants, Role::Editor),
+            &member(writer, Role::Editor),
             &mut state,
             now,
             skew,
@@ -523,15 +524,15 @@ use collab_types::{
 };
 use ed25519_dalek::SigningKey;
 use std::time::{Duration as StdDuration, SystemTime};
-use tilo_action_policy::{Authority, Grant, Grantee, Party, roles};
+use tilo_action_policy::MemberAccess;
 
-/// The role presets an author holding `role` is decided under.
-fn presets() -> Vec<Grant> {
-    roles::workspace_role_grants(DEFAULT_WORKSPACE, &Grantee::role(Role::Owner))
-}
-
-fn author(grants: &[Grant], role: Role) -> Authority<'_> {
-    Authority::person(Party::new(vec![Grantee::role(role)], grants))
+/// `root`'s person as a member of a workspace holding `role`: the access the
+/// changes naming that person are decided under.
+fn member(root: [u8; 32], role: Role) -> MemberAccess {
+    let person = tilo_action_policy::PersonId::from_root(root);
+    let mut policy = tilo_action_policy::WorkspacePolicy::new(DEFAULT_WORKSPACE, "owner");
+    policy.members.insert(person.as_str().to_owned(), role);
+    MemberAccess::person(policy, person)
 }
 
 /// Sign a Splice op whose payload is a real Automerge incremental delta

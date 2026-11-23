@@ -11,6 +11,15 @@ use ed25519_dalek::SigningKey;
 use tilo_user_identity::RevocationList;
 use web_time::Duration;
 
+/// The person whose certified device `key` is in `peer`'s workspace.
+fn person(peer: &StatePeer, key: &SigningKey) -> [u8; 32] {
+    let device = key.verifying_key().to_bytes();
+    peer.certificates()
+        .into_iter()
+        .find(|cert| cert.device_public_key == device)
+        .expect("the workspace holds the device's certificate")
+        .user_public_key
+}
 fn native(peer: &StatePeer) -> TransportOrigin {
     TransportOrigin::RetainedNativePublication {
         publisher: peer.owner_certificates()[0].device_public_key,
@@ -77,7 +86,7 @@ tilo_test_env::scenario! {
         let before = doc.get_heads();
         doc.put(ROOT, "member-published", "original signed operation")
             .unwrap();
-        doc.commit_edit("fixture", "member-published");
+        doc.commit_edit("fixture", "member-published", &person(&host, &member));
         let message = host
             .publication_mut()
             .publish_incremental("test.app", "tab:1", doc.save_after(&before), &member, now)
@@ -124,7 +133,7 @@ tilo_test_env::scenario! {
         let heads = doc.get_heads();
         doc.put(ROOT, "member-change", "retained signed member packet")
             .unwrap();
-        doc.commit_edit("fixture", "member-change");
+        doc.commit_edit("fixture", "member-change", &person(&host, &member));
         let message = host
             .publication_mut()
             .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &member, now)
@@ -268,14 +277,14 @@ fn assert_deferred_governor_revalidation(reopen: bool) {
     let mut doc = AutoCommit::load(&source.document("test.app", "tab:1").unwrap()).unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "predecessor", true).unwrap();
-    doc.commit_edit("fixture", "predecessor");
+    doc.commit_edit("fixture", "predecessor", &person(&source, &member));
     let predecessor = source
         .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &member, now)
         .unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "native-descendant", true).unwrap();
-    doc.commit_edit("fixture", "native-descendant");
+    doc.commit_edit("fixture", "native-descendant", &person(&source, &member));
     let descendant = source
         .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &member, now)
@@ -352,14 +361,14 @@ tilo_test_env::scenario! {
         let mut doc = AutoCommit::load(&source.document("test.app", "tab:1").unwrap()).unwrap();
         let heads = doc.get_heads();
         doc.put(ROOT, "parent", true).unwrap();
-        doc.commit_edit("fixture", "parent");
+        doc.commit_edit("fixture", "parent", &person(&source, &member));
         let parent = source
             .publication_mut()
             .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &member, now)
             .unwrap();
         let heads = doc.get_heads();
         doc.put(ROOT, "child", true).unwrap();
-        doc.commit_edit("fixture", "child");
+        doc.commit_edit("fixture", "child", &person(&source, &member));
         let child = source
             .publication_mut()
             .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &member, now)
@@ -450,14 +459,14 @@ tilo_test_env::scenario! {
         let mut doc = AutoCommit::load(&author.document("test.app", "tab:1").unwrap()).unwrap();
         let before = doc.get_heads();
         doc.put(ROOT, "pending-parent", "parent").unwrap();
-        doc.commit_edit("fixture", "pending-parent");
+        doc.commit_edit("fixture", "pending-parent", &person(&author, &member));
         let _parent = author
             .publication_mut()
             .publish_incremental("test.app", "tab:1", doc.save_after(&before), &member, now)
             .unwrap();
         let before = doc.get_heads();
         doc.put(ROOT, "pending-child", "child").unwrap();
-        doc.commit_edit("fixture", "pending-child");
+        doc.commit_edit("fixture", "pending-child", &person(&author, &member));
         let child = author
             .publication_mut()
             .publish_incremental("test.app", "tab:1", doc.save_after(&before), &member, now)
@@ -510,14 +519,14 @@ tilo_test_env::scenario! {
         let mut doc = AutoCommit::load(&author.document("test.app", "tab:1").unwrap()).unwrap();
         let before = doc.get_heads();
         doc.put(ROOT, "governor-parent", "parent").unwrap();
-        doc.commit_edit("fixture", "governor-parent");
+        doc.commit_edit("fixture", "governor-parent", &person(&author, &governor));
         let parent = author
             .publication_mut()
             .publish_incremental("test.app", "tab:1", doc.save_after(&before), &governor, now)
             .unwrap();
         let before = doc.get_heads();
         doc.put(ROOT, "revoked-member-child", "child").unwrap();
-        doc.commit_edit("fixture", "revoked-member-child");
+        doc.commit_edit("fixture", "revoked-member-child", &person(&author, &member));
         let child = author
             .publication_mut()
             .publish_incremental("test.app", "tab:1", doc.save_after(&before), &member, now)
@@ -579,7 +588,7 @@ tilo_test_env::scenario! {
         workspace
             .put(ROOT, "cut-workspace-parent", "parent")
             .unwrap();
-        workspace.commit_edit("fixture", "cut-workspace-parent");
+        workspace.commit_edit("fixture", "cut-workspace-parent", &receiver.owner_certificates()[0].user_public_key);
         let parent = NeighbourMsg::SyncResp {
             workspace: receiver.core.workspace.clone(),
             changes: workspace
@@ -590,7 +599,7 @@ tilo_test_env::scenario! {
         };
         let before = workspace.get_heads();
         workspace.put(ROOT, "cut-workspace-child", "child").unwrap();
-        workspace.commit_edit("fixture", "cut-workspace-child");
+        workspace.commit_edit("fixture", "cut-workspace-child", &receiver.owner_certificates()[0].user_public_key);
         let child = NeighbourMsg::SyncResp {
             workspace: receiver.core.workspace.clone(),
             changes: workspace

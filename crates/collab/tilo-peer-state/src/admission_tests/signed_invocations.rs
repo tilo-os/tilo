@@ -46,7 +46,7 @@ fn seeded_with(revocations: RevocationList) -> Seeded {
     .unwrap();
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "value", "seed").unwrap();
-    doc.commit_edit("fixture", "value");
+    doc.commit_edit("fixture", "value", &ac.user_public_key);
     peer.install_seed(
         SeedState {
             workspace_changes: seed_workspace(WORKSPACE, &ac, &[ac.clone(), bc.clone()]).unwrap(),
@@ -374,7 +374,9 @@ tilo_test_env::scenario! {
         // change names who made it and admission keeps it.
         let platform = collab_types::Stamp {
             verb: "$create".into(),
-            invoker: hex::encode(bc.user_public_key),
+            invoker: collab_types::Stamp::by(&tilo_action_policy::Actor::Member(
+                tilo_action_policy::MemberId::person(hex::encode(bc.user_public_key)),
+            )),
             invocation: "i1".into(),
             ..collab_types::Stamp::default()
         };

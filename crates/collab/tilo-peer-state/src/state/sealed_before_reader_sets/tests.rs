@@ -9,7 +9,7 @@
 //! artifact of then ([`collab_types::artifact_before_reader_sets`]). A write that build makes
 //! reaches this one live under the same artifact, sealed or in the clear.
 
-use super::sealed_compaction_tests::{APP, RECORD as DOC, device, open};
+use super::sealed_compaction_tests::{APP, RECORD as DOC, device, open, person};
 use super::*;
 use collab_types::CommitNamed as _;
 use collab_types::ContentRetention;
@@ -290,7 +290,7 @@ tilo_test_env::scenario! {
         let mut author = super::sealed_compaction_tests::Author::new(&f.replica);
         let heads = author.0.get_heads();
         author.0.put(ROOT, "before", "in the clear").unwrap();
-        author.0.commit_edit("fixture", "before");
+        author.0.commit_edit("fixture", "before", &person(&f.replica, &f.editor));
         let edit = DocumentMutation::Incremental(author.0.save_after(&heads))
             .encode()
             .unwrap();

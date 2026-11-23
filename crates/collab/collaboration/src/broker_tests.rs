@@ -4866,7 +4866,7 @@ tilo_test_env::scenario! {
         let heads = document.base_heads();
         let snapshot = document.save();
         document.put(automerge::ROOT, "body", "after").unwrap();
-        collab_types::CommitNamed::commit_edit(&mut document, "fixture", "body");
+        collab_types::CommitNamed::commit_edit(&mut document, "fixture", "body", &[1; 32]);
         let delta = document.save_after(&heads);
         // The route refuses documents until it is joined and its document
         // mode is resolved; the first refused attempt starts that join.

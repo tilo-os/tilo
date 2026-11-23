@@ -51,10 +51,20 @@ fn write_at(peer: &mut StatePeer, key: &SigningKey, field: &str, at: SystemTime)
     let mut doc = AutoCommit::load(&peer.document(APP, DOCUMENT).unwrap()).unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, field, "written").unwrap();
-    doc.commit_edit("fixture", field);
+    doc.commit_edit("fixture", field, &person(peer, key));
     peer.publication_mut()
         .publish_incremental(APP, DOCUMENT, doc.save_after(&heads), key, at)
         .unwrap()
+}
+
+/// The person whose certified device `key` is in `peer`'s workspace.
+fn person(peer: &StatePeer, key: &SigningKey) -> [u8; 32] {
+    let device = key.verifying_key().to_bytes();
+    peer.certificates()
+        .into_iter()
+        .find(|cert| cert.device_public_key == device)
+        .expect("the workspace holds the device's certificate")
+        .user_public_key
 }
 
 fn removal_of(device: &SigningKey, reason: RevocationReason, now: SystemTime) -> RevocationEntry {
@@ -272,7 +282,7 @@ tilo_test_env::scenario! {
         let mut thief = story.before_removal.clone();
         let mut other = AutoCommit::new();
         other.put(ROOT, "thief", "written").unwrap();
-        other.commit_edit("fixture", "thief");
+        other.commit_edit("fixture", "thief", &person(&thief, &story.b));
         let founded = thief
             .publication_mut()
             .publish_document(APP, "tab:2", other.save(), &story.b, story.now)
