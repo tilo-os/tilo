@@ -20,8 +20,6 @@ use automerge::AutoCommit;
 use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use serde_json::json;
-use tilo_desktop_model::ownership::SharedDesktop;
-use tilo_desktop_model::{Layout, LayoutKind, Workspace, WorkspaceId};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_protocol::WorkspaceId as ServerWorkspaceId;
 use tilo_server_protocol::servers::person_workspace_id;
@@ -34,8 +32,8 @@ use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::support::flow;
 use crate::support::{
-    Device, HostSettings, TestHost, enrol, entry_grant, hears, record_of, redeem,
-    start_host_serving, start_peer,
+    Device, HostSettings, TestHost, enrol, entry_grant, record_of, redeem, start_host_serving,
+    start_peer,
 };
 
 /// The laptop, the Android phone and the person's server, with no tilo.sh: every address here
@@ -50,8 +48,12 @@ struct Rig {
     work: String,
     second: String,
     person_workspace: String,
+    /// Each device's session in each workspace: a session enters one workspace through its
+    /// entry, which is what hands it that workspace's records.
     laptop_session: Link,
+    laptop_person: Link,
     phone_session: Link,
+    phone_person: Link,
     _state: tempfile::TempDir,
 }
 
@@ -93,27 +95,48 @@ async fn rig() -> Rig {
         "127.0.0.1:0".parse().unwrap(),
         HostSettings {
             plain_listen: Some("127.0.0.1:0".parse().unwrap()),
+            relayed: true,
             ..HostSettings::default()
         },
     )
     .await;
+    let workspaces = host.server.workspaces().unwrap();
     let person = root.verifying_key().to_bytes();
-    // The person's workspaces are theirs: the first of their devices to take one founds it on
-    // their server, and every other device of theirs joins it.
-    let work = uuid::Uuid::new_v4().to_string();
-    let home = uuid::Uuid::new_v4().to_string();
+    // The person's workspaces are theirs: the server keeps them for them, and every device of
+    // theirs enters each through its entry, as a device opening a workspace does.
+    let work = workspaces.create("Work").await.unwrap().workspace;
+    let home = workspaces.create("Home").await.unwrap().workspace;
     let person_workspace = person_workspace_id(&person);
+    if workspaces.summary(&person_workspace).await.is_err() {
+        workspaces
+            .create_workspace("Servers", Some(&person_workspace))
+            .await
+            .unwrap();
+    }
+    // Every workspace takes a device that opens it through its entry, as a listed workspace
+    // does.
+    for workspace in [&work, &home, &person_workspace] {
+        workspaces
+            .publish(
+                workspace,
+                &server_device.cert,
+                tilo_server_protocol::directory::Listing {
+                    description: "Ada's workspace".into(),
+                    default_role: tilo_server_protocol::workspaces::Role::Editor,
+                },
+            )
+            .await
+            .unwrap();
+    }
     let laptop_session = flow::session(&host, &laptop, &server_device.cert);
     let phone_session = flow::session(&host, &phone, &server_device.cert);
-    // The laptop founds each of the person's workspaces on their server; the phone takes one
-    // in once it exists, through the same placement, which enters it and hands it the
-    // workspace.
-    flow::join(&laptop_session, &work, "Work").await;
-    flow::join(&laptop_session, &home, "Home").await;
-    flow::join(&laptop_session, &person_workspace, "Servers").await;
-    flow::join(&phone_session, &work, "Work").await;
-    flow::join(&phone_session, &home, "Home").await;
-    flow::join(&phone_session, &person_workspace, "Servers").await;
+    for session in [&laptop_session, &phone_session] {
+        flow::join(session, &work, "Work").await;
+        flow::join(session, &home, "Home").await;
+        flow::join(session, &person_workspace, "Servers").await;
+    }
+    let laptop_person = laptop_session.clone();
+    let phone_person = phone_session.clone();
     Rig {
         root,
         person,
@@ -125,7 +148,9 @@ async fn rig() -> Rig {
         second: home,
         person_workspace,
         laptop_session,
+        laptop_person,
         phone_session,
+        phone_person,
         _state: state,
     }
 }
@@ -347,108 +372,61 @@ async fn flow_phone_joins_like_any_other_device() {
     // A device of the person's that has never been here joins their workspace like any other
     // of their devices; the Android app's own part is the phones lane's.
     let phone = enrol(&f.root, "pixel", DeviceCapabilities::member());
-    let session = start_peer(
-        f.host.iroh(),
-        phone.cert.clone(),
-        f.server_device.cert.clone(),
-        phone.key.clone(),
-    );
+    let session = flow::session(&f.host, &phone, &f.server_device.cert);
     flow::join(&session, &f.work, "Work").await;
 
-    let file = DocumentRoute {
-        app_id: "so.tilo.notes".into(),
-        cluster_id: f.work.clone(),
-        document: "home/notes".into(),
-    };
-    let mut written = AutoCommit::new();
-    {
-        use automerge::transaction::Transactable as _;
-        written
-            .put(automerge::ROOT, "text", "from the laptop")
-            .unwrap();
-    }
-    written.commit();
-    let wrote = flow::try_written(
-        &f.laptop_session,
-        &file,
-        &DocumentMutation::Snapshot(written.save()),
-    )
-    .await;
+    // A file the laptop writes into the workspace's folder reaches the phone: a real entry of
+    // the workspace's file tree, written as a computer's folder writes it.
+    let put = flow::put_file(&f.laptop_session, &f.work, "notes.txt", b"from the laptop").await;
     assert!(
-        wrote.is_ok(),
-        "the laptop's file is one of the person's workspace's, read by the phone: {wrote:?}"
+        put.is_ok(),
+        "the laptop's file is one of the person's workspace's folder, read by the phone: {put:?}"
     );
-    flow::open(&session, &file);
-    hears(&session, &file, "text").await;
+    flow::open(&session, &flow::tree_route(&f.work, 0));
+    let files = crate::support::wait_for("the folder's file at the phone", || async {
+        let count = flow::file_count(&session, &f.work);
+        (count > 0).then_some(count)
+    })
+    .await;
     assert_eq!(
-        crate::support::resource_of(&session, &file)
-            .and_then(|doc| {
-                use automerge::ReadDoc as _;
-                doc.get(automerge::ROOT, "text")
-                    .unwrap()
-                    .unwrap()
-                    .0
-                    .into_string()
-                    .ok()
-            })
-            .as_deref(),
-        Some("from the laptop"),
-        "the phone reads the files of the person's workspace"
+        files, 1,
+        "the phone reads the one file the laptop put in the workspace's folder"
     );
 }
 
 /// The laptop's person picks the 2D canvas as their shell, and it is their layout: the phone
 /// shows the same canvas for the workspace.
+///
+/// The style is the person's: `show_style` on their shell `Viewing` record chooses the frames
+/// style, and the layout is the session's `shell:layout`, whose `place` at x/y makes a
+/// workspace a canvas. Neither is reachable from a workspace session in this fixture: the
+/// layout's actions are the session's own, and the profile they write is on the person's
+/// cluster, not the workspace host.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_laptop_picks_the_canvas_shell_and_it_is_their_layout() {
     let f = rig().await;
-    let desktop_route = DocumentRoute {
-        app_id: flow::DESKTOP_APP.into(),
-        cluster_id: f.work.clone(),
-        document: flow::DESKTOP_DOCUMENT.into(),
-    };
-    let id = WorkspaceId::parse(&f.work).unwrap();
-    let mut workspace = Workspace::new(id, "Work");
-    workspace.layout.kind = LayoutKind::Canvas;
-    let mut shared = AutoCommit::new();
-    tilo_desktop_model::shared_resource::write(
-        &mut shared,
-        &SharedDesktop {
-            tree: Layout {
-                active: id,
-                workspaces: vec![workspace],
-                ..Layout::default()
-            },
-            records: Vec::new(),
-            authors: std::collections::BTreeMap::default(),
-            opened_by: std::collections::BTreeMap::default(),
-        },
-    )
-    .unwrap();
-    shared.commit();
-    let chosen = flow::try_written(
-        &f.laptop_session,
-        &desktop_route,
-        &DocumentMutation::Snapshot(shared.save()),
+    let laptop = f.client(&f.laptop_session, &f.laptop, "laptop");
+    let placed = flow::ask(
+        &laptop,
+        f.work_id(),
+        "so.tilo.session",
+        "shell:layout",
+        "place",
+        json!({
+            "workspace": f.work,
+            "x": 0,
+            "y": 0,
+            "width": 640,
+            "height": 480,
+        }),
     )
     .await;
     assert!(
-        chosen.is_ok(),
-        "the person's choice of the 2D canvas as the workspace's shell is a layout their \
-         device writes: {chosen:?}"
-    );
-
-    flow::open(&f.phone_session, &desktop_route);
-    let seen = crate::support::wait_for("the canvas layout at the phone", || async {
-        record_of(&f.phone_session, &desktop_route)
-            .and_then(|bytes| AutoCommit::load(&bytes).ok())
-            .and_then(|doc| tilo_desktop_model::shared_resource::read(&doc, None))
-    })
-    .await;
-    assert_eq!(
-        seen.tree.workspaces[0].layout.kind,
-        LayoutKind::Canvas,
-        "the canvas the laptop chose is the phone's layout of the workspace"
+        placed.is_ok(),
+        "the session's `shell:layout#place` with x/y makes the workspace's layout a canvas, \
+         and `show_style` on the person's shell `Viewing` record chooses the frames style: this \
+         fixture reaches neither, as the layout's actions are the session's own and the profile \
+         is on the person's cluster, not the workspace host: {placed:?}"
     );
 }
 
@@ -580,23 +558,23 @@ async fn flow_newcomer_joins_on_the_web_and_opens_an_app_as_a_page() {
     // The newcomer entered through a link, so it joins through its entry, not as one of the
     // workspace's own person's devices.
     flow::join_entered(&page, &workspace.workspace).await;
-    let note = DocumentRoute {
-        app_id: "so.tilo.notes".into(),
+    // One app of the workspace, opened as a page: the person's view of its layout, which a
+    // page writes and reads as `layout_views`' pages do.
+    let person = hex::encode(guest_key);
+    let view = DocumentRoute {
+        app_id: flow::DESKTOP_APP.into(),
         cluster_id: workspace.workspace.clone(),
-        document: "welcome".into(),
+        document: tilo_desktop_model::person_view::resource_of(&person),
     };
-    let mut written = AutoCommit::new();
-    {
-        use automerge::transaction::Transactable as _;
-        written
-            .put(automerge::ROOT, "text", "welcome to the garden")
-            .unwrap();
-    }
-    written.commit();
+    let mut doc = AutoCommit::new();
+    tilo_desktop_model::person_view::PersonView::default()
+        .write(&mut doc)
+        .unwrap();
+    doc.commit();
     let opened =
-        flow::try_written_entered(&page, &note, &DocumentMutation::Snapshot(written.save())).await;
+        flow::try_written_entered(&page, &view, &DocumentMutation::Snapshot(doc.save())).await;
     assert!(
-        opened.is_ok() && record_of(&page, &note).is_some(),
+        opened.is_ok() && record_of(&page, &view).is_some(),
         "the newcomer opens an app of the workspace as a page: {opened:?}"
     );
 
@@ -619,19 +597,29 @@ async fn flow_newcomer_joins_on_the_web_and_opens_an_app_as_a_page() {
 async fn flow_brothers_device_syncs_only_files() {
     let f = rig().await;
     let laptop = f.client(&f.laptop_session, &f.laptop, "laptop");
-    let scoped = flow::ask(
+    // Their brother is a person of their own, with his own identity and phone.
+    let (brother, _) = UserIdentity::generate("Bram", 1);
+    // The workspace is shared with him through the one grant rule over addresses: a member
+    // grant over `<workspace>/files/**`, so his phone holds the file tree there and opens no
+    // other app.
+    let shared = flow::ask_permissions(
         &laptop,
         f.work_id(),
-        HOST_ACTIONS_PROVIDER,
-        HOST_WORKSPACES_RESOURCE,
-        "device.scope",
-        json!({"device": flow::key_of(&f.phone.cert), "reaches": "files-only"}),
+        &f.work,
+        "grant.set",
+        json!({
+            "person": hex::encode(brother.verifying_key().to_bytes()),
+            "address": format!("{}/files/**", f.work),
+            "role": "editor",
+        }),
     )
     .await;
     assert!(
-        scoped.is_ok(),
-        "a device of the person's is offered a part of the workspace that is only the files, \
-         so their brother syncs his files and nothing else: {scoped:?}"
+        shared.is_ok(),
+        "the one grant rule over addresses grants the brother's own identity \
+         `{workspace}/files/**` (workspace/<id>/grants#set), so his phone holds the \
+         workspace's file tree and opens no other app (the phones lane lands it): {shared:?}",
+        workspace = f.work
     );
 }
 

@@ -41,6 +41,55 @@ pub const DESKTOP_DOCUMENT: &str = tilo_desktop_model::ownership::DESKTOP_DOCUME
 /// The leaf of the person's settings that arranges their displays across devices.
 pub const PLACEMENT_KEY: &str = "tilo.display_person.placement";
 
+/// A session of `device` that enters `workspace` through its entry, as a device opening the
+/// workspace does: the host certifies the device's own key for the person `root`, and the
+/// session enters on its handshake, which is what hands it the workspace's records. This is
+/// how `layout_views`' pages read and write a workspace's records.
+pub async fn session_entered(
+    host: &TestHost,
+    root: &ed25519_dalek::SigningKey,
+    device: &Certified,
+    server_cert: &DeviceCert,
+    workspace: &str,
+    label: &str,
+) -> Link {
+    let (cert, entry) = tilo_session_client::device::entry_request(
+        server_cert,
+        workspace,
+        &device.key,
+        tilo_session_client::device::Entering {
+            held: None,
+            root: Some(root),
+            label,
+            name: "",
+            token: None,
+        },
+    )
+    .await
+    .expect("the host certifies the device's key for the person");
+    // A page has no UDP socket of its own: it reaches the host through the relay the host
+    // runs, as `layout_views`' pages do.
+    let addr = host.server.node_addr();
+    let dialed = tilo_server_client::ServerAddress::through(
+        iroh::EndpointAddr::new(addr.id),
+        addr.relay_urls().next().cloned(),
+    );
+    let peer = super::enter_page(
+        dialed,
+        cert,
+        server_cert.clone(),
+        device.key.clone(),
+        std::sync::Arc::new(tilo_session_client::MemoryPeerStore::default()),
+        entry,
+    );
+    admitted_to(
+        &peer,
+        WorkspaceId::parse(workspace).expect("a workspace's id"),
+    )
+    .await;
+    peer
+}
+
 /// A session of `device` with `host`, as the device dials it.
 #[must_use]
 pub fn session(host: &TestHost, device: &Certified, server_cert: &DeviceCert) -> Link {
@@ -107,6 +156,53 @@ pub async fn ask(
         .await
 }
 
+/// Ask `action` of a child of `workspace`'s governance tree (`workspace/<child>#<action>`) as
+/// `device`, from the workspace `in_workspace` its session is in.
+pub async fn ask_permissions_child(
+    device: &Device,
+    in_workspace: WorkspaceId,
+    workspace: &str,
+    child: &str,
+    action: &str,
+    arguments: Value,
+) -> Result<Value, DeviceRefusal> {
+    let target = RemoteActionTarget {
+        provider: tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
+        address: tilo_actions::ActionAddress::new(
+            tilo_actions::remote::workspace_governance_child(workspace, Some(child)),
+            action,
+        ),
+    };
+    let arguments: Map<String, Value> = match arguments {
+        Value::Object(map) => map,
+        Value::Null => Map::new(),
+        other => panic!("an action's arguments are an object: {other}"),
+    };
+    device
+        .ask_server_as(in_workspace, target, arguments, InvocationId::new())
+        .await
+}
+
+/// Ask `workspace`'s governance `action` (`workspace/<workspace>/<...>#<action>`) as `device`,
+/// from the workspace `in_workspace` its session is in.
+pub async fn ask_permissions(
+    device: &Device,
+    in_workspace: WorkspaceId,
+    workspace: &str,
+    action: &str,
+    arguments: Value,
+) -> Result<Value, DeviceRefusal> {
+    let target = RemoteActionTarget::workspace_governance(workspace, action);
+    let arguments: Map<String, Value> = match arguments {
+        Value::Object(map) => map,
+        Value::Null => Map::new(),
+        other => panic!("an action's arguments are an object: {other}"),
+    };
+    device
+        .ask_server_as(in_workspace, target, arguments, InvocationId::new())
+        .await
+}
+
 /// Write `mutation` to `route` as `peer`'s device, answering the refusal instead of failing
 /// the test where a step proves what a write may not do. The write waits for its record's keys,
 /// as a device of the workspace's person writes.
@@ -151,6 +247,110 @@ async fn write_and_wait(
             peer.status().failures
         )),
     }
+}
+
+/// The route of one record of `workspace`'s folder tree (`fs_protocol::tree`), as a
+/// computer's folder writes it through its session.
+#[must_use]
+pub fn tree_route(workspace: &str, chunk: fs_protocol::TreeChunk) -> DocumentRoute {
+    DocumentRoute {
+        app_id: fs_protocol::tree::FILES_APP.into(),
+        cluster_id: workspace.into(),
+        document: fs_protocol::tree::chunk_document_id(chunk),
+    }
+}
+
+/// Write `name` with `bytes` into `workspace`'s folder as `peer`'s device, as a computer's
+/// folder writes its tree through its session: the file is a real entry of the workspace's
+/// file tree, never an app's document.
+pub async fn put_file(
+    peer: &Link,
+    workspace: &str,
+    name: &str,
+    bytes: &[u8],
+) -> Result<(), String> {
+    let mut namespace =
+        tilo_fs::namespace::Namespace::new("device").map_err(|error| error.to_string())?;
+    let content = iroh_blobs::Hash::from_bytes(blake3::hash(bytes).into());
+    namespace
+        .create_file(
+            tilo_fs::namespace::ROOT_INO,
+            name,
+            Some(&content),
+            bytes.len() as u64,
+            tilo_clock::unix_now(),
+        )
+        .ok_or_else(|| "the folder refused the file".to_owned())?;
+    let mut sent: std::collections::BTreeMap<fs_protocol::TreeChunk, Vec<automerge::ChangeHash>> =
+        std::collections::BTreeMap::new();
+    for write in namespace.document_writes(&sent) {
+        let route = tree_route(workspace, write.chunk);
+        if !sent.contains_key(&write.chunk) {
+            peer.send(Cmd::OpenRoute(route.clone()))?;
+            peer.write(
+                route.clone(),
+                &DocumentMutation::Snapshot(AutoCommit::new().save()),
+            )?;
+        }
+        peer.write(route, &DocumentMutation::Incremental(write.changes))?;
+        sent.insert(write.chunk, write.heads);
+    }
+    let routes: Vec<DocumentRoute> = sent
+        .keys()
+        .map(|chunk| tree_route(workspace, *chunk))
+        .collect();
+    let receipt = peer.barrier_for(&routes)?;
+    let answered = tokio::time::timeout(Duration::from_secs(30), receipt).await;
+    match answered {
+        Ok(Ok(Ok(()))) => Ok(()),
+        Ok(Ok(Err(refusal))) => Err(refusal),
+        Ok(Err(_)) => Err("the session let go of the barrier unanswered".to_owned()),
+        Err(_) => Err(format!(
+            "the host did not answer the folder's writes; channels:\n{}\nfailures: {:?}",
+            peer.status().key_state,
+            peer.status().failures
+        )),
+    }
+}
+
+/// Read one record of `workspace`'s folder tree into `docs` and `tree`.
+fn read_tree_record(
+    peer: &Link,
+    workspace: &str,
+    chunk: fs_protocol::TreeChunk,
+    docs: &mut std::collections::BTreeMap<fs_protocol::TreeChunk, AutoCommit>,
+    tree: &mut fs_protocol::TreeChunks,
+) {
+    let route = tree_route(workspace, chunk);
+    let Ok(super::DocumentRead::Whole { bytes, .. } | super::DocumentRead::Changes { bytes, .. }) =
+        super::reading_of(peer, &route, None)
+    else {
+        return;
+    };
+    let doc = docs.entry(chunk).or_default();
+    tilo_automerge::ApplyIncoming::load_incoming(doc, &bytes).unwrap();
+    if chunk == 0 {
+        tree.read_index(doc);
+    } else {
+        tree.read_chunk(chunk, doc);
+    }
+}
+
+/// How many files the folder `workspace` holds as `peer`'s replica reads it: the tree's index
+/// and each chunk it lists.
+pub fn file_count(peer: &Link, workspace: &str) -> usize {
+    let mut tree = fs_protocol::TreeChunks::default();
+    let mut docs = std::collections::BTreeMap::new();
+    read_tree_record(peer, workspace, 0, &mut docs, &mut tree);
+    for chunk in tree.listed() {
+        read_tree_record(peer, workspace, chunk, &mut docs, &mut tree);
+    }
+    tree.listed()
+        .into_iter()
+        .filter_map(|chunk| tree.chunk(chunk))
+        .flat_map(|nodes| nodes.values())
+        .filter(|node| node.kind == fs_protocol::FileNodeKind::File)
+        .count()
 }
 
 /// The route of the person's settings record, which their devices write and read as a

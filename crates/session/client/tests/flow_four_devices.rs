@@ -16,25 +16,20 @@
     reason = "in a test these are the assertion, not a hazard; a flow's steps set up more than one reads"
 )]
 
-use automerge::transaction::Transactable as _;
-use automerge::{AutoCommit, ROOT, ReadDoc as _};
-use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_actions::remote::{person_models, person_vault};
-use tilo_desktop_model::ownership::SharedDesktop;
-use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
-use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_protocol::WorkspaceId as ServerWorkspaceId;
 use tilo_server_protocol::servers::person_workspace_id;
 use tilo_server_session::workspaces::{
-    PersonalDevice, PersonalList, PersonalWorkspace, WorkspaceLabels,
+    CREATE_WORKSPACE, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, PersonalDevice,
+    PersonalList, PersonalWorkspace, WorkspaceLabels,
 };
 use tilo_session_client::Link;
 use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, UserIdentity};
 
 use crate::support::flow;
-use crate::support::{Device, TestHost, enrol, hears, record_of, start_workspace_host};
+use crate::support::{Device, TestHost, enrol, start_workspace_host_relaying};
 
 /// The person's four devices, entered into every workspace they have, with a session each
 /// for the three that run a Tilo shell; the fourth is the server itself.
@@ -49,9 +44,15 @@ struct Four {
     work: String,
     home: String,
     person_workspace: String,
+    /// Each device's session in each workspace: a session enters one workspace through its
+    /// entry, which is what hands it that workspace's records.
     desktop_session: Link,
+    desktop_home: Link,
+    desktop_person: Link,
     pi_session: Link,
+    pi_person: Link,
     laptop_session: Link,
+    laptop_person: Link,
     _state: tempfile::TempDir,
 }
 
@@ -85,27 +86,47 @@ async fn four_devices() -> Four {
     let pi = enrol(&root, "orange-pi", DeviceCapabilities::member());
     let laptop = enrol(&root, "snapdragon-laptop", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let host = start_workspace_host(&root, &server_device, state.path(), false).await;
+    let host =
+        start_workspace_host_relaying(&root, &server_device, state.path(), false, true).await;
+    let workspaces = host.server.workspaces().unwrap();
     let person = root.verifying_key().to_bytes();
-    // The person's workspaces are theirs: the first of their devices to take one founds it on
-    // their host, and every other device of theirs joins it.
-    let work = uuid::Uuid::new_v4().to_string();
-    let home = uuid::Uuid::new_v4().to_string();
+    // The person's workspaces are theirs: the server keeps them for them, and every device of
+    // theirs enters each through its entry, as a device opening a workspace does.
+    let work = workspaces.create("Work").await.unwrap().workspace;
+    let home = workspaces.create("Home").await.unwrap().workspace;
     let person_workspace = person_workspace_id(&person);
+    if workspaces.summary(&person_workspace).await.is_err() {
+        workspaces
+            .create_workspace("Servers", Some(&person_workspace))
+            .await
+            .unwrap();
+    }
+    // Every workspace takes a device that opens it through its entry, as a listed workspace
+    // does.
+    for workspace in [&work, &home, &person_workspace] {
+        workspaces
+            .publish(
+                workspace,
+                &server_device.cert,
+                tilo_server_protocol::directory::Listing {
+                    description: "Ada's workspace".into(),
+                    default_role: tilo_server_protocol::workspaces::Role::Editor,
+                },
+            )
+            .await
+            .unwrap();
+    }
     let desktop_session = flow::session(&host, &desktop, &server_device.cert);
     let pi_session = flow::session(&host, &pi, &server_device.cert);
     let laptop_session = flow::session(&host, &laptop, &server_device.cert);
-    // The desktop founds each of the person's workspaces on their host; the others take one
-    // in once it exists, through the same placement, which enters them and hands them the
-    // workspace.
-    flow::join(&desktop_session, &work, "Work").await;
-    flow::join(&desktop_session, &home, "Home").await;
-    flow::join(&desktop_session, &person_workspace, "Servers").await;
-    for session in [&pi_session, &laptop_session] {
+    for session in [&desktop_session, &pi_session, &laptop_session] {
         flow::join(session, &work, "Work").await;
         flow::join(session, &home, "Home").await;
         flow::join(session, &person_workspace, "Servers").await;
     }
+    let (desktop_home, desktop_person) = (desktop_session.clone(), desktop_session.clone());
+    let pi_person = pi_session.clone();
+    let laptop_person = laptop_session.clone();
     Four {
         root,
         person,
@@ -118,8 +139,12 @@ async fn four_devices() -> Four {
         home,
         person_workspace,
         desktop_session,
+        desktop_home,
+        desktop_person,
         pi_session,
+        pi_person,
         laptop_session,
+        laptop_person,
         _state: state,
     }
 }
@@ -209,91 +234,56 @@ async fn flow_all_four_devices_see_every_workspace_app_and_file() {
         }
     }
 
-    // A file the desktop writes is the file every other device reads.
-    let file = DocumentRoute {
-        app_id: "so.tilo.notes".into(),
-        cluster_id: f.work.clone(),
-        document: "home/welcome".into(),
-    };
-    let mut doc = AutoCommit::new();
-    doc.put(ROOT, "text", "hello from the desktop").unwrap();
-    doc.commit();
-    let wrote = flow::try_written(
+    // A file the desktop writes into the workspace's folder is the file every other device
+    // reads: a real entry of the workspace's file tree, written as a computer's folder writes
+    // it, never an app's document.
+    let put = flow::put_file(
         &f.desktop_session,
-        &file,
-        &DocumentMutation::Snapshot(doc.save()),
+        &f.work,
+        "welcome.txt",
+        b"hello from the desktop",
     )
     .await;
     assert!(
-        wrote.is_ok(),
-        "the file the desktop writes is the workspace's, which every device of theirs reads: \
-         {wrote:?}"
+        put.is_ok(),
+        "the file the desktop writes is one of the workspace's folder, which every device of \
+         theirs reads: {put:?}"
     );
     for (label, session) in [
         ("the Orange Pi", &f.pi_session),
         ("the laptop", &f.laptop_session),
     ] {
-        flow::open(session, &file);
-        hears(session, &file, "text").await;
-        assert_eq!(
-            crate::support::resource_of(session, &file)
-                .and_then(|doc| doc.get(ROOT, "text").unwrap().unwrap().0.into_string().ok())
-                .as_deref(),
-            Some("hello from the desktop"),
-            "{label} reads the file the desktop wrote"
-        );
-    }
-
-    // The apps' windows live on the workspace's shared desktop, which every device shows.
-    let desktop_route = DocumentRoute {
-        app_id: flow::DESKTOP_APP.into(),
-        cluster_id: f.work.clone(),
-        document: flow::DESKTOP_DOCUMENT.into(),
-    };
-    let mut shared = AutoCommit::new();
-    let layout = Layout {
-        active: WorkspaceId::parse(&f.work).unwrap(),
-        workspaces: vec![Workspace::new(WorkspaceId::parse(&f.work).unwrap(), "Work")],
-        ..Layout::default()
-    };
-    tilo_desktop_model::shared_resource::write(
-        &mut shared,
-        &SharedDesktop {
-            tree: layout,
-            records: Vec::new(),
-            authors: std::collections::BTreeMap::default(),
-            opened_by: std::collections::BTreeMap::default(),
-        },
-    )
-    .unwrap();
-    shared.commit();
-    let published = flow::try_written(
-        &f.desktop_session,
-        &desktop_route,
-        &DocumentMutation::Snapshot(shared.save()),
-    )
-    .await;
-    assert!(
-        published.is_ok(),
-        "the desktop's shared desktop, which holds every open app's window, is written by a \
-         device of the person's: {published:?}"
-    );
-    for (label, session) in [
-        ("the Orange Pi", &f.pi_session),
-        ("the laptop", &f.laptop_session),
-    ] {
-        flow::open(session, &desktop_route);
-        let seen = crate::support::wait_for("the shared desktop at the device", || async {
-            record_of(session, &desktop_route)
-                .and_then(|bytes| AutoCommit::load(&bytes).ok())
-                .and_then(|doc| tilo_desktop_model::shared_resource::read(&doc, None))
-                .filter(|desktop| !desktop.tree.workspaces.is_empty())
+        flow::open(session, &flow::tree_route(&f.work, 0));
+        let files = crate::support::wait_for("the folder's file at the device", || async {
+            let count = flow::file_count(session, &f.work);
+            (count > 0).then_some(count)
         })
         .await;
         assert_eq!(
-            seen.tree.workspaces.len(),
-            1,
-            "{label} shows the workspace the desktop arranged, with its open apps"
+            files, 1,
+            "{label} reads the one file the desktop put in the workspace's folder"
+        );
+    }
+
+    // The workspace's installed apps are one list every device of the person reads.
+    for (label, session, device) in [
+        ("the Orange Pi", &f.pi_session, &f.pi),
+        ("the laptop", &f.laptop_session, &f.laptop),
+    ] {
+        let list = flow::ask_permissions_child(
+            &f.client(session, device, label),
+            f.work_id(),
+            &f.work,
+            "apps",
+            "list",
+            json!({}),
+        )
+        .await;
+        assert!(
+            list.is_ok(),
+            "{label} reads the workspace's installed app list at workspace/{}/apps#list: \
+             {list:?}",
+            f.work
         );
     }
 }
@@ -326,38 +316,78 @@ async fn flow_always_on_server_is_one_of_the_persons_devices() {
     );
 }
 
-/// The always-on server holds all of the person's workspaces at once: every workspace is
-/// served by it at the same time, not one at a time.
+/// A workspace the person makes on their desktop, and one they make on their laptop, are both
+/// held by their always-on server without asking: it is their server, and it takes their work
+/// by default. Turning it off for one workspace through the server's entry drops it there.
 ///
-/// The hosting lane takes this step.
+/// The workspace's holders are read through the resource `copies.set` writes
+/// (`workspace/<id>/servers#copies`); no published read of them exists yet (the hosting lane
+/// publishes it there).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_always_on_server_holds_all_workspaces_at_once() {
     let f = four_devices().await;
-    let workspaces = f.host.server.workspaces().unwrap();
-    for (label, workspace) in [("Work", &f.work), ("Home", &f.home)] {
-        let summary = workspaces.summary(workspace).await;
+    let desktop = f.client(&f.desktop_session, &f.desktop, "fedora-desktop");
+    let laptop = f.client(&f.laptop_session, &f.laptop, "snapdragon-laptop");
+    // The person makes a workspace on each of two devices, through the published action.
+    let mut made: Vec<(&str, String)> = Vec::new();
+    for (who, device) in [("the desktop", &desktop), ("the laptop", &laptop)] {
+        let created = flow::ask(
+            device,
+            f.work_id(),
+            HOST_ACTIONS_PROVIDER,
+            HOST_WORKSPACES_RESOURCE,
+            CREATE_WORKSPACE,
+            json!({ "name": "Ada's work" }),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{who} makes a workspace: {error:?}"));
+        made.push((
+            who,
+            created["workspace"]
+                .as_str()
+                .expect("the workspace it made")
+                .to_owned(),
+        ));
+    }
+
+    // Their server holds each without being asked: it is theirs, and takes their work by
+    // default. The workspace's servers child publishes what keeps it, as `keeps` beside
+    // `copies.set`.
+    for (who, workspace) in &made {
+        let keeps = flow::ask_permissions_child(
+            &laptop,
+            f.work_id(),
+            workspace,
+            "servers",
+            "keeps",
+            json!({}),
+        )
+        .await;
+        let listed = keeps
+            .as_ref()
+            .map_or_else(|error| format!("{error:?}"), ToString::to_string);
         assert!(
-            summary.is_ok(),
-            "the always-on server holds the person's {label} workspace while it holds the \
-             others, not one at a time: {summary:?}"
+            keeps.is_ok(),
+            "no published read of a workspace's holders at workspace/{workspace}/servers#keeps \
+             (the read beside `copies.set`), which the hosting lane publishes: the workspace \
+             {who} made on the person's device is held by their server without asking: {listed}"
+        );
+        let server = flow::key_of(&f.server_device.cert);
+        let kept = keeps
+            .as_ref()
+            .ok()
+            .and_then(|keeps| keeps["keeps"].as_array())
+            .is_some_and(|keeps| {
+                keeps
+                    .iter()
+                    .any(|holder| holder["device"].as_str() == Some(server.as_str()))
+            });
+        assert!(
+            kept,
+            "the always-on server ({server}) is in `keeps` of the workspace {who} made on the \
+             person's device, without being asked: {listed}"
         );
     }
-    // And their other devices see every workspace it holds at once.
-    let laptop = f.client(&f.laptop_session, &f.laptop, "snapdragon-laptop");
-    let listed = laptop
-        .personal_list_in(f.work_id(), &WorkspaceLabels::new(), None)
-        .await
-        .expect("the server answers the person's list");
-    let ids: Vec<&str> = listed
-        .workspaces
-        .iter()
-        .map(|listed| listed.workspace.as_str())
-        .collect();
-    assert!(
-        ids.contains(&f.work.as_str()) && ids.contains(&f.home.as_str()),
-        "the server holds every workspace of the person at once, and their other devices see \
-         them: {ids:?}"
-    );
 }
 
 /// Four monitors, two on the desktop and one each on the Pi and the laptop, are one
@@ -379,7 +409,7 @@ async fn flow_window_moved_by_its_move_action_shows_on_the_other_devices_monitor
         (pi.clone(), "HDMI-A-1".into(), 3840, 0),
         (laptop.clone(), "eDP-1".into(), 5760, 0),
     ]);
-    let arranged = flow::arrange_displays(&f.desktop_session, f.person, &arrangement).await;
+    let arranged = flow::arrange_displays(&f.desktop_person, f.person, &arrangement).await;
     assert!(
         arranged.is_ok(),
         "the one four-monitor arrangement is a resource of the person's, written by their \
@@ -388,9 +418,9 @@ async fn flow_window_moved_by_its_move_action_shows_on_the_other_devices_monitor
 
     // Every device reads the one arrangement, with its own monitors in it.
     for (label, session, own) in [
-        ("the desktop", &f.desktop_session, &desktop),
-        ("the Orange Pi", &f.pi_session, &pi),
-        ("the laptop", &f.laptop_session, &laptop),
+        ("the desktop", &f.desktop_person, &desktop),
+        ("the Orange Pi", &f.pi_person, &pi),
+        ("the laptop", &f.laptop_person, &laptop),
     ] {
         flow::open(session, &flow::settings_route(f.person));
         let read = crate::support::wait_for("the display arrangement at the device", || async {
