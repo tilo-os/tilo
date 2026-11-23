@@ -115,14 +115,47 @@ fn expectation(kind: &str, data: &[u8]) -> TestResult<Value> {
     };
     Ok(value)
 }
-fn selected_payload(root: &Path, kind: &str) -> TestResult<Value> {
-    let data = sealed();
-    let e = expectation(kind, &data)?;
-    let mut selection = json!({"schema":1,"prepared_setup":receipt(&data)});
+fn flat_expectation(kind: &str, data: &[u8]) -> TestResult<Value> {
+    let base = expectation(kind, data)?;
+    let field = |key| base.get(key).cloned().ok_or("missing expectation field");
+    let purpose = match kind {
+        "applications" => "flatpak_applications",
+        "browser" => "browser_profiles",
+        _ => "home",
+    };
+    let logical = match kind {
+        "applications" => "manifest_sha256",
+        "browser" => "plan_sha256",
+        _ => "runtime_sockets",
+    };
+    let mut flat = json!({
+        "schema": 1,
+        "operation": field("operation")?,
+        "purpose": purpose,
+        "filename": field("filename")?,
+        "setup_binding": field("setup_binding")?,
+        "sealed_bytes": field("sealed_bytes")?,
+        "plaintext_bytes": field("plaintext_bytes")?,
+        "entries": field("entries")?,
+        "ciphertext_sha256": field("ciphertext_sha256")?,
+        "limits": field("limits")?,
+    });
+    let value = if kind == "home" {
+        json!(0)
+    } else {
+        json!([3; 32].to_vec())
+    };
+    flat.as_object_mut()
+        .ok_or("flat expectation must be an object")?
+        .insert(logical.into(), value);
+    Ok(flat)
+}
+fn selected_payload_with(root: &Path, kind: &str, data: &[u8], expected: &Value) -> TestResult {
+    let mut selection = json!({"schema":1,"prepared_setup":receipt(data)});
     selection
         .as_object_mut()
         .ok_or("selection must be an object")?
-        .insert(kind.into(), e.clone());
+        .insert(kind.into(), expected.clone());
     write(
         &root.join(format!(".tilo-installer/{kind}-selection.json")),
         &serde_json::to_vec(&selection)?,
@@ -130,22 +163,30 @@ fn selected_payload(root: &Path, kind: &str) -> TestResult<Value> {
     write(
         &root.join(format!(
             "{}.receipt.json",
-            e.get("operation")
+            expected
+                .get("operation")
                 .ok_or("missing operation")?
                 .as_str()
                 .ok_or("non-string field")?
         )),
-        &serde_json::to_vec(&e)?,
+        &serde_json::to_vec(expected)?,
     )?;
     write(
         &root.join(
-            e.get("filename")
+            expected
+                .get("filename")
                 .ok_or("missing filename")?
                 .as_str()
                 .ok_or("non-string field")?,
         ),
-        &data,
+        data,
     )?;
+    Ok(())
+}
+fn selected_payload(root: &Path, kind: &str) -> TestResult<Value> {
+    let data = sealed();
+    let e = expectation(kind, &data)?;
+    selected_payload_with(root, kind, &data, &e)?;
     Ok(e)
 }
 fn extract(root: &Path, out: &Path) -> TestResult<Output> {
@@ -394,34 +435,23 @@ tilo_test_env::scenario! {
             let mut nested_extra = base.clone();
             nested_extra["kind"]["unreviewed_grant"] = json!("/etc");
             mutations.push(nested_extra);
-            let purpose = match kind {
-                "applications" => "flatpak_applications",
-                "browser" => "browser_profiles",
-                _ => "home",
-            };
-            let logical = match kind {
-                "applications" => "manifest_sha256",
-                "browser" => "plan_sha256",
-                _ => "runtime_sockets",
-            };
-            let mut flat = json!({
-                "schema": 1,
-                "operation": base["operation"],
-                "purpose": purpose,
-                "filename": base["filename"],
-                "setup_binding": base["setup_binding"],
-                "sealed_bytes": base["sealed_bytes"],
-                "plaintext_bytes": base["plaintext_bytes"],
-                "entries": base["entries"],
-                "ciphertext_sha256": base["ciphertext_sha256"],
-                "limits": base["limits"],
-            });
-            flat[logical] = if kind == "home" {
-                json!(0)
-            } else {
-                json!([3; 32].to_vec())
-            };
-            mutations.push(flat);
+            let flat = flat_expectation(kind, &sealed()).unwrap();
+            let mut flat_extra = flat.clone();
+            flat_extra["unreviewed_grant"] = json!("/etc");
+            mutations.push(flat_extra);
+            let mut flat_bad_schema = flat.clone();
+            flat_bad_schema["schema"] = json!(2);
+            mutations.push(flat_bad_schema);
+            let mut flat_bad_purpose = flat.clone();
+            flat_bad_purpose["purpose"] = json!("unexpected");
+            mutations.push(flat_bad_purpose);
+            if kind == "applications" {
+                for protocol in [1, 2] {
+                    let mut with_protocol = flat.clone();
+                    with_protocol["consumer_protocol"] = json!(protocol);
+                    mutations.push(with_protocol);
+                }
+            }
             for e in mutations {
                 let temp = tempfile::tempdir().unwrap();
                 let root = temp.path().join("media");
@@ -761,44 +791,74 @@ fn check_backend_applications_selection(
     setup_receipt: &imager_backend::setup::media_setup::DeliveryReceipt,
 ) -> TestResult {
     use imager_backend::setup::{
-        flatpak_transfer::portable as flatpak_portable, portable_home_media::MediaGrant,
-        portable_transfer::Limits,
+        flatpak_transfer::{
+            Installation, InstalledRef,
+            portable::{self as flatpak_portable, PortableFlatpakSource, StageGrant},
+        },
+        portable_home_media::MediaGrant,
+        portable_transfer::{ImportReview, Limits, Purpose},
     };
     use std::sync::atomic::AtomicBool;
+    use zeroize::Zeroizing;
 
     let cancel = AtomicBool::new(false);
-    let temp = tempfile::tempdir()?;
-    let root = temp.path().join("media");
-    let out = temp.path().join("out");
-    let target = temp.path().join("var");
-    private_directories(&[&root, &out, &target])?;
+    let temp = tempfile::Builder::new()
+        .permissions(fs::Permissions::from_mode(0o700))
+        .tempdir()?;
+    let work = temp.path().canonicalize()?;
+    let fake = flatpak_portable::tests::fixture(&work.join("flatpak-source"));
+    let stage = work.join("stage");
+    let journals = work.join("journals");
+    let root = work.join("media");
+    let out = work.join("out");
+    let target = work.join("var");
+    private_directories(&[&stage, &journals, &root, &out, &target])?;
     media(&root)?;
-    let grant = MediaGrant::open(&root)?;
-    let app_data = sealed();
-    let operation = "11111111-1111-4111-8111-111111111111".to_owned();
-    let expected = flatpak_portable::Expectation {
-        filename: format!("applications-{operation}.sealed"),
-        operation: operation.clone(),
-        setup_binding: "prepared-binding".into(),
-        sealed_bytes: app_data.len() as u64,
-        plaintext_bytes: 16,
-        entries: 2,
-        ciphertext_sha256: Sha256::digest(&app_data).into(),
-        limits: Limits {
-            plaintext_bytes: 1024,
-            entries: 16,
-            metadata_bytes: 1024,
-        },
-        kind: flatpak_portable::Applications {
-            consumer_protocol: 2,
-            manifest_sha256: [5; 32],
-        },
-    };
-    write(&root.join(&expected.filename), &app_data)?;
-    write(
-        &root.join(format!("{operation}.receipt.json")),
-        &serde_json::to_vec(&expected)?,
+    let source = PortableFlatpakSource::review(
+        &fake,
+        &fake.source_home,
+        vec![InstalledRef {
+            reference: "app/org.example.Paint/x86_64/stable".into(),
+            origin: "flathub".into(),
+            installation: Installation::System("default".into()),
+            name: "Paint".into(),
+        }],
     )?;
+    let staged = source.stage(
+        &fake,
+        StageGrant {
+            root: &stage,
+            journals: &journals,
+            allocation_bytes: 64 * 1024 * 1024,
+            include_user_state: false,
+        },
+        &cancel,
+    )?;
+    let operation = "11111111-1111-4111-8111-111111111111".to_owned();
+    let password = b"applications transfer fixture secret";
+    let limits = Limits {
+        plaintext_bytes: 64 * 1024 * 1024,
+        entries: 4096,
+        metadata_bytes: 8 * 1024 * 1024,
+    };
+    let staging_package = work.join(format!("applications-{operation}.sealed"));
+    let expected = staged.seal(
+        &staging_package,
+        &operation,
+        "prepared-binding",
+        Zeroizing::new(password.to_vec()),
+        limits,
+        &cancel,
+    )?;
+    let mut archive = ImportReview::review(
+        &staging_package,
+        password,
+        Purpose::FlatpakApplications,
+        limits,
+        &cancel,
+    )?;
+    let grant = MediaGrant::open(&root)?;
+    grant.deliver_applications(&mut archive, &expected, &cancel)?;
     grant.publish_applications_selection(setup_receipt, &expected, &cancel)?;
 
     extract_and_retain("applications", &root, &out, &target)?;
@@ -908,5 +968,122 @@ fn backend_produced_medium_selections_extract_and_retain() {
     assert!(
         failures.is_empty(),
         "backend-produced medium selections rejected by extractor: {failures:?}"
+    );
+}
+
+fn check_flat_payload_round_trip(kind: &str) -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().join("media");
+    let out = temp.path().join("out");
+    let target = temp.path().join("var");
+    private_directories(&[&root, &out, &target])?;
+    media(&root)?;
+    let data = sealed();
+    let flat = flat_expectation(kind, &data)?;
+    let mut canonical = expectation(kind, &data)?;
+    if kind == "applications" {
+        canonical
+            .get_mut("kind")
+            .and_then(Value::as_object_mut)
+            .ok_or("missing applications kind object")?
+            .insert("consumer_protocol".into(), json!(1));
+    }
+    selected_payload_with(&root, kind, &data, &flat)?;
+
+    let extracted = extract(&root, &out)?;
+    if !extracted.status.success() {
+        return Err(format!("flat {kind} extract failed").into());
+    }
+    let locator_path = out.join(format!("portable-{kind}.json"));
+    let mut locator: Value = serde_json::from_slice(&fs::read(&locator_path)?)?;
+    if locator.get("expectation") != Some(&canonical) {
+        return Err(format!("staged {kind} locator did not normalize to kind").into());
+    }
+
+    // Overwrite staged locator with flat expectation to exercise flat locator readers too.
+    locator
+        .as_object_mut()
+        .ok_or("locator must be an object")?
+        .insert("expectation".into(), flat.clone());
+    write(&locator_path, &serde_json::to_vec(&locator)?)?;
+    let out_str = out.to_str().ok_or("utf-8 out path")?;
+    let target_str = target.to_str().ok_or("utf-8 target path")?;
+    if !run(&["preflight-home", "--source-dir", out_str], &[])?
+        .status
+        .success()
+    {
+        return Err(format!("flat {kind} locator preflight-home failed").into());
+    }
+    if kind == "home" || kind == "applications" {
+        let auth = if kind == "home" {
+            json!({"schema":1,"setup_binding":"example setup","completed_home":flat,"completed_setup":receipt(&data)})
+        } else {
+            json!({"schema":1,"setup_binding":"example setup","completed_applications_only":true,"completed_applications":flat,"completed_setup":receipt(&data)})
+        };
+        let auth_bytes = serde_json::to_vec(&auth)?;
+        let checked = run(
+            &["preflight-authenticated", "--source-dir", out_str],
+            &auth_bytes,
+        )?;
+        if !checked.status.success() || checked.stdout != auth_bytes {
+            return Err(format!("flat {kind} preflight-authenticated failed").into());
+        }
+    }
+
+    if !run(
+        &[
+            "retain-home",
+            "--source-dir",
+            out_str,
+            "--target-var",
+            target_str,
+        ],
+        &[],
+    )?
+    .status
+    .success()
+    {
+        return Err(format!("flat {kind} retain-home failed").into());
+    }
+    let retained_path = target.join(format!("lib/tilo/prepared-{kind}/expectation.json"));
+    if serde_json::from_slice::<Value>(&fs::read(&retained_path)?)? != canonical {
+        return Err(format!("retained {kind} expectation did not write canonical kind").into());
+    }
+
+    // Retry retain-home against an existing flat retained expectation.json.
+    write(&retained_path, &serde_json::to_vec(&flat)?)?;
+    if !run(
+        &[
+            "retain-home",
+            "--source-dir",
+            out_str,
+            "--target-var",
+            target_str,
+        ],
+        &[],
+    )?
+    .status
+    .success()
+    {
+        return Err(
+            format!("flat {kind} retain-home retry against flat expectation failed").into(),
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn flat_medium_selections_extract_authenticate_and_retain_as_kind() {
+    let failures: Vec<String> = ["home", "applications", "browser"]
+        .into_iter()
+        .filter_map(|kind| {
+            check_flat_payload_round_trip(kind)
+                .err()
+                .map(|error| error.to_string())
+        })
+        .collect();
+    assert!(
+        failures.is_empty(),
+        "flat medium selections rejected by extractor: {failures:?}"
     );
 }
