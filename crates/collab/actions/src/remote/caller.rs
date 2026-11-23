@@ -555,14 +555,15 @@ impl Caller {
         if self.session_delegated {
             return tilo_action_policy::roles::agent_bound(agent, person, kept);
         }
-        match (&self.own_bound, &self.workspace) {
-            (Some(bound), Some(workspace)) => {
-                let mut grants = Acting::handed_agent(agent, person).handed_preset(workspace);
-                grants.extend(tilo_action_policy::roles::agent_bound(agent, person, bound));
-                grants
-            }
-            _ => Vec::new(),
-        }
+        // Asked in no workspace (its person's list of them), the agent carries the delegation at
+        // the root, as a handed agent does.
+        let Some(bound) = &self.own_bound else {
+            return Vec::new();
+        };
+        let workspace = self.workspace.as_deref().unwrap_or_default();
+        let mut grants = Acting::handed_agent(agent, person).handed_preset(workspace);
+        grants.extend(tilo_action_policy::roles::agent_bound(agent, person, bound));
+        grants
     }
 
     /// The group a session named `id` is, as this caller's provider admitted
