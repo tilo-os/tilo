@@ -36,8 +36,13 @@ The [architecture overview](docs/architecture/README.md) states these; work keep
 
 - The default apps are enough for 95% of people: real Files, Writer, Ebooks, Settings, a video
   editor, never proofs of concept. Their UX is polished: Settings, Writer, the video editor and
-  the rest have custom interactive animations and visualizations on their pages. Tilo is fast,
-  and its apps are small. None of this is optional.
+  the rest have custom interactive animations and visualizations on their pages. None of this
+  is optional.
+- Tilo feels immediate: an app opens in under 100 ms when it's already on the device, and
+  under 500 ms when it first has to be installed. Apps are small, and the web version loads
+  about 1 MB of WASM and HTML.
+- The shell is a view a person can replace entirely. It can look like Windows 95 or work like
+  a Miro or Figma canvas, and tilolang is powerful enough to write either.
 - Any program can be a Tilo app, a Minecraft launcher or a CAD program included. Apps climb
   a ladder from tilolang to fully hand-written Rust. Each step allows more customization, and
   every step keeps actions callable from anywhere and tied to views, history and undo,

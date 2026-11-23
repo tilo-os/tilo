@@ -81,8 +81,12 @@ launcher or a CAD program is a Tilo app too.
 **The default apps are real.** Files, Writer, Ebooks, Settings, a video editor
 and the rest are enough for 95% of people, not proofs of concept. Their UX is
 polished: Settings, Writer, the video editor and the rest have custom
-interactive animations and visualizations on their pages. Tilo is fast, and
-its apps are small. None of this is optional.
+interactive animations and visualizations on their pages. None of this is
+optional.
+
+**Tilo feels immediate.** An app opens in under 100 ms when it's already on
+the device, and under 500 ms when it first has to be installed. Apps are
+small, and the web version loads about 1 MB of WASM and HTML.
 
 **Every actor uses the same actions, and every action can be seen.** People,
 agents, scripts and automations invoke the same typed actions. An action belongs
@@ -97,7 +101,8 @@ can change a view, or ask an agent in a chat to write a new one in tilolang,
 without rebuilding Tilo.
 
 **The shell is a view, on the same stack.** A person can customize it as deeply
-as any other view. The launcher, top bar, overview, quick
+as any other view, or replace it: a shell can look like Windows 95 or work
+like a Miro or Figma canvas, and tilolang is powerful enough to write either. The launcher, top bar, overview, quick
 settings, notifications and onboarding are apps on the same toolkit and the
 same resource/action/view model. The compositor stays thin: windows, input,
 outputs and scanout. Rendering capabilities the shell needs belong in the
