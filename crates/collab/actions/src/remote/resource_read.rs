@@ -9,6 +9,11 @@
 //! removed in the middle of a session cuts the reads that follow. A read carries the record's
 //! committed content and nothing that writes to it: the agent changes a record only by invoking
 //! actions.
+//!
+//! A provider publishes resources itself too, which no app's record holds: a desktop's device,
+//! its windows and its styles, Settings' sections. Those are answered on this same API as a
+//! reading, the JSON the service reads, so a program, an agent and a view read one resource one
+//! way.
 
 use super::{ActionCallError, Caller};
 
@@ -41,15 +46,32 @@ pub enum ResourceCopy {
     /// made each item and when included. A tilolang app's records are read this way, never as
     /// the documents that keep them.
     Read(serde_json::Value),
+    /// A resource the provider publishes itself rather than from an app's record (device state, a
+    /// desktop's windows and styles): its reading as the JSON its service reads, and the revision
+    /// it stands at when the provider names one. A provider with no revision of its own leaves it
+    /// `None`, and a reader's revision is the hash of the JSON then.
+    Reading {
+        value: serde_json::Value,
+        revision: Option<String>,
+    },
     /// The workspace holds no such record: nothing was ever written to it.
     Absent,
+}
+
+impl ResourceCopy {
+    /// A reading of a resource the provider publishes, at the revision it names (or none).
+    #[must_use]
+    pub const fn reading(value: serde_json::Value, revision: Option<String>) -> Self {
+        Self::Reading { value, revision }
+    }
 }
 
 /// A provider's API for reading records outside their app.
 pub trait ResourceReads: Send + Sync {
     /// The record `address`, in the workspace it names, as `caller` may read it now: decided at
     /// that workspace's record node with the caller's actor, whichever workspace the caller's
-    /// connection was admitted to.
+    /// connection was admitted to. A provider that publishes a resource itself answers its
+    /// reading here, as it answers an app's record.
     ///
     /// # Errors
     ///
@@ -78,9 +100,9 @@ pub trait ResourceReads: Send + Sync {
         read: super::ResourceReadRequest,
     ) -> super::Pending<super::RemoteActionMessage>;
 
-    /// Wake `wake` once the next write to `address` lands on this provider, decided as a read is:
-    /// what a reader holding a copy waits on before it reads again. Watched before the read it
-    /// guards, so no write between the two is missed.
+    /// Wake `wake` once the next write to `address` lands on this provider, or what it publishes
+    /// of the resource moves, decided as a read is: what a reader holding a copy waits on before
+    /// it reads again. Watched before the read it guards, so no write between the two is missed.
     ///
     /// # Errors
     ///
@@ -235,12 +257,26 @@ pub fn readings_of(
                 Err(ActionCallError::Unavailable { .. }) => None,
                 Err(error) => return Err(error),
             };
-            let read;
+            // A reading's revision is the one its provider names; one naming none, and a record
+            // its app reads for itself, are hashed by their JSON, which is all a reader can tell
+            // about them.
+            let hashed;
             let bytes: &[u8] = match &copy {
                 Some(ResourceCopy::Document(bytes)) => bytes,
                 Some(ResourceCopy::Read(value)) => {
-                    read = value.to_string();
-                    read.as_bytes()
+                    hashed = value.to_string();
+                    hashed.as_bytes()
+                }
+                Some(ResourceCopy::Reading {
+                    revision: Some(revision),
+                    ..
+                }) => revision.as_bytes(),
+                Some(ResourceCopy::Reading {
+                    value,
+                    revision: None,
+                }) => {
+                    hashed = value.to_string();
+                    hashed.as_bytes()
                 }
                 Some(ResourceCopy::Absent) => b"",
                 None => b"unavailable",
@@ -379,8 +415,9 @@ fn serve_readings(
 
 impl ResourceReadings {
     /// The readings as every reader is answered: `{"revision", "records": [...]}`, each record
-    /// `{"record", "value"}` ([`ResourceCopy::readable`]), `{"record", "absent": true}` for one the
-    /// workspace holds none of, or `{"record", "arriving": true}` for one still arriving.
+    /// `{"record", "value"}` ([`ResourceCopy::readable`], a document or a reading alike),
+    /// `{"record", "absent": true}` for one the workspace holds none of, or `{"record",
+    /// "arriving": true}` for one still arriving.
     ///
     /// # Errors
     ///
@@ -401,8 +438,8 @@ impl ResourceReadings {
 impl ResourceCopy {
     /// The record as any reader reads it, whatever app keeps it: its maps as objects, lists as
     /// arrays, text as strings, counters and scalars as numbers, strings and booleans, bytes as
-    /// their count, a data enum as its `$variant` beside its fields by name; `null` for a record
-    /// the workspace holds none of.
+    /// their count, a data enum as its `$variant` beside its fields by name; a reading as the JSON
+    /// its provider publishes; `null` for a record the workspace holds none of.
     ///
     /// A rich text reads with its paragraphs as lists in their order, each paragraph with its
     /// id, its kind, its words and its attributes, and without the key of bytes that places
@@ -416,7 +453,7 @@ impl ResourceCopy {
     pub fn readable(&self) -> Result<serde_json::Value, String> {
         match self {
             Self::Absent => Ok(serde_json::Value::Null),
-            Self::Read(value) => Ok(value.clone()),
+            Self::Read(value) | Self::Reading { value, .. } => Ok(value.clone()),
             Self::Document(bytes) => {
                 let doc = automerge::Automerge::load(bytes).map_err(|error| error.to_string())?;
                 let mut value =
@@ -690,6 +727,171 @@ mod tests {
             let moved = read_resources(&held, &caller, &[ask(&newest_part, false)], None, now).unwrap();
             assert_ne!(moved.revision, newest.revision);
             assert_eq!(moved.records[0].0, part(3));
+        }
+
+        phase a_reading_reads_as_its_json_and_a_change_wakes_the_follow;
+        {
+            /// A resource a provider publishes itself: its JSON, the revision it names, and the
+            /// follows watching it, woken when it moves.
+            struct Published {
+                value: std::sync::Mutex<serde_json::Value>,
+                revision: std::sync::Mutex<String>,
+                wakers: std::sync::Mutex<Vec<ResourceWake>>,
+            }
+
+            impl Published {
+                fn move_to(&self, value: serde_json::Value, revision: &str) {
+                    *self.value.lock().unwrap() = value;
+                    *self.revision.lock().unwrap() = revision.to_owned();
+                    for wake in std::mem::take(&mut *self.wakers.lock().unwrap()) {
+                        wake.wake();
+                    }
+                }
+            }
+
+            impl ResourceReads for Published {
+                fn read(
+                    &self,
+                    _: &Caller,
+                    _: &ResourceAddress,
+                ) -> Result<ResourceCopy, ActionCallError> {
+                    Ok(ResourceCopy::reading(
+                        self.value.lock().unwrap().clone(),
+                        Some(self.revision.lock().unwrap().clone()),
+                    ))
+                }
+
+                fn watch(
+                    &self,
+                    _: &Caller,
+                    _: &ResourceAddress,
+                    wake: &ResourceWake,
+                ) -> Result<(), ActionCallError> {
+                    self.wakers.lock().unwrap().push(wake.clone());
+                    Ok(())
+                }
+
+                fn answer_read(
+                    self: std::sync::Arc<Self>,
+                    caller: &Caller,
+                    correlation: u64,
+                    read: super::super::ResourceReadRequest,
+                ) -> super::super::Pending<super::super::RemoteActionMessage> {
+                    answer_read(self, caller, correlation, read)
+                }
+            }
+
+            let published = std::sync::Arc::new(Published {
+                value: std::sync::Mutex::new(serde_json::json!({"playing": false})),
+                revision: std::sync::Mutex::new("a".into()),
+                wakers: std::sync::Mutex::default(),
+            });
+            let caller = Caller::local_person("me");
+            let asks = [ResourceAsk {
+                address: ResourceAddress {
+                    workspace: "w".into(),
+                    app: "shell".into(),
+                    record: "session:media".into(),
+                },
+                joined: false,
+            }];
+            let now = tilo_clock::now();
+            let read = read_resources(&*published, &caller, &asks, None, now).unwrap();
+            assert_eq!(
+                values(&read),
+                [(
+                    "session:media".to_owned(),
+                    serde_json::json!({"playing": false})
+                )],
+                "a reading reads as the JSON its provider publishes"
+            );
+            assert!(!read.revision.is_empty(), "the reading has a revision");
+            // The first read watched too; only what the follow watches is woken here.
+            published.wakers.lock().unwrap().clear();
+            let changed = std::thread::scope(|scope| {
+                let waiting = scope.spawn(|| {
+                    read_resources(
+                        &*published,
+                        &caller,
+                        &asks,
+                        Some(&read.revision),
+                        tilo_clock::now()
+                            .checked_add(std::time::Duration::from_secs(30))
+                            .unwrap(),
+                    )
+                });
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                loop {
+                    if published.wakers.lock().unwrap().is_empty() {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "the follow watched nothing"
+                        );
+                        std::thread::yield_now();
+                        continue;
+                    }
+                    break;
+                }
+                published.move_to(serde_json::json!({"playing": true}), "b");
+                waiting.join().expect("the follow")
+            })
+            .unwrap();
+            assert_eq!(
+                values(&changed),
+                [(
+                    "session:media".to_owned(),
+                    serde_json::json!({"playing": true})
+                )],
+                "the change woke the follow, which read the new reading"
+            );
+            assert_ne!(changed.revision, read.revision);
+        }
+
+        phase a_reading_its_provider_names_no_revision_for_is_hashed_by_its_json;
+        {
+            struct Unversioned(std::sync::Mutex<serde_json::Value>);
+
+            impl ResourceReads for Unversioned {
+                fn read(
+                    &self,
+                    _: &Caller,
+                    _: &ResourceAddress,
+                ) -> Result<ResourceCopy, ActionCallError> {
+                    Ok(ResourceCopy::reading(
+                        self.0.lock().unwrap().clone(),
+                        None,
+                    ))
+                }
+
+                fn watch(
+                    &self,
+                    _: &Caller,
+                    _: &ResourceAddress,
+                    _: &ResourceWake,
+                ) -> Result<(), ActionCallError> {
+                    Ok(())
+                }
+
+                fn answer_read(
+                    self: std::sync::Arc<Self>,
+                    caller: &Caller,
+                    correlation: u64,
+                    read: super::super::ResourceReadRequest,
+                ) -> super::super::Pending<super::super::RemoteActionMessage> {
+                    answer_read(self, caller, correlation, read)
+                }
+            }
+
+            let published = Unversioned(std::sync::Mutex::new(serde_json::json!({"level": 1})));
+            let caller = Caller::local_person("me");
+            let asks = [ask("session:volume", false)];
+            let now = tilo_clock::now();
+            let first = read_resources(&published, &caller, &asks, None, now).unwrap();
+            let again = read_resources(&published, &caller, &asks, None, now).unwrap();
+            assert_eq!(first.revision, again.revision, "the same JSON is one revision");
+            *published.0.lock().unwrap() = serde_json::json!({"level": 2});
+            let moved = read_resources(&published, &caller, &asks, None, now).unwrap();
+            assert_ne!(moved.revision, first.revision, "another JSON is another");
         }
     }
 }

@@ -1309,6 +1309,12 @@ pub(crate) struct SessionServices {
     /// What changed in the records of the workspaces this device holds, for a watch of a whole
     /// workspace ([`crate::change_feed`]).
     changes: Arc<crate::change_feed::Feeds>,
+    /// The follows watching the resources the session's services publish themselves, woken when
+    /// what they publish moves ([`Self::watch_reading`]).
+    readings_woken: std::sync::Mutex<Vec<tilo_actions::remote::ResourceWake>>,
+    /// The services' revision the follows were last woken at: a pass that published nothing new
+    /// wakes none.
+    readings_at: std::sync::Mutex<u64>,
 }
 
 /// An ask of a workspace this session is founding, held until the founding lands: the broker
@@ -1407,6 +1413,32 @@ impl SessionServices {
             held: std::sync::Mutex::default(),
             processes: std::sync::OnceLock::new(),
             view: std::sync::OnceLock::new(),
+            readings_woken: std::sync::Mutex::default(),
+            readings_at: std::sync::Mutex::default(),
+        }
+    }
+
+    /// Follow what the session's services publish: wake `wake` once they move, as a write lands a
+    /// record ([`Self::readings_moved`]). The reader decides again for itself whether the reading
+    /// it follows actually changed.
+    pub(crate) fn watch_reading(&self, wake: &tilo_actions::remote::ResourceWake) {
+        let mut woken = self.readings_woken.lock_recover();
+        woken.retain(tilo_actions::remote::ResourceWake::waiting);
+        woken.push(wake.clone());
+    }
+
+    /// What the session's services publish moved to `revision`: wake every follow waiting on it,
+    /// once for that revision. A follow woken with nothing new waits again; nothing polls on a
+    /// timer of its own.
+    pub(crate) fn readings_moved(&self, revision: u64) {
+        let mut at = self.readings_at.lock_recover();
+        if *at == revision {
+            return;
+        }
+        *at = revision;
+        drop(at);
+        for wake in std::mem::take(&mut *self.readings_woken.lock_recover()) {
+            wake.wake();
         }
     }
 
@@ -1801,6 +1833,9 @@ impl SessionServices {
                 } => done.complete(change_through(services, &actor, &change)),
             }
         }
+        // A step that ran here may have moved what the services publish: a follow of a reading
+        // reads again, rather than waiting for a pass that publishes nothing new.
+        self.readings_moved(services.borrow().revision());
     }
 }
 
@@ -2460,15 +2495,6 @@ impl ActionProvider for Host {
     fn resource_changes(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceChanges>> {
         Some(Arc::new(self.service_records()))
     }
-
-    /// The readings of the resources the session publishes itself, which a task's programs read
-    /// within the program they run: asked on the loop's pass, where the services are.
-    fn readings(&self) -> Option<Arc<dyn tilo_actions::remote::Readings>> {
-        Some(Arc::new(SessionReadings {
-            session: Arc::clone(&self.session),
-            state: self.state.clone(),
-        }))
-    }
 }
 
 impl Host {
@@ -2481,37 +2507,6 @@ impl Host {
                 .as_ref()
                 .map(|at| (Arc::clone(&at.sessions), at.session.clone())),
         }
-    }
-}
-
-/// The readings of a session's own resources, for the programs its API runs ([`Readings`]).
-struct SessionReadings {
-    session: Arc<SessionServices>,
-    /// The session's broker, which decides each caller's read of a resource as it decides every
-    /// other: `None` on a desktop that runs none, where only the person reads their own.
-    state: Option<Arc<AppBrokerState>>,
-}
-
-impl tilo_actions::remote::Readings for SessionReadings {
-    fn reading(
-        &self,
-        caller: &Caller,
-        app: &str,
-        resource: &str,
-    ) -> Result<Option<serde_json::Value>, ActionCallError> {
-        if !published_root(app, resource) {
-            return Ok(None);
-        }
-        let Some(published) = self.session.reading(app, resource)? else {
-            return Ok(None);
-        };
-        // A read is decided at the resource's node, which its published kind names: a resource no
-        // service publishes a kind for has no node to decide it at, so it is read by nobody.
-        let Some(kind) = &published.kind else {
-            return Ok(None);
-        };
-        may_read_published(self.state.as_deref(), caller, (SESSION_APP, kind, resource))?;
-        Ok(Some(published.reading))
     }
 }
 

@@ -69,7 +69,6 @@ pub mod person_models;
 pub mod person_telling;
 pub mod person_vault;
 mod providers;
-mod readings;
 mod resource_read;
 pub mod search;
 pub mod server_account;
@@ -134,7 +133,6 @@ mod line;
 pub use execution_lease::ExecutionLease;
 pub use line::{answer_line, answer_message, frame_line, line_refusal};
 pub use pending::{Abandoned, Completer, Pending, PendingPoll, pending};
-pub use readings::Readings;
 pub use resource_read::{
     HeldCopies, RESOURCE_READ_REFUSED, RESOURCE_READS_FOR_AGENTS, RESOURCE_READS_UNAVAILABLE,
     ResourceAddress, ResourceAsk, ResourceChange, ResourceChanges, ResourceCopy, ResourceReadings,
@@ -1352,16 +1350,10 @@ pub trait ActionProvider {
     }
 
     /// Where an agent task reads its workspace's records outside their apps ([`ResourceReads`]);
-    /// `None` for a provider without them.
+    /// `None` for a provider without them. The resources a provider publishes itself (a desktop's
+    /// device, its windows, its styles, Settings' sections) are read on the same API, as a
+    /// [`ResourceCopy::Reading`], so a program and the shell's parts read one resource one way.
     fn resource_reads(&self) -> Option<std::sync::Arc<dyn ResourceReads>> {
-        None
-    }
-
-    /// Where a task's programs read the resources this provider publishes itself, rather than from
-    /// an app's record (a desktop's device, its windows, its styles, Settings' sections): one
-    /// reading for the shell's parts and a program alike ([`Readings`]). `None` for a provider that
-    /// publishes no such resource.
-    fn readings(&self) -> Option<std::sync::Arc<dyn Readings>> {
         None
     }
 

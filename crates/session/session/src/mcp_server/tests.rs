@@ -367,16 +367,44 @@ fn what_the_session_does_not_publish_is_no_reading_of_its() {
     );
 }
 
+/// A follow of a reading is woken by the pass that moves what the services publish, once for a
+/// revision: a pass that published nothing new wakes none, and the follow reads again by itself.
+#[test]
+fn a_pass_that_moves_the_readings_wakes_the_follows() {
+    use tilo_actions::remote::ResourceWake;
+    let services = SessionServices::new(Arc::new(|| {}), "person");
+    let (wake, woken) = ResourceWake::new();
+    services.watch_reading(&wake);
+    services.readings_moved(1);
+    assert!(
+        woken.wait_timeout(WAIT).is_ok(),
+        "what the services publish moved, so the follow woke"
+    );
+    let (wake, woken) = ResourceWake::new();
+    services.watch_reading(&wake);
+    services.readings_moved(1);
+    let woken = match woken.wait_timeout(std::time::Duration::from_millis(50)) {
+        Err(woken) => woken,
+        Ok(_) => panic!("a pass at the revision the follow already saw wakes none"),
+    };
+    services.readings_moved(2);
+    assert!(
+        woken.wait_timeout(WAIT).is_ok(),
+        "the next revision wakes the follow that was still watching"
+    );
+}
+
 /// A program's reading of a resource the session publishes is decided for its caller, as every
-/// read is: the person reads their own device, and an agent reads it only where the broker lets
-/// it read the resource. With no broker to decide it, an agent reads none of it.
+/// read of a record is: the person reads their own device, and an agent reads it only where the
+/// broker lets it read the resource. With no broker to decide it, an agent reads none of it.
 #[test]
 fn a_reading_is_the_callers_only_where_the_read_is_theirs() {
-    use tilo_actions::remote::Readings as _;
+    use tilo_actions::remote::ResourceReads as _;
     let session = Arc::new(SessionServices::new(Arc::new(|| {}), "person"));
-    let readings = SessionReadings {
-        session: Arc::clone(&session),
+    let records = super::records::ServiceRecords {
         state: None,
+        session: Arc::clone(&session),
+        agent_session: None,
     };
     let offered = serde_json::json!({"offered": []});
     // The loop's pass, answering the reading asked of it with the styles, published under the
@@ -396,11 +424,14 @@ fn a_reading_is_the_callers_only_where_the_read_is_theirs() {
             std::thread::yield_now();
         }
     };
-    let app = tilolang_tilo::platform_apps::DEVICE_APP;
-    let resource = crate::device_lists::STYLES_RESOURCE;
+    let address = tilo_actions::remote::ResourceAddress {
+        workspace: "studio".to_owned(),
+        app: tilolang_tilo::platform_apps::DEVICE_APP.to_owned(),
+        record: crate::device_lists::STYLES_RESOURCE.to_owned(),
+    };
     let read_as = |caller: &Caller, kind: Option<&str>| {
         std::thread::scope(|scope| {
-            let reader = scope.spawn(|| readings.reading(caller, app, resource));
+            let reader = scope.spawn(|| records.read(caller, &address));
             answer_once(&session, kind);
             reader.join().expect("the reader")
         })
@@ -411,7 +442,11 @@ fn a_reading_is_the_callers_only_where_the_read_is_theirs() {
         Caller::local_person("person"),
         Caller::local_agent("helper").in_workspace("studio"),
     ] {
-        assert_eq!(read_as(&caller, None), Ok(None), "no kind, no reading");
+        assert_eq!(
+            read_as(&caller, None),
+            Ok(tilo_actions::remote::ResourceCopy::Absent),
+            "no kind, no reading"
+        );
     }
     for (caller, theirs) in [
         (Caller::local_person("person"), true),
@@ -419,7 +454,14 @@ fn a_reading_is_the_callers_only_where_the_read_is_theirs() {
     ] {
         let read = read_as(&caller, Some("session.styles"));
         if theirs {
-            assert_eq!(read, Ok(Some(offered.clone())), "the person's own device");
+            assert_eq!(
+                read,
+                Ok(tilo_actions::remote::ResourceCopy::reading(
+                    offered.clone(),
+                    None
+                )),
+                "the person's own device"
+            );
         } else {
             assert!(
                 matches!(

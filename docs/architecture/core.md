@@ -637,10 +637,11 @@ and screen share only, never documents, and stays as it is.
   the shell, the session, a system program (calling as the device, under
   ordinary grants) and, before anyone signs in, the device reading the
   workspace founded on it. A record's address names its workspace. Writes are
-  the record's typed actions on the one dispatch. A program that needs more
-  extends this API; it gets no call of its own. The session's own engine
-  (`EngineRecords`, `settings_sync`) goes, and settings are records read and
-  written like any other.
+  the record's typed actions on the one dispatch. A record is answered as a
+  document or, for device state, as a reading, on this one path and followed
+  the same way. A program that needs more extends this API; it gets no call
+  of its own. The session's own engine (`EngineRecords`, `settings_sync`)
+  goes, and settings are records read and written like any other.
 - **The operator chooses workspaces, membership chooses people**: a host's
   operator decides which workspaces it stores and serves and who may create
   one there. A hosted workspace's signed membership decides who reaches it,

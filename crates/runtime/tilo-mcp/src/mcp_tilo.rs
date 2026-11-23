@@ -13,8 +13,9 @@
 //!   `item` — the read a window and `tilo_read` take too;
 //! - a resource the session publishes itself rather than from an app's record (the device's
 //!   sound, its power, the session's windows and styles, Settings' sections) is read from the
-//!   newest reading its service publishes, taken within the program ([`Readings`]): the shell's
-//!   parts read the same ones, so `device.styles.offered` is a program's to read;
+//!   newest reading its service publishes, through the same record API
+//!   ([`tilo_actions::remote::ResourceReads::read`]): the shell's parts read the same ones, so
+//!   `device.styles.offered` is a program's to read;
 //! - a change is an invocation of the action's own app: a method its type's declared action, an
 //!   assignment the resource's field edit. Each is decided at that action's node, asked about or
 //!   refused as the workspace's policy says, never done silently. A program never writes a record.
@@ -1609,7 +1610,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     }
 
     /// The newest reading of the resource `resource` the app `app` publishes (`{app, resource,
-    /// type}`), as the session's own services read it: `{"ok": {"reading": …}}`, `{"none": true}`
+    /// type}`), through the same record API a program reads an app's record by
+    /// ([`tilo_actions::remote::ResourceReads::read`]): `{"ok": {"reading": …}}`, `{"none": true}`
     /// for a resource no service publishes, or `{"err": why}`. Taken at once, so the program
     /// reading it goes on within the same call: `device.styles.offered`, `device.time.clock`, the
     /// session's windows and Settings' sections are read this way, and by the shell's parts too,
@@ -1619,13 +1621,26 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         else {
             return json!({"err": "a reading names its app and resource"});
         };
-        let Some(readings) = self.host().readings() else {
+        let Some(reads) = self.host().resource_reads() else {
             return json!({"none": true});
         };
         let caller = self.execution_caller();
-        match readings.reading(&caller, app, resource) {
-            Ok(Some(reading)) => json!({"ok": {"reading": reading}}),
-            Ok(None) => json!({"none": true}),
+        let address = tilo_actions::remote::ResourceAddress {
+            workspace: caller.workspace().unwrap_or_default().to_owned(),
+            app: app.to_owned(),
+            record: resource.to_owned(),
+        };
+        match reads.read(&caller, &address) {
+            Ok(tilo_actions::remote::ResourceCopy::Reading { value, .. }) => {
+                json!({"ok": {"reading": value}})
+            }
+            // An app's record is read through the record API, never as one of the session's
+            // readings, as a resource no service publishes is none of its.
+            Ok(
+                tilo_actions::remote::ResourceCopy::Absent
+                | tilo_actions::remote::ResourceCopy::Document(_)
+                | tilo_actions::remote::ResourceCopy::Read(_),
+            ) => json!({"none": true}),
             Err(error) => {
                 let name = app_names(&[app.to_owned()]).join("");
                 json!({"err": format!("{name}: {error}")})

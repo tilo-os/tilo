@@ -103,6 +103,11 @@ impl Session {
         // What the answers wrote (an agent's record of its work) reaches the workspace in this
         // pass, not in the next one's.
         self.shared.records.write();
+        // A follow of a reading reads again once what the services publish moved.
+        #[cfg(target_os = "linux")]
+        self.shared
+            .session_services
+            .readings_moved(services.revision());
     }
 
     /// Lend the session's own services the page the active workspace's resources open on the

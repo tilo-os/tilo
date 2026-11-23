@@ -350,10 +350,6 @@ impl ActionProvider for Latest {
         self.provider().resource_reads()
     }
 
-    fn readings(&self) -> Option<Arc<dyn tilo_actions::remote::Readings>> {
-        self.provider().readings()
-    }
-
     fn resource_changes(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceChanges>> {
         self.provider().resource_changes()
     }

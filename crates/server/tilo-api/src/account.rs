@@ -1313,10 +1313,6 @@ impl ActionProvider for Joined {
         self.actions.as_ref()?.resource_reads()
     }
 
-    fn readings(&self) -> Option<Arc<dyn tilo_actions::remote::Readings>> {
-        self.actions.as_ref()?.readings()
-    }
-
     fn resource_changes(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceChanges>> {
         self.actions.as_ref()?.resource_changes()
     }

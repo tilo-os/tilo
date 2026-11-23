@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, CatalogueResource,
     CatalogueRow, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
-    ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
+    ReceiptStatus, RemoteActionMessage, RemoteActionTarget, ResourceReads as _,
 };
 use tilo_actions::{ActionAddress, ActionOutput, InvocationId, InvocationUpdate};
 
@@ -862,17 +862,29 @@ struct Records {
 
 impl Records {
     fn reading(&self, correlation: u64) -> RemoteActionMessage {
-        let writes = *self.writes.lock().unwrap();
+        // The answer every reader of a record is given, from the copy the provider reads: an
+        // answer built here would test the shape against itself.
+        let asks = [tilo_actions::remote::ResourceAsk {
+            address: tilo_actions::remote::ResourceAddress {
+                workspace: "workspace".into(),
+                app: "so.tilo.tasks".into(),
+                record: String::new(),
+            },
+            joined: false,
+        }];
+        let caller = Caller::local_person("ada");
         let result = if self.refuses.load(Ordering::SeqCst) {
             Err(ActionCallError::Refused {
                 reason: tilo_actions::remote::RESOURCE_READ_REFUSED.into(),
             })
         } else {
-            Ok(serde_json::json!({
-                "revision": format!("r{writes}"),
-                "records": [{"record": "", "value": {"writes": writes}}],
-            })
-            .to_string())
+            tilo_actions::remote::readings_of(&asks, |address| self.read(&caller, address))
+                .and_then(|readings| {
+                    readings
+                        .readable()
+                        .map_err(|reason| ActionCallError::Refused { reason })
+                })
+                .map(|readings| readings.to_string())
         };
         RemoteActionMessage::ResourceReading {
             correlation,
@@ -907,7 +919,13 @@ impl tilo_actions::remote::ResourceReads for Records {
         _: &Caller,
         _: &tilo_actions::remote::ResourceAddress,
     ) -> Result<tilo_actions::remote::ResourceCopy, ActionCallError> {
-        Ok(tilo_actions::remote::ResourceCopy::Absent)
+        // A reading its provider publishes itself, naming the revision it stands at: the follow
+        // shows it as it shows a document, and asks again when it moves.
+        let writes = *self.writes.lock().unwrap();
+        Ok(tilo_actions::remote::ResourceCopy::reading(
+            serde_json::json!({"writes": writes}),
+            Some(format!("r{writes}")),
+        ))
     }
 
     fn answer_read(
@@ -1019,8 +1037,14 @@ tilo_test_env::scenario! {
         actions.poll();
         assert_eq!(records.asked().len(), 2, "nothing is asked while nothing is written");
         assert_eq!(followed.call().revision(), shown, "and nothing is shown again");
+        let shown_before = followed.call().revision();
         records.write();
         assert_eq!(writes_shown(&followed), Some(1));
+        assert_ne!(
+            followed.call().revision(),
+            shown_before,
+            "the revision the provider names is the one the UI follows"
+        );
         records.write();
         assert_eq!(writes_shown(&followed), Some(2));
         assert_eq!(records.asked().len(), 4, "one read for each write");
