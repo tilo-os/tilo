@@ -22,13 +22,28 @@ impl PeerGovernanceMut<'_> {
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
+        self.ban_member_by(user_public_key, Grantee::person(by), key, now)
+    }
+
+    /// [`Self::ban_member`] with `by` recorded as given: a person, or the workspace's moderation
+    /// bot taking the ban through its grant.
+    ///
+    /// # Errors
+    /// As [`Self::ban_member`].
+    pub fn ban_member_by(
+        self,
+        user_public_key: [u8; 32],
+        by: Grantee,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, String> {
         let person = hex::encode(user_public_key);
         // Work on a clone: a refused block must not leave the removal applied.
         let mut candidate = self.peer.clone();
         let removed = candidate
             .governance_mut()
             .remove_member(user_public_key, key, now)?;
-        let block = roles::block_grant(&self.peer.core.workspace, &person, Grantee::person(by));
+        let block = roles::block_grant(&self.peer.core.workspace, &person, by);
         let blocked = candidate
             .governance_mut()
             .put_governed_grants(&[block], key, now)?;

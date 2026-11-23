@@ -1207,12 +1207,15 @@ impl WorkspacePolicy {
     /// Whether `actor_person` reaches `person` with a membership action: the
     /// owner reaches everyone else, anyone else only those they outrank (a
     /// non-member target ranks lowest). Leaving, removing oneself, is always
-    /// in reach.
+    /// in reach. A bot that a governance grant reaches its own membership actions with ranks
+    /// as a Moderator, the highest role it is ever given.
     fn check_reach(&self, actor_person: &str, person: &str, ban: bool) -> Result<(), Refusal> {
         if self.is_owner(person) {
             return Err(Refusal::Owner);
         }
-        let actor = self.role_of(actor_person);
+        let actor = self
+            .role_of(actor_person)
+            .or_else(|| actor_person.strip_prefix("bot:").map(|_| Role::Moderator));
         if actor_person == person {
             return if ban {
                 Err(Refusal::NotBelowActor {

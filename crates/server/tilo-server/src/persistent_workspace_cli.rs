@@ -1058,9 +1058,10 @@ async fn refound_records(
 }
 
 /// A workspace the operator lists publicly, and governs, gets its moderation
-/// bot's grant once, when the operator's setup first brings it up: the
+/// bot's grants once, when the operator's setup first brings it up: the
 /// operator, as its own person, grants the reading and undoable changes in
-/// Chat the bot moderates by. The decision is noted in the workspace's own
+/// Chat the bot moderates by, and the membership verbs it restricts and bans
+/// by. The decision is noted in the workspace's own
 /// settlement document, so a restart neither grants it again nor takes back a
 /// person's later choice: after that, the switch in the workspace's settings
 /// is the only way to change it. A workspace the operator does not list, or

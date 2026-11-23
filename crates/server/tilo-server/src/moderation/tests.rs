@@ -104,7 +104,8 @@ fn a_report_is_about_who_wrote_the_message() {
 }
 
 #[tokio::test]
-async fn a_restriction_the_bot_may_not_enforce_settles_the_report_and_takes_nothing_back() {
+async fn a_restriction_without_the_workspaces_governance_settles_the_report_and_takes_nothing_back()
+{
     let mut chat = flooded_workspace();
     let agent = ModerationAgent::new(FakeJudge(Mutex::new(Vec::new())));
     let mut api = ChatApi::new(&mut chat, tilo_clock::unix_now_ms_i64());
@@ -117,7 +118,8 @@ async fn a_restriction_the_bot_may_not_enforce_settles_the_report_and_takes_noth
     assert!(enforced.failures.is_empty(), "{:?}", enforced.failures);
     drop(api);
 
-    // Restricting is a person's to do: her posts stay, and so do Ada's.
+    // A record read without the workspace's governance cannot restrict anyone: her posts stay,
+    // and so do Ada's.
     assert_eq!(texts_by(&chat, MALLORY).len(), 3);
     assert_eq!(texts_by(&chat, ADA), ["hello everyone"]);
     // The report is settled, saying what the model thought and why it was not enforced.
@@ -134,9 +136,7 @@ async fn a_restriction_the_bot_may_not_enforce_settles_the_report_and_takes_noth
         kept.decision
             .as_deref()
             .is_some_and(|said| said.starts_with("No action")
-                && said.contains(
-                    "Workspace membership changes require a person with moderation authority"
-                )),
+                && said.contains("this record is read without the workspace's governance")),
         "{:?}",
         kept.decision
     );

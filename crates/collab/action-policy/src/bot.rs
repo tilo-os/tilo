@@ -93,6 +93,42 @@ pub fn moderation_grant(workspace: &str, person: &str) -> Grant {
     )
 }
 
+/// The governance verbs the moderation agent may take on the members it outranks: restrict one
+/// from changing anything for a time, lift that, and ban or unban one from the workspace. Each
+/// is the workspace's own action ([`roles::governance`]), decided at its own node.
+pub const MODERATION_GOVERNANCE: [&str; 4] = [
+    roles::governance::BAN,
+    roles::governance::UNBAN,
+    roles::governance::RESTRICT,
+    roles::governance::UNRESTRICT,
+];
+
+/// The id of the grant letting the moderation agent take `verb` in `workspace`.
+#[must_use]
+pub fn moderation_governance_grant_id(verb: &str) -> String {
+    format!("{MODERATION_GRANT}:{verb}")
+}
+
+/// Every grant a person gives the moderation agent when they turn it on in `workspace`: its
+/// Chat grant ([`moderation_grant`]) and one for each governance verb it may take
+/// ([`MODERATION_GOVERNANCE`]), at that verb's own node, given by `person` (a user root, hex).
+#[must_use]
+pub fn moderation_grants(workspace: &str, person: &str) -> Vec<Grant> {
+    let granted_by = Grantee::person(person.to_owned());
+    let mut grants = vec![moderation_grant(workspace, person)];
+    grants.extend(MODERATION_GOVERNANCE.map(|verb| {
+        Grant::new(
+            moderation_governance_grant_id(verb),
+            Grantee::bot(MODERATION),
+            roles::governance_action(workspace, verb),
+            KindSet::OUTSIDE,
+            Answer::Allow,
+            granted_by.clone(),
+        )
+    }));
+    grants
+}
+
 #[must_use]
 pub fn grant_prefix(installation: &str) -> String {
     format!("bot:{installation}:")

@@ -3,8 +3,9 @@
 //!
 //! The key is kept in the host's secret store. The workspace's moderation bot
 //! ([`tilo_server::workspace_bots::ModerationBot`]) reads reports, takes messages back and
-//! settles reports through Chat's own actions under its Chat grant. A person with moderation
-//! authority handles membership changes.
+//! settles reports through Chat's own actions under its Chat grant, and restricts or bans a
+//! member through the workspace's own membership actions under the grants a person gave it when
+//! they turned it on.
 
 use std::path::Path;
 
