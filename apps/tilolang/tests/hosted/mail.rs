@@ -104,6 +104,21 @@ fn lease() -> String {
     )
 }
 
+/// The lease as a PDF, as the letting agent sends it.
+const LEASE_PDF: &[u8] = b"%PDF-1.4\n% lease 2026\n";
+
+/// The lease renewal with the lease attached, as a server holds it.
+fn lease_with_pdf() -> String {
+    format!(
+        "From: Mill Lane Lettings <office@lettings.example>\nTo: {ME}\nSubject: Your lease renewal\n\
+Message-ID: <lease@lettings.example>\nDate: Tue, 30 Jun 2026 09:00:00 +0000\nMIME-Version: 1.0\n\
+Content-Type: multipart/mixed; boundary=\"lease\"\n\n--lease\nContent-Type: text/plain; charset=utf-8\n\n\
+The new lease is attached.\n--lease\nContent-Type: application/pdf; name=\"Lease 2026.pdf\"\n\
+Content-Disposition: attachment; filename=\"Lease 2026.pdf\"\nContent-Transfer-Encoding: base64\n\n\
+JVBERi0xLjQKJSBsZWFzZSAyMDI2Cg==\n--lease--\n"
+    )
+}
+
 /// The two servers with nothing in the inbox yet: what a test puts there once the window stands,
 /// as mail arrives at an open window.
 fn empty_servers() -> Servers {
@@ -157,6 +172,15 @@ struct MailConnector {
 
 impl MailConnector {
     fn new(source: impl Fn() -> Vec<AccountConfig> + Send + 'static) -> Self {
+        Self::keeping(source, None)
+    }
+
+    /// [`Self::new`], keeping the files messages carry in `content`: the device's content store,
+    /// which the windows read them from.
+    fn keeping(
+        source: impl Fn() -> Vec<AccountConfig> + Send + 'static,
+        content: Option<tilo_content::ContentStore>,
+    ) -> Self {
         let (wakeups, woken) = std::sync::mpsc::channel::<Wakeup>();
         let looping = wakeups.clone();
         let online = Arc::new(AtomicBool::new(false));
@@ -176,7 +200,8 @@ impl MailConnector {
             .expect("the engine starts");
             let (requests, events) = ::mail_engine::engine::spawn_waking(Box::new(engine), wake);
             let source = move || source().into_iter().map(Into::into).collect();
-            Connector::new(Box::new(source), requests, events, device).run(&woken, &looping);
+            Connector::new(Box::new(source), (requests, events), device, content)
+                .run(&woken, &looping);
         });
         Self { wakeups, online }
     }
@@ -208,6 +233,18 @@ impl MailConnector {
         session.settle();
         session
     }
+}
+
+/// Ada at a Mail window kept in step with `config`'s servers, the files messages carry kept in
+/// `content`, the device's store, which the connector and the window share.
+fn window_keeping(
+    config: AccountConfig,
+    content: &tilo_content::ContentStore,
+) -> (MailConnector, Session) {
+    Session::keeping_files_in(content);
+    let connector = MailConnector::keeping(move || vec![config.clone()], Some(content.clone()));
+    let session = connector.window();
+    (connector, session)
 }
 
 /// Ada at a Mail window kept in step with `config`'s servers.
@@ -964,7 +1001,7 @@ fn a_message_delivered_from_outside_is_kept_once_in_its_conversation() {
         "folder": "archive", "read": true, "date": "2024-03-01T09:00:00Z",
         "conversation": "notes@analytical.example", "message_id": "notes@analytical.example",
         "original": "tilo.content:abc",
-        "attachments": ["notes.pdf"],
+        "attachments": [{"file": {"name": "notes.pdf", "hash": "def", "size": 3}}],
         "parts": [r#"{"at":120,"size":12,"pieces":["tilo.content:def"]}"#],
     });
     let delivered = session.call("deliver_message", &root, &first);
@@ -1006,7 +1043,13 @@ fn a_message_delivered_from_outside_is_kept_once_in_its_conversation() {
     assert_eq!(session.text(notes, "from_name"), "Ada Lovelace");
     assert_eq!(session.text(notes, "mailbox"), "archive");
     assert_eq!(session.text(notes, "original"), "tilo.content:abc");
-    assert_eq!(session.text(notes, "attachments"), "notes.pdf");
+    assert!(
+        matches!(
+            session.value_of(notes, "attachments"),
+            RtValue::List(files) if matches!(files.as_slice(), [RtValue::File(f)] if f.name == "notes.pdf" && f.hash == "def")
+        ),
+        "the file it carries is kept as the content it names"
+    );
     assert!(session.text(notes, "parts").contains("tilo.content:def"));
     assert!(!session.flag(notes, "unread"));
     assert_eq!(
@@ -1755,6 +1798,79 @@ fn a_conversation_shows_its_subject_senders_recipients_and_attachments() {
         shown.iter().any(|text| text.contains("lease")),
         "the conversation shows what it says: {shown:#?}"
     );
+}
+
+// USER REQUIREMENT: a file that came with a message is a real file: it saves as the bytes the
+// server sent, it goes along when the message is sent on, and a reply takes it as an attachment.
+#[test]
+fn an_attachment_saves_as_its_file_and_goes_along_with_what_is_sent() {
+    let servers = servers();
+    let content = tilo_content::ContentStore::memory();
+    let (_connector, mut session) = window_keeping(account(&servers), &content);
+    synced(&mut session);
+    session.hold_for(0);
+    servers.imap.append("INBOX", &lease_with_pdf(), &[]);
+    let message = session.wait_for("the lease with its file", |session| {
+        let lease = session
+            .threads()
+            .into_iter()
+            .find(|t| session.text(t, "subject") == "Your lease renewal")?;
+        session.refs(&lease, "messages").into_iter().next()
+    });
+    let shown = session.conversation(&session.thread("Your lease renewal"));
+    assert!(
+        shown.iter().any(|text| text == "Lease 2026.pdf"),
+        "the message shows the file it came with: {shown:#?}"
+    );
+
+    // It is the file the server sent, byte for byte, kept in the device's content.
+    let RtValue::List(files) = session.value_of(&message, "attachments") else {
+        panic!("a message holds its files");
+    };
+    let [RtValue::File(file)] = files.as_slice() else {
+        panic!("the lease came with one file: {files:?}");
+    };
+    assert_eq!(file.name, "Lease 2026.pdf");
+    assert_eq!(file.media, "application/pdf");
+    let hash = file.hash.clone();
+    assert_eq!(content.read(&hash).as_deref(), Some(LEASE_PDF));
+    session.call("attachment", &message, &json!({"name": "Lease 2026.pdf"}));
+    assert!(
+        session
+            .try_call("attachment", &message, &json!({"name": "Other.pdf"}))
+            .is_err(),
+        "a file it did not come with is none"
+    );
+
+    // Sent on, it carries the file.
+    let forward = session.made("forward_message", &message, &json!({}));
+    assert!(
+        matches!(
+            session.value_of(&forward, "attachments"),
+            RtValue::List(files) if matches!(files.as_slice(), [RtValue::File(f)] if f.hash == hash)
+        ),
+        "the forward takes the lease along"
+    );
+
+    // A reply takes the file as an attachment, as the person picks it, and the server gets it.
+    let reply = session.made("reply_to", &message, &json!({}));
+    session.call(
+        "attach",
+        &reply,
+        &json!({"file": {"file": {
+            "name": "Lease 2026.pdf",
+            "media": "application/pdf",
+            "size": LEASE_PDF.len(),
+            "hash": hash,
+        }}}),
+    );
+    session.call("send", &reply, &json!({}));
+    session.until("the server to take the reply", |_| {
+        servers.smtp.sent().len() == 1
+    });
+    let sent = String::from_utf8_lossy(&servers.smtp.sent()[0]).into_owned();
+    assert!(sent.contains("Lease 2026.pdf"), "{sent}");
+    assert!(sent.contains("JVBERi0xLjQKJSBsZWFzZSAyMDI2Cg=="), "{sent}");
 }
 
 // USER REQUIREMENT: an empty answer is nothing to send: nothing is written and no blank

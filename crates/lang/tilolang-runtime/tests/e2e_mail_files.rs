@@ -146,7 +146,15 @@ mod cases {
                     ("message_id", Value::text("notes@analytical.example")),
                     ("conversation", Value::text("notes@analytical.example")),
                     ("date", Value::text("2024-03-01T09:00:00Z")),
-                    ("attachments", Value::List(vec![Value::text("notes.pdf")])),
+                    (
+                        "attachments",
+                        Value::List(vec![Value::file(FileValue::new(
+                            "notes.pdf",
+                            "application/pdf",
+                            3,
+                            "def",
+                        ))]),
+                    ),
                 ],
             );
             returned_ref(out)

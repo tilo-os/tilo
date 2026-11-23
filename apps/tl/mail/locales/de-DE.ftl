@@ -156,11 +156,15 @@ d-sbrol5fc = Auszug
 
 d-4bchz3ch = Text
 
+d-plb4mg2p = Html
+    .doc = Was sie sagt, wie ihr Absender es gestaltet hat: ihr HTML-Teil, die Bilder, die sie an Ort und Stelle zeigt, aus den Inhalten dieses Geräts gelesen.
+
 d-anuds3qt = Kennung der Nachricht
 
 d-asu6ymha = Verweise
 
-d-4zhzrkne = Anhänge
+d-yltl32r3 = Anhänge
+    .doc = Die Dateien, mit denen sie kam, jede in den Inhalten des Arbeitsbereichs: eine, deren Bytes noch nicht auf diesem Gerät sind, ist ohne Inhalt genannt.
 
 d-ubfcf6ep = Ungelesen
 
@@ -218,6 +222,9 @@ d-h2nvr2op = Zurückgeholt
 
 d-em6rrmae = Einladung
     .doc = Die Kalendereinladung, die sie trägt (iCalendar), neben dem, was sie sagt, damit der Kalender des Gasts sie beantworten kann: leer für keine.
+
+d-2tq2zegc = Anhänge
+    .doc = Die Dateien, die sie mitnimmt.
 
 d-lidkonvr-filter-drafts = Entwürfe
 
@@ -340,10 +347,32 @@ d-ym62maet = Allen antworten
     .doc = Beantwortet eine Nachricht der Unterhaltung an alle, an die sie ging, außer die Person, die antwortet.
 
 d-jokcwung = Nachricht weiterleiten
-    .doc = Schickt eine Nachricht der Unterhaltung weiter, mit ihrem Absender, wann sie kam und was sie sagt.
+    .doc = Schickt eine Nachricht der Unterhaltung weiter, mit ihrem Absender, wann sie kam und was sie sagt, und den Dateien, mit denen sie kam.
 
 d-q6ltvsjf = Weiterleiten
-    .doc = Schickt die neueste Nachricht der Unterhaltung weiter, mit ihrem Absender und was sie sagt.
+    .doc = Schickt die neueste Nachricht der Unterhaltung weiter, mit ihrem Absender, was sie sagt und den Dateien, mit denen sie kam.
+
+d-ipew27sc = Anhang speichern
+    .doc = Eine Datei, mit der die Nachricht kam, als eigene Datei: was Speichern in Dateien ablegt und was ein Agent liest oder einer anderen App gibt.
+    .w-it-came-with-no = Sie kam ohne { $name }
+    .w-is-not-downloaded-yet = { $name } ist noch nicht heruntergeladen
+
+d-ipew27sc-name = Name
+
+d-dshny4x3 = Datei anhängen
+    .doc = Nimmt eine Datei mit der Nachricht mit: eine, die die Person wählt, oder eine, die ein Agent übergibt.
+    .w-this-message-went-already = Diese Nachricht ist schon raus
+    .w-a-message-takes-up-to-16 = Eine Nachricht nimmt bis zu 16 Dateien mit
+    .w-is-larger-than-32-mb = { $name } ist größer als 32 MB
+
+d-dshny4x3-file = Datei
+
+d-jk7ep3bb = Anhang entfernen
+    .doc = Lässt eine Datei zurück, die die Nachricht mitnehmen sollte.
+    .w-this-message-went-already = Diese Nachricht ist schon raus
+    .w-it-takes-no = Sie nimmt kein { $name } mit
+
+d-jk7ep3bb-name = Name
 
 d-eqvgypxr = Archivieren
     .doc = Archiviert die Unterhaltung: ihre Nachrichten verlassen den Posteingang.
@@ -486,6 +515,9 @@ d-a4rv5wm6 = Antworten
 
 d-a4rv5wm6-body = Text
 
+d-t57taubn = Weitergeleitet
+    .w-not-downloaded-so-not-sent-on = Nicht heruntergeladen, daher nicht weitergeschickt: { $names }
+
 d-dqdt6fce = Titel des Platzes
     .w-all-mail = Alle Mails
 
@@ -508,6 +540,11 @@ d-7jf4pn3j = Kalendereinladung vorbereiten~present
 d-s2qkkueu = Nachricht zustellen~present
 
 d-vdfbsj4a = Nachrichtendatei öffnen~present
+d-swcww42a = Anhang~present
+
+d-fxtnru4s = Anhängen~present
+
+d-p76r6z3v = Entfernen~present
 
 d-bj7uen6f = Archivieren~present
 
@@ -606,7 +643,9 @@ d-n2xgxnbw = Nachricht
     .w-to = an { $to }
     .w-hide-quoted-text = Zitierten Text ausblenden
     .w-show-quoted-text = Zitierten Text anzeigen
-    .w-attached = Angehängt: { $attachments }
+
+d-llqqdcy5 = Anhang-Chip
+    .w-not-downloaded = { $name }, nicht heruntergeladen
 
 d-nxayphhi = Nachrichtendatei
     .w-message = Nachricht
@@ -632,6 +671,7 @@ d-oqpazwvc = Schreiben
     .w-https-example-org = https://example.org
     .w-add-link = Link hinzufügen
     .w-write-your-message = Schreib deine Nachricht
+    .w-attach = Anhängen
     .w-send = Senden
 
 d-ozukvva2 = Zur Seite gelegt

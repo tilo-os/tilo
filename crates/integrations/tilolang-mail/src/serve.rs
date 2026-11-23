@@ -108,6 +108,8 @@ pub struct Connector {
     send_of: HashMap<Request, String>,
     /// The device came online again.
     online: Arc<AtomicBool>,
+    /// The content store the files messages carry are kept in ([`EngineConnector::keeping`]).
+    content: Option<tilo_content::ContentStore>,
 }
 
 fn shared(source: &Rc<AccountSource>) -> AccountSource {
@@ -117,16 +119,19 @@ fn shared(source: &Rc<AccountSource>) -> AccountSource {
 
 impl Connector {
     /// The connector reading its accounts from `source`, its engine answering on
-    /// `requests`/`events`. `online` is set when the device comes online again.
+    /// `requests`/`events`, keeping the files messages carry in `content`: the device's content
+    /// store, which the app's window reads them from. `online` is set when the device comes
+    /// online again.
     #[must_use]
     pub fn new(
         source: AccountSource,
-        requests: Sender<EngineRequest>,
-        events: Receiver<EngineEvent>,
+        (requests, events): (Sender<EngineRequest>, Receiver<EngineEvent>),
         online: Arc<AtomicBool>,
+        content: Option<tilo_content::ContentStore>,
     ) -> Self {
         let source = Rc::new(source);
-        let own = EngineConnector::sharing(shared(&source), requests.clone());
+        let own = EngineConnector::sharing(shared(&source), requests.clone())
+            .keeping_files(content.clone());
         let mut connector = Self {
             source,
             requests,
@@ -142,6 +147,7 @@ impl Connector {
             sends: HashMap::new(),
             send_of: HashMap::new(),
             online,
+            content,
         };
         connector.follow_accounts();
         connector
@@ -222,7 +228,8 @@ impl Connector {
         }
         let mut attached = Session {
             stream,
-            connector: EngineConnector::sharing(shared(&self.source), self.requests.clone()),
+            connector: EngineConnector::sharing(shared(&self.source), self.requests.clone())
+                .keeping_files(self.content.clone()),
             asked: HashMap::new(),
         };
         let mut first = vec![FromConnector::Accounts(self.accounts.clone())];
@@ -411,6 +418,10 @@ impl Connector {
                 };
                 self.tell(session, &FromConnector::Event(refused));
             }
+            Err(crate::connector::Unmade::Missing(reason)) => {
+                let refused = Event::Refused { request, reason };
+                self.tell(session, &FromConnector::Event(refused));
+            }
             // The engine never got it: it waits to go online.
             Err(crate::connector::Unmade::EngineStopped) => {
                 let unsent = Event::Unsent {
@@ -580,7 +591,12 @@ pub fn serve(sign_ins: UnixStream, attachments: impl Iterator<Item = UnixStream>
         tracing::error!(%error, "the mail connector takes no instances");
         return;
     }
-    let connector = Connector::new(accounts, requests, events, online);
+    let connector = Connector::new(
+        accounts,
+        (requests, events),
+        online,
+        tilo_content_device::device(),
+    );
     connector.run(&wakeups, &woken);
 }
 
@@ -623,7 +639,7 @@ mod tests {
         let (requests, asked) = channel();
         let (answer, events) = channel();
         let (woken, wakeups) = channel();
-        let connector = Connector::new(source, requests, events, Arc::default());
+        let connector = Connector::new(source, (requests, events), Arc::default(), None);
         Rig {
             connector,
             asked,

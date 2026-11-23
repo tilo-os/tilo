@@ -23743,6 +23743,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tilo-content",
+ "tilo-content-device",
  "tilo-doc-codecs",
  "tilo-net",
  "tilolang-tilo",

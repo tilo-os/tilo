@@ -27,7 +27,9 @@ use tilolang_tilo::runtime::origin::{OriginChange, OriginWrite, Unwritten};
 use tilolang_tilo::runtime::store::{FieldKey, Store as _};
 use tilolang_tilo::runtime::{Delivery, ResourceRef, Value};
 
-use super::connector::{Changes, Event, ImapMessage, MailConnector, Outgoing, Request, Unmade};
+use super::connector::{
+    Changes, Event, ImapMessage, MailConnector, Outgoing, Part, Request, Unmade,
+};
 
 /// The mailboxes every account shows, in order: key, name, role.
 pub const MAILBOXES: &[(&str, &str)] = &[
@@ -1488,11 +1490,52 @@ fn message_fields(ty: &OriginType, m: &ImapMessage) -> Vec<(String, Value)> {
     put(ty, &mut f, "body", text(&m.body));
     put(ty, &mut f, "message_id", text(&m.message_id));
     put(ty, &mut f, "references", text(&m.references));
-    put(ty, &mut f, "attachments", text(&m.attachments.join("\n")));
+    put(ty, &mut f, "html", text(&m.html));
+    put(ty, &mut f, "attachments", files(&m.attachments));
     put(ty, &mut f, "unread", Value::Bool(m.unread));
     put(ty, &mut f, "flagged", Value::Bool(m.flagged));
     put(ty, &mut f, "mailbox", text(&m.mailbox));
     f
+}
+
+/// The files a message carries as the package's `File`s: what each is called, its media type, its
+/// size and the reference its bytes are kept under, empty for one not on this device.
+fn files(parts: &[Part]) -> Value {
+    Value::List(
+        parts
+            .iter()
+            .map(|p| {
+                Value::file(tilolang_tilo::runtime::FileValue::new(
+                    p.name.as_str(),
+                    p.media.as_str(),
+                    i64::try_from(p.size).unwrap_or(i64::MAX),
+                    p.content.as_str(),
+                ))
+            })
+            .collect(),
+    )
+}
+
+/// The files a send takes along, as the package hands them (`d.attachments`, each a `File` as
+/// it is stored): what each is called, its media type, its size and its reference.
+fn parts_of(files: Option<&Json>) -> Vec<Part> {
+    let Some(files) = files.and_then(Json::as_array) else {
+        return Vec::new();
+    };
+    files
+        .iter()
+        .filter_map(|item| {
+            let file = item.get("file").unwrap_or(item);
+            let said = |key: &str| file.get(key).and_then(Json::as_str).map(str::to_owned);
+            Some(Part {
+                name: said("name")?,
+                media: said("media").unwrap_or_default(),
+                size: file.get("size").and_then(Json::as_u64).unwrap_or_default(),
+                content: said("hash")?,
+                inline_id: String::new(),
+            })
+        })
+        .collect()
 }
 
 /// What each touched conversation says of its messages: its newest, who wrote, how many,
@@ -1797,6 +1840,7 @@ impl Origin for ImapOrigin {
             in_reply_to: field(7),
             references: field(8),
             calendar_ics: field(9),
+            files: parts_of(payload.get(10)),
         };
         match self.connector.send(&account, message) {
             Ok(request) => {
@@ -1813,6 +1857,7 @@ impl Origin for ImapOrigin {
             // The message never left: it waits to go online, as one the server was not reached
             // for does.
             Err(Unmade::EngineStopped) => Delivery::Offline("the mail engine stopped".to_owned()),
+            Err(Unmade::Missing(reason)) => Delivery::Rejected(reason),
         }
     }
 }

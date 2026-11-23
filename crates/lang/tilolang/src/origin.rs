@@ -523,6 +523,12 @@ pub const KINDS: &[OriginKind] = &[
             field("received", "Time", "When it arrived."),
             field("snippet", "Text", "The start of what it says."),
             field("body", "Text", "What it says, as text."),
+            field(
+                "html",
+                "Text",
+                "What it says as its sender formatted it: its HTML part, each picture it shows in \
+                 place at the address of its content. Empty for a message of plain text.",
+            ),
             field("message_id", "Text", "Its Message-ID header."),
             field(
                 "references",
@@ -531,8 +537,9 @@ pub const KINDS: &[OriginKind] = &[
             ),
             field(
                 "attachments",
-                "Text",
-                "The names of its attachments, one per line.",
+                "List<File>",
+                "The files it came with, each kept in the workspace's content; one whose bytes \
+                 did not come with it is named with no content.",
             ),
             people("unread", "Bool", "Whether it is unread."),
             people("flagged", "Bool", "Whether it is flagged."),

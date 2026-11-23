@@ -130,6 +130,11 @@ impl ui::app::AppSurface for Region {
 thread_local! {
     /// The serial of the last input event the live window was handed.
     static INPUT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// The device's content store the windows opened from here on keep their files in, as the
+    /// session opens one for an app's instance: none unless a test hands one
+    /// ([`Session::keeping_files_in`]).
+    static DEVICE_CONTENT: std::cell::RefCell<Option<tilo_content::ContentStore>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// The window the person uses: the headless frame harness, or the live `App` a window process
@@ -515,6 +520,12 @@ impl Session {
         session
     }
 
+    /// The windows this thread opens from here on keep their files in `content`, the device's
+    /// content store: the one an app's other processes (its origin's connector) keep files in.
+    fn keeping_files_in(content: &tilo_content::ContentStore) {
+        DEVICE_CONTENT.with(|kept| *kept.borrow_mut() = Some(content.clone()));
+    }
+
     /// [`Self::open`], before the window had a frame.
     fn opened(app: &str, person: &str, window: impl FnOnce(HostedWindow) -> Window) -> Self {
         Self::opened_in_language(app, person, "en-US", window)
@@ -694,7 +705,10 @@ impl Session {
             connection,
             (store, tilolang_process::hosted::memory_content()),
             bundle,
-            &tilolang_process::hosted::Kept::default(),
+            &tilolang_process::hosted::Kept {
+                content: DEVICE_CONTENT.with(|content| content.borrow().clone()),
+                ..tilolang_process::hosted::Kept::default()
+            },
             Box::new(transport),
             (&Rc::new(Phrases::new("en-US")), host.formats()),
             woken.waker(),

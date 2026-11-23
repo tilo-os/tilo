@@ -157,11 +157,15 @@ d-sbrol5fc = Snippet
 
 d-4bchz3ch = Body
 
+d-plb4mg2p = Html
+    .doc = What it says as its sender formatted it: its HTML part, the pictures it shows in place read from this device's content.
+
 d-anuds3qt = Message id
 
 d-asu6ymha = References
 
-d-4zhzrkne = Attachments
+d-yltl32r3 = Attachments
+    .doc = The files it came with, each kept in the workspace's content: one whose bytes are not on this device yet is named with no content.
 
 d-ubfcf6ep = Unread
 
@@ -219,6 +223,9 @@ d-h2nvr2op = Recalled
 
 d-em6rrmae = Invitation
     .doc = The calendar invitation it carries (iCalendar), which goes beside what it says so the guest's calendar can answer it: empty for none.
+
+d-2tq2zegc = Attachments
+    .doc = The files it takes along.
 
 d-ozukvva2 = Set aside
     .doc = What the native Mail kept on this draft that this one has no place for (attachments, private notes), said in words: never sent with it.
@@ -347,10 +354,32 @@ d-ym62maet = Reply all
     .doc = Answers one message of the conversation, to everyone it went to but the person answering.
 
 d-jokcwung = Forward message
-    .doc = Sends one message of the conversation on, with its sender, when and what it says.
+    .doc = Sends one message of the conversation on, with its sender, when and what it says, and the files it came with.
 
 d-q6ltvsjf = Forward
-    .doc = Sends the conversation's newest message on, with its sender and what it says.
+    .doc = Sends the conversation's newest message on, with its sender, what it says and the files it came with.
+
+d-ipew27sc = Save attachment
+    .doc = One file the message came with, as a file of its own: what Save puts in Files, and what an agent reads or hands another app.
+    .w-it-came-with-no = It came with no { $name }
+    .w-is-not-downloaded-yet = { $name } is not downloaded yet
+
+d-ipew27sc-name = Name
+
+d-dshny4x3 = Attach a file
+    .doc = Takes a file along with the message: one the person picks, or one an agent hands over.
+    .w-this-message-went-already = This message went already
+    .w-a-message-takes-up-to-16 = A message takes up to 16 files
+    .w-is-larger-than-32-mb = { $name } is larger than 32 MB
+
+d-dshny4x3-file = File
+
+d-jk7ep3bb = Remove attachment
+    .doc = Leaves a file the message was to take along behind.
+    .w-this-message-went-already = This message went already
+    .w-it-takes-no = It takes no { $name }
+
+d-jk7ep3bb-name = Name
 
 d-eqvgypxr = Archive
     .doc = Archives the conversation: its messages leave the inbox.
@@ -496,6 +525,9 @@ d-a4rv5wm6-body = Body
 d-nxayphhi = Message file
     .w-message = Message
 
+d-t57taubn = Forwarded
+    .w-not-downloaded-so-not-sent-on = Not downloaded, so not sent on: { $names }
+
 d-dqdt6fce = Place title
     .w-all-mail = All mail
 
@@ -518,6 +550,12 @@ d-7jf4pn3j = Prepare calendar invitation~present
 d-s2qkkueu = Deliver message~present
 
 d-vdfbsj4a = Open message file~present
+
+d-swcww42a = Attachment~present
+
+d-fxtnru4s = Attach~present
+
+d-p76r6z3v = Detach~present
 
 d-bj7uen6f = Archive~present
 
@@ -616,7 +654,9 @@ d-n2xgxnbw = Message
     .w-to = to { $to }
     .w-hide-quoted-text = Hide quoted text
     .w-show-quoted-text = Show quoted text
-    .w-attached = Attached: { $attachments }
+
+d-llqqdcy5 = Attachment chip
+    .w-not-downloaded = { $name }, not downloaded
 
 d-oqpazwvc = Editor
     .w-status = Status
@@ -639,4 +679,5 @@ d-oqpazwvc = Editor
     .w-https-example-org = https://example.org
     .w-add-link = Add link
     .w-write-your-message = Write your message
+    .w-attach = Attach
     .w-send = Send

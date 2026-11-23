@@ -791,6 +791,7 @@ impl Resolver<'_> {
             "Int" => *have == Ty::Int,
             "Time" => *have == Ty::Time,
             "Set<Text>" => *have == Ty::Set(Box::new(Ty::Text)),
+            "List<File>" => *have == Ty::List(Box::new(Ty::File)),
             _ => false,
         }
     }

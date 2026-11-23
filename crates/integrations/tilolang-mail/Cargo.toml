@@ -14,6 +14,9 @@ accounts = { path = "../accounts", optional = true }
 tilolang-tilo = { path = "../../lang/tilolang-tilo" }
 wire-frame = { path = "../../platform/wire-frame" }
 tilo-content = { path = "../../system/content", optional = true }
+# This device's content store, which the files messages carry are kept in: the store the app's
+# window reads them from.
+tilo-content-device = { path = "../../system/content-device", optional = true }
 # Whether the device is online: an unreachable mail server is tried again when the network
 # comes back, followed on a thread of its own.
 tilo-net = { path = "../../platform/tilo-net", optional = true }
@@ -40,6 +43,7 @@ default = ["engine"]
 engine = [
     "dep:mail-engine",
     "dep:tilo-content",
+    "dep:tilo-content-device",
     "dep:tilo-net",
     "dep:runtime-portal",
     "dep:accounts",

@@ -6,12 +6,16 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 
+use mail_engine::attachment_store;
 use mail_engine::engine::{EngineEvent, EngineRequest, EngineRequestKind};
-use mail_engine::model::{AccountConfig, Draft, Folder, Mailbox, Message};
+use mail_engine::model::{
+    AccountConfig, Draft, DraftAttachment, Folder, Mailbox, Message, SendFile,
+};
 use mail_engine::sync::{Want, Window};
+use tilo_content::ContentStore;
 
 use crate::connector::{
-    AccountRef, Changes, Event, ImapMessage, MailConnector, Outgoing, Request, Unmade,
+    AccountRef, Changes, Event, ImapMessage, MailConnector, Outgoing, Part, Request, Unmade,
 };
 
 /// The key a message is known by.
@@ -37,9 +41,29 @@ fn kept_mail_root() -> Option<PathBuf> {
 }
 
 /// A message of the engine as the connector shows it.
+/// A message of the engine as the connector shows it, the files it carries kept in `content`:
+/// a file whose bytes the message did not bring, or that no store keeps, is named with no content.
+/// A picture its HTML shows in place (`cid:`) is no file of it: the HTML reads it at the address
+/// of its content instead.
 #[must_use]
-pub fn imap_message(m: &Message) -> ImapMessage {
+pub fn imap_message(m: &Message, content: Option<&ContentStore>) -> ImapMessage {
     let key = message_key(m);
+    let mut html = m.html_body.clone().unwrap_or_default();
+    let mut attachments = Vec::with_capacity(m.attachments.len());
+    for a in &m.attachments {
+        let part = Part {
+            name: a.filename.clone(),
+            media: a.mime.clone(),
+            size: a.size,
+            content: kept(content, &a.content, &a.filename),
+            inline_id: a.inline_id.clone().unwrap_or_default(),
+        };
+        if part.inline_id.is_empty() {
+            attachments.push(part);
+        } else if !part.content.is_empty() {
+            html = in_place(&html, &part.inline_id, &part.content);
+        }
+    }
     let mut to = String::new();
     for a in &m.to {
         if !to.is_empty() {
@@ -66,13 +90,78 @@ pub fn imap_message(m: &Message) -> ImapMessage {
             .unwrap_or_default()
             .saturating_mul(60),
         body: m.body.clone(),
+        html,
         message_id: m.rfc_message_id.clone().unwrap_or_default(),
         references: m.in_reply_to.clone().unwrap_or_default(),
-        attachments: m.attachments.iter().map(|a| a.filename.clone()).collect(),
+        attachments,
         unread: !m.read,
         flagged: m.starred,
         mailbox: m.folder.as_key().to_owned(),
     }
+}
+
+/// `html` with each reference to the part `id` (`cid:<id>`, in any case) the address of its
+/// content, `reference`.
+fn in_place(html: &str, id: &str, reference: &str) -> String {
+    let wanted = format!("cid:{}", id.to_ascii_lowercase());
+    let lower = html.to_ascii_lowercase();
+    let mut out = String::with_capacity(html.len());
+    // Lowercasing ASCII keeps every byte where it was, so a place in one is the same in both.
+    let (mut rest, mut lower_rest) = (html, lower.as_str());
+    while let Some(found) = lower_rest.find(&wanted) {
+        let end = found.saturating_add(wanted.len());
+        let (Some((before, _)), Some((_, after)), Some((_, lower_after))) = (
+            rest.split_at_checked(found),
+            rest.split_at_checked(end),
+            lower_rest.split_at_checked(end),
+        ) else {
+            break;
+        };
+        out.push_str(before);
+        out.push_str("tilo-blob://");
+        out.push_str(reference);
+        rest = after;
+        lower_rest = lower_after;
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `bytes` kept in `content`: the reference they are kept under, or empty when there are none
+/// or nowhere to keep them.
+fn kept(content: Option<&ContentStore>, bytes: &[u8], name: &str) -> String {
+    let Some(content) = content.filter(|_| !bytes.is_empty()) else {
+        return String::new();
+    };
+    match content.put(bytes) {
+        Ok(reference) => reference,
+        Err(error) => {
+            tracing::warn!(%error, name, "a file a message carries could not be kept");
+            String::new()
+        }
+    }
+}
+
+/// The files `parts` names with the bytes `content` keeps of each, as a message being sent takes
+/// them along; or which one is not on this device.
+fn files_of(content: Option<&ContentStore>, parts: &[Part]) -> Result<Vec<SendFile>, String> {
+    parts
+        .iter()
+        .map(|part| {
+            let bytes = content
+                .and_then(|content| content.read(&part.content))
+                .ok_or_else(|| format!("{} is not on this device", part.name))?;
+            Ok(SendFile {
+                attachment: DraftAttachment {
+                    content_id: format!("{}{}", attachment_store::PREFIX, part.content),
+                    filename: attachment_store::safe_filename(&part.name),
+                    mime: attachment_store::safe_mime(&part.media),
+                    size: bytes.len() as u64,
+                },
+                bytes,
+            })
+        })
+        .collect()
 }
 
 /// An account the connector signs in to: its settings, with the password the session released
@@ -119,6 +208,10 @@ pub struct EngineConnector {
     kept_taken: HashSet<(String, String)>,
     /// Where the installer keeps the mail it brought over, as it wrote it there.
     kept_root: Option<PathBuf>,
+    /// The content store the files messages carry are kept in, and those a send takes along are
+    /// read from: this device's, which the app's window reads. `None` names files with no
+    /// content.
+    content: Option<ContentStore>,
 }
 
 impl EngineConnector {
@@ -140,6 +233,7 @@ impl EngineConnector {
             ready: Vec::new(),
             kept_taken: HashSet::new(),
             kept_root: kept_mail_root(),
+            content: None,
         }
     }
 
@@ -158,6 +252,7 @@ impl EngineConnector {
             ready: Vec::new(),
             kept_taken: HashSet::new(),
             kept_root: kept_mail_root(),
+            content: None,
         }
     }
 
@@ -166,6 +261,13 @@ impl EngineConnector {
     #[must_use]
     pub fn keeping(mut self, root: Option<PathBuf>) -> Self {
         self.kept_root = root;
+        self
+    }
+
+    /// This connector keeping the files messages carry in `content`.
+    #[must_use]
+    pub fn keeping_files(mut self, content: Option<ContentStore>) -> Self {
+        self.content = content;
         self
     }
 
@@ -292,7 +394,7 @@ impl EngineConnector {
             m.folder = folder;
             self.keys
                 .insert((account.to_owned(), message_key(&m)), m.id);
-            out.push(imap_message(&m));
+            out.push(imap_message(&m, self.content.as_ref()));
             held.insert(m);
         }
         out
@@ -416,6 +518,7 @@ impl MailConnector for EngineConnector {
 
     fn send(&mut self, account: &str, message: Outgoing) -> Result<Request, Unmade> {
         let config = self.config(account).ok_or(Unmade::NoAccount)?;
+        let files = files_of(self.content.as_ref(), &message.files).map_err(Unmade::Missing)?;
         let mut draft = Draft {
             to: message.to,
             cc: message.cc,
@@ -444,9 +547,7 @@ impl MailConnector for EngineConnector {
         if !message.calendar_ics.is_empty() {
             draft.calendar_ics = Some(message.calendar_ics);
         }
-        // A message written on this device brings its files in the draft: there is no page
-        // whose files the host would have to read for it.
-        self.request(EngineRequest::send(config, Box::new(draft), Vec::new()))
+        self.request(EngineRequest::send(config, Box::new(draft), files))
             .ok_or(Unmade::EngineStopped)
     }
 
@@ -604,7 +705,10 @@ impl EngineConnector {
                 messages,
                 ..
             } => {
-                let found = messages.iter().map(imap_message).collect();
+                let found = messages
+                    .iter()
+                    .map(|m| imap_message(m, self.content.as_ref()))
+                    .collect();
                 out.push(Event::Found {
                     account: account_id,
                     messages: found,

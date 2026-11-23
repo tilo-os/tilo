@@ -101,9 +101,14 @@ type Message (origin: imap.message, title: subject) {
     received: Time
     snippet: Text
     body: Text
+    /// What it says as its sender formatted it: its HTML part, the pictures it shows in place read
+    /// from this device's content. Empty for a message of plain text.
+    html: Text
     message_id: Text merge register
     references: Text merge register
-    attachments: Text
+    /// The files it came with, each kept in the workspace's content: one whose bytes are not on
+    /// this device yet is named with no content.
+    attachments: List<File>
     unread: Bool
     flagged: Bool
     mailbox: Text
@@ -138,6 +143,8 @@ type Draft (title: subject, untitled: "New message") {
     /// The calendar invitation it carries (iCalendar), which goes beside what it says so the
     /// guest's calendar can answer it: empty for none.
     invitation: Text = ""
+    /// The files it takes along.
+    attachments: List<File>
     /// What the native Mail kept on this draft that this one has no place for (attachments,
     /// private notes), said in words: never sent with it.
     set_aside: Text
@@ -374,9 +381,9 @@ action prepare_calendar_invitation(
 /// the sender as a header writes it (`Ada Lovelace <ada@example.com>`), and `original` the
 /// content reference of the message as it was sent, less its large parts: `parts` says where
 /// each of those stands in it and which pieces of content it is in, one JSON text each
-/// (`{"at": 120, "size": 4096, "pieces": ["tilo.content:…"]}`). `attachments` names the
-/// files it carries. A message already held under its Message-ID is answered as it is, so
-/// delivering it again keeps it once.
+/// (`{"at": 120, "size": 4096, "pieces": ["tilo.content:…"]}`). `attachments` are the files it
+/// carries, each content the workspace holds. A message already held under its Message-ID is
+/// answered as it is, so delivering it again keeps it once.
 action deliver_message(
     m: Mail,
     from: Text,
@@ -391,7 +398,7 @@ action deliver_message(
     message_id: Text = "",
     original: Text = "",
     parts: List<Text> = [],
-    attachments: List<Text> = [],
+    attachments: List<File> = [],
 ) -> Message (icon: .inbox, label: "Deliver a message") {
     require from != "" "A message says who it is from"
     if message_id != "" {
@@ -440,7 +447,7 @@ action deliver_message(
             message_id: message_id,
             unread: not read,
             mailbox: folder,
-            attachments: attachments.join("\n"),
+            attachments: attachments,
             original: original,
             parts: parts.join("\n"),
         ),
@@ -514,10 +521,10 @@ fn message_markdown(m: Message) -> Text {
         if m.to == "" { "" } else { "To: {m.to}" },
         if m.cc == "" { "" } else { "Cc: {m.cc}" },
         "Date: {m.received.iso()}",
-        if m.attachments == "" {
+        if m.attachments.is_empty() {
             ""
         } else {
-            "Attached: {m.attachments.replace("\n", ", ")}"
+            "Attached: {attachment_names(m).join(", ")}"
         },
     ]
         .filter(line -> line != "")
@@ -547,7 +554,7 @@ fn message_json(m: Message) -> Text {
 
 /// The files a message carries, by name: none when it carries none.
 fn attachment_names(m: Message) -> List<Text> {
-    if m.attachments == "" { [] } else { m.attachments.split("\n") }
+    m.attachments.map(f -> f.name)
 }
 
 /// `text` as JSON writes it, quotes and escapes and all.
@@ -746,7 +753,8 @@ action reply_all_to(m: Message) -> Draft (icon: .reply_all, label: "Reply all") 
     )
 }
 
-/// Sends one message of the conversation on, with its sender, when and what it says.
+/// Sends one message of the conversation on, with its sender, when and what it says, and the
+/// files it came with.
 action forward_message(m: Message) -> Draft (icon: .forward) {
     let mail = root Mail
     let from = sends_from(mail, m.account)
@@ -754,24 +762,70 @@ action forward_message(m: Message) -> Draft (icon: .forward) {
         Draft(
             from: from,
             subject: "Fwd: {m.subject}",
-            body: signed(
-                mail,
-                from,
-                "\n\nFrom {m.from_name} <{m.from}> ({m.received}):\n\n> {m.body.replace("\n", "\n> ")}\n",
-            ),
+            body: signed(mail, from, forwarded(m)),
+            attachments: m.attachments.filter(f -> on_device(f)),
         ),
     )
 }
 
-/// Sends the conversation's newest message on, with its sender and what it says.
+/// Sends the conversation's newest message on, with its sender, what it says and the files it
+/// came with.
 action forward(t: Thread) -> Draft (icon: .forward, key: "f") {
     let m = root Mail
     let last = t.messages.last()
-    let said = if let l = last {
-        "\n\nFrom {l.from_name} <{l.from}> ({l.received}):\n\n> {l.body.replace("\n", "\n> ")}\n"
-    } else { "" }
     let from = sends_from(m, t.account)
-    m.drafts.insert(Draft(from: from, subject: "Fwd: {t.subject}", body: signed(m, from, said)))
+    m.drafts.insert(
+        Draft(
+            from: from,
+            subject: "Fwd: {t.subject}",
+            body: signed(m, from, if let l = last { forwarded(l) } else { "" }),
+            attachments: if let l = last { l.attachments.filter(f -> on_device(f)) } else { [] },
+        ),
+    )
+}
+
+/// `m` as a message sent on quotes it: who wrote it and when, then its lines after `> `, and the
+/// files it came with that are not on this device, by name, since they cannot go with it.
+fn forwarded(m: Message) -> Text {
+    let left = m.attachments.filter(f -> not on_device(f)).map(f -> f.name)
+    let names = left.join(", ")
+    let note = if left.is_empty() {
+        ""
+    } else {
+        std.say("Not downloaded, so not sent on: {names}")
+    }
+    let said = "\n\nFrom {m.from_name} <{m.from}> ({m.received}):\n\n> {m.body.replace("\n", "\n> ")}\n"
+    if note == "" { said } else { "{said}\n{note}\n" }
+}
+
+/// Whether the bytes of `f` are on this device: a file a server's message named whose content
+/// did not come with it has none.
+fn on_device(f: File) -> Bool {
+    f.url != "tilo-blob://"
+}
+
+/// One file the message came with, as a file of its own: what Save puts in Files, and what an
+/// agent reads or hands another app.
+action attachment(m: Message, name: Text) -> File (icon: .download, label: "Save attachment") {
+    require m.attachments.any(f -> f.name == name) "It came with no {name}"
+    require m.attachments.any(f -> f.name == name and on_device(f)) "{name} is not downloaded yet"
+    m.attachments.find(f -> f.name == name and on_device(f)) ?? File.of_text(name, "")
+}
+
+/// Takes a file along with the message: one the person picks, or one an agent hands over. A
+/// message takes up to sixteen files of up to 32 MB each, as mail servers take them.
+action attach(d: Draft, file: File) (icon: .paperclip, label: "Attach a file") {
+    require not d.sent or d.recalled "This message went already"
+    require d.attachments.len() < 16 "A message takes up to 16 files"
+    require file.size <= 33554432 "{file.name} is larger than 32 MB"
+    d.attachments = [d.attachments, [file]].flat_map(x -> x)
+}
+
+/// Leaves a file the message was to take along behind.
+action detach(d: Draft, name: Text) (icon: .x, label: "Remove attachment") {
+    require not d.sent or d.recalled "This message went already"
+    require d.attachments.any(f -> f.name == name) "It takes no {name}"
+    d.attachments = d.attachments.filter(f -> f.name != name)
 }
 
 /// Archives the conversation: its messages leave the inbox.
@@ -972,6 +1026,7 @@ action send_later(d: Draft, at: Time) uses time (icon: .clock, label: "Send late
             d.in_reply_to,
             d.references,
             d.invitation,
+            d.attachments,
         ),
         at: at,
     )
@@ -1082,6 +1137,7 @@ primary action send(d: Draft) uses time proposal compose(d) (icon: .send) {
             d.in_reply_to,
             d.references,
             d.invitation,
+            d.attachments,
         ),
         at: at,
     )
@@ -1471,13 +1527,17 @@ view thread_list(shown: List<Thread>) {
 }
 
 /// One conversation in a list: who wrote, the subject, the start of the newest message and
-/// when it came.
+/// when it came; flagged, unread, or carrying files.
 view thread_row(t: Thread) {
     row(
         t.senders,
-        secondary: t.subject,
+        secondary: if t.snippet == "" { t.subject } else { "{t.subject} – {t.snippet}" },
         meta: t.latest,
-        mark: if t.flagged { .flag } else if t.unread { .mail },
+        mark: if t.flagged {
+            .flag
+        } else if t.unread {
+            .mail
+        } else if t.messages.any(m -> not m.attachments.is_empty()) { .paperclip },
     )
 }
 
@@ -1573,6 +1633,7 @@ view message(m: Message) {
     // it: close enough to belong to it, far enough to be a card of its own.
     stack(gap: .section) {
         row(gap: .related, align: .center) {
+            ui.Avatar(name: if m.from_name == "" { m.from } else { m.from_name })
             ui.Text(if m.from_name == "" { m.from } else { m.from_name }, role: .subheading)
             ui.Time(m.received, role: .caption, past: true, secondary: true)
             spacer()
@@ -1613,10 +1674,26 @@ view message(m: Message) {
                     }
                 }
             }
-            if m.attachments != "" {
-                ui.Text("Attached: {m.attachments}", role: .label)
+            if not m.attachments.is_empty() {
+                row(gap: .tight, wrap: true) {
+                    for f in m.attachments {
+                        attachment_chip(m, f)
+                    }
+                }
             }
         }
+    }
+}
+
+/// A file a message came with: its name, which saves it to Files when pressed, or says it is not
+/// downloaded yet.
+view attachment_chip(m: Message, f: File) {
+    if on_device(f) {
+        ui.Chip(f.name, icon: .paperclip) {
+            on press: file.save(attachment(m, f.name), name: f.name)
+        }
+    } else {
+        ui.Chip(std.say("{f.name}, not downloaded"), icon: .paperclip)
     }
 }
 
@@ -1743,10 +1820,22 @@ view editor(d: Draft) {
             }
         }
         ui.BlockEditor(bind: d.body, placeholder: "Write your message", format: format_ask)
+        if not d.attachments.is_empty() {
+            row(gap: .tight, wrap: true) {
+                for f in d.attachments {
+                    ui.Chip(f.name, icon: .paperclip) {
+                        on remove: detach(d, f.name)
+                    }
+                }
+            }
+        }
         // The message's own Send: a composer sends from where it is written, and the window's
         // bar keeps it once for the draft it shows. While `send` would refuse, it stands dimmed
         // where a person looks for it, saying why in the words of its `require`.
         row {
+            ui.Button("Attach", icon: .paperclip) {
+                on press: file.choose(attach(d))
+            }
             spacer()
             ui.Button("Send", icon: .send) {
                 on press: send(d)
@@ -1861,7 +1950,6 @@ scenario "a busy inbox" -> Thread {
             snippet: "The new lease is attached.",
             body: "Dear Sam,\n\nThe new lease is attached. Please sign by Friday so we can register it before the month ends.\n\nKind regards,\nMill Lane Lettings",
             message_id: "lease@lettings.example",
-            attachments: "Lease 2026.pdf",
             unread: true,
             flagged: true,
             mailbox: "inbox",
@@ -1974,7 +2062,6 @@ scenario "a busy inbox" -> Thread {
             snippet: "The sunset ones came out best.",
             body: "The sunset ones came out best. I put the rest in the shared album.\n\nMia",
             message_id: "photos@mia.example",
-            attachments: "lake-1.jpg\nlake-2.jpg",
             mailbox: "inbox",
         ),
     )
@@ -2002,7 +2089,6 @@ scenario "a busy inbox" -> Thread {
             snippet: "The invoice is attached.",
             body: "Thanks for the work this month. The invoice is attached, payable within thirty days.",
             message_id: "invoice@studio.example",
-            attachments: "Invoice 0612.pdf",
             mailbox: "archive",
         ),
     )
@@ -2187,7 +2273,6 @@ scenario "an account that cannot be reached" -> Account {
             snippet: "The new lease is attached.",
             body: "Dear Sam,\n\nThe new lease is attached. Please sign by Friday so we can register it before the month ends.\n\nKind regards,\nMill Lane Lettings",
             message_id: "lease@lettings.example",
-            attachments: "Lease 2026.pdf",
             unread: true,
             flagged: true,
             mailbox: "inbox",
@@ -2296,7 +2381,6 @@ scenario "a mailbox on its own" -> Mailbox {
             snippet: "The invoice is attached.",
             body: "Thanks for the work this month. The invoice is attached, payable within thirty days.",
             message_id: "invoice@studio.example",
-            attachments: "Invoice 0612.pdf",
             mailbox: "archive",
         ),
     )

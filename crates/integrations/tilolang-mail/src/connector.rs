@@ -18,6 +18,24 @@ pub struct AccountRef {
     pub identities: Vec<String>,
 }
 
+/// A file a message carries, or one a message being sent takes along.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Part {
+    /// What it is called: `Lease 2026.pdf`.
+    pub name: String,
+    /// Its media type: `application/pdf`.
+    pub media: String,
+    /// How many bytes it is.
+    pub size: u64,
+    /// The reference its bytes are kept under in this device's content store, the hash a
+    /// `tilo-blob://` address names: empty while they are not on this device.
+    pub content: String,
+    /// The Content-ID its message's HTML shows it in place by (`cid:`): empty for a file attached
+    /// to the message.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub inline_id: String,
+}
+
 /// A message as its server holds it.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ImapMessage {
@@ -33,9 +51,14 @@ pub struct ImapMessage {
     /// When it arrived, in seconds since the epoch.
     pub received: u64,
     pub body: String,
+    /// Its `text/html` part as it came, when it has one: empty for a plain-text message.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub html: String,
     pub message_id: String,
     pub references: String,
-    pub attachments: Vec<String>,
+    /// The files it carries.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<Part>,
     pub unread: bool,
     pub flagged: bool,
     /// The key of its mailbox (`inbox`, `archive`, ...).
@@ -88,6 +111,9 @@ pub struct Outgoing {
     /// calendar answers it: empty for none.
     #[serde(default)]
     pub calendar_ics: String,
+    /// The files it takes along, each kept in this device's content store.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<Part>,
 }
 
 /// A request handed to a server.
@@ -132,6 +158,8 @@ pub enum Unmade {
     NoAccount,
     /// The engine that talks to the servers stopped.
     EngineStopped,
+    /// A file it takes along is not on this device: which, in words.
+    Missing(String),
 }
 
 /// The connector to the mail servers of the workspace's accounts.
