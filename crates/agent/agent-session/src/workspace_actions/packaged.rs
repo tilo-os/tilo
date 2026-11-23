@@ -97,19 +97,11 @@ impl Worker {
         let (resource, verb) = find(&surface, &target.address).ok_or_else(unknown_action)?;
         let descriptor = descriptor(resource, verb);
         withheld.refuses(&target.address.resource)?;
-        // The person's answer to this very invocation, from a device of theirs,
-        // or a lasting permission their own device gave for it.
-        let approval = self
-            .log()
-            .entries
-            .get(&request.invocation)
-            .and_then(|entry| entry.approval.clone())
-            .map(Confirmation::Approved);
-        let given = approval.as_ref().or(request.confirmation.as_ref());
-        let binding = bounded::ApprovalBinding::of(workspace_id, caller, request);
-        let confirmed = confirms(&descriptor.contract.confirmation, given, |token| {
-            self.shared.approvals.take(token, &binding)
-        });
+        // The person's approve of the record this very invocation was kept as.
+        let confirmed = confirms(
+            &descriptor.contract.confirmation,
+            request.confirmation.as_ref(),
+        );
         if caller.roster_created_at().is_some() {
             // The store checks the exact item and field under current policy,
             // while it holds the workspace through admission.

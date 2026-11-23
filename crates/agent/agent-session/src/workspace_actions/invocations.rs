@@ -368,7 +368,7 @@ fn call_of(id: String, entry: &Entry) -> (Option<String>, Call) {
         started_ms: entry.started_ms,
         ended_ms: entry.ended_ms,
         update: entry.update.clone(),
-        waiting: entry.asked && entry.approval.is_none() && !entry.update.is_terminal(),
+        waiting: entry.asked && !entry.update.is_terminal(),
         by: InvocationBy {
             name,
             kind: kind.to_owned(),

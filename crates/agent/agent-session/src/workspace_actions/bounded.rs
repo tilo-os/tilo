@@ -12,11 +12,11 @@
 //!
 //! Nobody acting for a person confirms by their own word, and the host does
 //! not take a person's word from a device that may be their agent: where an
-//! action asks first, the host puts it to the person on their own devices
-//! ([`WorkspaceDocumentsLink::ask_person`]) and runs it on their answer, which
-//! it keeps as a token bound to that one invocation, its target and its
-//! arguments ([`Approvals`]). A confirmation the host did not issue for the
-//! invocation is refused.
+//! action asks first, it is refused showing the person what would be done
+//! ([`About`]), the dispatch keeps it as an asked invocation record, and the
+//! person's approve of that record admits it again
+//! ([`InvokeRequest::approval`]). A confirmation of the caller's own word is
+//! refused.
 //!
 //! Before what such an action changed is saved, the host reads the caller's
 //! permissions again and checks every field the change writes against them
@@ -30,9 +30,7 @@ use super::{
 };
 use tilo_actions::InvocationUpdate;
 use tilo_actions::api::ActionAddress;
-use tilo_actions::remote::{
-    ActorPlace, ConfirmationQuestion, ConfirmationReply, InvocationReceipt, InvocationState,
-};
+use tilo_actions::remote::ActorPlace;
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::live::LiveAnchor;
 use ui::permissions::policy::{self, ActionKind, Answer, TreePath};
@@ -53,9 +51,6 @@ fn put_what_it_reads(held: &BoundedReplica, descriptor: &tilo_actions::ActionDes
         tracing::warn!(%error, "workspace actions: the content it refers to was not put");
     }
 }
-
-/// How long the person's answer to one invocation stays good for running it.
-const APPROVAL_LIFETIME: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 /// How long a caller's replica is kept on the member access it was opened with
 /// before the host reads their access again for it.
@@ -156,81 +151,6 @@ impl<T> Parked<T> {
     pub(super) fn retain(&mut self, keep: impl Fn(&BoundedKey) -> bool) {
         self.waiting.retain(|(key, _, _)| keep(key));
     }
-}
-
-/// What a person's answer is bound to: one invocation by one caller of one
-/// target with exactly these arguments ([`tilo_actions::remote::argument_digest`]),
-/// as the broker binds the answers it hands an agent.
-#[derive(Clone, PartialEq, Eq)]
-pub(super) struct ApprovalBinding {
-    caller: Caller,
-    workspace_id: WorkspaceId,
-    invocation: InvocationId,
-    provider: String,
-    resource: String,
-    action: String,
-    argument_digest: [u8; 32],
-}
-
-impl ApprovalBinding {
-    pub(super) fn of(workspace_id: WorkspaceId, caller: &Caller, request: &InvokeRequest) -> Self {
-        Self {
-            caller: caller.clone(),
-            workspace_id,
-            invocation: request.invocation,
-            provider: request.target.provider.clone(),
-            resource: request.target.address.resource.clone(),
-            action: request.target.address.action.clone(),
-            argument_digest: tilo_actions::remote::argument_digest(
-                request.argument.to_slot().as_deref(),
-            ),
-        }
-    }
-}
-
-/// The answers the host holds for invocations people allowed, by token.
-#[derive(Default)]
-pub(super) struct Approvals(Mutex<HashMap<String, (ApprovalBinding, Instant)>>);
-
-impl Approvals {
-    /// Keep the person's answer for `binding`, naming it by a new token.
-    pub(super) fn issue(&self, binding: ApprovalBinding) -> Result<String, String> {
-        let mut id = [0_u8; 32];
-        getrandom::fill(&mut id).map_err(|error| error.to_string())?;
-        let token = hex::encode(id);
-        let now = Instant::now();
-        let mut held = self.0.lock_recover();
-        held.retain(|_, (_, until)| *until > now);
-        held.insert(
-            token.clone(),
-            (binding, now.checked_add(APPROVAL_LIFETIME).unwrap_or(now)),
-        );
-        drop(held);
-        Ok(token)
-    }
-
-    /// Whether `token` names an answer the host issued for exactly
-    /// `binding`, still good; it is spent either way it matches.
-    pub(super) fn take(&self, token: &str, binding: &ApprovalBinding) -> bool {
-        let mut held = self.0.lock_recover();
-        let matches = held
-            .get(token)
-            .is_some_and(|(bound, until)| *until > Instant::now() && bound == binding);
-        if matches {
-            held.remove(token);
-        }
-        matches
-    }
-}
-
-/// Whether `given` is the person's own answer to this invocation: a token the
-/// host issued for `binding`. Nothing else confirms for a bounded caller.
-pub(super) fn approved(
-    approvals: &Approvals,
-    given: Option<&Confirmation>,
-    binding: &ApprovalBinding,
-) -> bool {
-    matches!(given, Some(Confirmation::Approved(token)) if approvals.take(token, binding))
 }
 
 /// The refusal of a confirmation a bounded caller gave by its own word.
@@ -373,48 +293,6 @@ pub(super) struct About {
     pub(super) route: DocumentRoute,
     /// What the call carries, where it carries its resource's other actions.
     pub(super) carries: super::carried::Carries,
-}
-
-/// The question the person is put about `request`, which `caller` asks the
-/// host to run in `workspace`: who asks, in which run, and exactly what
-/// would happen ([`About`]), as the host knows it rather than as the caller
-/// words it.
-pub(super) fn question(
-    caller: &Caller,
-    workspace: &str,
-    request: &InvokeRequest,
-    about: &About,
-) -> Result<ConfirmationQuestion, String> {
-    let mut id = [0_u8; 32];
-    getrandom::fill(&mut id).map_err(|error| error.to_string())?;
-    // An agent by the name its key goes by, as History names its
-    // changes; else its id.
-    let agent = caller
-        .agent_called()
-        .map_or_else(|| "One of your devices".into(), str::to_owned);
-    // The invocation as the agent titled it (`_meta` invocation.title); one that
-    // goes by the agent's own name says nothing more.
-    let title = super::said_invocation_title(request)
-        .filter(|title| *title != agent)
-        .unwrap_or_default();
-    let contract = &about.descriptor.contract;
-    // What is asked about is what would be done: for a call that carries other actions,
-    // those, by their own names.
-    let draft = about.draft();
-    Ok(ConfirmationQuestion {
-        id,
-        device_label: agent,
-        agent: caller.acting().agent_id().unwrap_or_default().to_owned(),
-        workspace: workspace.to_owned(),
-        title,
-        arguments: draft.summary(),
-        action_label: draft.action_label,
-        resource_label: about.record.clone(),
-        risk: contract.risk.name().to_owned(),
-        kind: contract.kind.to_string(),
-        undoable: draft.undoable,
-        ask: None,
-    })
 }
 
 /// `who`'s access as the host decides for them: the person's access as
@@ -1041,64 +919,6 @@ impl Worker {
             .and_then(|held| held.held.app.descriptor(address)))
     }
 
-    /// Put `request`, which `caller` (served within bounds) asked for and
-    /// which needs the person's confirmation, to that person on their own
-    /// devices, as `about` describes it: answered accepted, it runs on their
-    /// allowing it and ends refused otherwise. `None` when it cannot be
-    /// asked: the caller gave a confirmation of its own, the person was
-    /// asked already, or this host has nobody to ask.
-    pub(super) fn ask_person(
-        &self,
-        workspace_id: WorkspaceId,
-        caller: &Caller,
-        request: &InvokeRequest,
-        about: &About,
-    ) -> Option<InvocationReceipt> {
-        let who = self.bounded(caller)?;
-        if request.confirmation.is_some() {
-            return None;
-        }
-        let invocation = request.invocation;
-        let workspace = self
-            .workspaces
-            .get(&workspace_id)
-            .and_then(|workspace| workspace.cluster_id(workspace_id))?;
-        let question = question(caller, &workspace, request, about).ok()?;
-        if self
-            .log()
-            .entries
-            .get_mut(&invocation)
-            .is_none_or(|entry| std::mem::replace(&mut entry.asked, true))
-        {
-            return None;
-        }
-        let Some(asked) = self
-            .shared
-            .link
-            .get()
-            .and_then(|link| link.ask_person(workspace_id, &who.person_caller, question))
-        else {
-            if let Some(entry) = self.log().entries.get_mut(&invocation) {
-                entry.asked = false;
-            }
-            return None;
-        };
-        // Kept as asked before the answer can land: whoever follows the invocation reads
-        // that its person is asked, and need not wait for them.
-        let waiting = asked_on_devices(invocation);
-        if let Some(entry) = self.log().entries.get_mut(&invocation) {
-            entry.update = waiting.clone();
-        }
-        let shared = Arc::clone(&self.shared);
-        let asking = Asking {
-            workspace_id,
-            invocation,
-            binding: ApprovalBinding::of(workspace_id, caller, request),
-        };
-        asked.then(move |reply| shared.answered(asking, reply.as_ref()));
-        Some(InvocationState::new(invocation, waiting).receipt())
-    }
-
     /// `invocation` waits for the person's answer, asked as `about` says.
     pub(super) fn waits_for_person(&self, invocation: InvocationId, about: About) -> Outcome {
         if let Some(entry) = self.log().entries.get_mut(&invocation) {
@@ -1275,17 +1095,10 @@ impl Worker {
         // there for an action they are offered either ([`super::direct`]).
         let arguments = withheld.given(descriptor.bind_prompt_text(arguments))?;
         let declared = descriptor.contract.need().field;
-        let approval = self
-            .log()
-            .entries
-            .get(&request.invocation)
-            .and_then(|entry| entry.approval.clone())
-            .map(Confirmation::Approved);
-        let given = approval.as_ref().or(request.confirmation.as_ref());
-        let binding = ApprovalBinding::of(workspace_id, caller, request);
+        let given = request.confirmation.as_ref();
         let confirmed = self
             .part_waits
-            .confirmed_or(|| approved(&self.shared.approvals, given, &binding));
+            .confirmed_or(|| request.approval().is_some());
         let context = super::caller_context(caller, request);
         let running = super::timing_start();
         // Each try goes on off this thread once its worker takes long to answer, the request held
@@ -1345,7 +1158,9 @@ impl Worker {
             self.ask_again_once_arrived(workspace_id, &key, held, (tried, confirmed), asked)?;
         let output = match tried {
             Ok(output) => output,
-            Err(tilo_actions::api::ApiError::ConfirmationRequired) if given.is_some() => {
+            Err(tilo_actions::api::ApiError::ConfirmationRequired)
+                if given.is_some() && request.approval().is_none() =>
+            {
                 return Err(Outcome::Rejected(own_word_refused()));
             }
             Err(tilo_actions::api::ApiError::ConfirmationRequired) => {
@@ -1477,31 +1292,6 @@ pub(super) fn placed((anchor, head): (LiveAnchor, LiveAnchor)) -> ActorPlace {
     }
 }
 
-/// What an invocation says while its person is asked to allow it on their devices.
-const ASKED_ON_DEVICES: &str = "Its person is asked about this on their devices, and it is done \
-     when they allow it there. Nothing happened yet.";
-
-/// How `invocation` stands while its person is asked to allow it: under way, with nothing
-/// of it done. The phase is the protocol's own word for a confirmation that is required, so
-/// whoever follows the invocation can tell it from one that is merely slow.
-fn asked_on_devices(invocation: InvocationId) -> InvocationUpdate {
-    InvocationUpdate::Progress {
-        invocation,
-        sequence: 1,
-        phase: tilo_actions::remote::CONFIRMATION_REQUIRED_CODE.to_owned(),
-        completed: None,
-        total: None,
-        message: Some(ASKED_ON_DEVICES.to_owned()),
-    }
-}
-
-/// What a bounded caller's invocation waiting on the person needs to go on.
-pub(super) struct Asking {
-    pub(super) workspace_id: WorkspaceId,
-    pub(super) invocation: InvocationId,
-    pub(super) binding: ApprovalBinding,
-}
-
 impl super::Shared {
     /// The person whose device this service is: the root the service signs under.
     fn owner(&self) -> Option<ui::permissions::policy::PersonId> {
@@ -1521,71 +1311,6 @@ impl super::Shared {
     ) -> bool {
         self.owner()
             .is_some_and(|member| may_across(self, &member, workspace_id, caller, kind))
-    }
-
-    /// The person answered `asking`'s question with `reply`: on their
-    /// allowing it, the invocation runs again with the token naming their
-    /// answer; otherwise it ends refused.
-    pub(super) fn answered(
-        self: &Arc<Self>,
-        asking: Asking,
-        reply: Option<&Result<ConfirmationReply, ActionCallError>>,
-    ) {
-        let Asking {
-            workspace_id,
-            invocation,
-            binding,
-        } = asking;
-        let failed = |message: &str| tilo_actions::InvocationUpdate::Failed {
-            invocation,
-            error: tilo_actions::ActionFailure {
-                code: tilo_actions::api::ApiError::ConfirmationRequired
-                    .code()
-                    .to_owned(),
-                message: message.to_owned(),
-                details: None,
-                retryable: false,
-            },
-        };
-        let update = match reply {
-            Some(Ok(ConfirmationReply::AllowOnce)) => match self.approvals.issue(binding) {
-                Ok(token) => {
-                    if let Some(entry) = self.log.lock_recover().entries.get_mut(&invocation) {
-                        entry.approval = Some(token);
-                        // Allowed: it is under way now, and no longer waits for its person.
-                        if !entry.update.is_terminal() {
-                            entry.update = InvocationUpdate::Accepted { invocation };
-                        }
-                    }
-                    let (done, _) = tilo_actions::remote::pending();
-                    let job = super::Job::Invoke {
-                        workspace_id,
-                        invocation,
-                        done,
-                    };
-                    let sent = self
-                        .jobs
-                        .lock_recover()
-                        .as_ref()
-                        .is_some_and(|jobs| jobs.send((Instant::now(), job)).is_ok());
-                    if sent {
-                        return;
-                    }
-                    failed("the host's workspace actions stopped before it ran")
-                }
-                Err(error) => failed(&error),
-            },
-            // A reply answers an agent's own question, never an action's.
-            Some(Ok(ConfirmationReply::Deny | ConfirmationReply::Replied(_))) => {
-                failed("the person did not allow it")
-            }
-            Some(Err(_)) | None => failed("the person did not answer in time"),
-        };
-        if let Some(entry) = self.log.lock_recover().entries.get_mut(&invocation)
-            && !entry.update.is_terminal()
-        {
-            entry.update = update;
-        }
     }
 }
 

@@ -2,32 +2,30 @@
 //! ([`tilo_actions::remote::ASK`]): a decision only they make, or something
 //! only they know.
 //!
-//! The question goes where every question an agent puts to its person goes:
-//! to the person's own devices ([`super::WorkspaceDocumentsLink::ask_person`]),
-//! where it waits beside the agent's requests to allow an action, in the same
-//! place and on the same sheet. It names the agent and the agent session it asks in, as
-//! the system knows them, never as the agent words them. The invocation is
-//! answered accepted at once and succeeds with the person's answer
-//! ([`PersonAnswer`]): the one of the question's choices they picked. A
-//! person who chooses not to answer ends it declined; one who never answers
-//! ends it failed once the question expires.
+//! The question is the call itself, kept as its asked invocation record like
+//! every call that waits for the person's yes, with the agent's words and its
+//! choices ([`super::asking`]). It names the agent as the system knows it,
+//! never as the agent words itself. The person's approve picks one of the
+//! choices and admits the call again, which then succeeds with that choice
+//! ([`PersonAnswer`]); their decline ends it declined.
 
 use serde_json::Value;
+use tilo_actions::remote::asked::{AskedBy, AskedFacts, Named};
 use tilo_actions::remote::{
-    ActionCallError, Caller, ConfirmationQuestion, ConfirmationReply, InvocationReceipt,
-    InvocationState, InvokeRequest, PersonAnswer, PersonAsk, is_ask,
+    ActionCallError, Caller, InvocationReceipt, InvocationState, InvokeRequest, PersonAnswer,
+    PersonAsk, is_ask,
 };
-use tilo_actions::{ActionFailure, ActionOutput, InvocationUpdate};
-use tilo_lock::MutexRecover as _;
+use tilo_actions::{ActionOutput, InvocationUpdate};
 use tilo_server_protocol::WorkspaceId;
 
 use super::outcome::rejected;
 use super::{Worker, invoke_arguments};
 
 impl Worker {
-    /// Put `request` to the person `caller` acts for when it asks them
-    /// ([`is_ask`]), answering it accepted, or refused when it cannot be
-    /// asked; `None` for any other request.
+    /// Answer `request` when it asks the person `caller` acts for
+    /// ([`is_ask`]): with the choice they approved, else kept as its asked
+    /// record, or refused when it cannot be asked; `None` for any other
+    /// request.
     pub(super) fn ask_in_words(
         &self,
         workspace_id: WorkspaceId,
@@ -38,9 +36,25 @@ impl Worker {
             return None;
         }
         let invocation = request.invocation;
-        let receipt = match self.put_to_person(workspace_id, caller, request) {
-            Ok(()) => InvocationState::new(invocation, InvocationUpdate::Accepted { invocation })
-                .receipt(),
+        let receipt = match self.question(workspace_id, caller, request) {
+            Ok((ask, agent)) => match request.approval() {
+                Some(approval) => {
+                    let update = chosen(invocation, &ask, approval.choice);
+                    if let Some(entry) = self.log().entries.get_mut(&invocation) {
+                        entry.update = update.clone();
+                    }
+                    InvocationState::new(invocation, update).receipt()
+                }
+                None => {
+                    let facts = AskedFacts {
+                        words: ask.question.clone(),
+                        choices: ask.choices.clone(),
+                        conversation: caller.turn().map(|turn| turn.conversation.clone()),
+                        ..AskedFacts::by(AskedBy::Agent(agent))
+                    };
+                    self.keep_asked(workspace_id, caller, request, facts)
+                }
+            },
             Err(error) => {
                 self.log().forget(&invocation);
                 rejected(invocation, error)
@@ -50,12 +64,13 @@ impl Worker {
         Some(receipt)
     }
 
-    fn put_to_person(
+    /// The question `request` puts, and the agent that asks it.
+    fn question(
         &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Result<(), ActionCallError> {
+    ) -> Result<(PersonAsk, Named), ActionCallError> {
         let refused = |reason: &str| ActionCallError::Refused {
             reason: reason.to_owned(),
         };
@@ -70,84 +85,34 @@ impl Worker {
             serde_json::from_value(Value::Object(invoke_arguments(&request.argument)))
                 .map_err(|error| refused(&format!("a question: {error}")))?;
         let ask = ask.checked().map_err(|why| refused(&why))?;
-        let person = self
-            .bounded(caller)
-            .map_or_else(|| caller.clone(), |who| who.person_caller);
-        let workspace = self
-            .workspaces
-            .get(&workspace_id)
-            .and_then(|workspace| workspace.cluster_id(workspace_id))
-            .unwrap_or_else(|| workspace_id.to_string());
-        let mut id = [0_u8; 32];
-        getrandom::fill(&mut id).map_err(|error| refused(&error.to_string()))?;
-        // The agent by the name its key goes by, as History names its changes, and the agent
-        // session by the title its client gave it: who asks is the system's to say.
-        let device_label = caller
+        // The agent by the name its key goes by, as History names its changes.
+        let name = caller
             .agent_called()
             .map_or_else(|| agent.clone(), str::to_owned);
-        let title = super::said_invocation_title(request)
-            .filter(|title| *title != device_label)
-            .unwrap_or_default();
-        let question = ConfirmationQuestion {
-            id,
-            device_label,
-            agent,
-            workspace,
-            title,
-            ask: Some(ask.clone()),
-            ..ConfirmationQuestion::default()
-        };
-        let asked = self
-            .shared
-            .link
-            .get()
-            .and_then(|link| link.ask_person(workspace_id, &person, question))
-            .ok_or_else(|| refused("nobody can be asked: no device of your person is reachable"))?;
-        let log = std::sync::Arc::clone(&self.shared);
-        let invocation = request.invocation;
-        asked.then(move |reply| {
-            let update = answered(invocation, &ask, reply);
-            let mut held = log.log.lock_recover();
-            if let Some(entry) = held.entries.get_mut(&invocation)
-                && !entry.update.is_terminal()
-            {
-                entry.update = update;
-            }
-            // Whoever follows the invocation waits for it to move.
-            held.moved();
-            drop(held);
-        });
-        Ok(())
+        Ok((ask, Named { id: agent, name }))
     }
 }
 
-/// How the invocation `invocation` ends on the person's `reply` to `ask`: one
-/// of its choices, declined, or failed on anything else.
-fn answered(
+/// How `invocation` ends on the person's approve of `ask`, picking `choice`: that choice, or
+/// refused when it names none of the question's.
+fn chosen(
     invocation: tilo_actions::InvocationId,
     ask: &PersonAsk,
-    reply: Option<Result<ConfirmationReply, ActionCallError>>,
+    choice: Option<usize>,
 ) -> InvocationUpdate {
-    let answer = match reply {
-        Some(Ok(ConfirmationReply::Replied(choice))) if ask.answered_by(&choice) => {
-            PersonAnswer::Answered {
-                choice: choice.trim().to_owned(),
-            }
-        }
-        Some(Ok(ConfirmationReply::Deny)) => PersonAnswer::Declined,
-        Some(Ok(ConfirmationReply::AllowOnce | ConfirmationReply::Replied(_)) | Err(_)) | None => {
-            return InvocationUpdate::Failed {
-                invocation,
-                error: ActionFailure {
-                    code: "unanswered".to_owned(),
-                    message: "your person did not answer in time; ask again later, or go on \
-                              without their answer"
-                        .to_owned(),
-                    details: None,
-                    retryable: true,
-                },
-            };
-        }
+    let Some(choice) = choice.and_then(|at| ask.choices.get(at)) else {
+        return InvocationUpdate::Failed {
+            invocation,
+            error: tilo_actions::ActionFailure {
+                code: "invalid_request".to_owned(),
+                message: "the answer picks none of the question's choices".to_owned(),
+                details: None,
+                retryable: false,
+            },
+        };
+    };
+    let answer = PersonAnswer::Answered {
+        choice: choice.trim().to_owned(),
     };
     InvocationUpdate::Succeeded {
         invocation,

@@ -50,7 +50,7 @@
 
 mod acting;
 mod arguments;
-mod asked_in_turn;
+mod asking;
 mod bounded;
 mod call_wait;
 mod canonical;
@@ -110,8 +110,8 @@ pub use crate::worker::PersonRegion;
 pub(super) use arguments::invoke_arguments;
 pub use content::MAX_PUT_BYTES;
 pub use link::{
-    AskedInTurn, AsksInConversation, FeedbackReviewer, HostDevice, PackagedCall, ViewDocument,
-    ViewReadPolicy, WorkspaceDocumentsLink,
+    FeedbackReviewer, HostDevice, PackagedCall, ViewDocument, ViewReadPolicy,
+    WorkspaceDocumentsLink,
 };
 pub use terminal::{
     Opened, Opening, Recorder, ShellRan, TERMINAL_APP, Watching, WorkspaceShell, person_of,
@@ -196,10 +196,8 @@ struct Shared {
     steps: Arc<content::ContentSteps>,
     /// The uploads callers have open.
     puts: tilo_actions::remote::HostedContentPuts,
-    /// The answers people gave to invocations run for them.
-    approvals: bounded::Approvals,
-    /// What asks an agent's person in the conversation its turn is in.
-    in_conversation: std::sync::RwLock<Option<Arc<dyn AsksInConversation>>>,
+    /// What writes an invocation that waits for a person's yes as its asked record.
+    asked_records: OnceLock<Arc<dyn tilo_actions::remote::asked::AskedRecords>>,
     /// Records whose name in their app's index waits to be read again.
     renaming: Mutex<HashSet<DocumentRoute>>,
     /// What search read of the documents, counted for the timing lines and for the tests that
@@ -247,8 +245,7 @@ impl WorkspaceActions {
                 stores: Mutex::default(),
                 steps: Arc::new(content::ContentSteps::default()),
                 puts: tilo_actions::remote::HostedContentPuts::default(),
-                approvals: bounded::Approvals::default(),
-                in_conversation: std::sync::RwLock::default(),
+                asked_records: OnceLock::new(),
                 renaming: Mutex::default(),
                 agent_sessions: OnceLock::new(),
                 search: SearchActivity::default(),
@@ -738,6 +735,23 @@ impl WorkspaceActions {
         }
         {
             let mut log = self.log();
+            // The person approved the record it was kept as: the dispatch admits it again under
+            // its id, carrying their answer, and it runs from here.
+            if request.approval().is_some()
+                && let Some(entry) = log.entries.get_mut(&invocation)
+                && entry.asked
+                && !entry.update.is_terminal()
+                && caller.continues(&entry.caller)
+                && entry.request.target == request.target
+                && entry.request.argument == request.argument
+            {
+                entry.asked = false;
+                entry.request = request;
+                entry.update = InvocationUpdate::Accepted { invocation };
+                log.moved();
+                drop(log);
+                return self.run_admitted(workspace_id, invocation);
+            }
             let held = log.entries.get(&invocation);
             if let Some(entry) = held
                 && (!caller.continues(&entry.caller) || !entry.request.same_invocation(&request))
@@ -770,6 +784,15 @@ impl WorkspaceActions {
                 entry.workspace = Some(workspace_id);
             }
         }
+        self.run_admitted(workspace_id, invocation)
+    }
+
+    /// Run the admitted invocation `invocation` on the service's thread, answering its receipt.
+    fn run_admitted(
+        &self,
+        workspace_id: WorkspaceId,
+        invocation: InvocationId,
+    ) -> Pending<RemoteActionMessage> {
         let (done, answer) = pending();
         let job = Job::Invoke {
             workspace_id,

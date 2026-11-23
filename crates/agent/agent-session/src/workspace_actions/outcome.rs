@@ -17,16 +17,13 @@ use super::publish::Unsaved;
 use crate::record_actions::Outcome;
 
 /// Whether `given`, from the host's own person on their own device, confirms
-/// an action asking `policy`: their own word, the phrase it names, or a
-/// token naming their answer that the host issued for this very invocation
-/// (`approved` spends it).
-pub(super) fn confirms(
-    policy: &ConfirmationPolicy,
-    given: Option<&Confirmation>,
-    approved: impl FnOnce(&str) -> bool,
-) -> bool {
+/// an action asking `policy`: their own word, the phrase it names, or their
+/// approve of the asked record this very invocation was kept as, which only
+/// the dispatch carries. A token of anyone else's confirms nothing here.
+pub(super) fn confirms(policy: &ConfirmationPolicy, given: Option<&Confirmation>) -> bool {
     match (policy, given) {
-        (_, Some(Confirmation::Approved(token))) => approved(token),
+        (_, Some(Confirmation::Asked(_))) => true,
+        (_, Some(Confirmation::Approved(_))) => false,
         (ConfirmationPolicy::Phrase { phrase }, Some(Confirmation::Phrase(given))) => {
             phrase == given
         }

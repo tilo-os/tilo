@@ -9,10 +9,7 @@
 use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
-use tilo_actions::remote::person_asking::{Asked, Words};
-use tilo_actions::remote::{
-    ActionCallError, Caller, ConfirmationQuestion, ConfirmationReply, Pending,
-};
+use tilo_actions::remote::{ActionCallError, Caller, Pending};
 use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::WorkspaceShell;
@@ -353,18 +350,6 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
     fn feedback_reviewer(&self) -> Option<Arc<dyn FeedbackReviewer>> {
         None
     }
-    /// Put `question` about one invocation the host runs in `workspace` to
-    /// the person `caller` is or acts for, on their own devices, and answer
-    /// what they said. `None` when this host has nobody to ask, which leaves
-    /// the invocation refused: nobody else confirms for them.
-    fn ask_person(
-        &self,
-        _workspace: WorkspaceId,
-        _caller: &Caller,
-        _question: ConfirmationQuestion,
-    ) -> Option<Pending<Result<ConfirmationReply, ActionCallError>>> {
-        None
-    }
     /// Whether `caller` runs a command in the machine of `workspace` without
     /// its person being asked each time: a key reaching that workspace alone,
     /// whose person let that workspace run commands unattended. Nobody does
@@ -372,38 +357,6 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
     fn runs_unattended(&self, _workspace: WorkspaceId, _caller: &Caller) -> bool {
         false
     }
-    /// The lasting permission of the person `caller` acts for that covers
-    /// `asked`, by its id: that person answered a question about exactly
-    /// this with always and has not taken it back
-    /// ([`tilo_actions::remote::person_asking`]). `None` asks first, which is
-    /// what a holder that keeps none answers.
-    fn stands(&self, _workspace: WorkspaceId, _caller: &Caller, _asked: &Asked) -> Option<String> {
-        None
-    }
-    /// What the lasting permission `permission` covers ran unasked for
-    /// `caller`: counted where its person reads what stands.
-    fn permission_used(&self, _workspace: WorkspaceId, _caller: &Caller, _permission: &str) {}
-}
-
-/// What puts an agent's question to its person in the conversation its turn
-/// is in: the runtime that works agents on this server, which the service is
-/// given ([`super::WorkspaceActions::ask_in_conversations`]).
-pub trait AsksInConversation: Send + Sync {
-    /// Put what `caller`, an agent working inside a turn of `workspace`,
-    /// wants to do to its person as a question in the conversation, where
-    /// it waits until they answer it, however long that takes
-    /// ([`AskedInTurn`]). Answered once the server kept what was asked: `Ok`
-    /// and the question is theirs to answer, or why it could not be asked.
-    /// The invocation then ends as asked, and the server does it from the
-    /// person's own answer ([`super::WorkspaceActions::serve_allowed`]).
-    /// `None` leaves it to the person's devices
-    /// ([`WorkspaceDocumentsLink::ask_person`]).
-    fn ask(
-        &self,
-        workspace: WorkspaceId,
-        caller: &Caller,
-        asked: AskedInTurn,
-    ) -> Option<Pending<Result<(), String>>>;
 }
 
 /// One action of an installed app, as the action API asks a holder to apply
@@ -434,25 +387,6 @@ impl PackagedCall<'_> {
     pub const fn invocation(&self) -> tilo_actions::InvocationId {
         self.invocation
     }
-}
-
-/// What an agent working inside a turn wants to do, as its person is asked
-/// about it in the conversation the turn is in.
-#[derive(Clone, Debug)]
-pub struct AskedInTurn {
-    /// The invocation: its target and the arguments it would go with. It
-    /// holds nothing a draft withholds.
-    pub request: tilo_actions::remote::InvokeRequest,
-    /// The invocation as the person reviews it.
-    pub draft: tilo_actions::Draft,
-    /// What is asked, by the names the system gave it: what an answer of
-    /// always would let stand. `None` offers no such answer: the invocation
-    /// carries its resource's other actions, and an always is for the action
-    /// that asked, never for what carried it.
-    pub asked: Option<Asked>,
-    /// The action and the thing it is on, in the system's own words. The
-    /// workspace's name is the server's to add.
-    pub words: Words,
 }
 
 /// A model the host lends its admitted reporters to look over a report's

@@ -15,10 +15,8 @@
 //!   (`WorkspaceOperation::DelegateMembership`), and every change to its grant is
 //!   carried onto those rosters: a withdrawn or narrowed grant takes it off
 //!   the workspace and its documents.
-//! - **Asking first.** An action the person's grants leave to them is put
-//!   to their approving device as a question for that one invocation
-//!   ([`CertificationProtocol::confirm`]); the agent runs it only on the
-//!   approved answer, and a question nobody answers in time is refused.
+//! - **Asking first.** An action the person's grants leave to them is kept as
+//!   its asked invocation record, and runs on the person's approve of it.
 //!
 //! [`start`] wires both into a server: the supervisor answers the agent
 //! vocabulary as the host's app action server, and the host's own agents
@@ -57,7 +55,6 @@ use tilo_agent_session::{
     AgentHostLink, AgentService, AgentSupervisor, AppCatalogue, ApprovalDone, CatalogueFactory,
     FeedbackReviewer, ServerEndpoint, WorkspaceActions, WorkspaceDocumentsLink,
 };
-use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 
 use tilo_server_protocol::delegation::DelegateProposal;
 use tilo_user_identity::{
@@ -73,12 +70,6 @@ use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 
 /// How long an agent's approval request waits for an approver.
 const APPROVAL_WAIT_NS: u64 = 10 * 60 * 1_000_000_000;
-
-/// How long an agent's question about one invocation waits for its person.
-const CONFIRMATION_WAIT_NS: u64 = 2 * 60 * 1_000_000_000;
-/// How long a question an agent asks in its own words waits for its person:
-/// a decision or something only they know may take them a while.
-const ASK_WAIT_NS: u64 = 30 * 60 * 1_000_000_000;
 
 /// How long a short invite link made ahead of a press is handed over for: an
 /// invitation is good for a week, and one made longer ago than this is made
@@ -586,43 +577,14 @@ struct WorkspaceActionsServer {
 }
 
 /// The workspaces' apps as web pages, each held by the action service as the
-/// member who opened it ([`WorkspaceActions::open_page`]), and the sheet the
-/// page draws over the app when one of their agents' hosts asks them
-/// something.
+/// member who opened it ([`WorkspaceActions::open_page`]).
 struct ActionPages {
     actions: WorkspaceActions,
-    /// The host's pending questions: known once the server has started, and
-    /// a page is opened only after.
-    certification: Arc<std::sync::OnceLock<CertificationProtocol>>,
-    /// The person each open page belongs to: the questions a page draws over
-    /// its app are theirs, and so is the answer their sheet sends.
-    people: Arc<std::sync::Mutex<std::collections::HashMap<u64, [u8; 32]>>>,
 }
 
 impl ActionPages {
     fn new(actions: WorkspaceActions) -> Self {
-        Self {
-            actions,
-            certification: Arc::default(),
-            people: Arc::default(),
-        }
-    }
-
-    /// The questions waiting for the person whose page `page` is, as the sheet
-    /// the page draws.
-    fn sheet_for(&self, page: u64) -> String {
-        let questions = self
-            .people
-            .lock_recover()
-            .get(&page)
-            .copied()
-            .and_then(|person| {
-                self.certification
-                    .get()
-                    .map(|certification| certification.pending_for(&person))
-            })
-            .unwrap_or_default();
-        crate::web::question_sheet::sheet_html(&questions)
+        Self { actions }
     }
 }
 
@@ -650,55 +612,7 @@ impl crate::app_serving::AppPages for ActionPages {
     }
 
     fn close(&self, workspace_id: WorkspaceId, page: u64) {
-        self.people.lock_recover().remove(&page);
         self.actions.close_page(workspace_id, page);
-    }
-
-    fn opened(&self, _workspace_id: WorkspaceId, page: u64, person: &Caller) {
-        if let Some(person) = person.user_public_key().copied() {
-            self.people.lock_recover().insert(page, person);
-        }
-    }
-
-    fn question_sheet(&self, _workspace_id: WorkspaceId, page: u64) -> String {
-        self.sheet_for(page)
-    }
-
-    fn answer_question(
-        &self,
-        _workspace_id: WorkspaceId,
-        page: u64,
-        target: &str,
-    ) -> Option<
-        Pending<
-            Result<
-                Vec<tilo_server_protocol::page::PagePatch>,
-                tilo_server_protocol::page::PageRefusal,
-            >,
-        >,
-    > {
-        use tilo_server_protocol::page::{PagePatch, PageRefusal, QUESTION_PATCH_ID};
-        let (id, word) = tilo_server_protocol::page::parse_question_target(target)?;
-        let answer = crate::web::question_sheet::answer_of(word)?;
-        let person = *self.people.lock_recover().get(&page)?;
-        let answered = self.certification.get()?.answer_for(&person, id, answer);
-        Some(Pending::ready(match answered {
-            Ok(()) => {
-                // The answered question leaves the sheet now, though the
-                // host may still list it until its waiting call is woke.
-                let mut waiting = self
-                    .certification
-                    .get()
-                    .map(|certification| certification.pending_for(&person))
-                    .unwrap_or_default();
-                waiting.retain(|question| question.id != id);
-                Ok(vec![PagePatch {
-                    id: QUESTION_PATCH_ID,
-                    html: crate::web::question_sheet::sheet_html(&waiting),
-                }])
-            }
-            Err(reason) => Err(PageRefusal::Unavailable(reason)),
-        }))
     }
 }
 
@@ -1045,8 +959,6 @@ struct ServerRecordsLink {
     stores: Arc<WorkspaceStores>,
     /// The links to the workspaces' files the host's web origin serves.
     content_links: Arc<crate::content_links::ContentLinks>,
-    /// Where a person is asked about an action run for them.
-    certification: CertificationProtocol,
     sessions: Option<tilo_agent_session::AgentSessions>,
     /// The short invite links made ahead of the press that hands one over,
     /// per workspace and person: a page carries one on its row, and the press
@@ -1055,22 +967,6 @@ struct ServerRecordsLink {
 }
 
 impl ServerRecordsLink {
-    /// The person a turn of this server works for, and where their own store
-    /// is kept, when `caller` is such a turn's agent: this server's own,
-    /// working inside a turn. Nothing else is decided by what stands for a
-    /// person.
-    fn turn_of(&self, caller: &Caller) -> Option<(&crate::workspaces::Workspaces, [u8; 32])> {
-        let acting = caller.acting();
-        if acting.app().is_some()
-            || !acting.is_agent()
-            || caller.roster_created_at().is_none()
-            || caller.turn().is_none()
-        {
-            return None;
-        }
-        Some((self.workspaces.as_ref()?, *caller.turn_person()?))
-    }
-
     /// The host an actor's address in `workspace` is at: the origin this host publishes its pages
     /// at, else the name its device gives itself, when either names a network; else the
     /// workspace's own (`team.tilo`). A machine's loopback names nobody's work.
@@ -1226,107 +1122,6 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
         Some(Arc::new(
             tilo_workspace_service::device_documents::ServiceWrites::of(workspaces),
         ))
-    }
-
-    /// What stands for the person the turn acts for, read from their own
-    /// store on this server now: for the turn's own agent and nobody else.
-    fn stands(
-        &self,
-        _workspace: WorkspaceId,
-        caller: &Caller,
-        asked: &tilo_actions::remote::person_asking::Asked,
-    ) -> Option<String> {
-        let (workspaces, person) = self.turn_of(caller)?;
-        if caller.acting().agent_id() != Some(asked.agent.as_str()) {
-            return None;
-        }
-        workspaces.stands(&person, asked)
-    }
-
-    fn permission_used(&self, _workspace: WorkspaceId, caller: &Caller, permission: &str) {
-        if let Some((workspaces, person)) = self.turn_of(caller) {
-            workspaces.permission_used(&person, permission);
-        }
-    }
-
-    /// On the approving devices of the person `caller` is or works for: the
-    /// host's own person's, or a member's own root, as their device requests
-    /// are answered.
-    fn ask_person(
-        &self,
-        _workspace: WorkspaceId,
-        caller: &Caller,
-        question: tilo_actions::remote::ConfirmationQuestion,
-    ) -> Option<Pending<Result<tilo_actions::remote::ConfirmationReply, ActionCallError>>> {
-        let person = *caller.turn_person().or_else(|| caller.user_public_key())?;
-        // The agent the person's device asks for, when the device asks over its own session.
-        let agent_id = caller
-            .acting()
-            .agent_id()
-            .map_or(question.agent, str::to_owned);
-        let pending = PendingConfirmation {
-            id: question.id,
-            agent_id,
-            agent_label: question.device_label,
-            title: question.title,
-            action_label: question.action_label,
-            resource_label: question.resource_label,
-            arguments: question.arguments,
-            risk: question.risk,
-            kind: question.kind,
-            undoable: question.undoable,
-            workspace: question.workspace,
-            expires_at_ns: tilo_clock::unix_now_ns().saturating_add(if question.ask.is_some() {
-                ASK_WAIT_NS
-            } else {
-                CONFIRMATION_WAIT_NS
-            }),
-            page: None,
-            allow_always: false,
-            ask: question
-                .ask
-                .map(|ask| tilo_server_protocol::certify::AgentAsk {
-                    question: ask.question,
-                    choices: ask.choices,
-                    // An agent's own question never asks for a secret: only this host words one.
-                    secret: false,
-                }),
-        };
-        let (completer, answer) = tilo_actions::remote::pending();
-        let certification = self.certification.clone();
-        let workspaces = self.workspaces.clone();
-        self.host_device.runtime.spawn(async move {
-            let mut pending = pending;
-            if let Some(workspaces) = workspaces {
-                // Who asks is what the workspace calls the agent, never the label of the client
-                // that connected it or its id: the person reads a name they know.
-                if let Some(name) = workspaces
-                    .agent_name(&pending.workspace, &pending.agent_id)
-                    .await
-                {
-                    pending.agent_label = name;
-                }
-                // The person reads the workspace by its name, not its id.
-                if let Ok(summary) = workspaces.summary(&pending.workspace).await {
-                    pending.workspace = summary.name;
-                }
-            }
-            completer.complete(match certification.confirm_for(person, pending).await {
-                Ok(ConfirmationAnswer::AllowOnce) => {
-                    Ok(tilo_actions::remote::ConfirmationReply::AllowOnce)
-                }
-                Ok(
-                    ConfirmationAnswer::Deny
-                    | ConfirmationAnswer::AllowAlways
-                    | ConfirmationAnswer::Secret(_),
-                ) => Ok(tilo_actions::remote::ConfirmationReply::Deny),
-                Ok(ConfirmationAnswer::Reply(reply)) => {
-                    Ok(tilo_actions::remote::ConfirmationReply::Replied(reply))
-                }
-                Err(_) => Err(ActionCallError::confirmation_required()),
-            });
-        });
-        Some(answer)
     }
 
     fn workspace_agent(
@@ -1987,7 +1782,6 @@ fn attach_resources(
             feedback_reviewer,
             stores: server.content(),
             content_links: server.content_links(),
-            certification: server.web_context().certification.clone(),
             sessions,
             ready_links: std::sync::Mutex::default(),
             runtime: tokio::runtime::Handle::current(),
@@ -2069,12 +1863,6 @@ async fn start_app_server(
     });
     let web_entry = cfg.web_entry.clone();
     let server = Server::start_with_app_serving(cfg, identity, Some(action_server.clone())).await?;
-    // The pages draw the questions their people's hosts ask them: the
-    // questions are the server's own, known now.
-    let _ = action_server
-        .pages
-        .certification
-        .set(server.web_context().certification.clone());
     attach_resources(
         &action_server.actions,
         &server,

@@ -38,6 +38,7 @@ pub use window_actions::{
 
 pub mod agent_tools;
 mod application;
+pub mod asked;
 pub mod browser;
 mod caller;
 pub mod environment_device;
@@ -63,7 +64,6 @@ mod nodes;
 pub mod own_device;
 mod pending;
 pub mod person_accounts;
-pub mod person_asking;
 pub mod person_connections;
 pub mod person_models;
 pub mod person_telling;
@@ -154,7 +154,7 @@ use crate::params::ARGUMENTS_JSON_PREFIX;
 ///
 /// Additive changes keep the version; a change an older peer would misread
 /// bumps it, and [`RemoteActionFrame::decode`] refuses a version it does not know.
-pub const REMOTE_ACTIONS_VERSION: u16 = 3;
+pub const REMOTE_ACTIONS_VERSION: u16 = 4;
 
 /// Upper bound on one encoded frame: a provider pages its catalogue rather than raise this.
 pub const MAX_REMOTE_ACTION_FRAME_BYTES: usize = 1024 * 1024;
@@ -637,6 +637,17 @@ pub struct InvokeRequest {
 }
 
 impl InvokeRequest {
+    /// The person's approve of the asked record this call was kept as, when
+    /// the dispatch admitted it again on their answer: what a provider that
+    /// waits for their yes reads instead of asking.
+    #[must_use]
+    pub fn approval(&self) -> Option<&asked::Approval> {
+        match &self.confirmation {
+            Some(Confirmation::Asked(approval)) => Some(approval),
+            _ => None,
+        }
+    }
+
     /// What the agent's harness calls the session this request was sent in ("Release prep"), as
     /// the client's agent-session group says it: display only, the name people see the agent by
     /// ([`Caller::in_named_session`]). `None` when the client named no session.
@@ -837,9 +848,9 @@ impl InvocationState {
             // is a refusal to the caller, not a failure of the action.
             InvocationUpdate::Failed { error, .. } if error.code == CONFIRMATION_REQUIRED_CODE => {
                 ReceiptStatus::Rejected {
-                    error: ActionCallError::ConfirmationRequired {
-                        departure: browser::departure_stated(error.details.as_ref()),
-                    },
+                    error: ActionCallError::asks(asked::AskedFacts::from_details(
+                        error.details.as_ref(),
+                    )),
                 }
             }
             InvocationUpdate::Failed { error, .. } => ReceiptStatus::Failed {
@@ -921,15 +932,11 @@ pub enum ActionCallError {
     /// The caller's authority does not cover the action.
     #[error("the caller may not invoke this action")]
     NotPermitted,
-    /// The action requires a confirmation step this request did not carry.
-    ///
-    /// `departure` states the page departure the action's own run reached and
-    /// holds for the person, when it reached one ([`browser::DEPARTURE_FACET`]s):
-    /// what is about to leave, where, and the picture of the filled page, so
-    /// the question they are asked names it rather than a label for it. It is
-    /// empty for an action that asks before it runs anything.
+    /// The action waits for a person's yes this request did not carry: what
+    /// they are shown ([`asked::AskedFacts`]). The dispatch keeps the call as
+    /// an asked invocation record, and their approve admits it again.
     #[error("the action requires confirmation")]
-    ConfirmationRequired { departure: Vec<ActionFacet> },
+    ConfirmationRequired(Box<asked::AskedFacts>),
     /// The request is malformed for this action (arguments, input).
     #[error("invalid request: {reason}")]
     InvalidRequest { reason: String },
@@ -987,13 +994,17 @@ impl ActionCallError {
         }
     }
 
-    /// The refusal for want of the person's answer, for an action that
-    /// reached no page departure to name.
+    /// The refusal for want of the person's answer, for an action whose
+    /// name says all the person is shown.
     #[must_use]
-    pub const fn confirmation_required() -> Self {
-        Self::ConfirmationRequired {
-            departure: Vec::new(),
-        }
+    pub fn confirmation_required() -> Self {
+        Self::asks(asked::AskedFacts::default())
+    }
+
+    /// The refusal for want of the person's answer, showing them `facts`.
+    #[must_use]
+    pub fn asks(facts: asked::AskedFacts) -> Self {
+        Self::ConfirmationRequired(Box::new(facts))
     }
 
     /// The provider refused for a reason of its own.
@@ -1027,7 +1038,7 @@ impl ActionCallError {
             Self::Unavailable { .. } => "remote_actions_unavailable",
             Self::UnknownAction => "unknown_action",
             Self::NotPermitted => "not_permitted",
-            Self::ConfirmationRequired { .. } => "action_confirmation_required",
+            Self::ConfirmationRequired(_) => "action_confirmation_required",
             Self::InvalidRequest { .. } => "invalid_arguments",
             Self::StaleRevision => "stale_revision",
             Self::UnknownInvocation => "unknown_invocation",
@@ -1104,28 +1115,15 @@ pub const STALE_REVISION_REASON: &str = "the target changed since that revision;
 #[derive(Serialize, Deserialize)]
 #[serde(rename = "ActionCallError")]
 enum WireActionCallError {
-    Unavailable {
-        reason: String,
-    },
+    Unavailable { reason: String },
     UnknownAction,
     NotPermitted,
-    ConfirmationRequired {
-        /// Written even when there is no departure: a refusal is encoded by
-        /// position too, and a part left out is one its reader still expects.
-        #[serde(default)]
-        departure: Vec<ActionFacet>,
-    },
-    InvalidRequest {
-        reason: String,
-    },
+    ConfirmationRequired(Box<asked::AskedFacts>),
+    InvalidRequest { reason: String },
     UnknownInvocation,
     InvocationConflict,
-    NotCancellable {
-        reason: String,
-    },
-    Refused {
-        reason: String,
-    },
+    NotCancellable { reason: String },
+    Refused { reason: String },
     NotReady,
     Unanswered,
 }
@@ -1136,9 +1134,7 @@ impl From<ActionCallError> for WireActionCallError {
             ActionCallError::Unavailable { reason } => Self::Unavailable { reason },
             ActionCallError::UnknownAction => Self::UnknownAction,
             ActionCallError::NotPermitted => Self::NotPermitted,
-            ActionCallError::ConfirmationRequired { departure } => {
-                Self::ConfirmationRequired { departure }
-            }
+            ActionCallError::ConfirmationRequired(facts) => Self::ConfirmationRequired(facts),
             ActionCallError::InvalidRequest { reason } => Self::InvalidRequest { reason },
             ActionCallError::StaleRevision => Self::InvalidRequest {
                 reason: STALE_REVISION_REASON.to_owned(),
@@ -1162,9 +1158,7 @@ impl From<WireActionCallError> for ActionCallError {
             WireActionCallError::Unavailable { reason } => Self::Unavailable { reason },
             WireActionCallError::UnknownAction => Self::UnknownAction,
             WireActionCallError::NotPermitted => Self::NotPermitted,
-            WireActionCallError::ConfirmationRequired { departure } => {
-                Self::ConfirmationRequired { departure }
-            }
+            WireActionCallError::ConfirmationRequired(facts) => Self::ConfirmationRequired(facts),
             WireActionCallError::InvalidRequest { reason } => Self::InvalidRequest { reason },
             WireActionCallError::UnknownInvocation => Self::UnknownInvocation,
             WireActionCallError::InvocationConflict => Self::InvocationConflict,
@@ -2762,19 +2756,15 @@ mod tests {
             );
         }
 
-        phase a_refusal_for_want_of_the_person_carries_the_departure_the_run_stated;
+        phase a_refusal_for_want_of_the_person_carries_what_they_are_shown;
         // A run that reached something only the person may allow is refused for
         // want of their answer, and that refusal carries what the run stated
-        // about it: the page departure it holds, as it travels to the provider that
-        // asks them.
+        // about it: the page departure it holds, as it travels to whoever asks them.
         {
-            let departure = vec![
-                browser::departure_facet("page", "https://visa.example/apply"),
-                browser::departure_facet("kind", "submit"),
-                browser::departure_facet("method", "POST"),
-                browser::departure_facet("destination", "https://visa.example"),
-                browser::departure_facet("picture", "tilo.content:5f2b"),
-            ];
+            let facts = asked::AskedFacts::default()
+                .with_fact("kind", "submit")
+                .with_fact("destination", "https://visa.example")
+                .with_fact("picture", "tilo.content:5f2b");
             let invocation = InvocationId::new();
             let state = InvocationState::new(
                 invocation,
@@ -2783,29 +2773,29 @@ mod tests {
                     error: ActionFailure {
                         code: CONFIRMATION_REQUIRED_CODE.into(),
                         message: "the person has to allow this".into(),
-                        details: serde_json::to_value(&departure).ok(),
+                        details: Some(facts.to_details()),
                         retryable: false,
                     },
                 },
             );
             let receipt = state.receipt();
             let ReceiptStatus::Rejected {
-                error: ActionCallError::ConfirmationRequired { departure: stated },
+                error: ActionCallError::ConfirmationRequired(stated),
             } = &receipt.status
             else {
                 panic!("a run waiting on the person is a refusal: {receipt:?}");
             };
-            assert_eq!(*stated, departure);
-            // The refusal travels with it, so a provider in another process asks the
-            // person about what leaves and not about a name for it.
-            let error = ActionCallError::ConfirmationRequired {
-                departure: stated.clone(),
-            };
+            assert_eq!(**stated, facts);
+            // The refusal travels with it, so whoever asks the person in another process
+            // shows what leaves and not a name for it.
+            let error = ActionCallError::asks(facts);
             let wire = serde_json::to_value(&error).unwrap();
             assert_eq!(
                 serde_json::from_value::<ActionCallError>(wire).unwrap(),
                 error
             );
+            let wire = postcard::to_allocvec(&error).unwrap();
+            assert_eq!(postcard::from_bytes::<ActionCallError>(&wire).unwrap(), error);
         }
 
         phase the_remote_wire_is_versioned_and_explicit;

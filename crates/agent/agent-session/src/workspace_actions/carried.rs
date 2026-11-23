@@ -5,11 +5,9 @@
 //! person, they are asked about the carried actions by their own names, in the words those
 //! go by, and are told that Undo takes it back only where it takes back every one of them.
 //!
-//! An always is for the action that asked, by its own name and place, never for what carried
-//! it. So the question about a call that carries others offers no always, nothing is read
-//! that a server before this kept for one, and such a call goes ahead unasked only where the
-//! own always of every carried action that asks by its own name stands
-//! ([`About::opened_by`]).
+//! An always is for the action that asked, by its own name and resource type, never for what
+//! carried it. So the question about a call that carries others offers no always
+//! ([`About::facts`]).
 //!
 //! What is carried is read from the call's arguments in the one form an invocation is
 //! written as a value: `{action: id, args: {..}}`, alone, under `op`, or in a list. Each is
@@ -18,10 +16,10 @@
 //! it stands, every time, and is not said to be undoable.
 
 use serde_json::{Map, Value};
-use tilo_actions::remote::person_asking::{ActionName, Asked, Thing, Words};
+use tilo_actions::remote::Caller;
+use tilo_actions::remote::asked::{AskedBy, AskedFacts, Named};
 use tilo_actions::{ActionDescriptor, ConfirmationPolicy, Draft, DraftField, DraftValue};
 
-use super::InvokeRequest;
 use super::bounded::About;
 
 /// One action a call carries: as its resource declares it under its own name, with its
@@ -237,87 +235,47 @@ impl About {
         self.carries.draft(&self.descriptor, &self.arguments)
     }
 
-    /// What is asked about, in the system's own words: the action, by the names of what it
-    /// carries where it carries others, and the thing it is on.
-    pub(super) fn words(&self) -> Words {
-        Words {
-            action: self.carries.label(&self.descriptor.action_label),
-            on: self.record.clone(),
-            place: String::new(),
-        }
-    }
-
-    /// `action` of the resource kind `kind`, as `agent` asks to do it in `workspace` on the
-    /// thing `request` names: what a lasting permission covers.
-    fn named(
-        &self,
-        (agent, workspace): (&str, &str),
-        request: &InvokeRequest,
-        (kind, action): (&str, &str),
-    ) -> Asked {
-        Asked {
-            workspace: workspace.to_owned(),
-            agent: agent.to_owned(),
-            action: ActionName {
-                provider: self.route.app_id.clone(),
-                kind: kind.to_owned(),
-                action: action.to_owned(),
-            },
-            on: Some(Thing {
-                document: self.route.document.clone(),
-                resource: request.target.address.resource.clone(),
+    /// What the person `caller` acts for is shown about this call while it waits for their
+    /// answer: who asks, the call as they review it, the record it acts on, and the resource
+    /// type an always would cover, which a call that carries others offers none of.
+    pub(super) fn facts(&self, caller: &Caller) -> AskedFacts {
+        let draft = self.draft();
+        let acting = caller.acting();
+        let by = match acting.agent_id() {
+            Some(id) => AskedBy::Agent(Named {
+                id: id.to_owned(),
+                name: caller.agent_called().unwrap_or(id).to_owned(),
             }),
+            None => AskedBy::Device(Named::default()),
+        };
+        let own = matches!(self.carries, Carries::Nothing);
+        AskedFacts {
+            by,
+            words: String::new(),
+            on: Some(self.record.clone()).filter(|record| !record.is_empty()),
+            facts: draft
+                .summary()
+                .into_iter()
+                .map(|(label, value)| tilo_actions::remote::asked::Fact { label, value })
+                .collect(),
+            destructive: self.descriptor.contract.risk == tilo_actions::RiskLevel::Destructive,
+            choices: Vec::new(),
+            verb: verb_of(&self.carries.label(&self.descriptor.action_label)),
+            plural: own
+                .then(|| tilo_actions::plural(&self.descriptor.resource_label).to_lowercase())
+                .filter(|plural| !plural.is_empty()),
+            conversation: caller.turn().map(|turn| turn.conversation.clone()),
         }
     }
+}
 
-    /// What an answer of always to the question about `request` would let stand for
-    /// `agent` in `workspace`: the call's own name and thing. `None` for a call that carries
-    /// others: an always is for the action that asked, never for what carried it.
-    pub(super) fn always(
-        &self,
-        agent: &str,
-        workspace: &str,
-        request: &InvokeRequest,
-    ) -> Option<Asked> {
-        matches!(self.carries, Carries::Nothing).then(|| {
-            self.named(
-                (agent, workspace),
-                request,
-                (
-                    &self.descriptor.resource_kind,
-                    &request.target.address.action,
-                ),
-            )
-        })
-    }
-
-    /// Every always that has to stand for `request` to go ahead unasked: the call's own, or
-    /// for a call that carries others the own always of each carried action that asks by its
-    /// own name, and never the carrier's. `None` where none can open it: what it carries has
-    /// no name.
-    pub(super) fn opened_by(
-        &self,
-        agent: &str,
-        workspace: &str,
-        request: &InvokeRequest,
-    ) -> Option<Vec<Asked>> {
-        match &self.carries {
-            Carries::Nothing => self.always(agent, workspace, request).map(|own| vec![own]),
-            Carries::Unnamed => None,
-            Carries::Actions(_) => Some(
-                self.carries
-                    .asking()
-                    .map(|carried| {
-                        self.named(
-                            (agent, workspace),
-                            request,
-                            (&carried.descriptor.resource_kind, &carried.name),
-                        )
-                    })
-                    .collect(),
-            ),
-        }
-    }
+/// The verb an action's label leads with, as "Always let {asker} {verb} {plural}" reads it.
+fn verb_of(label: &str) -> String {
+    label
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_lowercase()
 }
 
 #[cfg(test)]

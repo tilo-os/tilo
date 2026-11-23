@@ -341,12 +341,10 @@ impl Worker {
         request: &InvokeRequest,
         descriptor: &tilo_actions::ActionDescriptor,
     ) -> bool {
-        let binding = bounded::ApprovalBinding::of(workspace_id, caller, request);
         self.part_waits.confirmed_or(|| {
             confirms(
                 &descriptor.contract.confirmation,
                 request.confirmation.as_ref(),
-                |token| self.shared.approvals.take(token, &binding),
             )
         })
     }

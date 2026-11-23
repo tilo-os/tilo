@@ -1,17 +1,14 @@
-//! Telling a person in their browser that an agent waits for them, while no
+//! Telling a person in their browser that something waits for them, while no
 //! Tilo of theirs is open: Web Push (RFC 8030), its message encrypted for the
 //! browser that subscribed (RFC 8291, `aes128gcm` of RFC 8188) and the request
 //! signed with this host's application server key (VAPID, RFC 8292).
 //!
 //! A page of the person's that may show notifications subscribes its browser
 //! and hands the subscription here ([`ApproverRequest::Notify`]); this host
-//! keeps a few per person on disk. When a question waits for a person and no
-//! device of theirs has looked for questions lately, every browser they
-//! subscribed is pushed a short message: who waits, and for what. Its service
-//! worker shows it, and a click opens Tilo, where the question waits.
-//!
-//! The message names the agent and the action, never the page's contents or
-//! picture: what the person decides on is shown in Tilo, where they answer.
+//! keeps a few per person on disk. When the teller has something for a person
+//! and no device of theirs is looking, every browser they subscribed is
+//! pushed a short message. Its service worker shows it, and a click opens
+//! Tilo, where it waits.
 //!
 //! [`ApproverRequest::Notify`]: tilo_server_protocol::certify::ApproverRequest::Notify
 
@@ -341,50 +338,13 @@ fn expand(prk: &ring::hkdf::Prk, info: &[u8], len: usize) -> Result<Vec<u8>, ()>
     Ok(out)
 }
 
-impl crate::certification::QuestionNotifier for WebPush {
+impl crate::certification::PushSubscriptions for WebPush {
     fn push_key(&self) -> Vec<u8> {
         self.public_key()
     }
 
     fn subscribe(&self, person: &[u8; 32], subscription: PushSubscription) -> Result<(), String> {
         Self::subscribe(self, person, subscription)
-    }
-
-    fn notify(
-        &self,
-        person: [u8; 32],
-        question: tilo_server_protocol::certify::PendingConfirmation,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
-        let push = self.clone();
-        Box::pin(async move {
-            let agent = question.agent_label.trim();
-            let title = if agent.is_empty() {
-                "An agent needs you".to_owned()
-            } else {
-                format!("{agent} needs you")
-            };
-            let body = match (question.action_label.trim(), question.workspace.trim()) {
-                ("", _) => "Open Tilo to answer.".to_owned(),
-                (action, "") => format!("{action}. Open Tilo to answer."),
-                (action, workspace) => format!("{action} in {workspace}. Open Tilo to answer."),
-            };
-            let tag = format!("tilo-question-{}", hex::encode(question.id));
-            let delivered = push
-                .notify(
-                    &person,
-                    &Message {
-                        title: &title,
-                        body: &body,
-                        tag: &tag,
-                        url: "/",
-                    },
-                )
-                .await;
-            tracing::info!(
-                delivered,
-                "a person with no Tilo open was told a question waits"
-            );
-        })
     }
 }
 

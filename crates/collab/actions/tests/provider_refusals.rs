@@ -29,12 +29,10 @@ fn refusals() -> Vec<ActionCallError> {
         ActionCallError::UnknownAction,
         ActionCallError::NotPermitted,
         ActionCallError::confirmation_required(),
-        ActionCallError::ConfirmationRequired {
-            departure: vec![
-                tilo_actions::remote::browser::departure_facet("kind", "submit"),
-                tilo_actions::remote::browser::departure_facet("picture", "tilo.content:5f2b"),
-            ],
-        },
+        ActionCallError::asks(tilo_actions::remote::browser::departure_asked(vec![
+            ("kind".to_owned(), "submit".to_owned()),
+            ("picture".to_owned(), "tilo.content:5f2b".to_owned()),
+        ])),
         ActionCallError::InvalidRequest {
             reason: "`name` is text".to_owned(),
         },

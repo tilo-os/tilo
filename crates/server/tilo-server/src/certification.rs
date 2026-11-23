@@ -1,5 +1,5 @@
 //! Host side of server-mediated device certification
-//! ([`crate::certify`], ALPN `tilo-device-certify/1`).
+//! ([`crate::certify`], ALPN `tilo-device-certify/2`).
 //!
 //! The host only carries and checks. A requester's signed
 //! [`CertificationRequest`] waits here until an approver — a device of the
@@ -16,10 +16,6 @@
 //! An agent is approved the same way, by any device of the person it acts
 //! for: the same command lists the proposal, and the member's root signs the
 //! agent's certificate and its delegation together.
-//!
-//! The same approvers answer the questions the host's agents put to their
-//! person ([`CertificationProtocol::confirm`]): one invocation each, allowed
-//! once or denied, refused when nobody answers in time.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -37,8 +33,8 @@ use tokio::sync::watch;
 use crate::auth::{self, HandshakeTrust};
 use crate::certify::{
     AWAIT_PENDING_NS, ApproverDecision, ApproverReply, ApproverRequest, CertifyOpen, CertifyReply,
-    ConfirmationAnswer, MAX_CERTIFY_FRAME_BYTES, MAX_PENDING_CERTIFICATIONS, MemberApproval,
-    PendingCertification, PendingConfirmation, PendingDelegate, PushSubscription,
+    MAX_CERTIFY_FRAME_BYTES, MAX_PENDING_CERTIFICATIONS, MemberApproval, PendingCertification,
+    PendingDelegate, PushSubscription,
 };
 use crate::frame::{read_frame, read_frame_or_eof, write_frame};
 use crate::handshake::{EndpointTrust, LiveIdentity};
@@ -49,8 +45,6 @@ use tilo_server_protocol::delegation::{DelegateProposal, Delegation};
 
 /// How long a final answer may wait for the requester to read it.
 const CLOSE_GRACE: Duration = Duration::from_secs(2);
-/// The most people remembered as watching for their questions.
-const MAX_WATCHED: usize = 65_536;
 
 /// One request, and its answer once an approver gave it. A decided request
 /// stays until its requester collected the answer or it expired, so an
@@ -72,20 +66,6 @@ struct Pending {
 impl Pending {
     fn decided(&self) -> bool {
         self.answer.borrow().is_some()
-    }
-}
-
-/// A question an agent waits on, and the person's answer once given.
-struct Asked {
-    /// The person asked: only their approving devices see and answer it.
-    person: [u8; 32],
-    question: PendingConfirmation,
-    answer: watch::Sender<Option<ConfirmationAnswer>>,
-}
-
-impl Asked {
-    fn open(&self, now_ns: u64) -> bool {
-        self.question.expires_at_ns > now_ns && self.answer.borrow().is_none()
     }
 }
 
@@ -114,9 +94,8 @@ pub(crate) trait TabRequests: Send + Sync {
     fn expects(&self, request: &CertificationRequest, now_ns: u64) -> bool;
 }
 
-/// What tells a person, outside every Tilo of theirs, that a question waits
-/// for them: their browsers' push subscriptions ([`crate::web_push`]).
-pub trait QuestionNotifier: Send + Sync {
+/// Where a person's browsers take pushes ([`crate::web_push`]).
+pub trait PushSubscriptions: Send + Sync {
     /// The key a browser subscribes with.
     fn push_key(&self) -> Vec<u8>;
     /// Keep `subscription` as one of `person`'s browsers.
@@ -124,22 +103,7 @@ pub trait QuestionNotifier: Send + Sync {
     /// # Errors
     /// Why it was not kept.
     fn subscribe(&self, person: &[u8; 32], subscription: PushSubscription) -> Result<(), String>;
-    /// Tell `person` that `question` waits for them.
-    fn notify(
-        &self,
-        person: [u8; 32],
-        question: PendingConfirmation,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
 }
-
-/// How long a question waits before a person no device of theirs is
-/// watching for is told outside Tilo: a device that is open hears of it
-/// first, within its next look.
-const NOTIFY_AFTER: Duration = Duration::from_secs(4);
-/// How recently a device of the person must have looked for their
-/// questions to count as watching: a page looks every two seconds, a
-/// desktop more often.
-const WATCHING: Duration = Duration::from_secs(8);
 
 /// The certification ALPN handler.
 #[derive(Clone)]
@@ -147,7 +111,6 @@ pub struct CertificationProtocol {
     identity: LiveIdentity,
     policy: CertificationPolicy,
     pending: Arc<Mutex<HashMap<[u8; 32], Pending>>>,
-    confirmations: Arc<Mutex<HashMap<[u8; 32], Asked>>>,
     /// The pairing invites an approver answered, by person: an invite is
     /// for one device, so a second request naming it is refused.
     answered_invites: Arc<Mutex<AnsweredInvites>>,
@@ -163,10 +126,8 @@ pub struct CertificationProtocol {
     /// waiting for its person's requests to change
     /// ([`ApproverRequest::AwaitPending`]) wakes on.
     moved: Arc<watch::Sender<u64>>,
-    /// Tells a person who has no Tilo open that a question waits for them.
-    notifier: Arc<std::sync::OnceLock<Arc<dyn QuestionNotifier>>>,
-    /// When a device of each person last looked for their questions.
-    watched: Arc<Mutex<HashMap<[u8; 32], std::time::Instant>>>,
+    /// Keeps where a person's browsers take pushes.
+    notifier: Arc<std::sync::OnceLock<Arc<dyn PushSubscriptions>>>,
 }
 
 impl std::fmt::Debug for CertificationProtocol {
@@ -192,51 +153,19 @@ impl CertificationProtocol {
             identity,
             policy: CertificationPolicy::browser(),
             pending: Arc::new(Mutex::new(HashMap::new())),
-            confirmations: Arc::new(Mutex::new(HashMap::new())),
             answered_invites: Arc::new(Mutex::new(std::collections::HashSet::new())),
             workspaces,
             codes: Arc::default(),
             records: Arc::default(),
             moved: Arc::new(watch::Sender::new(0)),
             notifier: Arc::default(),
-            watched: Arc::default(),
         }
     }
 
-    /// Name what tells a person outside Tilo that a question waits for them.
-    /// Named once; a later call keeps the first.
-    pub fn set_notifier(&self, notifier: Arc<dyn QuestionNotifier>) {
+    /// Name what keeps a person's browsers' push subscriptions. Named once; a
+    /// later call keeps the first.
+    pub fn set_notifier(&self, notifier: Arc<dyn PushSubscriptions>) {
         let _ = self.notifier.set(notifier);
-    }
-
-    /// Whether a device of `person` looked for their questions lately.
-    fn watching(&self, person: &[u8; 32]) -> bool {
-        self.watched
-            .lock_recover()
-            .get(person)
-            .is_some_and(|at| at.elapsed() < WATCHING)
-    }
-
-    /// Tell `person` outside Tilo that `question` waits, unless a device of
-    /// theirs is watching for it or it was answered first.
-    fn notify_later(&self, person: [u8; 32], question: PendingConfirmation) {
-        let Some(notifier) = self.notifier.get().cloned() else {
-            return;
-        };
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        let protocol = self.clone();
-        runtime.spawn(async move {
-            tokio::time::sleep(NOTIFY_AFTER).await;
-            let open = protocol
-                .asked()
-                .get(&question.id)
-                .is_some_and(|entry| entry.open(unix_now_ns()));
-            if open && !protocol.watching(&person) {
-                notifier.notify(person, question).await;
-            }
-        });
     }
 
     /// A push subscription of `person`'s, or the key to make one with.
@@ -376,70 +305,6 @@ impl CertificationProtocol {
         self.pending.lock_recover()
     }
 
-    fn asked(&self) -> std::sync::MutexGuard<'_, HashMap<[u8; 32], Asked>> {
-        self.confirmations.lock_recover()
-    }
-
-    /// Put `question` to the person's approving devices and wait for the
-    /// answer to it, until it expires.
-    ///
-    /// # Errors
-    ///
-    /// Returns why there is no answer: the question could not be asked, or
-    /// nobody answered before it expired.
-    pub async fn confirm(
-        &self,
-        question: PendingConfirmation,
-    ) -> Result<ConfirmationAnswer, String> {
-        self.confirm_for(self.identity.user_public_key, question)
-            .await
-    }
-
-    /// [`Self::confirm`], put to `person`: the host's own person on their
-    /// approving devices, or a member of a workspace here, whose root answers
-    /// it through [`Self::member_approve`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::confirm`].
-    pub async fn confirm_for(
-        &self,
-        person: [u8; 32],
-        question: PendingConfirmation,
-    ) -> Result<ConfirmationAnswer, String> {
-        let now = unix_now_ns();
-        let id = question.id;
-        let wait = Duration::from_nanos(question.expires_at_ns.saturating_sub(now));
-        let mut receiver = {
-            let mut asked = self.asked();
-            asked.retain(|_, entry| entry.open(now));
-            if asked.contains_key(&id) {
-                return Err("this question is already asked".into());
-            }
-            if asked.len() >= MAX_PENDING_CERTIFICATIONS {
-                return Err("too many questions are waiting for an answer".into());
-            }
-            let (answer, receiver) = watch::channel(None);
-            self.notify_later(person, question.clone());
-            asked.insert(
-                id,
-                Asked {
-                    person,
-                    question,
-                    answer,
-                },
-            );
-            receiver
-        };
-        let answered = tokio::time::timeout(wait, receiver.wait_for(Option::is_some))
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .and_then(|answer| answer.clone());
-        self.asked().remove(&id);
-        answered.ok_or_else(|| "nobody answered in time".into())
-    }
-
     /// Admit a request into the pending set, or say why not. Returns its
     /// digest, pairing code and a receiver that sees the answer.
     pub fn enqueue(&self, request: CertificationRequest, now_ns: u64) -> Result<Queued, String> {
@@ -484,12 +349,6 @@ impl CertificationProtocol {
                 now_ns,
                 &user,
             ),
-            // What the host asks them about something run for them, and
-            // their answer to one such question of their own.
-            ApproverRequest::Confirmations => {
-                ApproverReply::Confirmations(self.questions(&user, now_ns))
-            }
-            ApproverRequest::Answer { id, answer } => self.answer(&user, id, answer, now_ns),
             request @ (ApproverRequest::PushKey | ApproverRequest::Notify(_)) => {
                 self.push(&user, request)
             }
@@ -756,12 +615,11 @@ impl CertificationProtocol {
         }
     }
 
-    /// Whether `cert` is a device a person's questions reach: one of their
-    /// own (no agent's key, no stand-in), unrevoked here, of a person this
-    /// host serves. The host's own person answers through their admitting
-    /// devices alone ([`Self::serve_approver`]): its other devices include
-    /// the hosted environments that hold the windows being asked about.
-    async fn answers_questions(&self, cert: &DeviceCert) -> bool {
+    /// Whether `cert` is a device of a person this host serves that may keep
+    /// their push subscriptions: one of their own (no agent's key, no
+    /// stand-in), unrevoked here. The host's own person goes through their
+    /// admitting devices alone ([`Self::serve_approver`]).
+    async fn person_device(&self, cert: &DeviceCert) -> bool {
         cert.user_public_key != self.identity.user_public_key
             && workspace_access::person_device(cert)
             && !self
@@ -771,7 +629,7 @@ impl CertificationProtocol {
     }
 
     /// One approver command from a member's root, or from a device of theirs
-    /// about the questions they are asked, answered once.
+    /// about their push subscriptions, answered once.
     async fn serve_member(
         &self,
         connection: &Link,
@@ -780,11 +638,11 @@ impl CertificationProtocol {
     ) -> Result<(), AcceptError> {
         let device_may = match &approval.device {
             None => true,
-            Some(cert) => self.answers_questions(cert).await,
+            Some(cert) => self.person_device(cert).await,
         };
         let reply = if !device_may {
             ApproverReply::Refused {
-                reason: "this device answers no question here".into(),
+                reason: "this device approves nothing here".into(),
             }
         } else if self.admits(approval.user_public_key).await {
             if let ApproverRequest::AwaitPending { known } = &approval.request
@@ -805,7 +663,7 @@ impl CertificationProtocol {
                 reason: "only a member approves devices here".into(),
             }
         };
-        write_frame(&mut send, &reply.encode().map_err(|err| io(&err))?)
+        write_frame(&mut send, &encode(&reply)?)
             .await
             .map_err(|error| io(&error))?;
         finish(connection, send).await
@@ -883,7 +741,7 @@ impl CertificationProtocol {
             .map_err(|error| io(&error))?;
         let owner = peer.user_public_key == self.identity.user_public_key
             && peer.cert.capabilities.can_admit_devices;
-        if !owner && !self.answers_questions(&peer.cert).await {
+        if !owner && !self.person_device(&peer.cert).await {
             return Err(io(&"this device approves nothing here"));
         }
         while let Some(frame) = read_frame_or_eof(&mut recv, MAX_CERTIFY_FRAME_BYTES)
@@ -895,28 +753,19 @@ impl CertificationProtocol {
             let reply = if owner {
                 self.decide(request, unix_now_ns(), &self.identity.user_public_key)
             } else {
-                self.answer_for_device(&peer.user_public_key, request, unix_now_ns())
+                self.answer_for_device(&peer.user_public_key, request)
             };
-            write_frame(&mut send, &reply.encode().map_err(|err| io(&err))?)
+            write_frame(&mut send, &encode(&reply)?)
                 .await
                 .map_err(|error| io(&error))?;
         }
         finish(connection, send).await
     }
 
-    /// A command from a device of `person` (not the host's own): their
-    /// questions, and their answer to one; nothing of pairing.
-    fn answer_for_device(
-        &self,
-        person: &[u8; 32],
-        request: ApproverRequest,
-        now_ns: u64,
-    ) -> ApproverReply {
+    /// A command from a device of `person` (not the host's own): their push
+    /// subscriptions; nothing of pairing.
+    fn answer_for_device(&self, person: &[u8; 32], request: ApproverRequest) -> ApproverReply {
         match request {
-            ApproverRequest::Confirmations => {
-                ApproverReply::Confirmations(self.questions(person, now_ns))
-            }
-            ApproverRequest::Answer { id, answer } => self.answer(person, id, answer, now_ns),
             request @ (ApproverRequest::PushKey | ApproverRequest::Notify(_)) => {
                 self.push(person, request)
             }
@@ -936,77 +785,6 @@ impl CertificationProtocol {
         }
     }
 
-    /// Every question still waiting for `person`'s answer: a device of
-    /// theirs looked for them now.
-    fn questions(&self, person: &[u8; 32], now_ns: u64) -> Vec<PendingConfirmation> {
-        {
-            let mut watched = self.watched.lock_recover();
-            if watched.len() >= MAX_WATCHED {
-                watched.retain(|_, at| at.elapsed() < WATCHING);
-            }
-            watched.insert(*person, std::time::Instant::now());
-        }
-        self.asked()
-            .values()
-            .filter(|entry| entry.open(now_ns) && entry.person == *person)
-            .map(|entry| entry.question.clone())
-            .collect()
-    }
-
-    /// Hand `answer` to the agent waiting on question `id`, once.
-    fn answer(
-        &self,
-        person: &[u8; 32],
-        id: [u8; 32],
-        answer: ConfirmationAnswer,
-        now_ns: u64,
-    ) -> ApproverReply {
-        let asked = self.asked();
-        let Some(entry) = asked
-            .get(&id)
-            .filter(|entry| entry.open(now_ns) && entry.person == *person)
-        else {
-            return ApproverReply::Refused {
-                reason: "no such question is waiting".into(),
-            };
-        };
-        if !answer.answers(&entry.question) {
-            return ApproverReply::Refused {
-                reason: "that is no answer to this question".into(),
-            };
-        }
-        entry.answer.send_replace(Some(answer));
-        drop(asked);
-        ApproverReply::Decided
-    }
-
-    /// Every question still waiting for `person`'s answer, for a page of
-    /// theirs to draw in the sheet's words: the same list their approving
-    /// devices read over an approver session.
-    #[must_use]
-    pub fn pending_for(&self, person: &[u8; 32]) -> Vec<PendingConfirmation> {
-        self.questions(person, unix_now_ns())
-    }
-
-    /// Answer question `id` for `person`, as a device of theirs proved on the
-    /// session the page asked over: the answer runs the call held there once,
-    /// or refuses it. `Err` says why it was not taken.
-    ///
-    /// # Errors
-    /// No such question waits for them, or it takes no such answer.
-    pub fn answer_for(
-        &self,
-        person: &[u8; 32],
-        id: [u8; 32],
-        answer: ConfirmationAnswer,
-    ) -> Result<(), String> {
-        match self.answer(person, id, answer, unix_now_ns()) {
-            ApproverReply::Decided => Ok(()),
-            ApproverReply::Refused { reason } => Err(reason),
-            _ => Err("the question was not answered".into()),
-        }
-    }
-
     /// Answer `request` from an approver of `approver`'s root, who decides
     /// only requests naming that root.
     fn decide(&self, request: ApproverRequest, now_ns: u64, approver: &[u8; 32]) -> ApproverReply {
@@ -1022,12 +800,6 @@ impl CertificationProtocol {
             ApproverRequest::DelegateProposals => ApproverReply::DelegateProposals(
                 self.proposals_of(&self.identity.user_public_key, now_ns),
             ),
-            ApproverRequest::Confirmations => {
-                ApproverReply::Confirmations(self.questions(&self.identity.user_public_key, now_ns))
-            }
-            ApproverRequest::Answer { id, answer } => {
-                self.answer(&self.identity.user_public_key, id, answer, now_ns)
-            }
             request @ (ApproverRequest::PushKey | ApproverRequest::Notify(_)) => {
                 self.push(&self.identity.user_public_key, request)
             }
@@ -1114,28 +886,6 @@ async fn finish(connection: &Link, mut send: LinkSend) -> Result<(), AcceptError
     send.finish();
     let _ = tokio::time::timeout(CLOSE_GRACE, connection.closed()).await;
     Ok(())
-}
-
-/// The server's confirmations as its workspaces reach them: weakly, since the
-/// confirmations hold the workspaces, and a server that stopped asks nobody.
-pub(crate) struct AsksThroughConfirmations(pub(crate) std::sync::Weak<CertificationProtocol>);
-
-/// Whether a workspace runs commands unattended is asked as an agent's
-/// action is: on the approving devices of the person, who alone answer it.
-impl tilo_workspace_service::workspaces::AsksPeople for AsksThroughConfirmations {
-    fn ask(
-        &self,
-        person: [u8; 32],
-        question: PendingConfirmation,
-    ) -> tilo_workspace_service::workspaces::PersonAnswer {
-        let asked = self.0.upgrade().map(|asked| (*asked).clone());
-        Box::pin(async move {
-            match asked {
-                Some(asked) => asked.confirm_for(person, question).await,
-                None => Err("this host stopped".into()),
-            }
-        })
-    }
 }
 
 impl ProtocolHandler for CertificationProtocol {
@@ -1245,83 +995,6 @@ mod confirmation_tests {
             },
             None,
         )
-    }
-
-    fn question(id: u8, wait: Duration) -> PendingConfirmation {
-        PendingConfirmation {
-            id: [id; 32],
-            agent_id: "careful".into(),
-            agent_label: "Careful".into(),
-            action_label: "Clear history".into(),
-            resource_label: "Calculator".into(),
-            risk: "destructive".into(),
-            workspace: "workspace".into(),
-            expires_at_ns: unix_now_ns().saturating_add(u64::try_from(wait.as_nanos()).unwrap()),
-            ..PendingConfirmation::default()
-        }
-    }
-
-    #[tokio::test]
-    async fn a_question_nobody_answers_is_refused_when_it_expires() {
-        let protocol = protocol();
-        let answer = protocol
-            .confirm(question(1, Duration::from_millis(100)))
-            .await;
-        assert!(answer.is_err(), "{answer:?}");
-        assert_eq!(
-            protocol.decide(
-                ApproverRequest::Confirmations,
-                unix_now_ns(),
-                &protocol.identity.user_public_key
-            ),
-            ApproverReply::Confirmations(Vec::new()),
-            "an expired question is no longer shown"
-        );
-    }
-
-    #[tokio::test]
-    async fn an_approver_answers_each_question_once() {
-        let protocol = protocol();
-        let waiting = tokio::spawn({
-            let protocol = protocol.clone();
-            async move { protocol.confirm(question(2, Duration::from_secs(30))).await }
-        });
-        let shown = loop {
-            if let ApproverReply::Confirmations(shown) = protocol.decide(
-                ApproverRequest::Confirmations,
-                unix_now_ns(),
-                &protocol.identity.user_public_key,
-            ) && !shown.is_empty()
-            {
-                break shown;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        };
-        assert_eq!(
-            shown[0].question(),
-            "Careful wants to Clear history: Calculator, for you"
-        );
-        let answer = |answer| ApproverRequest::Answer {
-            id: [2; 32],
-            answer,
-        };
-        assert_eq!(
-            protocol.decide(
-                answer(ConfirmationAnswer::AllowOnce),
-                unix_now_ns(),
-                &protocol.identity.user_public_key
-            ),
-            ApproverReply::Decided
-        );
-        assert!(matches!(
-            protocol.decide(
-                answer(ConfirmationAnswer::Deny),
-                unix_now_ns(),
-                &protocol.identity.user_public_key
-            ),
-            ApproverReply::Refused { .. }
-        ));
-        assert_eq!(waiting.await.unwrap(), Ok(ConfirmationAnswer::AllowOnce));
     }
 
     fn member_request(

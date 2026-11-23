@@ -704,3 +704,13 @@ reason = "the host's call events go with the host-kept calls: a page reads who i
 file = "crates/os/tilo-device-protocol/src/lib.rs"
 enum = "LayerSource"
 reason = "a device-control action's argument, JSON by name, read once by the step that imports the layer and never kept. `Upload` named bytes sent in request lines to tilo-vmd, which is gone: a layer now arrives as a content blob the action names"
+
+[[break]]
+file = "crates/server/tilo-server-protocol/src/certify.rs"
+enum = "ApproverRequest"
+reason = "spoken only on a live certification connection, never stored, and its ALPN moved to tilo-device-certify/2 when the questions left it: a peer of the old protocol is not answered, so no bytes of another layout are read"
+
+[[break]]
+file = "crates/server/tilo-server-protocol/src/certify.rs"
+enum = "ApproverReply"
+reason = "spoken only on a live certification connection, never stored, and its ALPN moved to tilo-device-certify/2 when the questions left it: a peer of the old protocol is not answered, so no bytes of another layout are read"
