@@ -32,10 +32,10 @@ tilo_automerge_isolate::test_worker!();
 // executable, started again on its way, which serves it here.
 tilo_agent_session::app_worker!();
 
-#[path = "app_views.rs"]
-mod app_views;
 #[path = "agent_fixture.rs"]
 mod agent_fixture;
+#[path = "agent_keys.rs"]
+mod agent_keys;
 #[path = "agent_machine.rs"]
 mod agent_machine;
 #[path = "agent_member.rs"]
@@ -66,6 +66,8 @@ mod api_model_asks;
 mod api_records;
 #[path = "api_workspaces.rs"]
 mod api_workspaces;
+#[path = "app_views.rs"]
+mod app_views;
 #[path = "chat.rs"]
 mod chat;
 #[path = "customer_workspaces.rs"]
@@ -94,8 +96,6 @@ mod files_views;
 mod guests;
 /// The one fixture a test reaches a device's daemon through.
 mod host;
-#[path = "provided.rs"]
-mod provided;
 #[path = "hosted_agent_terminal.rs"]
 mod hosted_agent_terminal;
 #[path = "hosted_mail_accounts.rs"]
@@ -110,6 +110,8 @@ mod invocations;
 mod joining;
 #[path = "machine_secrets.rs"]
 mod machine_secrets;
+#[path = "provided.rs"]
+mod provided;
 #[path = "root_holder_login.rs"]
 mod root_holder_login;
 #[path = "runtime_daemon_process.rs"]

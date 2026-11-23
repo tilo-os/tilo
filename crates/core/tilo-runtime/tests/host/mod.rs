@@ -372,7 +372,8 @@ impl Host {
         self.dial(random_key(), workspace).await
     }
 
-    async fn dial(&self, key: SigningKey, workspace: &str) -> Member {
+    /// `key`, whatever certifies it, asking the daemon over the device link for `workspace`.
+    pub async fn dial(&self, key: SigningKey, workspace: &str) -> Member {
         let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
             .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
             .relay_mode(iroh::RelayMode::Disabled)
@@ -583,6 +584,16 @@ impl Member {
         &self._endpoint
     }
 
+    /// `request` as it is, its signature included, followed until it settles.
+    pub async fn send(&self, request: InvokeRequest) -> Result<InvocationUpdate, ActionCallError> {
+        tilo_test_env::within(
+            "the daemon to answer over the device link",
+            Arc::clone(&self.remote).invoke_until_settled(request, FOLLOW),
+        )
+        .await
+        .expect("the device link answers")
+    }
+
     /// The action at `address` of `provider`, with `arguments`, followed until it settles.
     pub async fn call(
         &self,
@@ -629,7 +640,7 @@ fn random_key() -> SigningKey {
 }
 
 /// A new key `label` of the person whose root `root` is, certified with `capabilities`.
-fn certified(
+pub fn certified(
     root: &dyn tilo_user_identity::StatementSigner,
     person: [u8; 32],
     label: &str,
