@@ -1,6 +1,8 @@
 {
   "app": "ebook",
   "said": "Books",
+  "family": "apps",
+  "live": "tl",
   "tl": {
     "id": "so.tilo.ebook",
     "package": "ebook"

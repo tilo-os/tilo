@@ -731,6 +731,15 @@ requires = ["arch=any"]
 run = "python3 -m unittest tools/tests/test_client_licenses.py && python3 -I tools/sdk/check_client_licenses.py"
 
 [[check]]
+# The walks' step files, baselines and record of moved capabilities, held to what the walk's
+# driver reads (scripts/headless-examples/test_app_walk.py): no session starts, so a step file
+# naming an op the driver lacks, a walk no check runs, or a moved capability whose test is gone
+# fails here in seconds instead of in an app-walk/* run or not at all.
+name = "app-walk-steps"
+requires = ["arch=any"]
+run = "cd scripts/headless-examples && python3 -m unittest test_app_walk"
+
+[[check]]
 name = "lockfile"
 requires = ["arch=any"]
 # Resolves against crates.io.
