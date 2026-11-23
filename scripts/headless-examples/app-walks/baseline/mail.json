@@ -1,0 +1,76 @@
+{
+ "walk": "mail",
+ "live": "tl",
+ "commit": null,
+ "versions": {
+  "tl": {
+   "session_start_ms": 29058,
+   "walk_ms": 47775,
+   "steps": {
+    "open": {
+     "walked": true,
+     "took_ms": 1699,
+     "controls": [
+      "11:26 AM",
+      "BackgroundLayer",
+      "BackgroundLayer[0]",
+      "Close",
+      "Deliver a message\u2026",
+      "Desktop navigation",
+      "DesktopChrome",
+      "DesktopChrome[0]",
+      "History",
+      "Hosted applications",
+      "Invite",
+      "Invite by mail\u2026",
+      "Mail",
+      "Maximize",
+      "More actions",
+      "New strip",
+      "New tab",
+      "Notifications",
+      "Open quick settings",
+      "Search in this window",
+      "Show strips, now on Strip 1",
+      "Someone without a name yet (you): your profile",
+      "Switch workspace, now in Workspace",
+      "Undo",
+      "Undo send time\u2026",
+      "Workspace overview",
+      "strip_switcher",
+      "strip_switcher.new_strip",
+      "tab:Mail",
+      "tab:Mail[12323255955369230342]",
+      "tabbar_new_tab",
+      "tabbar_new_tab[12323255955369230342]",
+      "tabs",
+      "topbar_bell",
+      "topbar_center_clock",
+      "topbar_profile",
+      "topbar_strip_name",
+      "topbar_tilo_mark",
+      "topbar_tray_hit",
+      "topbar_tray_pill",
+      "topbar_workspace_pill",
+      "window-close",
+      "window-history",
+      "window-maximize",
+      "window-search-open",
+      "window_tab:0"
+     ]
+    },
+    "compose": {
+     "walked": false,
+     "took_ms": 15162,
+     "failed": "not on screen: [{\"prefix\": \"Subject\"}]"
+    },
+    "drafts": {
+     "walked": false,
+     "took_ms": 30088,
+     "failed": "timed out waiting for the row 'Drafts' in the window"
+    }
+   }
+  }
+ },
+ "run": "r663c8ab361"
+}
