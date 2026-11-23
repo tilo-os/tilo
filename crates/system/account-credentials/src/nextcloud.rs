@@ -322,9 +322,12 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use test_http::{Reply, Responder};
+    use test_http::{CountingListener, Reply, Responder};
 
-    fn fake_nextcloud(pending_polls: usize) -> (Responder, std::sync::Arc<Mutex<Vec<String>>>) {
+    fn fake_nextcloud(
+        host: &str,
+        pending_polls: usize,
+    ) -> (Responder, std::sync::Arc<Mutex<Vec<String>>>) {
         let tokens = std::sync::Arc::new(Mutex::new(Vec::new()));
         let seen = std::sync::Arc::clone(&tokens);
         let polls = AtomicUsize::new(0);
@@ -361,7 +364,7 @@ mod tests {
                 _ => Some(Reply::status(404)),
             }
         });
-        *base.lock().unwrap() = responder.url();
+        *base.lock().unwrap() = format!("http://{host}:{}", responder.port());
         (responder, tokens)
     }
 
@@ -371,7 +374,7 @@ mod tests {
 
         phase login_flow_polls_until_the_app_password_is_minted;
         {
-            let (server, tokens) = fake_nextcloud(2);
+            let (server, tokens) = fake_nextcloud("127.0.0.1", 2);
             let flow = begin(&format!("{}/", server.url())).unwrap();
             assert_eq!(
                 flow.login_url(),
@@ -404,7 +407,7 @@ mod tests {
 
         phase cancelling_stops_polling;
         {
-            let (server, tokens) = fake_nextcloud(usize::MAX);
+            let (server, tokens) = fake_nextcloud("127.0.0.1", usize::MAX);
             let flow = begin(&server.url()).unwrap();
             let (stop, cancel) = mpsc::channel();
             stop.send(()).unwrap();
@@ -454,97 +457,6 @@ mod tests {
                 "https://cloud.example.com/nc"
             );
         }
-    }
-
-    struct CountingListener {
-        port: u16,
-        accepted: Arc<AtomicUsize>,
-        stop: Arc<std::sync::atomic::AtomicBool>,
-        worker: Option<std::thread::JoinHandle<()>>,
-    }
-
-    impl CountingListener {
-        fn start() -> Self {
-            let listener =
-                std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).expect("a port");
-            let port = listener.local_addr().expect("its address").port();
-            let accepted = Arc::new(AtomicUsize::new(0));
-            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let count = Arc::clone(&accepted);
-            let stopping = Arc::clone(&stop);
-            let worker = std::thread::spawn(move || {
-                while let Ok((stream, _)) = listener.accept() {
-                    if stopping.load(Ordering::SeqCst) {
-                        break;
-                    }
-                    count.fetch_add(1, Ordering::SeqCst);
-                    drop(stream);
-                }
-            });
-            Self {
-                port,
-                accepted,
-                stop,
-                worker: Some(worker),
-            }
-        }
-
-        fn count(&self) -> usize {
-            self.accepted.load(Ordering::SeqCst)
-        }
-    }
-
-    impl Drop for CountingListener {
-        fn drop(&mut self) {
-            self.stop.store(true, Ordering::SeqCst);
-            let _ = std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, self.port));
-            if let Some(worker) = self.worker.take() {
-                let _ = worker.join();
-            }
-        }
-    }
-
-    fn fake_nextcloud_at_host(
-        host: &str,
-        pending_polls: usize,
-    ) -> (Responder, Arc<Mutex<Vec<String>>>) {
-        let tokens = Arc::new(Mutex::new(Vec::new()));
-        let seen = Arc::clone(&tokens);
-        let polls = AtomicUsize::new(0);
-        let base = Arc::new(Mutex::new(String::new()));
-        let base_for_handler = Arc::clone(&base);
-        let responder = Responder::handle(move |request| {
-            let base = base_for_handler.lock().unwrap().clone();
-            match (request.method.as_str(), request.target.as_str()) {
-                ("POST", "/index.php/login/v2") => Some(
-                    Reply::status(200).body(
-                        serde_json::json!({
-                            "poll": {"token": "poll-token-1", "endpoint": format!("{base}/login/v2/poll")},
-                            "login": format!("{base}/login/v2/flow/abc"),
-                        })
-                        .to_string(),
-                    ),
-                ),
-                ("POST", "/login/v2/poll") => {
-                    seen.lock().unwrap().push(request.body_text());
-                    if polls.fetch_add(1, Ordering::SeqCst) < pending_polls {
-                        Some(Reply::status(404))
-                    } else {
-                        Some(Reply::status(200).body(
-                            serde_json::json!({
-                                "server": base,
-                                "loginName": "ada",
-                                "appPassword": "minted-app-password",
-                            })
-                            .to_string(),
-                        ))
-                    }
-                }
-                _ => Some(Reply::status(404)),
-            }
-        });
-        *base.lock().unwrap() = format!("http://{host}:{}", responder.port());
-        (responder, tokens)
     }
 
     fn poll_ready<T>(
@@ -601,7 +513,7 @@ mod tests {
         assert_eq!(first, vec![std::net::IpAddr::from([93, 184, 216, 34])]);
         assert_eq!(asked.load(Ordering::SeqCst), 1);
 
-        let named = format!("https://localhost:{}", listener.port);
+        let named = format!("https://localhost:{}", listener.port());
         assert_eq!(
             begin_looking(&named, Arc::clone(&judged)).unwrap_err(),
             NextcloudError::Offline(
@@ -611,7 +523,7 @@ mod tests {
         assert_eq!(listener.count(), 0, "nothing is connected to");
         assert_eq!(asked.load(Ordering::SeqCst), 2, "looked up at connection");
 
-        let literal = format!("http://127.0.0.1:{}", listener.port);
+        let literal = format!("http://127.0.0.1:{}", listener.port());
         assert_eq!(
             begin_looking(
                 &literal,
@@ -629,9 +541,13 @@ mod tests {
         assert_eq!(listener.count(), 1, "device caller connects as on main");
     }
 
+    /// `test_http::Responder` closes each connection after replying, so every
+    /// poll here opens a new connection and asks the flow's given lookup anew.
+    /// A real server that keeps connections alive asks the lookup whenever a
+    /// new connection is made.
     #[test]
-    fn a_login_flow_asks_its_given_lookup_on_every_poll() {
-        let (server, tokens) = fake_nextcloud_at_host("localhost", 1);
+    fn a_login_flow_asks_its_given_lookup_at_every_new_connection() {
+        let (server, tokens) = fake_nextcloud("localhost", 1);
         let base = format!("http://localhost:{}", server.port());
         let asked = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&asked);
@@ -661,7 +577,7 @@ mod tests {
         assert_eq!(tokens.lock().unwrap().len(), 2);
 
         // Shutting off private addresses mid-flow refuses subsequent polls by name.
-        let (named_server, named_tokens) = fake_nextcloud_at_host("localhost", 0);
+        let (named_server, named_tokens) = fake_nextcloud("localhost", 0);
         let named_base = format!("http://localhost:{}", named_server.port());
         let open = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let named_asked = Arc::new(AtomicUsize::new(0));
@@ -678,7 +594,7 @@ mod tests {
         assert!(named_tokens.lock().unwrap().is_empty());
 
         // And refuses subsequent polls to a written-out IP literal as well.
-        let (literal_server, literal_tokens) = fake_nextcloud(0);
+        let (literal_server, literal_tokens) = fake_nextcloud("127.0.0.1", 0);
         let literal_open = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let literal_asked = Arc::new(AtomicUsize::new(0));
         let flow = begin_looking(
@@ -696,7 +612,7 @@ mod tests {
         assert!(literal_tokens.lock().unwrap().is_empty());
 
         // Device caller's `begin` completes a localhost flow as on main.
-        let (device_server, device_tokens) = fake_nextcloud_at_host("localhost", 0);
+        let (device_server, device_tokens) = fake_nextcloud("localhost", 0);
         let device_base = format!("http://localhost:{}", device_server.port());
         let flow = begin(&device_base).unwrap();
         let login = flow.poll().unwrap().expect("device poll completes");
