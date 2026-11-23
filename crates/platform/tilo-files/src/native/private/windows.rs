@@ -1,124 +1,32 @@
 //! Windows ownership and DACL checks for identity secrets.
 use super::{File, Path, io};
-use std::ffi::c_void;
 use std::os::windows::{
     ffi::OsStrExt,
     fs::MetadataExt,
-    io::{AsRawHandle, FromRawHandle, OwnedHandle},
+    io::{AsRawHandle, FromRawHandle},
 };
+use tilo_socket::account::{Account, LocalAllocation, attributes};
 use windows_sys::Win32::{
     Foundation::{
-        ERROR_ALREADY_EXISTS, ERROR_NO_TOKEN, ERROR_SUCCESS, GENERIC_READ, GENERIC_WRITE,
-        GetLastError, INVALID_HANDLE_VALUE, LocalFree,
+        ERROR_ALREADY_EXISTS, ERROR_SUCCESS, GENERIC_READ, GENERIC_WRITE, GetLastError,
+        INVALID_HANDLE_VALUE,
     },
     Security::{
         ACCESS_ALLOWED_ACE, ACE_HEADER,
-        Authorization::{
-            ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-            GetSecurityInfo, SE_FILE_OBJECT, SetSecurityInfo,
-        },
-        DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetSecurityDescriptorDacl,
-        GetTokenInformation, IsValidSid, OWNER_SECURITY_INFORMATION,
-        PROTECTED_DACL_SECURITY_INFORMATION, PSID, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
-        TokenUser,
+        Authorization::{GetSecurityInfo, SE_FILE_OBJECT, SetSecurityInfo},
+        DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetSecurityDescriptorDacl, IsValidSid,
+        OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
     },
     Storage::FileSystem::{
         CREATE_NEW, CreateDirectoryW, CreateFileW, FILE_ATTRIBUTE_REPARSE_POINT,
         FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
         FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_ALWAYS, OPEN_EXISTING, READ_CONTROL, WRITE_DAC,
     },
-    System::Threading::{GetCurrentProcess, GetCurrentThread, OpenProcessToken, OpenThreadToken},
 };
 
-struct LocalAllocation(*mut c_void);
-impl Drop for LocalAllocation {
-    fn drop(&mut self) {
-        // SAFETY: all instances own a LocalAlloc-family API result.
-        unsafe {
-            LocalFree(self.0);
-        }
-    }
-}
-
-struct UserSid(Vec<usize>);
-impl UserSid {
-    fn current() -> io::Result<Self> {
-        let mut raw = std::ptr::null_mut();
-        // SAFETY: output pointer is valid and token access is query-only.
-        unsafe {
-            if OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, 1, &raw mut raw) == 0
-                && (GetLastError() != ERROR_NO_TOKEN
-                    || OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut raw) == 0)
-            {
-                return Err(io::Error::last_os_error());
-            }
-            let token = OwnedHandle::from_raw_handle(raw);
-            let mut size = 0;
-            GetTokenInformation(
-                token.as_raw_handle(),
-                TokenUser,
-                std::ptr::null_mut(),
-                0,
-                &raw mut size,
-            );
-            if size == 0 {
-                return Err(io::Error::last_os_error());
-            }
-            let mut buffer = vec![0usize; (size as usize).div_ceil(size_of::<usize>())];
-            if GetTokenInformation(
-                token.as_raw_handle(),
-                TokenUser,
-                buffer.as_mut_ptr().cast(),
-                size,
-                &raw mut size,
-            ) == 0
-            {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(Self(buffer))
-        }
-    }
-    fn ptr(&self) -> PSID {
-        // SAFETY: GetTokenInformation initialized an aligned TOKEN_USER and its SID inside this
-        // retained allocation.
-        unsafe { (*self.0.as_ptr().cast::<TOKEN_USER>()).User.Sid }
-    }
-    fn descriptor(&self) -> io::Result<LocalAllocation> {
-        let mut sid_string = std::ptr::null_mut();
-        // SAFETY: self owns a valid SID; API allocations are freed by guards.
-        unsafe {
-            if ConvertSidToStringSidW(self.ptr(), &raw mut sid_string) == 0 {
-                return Err(io::Error::last_os_error());
-            }
-            let _sid = LocalAllocation(sid_string.cast());
-            let mut length = 0;
-            while *sid_string.add(length) != 0 {
-                length = length
-                    .checked_add(1)
-                    .ok_or_else(|| io::Error::other("SID string exceeds addressable length"))?;
-            }
-            let sid = String::from_utf16(std::slice::from_raw_parts(sid_string, length))
-                .map_err(|_| io::Error::other("invalid account SID"))?;
-            // Explicit owner, a protected DACL, and only this account gets access; OI/CI make
-            // descendants private from the moment they are made.
-            let sddl: Vec<_> = format!("O:{sid}D:P(A;OICI;FA;;;{sid})")
-                .encode_utf16()
-                .chain(Some(0))
-                .collect();
-            let mut descriptor = std::ptr::null_mut();
-            if ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                sddl.as_ptr(),
-                1,
-                &raw mut descriptor,
-                std::ptr::null_mut(),
-            ) == 0
-            {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(LocalAllocation(descriptor))
-        }
-    }
-}
+/// Explicit owner, a protected DACL, and only this account gets access; OI/CI make descendants
+/// private from the moment they are made.
+const PRIVATE_SDDL: &str = "O:{sid}D:P(A;OICI;FA;;;{sid})";
 
 fn denied() -> io::Error {
     io::Error::new(
@@ -138,7 +46,7 @@ fn wide(path: &Path) -> io::Result<Vec<u16>> {
     Ok(wide)
 }
 
-fn validate(file: &File, user: &UserSid, directory: bool, check_acl: bool) -> io::Result<()> {
+fn validate(file: &File, user: &Account, directory: bool, check_acl: bool) -> io::Result<()> {
     let metadata = file.metadata()?;
     if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
         || if directory {
@@ -169,7 +77,7 @@ fn validate(file: &File, user: &UserSid, directory: bool, check_acl: bool) -> io
             return Err(io::Error::from_raw_os_error(result.cast_signed()));
         }
         let _descriptor = LocalAllocation(descriptor);
-        if owner.is_null() || EqualSid(owner, user.ptr()) == 0 {
+        if owner.is_null() || EqualSid(owner, user.sid()) == 0 {
             return Err(denied());
         }
         if !check_acl {
@@ -211,7 +119,7 @@ fn validate(file: &File, user: &UserSid, directory: bool, check_acl: bool) -> io
                 return Err(denied());
             }
             let sid = sid_bytes.cast();
-            if IsValidSid(sid) == 0 || EqualSid(sid, user.ptr()) == 0 {
+            if IsValidSid(sid) == 0 || EqualSid(sid, user.sid()) == 0 {
                 return Err(denied());
             }
         }
@@ -223,14 +131,9 @@ pub(super) fn directory(path: &Path) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let user = UserSid::current()?;
-    let descriptor = user.descriptor()?;
-    let attributes = SECURITY_ATTRIBUTES {
-        nLength: u32::try_from(size_of::<SECURITY_ATTRIBUTES>())
-            .map_err(|_| io::Error::other("security attributes exceed native length"))?,
-        lpSecurityDescriptor: descriptor.0,
-        bInheritHandle: 0,
-    };
+    let user = Account::current()?;
+    let descriptor = user.descriptor(PRIVATE_SDDL)?;
+    let attributes = attributes(&descriptor);
     let name = wide(path)?;
     // SAFETY: terminated path and valid security descriptor live across calls.
     unsafe {
@@ -284,14 +187,9 @@ pub(super) fn directory(path: &Path) -> io::Result<()> {
 }
 
 pub(super) fn open(path: &Path, write: bool, create: bool, exclusive: bool) -> io::Result<File> {
-    let user = UserSid::current()?;
-    let descriptor = user.descriptor()?;
-    let attributes = SECURITY_ATTRIBUTES {
-        nLength: u32::try_from(size_of::<SECURITY_ATTRIBUTES>())
-            .map_err(|_| io::Error::other("security attributes exceed native length"))?,
-        lpSecurityDescriptor: descriptor.0,
-        bInheritHandle: 0,
-    };
+    let user = Account::current()?;
+    let descriptor = user.descriptor(PRIVATE_SDDL)?;
+    let attributes = attributes(&descriptor);
     let name = wide(path)?;
     let access = GENERIC_READ | READ_CONTROL | if write { GENERIC_WRITE } else { 0 };
     let disposition = if exclusive {

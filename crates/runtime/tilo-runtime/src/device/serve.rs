@@ -591,10 +591,7 @@ impl Drop for Watching {
 /// server.
 fn serve_api(place: &DaemonPlace, api: Arc<tilo_api::direct::Direct>) -> Result<()> {
     let listener = tilo_files::native::private::bind_socket(place.api())
-        .and_then(|listener| {
-            listener.set_nonblocking(true)?;
-            tokio::net::UnixListener::from_std(listener)
-        })
+        .and_then(tilo_files::native::socket::tokio::listener)
         .with_context(|| format!("listen at {}", place.api().display()))?;
     std::fs::set_permissions(
         place.api(),

@@ -17,7 +17,6 @@ pub mod folders;
 pub mod service;
 pub mod who;
 
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -272,7 +271,7 @@ impl DaemonPlace {
 
     /// A connection to the device's daemon when one listens, starting none.
     #[must_use]
-    pub fn connect(&self) -> Option<UnixStream> {
+    pub fn connect(&self) -> Option<tilo_files::native::socket::Stream> {
         tilo_files::native::socket::connect(&self.socket).ok()
     }
 
@@ -281,7 +280,7 @@ impl DaemonPlace {
     /// daemon that is busy with a step over a workspace's folder.
     #[must_use]
     pub fn listening(&self) -> bool {
-        self.socket.exists()
+        tilo_files::native::socket::is_bound(&self.socket)
     }
 
     /// Whether a live process holds this device's lock. The kernel drops the lock with its
@@ -328,7 +327,10 @@ impl DaemonPlace {
     ///
     /// # Errors
     /// The service did not start, or no daemon answered in `within`.
-    pub fn reach(&self, within: Duration) -> Result<UnixStream, String> {
+    pub fn reach(
+        &self,
+        within: Duration,
+    ) -> Result<tilo_files::native::socket::Stream, String> {
         self.wait_for(&self.socket, within, !self.system)?;
         tilo_files::native::socket::connect(&self.socket).map_err(|error| error.to_string())
     }

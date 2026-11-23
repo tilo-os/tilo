@@ -56,6 +56,8 @@ tilo-device-identity = { path = "../../collab/tilo-device-identity" }
 tilo-identity = { path = "../../runtime/tilo-identity" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-files = { path = "../../platform/tilo-files" }
+# The daemon's local socket for tokio: a Unix socket, or a named pipe on Windows.
+tilo-socket = { path = "../../platform/tilo-socket", features = ["tokio"] }
 # The lock that keeps one daemon per device, which a command reads to see whether one is there.
 tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 # A workspace's name as a folder name, composed as macOS and Linux read it back.

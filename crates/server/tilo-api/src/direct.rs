@@ -168,8 +168,10 @@ impl KeyFile {
 /// login's own user and mount namespaces, as a session's other sockets require
 /// ([`shares_security_namespaces`]). A program a sandbox put in a namespace of
 /// its own is the same account and is refused all the same.
-pub async fn serve_current<F, Fut>(listener: tokio::net::UnixListener, current: F)
-where
+pub async fn serve_current<F, Fut>(
+    listener: tilo_files::native::socket::tokio::Listener,
+    current: F,
+) where
     F: Fn() -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<Arc<Direct>, String>> + Send + 'static,
 {
@@ -209,7 +211,7 @@ where
 }
 
 /// Answer every call on `stream` with why no key serves it now.
-async fn refuse_connection(stream: tokio::net::UnixStream, why: &str) {
+async fn refuse_connection(stream: tilo_files::native::socket::tokio::Stream, why: &str) {
     let refusal = serde_json::json!({"error": {"code": "not_in_workspace", "message": why}});
     let service = hyper::service::service_fn(move |_| {
         let refusal = refusal.clone();
@@ -369,13 +371,13 @@ impl Direct {
     /// Serve the API on `listener` until it closes, every request as this
     /// key: to programs of the account that owns the socket, and nobody else
     /// ([`serve_current`]).
-    pub async fn serve(self, listener: tokio::net::UnixListener) {
+    pub async fn serve(self, listener: tilo_files::native::socket::tokio::Listener) {
         let this = Arc::new(self);
         serve_current(listener, move || std::future::ready(Ok(Arc::clone(&this)))).await;
     }
 
     /// Serve one admitted connection as this key.
-    async fn serve_one(&self, stream: tokio::net::UnixStream) {
+    async fn serve_one(&self, stream: tilo_files::native::socket::tokio::Stream) {
         let Ok(authorization) = hyper::header::HeaderValue::from_str(&self.authorization) else {
             return;
         };

@@ -7,54 +7,49 @@
 //! does not fit is refused with [`io::ErrorKind::InvalidInput`] naming the limit, never
 //! silently.
 //!
-//! Windows names a local service with a named pipe instead, which is not here yet:
-//! [`bind`] and [`connect`] answer [`io::ErrorKind::Unsupported`], and their connection
-//! types are never produced. A caller that reaches a service only behind `cfg(unix)`
-//! needs no change.
+//! Windows names a local service with a named pipe instead (`windows`): the same
+//! [`bind`], [`connect`], [`Listener`] and [`Stream`], kept to this account by the
+//! pipe's DACL and a check of the peer's token. [`tokio`] is the same for an async
+//! caller.
 //!
-//! The crate is std-only: `tilo_files::native::socket` re-exports it, and a tool that
-//! must stay small to start quickly (the `cargo desktop` launcher) can bind and connect
-//! through the same code without taking on a dependency graph.
+//! The crate is std-only on Unix: `tilo_files::native::socket` re-exports it, and a
+//! tool that must stay small to start quickly (the `cargo desktop` launcher) can bind
+//! and connect through the same code without taking on a dependency graph.
 
 use std::io;
 #[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 
+#[cfg(windows)]
+pub mod account;
+#[cfg(feature = "tokio")]
+pub mod tokio;
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub use windows::{Listener, MAX_PATH, SocketAddr, Stream};
+
 /// The longest socket path the kernel takes, without its terminating NUL.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub const MAX_PATH: usize = 107;
 #[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
 pub const MAX_PATH: usize = 103;
-/// A named pipe's name is not a socket path, and a page has neither: no length
-/// of one fits here.
-#[cfg(not(unix))]
+/// A page has no local socket: no length of a path fits.
+#[cfg(not(any(unix, windows)))]
 pub const MAX_PATH: usize = 0;
 
-/// A listening local socket; on Windows, and in a page, nothing produces one yet.
 #[cfg(unix)]
 pub type Listener = UnixListener;
-#[cfg(not(unix))]
-pub struct Listener(std::convert::Infallible);
 #[cfg(unix)]
 pub type Stream = UnixStream;
-#[cfg(not(unix))]
+#[cfg(unix)]
+pub use std::os::unix::net::SocketAddr;
+/// A page has no local socket: nothing produces one.
+#[cfg(not(any(unix, windows)))]
+pub struct Listener(std::convert::Infallible);
+#[cfg(not(any(unix, windows)))]
 pub struct Stream(std::convert::Infallible);
-
-/// The refusal a caller without local sockets reaches.
-#[cfg(windows)]
-fn unsupported() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::Unsupported,
-        "local sockets are not supported on Windows yet",
-    )
-}
-
-/// The refusal a page reaches: it has no local socket to reach.
-#[cfg(all(not(unix), not(windows)))]
-fn unsupported() -> io::Error {
-    io::Error::new(io::ErrorKind::Unsupported, "a page has no local socket")
-}
 
 /// Listens on a new socket at `path`, whatever its length.
 pub fn bind(path: &Path) -> io::Result<Listener> {
@@ -62,10 +57,13 @@ pub fn bind(path: &Path) -> io::Result<Listener> {
     {
         reach(path, |short| UnixListener::bind(short))
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        let _ = path;
-        Err(unsupported())
+        windows::bind(path)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        Err(no_socket(path))
     }
 }
 
@@ -75,11 +73,41 @@ pub fn connect(path: &Path) -> io::Result<Stream> {
     {
         reach(path, |short| UnixStream::connect(short))
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        windows::connect(path)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        Err(no_socket(path))
+    }
+}
+
+/// Whether something is bound at `path` now, without connecting to it: a
+/// socket file on Unix, a pipe with an instance on Windows. One a run left
+/// behind on Unix still reads as bound; [`connect`] says whether it answers.
+#[must_use]
+pub fn is_bound(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt as _;
+        std::fs::symlink_metadata(path).is_ok_and(|found| found.file_type().is_socket())
+    }
+    #[cfg(windows)]
+    {
+        windows::is_bound(path)
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = path;
-        Err(unsupported())
+        false
     }
+}
+
+/// The refusal a page reaches: it has no local socket to reach.
+#[cfg(not(any(unix, windows)))]
+fn no_socket(_path: &Path) -> io::Error {
+    io::Error::new(io::ErrorKind::Unsupported, "a page has no local socket")
 }
 
 /// Calls `act` with a name for `path` that fits the kernel's buffer, valid for as long as `act` runs.

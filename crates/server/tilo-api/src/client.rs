@@ -119,7 +119,7 @@ pub fn entered_workspace(reach: Reach<'_>) -> Result<Option<(String, String)>> {
     if !reach.as_device() {
         return Ok(None);
     }
-    let Some(socket) = held_api_for(reach)?.filter(|socket| model_asks::is_socket(socket)) else {
+    let Some(socket) = held_api_for(reach)?.filter(|socket| tilo_files::native::socket::is_bound(socket)) else {
         // A daemon whose person's part is not serving its API yet still says where it enters.
         return Ok(crate::daemon::who::home().ok().flatten().map(|home| {
             let name = home
@@ -983,9 +983,9 @@ impl Client {
             }
             Transport::Session(socket) => {
                 let reached = || format!("reaching Tilo on this computer at {}", socket.display());
-                let stream = tilo_files::native::socket::connect(socket).with_context(reached)?;
-                stream.set_nonblocking(true).with_context(reached)?;
-                let stream = tokio::net::UnixStream::from_std(stream).with_context(reached)?;
+                let stream = tilo_files::native::socket::tokio::connect(socket)
+                    .await
+                    .with_context(reached)?;
                 let (mut sender, connection) =
                     hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(stream))
                         .await
@@ -1147,10 +1147,7 @@ pub fn desktop_socket() -> Option<std::path::PathBuf> {
     let socket = directory.join(tilo_paths::login::API_SOCKET_FILE);
     // A socket that answers is one this session serves still; one a session
     // left behind is not.
-    let is_socket = std::os::unix::fs::FileTypeExt::is_socket(
-        &std::fs::symlink_metadata(&socket).ok()?.file_type(),
-    );
-    is_socket.then_some(socket)
+    tilo_files::native::socket::is_bound(&socket).then_some(socket)
 }
 
 /// Names the desktop's own API socket, as `TILO_MCP_SERVER` names the agent

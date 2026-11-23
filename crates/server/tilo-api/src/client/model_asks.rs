@@ -18,7 +18,7 @@ impl Client {
         let held = crate::daemon::device_api()
             .ok()
             .flatten()
-            .filter(|socket| is_socket(socket));
+            .filter(|socket| tilo_files::native::socket::is_bound(socket));
         held.or_else(super::desktop_socket)
             .map(|socket| Self::session(&socket))
     }
@@ -97,12 +97,6 @@ impl Client {
         }
         bail!("the model's answer ended before the turn did")
     }
-}
-
-/// Whether `path` is a socket something may listen at.
-pub(super) fn is_socket(path: &std::path::Path) -> bool {
-    std::fs::symlink_metadata(path)
-        .is_ok_and(|found| std::os::unix::fs::FileTypeExt::is_socket(&found.file_type()))
 }
 
 /// Server-sent events, read from pieces cut anywhere.
