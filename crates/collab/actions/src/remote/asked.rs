@@ -194,6 +194,14 @@ pub trait AskedRecords: Send + Sync {
         request: &super::InvokeRequest,
         facts: &AskedFacts,
     ) -> Result<RecordRef, String>;
+
+    /// Every asked record `person` (their root key) may answer, across the
+    /// workspaces here, oldest first.
+    fn asked_of(&self, person: &[u8; 32]) -> Vec<Asked>;
+
+    /// Answered once an asked record here changes: what a live listing of
+    /// [`Self::asked_of`] waits on before it reads again.
+    fn changed(&self) -> super::Pending<()>;
 }
 
 /// A person's approve of an asked record, as the call kept in it reads it
