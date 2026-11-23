@@ -8,6 +8,9 @@
 
 use std::fmt::Write as _;
 
+mod desktop;
+use desktop::{DESKTOP_PAGE, DesktopPage};
+
 use super::{
     ActionCallError, Caller, DocumentRoute, HashMap, Job, Needs, Worker, WorkspaceActions,
     WorkspaceId, bounded, catch_up, pending,
@@ -110,6 +113,8 @@ pub(super) enum HeldPage {
         /// does with it.
         card: Option<Card>,
     },
+    /// The workspace's desktop: the windows open on its shared layout.
+    Desktop(DesktopPage),
 }
 
 /// What one of the host's own actions opened on the search page, under the
@@ -272,9 +277,17 @@ impl Pages {
             PageJob::Act { page, .. } | PageJob::Close { page, .. } => match self.held.get(page) {
                 Some(HeldPage::App { who, .. }) => Some(&who.caller),
                 Some(HeldPage::Search { caller, .. }) => Some(caller),
+                Some(HeldPage::Desktop(desktop)) => Some(&desktop.caller),
                 Some(HeldPage::Home { .. }) | None => None,
             },
         }
+    }
+
+    /// Hold `page` under a number of its own: what the person's acts name it by.
+    fn add(&mut self, page: HeldPage) -> u64 {
+        self.next = self.next.wrapping_add(1);
+        self.held.insert(self.next, page);
+        self.next
     }
 }
 
@@ -398,16 +411,25 @@ impl Worker {
             record: document.to_owned(),
             act: true,
         };
+        let layout = || super::keys::Keys::Record {
+            app_id: tilo_desktop_model::ownership::DESKTOP_APP.to_owned(),
+            record: tilo_desktop_model::ownership::DESKTOP_DOCUMENT.to_owned(),
+            act: false,
+        };
         match job {
             PageJob::Open { address, .. } => {
                 if address.is_home() || address.app == SEARCH_APP {
                     return super::keys::Keys::Joined;
+                }
+                if address.app == DESKTOP_PAGE {
+                    return layout();
                 }
                 self.page_app(&address.app)
                     .map_or(super::keys::Keys::Joined, |app| document(app.app_id(), ""))
             }
             PageJob::Act { page, .. } => match self.pages.held.get(page) {
                 Some(HeldPage::App { route, .. }) => document(&route.app_id, &route.document),
+                Some(HeldPage::Desktop(_)) => layout(),
                 Some(HeldPage::Home { .. } | HeldPage::Search { .. }) | None => {
                     super::keys::Keys::Joined
                 }
@@ -439,6 +461,9 @@ impl Worker {
         }
         if address.is_home() {
             return self.open_home(workspace_id);
+        }
+        if address.app == DESKTOP_PAGE {
+            return self.open_desktop(workspace_id, caller);
         }
         if address.app == SEARCH_APP {
             return self.open_search(
@@ -555,6 +580,12 @@ impl Worker {
             "<a class=\"tilo-home-search\" href=\"/w/{workspace_id}/{SEARCH_APP}\" \
              aria-label=\"Search the workspace\">Search apps, actions and records</a>"
         );
+        // What the people have open, on any device of theirs, is the workspace's desktop.
+        let _ = write!(
+            body,
+            "<a class=\"tilo-home-desktop\" href=\"/w/{workspace_id}/{DESKTOP_PAGE}\">\
+             Open windows</a>"
+        );
         // Who is here is said only when the live session says someone is: a
         // page that claims "0 here" of a workspace someone is reading is
         // wrong about the one person it can see.
@@ -608,14 +639,7 @@ impl Worker {
                 .app_id()
                 .rsplit_once('.')
                 .map_or_else(|| app.app_id(), |(_, last)| last);
-            // Every tile holds its icon's place, so a grid of apps reads as
-            // rows: an app with no artwork of its own stands as its first
-            // letter on the same tile.
-            let icon = match &app.icon {
-                ui::IconDescriptor::Named(icon) => ui::icons::Icon::from_name(icon)
-                    .map_or_else(|| initial_tile(app.title()), ui::icons::icon_svg),
-                ui::IconDescriptor::Glyph(_) => initial_tile(app.title()),
-            };
+            let icon = app_icon(app);
             let _ = write!(
                 body,
                 "<li><a class=\"tilo-home-app\" href=\"/w/{workspace_id}/{name}\">{icon}\
@@ -1405,6 +1429,7 @@ impl Worker {
                 None,
                 Some((*workspace_id, caller.clone(), needle.clone())),
             ),
+            Some(HeldPage::Desktop(_)) => return Some(self.act_on_desktop(page, act.as_ref())),
             None => {
                 tracing::warn!(page, "a page's act found no page held here");
                 return Some(Err(unavailable("the page was closed")));
@@ -1839,6 +1864,10 @@ border-radius:12px;background:var(--tilo-raised);color:var(--tilo-text-dim);\
 text-decoration:none;font-size:16px;}\
 .tilo-home-search:hover{color:var(--tilo-text);}\
 .tilo-home-search:focus-visible{outline:2px solid var(--tilo-accent);outline-offset:-2px;}\
+.tilo-home-desktop{align-self:flex-start;padding:8px 14px;border-radius:999px;\
+background:var(--tilo-raised);color:var(--tilo-text);text-decoration:none;font-size:14px;font-weight:500;}\
+.tilo-home-desktop:hover{background:var(--tilo-hover);}\
+.tilo-home-desktop:focus-visible{outline:2px solid var(--tilo-accent);outline-offset:-2px;}\
 .tilo-home-apps{display:grid;grid-template-columns:repeat(auto-fill,minmax(118px,1fr));\
 gap:8px;margin:0;padding:0;list-style:none;max-width:880px;}\
 .tilo-home-app{display:flex;flex-direction:column;align-items:center;gap:10px;padding:18px 10px;\
@@ -1877,6 +1906,16 @@ fn here(present: &[collab_types::presence::Shown]) -> usize {
         }
     }
     identities.len()
+}
+
+/// An app's icon on its tile. Every tile holds its icon's place, so a grid of apps reads as rows:
+/// an app with no artwork of its own stands as its first letter on the same tile.
+fn app_icon(app: &ui::application::ApplicationDefinition) -> String {
+    match &app.icon {
+        ui::IconDescriptor::Named(icon) => ui::icons::Icon::from_name(icon)
+            .map_or_else(|| initial_tile(app.title()), ui::icons::icon_svg),
+        ui::IconDescriptor::Glyph(_) => initial_tile(app.title()),
+    }
 }
 
 fn initial_tile(title: &str) -> String {

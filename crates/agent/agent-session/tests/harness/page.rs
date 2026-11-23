@@ -345,6 +345,41 @@ impl Page {
             .push(([0; 32], bytes));
     }
 
+    /// Open `app` in a window of the workspace's shared layout, as `person` opens it on this
+    /// device: the change that places it, written into the layout this page holds.
+    pub fn open_on_layout(&mut self, app: &str, title: &str, person: &str) {
+        let route = self.layout_route();
+        let bytes = self
+            .read(&route)
+            .expect("the page holds the workspace's layout");
+        let doc = automerge::AutoCommit::load(&bytes).unwrap();
+        let change = tilo_desktop_model::place::place_view(
+            &doc,
+            &tilo_desktop_model::place::Opener {
+                person,
+                opened_by: None,
+            },
+            &tilo_desktop_model::place::View {
+                app_id: app,
+                title,
+                document: "",
+                beside: None,
+            },
+        )
+        .unwrap()
+        .expect("the window is added");
+        self.peer
+            .write(
+                route.clone(),
+                &collab_types::DocumentMutation::Incremental(change.clone()),
+            )
+            .unwrap();
+        self.documents
+            .entry(route)
+            .or_default()
+            .push(([0; 32], change));
+    }
+
     /// The workspace's shared layout as the page has received it.
     pub fn layout(&mut self) -> Option<tilo_desktop_model::ownership::SharedDesktop> {
         self.pump();

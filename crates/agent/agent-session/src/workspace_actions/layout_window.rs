@@ -33,7 +33,8 @@ impl Worker {
             return Err(Outcome::Rejected(ActionCallError::UnknownAction));
         }
         let document = application_provider_resource(&request.target.provider).unwrap_or_default();
-        self.place_window(workspace_id, caller, (named, app, document), request)?;
+        let opened_by = opened_by(caller, request);
+        self.place_window(workspace_id, caller, (named, app, document), opened_by)?;
         Ok(ActionOutput::default())
     }
 
@@ -51,43 +52,17 @@ impl Worker {
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the service keeps"
     )]
-    fn place_window(
+    pub(super) fn place_window(
         &mut self,
         workspace_id: WorkspaceId,
         caller: &Caller,
         (named, app, document): (&str, &str, &str),
-        request: &InvokeRequest,
+        opened_by: Option<tilo_desktop_model::ownership::OpenedBy>,
     ) -> Result<(), Outcome> {
         let unknown = || Outcome::Rejected(ActionCallError::UnknownAction);
-        let person = if self.acts_for_owner(caller) {
-            self.member.clone()
-        } else {
-            self.bounded(caller)
-                .filter(|who| self.admits_bounded(workspace_id, who))
-                .ok_or_else(unknown)?
-                .person
-        };
-        let opened_by = caller_context(caller, request)
-            .group
-            .filter(|group| group.kind == tilo_actions::context::AGENT_SESSION_GROUP)
-            .map(|group| {
-                tilo_desktop_model::ownership::OpenedBy {
-                    run: group.id,
-                    agent: caller.acting().agent_id().unwrap_or_default().to_owned(),
-                    // The name the agent goes by here: its session's, where its client named one
-                    // (`Caller::in_session_of`), as everywhere else it appears.
-                    label: caller
-                        .clone()
-                        .in_session_of(request)
-                        .agent_called()
-                        .unwrap_or_default()
-                        .to_owned(),
-                    // Only what the agent called the step that opened it: the group's label
-                    // also names a session asked nothing by its agent's name, which the mark
-                    // already says.
-                    title: said_invocation_title(request).unwrap_or_default(),
-                }
-            });
+        let person = self
+            .layout_person(workspace_id, caller)
+            .ok_or_else(unknown)?;
         let title = self
             .catalogue
             .get(app)
@@ -117,18 +92,7 @@ impl Worker {
                 reason: format!("this workspace has no {app} record {}", route.document),
             }));
         }
-        let workspace = self
-            .workspaces
-            .get_mut(&workspace_id)
-            .ok_or_else(|| commit_failed("the workspace was not joined".into(), true))?;
-        // The layout as the device's service holds it, read even before anything landed here
-        // this session (an agent's first call is often an open).
-        let reads = workspace.reads.clone();
-        let Some(held) = workspace
-            .documents
-            .get_or_insert_with(|| WorkspaceDocuments::new(named, reads))
-            .desktop()
-        else {
+        let Some(held) = self.held_layout(workspace_id, named)? else {
             // A layout not held here (none yet, or not replayed here yet) is never waited for: the
             // view is asked for in the layout's document, and the person's page places it once it
             // holds the layout, now or when it next comes up.
@@ -165,6 +129,45 @@ impl Worker {
         .map_err(|reason| commit_failed(reason, true))
     }
 
+    /// The person whose window `caller` opens or closes on the workspace's layout: the host's own
+    /// member for its owner, else the member the caller acts for; `None` for a caller the
+    /// workspace does not admit.
+    pub(super) fn layout_person(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+    ) -> Option<ui::permissions::policy::PersonId> {
+        if self.acts_for_owner(caller) {
+            return Some(self.member.clone());
+        }
+        self.bounded(caller)
+            .filter(|who| self.admits_bounded(workspace_id, who))
+            .map(|who| who.person)
+    }
+
+    /// The workspace `named`'s shared layout as the device's service holds it now, read even
+    /// before anything landed here this session (an agent's first call is often an open):
+    /// `None` while it holds none.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the outcome becomes the receipt the service keeps"
+    )]
+    pub(super) fn held_layout(
+        &mut self,
+        workspace_id: WorkspaceId,
+        named: &str,
+    ) -> Result<Option<automerge::AutoCommit>, Outcome> {
+        let workspace = self
+            .workspaces
+            .get_mut(&workspace_id)
+            .ok_or_else(|| commit_failed("the workspace was not joined".into(), true))?;
+        let reads = workspace.reads.clone();
+        Ok(workspace
+            .documents
+            .get_or_insert_with(|| WorkspaceDocuments::new(named, reads))
+            .desktop())
+    }
+
     /// Ask for `view` in the layout's document, as a document of its own that merges with any
     /// copy of the layout ([`tilo_desktop_model::asked`]): the person's page places it.
     #[allow(
@@ -196,4 +199,33 @@ fn not_placed(title: &str, why: &tilo_desktop_model::place::NotPlaced) -> Outcom
     Outcome::Rejected(ActionCallError::Unavailable {
         reason: format!("{title}'s window is not on the person's layout: {why}"),
     })
+}
+
+/// The agent session that opens a window for `request`, when an agent's session does: what the
+/// window's mark says beside it.
+fn opened_by(
+    caller: &Caller,
+    request: &InvokeRequest,
+) -> Option<tilo_desktop_model::ownership::OpenedBy> {
+    caller_context(caller, request)
+        .group
+        .filter(|group| group.kind == tilo_actions::context::AGENT_SESSION_GROUP)
+        .map(|group| {
+            tilo_desktop_model::ownership::OpenedBy {
+                run: group.id,
+                agent: caller.acting().agent_id().unwrap_or_default().to_owned(),
+                // The name the agent goes by here: its session's, where its client named one
+                // (`Caller::in_session_of`), as everywhere else it appears.
+                label: caller
+                    .clone()
+                    .in_session_of(request)
+                    .agent_called()
+                    .unwrap_or_default()
+                    .to_owned(),
+                // Only what the agent called the step that opened it: the group's label
+                // also names a session asked nothing by its agent's name, which the mark
+                // already says.
+                title: said_invocation_title(request).unwrap_or_default(),
+            }
+        })
 }

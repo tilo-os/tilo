@@ -122,6 +122,9 @@ mod chat_restart;
 #[path = "workspace_actions/delete_workspace.rs"]
 mod delete_workspace;
 #[cfg(test)]
+#[path = "workspace_actions/desktop_page.rs"]
+mod desktop_page;
+#[cfg(test)]
 #[path = "workspace_actions/device_issue_create.rs"]
 mod device_issue_create;
 #[cfg(test)]

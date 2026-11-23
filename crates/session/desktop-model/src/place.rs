@@ -174,6 +174,56 @@ fn add_tab(desktop: &mut SharedDesktop, author: &str, view: &View<'_>) -> Result
     opened.ok_or_else(|| NotPlaced::NoPlace("no tab was opened".to_owned()))
 }
 
+/// The change that closes the window `tab` on `layout` as `person` closes it, everywhere the
+/// layout is shown: `None` when no window of the layout is `tab` (closed already, by someone
+/// else or on another device). A window on a shared layout is every member's to close
+/// ([`crate::ownership::shares_windows`]); its record stays in the workspace.
+///
+/// # Errors
+///
+/// The layout holds none, or the layout without the window did not write.
+pub fn close_window(
+    layout: &AutoCommit,
+    person: &str,
+    tab: u64,
+) -> Result<Option<Vec<u8>>, NotPlaced> {
+    let mut doc = layout.clone();
+    let mut desktop = shared_resource::read(&doc, None).ok_or(NotPlaced::NoLayout)?;
+    let found = desktop.tree.workspaces.iter_mut().find_map(|workspace| {
+        let location = workspace.strips.iter().find_map(|strip| {
+            strip.window_groups.iter().find_map(|group| {
+                group.tabs.iter().any(|shown| shown.id == tab).then_some(
+                    crate::commands::TabLocation {
+                        strip: strip.id.0,
+                        group: group.id,
+                        tab,
+                    },
+                )
+            })
+        })?;
+        Some((workspace, location))
+    });
+    let Some((workspace, location)) = found else {
+        return Ok(None);
+    };
+    apply_command(
+        workspace,
+        &DesktopCommand::CloseTab { location },
+        &mut || Err("closing a window makes nothing".to_owned()),
+        &mut |_, _| Err("closing a window opens nothing".to_owned()),
+    )
+    .map_err(NotPlaced::NoPlace)?;
+    desktop.records.retain(|(shown, _)| *shown != tab);
+    desktop.authors.remove(&tab);
+    desktop.opened_by.remove(&tab);
+    let before = doc.get_heads();
+    doc.set_actor(automerge::ActorId::from(person.as_bytes()));
+    shared_resource::write(&mut doc, &desktop)
+        .map_err(|error| NotPlaced::Unwritten(error.to_string()))?;
+    doc.commit();
+    Ok(Some(doc.save_after(&before)))
+}
+
 /// `author`'s share of the desktop id space: FNV-1a folded to 16 bits, never
 /// `0` or the reserved namespace.
 fn salt_of(author: &str) -> u16 {
@@ -315,6 +365,28 @@ mod tests {
             place_view(&merged(&changes), &opener(), &view) == Ok(None),
             "a record already on the layout stays where it is"
         );
+    }
+
+    /// A member closes a window of the shared layout: it leaves the layout with what was noted
+    /// beside it, the rest stays where it was, and closing it again changes nothing.
+    #[test]
+    fn a_closed_window_leaves_the_layout_with_its_record_note() {
+        let mut changes = vec![layout()];
+        let change = close_window(&merged(&changes), PERSON, 21)
+            .expect("the layout writes")
+            .expect("the window was there");
+        changes.push(change);
+        let desktop = read(&changes);
+        assert!(
+            desktop.tree.tab(21).is_none(),
+            "the window is gone: {desktop:?}"
+        );
+        assert!(
+            !desktop.records.iter().any(|(tab, _)| *tab == 21),
+            "its record note went with it"
+        );
+        assert!(desktop.tree.tab(31).is_some(), "the other window stays");
+        assert_eq!(close_window(&merged(&changes), PERSON, 21), Ok(None));
     }
 
     /// Notes keeps its notes in its primary record, which a person's own Notes window shows and
