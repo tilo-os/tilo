@@ -83,17 +83,20 @@ fn identity_load_error(error: tilo_identity_client::NotAvailable) -> io::Error {
     }
 }
 
-/// Human-facing name of the Unix account running this session.
-///
-/// This is only used by the compatibility path where Tilo Desktop is installed
-/// on top of an existing Linux distribution. Native Tilo setup has its own
-/// identity ceremony and must not derive identity metadata from a Unix
-/// account that happens to run the session.
+/// Human-facing name of the Unix account running this process
+/// ([`account_display_name`]).
 #[cfg(unix)]
 pub fn login_account_display_name() -> String {
+    account_display_name(rustix::process::geteuid().as_raw())
+}
+
+/// Human-facing name of the Unix account `uid`: its full name (the first
+/// field of its GECOS), else its login name. A new person takes it as their
+/// name until they rename themselves.
+#[cfg(unix)]
+pub fn account_display_name(uid: u32) -> String {
     use std::ffi::CStr;
 
-    let uid = rustix::process::geteuid().as_raw();
     let mut pwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
     let mut result = std::ptr::null_mut();
     let mut buffer = vec![0_u8; 16 * 1024];
@@ -128,7 +131,7 @@ pub fn login_account_display_name() -> String {
     }
     std::env::var("USER")
         .ok()
-        .filter(|name| !name.trim().is_empty())
+        .filter(|name| !name.trim().is_empty() && uid == rustix::process::geteuid().as_raw())
         .unwrap_or_else(|| format!("User {uid}"))
 }
 
@@ -262,11 +265,10 @@ impl DeviceClass {
 
 /// The platform a test plays, for the class of the device it certifies
 /// ([`TILO_OS_PLATFORM`] for Tilo OS, anything else for an operating system
-/// Tilo does not control). Read only by a test build.
-#[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
+/// Tilo does not control). Read only by a test build: a release build's tests
+/// name it, and the computer decides.
 pub const TEST_PLATFORM_ENV: &str = "TILO_TEST_PLATFORM";
 /// [`TEST_PLATFORM_ENV`]'s word for Tilo OS.
-#[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
 pub const TILO_OS_PLATFORM: &str = "tilo-os";
 
 mod renewal;
@@ -1160,20 +1162,6 @@ pub fn active_identity_owns_device(identity_dir: &Path, paths: &IdentityPaths) -
         .verifying_key()
         .to_bytes();
     Ok(cert.user_public_key == owner && cert.device_public_key == device)
-}
-
-/// Enrol the machine's existing device key under an imported local identity.
-///
-/// This keeps app signing and collaboration transport authentication on the
-/// same `identity -> device` chain immediately after setup/import.
-pub fn ensure_device_certificate_for_record(
-    record_path: &Path,
-    paths: &IdentityPaths,
-    label: &str,
-) -> Result<PathBuf, io::Error> {
-    let identity = crate::store::load_from_path(record_path.to_path_buf())
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-    ensure_device_certificate_for_identity(&identity, paths, label, DeviceClass::Native)
 }
 
 /// Ensure this device holds its certificate for `identity`, labelled

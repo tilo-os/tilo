@@ -1582,28 +1582,6 @@ impl OnboardingView {
                 .minted()
                 .is_none_or(|minted| !crate::identity::canonical_native_identity_ready(minted))
     }
-    fn persist_progress(&mut self, stage: PersistedStage) -> bool {
-        let Some(journal) = self.journal_writer() else {
-            return true;
-        };
-        let written = journal
-            .write(JournalChange::Store(stage))
-            .and_then(|_| journal.flush());
-        match written {
-            Ok(()) => {
-                self.progress_error = None;
-                true
-            }
-            Err(error) => {
-                self.progress_error = Some(t_args(
-                    "onboarding-progress-save-failed",
-                    &[("error", error.to_string().into())],
-                ));
-                self.invalidation.structure();
-                false
-            }
-        }
-    }
 }
 
 fn read_bool(state: &AutoCommit, root: &ObjId, key: &str) -> bool {

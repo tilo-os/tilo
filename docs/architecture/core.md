@@ -449,8 +449,8 @@ There are seven ways to add a device:
 1. The imager: the person's root on the machine writing an image certifies
    the image's new device key, and the key and certificate go where a
    ticket's login keeps them (`imager` `handoff.rs`).
-2. `tilo-identity` `certification_ceremony` with `pairing_code`,
-   `enrollment/` and `enrolled_transport` (about 5,300).
+2. `tilo-identity` `certification_ceremony` with `pairing_code` and
+   `enrollment/` (about 2,500).
 3. The `tilo-enroll` and `tilo-approve` binaries in `tilo-server` (1,741).
 4. `tilo login` with a ticket, the certify action on the device that issued
    it (`tilo_device_identity::login`, `tilo_peer_state::new_device`, `tilo-cli`

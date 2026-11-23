@@ -299,25 +299,36 @@ impl DeviceOnly {
         receipt
     }
 
-    /// Start a new person on this device ([`FOUND`]), as its own account asks, named as `args`'
-    /// `name` says (unnamed without one): their root is kept here and certifies this device's key,
-    /// and the daemon serves them from then on. Answers the person's id.
+    /// Start a new person on this device ([`FOUND`]), as its own account asks, or under the
+    /// system unit the account that sets the computer up: named as `args`' `name` says, else as
+    /// that account is. Their root is kept here and certifies this device's key, the daemon
+    /// serves them from then on, and the account acts as them. Answers the person's id.
     fn found(&self, args: &Value) -> Result<String, String> {
         if self.claimed() {
             return Err(format!("{ALREADY_A_PERSONS}: it serves them"));
         }
-        let own = self.1.as_ref().is_some_and(|seated| {
-            seated.seat.admitted == tilo_api::daemon::admission::Admitted::Device
-        });
-        if !own {
-            return Err("only this device's own account starts a person on it".to_owned());
-        }
-        let name = args.get("name").and_then(Value::as_str).unwrap_or_default();
-        super::services::found_a_person(self.keys(), name)
+        let Some(seated) = self
+            .1
+            .as_ref()
+            .filter(|seated| seated.seats.founds(seated.seat))
+        else {
+            return Err(
+                "only the account this computer is set up from starts a person on it".to_owned(),
+            );
+        };
+        let name = args
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map_or_else(|| founder_name(seated.seat.uid), str::to_owned);
+        super::services::found_a_person(self.keys(), &name)
             .map_err(|error| format!("this device could not make a new person: {error}"))?;
-        self.person()
-            .map(hex::encode)
-            .ok_or_else(|| "the new person's certificate does not name this device".to_owned())
+        let person = self
+            .person()
+            .ok_or_else(|| "the new person's certificate does not name this device".to_owned())?;
+        seated.seats.founded_by(seated.seat, person)?;
+        Ok(hex::encode(person))
     }
 
     /// Log this device in with the ticket `args` name, as `tilo login` does.
@@ -330,6 +341,17 @@ impl DeviceOnly {
         *self.0.entered.lock_recover() = Some(device);
         Ok(said)
     }
+}
+
+/// The name a new person takes from the account `uid` that made them: its full name, else its
+/// login name. Root asking for its daemon names the daemon's own account.
+fn founder_name(uid: u32) -> String {
+    let uid = if uid == tilo_api::daemon::admission::ROOT {
+        rustix::process::geteuid().as_raw()
+    } else {
+        uid
+    };
+    tilo_identity::provisioning::account_display_name(uid)
 }
 
 impl ActionProvider for DeviceOnly {

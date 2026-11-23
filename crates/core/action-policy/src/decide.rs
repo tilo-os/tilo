@@ -14,7 +14,7 @@ pub enum Basis<'g> {
     /// The most specific live grant covering the node and kind.
     Grant(&'g Grant),
     /// The cap the code puts on the party, below what its grants allow.
-    Capped(Answer),
+    Capped(Cap),
     /// The party owns the workspace the node is in.
     Owner,
     /// The node is the party's own: their view of the layout, or a private record of theirs
@@ -166,6 +166,8 @@ pub struct Cap {
     pub outside: Answer,
     /// What it may do to the workspace's own resource (its governance).
     pub governance: Answer,
+    /// Why, in words for the person it holds back.
+    pub why: &'static str,
 }
 
 impl Cap {
@@ -175,6 +177,9 @@ impl Cap {
         content: Answer::Allow,
         outside: Answer::Ask,
         governance: Answer::Deny,
+        why: "this computer is not one of the person's own Tilo devices, so from it they \
+              change content, are asked before reaching outside the workspace, and leave its \
+              members and settings to a device of their own",
     };
 
     /// What this cap answers for `kind` at `node` in the workspace it governs.
@@ -263,7 +268,7 @@ impl<'g> Party<'g> {
                 if answer < held.answer {
                     Decision {
                         answer,
-                        basis: Basis::Capped(answer),
+                        basis: Basis::Capped(cap),
                     }
                 } else {
                     held
@@ -716,11 +721,7 @@ impl<'g> Verdict<'g> {
         let reason = match self.parts.get(index).map(|part| part.basis) {
             Some(Basis::Owner) => "the person owns the workspace".to_owned(),
             Some(Basis::OwnRecord) => format!("{} is theirs alone", self.node),
-            Some(Basis::Capped(answer)) => format!(
-                "{} may do at most \"{answer}\" with {} here",
-                who(index),
-                self.kind.phrase()
-            ),
+            Some(Basis::Capped(cap)) => cap.why.to_owned(),
             Some(Basis::Grant(grant)) => format!(
                 "{} give {} on {} the answer \"{}\" (grant {})",
                 who(index),

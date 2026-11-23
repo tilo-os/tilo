@@ -418,16 +418,6 @@ impl DeviceFleetStore {
         Ok(fleet)
     }
 
-    /// Install `fleet` as this device's record of `fleet.identity_id`'s
-    /// devices: the fleet another device handed it when it joined. Written
-    /// the way every fleet write is — as the person, under the fleet lock —
-    /// so a device that joined reads the fleet it was given.
-    pub fn adopt_transferred(&self, fleet: &DeviceFleet) -> io::Result<()> {
-        fleet.check(&fleet.identity_id)?;
-        let _fleet_lock = self.lock_fleets()?;
-        self.save(fleet)
-    }
-
     /// Record a root-signed revocation another host of `identity_id` withdrew
     /// a device with: kept once, and refused from then on.
     ///

@@ -31,7 +31,7 @@ use tilo_actions::{
     ExecutionLocus, InputSpec, InvocationId, InvocationUpdate, OperationKind, ParamType,
 };
 use tilo_device_identity::login::{
-    APPROVE, Approval, Approved, Approver, Asked, Declined, Device, Direction, Entry, ISSUE,
+    APPROVE, Approval, Approved, Approver, Asked, Declined, Device, Direction, Entry, FOUND, ISSUE,
     LOG_IN, PENDING, PLANNED_TICKET_LIFETIME_NS, PROVIDER, Place, RENAME, REPORTED, RESOURCE,
     REVOKE, Report, SCOPE, TICKET_LIFETIME_NS, Ticket, UPDATE,
 };
@@ -73,14 +73,14 @@ pub(crate) fn provider(workspace: &str) -> CatalogueProvider {
 /// invoked the way an app's are.
 #[must_use]
 pub(crate) fn catalogue(query: &CatalogueQuery) -> CataloguePage {
-    catalogue_of(query, |_| true)
+    catalogue_of(query, |action| action != FOUND)
 }
 
 /// [`catalogue`] with only what a device answers before its person's services run: what it is,
-/// and logging it in with a ticket.
+/// logging it in with a ticket, and making it a new person's first device.
 #[must_use]
 pub(crate) fn device_only_catalogue(query: &CatalogueQuery) -> CataloguePage {
-    catalogue_of(query, |action| matches!(action, INFO | LOG_IN))
+    catalogue_of(query, |action| matches!(action, INFO | LOG_IN | FOUND))
 }
 
 /// The `devices` resource and those of its actions `keep` keeps.
@@ -215,6 +215,16 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
                     "How the devices list this computer.",
                 ),
             ],
+        ))),
+        row(Some(descriptor(
+            FOUND,
+            "Start as a new person",
+            "Make a new person whose first device this computer is, with their own workspace.",
+            &[ActionParam::optional(
+                "name",
+                ParamType::Text,
+                "What the person is called: the computer account's name when left out.",
+            )],
         ))),
     ];
     let rows = rows

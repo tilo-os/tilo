@@ -238,6 +238,20 @@ impl Seats {
             .then_some((signing, cert))
     }
 
+    /// Whether the account `seat` may make this device's person ([`FOUND`]): its own account,
+    /// and under the system unit the account that sets the computer up, while it has no person.
+    ///
+    /// [`FOUND`]: tilo_device_identity::login::FOUND
+    pub(crate) fn founds(&self, seat: Seat) -> bool {
+        seat.admitted == Admitted::Device || (self.admission.system() && seat.uid != u32::MAX)
+    }
+
+    /// Record that the account `seat` made the device's person `person`, which it acts as from
+    /// now on.
+    pub(crate) fn founded_by(&self, seat: Seat, person: [u8; 32]) -> Result<(), String> {
+        self.admission.founded_by(seat.uid, person)
+    }
+
     /// Serve the person's shells with `shells` from now on: what a sign-in and a shell's start do.
     pub(crate) fn serve(&self, shells: Arc<dyn Shells>) {
         let _ = self.shells.set(shells);

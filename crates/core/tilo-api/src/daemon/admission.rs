@@ -1,6 +1,8 @@
 //! Who a connection to this computer's daemon is, by the account the kernel says is at its other
-//! end. Root and the daemon's own account act as the device. Under Tilo OS's system unit, an
-//! account the sign-in said is the device's person ([`Admission::signed_in`]) acts as that person.
+//! end. Root and the daemon's own account act as the device. Under Tilo OS's system unit, the
+//! account that made the device's person ([`Admission::founded_by`]), which the daemon records,
+//! acts as that person, and so does an account the sign-in said is them
+//! ([`Admission::signed_in`]).
 //! Another person signed in on the computer acts as a key of their own on this device, which
 //! their root (or their identity's issuer) certified ([`Admission::certified`]): the account is
 //! admitted as that key, and only once it holds a certificate for it. Any other account is
@@ -8,6 +10,8 @@
 //! owner and root alone.
 
 use std::collections::HashMap;
+use std::io;
+use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock, PoisonError};
 
 use tilo_user_identity::DeviceCert;
@@ -49,6 +53,9 @@ pub struct Admission {
     own: u32,
     system: bool,
     seats: Mutex<HashMap<u32, Seat>>,
+    /// The accounts that are the device's person, by uid, and the file that keeps them.
+    accounts: Mutex<HashMap<u32, [u8; 32]>>,
+    kept: Option<PathBuf>,
 }
 
 /// Who an account signed in as.
@@ -72,7 +79,73 @@ impl Admission {
             own,
             system,
             seats: Mutex::default(),
+            accounts: Mutex::default(),
+            kept: None,
         }
+    }
+
+    /// The same admission, keeping which accounts are the device's person in `path`, and
+    /// admitting those it already names.
+    ///
+    /// # Errors
+    /// The file is there and cannot be read, or is not such a record.
+    pub fn keeping_accounts_in(mut self, path: PathBuf) -> io::Result<Self> {
+        let accounts: HashMap<u32, String> = match std::fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("{} names no accounts: {error}", path.display()),
+                )
+            })?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => HashMap::new(),
+            Err(error) => return Err(error),
+        };
+        let accounts = accounts
+            .into_iter()
+            .map(|(uid, person)| {
+                hex::decode(&person)
+                    .ok()
+                    .and_then(|person| <[u8; 32]>::try_from(person).ok())
+                    .map(|person| (uid, person))
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("{} names account {uid} as no person", path.display()),
+                        )
+                    })
+            })
+            .collect::<io::Result<_>>()?;
+        self.accounts = Mutex::new(accounts);
+        self.kept = Some(path);
+        Ok(self)
+    }
+
+    /// Record that the account `uid` made the device's person `person`: under the system unit
+    /// it acts as them from now on, across the daemon's restarts. A person's own service is
+    /// theirs already and records nothing.
+    ///
+    /// # Errors
+    /// The record could not be kept, or another account is the device's person already.
+    pub fn founded_by(&self, uid: u32, person: [u8; 32]) -> Result<(), String> {
+        if !self.system || uid == ROOT || uid == self.own {
+            return Ok(());
+        }
+        let mut accounts = self.accounts.lock().unwrap_or_else(PoisonError::into_inner);
+        if accounts.values().any(|held| *held != person) {
+            return Err("another person's account is this computer's already".to_owned());
+        }
+        accounts.insert(uid, person);
+        if let Some(path) = &self.kept {
+            let record: HashMap<String, String> = accounts
+                .iter()
+                .map(|(uid, person)| (uid.to_string(), hex::encode(person)))
+                .collect();
+            let bytes = serde_json::to_vec(&record).map_err(|error| error.to_string())?;
+            tilo_files::native::atomic::write_private(path, &bytes).map_err(|error| {
+                format!("this computer could not keep which account is its person: {error}")
+            })?;
+        }
+        Ok(())
     }
 
     /// Whether it is the system unit's daemon, serving every account of the computer.
@@ -97,7 +170,13 @@ impl Admission {
                 key,
                 cert: Some(_),
             }) => Admitted::Key { person, key },
-            Some(Seat::Key { cert: None, .. }) | None => Admitted::Stranger,
+            Some(Seat::Key { cert: None, .. }) => Admitted::Stranger,
+            None => self
+                .accounts
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&uid)
+                .map_or(Admitted::Stranger, |person| Admitted::Person(*person)),
         }
     }
 
@@ -270,6 +349,29 @@ mod tests {
         assert!(admission.left(1000, 1000).is_err());
         assert!(admission.left(ROOT, 1000).unwrap());
         assert_eq!(admission.admit(1000), Admitted::Stranger);
+    }
+
+    #[test]
+    fn the_account_that_made_the_person_is_them_across_restarts() {
+        let dir = tempfile::tempdir().unwrap();
+        let kept = dir.path().join("accounts").join("person.json");
+        let admission = Admission::new(990, true)
+            .keeping_accounts_in(kept.clone())
+            .unwrap();
+        assert_eq!(admission.admit(1000), Admitted::Stranger);
+        admission.founded_by(1000, [7; 32]).unwrap();
+        assert_eq!(admission.admit(1000), Admitted::Person([7; 32]));
+        assert_eq!(admission.admit(1001), Admitted::Stranger);
+        assert!(
+            admission.founded_by(1001, [8; 32]).is_err(),
+            "a second person never takes the computer"
+        );
+        let restarted = Admission::new(990, true).keeping_accounts_in(kept).unwrap();
+        assert_eq!(restarted.admit(1000), Admitted::Person([7; 32]));
+        assert_eq!(restarted.admit(1001), Admitted::Stranger);
+        // Leaving a session ends a sign-in, not which account the person is.
+        assert!(!restarted.left(ROOT, 1000).unwrap());
+        assert_eq!(restarted.admit(1000), Admitted::Person([7; 32]));
     }
 
     #[test]

@@ -1865,11 +1865,14 @@ tilo_test_env::scenario! {
             Answer::Allow
         );
         let invite = roles::governance_action("r", governance::ADD_MEMBER);
-        assert_eq!(
-            authority
-                .decide(&invite, roles::GOVERNANCE_KIND, &cx())
-                .answer,
-            Answer::Deny
+        let refused = authority.decide(&invite, roles::GOVERNANCE_KIND, &cx());
+        assert_eq!(refused.answer, Answer::Deny);
+        assert!(
+            refused
+                .explain()
+                .starts_with("Not allowed: this computer is not one of the person's own"),
+            "a refusal says why in words: {}",
+            refused.explain()
         );
         assert_eq!(
             authority

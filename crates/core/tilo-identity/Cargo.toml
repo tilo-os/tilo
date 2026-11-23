@@ -16,8 +16,6 @@ path = "src/lib.rs"
 [features]
 # Compiles the throwaway test identity into a release build (dev images only).
 throwaway-test-identity = []
-# Real root-owned current-device identity store with an original-user qualification child.
-native-current-device-qualification = []
 
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }

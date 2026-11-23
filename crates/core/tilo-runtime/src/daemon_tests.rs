@@ -939,7 +939,7 @@ fn a_device_founds_its_person_only_when_its_own_account_asks() {
 
     let (refused, why) = found(OTHER);
     assert!(refused, "another account started a person: {why}");
-    assert!(why.contains("own account"), "{why}");
+    assert!(why.contains("set up from"), "{why}");
     assert_eq!(ask(OWN, json!({"native": "account#who"}))["claimed"], false);
 
     // The laptop's first command: through the place every client finds the daemon at.

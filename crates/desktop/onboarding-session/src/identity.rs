@@ -44,19 +44,6 @@ pub struct MintedIdentity {
     pub path: PathBuf,
 }
 
-impl MintedIdentity {
-    /// The fingerprint in short groups, how a person actually compares two
-    /// of them — full hex in one run is unreadable and invites checking only the first four characters.
-    pub fn grouped_fingerprint(&self) -> String {
-        self.fingerprint
-            .as_bytes()
-            .chunks(4)
-            .map(|c| String::from_utf8_lossy(c).to_string())
-            .collect::<Vec<_>>()
-            .join(" ")
-    }
-}
-
 impl Default for Onboarding {
     fn default() -> Self {
         Self::new()
@@ -212,16 +199,6 @@ pub enum OnboardingError {
 }
 
 impl OnboardingError {
-    /// What stopped the device from taking up its identity, when that is
-    /// what failed. A UI picks its recovery from this, never from `Display`.
-    #[must_use]
-    pub fn identity_problem(&self) -> Option<IdentityProblem> {
-        match self {
-            Self::Identity { problem, .. } => Some(*problem),
-            Self::NoUserDirectory | Self::Mint(_) => None,
-        }
-    }
-
     fn from_provisioning(error: &std::io::Error) -> Self {
         match IdentityProblem::of(error) {
             Some(problem) => Self::Identity {
@@ -652,15 +629,6 @@ mod tests {
                 assert_eq!(IdentityProblem::parse(problem.as_str()), Some(problem));
             }
             assert_eq!(IdentityProblem::parse("1"), None);
-
-            // A selector naming a record that is gone is reported as missing,
-            // distinct from a locked keyring or a broken chain.
-            let dir = tempfile::tempdir().unwrap();
-            let error = existing_identity_in(dir.path()).unwrap_err();
-            assert_eq!(
-                error.identity_problem(),
-                Some(IdentityProblem::RecordMissing)
-            );
         }
     }
 
@@ -715,15 +683,6 @@ mod tests {
 
     tilo_test_env::scenario! {
         fn onboarding_copy_is_honest_about_identity_and_recovery;
-
-        phase fingerprints_are_grouped_so_they_can_be_compared_by_eye;
-        {
-            let m = MintedIdentity {
-                fingerprint: "0123456789abcdef".to_string(),
-                path: PathBuf::from("/x"),
-            };
-            assert_eq!(m.grouped_fingerprint(), "0123 4567 89ab cdef");
-        }
 
         phase copy_does_not_promise_recovery;
         // The copy must not imply a safety net that does not exist: there is

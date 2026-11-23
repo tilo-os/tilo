@@ -203,6 +203,9 @@ impl Person {
     }
 }
 
+/// Where in the daemon's profile it keeps which account is the device's person.
+const PERSON_ACCOUNTS: &str = "accounts/person.json";
+
 impl Running {
     /// Start the daemon over `profile`, returning once its native endpoint is bound: it answers
     /// the device's own actions at once, and its person's once their services run, which they
@@ -220,11 +223,15 @@ impl Running {
         validate_profile(profile)?;
         let device = crate::device::unclaimed::ThisDevice::lock()?;
         // Who each connection is: root and this daemon's own account act as the device, and
-        // under the system unit the people signed in act as themselves.
-        tilo_api::daemon::admission::install(tilo_api::daemon::admission::Admission::new(
-            rustix::process::geteuid().as_raw(),
-            tilo_api::daemon::system_daemon(),
-        ));
+        // under the system unit the account that made the device's person, kept in the profile,
+        // and the people signed in act as themselves.
+        tilo_api::daemon::admission::install(
+            tilo_api::daemon::admission::Admission::new(
+                rustix::process::geteuid().as_raw(),
+                tilo_api::daemon::system_daemon(),
+            )
+            .keeping_accounts_in(profile.join(PERSON_ACCOUNTS))?,
+        );
         // The native endpoint answers from boot, before anyone's certificate names this device
         // and while its person's services start: the device's own actions first, the person's
         // once they run. This process has the device's lock, so only it removes a stale endpoint.

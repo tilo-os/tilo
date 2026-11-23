@@ -103,33 +103,6 @@ fn valid_identity_id(id: &str) -> bool {
         })
 }
 
-/// Strictly interpret an already held active-selector record. Only absence
-/// permits the legacy primary record; corruption is never a new identity choice.
-///
-/// # Errors
-/// Refuses oversized, non-UTF8 or invalid canonical identity identifiers.
-pub fn selected_identity_id_from_bytes(bytes: Option<&[u8]>) -> io::Result<String> {
-    let Some(bytes) = bytes else {
-        return Ok("primary".to_owned());
-    };
-    if bytes.len() > 128 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Identity selector exceeds its bound",
-        ));
-    }
-    let id = std::str::from_utf8(bytes)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Identity selector is not UTF-8"))?
-        .trim();
-    if !valid_identity_id(id) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Identity selector is invalid",
-        ));
-    }
-    Ok(id.to_owned())
-}
-
 fn identity_path(dir: &std::path::Path, id: &str) -> io::Result<PathBuf> {
     if !valid_identity_id(id) {
         return Err(io::Error::new(
@@ -1211,23 +1184,6 @@ pub fn load_from_path(path: PathBuf) -> Result<SigningIdentity, NotAvailable> {
     let bytes =
         read_record_bytes(&path).map_err(|e| LoadFailure::ReadFailed(e).into_not_available())?;
     load_record(&path, parse_record(&bytes)?)
-}
-
-/// Load exact already-admitted record bytes using the canonical secret provider
-/// for their retained identity namespace. The record itself is never reopened.
-/// Callers own admission and must reattest the namespace around this operation.
-///
-/// # Errors
-/// As the canonical path loader: refuses malformed records, unavailable or
-/// mismatched providers, and secret/public identity inconsistencies.
-pub fn load_from_admitted_bytes(
-    bytes: &[u8],
-    identity_directory: &std::path::Path,
-) -> Result<SigningIdentity, NotAvailable> {
-    load_record(
-        &identity_directory.join("primary.json"),
-        parse_record(bytes)?,
-    )
 }
 
 fn load_record(

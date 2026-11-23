@@ -18,8 +18,8 @@ use tilo_device_identity::IdentityPaths;
 use tilo_identity::provisioning::IdentityStorage;
 pub use tilo_identity::provisioning::{
     PRIMARY_IDENTITY_FILE, ProvisionOutcome, collaboration_identity_paths,
-    device_certificate_clock_refusal, ensure_device_certificate_for_record,
-    login_account_display_name, prepare_identity_directory, verify_collaboration_identity,
+    device_certificate_clock_refusal, login_account_display_name, prepare_identity_directory,
+    verify_collaboration_identity,
 };
 
 /// Where this session keeps a newly provisioned identity: the platform store,
@@ -28,16 +28,6 @@ pub use tilo_identity::provisioning::{
 pub(crate) const IDENTITY_STORAGE: IdentityStorage = IdentityStorage::Platform;
 #[cfg(test)]
 pub(crate) const IDENTITY_STORAGE: IdentityStorage = IdentityStorage::Files;
-
-/// [`tilo_identity::provisioning::ensure_primary_identity`] in this
-/// session's identity storage.
-///
-/// # Errors
-///
-/// Returns an error if file system operations fail (permission denied, I/O error, etc.).
-pub fn ensure_primary_identity(identity_dir: &Path) -> Result<ProvisionOutcome, io::Error> {
-    tilo_identity::provisioning::ensure_primary_identity(identity_dir, IDENTITY_STORAGE)
-}
 
 /// [`tilo_identity::provisioning::ensure_collaboration_identity`] in this
 /// session's identity storage.
@@ -75,23 +65,6 @@ pub fn verify_existing_collaboration_identity(
         Some(refusal) => Err(refusal.into_io()),
         None => Ok(outcome),
     }
-}
-
-/// Provision the native device with its authenticated installer name.
-///
-/// # Errors
-/// As the canonical labeled collaboration provisioning operation.
-pub fn ensure_collaboration_identity_with_device_label(
-    identity_dir: &Path,
-    paths: &IdentityPaths,
-    label: &str,
-) -> Result<ProvisionOutcome, io::Error> {
-    tilo_identity::provisioning::ensure_collaboration_identity_with_device_label(
-        identity_dir,
-        paths,
-        IDENTITY_STORAGE,
-        label,
-    )
 }
 
 /// The identity whose certificates this session renews, once
