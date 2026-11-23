@@ -1355,6 +1355,365 @@ async fn with_no_page_open_a_file_is_written_from_text_and_from_content_and_take
     assert_eq!(names_in(&listed), ["report.md"], "{listed}");
 }
 
+/// Invoke `action` on `app.so.tilo.file-explorer` (or `resource`) addressed to `served` with
+/// `target.provider` set to `workspace:<named>`, returning either its JSON output value or the
+/// exact [`tilo_actions::remote::ActionCallError`] refusal.
+async fn invoke_on_workspace(
+    actions: &tilo_agent_session::workspace_actions::WorkspaceActions,
+    served: tilo_server_protocol::WorkspaceId,
+    caller: &Caller,
+    named: &str,
+    (resource, action): (&str, &str),
+    arguments: Value,
+) -> Result<Value, tilo_actions::remote::ActionCallError> {
+    let request = InvokeRequest {
+        invocation: InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: tilo_actions::remote::workspace_provider(named),
+            address: ActionAddress::new(resource, action),
+        },
+        argument: InvokeArgument::Json(arguments.as_object().cloned().unwrap_or_default()),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    let invocation = request.invocation;
+    let (actions, caller) = (actions.clone(), caller.clone());
+    tokio::task::spawn_blocking(move || {
+        let answer = actions
+            .serve(served, &caller, RemoteActionMessage::Invoke(request))
+            .expect("the service answers an invoke")
+            .wait_timeout(tilo_test_env::hang_bound())
+            .ok()
+            .flatten()
+            .expect("the invoke answered in time");
+        let RemoteActionMessage::Receipt(receipt) = answer else {
+            panic!("expected a receipt, got {answer:?}");
+        };
+        match receipt.status {
+            ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(Value::Null)),
+            ReceiptStatus::Rejected { error } => Err(error),
+            ReceiptStatus::Accepted => {
+                let started = std::time::Instant::now();
+                loop {
+                    match actions
+                        .observe(&caller, &invocation)
+                        .map(|state| state.update)
+                    {
+                        Some(InvocationUpdate::Succeeded { output, .. }) => {
+                            return Ok(output.value.unwrap_or(Value::Null));
+                        }
+                        Some(other) if other.is_terminal() => {
+                            panic!("expected completion or rejection, got {other:?}");
+                        }
+                        _ => {}
+                    }
+                    assert!(
+                        started.elapsed() <= tilo_test_env::hang_bound(),
+                        "the invocation did not settle in time"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            }
+            other => panic!("expected completion or rejection, got {other:?}"),
+        }
+    })
+    .await
+    .unwrap()
+}
+
+/// Tree reads, tree changes and `files` puts whose target names another workspace are refused
+/// with `UnknownAction` (the same answer `open_asked` gives) and leave the served workspace's
+/// tree untouched; the same requests naming the served workspace succeed as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn workspace_tree_requests_naming_another_workspace_are_refused() {
+    use tilo_actions::remote::ActionCallError;
+
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let device = enrol(&root, "tilo-sh", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let (server, actions) = tilo_server::agents::start_serving_documents(
+        crate::harness::hosted::on_this_machine(state.path()),
+        tilo_server::daemon::ServerIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_signing_key: device.key.clone(),
+            device_cert: device.cert.clone(),
+            revocations: tilo_user_identity::RevocationList::new(),
+        },
+        Some(std::sync::Arc::new(crate::common::catalogue)),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let workspaces = server.workspaces().unwrap().clone();
+    let served = workspaces.create("Served").await.unwrap().workspace;
+    let other = workspaces.create("Other").await.unwrap().workspace;
+    let served_id = tilo_server_protocol::WorkspaceId::parse(&served).unwrap();
+    let person = Caller::authenticated(
+        root.verifying_key().to_bytes(),
+        device.cert.device_public_key,
+    )
+    .in_workspace(&served);
+    let files_app = format!("app.{FILES_APP}");
+
+    // Seed the served workspace with one text file and keep content blobs ready for puts.
+    let seed_bytes = b"Served workspace note.\n";
+    let seed_content = uploaded(&actions, served_id, &person, seed_bytes).await;
+    let seeded = invoke_on_workspace(
+        &actions,
+        served_id,
+        &person,
+        &served,
+        (&files_app, "open"),
+        json!({"content": seed_content, "name": "seed.txt", "dir": "Notes"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(seeded["path"], "Notes/seed.txt", "{seeded}");
+    let seed_tree = kept_when(&workspaces, &served, |tree| {
+        content_at(tree, "Notes", "seed.txt").is_some()
+    })
+    .await;
+    let seed_hash = content_at(&seed_tree, "Notes", "seed.txt").unwrap();
+
+    let batch_bytes = b"Batch put body.\n";
+    let batch_content = uploaded(&actions, served_id, &person, batch_bytes).await;
+    let single_bytes = b"Single put body.\n";
+    let single_content = uploaded(&actions, served_id, &person, single_bytes).await;
+
+    // Baseline: an app open naming another workspace is refused with UnknownAction.
+    assert_eq!(
+        invoke_on_workspace(
+            &actions,
+            served_id,
+            &person,
+            &other,
+            ("app.so.tilo.notes", "open"),
+            json!({}),
+        )
+        .await,
+        Err(ActionCallError::UnknownAction)
+    );
+
+    // Tree reads naming another workspace are refused with UnknownAction.
+    assert_eq!(
+        invoke_on_workspace(
+            &actions,
+            served_id,
+            &person,
+            &other,
+            (&files_app, "list"),
+            json!({"folder": "Notes"}),
+        )
+        .await,
+        Err(ActionCallError::UnknownAction)
+    );
+    assert_eq!(
+        invoke_on_workspace(
+            &actions,
+            served_id,
+            &person,
+            &other,
+            (&files_app, "read-text"),
+            json!({"file": "Notes/seed.txt"}),
+        )
+        .await,
+        Err(ActionCallError::UnknownAction)
+    );
+
+    // Tree changes naming another workspace are refused with UnknownAction.
+    assert_eq!(
+        invoke_on_workspace(
+            &actions,
+            served_id,
+            &person,
+            &other,
+            (&files_app, "new-folder"),
+            json!({"parent": "Notes", "name": "Intruder"}),
+        )
+        .await,
+        Err(ActionCallError::UnknownAction)
+    );
+    assert_eq!(
+        invoke_on_workspace(
+            &actions,
+            served_id,
+            &person,
+            &other,
+            (&files_app, "write-file"),
+            json!({"folder": "Notes", "name": "intruder.md", "text": "wrong workspace"}),
+        )
+        .await,
+        Err(ActionCallError::UnknownAction)
+    );
+
+    // Both `files` put and single-file Files open naming another workspace are refused.
+    assert_eq!(
+        invoke_on_workspace(
+            &actions,
+            served_id,
+            &person,
+            &other,
+            (&files_app, "open"),
+            json!({"files": [{"content": batch_content, "name": "batch.txt", "dir": "Dropped"}]}),
+        )
+        .await,
+        Err(ActionCallError::UnknownAction)
+    );
+    assert_eq!(
+        invoke_on_workspace(
+            &actions,
+            served_id,
+            &person,
+            &other,
+            (&files_app, "open"),
+            json!({"content": single_content, "name": "single.txt", "dir": "Dropped"}),
+        )
+        .await,
+        Err(ActionCallError::UnknownAction)
+    );
+
+    // None of the refused requests changed the served workspace's tree, nor created the other's.
+    let unchanged = tree_kept(&workspaces, &served).await;
+    assert_eq!(
+        content_at(&unchanged, "Notes", "seed.txt"),
+        Some(seed_hash.clone())
+    );
+    assert!(!folder_at(&unchanged, "Notes", "Intruder"));
+    assert!(file_at(&unchanged, "Notes", "intruder.md").is_none());
+    assert!(!folder_at(&unchanged, "", "Dropped"));
+    assert!(file_at(&unchanged, "Dropped", "batch.txt").is_none());
+    assert!(file_at(&unchanged, "Dropped", "single.txt").is_none());
+    assert!(tree_if_kept(&workspaces, &other).await.is_none());
+
+    // The same three kinds of requests naming the served workspace succeed with exact answers.
+    let listed = invoke_on_workspace(
+        &actions,
+        served_id,
+        &person,
+        &served,
+        (&files_app, "list"),
+        json!({"folder": "Notes"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(listed["folder"], "Notes", "{listed}");
+    assert_eq!(names_in(&listed), ["seed.txt"], "{listed}");
+    assert_eq!(listed["total"], 1, "{listed}");
+
+    let read = invoke_on_workspace(
+        &actions,
+        served_id,
+        &person,
+        &served,
+        (&files_app, "read-text"),
+        json!({"file": "Notes/seed.txt"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(read["file"], "Notes/seed.txt", "{read}");
+    assert_eq!(read["text"], "Served workspace note.\n", "{read}");
+    assert_eq!(read["size"], seed_bytes.len(), "{read}");
+
+    let made = invoke_on_workspace(
+        &actions,
+        served_id,
+        &person,
+        &served,
+        (&files_app, "new-folder"),
+        json!({"parent": "Notes", "name": "Added"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(made["action"], "new-folder", "{made}");
+    assert_eq!(made["entries"][0]["to"], "Notes/Added", "{made}");
+    assert_eq!(made["entries"][0]["folder"], true, "{made}");
+
+    let written_text = "Written in served.\n";
+    let written = invoke_on_workspace(
+        &actions,
+        served_id,
+        &person,
+        &served,
+        (&files_app, "write-file"),
+        json!({"folder": "Notes", "name": "written.md", "text": written_text}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(written["action"], "write-file", "{written}");
+    assert_eq!(written["path"], "Notes/written.md", "{written}");
+    assert_eq!(written["size"], written_text.len(), "{written}");
+    assert_eq!(written["replaced"], false, "{written}");
+
+    let put_many = invoke_on_workspace(
+        &actions,
+        served_id,
+        &person,
+        &served,
+        (&files_app, "open"),
+        json!({"files": [{"content": batch_content, "name": "batch.txt", "dir": "Dropped"}]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(put_many, json!({"count": 1}), "{put_many}");
+
+    let put_one = invoke_on_workspace(
+        &actions,
+        served_id,
+        &person,
+        &served,
+        (&files_app, "open"),
+        json!({"content": single_content, "name": "single.txt", "dir": "Dropped"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(put_one["path"], "Dropped/single.txt", "{put_one}");
+    assert_eq!(put_one["content"], single_content, "{put_one}");
+    assert_eq!(put_one["size"], single_bytes.len(), "{put_one}");
+    assert_eq!(put_one["replaced"], false, "{put_one}");
+
+    let final_tree = kept_when(&workspaces, &served, |tree| {
+        folder_at(tree, "Notes", "Added")
+            && content_at(tree, "Notes", "written.md").is_some()
+            && content_at(tree, "Dropped", "batch.txt").is_some()
+            && content_at(tree, "Dropped", "single.txt").is_some()
+    })
+    .await;
+    assert!(folder_at(&final_tree, "Notes", "Added"));
+    assert_eq!(
+        content_at(&final_tree, "Notes", "seed.txt"),
+        Some(seed_hash)
+    );
+    assert_sealed_file(
+        &server,
+        &served,
+        &content_at(&final_tree, "Notes", "written.md").unwrap(),
+        written_text.as_bytes(),
+    )
+    .await;
+    assert_sealed_file(
+        &server,
+        &served,
+        &content_at(&final_tree, "Dropped", "batch.txt").unwrap(),
+        batch_bytes,
+    )
+    .await;
+    assert_sealed_file(
+        &server,
+        &served,
+        &content_at(&final_tree, "Dropped", "single.txt").unwrap(),
+        single_bytes,
+    )
+    .await;
+    assert!(tree_if_kept(&workspaces, &other).await.is_none());
+}
+
 /// What the folder's files say and what the folder lists reach a turn's model labelled as content
 /// from outside.
 #[path = "put_files_outside.rs"]
