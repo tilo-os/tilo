@@ -34,8 +34,8 @@ use tilo_server_client::{DeviceSigner, ServerAddress, SignError, SignFuture};
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::live::{LiveAnchor, LiveFrame, LiveResource, OpsFrame, PreviewOp};
 use tilo_server_protocol::web::{PageHost, PageHostAddress};
-use tilo_session::sync::{Cmd, Event, InCall, Outbox};
 use tilo_session_client::device::{Device, DeviceRefusal};
+use tilo_session_client::{Cmd, Event, InCall, Outbox};
 use tilo_session_client::{Events, FailureKind, Link, LocalState};
 use tilo_session_client::{PeerConfig, PeerEntry, PeerStore};
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList, RevocationReason};
@@ -1797,7 +1797,7 @@ impl WasmPeer {
         workspace: String,
         frame: Vec<u8>,
     ) -> Result<Option<Vec<u8>>, JsError> {
-        let (sealed, receipt) = tilo_session::sync::answer();
+        let (sealed, receipt) = tilo_session_client::answer();
         self.handle
             .send(Cmd::SealLive(workspace_id(&workspace)?, frame, sealed))
             .map_err(js_error)?;
@@ -1993,10 +1993,10 @@ impl WasmPeer {
             opus: String,
         }
         let frames: Vec<Frame> = serde_json::from_str(frames).map_err(js_error)?;
-        let frames: Vec<tilo_session::sync::CallFrame> = frames
+        let frames: Vec<tilo_session_client::CallFrame> = frames
             .into_iter()
             .filter_map(|frame| {
-                Some(tilo_session::sync::CallFrame {
+                Some(tilo_session_client::CallFrame {
                     timestamp_48k: frame.timestamp48k,
                     opus: hex::decode(frame.opus).ok()?,
                 })
@@ -2031,10 +2031,10 @@ impl WasmPeer {
             payload: String,
         }
         let pictures: Vec<Picture> = serde_json::from_str(pictures).map_err(js_error)?;
-        let pictures: Vec<tilo_session::sync::CallPicture> = pictures
+        let pictures: Vec<tilo_session_client::CallPicture> = pictures
             .into_iter()
             .filter_map(|picture| {
-                Some(tilo_session::sync::CallPicture {
+                Some(tilo_session_client::CallPicture {
                     source: source_of_name(&picture.source)?,
                     layer: layer_of_name(&picture.layer)?,
                     sequence: picture.sequence,
@@ -2068,11 +2068,11 @@ impl WasmPeer {
             screen: Vec<String>,
         }
         let shown: Vec<Shown> = serde_json::from_str(shown).map_err(js_error)?;
-        let shown: Vec<tilo_session::sync::CallShown> = shown
+        let shown: Vec<tilo_session_client::CallShown> = shown
             .into_iter()
             .filter_map(|entry| {
                 let device: [u8; 32] = hex::decode(&entry.device).ok()?.try_into().ok()?;
-                Some(tilo_session::sync::CallShown {
+                Some(tilo_session_client::CallShown {
                     device,
                     camera: entry
                         .camera

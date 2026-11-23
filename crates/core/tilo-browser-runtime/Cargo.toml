@@ -27,9 +27,9 @@ tilo-actions = { version = "0.1.0", path = "../actions" }
 # The one link grammar, exported to the page as parseLink/formatLink.
 tilo-reference = { version = "0.1.0", path = "../reference" }
 tilo-desktop-model = { version = "0.1.0", path = "../../desktop/desktop-model" }
-# The session's sync, which keeps who is here on every host: the page says its
-# own word through it and reads the members back from its board.
-tilo-session = { version = "0.1.0", path = "../../desktop/session" }
+# The sync a member keeps, which keeps who is here on every host: the page says its
+# own word through it and reads the members back from its board. The member client,
+# never the desktop session: a page builds the member's half alone.
 # The native shell's chrome widgets: top bar, backdrop, launchpad.
 tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
 # The reads and joins of a workspace's entry, and the invitation a short link

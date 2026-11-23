@@ -11,9 +11,9 @@ use std::rc::Rc;
 
 use collab_types::presence::Shown;
 use iroh_base::{EndpointAddr, EndpointId};
-use tilo_session::sync::{Client, Device, InCall, OwnPresence, Topic, Transport};
 use tilo_session_actions::SessionActions;
 use tilo_session_client::Link;
+use tilo_session_client::{Client, Device, InCall, OwnPresence, Topic, Transport};
 use tilo_user_identity::DeviceCert;
 use wasm_bindgen::prelude::*;
 
