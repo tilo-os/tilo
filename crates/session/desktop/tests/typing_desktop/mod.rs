@@ -43,7 +43,7 @@ pub type DemoApp = (
 
 /// The apps the demo opens, in the order it opens them.
 pub const DEMO: [DemoApp; 3] = [
-    ("word_processor", "Writer", word_processor::definition),
+    ("word_processor", "Writer", test_document_app::definition),
     ("sheets", "Sheets", sheets::definition),
     ("slides", "Slides", slides::definition),
 ];

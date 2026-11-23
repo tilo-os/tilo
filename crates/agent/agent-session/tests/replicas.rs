@@ -334,7 +334,7 @@ fn only_the_creator_seeds_a_record() {
 
 #[test]
 fn an_agents_presence_is_where_its_last_operation_left_it() {
-    let app = "so.tilo.word-processor";
+    let app = test_document_app::APP_ID;
     let mut agent = crate::common::open(
         app,
         &MemberId::agent("writer"),
@@ -365,9 +365,9 @@ fn an_agents_presence_is_where_its_last_operation_left_it() {
         tilo_server_protocol::live::read_presence_anchors(&anchor, &head).unwrap();
     let last = agent
         .read(|doc| {
-            let state = <word_processor::model::Document as ui::tilo_resource::Resource>::read(doc)
-                .unwrap();
-            let body = state.text().unwrap().body();
+            let state =
+                <test_document_app::Document as ui::tilo_resource::Resource>::read(doc).unwrap();
+            let body = state.body();
             body.id_at(body.len() - 1).unwrap().to_owned()
         })
         .unwrap();
@@ -377,7 +377,7 @@ fn an_agents_presence_is_where_its_last_operation_left_it() {
     let written = ui::presence::PresenceKey::Resource {
         app: app.to_owned(),
         id: last,
-        kind: "word-processor.document".to_owned(),
+        kind: <test_document_app::Document as ui::tilo_resource::Resource>::KIND.to_owned(),
     };
     assert!(
         key == written || Some(&key) == written.digest_form().as_ref(),

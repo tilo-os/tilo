@@ -27,8 +27,8 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_de
 use tokio::sync::{mpsc, oneshot};
 
 const STATE: &str = "session.bin";
-/// The seeded Writer record.
-pub const WRITER: (&str, &str) = ("so.tilo.word-processor", "tab:0000000000000001");
+/// The seeded document record.
+pub const WRITER: (&str, &str) = (test_document_app::APP_ID, "tab:0000000000000001");
 
 #[derive(Serialize, Deserialize)]
 struct Stored {
@@ -63,7 +63,7 @@ pub struct SessionOwner {
 /// The Writer record as a record store reserves it, carrying its identity.
 fn writer_seed(workspace: &str) -> Result<Vec<u8>, String> {
     use ui::resource::{DocumentCheckout, DocumentId, ResourceOwners};
-    let definition = word_processor::definition();
+    let definition = test_document_app::definition();
     let checkout = DocumentCheckout::new(DocumentId::for_tab(1), definition.resource_type.clone());
     let mut owners = ResourceOwners::portable(
         collaboration::portable_storage::PortableStorage::new("test-owner-initialize", workspace)?,
@@ -74,7 +74,7 @@ fn writer_seed(workspace: &str) -> Result<Vec<u8>, String> {
     records
         .reserve_resource(&checkout)
         .map_err(|e| e.to_string())?
-        .initialize(word_processor::initialize_empty_document)
+        .initialize(test_document_app::initialize_empty_document)
         .map_err(|e| e.to_string())?;
     records
         .read(&checkout.id, |doc| doc.clone().save())
@@ -136,7 +136,7 @@ impl SessionOwner {
         seeded.push(SeedDocument {
             app_id: WRITER.0.into(),
             document_id: WRITER.1.into(),
-            kind: word_processor::definition().resource_type.as_str().into(),
+            kind: test_document_app::definition().resource_type.as_str().into(),
             bytes: writer,
         });
         peer.install_seed(

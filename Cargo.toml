@@ -270,6 +270,7 @@ members = [
     "crates/ui/headless-schema",
     "tools/test-env",
     "tools/test-app-registry",
+    "tools/test-document-app",
     "tools/test-http",
     "tools/test-server",
     "tools/tilo-app-cli",

@@ -194,7 +194,7 @@ fn fixture(
     let views = Rc::new(InstanceViewStore::portable(cache, "workspace").unwrap());
     let mut catalog = ApplicationCatalog::new();
     let definitions = [
-        word_processor::definition(),
+        test_document_app::definition(),
         calendar::definition(),
         sheets::definition(),
     ];
@@ -231,7 +231,7 @@ fn fixture(
                             // Calendar and Sheets open empty ones of their own on a blank record.
                             store.with(&checkout.id, |doc| {
                                 if which == 0 {
-                                    word_processor::initialize_empty_document(doc).unwrap();
+                                    test_document_app::initialize_empty_document(doc).unwrap();
                                 }
                             });
                         }

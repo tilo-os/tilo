@@ -16774,6 +16774,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "test-document-app"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-app",
+ "tilo-automerge-fork",
+ "tilo-content",
+ "tilo-rich-text",
+ "workspace-hack",
+]
+
+[[package]]
 name = "test-http"
 version = "0.1.0"
 dependencies = [

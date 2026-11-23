@@ -71,7 +71,6 @@ totp = { path = "../../../apps/totp" }
 typst-editor = { path = "../../../apps/typst-editor" }
 video-editor = { path = "../../../apps/video-editor", default-features = false, features = [] }
 weather = { path = "../../../apps/weather" }
-word-processor = { path = "../../../apps/word-processor" }
 # The member's client: the certified relay session (iroh for a host-side agent) with its live
 # live session, the same code a browser page runs, and the board of who is here and the agent's own word
 # on it.
@@ -152,6 +151,9 @@ discord = { path = "../../../apps/discord" }
 
 
 [dev-dependencies]
+# The document app the suites open where a product app used to stand: the shared
+# editor over a rich-text record, with the actions that record publishes.
+test-document-app = { path = "../../../tools/test-document-app" }
 # The page holder a test reads a peer's workspace through: the workspace service's document
 # core over the replica the peer's session admits into, as a page reads it.
 tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["device-keys", "session-pages", "fixture-servers"] }

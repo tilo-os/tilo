@@ -430,7 +430,8 @@ fn an_appearance_given_to_the_worker_is_recorded_on_the_change() {
 
 const CANVAS: &str = "so.tilo.canvas";
 const PDF: &str = "so.tilo.pdf-viewer";
-const WRITER: &str = "so.tilo.word-processor";
+/// The document app the suites open, in place of a product app.
+const DOCUMENT: &str = test_document_app::APP_ID;
 const SHEETS: &str = "so.tilo.sheets";
 
 /// A new record of `app` held for an agent, lent `workspace`'s content when
@@ -761,14 +762,14 @@ fn an_agent_adds_a_local_event_unasked_and_is_asked_for_a_remote_one() {
 }
 
 /// Placing a picture the workspace keeps is an ordinary edit of the document:
-/// an agent is offered it, and it runs unasked, under the heading named.
+/// an agent is offered it, and it runs unasked.
 #[test]
-fn an_agent_places_a_picture_the_workspace_keeps_under_a_heading() {
+fn an_agent_places_a_picture_the_workspace_keeps_in_the_document() {
     let workspace = ContentStore::memory();
     // The address an export answered with, as `tilo.content:latest` binds.
     let hash = workspace.put(&png(8, 0x40)).unwrap();
     let address = tilo_actions::content_resource(&hash).unwrap();
-    let writer = agents_document(WRITER, Some(&workspace));
+    let writer = agents_document(DOCUMENT, Some(&workspace));
     let replace = operation(&writer, "replace-body");
     writer
         .invoke(
@@ -780,11 +781,12 @@ fn an_agent_places_a_picture_the_workspace_keeps_under_a_heading() {
         )
         .expect("the agent writes the document");
     writer.take_mutation().unwrap().unwrap();
-    let place = offered(&writer, "place-image").expect("an agent is offered place-image");
+    let markdown = format!("![]({address})");
+    let place = offered(&writer, "insert-markdown").expect("an agent is offered insert-markdown");
     writer
         .invoke(
             &place.address,
-            &arguments(serde_json::json!({ "content": address, "after": "Results" })),
+            &arguments(serde_json::json!({ "markdown": markdown, "position": "end" })),
             false,
         )
         .expect("the agent places the picture unasked");
@@ -795,7 +797,6 @@ fn an_agent_places_a_picture_the_workspace_keeps_under_a_heading() {
     let body = writer
         .read(|doc| serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap())
         .unwrap();
-    // Where it goes under the heading is the word processor's own test.
     assert!(
         body.contains(&hash),
         "the document holds the picture: {body}"
@@ -815,11 +816,11 @@ fn an_agent_may_not_write_where_an_effect_would_or_run_one_that_answers_nothing(
     }
     assert!(!target.exists());
 
-    // Replacing the document from a file answers nothing an agent could
-    // use and edits the document out of sight of any plan: refused.
-    let writer = agents_document(WRITER, None);
+    // Opening a document from a file answers nothing an agent could use and
+    // edits the document out of sight of any plan: refused.
+    let writer = agents_document(DOCUMENT, None);
     let kind = catalogue()
-        .get(WRITER)
+        .get(DOCUMENT)
         .unwrap()
         .resource_type
         .as_str()
@@ -1045,15 +1046,15 @@ fn an_agent_looks_at_a_pdf_page_in_its_worker() {
     );
 }
 
-/// A document the workspace holds as content is read with the word processor's
+/// A document the workspace holds as content is read with the document app's
 /// read-content, in the worker, from the bytes the workspace lent it.
 #[test]
-fn an_agent_reads_a_document_the_workspace_holds_with_the_word_processor() {
+fn an_agent_reads_a_document_the_workspace_holds_with_the_document_app() {
     let workspace = ContentStore::memory();
     let hash = workspace
         .put(b"# Lamps\n\nThe cellar lamp flickers.\n")
         .unwrap();
-    let agent = agents_document(WRITER, Some(&workspace));
+    let agent = agents_document(DOCUMENT, Some(&workspace));
     let read = operation(&agent, "read-content");
     assert!(tilo_agent_session::apps::readable(&read), "{read:?}");
     let output = agent
