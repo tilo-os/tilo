@@ -92,12 +92,7 @@ pub(crate) fn act(records: &Resources, seen: &Seen, client: &str, command: Agent
             true
         }),
         AgentCommand::Revoke => grant_of(seen, client).is_some_and(|grant| {
-            records.server(
-                mcp_server::REVOKE,
-                &mcp_server::GrantRef {
-                    grant: grant.id.clone(),
-                },
-            );
+            records.revoke_key(&grant.id);
             true
         }),
     }
@@ -169,12 +164,7 @@ fn card(cx: &ViewCx<Console>, nav: &Nav, seen: &Seen, client: &str) -> Element {
             let (records, id) = (records.clone(), grant.id.clone());
             Button::new("console-agent-revoke", "console-grant-revoke")
                 .role(ButtonRole::Destructive)
-                .on_open(move || {
-                    records.server(
-                        mcp_server::REVOKE,
-                        &mcp_server::GrantRef { grant: id.clone() },
-                    );
-                })
+                .on_open(move || records.revoke_key(&id))
         };
         parts.push(Box::new(Section::titled(
             tr("console-agent-access"),

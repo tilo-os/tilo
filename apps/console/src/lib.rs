@@ -191,6 +191,16 @@ impl Resources {
         self.ask(mcp_server::target(action), mcp_server::argument(value));
     }
 
+    /// Take the key `device` (hex) back, as every list of the person's keys does: their root
+    /// revokes it, and the record of their keys marks it, which ends its sessions everywhere.
+    pub(crate) fn revoke_key(&self, device: &str) {
+        use ui::tilo_actions::remote::device_tickets;
+        self.ask(
+            device_tickets::target(device_tickets::REVOKE),
+            device_tickets::Revoke::retired(device).argument(),
+        );
+    }
+
     /// Show the person how their agent connects as them: the setup their own card shows, with
     /// the one line that sets Tilo up on the agent's computer.
     pub(crate) fn show_connect(&self) {

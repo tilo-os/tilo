@@ -69,6 +69,10 @@ pub trait AgentKeys: Send + Sync {
     /// default.
     fn keep_in(&self, _record: &Workspaces) {}
 
+    /// Keep `cert`, a key the person's root certified on this device for an agent, among their
+    /// keys where [`Self::keep_in`] named a record, once it does. Nothing by default.
+    fn keep_key(&self, _cert: &DeviceCert) {}
+
     /// Sign `shortcut` as saved in `workspace` by `agent`, with the agent key `key`, a key
     /// [`Self::grant`] gave: what the agent saves acts as the agent.
     ///
@@ -156,6 +160,8 @@ pub struct FleetAgentKeys {
     made: Mutex<HashMap<[u8; 32], (DeviceCert, SigningKey)>>,
     /// Where each key made is kept among the person's keys, and the runtime that writes it.
     record: OnceLock<(Workspaces, tokio::runtime::Handle)>,
+    /// The certificates made before a record was named, kept once it is.
+    waiting: Mutex<Vec<DeviceCert>>,
 }
 
 impl FleetAgentKeys {
@@ -176,13 +182,15 @@ impl FleetAgentKeys {
             fleets,
             made: Mutex::default(),
             record: OnceLock::new(),
+            waiting: Mutex::default(),
         }
     }
 
-    /// Keep `cert` among its person's keys, where a record is known: once for each key this
-    /// process makes, and again for each certificate that renews it.
+    /// Keep `cert` among its person's keys: once for each key this process makes, and again for
+    /// each certificate that renews it, as soon as a record is known.
     fn keep(&self, cert: &DeviceCert) {
         let Some((workspaces, runtime)) = self.record.get() else {
+            self.waiting.lock_recover().push(cert.clone());
             return;
         };
         let (workspaces, cert) = (workspaces.clone(), cert.clone());
@@ -306,7 +314,16 @@ impl AgentKeys for FleetAgentKeys {
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return;
         };
-        let _ = self.record.set((record.clone(), runtime));
+        if self.record.set((record.clone(), runtime)).is_ok() {
+            let waiting = std::mem::take(&mut *self.waiting.lock_recover());
+            for cert in &waiting {
+                self.keep(cert);
+            }
+        }
+    }
+
+    fn keep_key(&self, cert: &DeviceCert) {
+        self.keep(cert);
     }
 }
 

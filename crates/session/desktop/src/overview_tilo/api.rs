@@ -92,22 +92,6 @@ impl ApiRead {
     pub fn server(&self) -> Option<&mcp_server::Server> {
         self.answer.as_ref()
     }
-
-    /// Take back grant `grant` at the MCP server `host` serves, as the person:
-    /// the MCP server ends its runs and lets it in no more, and a page hands the
-    /// device's revocation to their root to sign, as it revokes any of
-    /// their devices. The MCP server answers in its own time; what it says next
-    /// is what the read shows.
-    pub fn revoke(host: &dyn ActionProvider, caller: &Caller, grant: &str) {
-        let request = request(
-            InvocationId::new(),
-            mcp_server::REVOKE,
-            mcp_server::argument(&mcp_server::GrantRef {
-                grant: grant.to_owned(),
-            }),
-        );
-        drop(host.invoke(caller, request));
-    }
 }
 
 /// The invocation of server `action`, with `argument`.

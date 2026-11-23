@@ -13,9 +13,10 @@
 //! session through it is one agent session, named for the person ("Claude
 //! Code #2") as History names it. Whoever serves the server serves
 //! [`PROVIDER`]; a provider without one leaves the reads unanswered, and a view
-//! that follows them says so. Revoking a grant ([`REVOKE`]) ends every session
-//! it carries and lets none in again; stopping a session ([`STOP`]) ends that
-//! one connection and keeps the grant, so the agent can come back.
+//! that follows them says so. A grant's key is one of the person's keys, taken
+//! back as every one is ([`super::device_tickets::REVOKE`]); stopping a session
+//! ([`STOP`]) ends that one connection and keeps the grant, so the agent can
+//! come back.
 
 use serde::{Deserialize, Serialize};
 
@@ -29,9 +30,6 @@ pub const RESOURCE: &str = "mcp.server";
 
 /// Live: the server and what it let in; answers [`Server`].
 pub const SERVER: &str = "server";
-/// Take back a grant ([`Grant`] by [`Grant::id`], as [`GrantRef`]): its
-/// sessions end now and it lets none in again.
-pub const REVOKE: &str = "revoke";
 /// End one agent session now, keeping its grant ([`AgentSessionRef`]).
 pub const STOP: &str = "stop";
 
@@ -88,7 +86,7 @@ pub struct AgentSession {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Grant {
-    /// What [`GrantRef`] names it by.
+    /// Its key, in hex: what [`AgentSessionRef`] and the person's keys name it by.
     pub id: String,
     /// The agent as its client named itself when the person agreed
     /// ("Claude Code").
@@ -165,13 +163,6 @@ impl Server {
     }
 }
 
-/// Which grant [`REVOKE`] takes back.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct GrantRef {
-    pub grant: String,
-}
-
 /// Which agent session [`STOP`] ends: the grant it came in by, and its name.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -219,16 +210,6 @@ mod tests {
                 server.session("Claude Code #1").is_none(),
                 "a session that ended is no longer open"
             );
-        }
-
-        phase a_grant_reference_reads_back_and_refuses_what_it_does_not_name;
-        {
-            let InvokeArgument::Json(map) = argument(&GrantRef { grant: "g1".into() }) else {
-                panic!("a reference is an object");
-            };
-            let read: GrantRef = serde_json::from_value(serde_json::Value::Object(map)).unwrap();
-            assert_eq!(read.grant, "g1");
-            assert!(serde_json::from_str::<GrantRef>(r#"{"grant":"g1","all":true}"#).is_err());
         }
     }
 }

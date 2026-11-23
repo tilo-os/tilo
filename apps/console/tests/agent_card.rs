@@ -14,6 +14,7 @@ use tilo_console::{App, ConsoleEffect};
 use ui::collaboration::{CollabEvent, CollabRequest};
 use ui::prelude::*;
 use ui::tilo_actions::InvocationUpdate;
+use ui::tilo_actions::remote::device_tickets;
 use ui::tilo_actions::remote::mcp_server;
 use ui::tilo_actions::remote::workspace_activity as wire;
 use ui::tilo_actions::remote::{
@@ -199,8 +200,15 @@ fn revoking_an_agent_takes_back_its_grant() {
     app.call_on(AGENT, "revoke-agent", json!({}))
         .expect("revoke the agent");
     let requests = asked(&mut app);
-    let revoke = find(&requests, &mcp_server::target(mcp_server::REVOKE));
-    assert_eq!(argument(&revoke), json!({"grant": "g1"}));
+    let revoke = find(
+        &requests,
+        &device_tickets::target(device_tickets::REVOKE),
+    );
+    assert_eq!(
+        argument(&revoke),
+        json!({"device": "g1", "reason": "retired"}),
+        "an agent's key is taken back as every key of the person's is"
+    );
     assert!(
         app.harness()
             .targets()

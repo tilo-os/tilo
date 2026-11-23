@@ -9,6 +9,7 @@
 use tilo_console::App;
 use ui::collaboration::{CollabEvent, CollabRequest};
 use ui::prelude::*;
+use ui::tilo_actions::remote::device_tickets;
 use ui::tilo_actions::remote::mcp_server;
 use ui::tilo_actions::remote::workspace_activity as wire;
 use ui::tilo_actions::remote::{
@@ -446,10 +447,12 @@ fn the_connected_agents_list_says_when_a_key_operates_web_pages() {
         .click_named("console-grant-0-revoke")
         .unwrap();
     let requests = asked(&mut operating);
-    let revoke: mcp_server::GrantRef =
-        argument(&find(&requests, &mcp_server::target(mcp_server::REVOKE)));
+    let revoke: device_tickets::Revoke = argument(&find(
+        &requests,
+        &device_tickets::target(device_tickets::REVOKE),
+    ));
     assert_eq!(
-        revoke.grant, "g1",
+        revoke.device, "g1",
         "revoking that agent ends the key that operates web pages"
     );
     let mut asked = connect(false);
@@ -525,9 +528,11 @@ fn revoking_a_grant_names_it_to_the_server() {
     }
     app.harness().click_named("console-grant-0-revoke").unwrap();
     let requests = asked(&mut app);
-    let revoke: mcp_server::GrantRef =
-        argument(&find(&requests, &mcp_server::target(mcp_server::REVOKE)));
-    assert_eq!(revoke.grant, "g1");
+    let revoke: device_tickets::Revoke = argument(&find(
+        &requests,
+        &device_tickets::target(device_tickets::REVOKE),
+    ));
+    assert_eq!(revoke.device, "g1");
 }
 
 /// A run that is working says what it is doing now on its row, from the history's live

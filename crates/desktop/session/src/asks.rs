@@ -128,9 +128,9 @@ impl Shared {
                 DesktopAsk::OpenSettings(link) => {
                     crate::quick_settings::open_settings(self, &link);
                 }
-                // The grant is taken back at the person's MCP server, as Console takes it back:
-                // whatever this session offers it on answers, and without one the person hears
-                // that it did not happen.
+                // The grant's key is taken back among the person's keys, as Console takes it
+                // back: whatever this session offers it on answers, and without one the person
+                // hears that it did not happen.
                 DesktopAsk::RevokeAgentGrant(grant) => self.revoke_agent_grant(grant),
                 // An agent's card, opened by the agent's own face in the overview: the same ask
                 // its face makes anywhere else, which brings the card forward beside the work.
@@ -331,13 +331,17 @@ impl Shared {
         }
     }
 
-    /// Take the agent grant `grant` back at the person's MCP server.
+    /// Take the agent grant `grant`, its key in hex, back as every key of the person's is: their
+    /// root revokes it and the record of their keys marks it.
     fn revoke_agent_grant(&self, grant: String) {
-        use tilo_actions::remote::mcp_server;
-        let mut arguments = serde_json::Map::new();
-        arguments.insert("grant".into(), grant.into());
+        use tilo_actions::remote::device_tickets;
+        let tilo_actions::remote::InvokeArgument::Json(arguments) =
+            device_tickets::Revoke::retired(&grant).argument()
+        else {
+            unreachable!("a revocation is asked with an object");
+        };
         let revoked = self.published.invoke(
-            &ActionAddress::new(mcp_server::RESOURCE, mcp_server::REVOKE),
+            &ActionAddress::new(device_tickets::RESOURCE, device_tickets::REVOKE),
             &arguments,
             &mut tilo_session_core::surfaces::Look::none(),
         );
@@ -386,9 +390,15 @@ impl Shared {
             }
             AgentAsk::Revoke => {
                 // What let its program in here is taken back, and every session of it ends: the
-                // next client of that program is asked about, as the first was.
-                if let Some(server) = self.mcp_server.borrow_mut().as_mut() {
-                    server.revoke(&working.program);
+                // next client of that program is asked about, as the first was. A key the
+                // session's agent key certified is revoked among the person's keys.
+                let key = self
+                    .mcp_server
+                    .borrow_mut()
+                    .as_mut()
+                    .and_then(|server| server.revoke(&working.program));
+                if let Some(key) = key {
+                    self.revoke_agent_grant(key);
                 }
                 self.agent_sessions.stop_program(&working.program);
             }

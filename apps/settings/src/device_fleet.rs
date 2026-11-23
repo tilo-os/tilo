@@ -72,12 +72,13 @@ pub(crate) fn revoke(
     device: &[u8; 32],
     reason: &str,
 ) -> ui::InvocationCall {
-    let mut arguments = serde_json::Map::new();
-    arguments.insert("device".into(), hex::encode(device).into());
-    arguments.insert("reason".into(), reason.into());
+    let revoke = device_tickets::Revoke {
+        device: hex::encode(device),
+        reason: reason.to_owned(),
+    };
     remote.invoke(
         device_tickets::target(device_tickets::REVOKE),
-        InvokeArgument::Json(arguments),
+        revoke.argument(),
         Some(Confirmation::Confirmed),
     )
 }

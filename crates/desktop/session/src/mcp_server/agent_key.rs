@@ -8,9 +8,11 @@
 //! reaches the same session after a restart. The grant's own key is derived from that secret, so
 //! whoever holds the file holds the grant, and the person's root certifies it as an agent's grant
 //! ([`tilo_user_identity::DeviceCapabilities::agent_grant`]) once the session knows who the person
-//! is. The certificate is kept with the person's devices (their fleet), where it is listed, and
-//! ends as a device does: a revocation their root signs, from their device list or the agent's
-//! card. A revoked key is never certified again; a new key is a new FILE.
+//! is. The certificate is kept among the person's keys in their own workspace, the one way every
+//! key their root certifies is ([`tilo_workspace_service::workspaces::person_workspace::devices`]),
+//! where it is listed as an agent's, and ends as a device does: their root revokes it and the
+//! record marks it, from their device list or the agent's card. A revoked key is never certified
+//! again; a new key is a new FILE.
 //!
 //! A program presenting the key at the API ([`tilo_mcp::session_api::KEY`]) is admitted as
 //! the grant's agent without a question: every connection an instance of its own, attributed to the
@@ -244,25 +246,13 @@ impl AgentKey {
         }
     }
 
-    /// Take the grant back: what the agent's card's Revoke does. Its root signs the revocation,
-    /// which is kept with the person's devices, and no client of the key is admitted again.
-    pub(crate) fn revoke(&mut self) {
-        if let GrantState::Certified { identity, .. } = &self.state {
-            let revoked = crate::identity_admin::fleet_store().and_then(|fleets| {
-                fleets
-                    .revoke(
-                        identity,
-                        self.grant,
-                        tilo_user_identity::RevocationReason::Retired,
-                        now_ns(),
-                    )
-                    .map_err(|error| error.to_string())
-            });
-            if let Err(why) = revoked {
-                tracing::warn!(%why, "MCP server: the agent key's revocation was not signed");
-            }
-        }
+    /// Take the grant back: what the agent's card's Revoke does. No client of the key is admitted
+    /// here again, and the grant's key, in hex, is answered where it was certified: the person's
+    /// keys revoke it ([`tilo_actions::remote::device_tickets::REVOKE`]), as they revoke any.
+    pub(crate) fn revoke(&mut self) -> Option<String> {
+        let certified = matches!(self.state, GrantState::Certified { .. });
         self.state = GrantState::Revoked;
+        certified.then(|| hex::encode(self.grant))
     }
 }
 
@@ -322,7 +312,7 @@ fn certify(grant: [u8; 32], person: &str) -> Result<GrantState, String> {
         }
     }
     let expires_at_ns = now.saturating_add(LIFETIME_NS);
-    fleets
+    let cert = fleets
         .certify_agent_grant(
             &profile.id,
             grant,
@@ -332,6 +322,10 @@ fn certify(grant: [u8; 32], person: &str) -> Result<GrantState, String> {
             expires_at_ns,
         )
         .map_err(|error| format!("the person's root did not certify it here: {error}"))?;
+    // Every device of the person's lists it among their keys, as an agent's.
+    if let Ok(keys) = tilo_workspace_service::agents::agent_keys::this_device() {
+        keys.keep_key(&cert);
+    }
     Ok(GrantState::Certified {
         identity: profile.id,
         expires_at_ns,
@@ -378,7 +372,7 @@ mod tests {
             key.admits(&text),
             Err(KeyRefusal::Uncertified("no root here".into()))
         );
-        key.revoke();
+        assert_eq!(key.revoke(), None, "a grant never certified is no key to revoke");
         assert_eq!(key.admits(&text), Err(KeyRefusal::Revoked));
     }
 }

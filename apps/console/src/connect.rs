@@ -128,12 +128,7 @@ fn grant_row(records: &Resources, index: usize, grant: &mcp_server::Grant) -> El
             "console-grant-revoke",
         )
         .role(ButtonRole::Destructive)
-        .on_open(move || {
-            records.server(
-                mcp_server::REVOKE,
-                &mcp_server::GrantRef { grant: id.clone() },
-            );
-        })
+        .on_open(move || records.revoke_key(&id))
     };
     // What the agent may reach says on a line of its own that wraps: it is the whole of
     // what the person let in, and a narrow window must not cut it short.

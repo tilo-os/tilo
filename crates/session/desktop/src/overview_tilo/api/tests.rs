@@ -1,15 +1,14 @@
-//! The MCP server's read becomes the overview's Agents rows, and a row's Revoke
-//! goes to the MCP server the page serves.
+//! The MCP server's read becomes the overview's Agents rows, and a row offers to
+//! take its grant's key back.
 
 use std::cell::RefCell;
 use std::sync::Arc;
 
-use serde_json::Value;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
-    InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
+    InvocationState, InvokeRequest, Pending,
 };
-use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
+use tilo_actions::{InvocationId, InvocationUpdate};
 
 use super::{ApiRead, mcp_server};
 use crate::overview_panel::OverviewPick;
@@ -19,15 +18,12 @@ fn en() {
     ui::i18n::I18nManager::init("en-US");
 }
 
-/// The MCP server of a host: what it let in, read live, and the grants the
-/// person took back there.
+/// The MCP server of a host: what it let in, read live.
 #[derive(Default)]
 struct ServerHost {
     grants: Vec<mcp_server::Grant>,
     /// The state the MCP server's read last answered.
     read: RefCell<Option<InvocationState>>,
-    /// The grants a revoke named, in the order they were asked.
-    revoked: RefCell<Vec<String>>,
 }
 
 impl ServerHost {
@@ -56,22 +52,6 @@ impl ActionProvider for ServerHost {
         _caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        if request.target == mcp_server::target(mcp_server::REVOKE) {
-            let InvokeArgument::Json(argument) = &request.argument else {
-                return Pending::ready(Err(ActionCallError::InvalidRequest {
-                    reason: "a revoke names its grant".into(),
-                }));
-            };
-            let grant: mcp_server::GrantRef =
-                serde_json::from_value(Value::Object(argument.clone())).unwrap_or_default();
-            self.revoked.borrow_mut().push(grant.grant);
-            return Pending::ready(Ok(InvocationReceipt {
-                invocation: request.invocation,
-                status: ReceiptStatus::Completed {
-                    output: ActionOutput::default(),
-                },
-            }));
-        }
         // The MCP server's read: what a live server holds now.
         let server = mcp_server::Server {
             endpoint: "https://mcp.tilo.sh".into(),
@@ -192,10 +172,9 @@ tilo_test_env::scenario! {
         assert_eq!(facts(items(&rows)[0]), ["Build"]);
     }
 
-    phase a_rows_revoke_reaches_the_server;
-    // A row's Revoke is the grant's, asked of the MCP server the page serves: the
-    // person's root signs the device's revocation from there, as the card's
-    // Revoke does.
+    phase a_row_offers_to_take_its_grant_back;
+    // A row's Revoke names the grant's key, which the session takes back among
+    // the person's keys, as the card's Revoke does.
     {
         en();
         let host = ServerHost::with(vec![working()]);
@@ -207,8 +186,7 @@ tilo_test_env::scenario! {
             panic!("the agents' row offers to take its grant back");
         };
         assert_eq!(label, "Revoke");
-        ApiRead::revoke(&host, &caller(), &grant);
-        assert_eq!(*host.revoked.borrow(), [grant], "the MCP server took it back");
+        assert_eq!(grant, working().id);
     }
 
     phase a_server_with_no_grants_leaves_the_overview_without_agents;

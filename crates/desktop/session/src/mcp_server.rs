@@ -766,18 +766,20 @@ impl Loop {
 
     /// Take back the answers that let `agent` in: a client whose answer this was is asked again
     /// the next time it connects, as if the person had never said "always allow". What it works on
-    /// now is ended by whoever asked ([`AgentSessions::stop_program`]).
-    pub(super) fn revoke(&mut self, agent: &str) {
-        if let Some(key) = self.agent_key.as_mut()
-            && same_program(&key.agent(), agent)
-        {
-            key.revoke();
-        }
+    /// now is ended by whoever asked ([`AgentSessions::stop_program`]). The key of the session's
+    /// agent key, in hex, when that was `agent`'s: the person's keys revoke it.
+    pub(super) fn revoke(&mut self, agent: &str) -> Option<String> {
+        let key = self
+            .agent_key
+            .as_mut()
+            .filter(|key| same_program(&key.agent(), agent))
+            .and_then(agent_key::AgentKey::revoke);
         self.always
             .retain(|_, admitted| !same_program(admitted, agent));
         self.session
             .retain(|_, admitted| !same_program(admitted, agent));
         self.store_always();
+        key
     }
 
     /// Keep "Always allow" in this account's private state. The loop does not wait for the disk.

@@ -512,6 +512,31 @@ pub mod device_tickets {
         }
     }
 
+    /// What [`REVOKE`] takes back: any key of the person's (a device, an agent's grant, a
+    /// script's key) by its key in hex, and why (`retired`, `lost`, `stolen` or `compromised`).
+    #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct Revoke {
+        pub device: String,
+        pub reason: String,
+    }
+
+    impl Revoke {
+        /// Taking `device` back as retired: what a list's remove asks.
+        #[must_use]
+        pub fn retired(device: &str) -> Self {
+            Self {
+                device: device.to_owned(),
+                reason: "retired".to_owned(),
+            }
+        }
+
+        /// The argument [`REVOKE`] is asked with.
+        #[must_use]
+        pub fn argument(&self) -> super::InvokeArgument {
+            super::workspace_activity::argument(self)
+        }
+    }
+
     /// One of the person's devices, as every list of them shows it: joined from the record of
     /// their own workspace and who is here.
     #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
