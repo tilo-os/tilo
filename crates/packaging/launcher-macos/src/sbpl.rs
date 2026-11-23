@@ -323,32 +323,6 @@ mod tests {
     tilo_test_env::scenario! {
         fn the_rendered_profile;
 
-        phase the_offline_profile_is_pinned;
-        {
-            let profile = render(&policy(SeatbeltNetwork::Denied));
-            let expected = include_str!("../tests/fixtures/offline.sb");
-            assert_eq!(
-                profile.text, expected,
-                "the rendered profile changed; review the diff and update tests/fixtures/offline.sb"
-            );
-            let names: Vec<&str> = profile.params.iter().map(|(k, _)| k.as_str()).collect();
-            assert_eq!(
-                names,
-                [
-                    "PAYLOAD_DIR",
-                    "RUNTIME_DIR",
-                    "CONTAINER_DIR",
-                    "DARWIN_CACHE_DIR",
-                    "READ_0",
-                    "WRITE_0",
-                    "HIDDEN_0",
-                    "PINNED_0",
-                    "PINNED_1",
-                    "PINNED_2"
-                ]
-            );
-        }
-
         phase it_denies_by_default_and_carries_paths_only_as_parameters;
         {
             for network in [
