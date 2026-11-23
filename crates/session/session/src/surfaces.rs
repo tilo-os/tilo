@@ -15,7 +15,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::os::fd::AsRawFd as _;
 use std::os::unix::net::UnixStream;
-use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
@@ -791,26 +790,11 @@ impl Surfaces {
         // the session opens.
         let registration =
             launcher::launch_hold::install(&mut command).map_err(StartError::Hold)?;
-        // Safety: this runs in the child between `fork` and `exec` , where the app has done nothing
-        // yet; it touches no memory the parent shares with other threads. The actions descriptor is
-        // moved out of the range the fixed ones take before either is placed, so handing over one
-        // cannot overwrite the other.
-        unsafe {
-            command.pre_exec(move || {
-                let actions = libc::fcntl(actions, libc::F_DUPFD_CLOEXEC, 10);
-                if actions < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                if libc::dup2(descriptor, SOCKET_DESCRIPTOR) < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                if libc::dup2(actions, ACTIONS_DESCRIPTOR) < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                libc::close(actions);
-                Ok(())
-            });
-        }
+        let handed = vec![
+            (descriptor, SOCKET_DESCRIPTOR),
+            (actions, ACTIONS_DESCRIPTOR),
+        ];
+        launcher::inherit::hand_down(&mut command, handed, false);
         let child = command.spawn().map_err(|source| StartError::Spawn {
             program: surface.program.clone(),
             source,

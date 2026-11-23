@@ -9,19 +9,30 @@ use std::process::Command;
 /// Make the program `command` starts find each `(source, target)` descriptor of `handed` at
 /// `target`, and start with the game performance hints when `latency_sensitive`.
 ///
-/// Every source must differ from every target (duplicate the sources above the targets first),
-/// so handing one down never overwrites the source of the next; dup2 clears close-on-exec on each
-/// target. The sources must stay open until the command is spawned.
-pub fn hand_down(command: &mut Command, handed: Vec<(RawFd, RawFd)>, latency_sensitive: bool) {
+/// In the child each source is first copied above every target, so handing one down never
+/// overwrites the source of the next, whatever numbers they have; dup2 clears close-on-exec on
+/// each target. The sources must stay open until the command is spawned.
+pub fn hand_down(command: &mut Command, mut handed: Vec<(RawFd, RawFd)>, latency_sensitive: bool) {
     if handed.is_empty() && !latency_sensitive {
         return;
     }
-    // SAFETY: the closure only iterates a vector allocated before the fork and calls
-    // async-signal-safe syscalls (the performance hints and dup2).
+    let above = handed
+        .iter()
+        .map(|&(_, target)| target.saturating_add(1))
+        .max()
+        .unwrap_or(0);
+    // SAFETY: the closure only changes a vector allocated before the fork, in the child's own
+    // copy, and calls async-signal-safe syscalls (the performance hints, fcntl and dup2).
     unsafe {
         command.pre_exec(move || {
             if latency_sensitive {
                 crate::performance::apply_game_performance_hints()?;
+            }
+            for (source, _) in &mut handed {
+                *source = libc::fcntl(*source, libc::F_DUPFD_CLOEXEC, above);
+                if *source < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
             }
             for &(source, target) in &handed {
                 if libc::dup2(source, target) == -1 {

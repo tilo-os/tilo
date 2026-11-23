@@ -544,13 +544,8 @@ pub fn take() -> Option<Descriptor> {
     None
 }
 
-/// Start `command` holding the other end of a new link, as its stdin, named by [`FD_ENV`]: a
-/// tilolang host reads it there, and a launcher takes it off stdin and places it at [`CHILD_FD`]
-/// in the sandbox it starts. Answers this end and the child. Every tilolang host is handed its
-/// link this way, whatever starts it.
-///
-/// Stdin, rather than a descriptor placed in a `pre_exec` step: that step makes
-/// `Command::spawn` `fork()` the caller, which for the compositor's session is the whole desktop.
+/// Start `command` with the other end of a new link as its stdin, named by [`FD_ENV`] ([`take`]
+/// reads it): not a `pre_exec` step, which would make the spawn `fork()` the whole caller.
 ///
 /// # Errors
 /// No link could be made, or the program did not start.

@@ -696,11 +696,8 @@ impl Processes {
     }
 }
 
-/// Start the tilolang host `key`, keeping `storage` and reading what an earlier version of its app
-/// kept (the directory, and where the host sees it beneath its mount), on its process link: the
-/// one place a host is started, and the only one that names the platform. On Linux the launcher
-/// is `tilo-launcher tilolang-process`, which takes the link off its stdin and starts the host in
-/// its sandbox.
+/// Start the tilolang host `key` with its `storage` and `earlier` grant: the one place a host
+/// starts, and the only one that names the platform's launcher (`tilo-launcher tilolang-process`).
 fn spawn_host(
     launcher: &Path,
     key: &HostKey,

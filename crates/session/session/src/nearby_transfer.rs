@@ -2724,40 +2724,14 @@ fn inherit_descriptors(command: &mut Command, source: Option<i32>, staging: Opti
             {
                 return Err(std::io::Error::last_os_error());
             }
-            // Duplicate first so an original fd9/fd10 cannot be overwritten.
-            let source_copy = match source {
-                Some(source) => {
-                    let copy = libc::fcntl(source, libc::F_DUPFD_CLOEXEC, 11);
-                    if copy < 0 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    Some(copy)
-                }
-                None => None,
-            };
-            let staging_copy = match staging {
-                Some(staging) => {
-                    let copy = libc::fcntl(staging, libc::F_DUPFD_CLOEXEC, 11);
-                    if copy < 0 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    Some(copy)
-                }
-                None => None,
-            };
-            if let Some(copy) = source_copy
-                && libc::dup2(copy, 9) < 0
-            {
-                return Err(std::io::Error::last_os_error());
-            }
-            if let Some(copy) = staging_copy
-                && libc::dup2(copy, 10) < 0
-            {
-                return Err(std::io::Error::last_os_error());
-            }
             Ok(())
         });
     }
+    let handed = [(source, 9), (staging, 10)]
+        .into_iter()
+        .filter_map(|(fd, target)| Some((fd?, target)))
+        .collect();
+    launcher::inherit::hand_down(command, handed, false);
 }
 
 /// Run `command` while `admitted` holds, for at most `limit`, and read back its one JSON answer.
