@@ -405,8 +405,7 @@ impl Described for MediaGrid {
         self.set_justified(justified);
         self.set_size(size.unwrap_or_default());
         self.set_select(select);
-        let hovered = Rc::clone(&self.hovered);
-        let order = Rc::clone(&self.order);
+        let (order, hovered) = self.range_cells();
         *order.borrow_mut() = cards.iter().map(|props| props.item.clone()).collect();
         self.set_cards(
             cards

@@ -1606,6 +1606,17 @@ impl MediaGrid {
         self.select = select;
     }
 
+    /// The places its cards stand in, and the cell the card the pointer is over is read from, as
+    /// the grid whose cards it builds them again hands them over.
+    pub(crate) fn range_cells(
+        &self,
+    ) -> (
+        Rc<std::cell::RefCell<Vec<Option<crate::component::ResourceId>>>>,
+        Rc<Cell<Option<usize>>>,
+    ) {
+        (Rc::clone(&self.order), Rc::clone(&self.hovered))
+    }
+
     /// What a range gesture takes: the cards from `from` to `to`, each by the item it shows, in
     /// the order they stand.
     fn take_range(&self, from: usize, to: usize) {
