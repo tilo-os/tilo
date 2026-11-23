@@ -127,7 +127,7 @@ names are stable even when directories move.
 | Compositor and shell | `crates/desktop/session` |
 | Web runtime (the page a browser enters a workspace with) | `crates/core/tilo-browser-runtime` |
 | Platform services with one API on Linux, macOS and the web | `crates/platform/` |
-| Packages, sandboxed launch, the registry | `crates/packaging/` |
+| Packages, sandboxed launch, the registry | `crates/core/` (`launcher`, `package-service`, `package-store`, `app-registry`, `registry-server`) |
 | The `tilo-app` command | `tools/tilo-app-cli` |
 | The OS image | `os/` |
 

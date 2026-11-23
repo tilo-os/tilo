@@ -14,7 +14,7 @@ the other paragraphs' ranges to the first.
 
 The patch makes a mark event extend the previous one only when both are on the
 same object; everything else is crates.io `automerge` 0.12.0, verbatim. It is
-pinned by `crates/doc/tilo-automerge/tests/diff_marks.rs`. Upstream `main`
+pinned by `crates/core/tilo-automerge/tests/diff_marks.rs`. Upstream `main`
 has the same code; remove this copy once a release carries the fix.
 
 Three `#[allow]`s (the `log!` macro's import, `GenericColIter::try_next` and
@@ -28,7 +28,7 @@ close the open transaction first. Tilo hands widgets the document read-only
 and commits before every frame, so `committed_heads`, `committed_diff`,
 `committed_fork_at` and `committed_document` read the committed document
 from `&self` (an open transaction is not part of it). Pinned by
-`crates/doc/tilo-automerge/tests/committed_readers.rs`.
+`crates/core/tilo-automerge/tests/committed_readers.rs`.
 
 # Tilo patch: an idle sync message does not walk the whole history
 
@@ -41,7 +41,7 @@ the walk visited the document's whole change graph on every message: about
 runs such an exchange with every peer every few seconds. `remove_ancestors`
 now returns at once for an empty set and stops walking once it has removed
 everything; the set it leaves is unchanged. Pinned by
-`crates/doc/tilo-automerge/tests/idle_sync.rs`.
+`crates/core/tilo-automerge/tests/idle_sync.rs`.
 
 # Tilo patch: list the change log's hashes without rebuilding any change
 
@@ -53,7 +53,7 @@ answers both by rebuilding every change from the op set, and
 O(history) per refresh. `Automerge::change_hashes` borrows the change graph's
 own hash list, which is in the order `get_changes(&[])` lists the changes and
 to which adding a change only appends. Pinned by
-`crates/doc/tilo-automerge/tests/change_hashes.rs`.
+`crates/core/tilo-automerge/tests/change_hashes.rs`.
 
 # Tilo patch: a change to a map does not walk the whole map
 
@@ -80,7 +80,7 @@ record the few objects a batch creates.
 
 The marked spots are `TILO(map-apply-skip)` in `batch.rs` and the lookups
 it adds to `src/op_set2/op_set.rs`. Lists and text are the next section.
-Pinned by `crates/doc/tilo-automerge/tests/map_apply.rs`, which
+Pinned by `crates/core/tilo-automerge/tests/map_apply.rs`, which
 compares documents, heads and patches with crates.io `automerge` 0.12.0
 over randomised histories (including changes that overwrite an op under
 another key) and checks the cost does not grow with history. Upstream
@@ -115,7 +115,7 @@ unchanged at about 260 ms).
 
 The marked spots are `TILO(seq-apply-skip)` in `batch.rs` and the lookups
 it adds to `src/op_set2/op_set.rs`. Pinned by
-`crates/doc/tilo-automerge/tests/sequence_apply.rs`, which compares
+`crates/core/tilo-automerge/tests/sequence_apply.rs`, which compares
 documents, heads and patches with crates.io `automerge` 0.12.0 over
 randomised three-actor histories of text and list edits (multi-unit
 characters in every text encoding, marks and unmarks, block markers,
@@ -145,7 +145,7 @@ as before. They are not checked against the changes themselves, so a caller
 must pass only hashes it listed for exactly these bytes (Tilo's `app-state`
 binds them to the document chunk by digest and never takes them from peers).
 Without the option nothing changes. Pinned by
-`crates/doc/tilo-automerge/tests/known_hashes.rs`.
+`crates/core/tilo-automerge/tests/known_hashes.rs`.
 
 # Tilo patch: no hash lookup per op on an empty map
 
@@ -214,7 +214,7 @@ patch replaces the character with itself, as a list's `put_seq` does.
 
 The marked spots are `TILO(peer-change-check)` in `batch.rs`, `error.rs`,
 `change_queue.rs`, `change_graph.rs` and `src/op_set2/op_set.rs`. Pinned
-by `crates/doc/tilo-automerge/tests/crafted_changes.rs` (each class above
+by `crates/core/tilo-automerge/tests/crafted_changes.rs` (each class above
 refused with the document unchanged and still loading; the forged value
 and the honest delete applied in either order, with patches that replay to
 the text; a refused change taking its delivery with it; a refused queued
@@ -274,7 +274,7 @@ The marked spots are `TILO(op-id-index)` in `op_set.rs`, `op_id_index.rs`
 (with unit tests checking it against a model under random splices) and
 `batch.rs`. With `slow_path_assertions` (or in the crate's own tests)
 every lookup is also checked against the search. Pinned by
-`crates/doc/tilo-automerge/tests/scattered_apply.rs`, which compares
+`crates/core/tilo-automerge/tests/scattered_apply.rs`, which compares
 documents, heads and patches with crates.io `automerge` 0.12.0 over
 three-actor histories typed at scattered places and checks that what a
 remote letter costs does not grow with such a history. Upstream `main`
@@ -299,7 +299,7 @@ op columns do not store, are not looked for. The marked spot is
 `TILO(op-id-index)` in `undo_op`; the unit test
 `taking_back_spliced_ops_keeps_the_index` checks the index against a model
 through random transactions committed or taken back. Pinned by
-`crates/doc/tilo-automerge/tests/speculative_writes.rs`: taking back a letter
+`crates/core/tilo-automerge/tests/speculative_writes.rs`: taking back a letter
 before a remote letter adds 3.4 ms to the remote letter at 80,000 letters of
 scattered history without the patch (test profile, the fork optimised),
 16 µs at 4,000; with it the test holds the long history to twice the short
@@ -321,7 +321,7 @@ an empty commit no longer drops queued changes of the document's own actor
 at or after its next sequence number (`transaction_args` does that for a
 change about to claim that number, and an empty commit claims none). The
 marked spot is `TILO(empty-commit)` in `autocommit.rs`. Pinned by
-`crates/doc/tilo-automerge/tests/speculative_writes.rs`: an empty commit
+`crates/core/tilo-automerge/tests/speculative_writes.rs`: an empty commit
 cost 1.3 ms at 80,000 letters of scattered history and 37 µs at 4,000
 without the patch (test profile); with it the test holds the long history
 to ten times the short one's cost plus 50 µs.
@@ -353,7 +353,7 @@ The marked spots are `TILO(op-id-index-load)` in `automerge.rs`, `op_set.rs`
 and `op_id_index.rs`, and `TILO(op-id-index-actors)` in `op_set.rs` and
 `op_id_index.rs`, with the unit test
 `a_new_actor_renumbers_the_index_rather_than_dropping_it`. Pinned by
-`crates/doc/tilo-automerge/tests/speculative_writes.rs`: of 24 remote
+`crates/core/tilo-automerge/tests/speculative_writes.rs`: of 24 remote
 letters taken in by a replica that loaded 80,000 letters of scattered
 history, the slowest took 3.4 ms more than the median without the patch
 (test profile, the fork optimised) and 0.4 ms with it; the test allows
@@ -363,7 +363,7 @@ Upstreamable.
 # Tilo change: count the work an apply, a lookup and a sync walk do
 
 The tests that pin the patches above (`map_apply.rs`, `sequence_apply.rs`,
-`scattered_apply.rs` and `idle_sync.rs` in `crates/doc/tilo-automerge`)
+`scattered_apply.rs` and `idle_sync.rs` in `crates/core/tilo-automerge`)
 compared wall-clock times of a change into a long history and a short one,
 so a loaded machine could fail them. `automerge::work()` returns what this
 thread has done: the document ops an apply stepped over one at a time
@@ -479,7 +479,7 @@ without the change that would hold them. `AutoCommit::save_committed` saves
 what is committed and leaves the transaction open: a disk writer that shares
 a document with code holding a transaction never stores, or commits, that
 code's pending writes. Pinned by
-`crates/doc/tilo-automerge/tests/committed_readers.rs`.
+`crates/core/tilo-automerge/tests/committed_readers.rs`.
 
 # Tilo patch: a deletion of many elements is one walk and few splices
 
@@ -517,7 +517,7 @@ version, as before. An object it leaves out is in both versions with the
 same ops visible, as is everything under it, so the walk logs the same
 patches. A diff of the current state (`ClockRange::Current`) walks
 everything, as it must. Pinned by
-`crates/doc/tilo-automerge/tests/diff_walks_what_differs.rs`, and what an undo
+`crates/core/tilo-automerge/tests/diff_walks_what_differs.rs`, and what an undo
 pays for it by `collaboration`'s `undo_of_a_small_step_costs_the_step_not_the_record`.
 
 # Tilo patch: read a past version without moving the view
@@ -569,7 +569,7 @@ returns the document, and `AutoCommit::from_document` wraps it as
 that do not fit them, answer `None` and load as before. The marked spots are
 `TILO(load-in-slices)` in `automerge.rs`, `autocommit.rs` and
 `storage/document.rs`. Pinned by
-`crates/doc/tilo-automerge/tests/load_in_slices.rs`.
+`crates/core/tilo-automerge/tests/load_in_slices.rs`.
 
 # Tilo patch: a text made in a batch is made with its marks
 
@@ -613,7 +613,7 @@ where it makes it, as ids of this document. The marked spots are
 `TILO(local-change)` and `TILO(touches)` in `automerge.rs`,
 `transaction/inner.rs`, `change.rs`, `storage/change.rs` and
 `storage/change/change_op_columns.rs`. Pinned by
-`crates/doc/tilo-automerge/tests/change_touches.rs`.
+`crates/core/tilo-automerge/tests/change_touches.rs`.
 
 # Tilo patch: a model module's documents are its host's
 
@@ -637,7 +637,7 @@ committed changes' metadata (`committed_change_meta`,
 `committed_hash_of_actor_seq`, `committed_applied_seq`) without lending out
 the committed `Automerge`, which a module has none of. `AutomergeError::Device`
 carries the host's refusals. The marked spots are `TILO(model-device)`. Pinned
-by `crates/server/tilo-workspace-service/src/workspaces/packaged_model_tests.rs`.
+by `crates/core/tilo-workspace-service/src/workspaces/packaged_model_tests.rs`.
 
 # Tilo patch: ask whether a document holds a change without rebuilding it
 
@@ -648,7 +648,7 @@ heads are still in it) many times per received write, so a page catching up
 on a large record spent seconds rebuilding changes it threw away.
 `ReadDoc::has_change`, with `Automerge::has_change` and `AutoCommit::has_change`,
 answers from the change graph's hash index. Pinned by
-`crates/doc/tilo-automerge/tests/has_change.rs`.
+`crates/core/tilo-automerge/tests/has_change.rs`.
 
 # Tilo patch: a text written at once goes into the op set as runs
 
@@ -665,7 +665,7 @@ string until a patch edits it, so writing a new text builds no tree of its
 letters to read them back out of. The op set, the changes and the saved
 document are byte for byte the ones made before. The marked spots are
 `TILO(run-splice)` and `TILO(written-text)`; `Work::column_runs` counts the
-runs. Pinned by `crates/doc/tilo-automerge/tests/new_text.rs`.
+runs. Pinned by `crates/core/tilo-automerge/tests/new_text.rs`.
 
 # Tilo patch: objects made side by side go into the op set together
 
@@ -682,7 +682,7 @@ one more. A key that already holds something, a key given twice, or a
 transaction reading an older document puts each key's op in as before. The
 document is the one making each object in key order gives, byte for byte.
 The marked spot is `TILO(batch-siblings)`; `Work::op_set_splices` counts the
-splices. Pinned by `crates/doc/tilo-automerge/tests/new_text.rs`.
+splices. Pinned by `crates/core/tilo-automerge/tests/new_text.rs`.
 
 # Tilo patch: a change takes its ops' values a run at a time
 
@@ -694,4 +694,4 @@ runs of equal values (a text's letters share their object, action, key
 and value kind), so a column pays a comparison per op and one append per
 run. The change is byte for byte the one made before. The marked spot is
 `TILO(change-runs)`; `Work::change_runs` counts the runs. Pinned by
-`crates/doc/tilo-automerge/tests/new_text.rs`.
+`crates/core/tilo-automerge/tests/new_text.rs`.

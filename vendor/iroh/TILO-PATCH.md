@@ -6,12 +6,12 @@ commit `f2eb930dda3779c6d852b72f3712aacd6e573ab1`) but for the changes
 below, each marked `TILO PATCH` in the source, and its `[lib]` building an
 `rlib` only. iroh 1.3.0, the newest release
 when this was written, has the same code in every place patched. Pinned by
-`crates/system/fs/tests/iroh_idle.rs` and
+`crates/core/fs/tests/iroh_idle.rs` and
 `crates/platform/tilo-net/tests/iroh_trust.rs`.
 
 Tilo binds every endpoint with an empty relay map until someone could need to
 dial the device, and empties it again five minutes after the last
-collaborator leaves (`crates/system/fs/src/reachability.rs`,
+collaborator leaves (`crates/core/fs/src/reachability.rs`,
 tilo-fs's `bind_endpoint_with_key`). With no relays a net report is skipped
 (`DirectAddrUpdateState::run`), yet the endpoint kept waking.
 
@@ -75,7 +75,7 @@ wakeup per path every 5 s. Both now take the value given. A relay path's idle
 timeout was set to 30 s whatever the configured default; it now keeps the
 configured default when that is longer, so a longer keep-alive does not
 time out the relay path first. iroh's defaults are unchanged; tilo-fs sets a
-25 s keep-alive and a 60 s idle timeout (`crates/system/fs/src/sync.rs`).
+25 s keep-alive and a 60 s idle timeout (`crates/core/fs/src/sync.rs`).
 
 ## Built as an rlib only (`Cargo.toml`)
 
@@ -107,7 +107,7 @@ DNS-over-HTTPS resolvers against `webpki_roots`, a compiled-in copy of
 Mozilla's roots. Every other Tilo client trusts the system store
 (`tilo_net::client_config`): Tilo's bundle at
 `/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem` on Linux, read by the
-platform verifier through `crates/system/tilo-native-certs`. So a relay
+platform verifier through `crates/core/tilo-native-certs`. So a relay
 whose packet relay is served under a CA installed in that bundle, as a local
 stack's is, failed its own probe with `UnknownIssuer` and never got a home
 relay. Unset, the trust is now that store: the platform verifier

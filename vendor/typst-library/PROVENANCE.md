@@ -12,5 +12,5 @@
   and the archive's `Cargo.lock` is omitted.
 
 The one local change is described, with its reason, in `TILO-PATCH.md`. The manifest also adds
-this tree's shared wasm host (`crates/runtime/tilo-wasm-host`) as a path dependency, which is
+this tree's shared wasm host (`crates/core/tilo-wasm-host`) as a path dependency, which is
 what the change is.

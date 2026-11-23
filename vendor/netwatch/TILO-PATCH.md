@@ -5,7 +5,7 @@ crates.io `netwatch` 0.19.1, verbatim (archive SHA-256
 commit `051ab8761006d7f2155e34a49f6bb881b582d5ab`) but for the changes below,
 marked `TILO PATCH` in the source. netwatch 0.19.3, the newest release when
 this was written, has the same actor loop. Pinned by
-`crates/system/fs/tests/iroh_idle.rs`.
+`crates/core/fs/tests/iroh_idle.rs`.
 
 The network monitor's actor (`src/netmon/actor.rs`) read the clock every
 15 s (`POLL_WALL_TIME_INTERVAL`) to notice that the machine had slept: a gap
@@ -66,7 +66,7 @@ message still pass. The program is rebuilt when the known set changes (it
 lists at most 32 addresses; beyond that the monitor reads every message as
 before). A test runs the program on a datagram socket, where the kernel sees
 a message exactly as on a netlink socket, and checks what is dropped and what
-passes; `crates/system/fs/tests/iroh_idle.rs` and the shell's lone-desktop
+passes; `crates/core/fs/tests/iroh_idle.rs` and the shell's lone-desktop
 wakeup test refresh an address's lifetimes five times a second and assert the
 endpoint still sleeps.
 

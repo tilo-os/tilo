@@ -94,7 +94,7 @@ waking the process to ignore them. Its monitor also re-reads the interfaces
 once its netlink socket has subscribed, so a change made while it starts is
 not lost. A browser page also keeps its relay connection across a network
 change (it is pinged; upstream closed it for having no local address). Each directory's `TILO-PATCH.md` has the details and an
-upstream-ready description; `crates/system/fs/tests/iroh_idle.rs` pins them.
+upstream-ready description; `crates/core/fs/tests/iroh_idle.rs` pins them.
 `iroh` builds an `rlib` only: as a path package its
 upstream `cdylib` dropped the hash from the library filenames, so two builds
 in one Cargo run overwrote each other's outputs (E0460/E0463).
