@@ -845,6 +845,17 @@ impl Runtime {
         tilolang::natural::dated(text, now, offset)
     }
 
+    /// End the run `run`, which waits on a call nobody can answer any more (a host that restarted
+    /// over a store that still holds it): what it wrote is taken back, and `reason` is its last
+    /// journaled step ([`crate::exec::Core::abandon_run`]).
+    ///
+    /// # Errors
+    ///
+    /// `NotPending` when the run waits on nothing; `NotFound` when no run is; a store failure.
+    pub fn abandon_run(&self, run: &RunId, reason: &str) -> Result<(), RuntimeError> {
+        self.core.abandon_run(run, reason)
+    }
+
     /// Answer the call the run `run` waits on ([`crate::exec::Core::answer_call`]): what it came
     /// to, or a refusal, which ends the run and takes back what it wrote.
     ///

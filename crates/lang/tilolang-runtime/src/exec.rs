@@ -1900,6 +1900,34 @@ impl Core {
         self.drive_chain(run, journal)
     }
 
+    /// End the run `run`, which waits on a call nobody can answer any more: what it wrote is
+    /// taken back, and the reason it ended is its last journaled step.
+    ///
+    /// A host that restarts over a store still holding a waiting run has no invocation to answer
+    /// the call with, and no record of what the run held, so the run is ended here rather than
+    /// waiting for ever.
+    ///
+    /// # Errors
+    ///
+    /// `NotPending` when the run waits on nothing; `NotFound` when no run is; a store failure.
+    pub fn abandon_run(&self, run: &RunId, reason: &str) -> Result<(), RuntimeError> {
+        let mut journal = self.waiting_journal(run)?;
+        let action = match journal.pending.take() {
+            Some(Pending::Call { action, .. }) => action,
+            _ => journal.action.clone().unwrap_or_default(),
+        };
+        journal.finished = true;
+        journal.entries.push(JournalEntry::Denied {
+            action,
+            reason: reason.to_owned(),
+        });
+        self.store.borrow_mut().save_journal(run, &journal)?;
+        if !journal.invocation.is_empty() {
+            self.store.borrow_mut().abort_run(&journal.invocation);
+        }
+        Ok(())
+    }
+
     /// The journal of `run`, which waits on something.
     fn waiting_journal(&self, run: &RunId) -> Result<Journal, RuntimeError> {
         let journal = self

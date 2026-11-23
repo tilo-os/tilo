@@ -997,9 +997,6 @@ struct Child {
     /// The person the served invocation acts for, when the broker named one: what the run goes
     /// on as when the answer comes.
     person: Option<String>,
-    /// Whether it was resumed from the store's journals, so the invocation it was made under is
-    /// not kept: the answer cannot end that invocation, and the run stays waiting.
-    rebuilt: bool,
 }
 
 /// The wake scope an instance's code runs in, the device's content store registered for it: an
@@ -1103,30 +1100,21 @@ impl Hosted {
         // The apps this one may call, each by its package: what a call of another app's action
         // is built from.
         let callees = Rc::new(callees_of(&bundle, &spec.workspace));
-        // The runs an earlier host over this store left waiting on a child call: the answers
-        // they wait on resume them. A run's journal is the store's, so a store the process kept
-        // (another instance over it) carries its waits here. The invocation a call went out as
-        // is not in the journal; the action it invokes is, and is enough to read its answer.
+        // A run an earlier host over this store left waiting on a child call cannot be answered:
+        // the invocation the call went out as died with that host, and the change the run held
+        // went with it. It is ended here with the failure that is true of it, rather than left
+        // waiting for ever.
+        for (call, run, action) in store.open_runs() {
+            let reason = format!("`{action}` stopped when its app restarted");
+            tracing::warn!(app = spec.app, %call, %run, %reason);
+            if let Some(host) = instance.host()
+                && let Err(error) = host.runtime().abandon_run(&run, &reason)
+            {
+                tracing::warn!(app = spec.app, %run, %error, "a waiting run could not be ended");
+            }
+        }
         let waiting_calls: Rc<RefCell<BTreeMap<String, Invocation>>> = Rc::default();
-        let children: Rc<RefCell<BTreeMap<String, Child>>> = Rc::new(RefCell::new(
-            store
-                .open_runs()
-                .into_iter()
-                .filter_map(|(call, run, action)| {
-                    let invocation = rebuilt_invocation(&callees, &action)?;
-                    waiting_calls.borrow_mut().insert(call.clone(), invocation);
-                    Some((
-                        call,
-                        Child {
-                            run: Some(run),
-                            served: None,
-                            person: None,
-                            rebuilt: true,
-                        },
-                    ))
-                })
-                .collect(),
-        ));
+        let children: Rc<RefCell<BTreeMap<String, Child>>> = Rc::new(RefCell::new(BTreeMap::new()));
 
         Self {
             spec,
@@ -2242,7 +2230,6 @@ impl Hosted {
                 run,
                 served,
                 person,
-                rebuilt: false,
             },
         );
     }
@@ -2274,23 +2261,6 @@ impl Hosted {
             return false;
         }
         let call = receipt.invocation.0.to_string();
-        // A run resumed from the store's journals waits on a call whose invocation is gone: its
-        // answer has nobody to end, so the run stays waiting rather than committing half an
-        // invocation nobody was answered for.
-        if self
-            .children
-            .borrow()
-            .get(&call)
-            .is_some_and(|child| child.rebuilt)
-        {
-            tracing::warn!(
-                app = self.spec.app,
-                call,
-                "a run resumed from the store waits on a call its invocation is no longer here \
-                 to answer; it stays waiting"
-            );
-            return false;
-        }
         let invocation = self.waiting_calls.borrow_mut().remove(&call);
         let Some(child) = self.children.borrow_mut().remove(&call) else {
             // A call made outside a run (a press, whose answer the dispatch read when it ran
@@ -3153,30 +3123,6 @@ impl Invoker for Apis {
             .insert(call_id.clone(), invocation.clone());
         Invoked::Pending(call_id)
     }
-}
-
-/// The invocation a call of the action `action` was made as, as its answer reads: what a run
-/// resumed from a journal rebuilds, the journal keeping the action and not the call. `None` when
-/// no package this app may call declares it.
-fn rebuilt_invocation(callees: &Callees, action: &str) -> Option<Invocation> {
-    let (app, declared) = callees.apps.iter().find_map(|(app, meta)| {
-        meta.actions
-            .iter()
-            .find(|declared| declared.id == action)
-            .map(|declared| (app.as_str(), declared))
-    })?;
-    Some(Invocation::Action {
-        app: tilolang_tilo::runtime::ids::AppId::from(app),
-        action: action.to_owned(),
-        name: declared.name.clone(),
-        args: Vec::new(),
-        class: tilolang_tilo::runtime::meta::EffectClass::Undoable,
-        destructive: false,
-        author: None,
-        target: None,
-        from: None,
-        asks: false,
-    })
 }
 
 /// Every package this app may call, by app, in the workspace it calls them in: what a child call

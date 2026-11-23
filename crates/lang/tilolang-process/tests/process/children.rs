@@ -266,7 +266,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_host_starting_over_the_stores_runs_resumes_them_on_the_answer;
+    phase a_host_starting_over_the_stores_runs_ends_them_a_failure;
     {
         let route = RouteSpec::app(CALLER_APP, uuid::Uuid::new_v4());
         let bus = Rc::default();
@@ -292,26 +292,26 @@ tilo_test_env::scenario! {
         assert_eq!(store.open_runs().len(), 1, "the run waits on its call");
         drop(host);
 
-        // A host starts over the store: its run map is the journals' waits, and the answer
-        // resumes the run there.
+        // A host starts over the store: the run left waiting cannot be answered (the invocation
+        // the call went out as died with the host, and what the run held went with it), so it is
+        // ended with the failure that is true of it rather than left waiting for ever.
         let mut restarted = TilolangProcess::new(wake());
         let (mut window, _sent, inbox) =
             instance_with_store(&mut restarted, attributes, bundles(), &route, &bus, store);
         settle(&mut restarted, &mut window);
+        let restarted_instance = restarted.instances().next().unwrap();
+        assert_eq!(
+            restarted_instance.store().open_runs().len(),
+            0,
+            "the run left waiting is ended, not left waiting"
+        );
+        // An answer to the call arrives late: nobody waits on it any more, and nothing runs.
         receipt(&inbox, child.invocation, completed(serde_json::json!(2)));
         settle(&mut restarted, &mut window);
-        // The invocation the run was a step of is not kept with the journal, so its answer has
-        // nobody to end: the run stays waiting rather than committing its half, unanswerable.
-        let restarted = restarted.instances().next().unwrap();
         assert_eq!(
-            restarted.store().open_runs().len(),
+            counter(restarted.instances().next().unwrap()),
             1,
-            "the resumed run is still waiting"
-        );
-        assert_ne!(
-            counter(restarted),
-            3,
-            "the run did not go on with the answer: nobody it would be answered to is here"
+            "nothing of the run went on"
         );
     }
 }
