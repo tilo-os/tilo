@@ -132,6 +132,9 @@ fnv.workspace = true
 # native backends. Re-exported under the toolkit's own module paths.
 tilo-process-services = { version = "0.1.0", path = "../../sdk/tilo-process-services" }
 tilo-ui-paint = { version = "0.1.0", path = "../ui-paint" }
+# Brush presets and stroke geometry, so a stroke is previewed while it is
+# drawn by the same code that bakes it.
+tilo-paint-strokes = { version = "0.1.0", path = "../../engines/paint-strokes" }
 # The web engine client the `WebView` widget displays: the Chromium helper transport,
 # the page protocol and their commands, so code that talks to a web engine links that
 # crate instead of the toolkit.

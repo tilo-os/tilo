@@ -2480,6 +2480,9 @@ pub mod level_meter;
 pub use level_meter::{LevelMeter, LevelMeterFace, LevelMeterProps, MeterState};
 pub mod drawing;
 pub use drawing::{Drawing, DrawingProps, Ink, Meaning, Shape, Weight};
+
+pub mod paint_surface;
+pub use paint_surface::{PaintSurface, PaintSurfaceProps};
 pub mod chart;
 pub use chart::{
     Chart, ChartStyle, RollingSeries, Series, Sparkline, TrendCurve, TrendFill, TrendMarks,
