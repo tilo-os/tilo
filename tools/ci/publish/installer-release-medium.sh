@@ -97,10 +97,10 @@ else
   bundle_work="$(mktemp -d "${TMPDIR:-/var/tmp}/tilo-internal-bundle.XXXXXX")"
   trap 'rm -rf "$bundle_work"' EXIT
   TMPDIR=/var/tmp bash os/dev/export-internal-bundle.sh \
-    "$out/disk.qcow2" "$arch" "$release_tag" "$bundle_work" \
+    "$out/disk.qcow2" "$arch" "$release_tag" "$bundle_work/bundle-out" \
     || die "the internal bundle did not export from the tested medium"
-  mv "$bundle_work/bundle" "$out/bundle"
-  mv "$bundle_work/internal-catalog-$arch.json" "$out/internal-catalog-$arch.json"
+  mv "$bundle_work/bundle-out/bundle" "$out/bundle"
+  mv "$bundle_work/bundle-out/internal-catalog-$arch.json" "$out/internal-catalog-$arch.json"
   rm -rf "$bundle_work"
   trap - EXIT
   printf 'TILO_INSTALLER_MEDIUM_TIMING phase=bundle seconds=%s\n' "$((SECONDS - started))"
