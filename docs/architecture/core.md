@@ -700,7 +700,9 @@ and screen share only, never documents, and stays as it is.
   with a typed action per key (`settings/appearance#set_theme`), so a grant
   can name one setting and search finds each field at its own address; an
   app's preferences are one resource per app. There is no generic
-  `set(key, value)`.
+  `set(key, value)`. A write that must not overwrite a newer one (a display
+  arrangement) names the revision it was based on as an argument of its
+  action, and the action refuses when the record has moved past it.
 
 ### What goes
 

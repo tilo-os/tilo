@@ -188,6 +188,18 @@ impl Apps {
         let _ = self.grants.set(source);
     }
 
+    /// Hand every app instance started from now on what the providers in `providers` publish,
+    /// so the packages its code uses that are theirs are called where they registered them.
+    pub(crate) fn read_provided_from(
+        &self,
+        providers: tilo_workspace_service::workspaces::providers::Providers,
+    ) {
+        #[cfg(target_os = "linux")]
+        self.instances.read_provided_from(providers);
+        #[cfg(not(target_os = "linux"))]
+        let _ = providers;
+    }
+
     /// Run the code of an app whose calls name no view as `person`, the member the device acts
     /// as, from now on.
     pub(crate) fn keep_person(&self, person: &str) {

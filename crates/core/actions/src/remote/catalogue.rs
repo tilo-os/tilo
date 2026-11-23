@@ -561,6 +561,46 @@ pub struct CatalogueProvider {
     pub browsable: bool,
 }
 
+/// What a provider a device registered publishes, read as a package code calls its actions by
+/// (`use so.tilo.migrate.engine as engine`, then `engine.start(source: "home")`): the app its
+/// resources name, the name people call it, and each resource with the address its actions are
+/// called at. A call of one goes out as any app's call does; the device's dispatch finds the
+/// provider by the address.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ProvidedPackage {
+    pub app: String,
+    pub title: String,
+    pub resources: Vec<ProvidedResource>,
+}
+
+/// One resource of a [`ProvidedPackage`]: where its actions are called, and what they take.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ProvidedResource {
+    pub address: String,
+    pub surface: crate::surface::Surface,
+}
+
+impl ProvidedPackage {
+    /// The package `resources` make: named by the app the first of them says it is published
+    /// by, and by its label. `None` when none names an app: such a provider is reached by
+    /// querying it, not compiled against.
+    #[must_use]
+    pub fn of(resources: &[crate::ResourceSpec]) -> Option<Self> {
+        let named = resources.iter().find(|spec| spec.app_id.is_some())?;
+        Some(Self {
+            app: named.app_id.clone()?,
+            title: named.label.clone(),
+            resources: resources
+                .iter()
+                .map(|spec| ProvidedResource {
+                    address: spec.id.as_str().to_owned(),
+                    surface: crate::surface::of_resource(spec),
+                })
+                .collect(),
+        })
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct CataloguePage {
     /// Opaque revision the page, its cursor and its targets belong to.
@@ -572,6 +612,10 @@ pub struct CataloguePage {
     /// For a query naming no provider: the publishers the caller may use.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub providers: Vec<CatalogueProvider>,
+    /// For a query naming no provider: what each provider this device registered publishes at
+    /// fixed addresses, as a package code calls it by ([`ProvidedPackage`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub packages: Vec<ProvidedPackage>,
     /// Continuation for the next page; empty when there is none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub next_cursor: Vec<u8>,

@@ -277,6 +277,22 @@ d-dfz6u5sa = Videoraster
 
 d-nxne4q6s = Suchergebnisse
     .w-search-youtube = YouTube durchsuchen
+    .w-4-to-20-min = 4 bis 20 Min.
+    .w-all = Alle
+    .w-any = Beliebig
+    .w-any-time = Jederzeit
+    .w-channels = Kanäle
+    .w-length = Länge
+    .w-over-20-min = Über 20 Min.
+    .w-past-hour = Letzte Stunde
+    .w-playlists = Wiedergabelisten
+    .w-posted = Gepostet
+    .w-this-month = Diesen Monat
+    .w-this-week = Diese Woche
+    .w-this-year = Dieses Jahr
+    .w-today = Heute
+    .w-under-4-min = Unter 4 Min.
+    .w-videos = Videos
 
 d-tbcsx2lp = Suche findet
     .w-searching-youtube = YouTube wird durchsucht
@@ -288,6 +304,7 @@ d-tbcsx2lp = Suche findet
     .w-channels = Kanäle
     .w-playlists = Wiedergabelisten
     .w-videos = Videos
+    .w-videos-2 = Videos
 
 d-yf5l4ysw = Gesehen-Seite
     .w-history = Verlauf
@@ -317,6 +334,14 @@ d-w7mpbzm4 = Videoseite
     .w-found-for = Gefunden über { $found_for }
     .w-this-video-won-t-play-here = Dieses Video lässt sich hier nicht abspielen
     .w-try-again = Erneut versuchen
+    .w-cancel = Abbrechen
+    .w-comments = Kommentare
+    .w-delete = Löschen
+    .w-no-comments-yet = Noch keine Kommentare
+    .w-pinned = Angepinnt
+    .w-refresh-comments = Kommentare aktualisieren
+    .w-reply = Antworten
+    .w-send = Senden
 
 d-eijjevst = Wiedergabelistenseite
     .w-videos = { $video_count } Videos
@@ -324,6 +349,7 @@ d-eijjevst = Wiedergabelistenseite
     .w-nothing-shown-from-this-playlist-yet = Aus dieser Wiedergabeliste wird noch nichts gezeigt
     .w-play-all = Alle abspielen
     .w-refresh = Aktualisieren
+    .w-loading-the-playlist = Wiedergabeliste wird geladen
 
 d-z642pnnw = Videozeile
 
@@ -422,3 +448,195 @@ d-bxmkupyx = Nächstes automatisch abspielen
     .doc = Wenn das Video sein Ende erreicht und die Person das nächste verlangt hat, geht die Wiedergabe zum folgenden über: das nächste Video der Warteschlange wird jetzt angesehen, damit seine Stelle im Verlauf bleibt und seine Bytes angefragt werden, wenn der Dienst sie noch nicht geantwortet hat.
 d-bxmkupyx-p = P
 d-bxmkupyx-share = Anteil
+
+d-2pryeqkt = Suchart
+    .doc = Welche Arten die letzte Suche zeigt: `all`, `video`, `channel` oder `playlist`.
+
+d-33ap24jl = Verlauf importieren
+    .doc = Importiert einen Verlauf, den ein anderes Gerät geführt hat, im Format, das der Verlauf der nativen App und ihr `import`-Aufruf nutzten: Zeilen aus `[der Schlüssel eines Videos, wann es angesehen wurde in Millisekunden seit 1970]`.
+d-33ap24jl-watched = Angesehen
+
+d-3hrcdqhd = Community-Titel und -Bilder
+    .doc = Ob ein Video den Titel und das Bild der Community zeigt, wo DeArrow sie hat.
+d-3hrcdqhd-on = An
+
+d-3ncdj3up = Autor
+
+d-3vh5q7os = Antwort
+    .doc = Eine Antwort, die ein Mitglied auf einen Kommentar geschrieben hat: die des Arbeitsbereichs, neben dem Kommentar aufbewahrt, den sie beantwortet, da YouTube keine App als die Person schreiben lässt.
+    .noun = { $count ->
+        [one] Antwort
+       *[other] Antworten
+    }
+d-3vh5q7os-filter-member = Mitglied
+d-3vh5q7os-filter-said = Gesagt
+
+d-4qqv4ujc = Kommentar
+    .doc = Ein Kommentar, den jemand unter einem Video hinterlassen hat, wie der Dienst ihn angibt.
+    .noun = { $count ->
+        [one] Kommentar
+       *[other] Kommentare
+    }
+
+d-6aqost67 = Länge filtern~present
+d-6psi22ua = Text
+
+d-7cyrtrv6 = DeArrow
+    .doc = Zeigt die Titel und Bilder der Community, wo DeArrow sie hat.
+d-7pzrjwch = Auf Kommentar antworten~present
+
+d-az6iwuma = Text
+
+d-bbnmvcim = Anfang
+    .doc = Wo es beginnt, in ganzen Sekunden.
+
+d-cjlgivfs = Abschnitte
+    .doc = Die SponsorBlock-Abschnitte, die der Dienst geantwortet hat, nach ihrer Stelle.
+
+d-ckcysqaa = Beim Öffnen holen
+    .doc = Beim Öffnen einer Wiedergabeliste fragt die App den Dienst, was sie hält, wenn der Client es noch nicht weiß: eine Wiedergabeliste, die eine Suche fand, ist nur über ihren Namen und ihr Bild bekannt, und ihre Videos erscheinen, sobald YouTube sie sagt, damit eine Seite nie leer bleibt, bis jemand Aktualisieren drückt.
+
+d-dinedg2j = Sponsor-Abschnitte überspringen
+    .doc = Ob der Player die Abschnitte überspringt, die SponsorBlock markiert, während sie laufen.
+d-dinedg2j-on = An
+
+d-dninsxc6 = Veröffentlicht
+    .doc = Wann er geschrieben wurde.
+
+d-eee25ayg = Antwort zurückziehen~present
+
+d-egducuxn = Suchlänge
+    .doc = Wie lang die gefundenen Videos laufen: `any`, `short` (unter vier Minuten), `medium` (vier bis zwanzig) oder `long` (über zwanzig).
+
+d-eoe2k3dt = Suche filtern
+    .doc = Engt die Suche auf die Arten ein, die die Person gewählt hat: `all`, `video`, `channel` oder `playlist`.
+    .w-is-not-a-kind-of-result = { $kind } ist keine Ergebnisart
+d-eoe2k3dt-kind = Art
+
+d-eyoonq3d = Dislikes
+    .doc = Zeigt, wie viele Leute ein Video nicht mochten, wie Return YouTube Dislike es schätzt.
+
+d-fheinfhb = Nach Datum filtern
+    .doc = Engt die Suche darauf ein, wie neu ihre Ergebnisse sind: `any`, `hour`, `today`, `week`, `month` oder `year`.
+    .w-is-not-a-period = { $published } ist kein Zeitraum
+d-fheinfhb-published = Veröffentlicht
+
+d-gp3basiz = Mit Herz markiert
+    .doc = Der Ersteller des Videos hat es mit einem Herz markiert.
+
+d-gzpeyx2d = Antwort löschen
+    .doc = Nimmt eine Antwort zurück, die die Person geschrieben hat.
+    .w-only-the-person-who-wrote-a = Nur wer eine Antwort geschrieben hat, nimmt sie zurück
+
+d-ha6vpfhz = Antworten
+    .doc = Wie viele Antworten es auf YouTube hat.
+
+d-hgdwjwgt = Likes
+
+d-hr6a4zpi = Kommentare aktualisieren
+    .doc = Fragt den Dienst erneut nach den Kommentaren des Videos, für das, was seit dem Öffnen der Seite gesagt wurde.
+
+d-hts3jgqy = Ende
+    .doc = Wo es endet, in ganzen Sekunden.
+
+d-imamvrnr = DeArrow-Bild
+    .doc = Das Bild, mit dem die Community es rahmt, als Inhaltsadresse dieses Geräts.
+
+d-iphlnbkx = Antworten
+    .doc = Die Antworten, die Mitglieder auf Kommentare geschrieben haben: die des Arbeitsbereichs, da YouTube keine App als die Person schreiben lässt.
+
+d-j5dzbot6 = Früheren Verlauf importieren
+    .doc = Importiert den Verlauf, den eine frühere Version dieser App für die Person geführt hat, im Format jener Version: Zeilen aus `[der Schlüssel eines Videos, wann es angesehen wurde in Millisekunden seit 1970, wo es verlassen wurde in Millisekunden oder nichts]`.
+d-j5dzbot6-previous = Früher
+
+d-j7wuhxg5 = Stimmen
+    .doc = Die Stimmen der Community, die es dorthin setzen.
+
+d-jw35ym2c = Antworten
+    .doc = Antwortet auf einen Kommentar: der Arbeitsbereich behält die Antwort selbst, neben dem Kommentar, den sie beantwortet, da YouTube keine App als die Person schreiben lässt.
+    .w-type-something-to-reply-with = Tippe etwas zum Antworten
+d-jw35ym2c-text = Text
+
+d-k3jskmid = Gesagt
+
+d-kwxg57v6 = Video
+    .doc = Das Video, unter dem der Kommentar steht.
+
+d-lgtlgzui = Bild
+
+d-lhbq7qff = Dislikes
+    .doc = Wie viele Leute es nicht mochten, wie Return YouTube Dislike es schätzt: null, bis er es sagt.
+
+d-li4xiefh = Video-Schlüssel
+    .doc = Das Video, unter dem er hinterlassen wurde, wie der Dienst es benennt.
+
+d-mwai3gvn = Link öffnen
+    .doc = Öffnet einen Link des Schemas, das dieser Client beansprucht: das Video (`tube:watch?v=<key>`), den Kanal (`tube:channel?key=<key>`) oder die Wiedergabeliste (`tube:playlist?key=<key>`), das er benennt, oder die Suche, um die er bittet (`tube:search?q=<query>`).
+d-mwai3gvn-link = Link
+
+d-nzwksffp = Mitglied
+    .doc = Wer ihn geschrieben hat.
+
+d-o7bs2bg7 = Abschnitt
+    .doc = Ein `SponsorBlock`-Abschnitt eines Videos: wo er beginnt und endet, damit der Player ihn überspringen kann.
+    .noun = { $count ->
+        [one] Abschnitt
+       *[other] Abschnitte
+    }
+
+d-puten5ar = Verlauf gelöscht
+    .doc = Ob eine Person ihren Verlauf gelöscht hat: ein früherer Verlauf wird nicht darüber importiert, da das Löschen ihr gehört.
+
+d-pv4laajx = Schlüssel
+
+d-pvlf5o2c = Video-Schlüssel
+    .doc = Das Video, zu dem er gehört, wie der Dienst es benennt.
+
+d-qlgpeq35 = Kategorie
+    .doc = Seine Art, wie SponsorBlock sie benennt: `sponsor`, `selfpromo`, `interaction`, `intro`, `outro`, `preview`, `music_offtopic` oder `filler`.
+
+d-qynvz25p-filter-dearrow = DeArrow
+d-qynvz25p-filter-dislikes = Dislikes
+d-qynvz25p-filter-sponsorblock = SponsorBlock
+
+d-s3fflgse = Abschnitt überspringen
+    .doc = Überspringt den SponsorBlock-Abschnitt, in den das Video läuft, bei `at` (ein Anteil seiner Länge), wenn die Person Abschnitte überspringt: der Abspielkopf springt an das Ende des Abschnitts, damit eine Sponsor-Lesung oder ein Outro nie angesehen wird.
+d-s3fflgse-at = Bei
+
+d-tfnkfs2w = Nach Länge filtern
+    .doc = Engt die Suche darauf ein, wie lang ihre Videos laufen: `any`, `short`, `medium` oder `long`.
+    .w-is-not-a-length = { $length } ist keine Länge
+d-tfnkfs2w-length = Länge
+
+d-thwdswkk-filter-history_cleared = Verlauf gelöscht
+
+d-tmf5hovn = Angepinnt
+    .doc = Der Ersteller des Videos hat es oben angepinnt.
+
+d-u3d3kfnk = Veröffentlichung filtern~present
+
+d-uakovynu = Schlüssel
+
+d-ugv4b6is = Kommentare
+    .doc = Die Kommentare, die der Dienst geantwortet hat, nach der eigenen id des Kommentars.
+
+d-usutngoe = Dislike-Zahlen
+    .doc = Ob ein Video zeigt, wie viele Leute es nicht mochten, wie Return YouTube Dislike es schätzt.
+d-usutngoe-on = An
+
+d-vbbcsaos = SponsorBlock
+    .doc = Überspringt die Abschnitte, die SponsorBlock markiert, während sie laufen.
+
+d-vvxj4w64 = DeArrow-Titel
+    .doc = Der Titel der Community für es, wenn DeArrow es besser benennt als sein Ersteller.
+
+d-xwvivyes = Beim Öffnen lesen
+    .doc = Beim Öffnen eines Videos fragt die App den Dienst nach dem, was seine Seite zeigt und der Client noch nicht hält: wo seine Bytes in der bevorzugten Qualität der Person laufen, seine Kommentare, die von SponsorBlock markierten Abschnitte, den Titel und das Bild der Community (DeArrow) und wie viele Leute es nicht mochten.
+
+d-y4coaxks = Kommentar
+    .doc = Der Kommentar, den sie beantwortet, wie der Dienst ihn benennt.
+
+d-ypapv6iy = Suchveröffentlichung
+    .doc = Wie neu sie sind: `any`, `hour`, `today`, `week`, `month` oder `year`.
+
+d-zk3bb2v4 = Suche filtern~present

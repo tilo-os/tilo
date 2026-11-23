@@ -18,7 +18,7 @@
 use super::commits::{RecordCreation, ServiceCommits};
 use super::ticket::Tickets;
 use super::workspaces::{MemberListGrants, Opening, ServiceWorkspaces, block_on_owned};
-use super::{host_runs, presence, take_work};
+use super::{host_runs, take_work};
 use crate::personal_devices::PersonalDevices;
 use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, apps, host, profile};
 use collab_types::workspace_grant::WorkspaceGrant;
@@ -122,9 +122,6 @@ pub struct Daemon {
     tickets: Arc<Tickets>,
     /// Every invocation this device was asked for, however it was asked.
     invocations: Arc<Invocations>,
-    /// The agent sessions this device's MCP server serves now: who is here, beside the
-    /// workspace's own roster.
-    who_is_here: Arc<presence::WhoIsHere>,
     /// The device this daemon is, as the API it serves locally acts.
     key: SigningKey,
     cert: DeviceCert,
@@ -714,6 +711,9 @@ impl Daemon {
         let personal = tilo_workspace_service::workspaces::PersonResources::default();
         personal.attach(workspaces.copies().clone(), tilo_rt::app().handle(), None);
         apps.device_grants().keep_in(std::sync::Arc::new(personal));
+        // What the device's providers publish at fixed addresses is what an app's code calls them
+        // by: each instance is handed their packages.
+        apps.read_provided_from(workspaces.copies().providers());
         let identity_socket = sockets.join(IDENTITY_SOCKET);
         stage("starting the identity service");
         let identity_broker = identity_service(
@@ -731,8 +731,6 @@ impl Daemon {
         stage("starting the collaboration broker");
         #[cfg(unix)]
         let shell_links = Arc::default();
-        #[cfg(unix)]
-        let shell_dispatch: Arc<super::shell::Dispatching> = Arc::default();
         let invocations: Arc<Invocations> = Arc::default();
         let (policy_origin, broker) = start_broker(
             BrokerParts {
@@ -746,8 +744,6 @@ impl Daemon {
                 files: Arc::clone(&files_daemons),
                 #[cfg(unix)]
                 shell_links: &shell_links,
-                #[cfg(unix)]
-                shell_dispatch: &shell_dispatch,
             },
             brokers,
             fanout,
@@ -822,7 +818,7 @@ impl Daemon {
             identity_socket.clone(),
             (actor.clone(), identity.key.verifying_key().to_bytes()),
         );
-        let daemon = Self {
+        Ok(Self {
             _files_tree: files_tree,
             policy_origin,
             broker,
@@ -843,7 +839,6 @@ impl Daemon {
             _kept: kept,
             tickets,
             invocations,
-            who_is_here: Arc::new(presence::WhoIsHere::default()),
             key: identity.key.clone(),
             cert: identity.cert,
             account: Mutex::new(None),
@@ -851,14 +846,7 @@ impl Daemon {
             agents: super::serve::Agents::default(),
             place,
             _lock: lock,
-        };
-        // The person's shell reaches the one dispatch their own runs do, as them.
-        #[cfg(unix)]
-        match daemon.person() {
-            Ok(person) => shell_dispatch.serve(person),
-            Err(error) => tracing::warn!(%error, "this daemon's shell reaches no dispatch"),
-        }
-        Ok(daemon)
+        })
     }
 }
 
@@ -996,9 +984,6 @@ struct BrokerParts<'a> {
     /// The links of the shells this daemon starts.
     #[cfg(unix)]
     shell_links: &'a Arc<tilo_workspace_service::apps::shell::ShellLinks>,
-    /// The dispatch those shells' calls reach, once the broker serves.
-    #[cfg(unix)]
-    shell_dispatch: &'a Arc<super::shell::Dispatching>,
 }
 
 /// Start the collaboration broker over this profile's services.
@@ -1100,6 +1085,10 @@ fn broker_services(
         // The person's shortcuts, saved into the workspaces this device holds and run here: the
         // same store the trigger runner arms them from, so a computer keeps its shortcuts with
         // no desktop session open on it.
+        // Who is present on which device, as this device's workspaces hear it: their links, and
+        // the agent sessions this daemon serves.
+        present_devices: Some(Arc::new(parts.workspaces.copies().clone())
+            as Arc<dyn tilo_workspace_service::workspaces::PresentDevices>),
         shortcut_library: Some(Arc::new(super::shortcuts::Shortcuts::new(
             parts.workspaces.copies().clone(),
             parts.workspaces.device_cert().clone(),
@@ -1120,9 +1109,7 @@ fn broker_services(
         #[cfg(unix)]
         shell: Some(Arc::new(super::shell::services(
             parts.workspaces,
-            parts.shell_links,
-            parts.sockets.join(COLLAB_SOCKET),
-            Arc::clone(parts.shell_dispatch),
+            parts.apps,
         ))),
         // The providers registered on this device ([`Daemon::provide`]): a call made here reaches
         // them through the same registry another device's call does.
@@ -1242,77 +1229,64 @@ impl Daemon {
     /// # Errors
     /// The workspace is not one this device may act in, or its admission cannot be opened.
     fn provider_for(&self, workspace: &str) -> io::Result<RuntimeActionProvider> {
-        self.person()?.provider(workspace)
-    }
-
-    /// The one dispatch the person's own calls on this device reach, as them.
-    fn person(&self) -> io::Result<PersonDispatch> {
-        Ok(PersonDispatch {
-            workspaces: Arc::clone(&self.workspaces),
-            actor: self.actor.clone(),
-            broker: self
-                .broker
-                .app_action_broker()
-                .ok_or_else(|| io::Error::other("the action broker is unavailable"))?,
-            apps: Arc::clone(&self.apps),
-            policy_time: self.policy_origin.capture().map_err(io::Error::other)?,
-            tickets: Arc::clone(&self.tickets),
-            invocations: Arc::clone(&self.invocations),
-            who_is_here: Arc::clone(&self.who_is_here),
-        })
-    }
-}
-
-/// The one dispatch the person's own calls on this device reach (`tilo do`, their shell), in any
-/// workspace it holds: admitted as the person, and decided by what they may do there.
-#[derive(Clone)]
-pub(super) struct PersonDispatch {
-    workspaces: Arc<ServiceWorkspaces>,
-    actor: String,
-    broker: AppActionBroker,
-    apps: Arc<apps::Apps>,
-    policy_time: tilo_workspace_service::apps::policy_clock::PolicyTime,
-    tickets: Arc<Tickets>,
-    invocations: Arc<Invocations>,
-    who_is_here: Arc<who_is_here::WhoIsHere>,
-}
-
-impl PersonDispatch {
-    /// Who the person's calls in `workspace` are made as.
-    pub(super) fn caller(&self, workspace: &str) -> Caller {
-        Caller::local_person(&self.actor).in_workspace(workspace)
-    }
-
-    /// The dispatch the person's calls in `workspace` reach.
-    pub(super) fn provider(&self, workspace: &str) -> io::Result<RuntimeActionProvider> {
         let workspaces = Arc::clone(&self.workspaces);
         let actor = self.actor.clone();
         let named = workspace.to_owned();
         let admission =
             block_on_owned(async move { workspaces.admit_execution(&named, &actor).await })
                 .map_err(io::Error::other)?;
-        let provider = self
+        let broker = self
             .broker
+            .app_action_broker()
+            .ok_or_else(|| io::Error::other("the action broker is unavailable"))?;
+        let provider = broker
             .certified_local_action_provider(admission.caller(), admission.presentation())
             .map_err(io::Error::other)?;
         admission
             .check(self.workspaces.copies())
             .map_err(io::Error::other)?;
         Ok(RuntimeActionProvider {
-            broker: self.broker.clone(),
+            broker,
             workspace: workspace.to_owned(),
             workspaces: Arc::clone(&self.workspaces),
             apps: Some(Arc::clone(&self.apps)),
             session: Some(Arc::new(AdmittedRuntimeSession {
-                policy_time: self.policy_time.clone(),
+                policy_time: self.policy_origin.capture().map_err(io::Error::other)?,
                 provider,
                 admission,
                 agent: None,
-                projection: Some(self.caller(workspace)),
+                projection: Some(Caller::local_person(&self.actor).in_workspace(workspace)),
             })),
             tickets: Some(Arc::clone(&self.tickets)),
             invocations: Arc::clone(&self.invocations),
-            who_is_here: Some(Arc::clone(&self.who_is_here)),
+        })
+    }
+
+    /// The sessions of an account signed in on this computer as another person than the
+    /// device's, each a run of `key` (certified by `cert`) in the device's workspace: its calls
+    /// act as that key, and the workspace grants it what it grants its person, never what the
+    /// device's own person holds.
+    pub(crate) fn key_sessions(
+        self: &Arc<Self>,
+        key: SigningKey,
+        cert: DeviceCert,
+    ) -> tilo_mcp::SessionFactory<RuntimeActionProvider> {
+        let daemon = Arc::downgrade(self);
+        Arc::new(move || {
+            let daemon = daemon
+                .upgrade()
+                .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
+            let key = tilo_api::grant_key::GrantKey::held(
+                key.clone(),
+                cert.clone(),
+                tilo_clock::unix_now_ns(),
+            )
+            .map_err(|refused| io::Error::other(refused.to_string()))?;
+            let provider = daemon.provider_for_key(&daemon.workspace()?, &key)?;
+            let caller = provider
+                .admission_caller()
+                .ok_or_else(|| io::Error::other("the key's run was not admitted"))?;
+            tilo_mcp::McpServer::admitted(provider, caller)
         })
     }
 }
@@ -1357,7 +1331,6 @@ impl Daemon {
             // another device in ([`RuntimeActionProvider::is_the_person`]).
             tickets: Some(Arc::clone(&self.tickets)),
             invocations: Arc::clone(&self.invocations),
-            who_is_here: Some(Arc::clone(&self.who_is_here)),
         })
     }
 }
@@ -1387,6 +1360,28 @@ impl Daemon {
             Some(person),
             Arc::new(catalogue),
         )))
+    }
+
+    /// What the person's own programs call through in `workspace`: this daemon's API for them,
+    /// and the caller it admitted them as.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn person_programs_api(
+        &self,
+        workspace: &str,
+    ) -> Result<(Arc<dyn ActionProvider + Send + Sync>, Caller), String> {
+        let provider = self
+            .provider_for(workspace)
+            .map_err(|error| error.to_string())?;
+        let caller = provider
+            .admission_caller()
+            .ok_or_else(|| "the person's run was not admitted".to_owned())?;
+        Ok((Arc::new(provider), caller))
+    }
+
+    /// The person this daemon serves.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn persons_id(&self) -> &str {
+        &self.actor
     }
 
     /// A task's programs run on Linux alone.
@@ -1983,10 +1978,6 @@ pub struct RuntimeActionProvider {
     /// The device's record of every invocation it was asked for: what following, waiting on and
     /// stopping one asks, wherever the call came in.
     invocations: Arc<Invocations>,
-    /// The agent sessions this device's MCP server serves, for a host that serves them: what
-    /// who is here adds beside the workspace's roster, and what a stop action ends. `None` for a
-    /// host that serves no connection of its own.
-    who_is_here: Option<Arc<presence::WhoIsHere>>,
 }
 
 struct AdmittedRuntimeSession {
@@ -2138,10 +2129,8 @@ impl RuntimeActionProvider {
             let run = tilo_mcp::agent_id(&caller);
             // The connection is here from the moment it opens, before it asks anything, and
             // says what it is when its client does.
-            if let (Some(who_is_here), Some(execution)) =
-                (&provider.who_is_here, caller.execution_id())
-            {
-                who_is_here.opened(
+            if let Some(execution) = caller.execution_id() {
+                provider.workspaces.copies().agent_opened(
                     &execution.to_string(),
                     &workspace,
                     tilo_mcp::session_api::UNNAMED_CLIENT,
@@ -2210,7 +2199,6 @@ impl RuntimeActionProvider {
             })),
             tickets: self.tickets.clone(),
             invocations: Arc::clone(&self.invocations),
-            who_is_here: self.who_is_here.clone(),
         };
         Ok((run, caller))
     }
@@ -2267,7 +2255,7 @@ fn whichever_first(
 /// this device serves it: `None` for a session it does not serve, whose stop is somebody
 /// else's to answer.
 fn stop_session(
-    who_is_here: &presence::WhoIsHere,
+    workspaces: &tilo_workspace_service::workspaces::Workspaces,
     workspace: &str,
     request: &InvokeRequest,
 ) -> Option<InvocationReceipt> {
@@ -2276,7 +2264,7 @@ fn stop_session(
     };
     let stop: tilo_actions::remote::mcp_server::AgentSessionRef =
         serde_json::from_value(serde_json::Value::Object(argument.clone())).ok()?;
-    if !who_is_here.stop(workspace, &stop.session) {
+    if !workspaces.stop_agent(workspace, &stop.session) {
         return None;
     }
     Some(InvocationReceipt {
@@ -2452,8 +2440,10 @@ impl ActionProvider for RuntimeActionProvider {
 
     fn retire_execution(&self, caller: &Caller) {
         // The connection ended, so its session leaves who is here.
-        if let (Some(who_is_here), Some(execution)) = (&self.who_is_here, caller.execution_id()) {
-            who_is_here.closed(&execution.to_string());
+        if let Some(execution) = caller.execution_id() {
+            self.workspaces
+                .copies()
+                .agent_closed(&execution.to_string());
         }
         if let Some(session) = &self.session {
             if caller
@@ -2474,7 +2464,7 @@ impl ActionProvider for RuntimeActionProvider {
     /// The connection's client named itself (`Claude Code`): who is here calls its session so
     /// from now on.
     fn introduced(&self, caller: &Caller, client: &str) {
-        let (Some(session), Some(who_is_here)) = (&self.session, &self.who_is_here) else {
+        let Some(session) = &self.session else {
             return;
         };
         // Only the run's own connection may say what it is, and the person's own run is no agent.
@@ -2482,7 +2472,9 @@ impl ActionProvider for RuntimeActionProvider {
             return;
         }
         if let Some(execution) = caller.execution_id() {
-            who_is_here.named(&execution.to_string(), client);
+            self.workspaces
+                .copies()
+                .agent_named(&execution.to_string(), client);
         }
         // The workspace's record of its agents calls the agent what its client names itself,
         // keeping the id every run of it shares: a person reads "Claude Code" in the roster, not
@@ -2593,18 +2585,20 @@ impl ActionProvider for RuntimeActionProvider {
         //
         // A session the person stopped is ended for good: what its connection asks next reaches
         // nothing.
-        if let (Some(who_is_here), Some(execution)) = (&self.who_is_here, caller.execution_id())
-            && who_is_here.ended(&execution.to_string())
+        if let Some(execution) = caller.execution_id()
+            && self
+                .workspaces
+                .copies()
+                .agent_stopped(&execution.to_string())
         {
             return Pending::ready(Err(ActionCallError::NotPermitted));
         }
         // The person stops one of the agent sessions this device serves, as their card asks:
         // the session leaves who is here and answers no more.
-        if let Some(who_is_here) = &self.who_is_here
-            && request.target
-                == tilo_actions::remote::mcp_server::target(tilo_actions::remote::mcp_server::STOP)
+        if request.target
+            == tilo_actions::remote::mcp_server::target(tilo_actions::remote::mcp_server::STOP)
             && self.is_the_person(caller)
-            && let Some(receipt) = stop_session(who_is_here, &self.workspace, &request)
+            && let Some(receipt) = stop_session(self.workspaces.copies(), &self.workspace, &request)
         {
             return Pending::ready(Ok(receipt));
         }
@@ -2630,6 +2624,21 @@ impl ActionProvider for RuntimeActionProvider {
         if let Some(session) = &self.session {
             if let Err(refusal) = session.check(caller, &self.workspaces) {
                 return Pending::ready(Err(refusal.into()));
+            }
+            // What an agent asks shown goes on its person's layout, where their devices show it.
+            if session.agent.is_some()
+                && let Some(shown) = super::layout::show_on_layout(
+                    &self.workspaces,
+                    &self.workspace,
+                    (session.acting(), &request),
+                    |app| {
+                        self.apps
+                            .as_ref()
+                            .map_or_else(|| app.to_owned(), |apps| apps.display_name(app))
+                    },
+                )
+            {
+                return shown;
             }
             let runs_as = session.acting().clone();
             let invocation = request.invocation;
@@ -2682,10 +2691,10 @@ impl ActionProvider for RuntimeActionProvider {
             .action_observe(&on_this_device(caller), id)
     }
 
-    /// Who is in the workspace, as the desktop's roster names them: routed
-    /// and authorized exactly as [`Self::observe`], and empty for a host
-    /// that keeps no roster. A device that serves its person's agent
-    /// sessions lists them beside the roster, from the moment each connects.
+    /// Who is in the workspace, as the desktop's roster names them with the
+    /// presence of this device's workspaces beside it: routed and authorized
+    /// exactly as [`Self::observe`], and empty for a session whose host keeps
+    /// no roster.
     fn here(&self, caller: &Caller) -> Option<Vec<tilo_actions::remote::Here>> {
         let listed = if let Some(session) = &self.session {
             session.check(caller, &self.workspaces).ok()?;
@@ -2700,20 +2709,10 @@ impl ActionProvider for RuntimeActionProvider {
             }
             self.broker.state().here(&on_this_device(caller))
         };
-        if listed.is_none() && self.who_is_here.is_none() {
-            return None;
+        if self.session.is_some() {
+            return Some(listed.unwrap_or_default());
         }
-        let mut here = listed.unwrap_or_default();
-        if let Some(who_is_here) = &self.who_is_here {
-            who_is_here.add_here(&self.workspace, &mut here);
-        }
-        // The devices each is present on, as this device's links hear them.
-        tilo_workspace_service::workspaces::PresentDevices::attach(
-            self.workspaces.copies(),
-            &self.workspace,
-            &mut here,
-        );
-        Some(here)
+        listed
     }
 
     /// Where the session's workspace stands, for a caller of it: authorized
@@ -2755,15 +2754,14 @@ impl ActionProvider for RuntimeActionProvider {
         if !matches!(scope, tilo_actions::remote::WatchScope::Here) {
             return followed;
         }
-        let Some(who_is_here) = &self.who_is_here else {
-            return followed;
-        };
-        // A session opening, naming itself or leaving is news to who is here, as the roster's
-        // own changes are.
-        let sessions = who_is_here.changed().map(|()| Ok(()));
+        // Presence moving (an agent session opening, naming itself or leaving, a device coming
+        // or going) is news to who is here, as the roster's own changes are.
+        let (wake, moved) = tilo_actions::remote::ResourceWake::new();
+        tilo_workspace_service::workspaces::on_presence_change(&wake);
+        let moved = moved.map(|()| Ok(()));
         Some(match followed {
-            Some(followed) => whichever_first(followed, sessions),
-            None => sessions,
+            Some(followed) => whichever_first(followed, moved),
+            None => moved,
         })
     }
 
@@ -2843,8 +2841,8 @@ impl ActionProvider for RuntimeActionProvider {
             .action_cancel(&on_this_device(caller), id)
     }
 
-    /// The workspace's content, put through the broker, which decides who may, into the shelf
-    /// its records' content is kept on: for the run this runtime admitted, as that run.
+    /// The workspace's content, put into the shelf its records' content is kept on once the
+    /// workspace's grants allow the put: for the run this runtime admitted, as that run.
     fn content_puts(&self) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
         Some(Arc::new(AdmittedContent {
             session: Arc::clone(self.session.as_ref()?),
@@ -3258,7 +3256,6 @@ fn serve_key_sessions(
                 session: None,
                 tickets: None,
                 invocations: Arc::clone(invocations),
-                who_is_here: None,
             },
             workspace: workspace.to_owned(),
             actor: actor.to_owned(),

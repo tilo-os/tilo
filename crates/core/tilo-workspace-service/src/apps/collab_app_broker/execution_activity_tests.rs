@@ -1590,13 +1590,6 @@ impl ActionProvider for CountedApi {
 struct NoPolling(crate::apps::automation::ApiHooks);
 
 impl tilo_automation::InvocationHooks for NoPolling {
-    fn confirm(
-        &self,
-        request: tilo_automation::ConfirmationRequest,
-    ) -> Pending<Option<tilo_actions::remote::Confirmation>> {
-        self.0.confirm(request)
-    }
-
     fn ask(&self, request: tilo_automation::AskRequest) -> Pending<Option<serde_json::Value>> {
         self.0.ask(request)
     }
@@ -1652,7 +1645,6 @@ async fn shortcut_step_observes_once_per_change() {
     let observes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let shortcut = export_shortcut();
     let hooks = NoPolling(crate::apps::automation::ApiHooks::new(
-        None,
         tokio::runtime::Handle::current(),
         crate::apps::automation::RunningInvocations::default(),
         tilo_automation::AutomationInvocationId::new(),
@@ -1678,6 +1670,7 @@ async fn shortcut_step_observes_once_per_change() {
                     caused_by: None,
                     parent: None,
                     chain: Vec::new(),
+                    approval: None,
                     resume: None,
                     from: None,
                 },

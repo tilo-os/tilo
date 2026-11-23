@@ -54,13 +54,13 @@ use tilo_actions::remote::{
     CatalogueResource, CatalogueRow, InvocationLog, InvocationReceipt, InvocationState,
     InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, WORKSPACE_APPS,
     WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_GRANT_REVOKE,
-    WORKSPACE_INVITATIONS, WORKSPACE_MEMBER_ADDED, WORKSPACE_MEMBER_ADMIT, WORKSPACE_MEMBER_PLACED,
-    WORKSPACE_MEMBER_REMOVED, WORKSPACE_MEMBERS, WORKSPACE_REGISTRIES, WORKSPACE_SERVERS,
-    WORKSPACE_TRUST, WORKSPACE_WAITING, asked, formats, mcp_server, person_accounts,
-    person_connections, person_models, person_telling, person_vault, server_account, workspace_app,
-    workspace_app_named, workspace_governance_address, workspace_governance_child,
-    workspace_governance_operation, workspace_governance_resource, workspace_member,
-    workspace_person,
+    WORKSPACE_INVITATIONS, WORKSPACE_MEMBER_ADMIT, WORKSPACE_MEMBER_ADMITTED,
+    WORKSPACE_MEMBER_PLACED, WORKSPACE_MEMBER_REMOVED, WORKSPACE_MEMBERS, WORKSPACE_REGISTRIES,
+    WORKSPACE_SERVERS, WORKSPACE_TRUST, WORKSPACE_WAITING, asked, formats, mcp_server,
+    person_accounts, person_connections, person_models, person_telling, person_vault,
+    server_account, workspace_app, workspace_app_named, workspace_governance_address,
+    workspace_governance_child, workspace_governance_operation, workspace_governance_resource,
+    workspace_member, workspace_person,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionParam, ExecutionLocus,
@@ -280,7 +280,7 @@ const VERBS: [Verb; 45] = [
     },
     Verb {
         id: ADD_MEMBER,
-        label: "Add a person",
+        label: "Admit a person",
         check: governance::ADD_MEMBER,
         kind: roles::GOVERNANCE_KIND,
         params: add_member_params,
@@ -1180,11 +1180,11 @@ fn governance_request(request: &InvokeRequest, workspace: &str, operation: &str)
 }
 
 /// The operation `change` is granted by, and the action the tree publishes it at, for a device
-/// asking whether it is its to make: `add` and `role` are the `member.add` operation, and a
+/// asking whether it is its to make: `admit` and `role` are the `member.add` operation, and a
 /// removal is `remove-member`.
 fn admitted_change(change: &str) -> Option<(&'static str, &'static str)> {
     let published = [
-        WORKSPACE_MEMBER_ADDED,
+        WORKSPACE_MEMBER_ADMITTED,
         WORKSPACE_MEMBER_PLACED,
         WORKSPACE_MEMBER_REMOVED,
     ]
@@ -2009,7 +2009,7 @@ impl Workspaces {
                         .await
                 } else {
                     // The action the tree publishes the operation at, which says more than
-                    // the operation does where one publishes several (`role` and `add` are
+                    // the operation does where one publishes several (`role` and `admit` are
                     // both `member.add`).
                     let published = request.target.address.action.clone();
                     self.governance_invoke(workspace_id, caller, certificate, &asked, &published)
@@ -2266,7 +2266,7 @@ impl Workspaces {
             ADD_MEMBER => {
                 let person = args.required_key("person")?;
                 let place = args.place_at("role")?;
-                // A role is changed on a member; `add` is what gives a person a place.
+                // A role is changed on a member; `admit` is what gives a person a place.
                 if published == WORKSPACE_MEMBER_PLACED {
                     WorkspaceOp::Role(person, place)
                 } else {

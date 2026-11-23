@@ -36,9 +36,9 @@ pub const ISSUE_INVITATION: &str = "issue-invitation";
 /// sheet.
 pub const SHOW_INVITE: &str = "show-invite";
 
-/// The action opening the Add a device sheet: the link a new device of the person's becomes
-/// one of theirs, shown as a code its camera reads. An app that lists what acts as the person
-/// (Settings' Devices) offers adding to it this way.
+/// The action showing how a new device of the person's joins them: a desktop opens Settings'
+/// devices page, where "Add a device" prints the ticket the new device logs in with. An app that
+/// lists what acts as the person (Settings' Devices) offers adding to it this way.
 pub const SHOW_PAIR_DEVICE: &str = "show-pair-device";
 
 /// The resource the person's own tilolang line is run on: a line typed in a conversation, run as

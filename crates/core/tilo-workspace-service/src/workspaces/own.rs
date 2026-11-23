@@ -682,29 +682,6 @@ impl Workspaces {
         )
     }
 
-    /// Keep `person`'s membership of `workspace` at the role its governance gives them now: what
-    /// admitting them writes, as they join.
-    pub(super) async fn keep_admitted(&self, workspace: &str, person: &[u8; 32]) {
-        let role = match self.workspace(workspace).await {
-            Ok(governed) => governed
-                .lock()
-                .await
-                .peer()
-                .governance()
-                .governed_policy()
-                .ok()
-                .and_then(|policy| policy.active_role(&hex::encode(person))),
-            Err(_) => None,
-        };
-        let Some(role) = role else {
-            return;
-        };
-        let role = role.name().to_string();
-        if let Err(error) = self.keep_membership(workspace, person, &role) {
-            tracing::warn!(%workspace, %error, "an admitted member's membership is not kept");
-        }
-    }
-
     /// Label `workspace` with `labels`, in place of what it was labelled with before (none takes
     /// them all off).
     pub(super) fn label(&self, workspace: &str, labels: WorkspaceLabels) -> Result<(), String> {

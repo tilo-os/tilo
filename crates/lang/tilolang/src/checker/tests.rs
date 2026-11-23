@@ -104,7 +104,7 @@ fn a_prop_a_component_does_not_declare_fails_the_compile() {
 fn a_begin_handler_without_a_binds_clause_is_refused() {
     let body = "type Step {\n    title: Text\n    done: Bool\n}\n\
                 action make(s: Step, title: Text) -> Step {\n    s.title = title\n    s\n}\n\
-                view page(s: Step) {\n    ui.TextInput(placeholder: \"Add\") {\n        \
+                view editor(s: Step) {\n    ui.TextInput(placeholder: \"Add\") {\n        \
                 on begin(text: Text): make(s, text)\n    }\n}\n";
     let diags = diagnostics(body);
     assert!(
@@ -121,7 +121,7 @@ fn a_begin_handler_without_a_binds_clause_is_refused() {
 fn a_begin_handler_binds_only_a_text_field_of_the_made_type() {
     let body = "type Step {\n    title: Text\n    done: Bool\n}\n\
                 action make(s: Step, title: Text) -> Step {\n    s.title = title\n    s\n}\n\
-                view page(s: Step) {\n    ui.TextInput(placeholder: \"Add\") {\n        \
+                view editor(s: Step) {\n    ui.TextInput(placeholder: \"Add\") {\n        \
                 on begin(text: Text): make(s, text) binds .done\n    }\n}\n";
     let diags = diagnostics(body);
     assert!(
@@ -137,7 +137,7 @@ fn a_begin_handler_binds_only_a_text_field_of_the_made_type() {
 fn a_begin_handler_binding_a_text_field_is_accepted() {
     let body = "type Step {\n    title: Text\n    done: Bool\n}\n\
                 action make(s: Step, title: Text) -> Step {\n    s.title = title\n    s\n}\n\
-                view page(s: Step) {\n    ui.TextInput(placeholder: \"Add\") {\n        \
+                view editor(s: Step) {\n    ui.TextInput(placeholder: \"Add\") {\n        \
                 on begin(text: Text): make(s, text) binds .title\n    }\n}\n";
     let diags = diagnostics(body);
     assert!(diags.is_empty(), "{diags:#?}");

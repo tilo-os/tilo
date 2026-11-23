@@ -1014,9 +1014,80 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         args: TiloArgs,
         structured: bool,
     ) -> Result<Reply, Failure> {
+        if self.programs_on_device && !self.starts_programs() {
+            return Box::pin(self.tilo_on_device(args, structured)).await;
+        }
         let (mut reply, answer, _) = Box::pin(self.tilo_step(args)).await?;
         if structured {
             reply.structured = Some(self.program_answer(answer.as_ref(), &reply));
+        }
+        Ok(reply)
+    }
+
+    /// The `tilo` tool where the device this server's calls go to runs the programs: `args`'
+    /// program as one step of this session there ([`task_programs::RUN`]), which that device runs
+    /// in a task host of its own, as this session's caller.
+    async fn tilo_on_device(&self, args: TiloArgs, structured: bool) -> Result<Reply, Failure> {
+        use tilo_actions::InvocationUpdate;
+        use tilo_actions::remote::task_programs;
+        let mut fields = Map::new();
+        fields.insert("program".into(), args.program.into());
+        if args.confirm {
+            fields.insert("confirm".into(), true.into());
+        }
+        // A person's programs go on in this server's own program session there, so its `let`s
+        // carry from one program to the next and another client's never mix in.
+        if self.session_id().is_none()
+            && let Some(execution) = self.caller.execution_id()
+        {
+            fields.insert("session".into(), execution.simple().to_string().into());
+        }
+        let invocation = tilo_actions::InvocationId::new();
+        let request = InvokeRequest {
+            invocation,
+            target: task_programs::target(),
+            argument: InvokeArgument::Json(fields),
+            context: self.context(),
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        let receipt = self
+            .host()
+            .invoke(&self.caller(), request)
+            .await
+            .ok_or_else(|| "the device did not answer".to_owned())?
+            .map_err(Failure::from)?;
+        let output = match receipt.status {
+            ReceiptStatus::Completed { output } => output,
+            ReceiptStatus::Rejected { error } => return Err(Failure::from(error)),
+            _ => {
+                let value = self
+                    .settled(invocation, crate::Hold::For(self.task_answer_wait))
+                    .await?;
+                match serde_json::from_value(value.get("update").cloned().unwrap_or_default()) {
+                    Ok(InvocationUpdate::Succeeded { output, .. }) => output,
+                    Ok(InvocationUpdate::Failed { error, .. }) => {
+                        return Ok(Reply::failed(error.message));
+                    }
+                    _ => return Err(waited_for_the_task("the device's answer").into()),
+                }
+            }
+        };
+        let answer: task_programs::ProgramAnswer = output
+            .value
+            .and_then(|value| serde_json::from_value(value).ok())
+            .ok_or_else(|| "the device answered no program's answer".to_owned())?;
+        let mut reply = if answer.failed {
+            Reply::failed(answer.text)
+        } else {
+            Reply::ok(answer.text)
+        };
+        if structured {
+            reply.structured = Some(self.program_answer(answer.answer.as_ref(), &reply));
         }
         Ok(reply)
     }

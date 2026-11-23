@@ -16660,6 +16660,7 @@ dependencies = [
  "tracing",
  "unicode-normalization",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -19429,6 +19430,7 @@ dependencies = [
  "tilo-seal",
  "tilo-secrets",
  "tilo-test-env",
+ "toml 1.0.6+spec-1.1.0",
  "url",
  "uuid",
  "windows-sys 0.61.2",
@@ -21556,6 +21558,7 @@ dependencies = [
 name = "tilo-settings-service"
 version = "0.1.0"
 dependencies = [
+ "accounts",
  "agent-provider-config",
  "serde",
  "serde_json",

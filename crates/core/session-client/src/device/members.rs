@@ -6,7 +6,7 @@ use serde_json::{Map, Value};
 use tilo_actions::remote::{
     AWAITING_APPROVAL, ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery,
     ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest,
-    Pending, ReceiptStatus, RemoteActionTarget, WORKSPACE_MEMBER_ADDED, WORKSPACE_MEMBER_ADMIT,
+    Pending, ReceiptStatus, RemoteActionTarget, WORKSPACE_MEMBER_ADMIT, WORKSPACE_MEMBER_ADMITTED,
     WORKSPACE_MEMBER_PLACED, WORKSPACE_MEMBER_REMOVED, WatchScope, pending,
     workspace_governance_operation, workspace_person,
 };
@@ -18,7 +18,7 @@ use super::{Device, DeviceRefusal};
 use crate::membership::{MemberPlace, Membership};
 
 /// The governance operations that change who is in a workspace: holding a person at a place
-/// (`workspace/members#add`, `workspace/members/<person>#role`) and removing one
+/// (`workspace/members#admit`, `workspace/members/<person>#role`) and removing one
 /// (`workspace/members/<person>#remove`).
 const ADD: &str = "member.add";
 const REMOVE: &str = "remove-member";
@@ -74,10 +74,10 @@ impl DeviceActions {
         if workspace != self.workspace_id.to_string() {
             return None;
         }
-        // The action the tree publishes it at: `add` and `role` are both `member.add`, and the
+        // The action the tree publishes it at: `admit` and `role` are both `member.add`, and the
         // host decides a role only for a member.
         let published = match address.action.as_str() {
-            WORKSPACE_MEMBER_ADDED => WORKSPACE_MEMBER_ADDED,
+            WORKSPACE_MEMBER_ADMITTED => WORKSPACE_MEMBER_ADMITTED,
             WORKSPACE_MEMBER_PLACED => WORKSPACE_MEMBER_PLACED,
             WORKSPACE_MEMBER_REMOVED => WORKSPACE_MEMBER_REMOVED,
             _ => return None,

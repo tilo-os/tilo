@@ -376,12 +376,6 @@ search-action-identity-remove-subtitle = Delete an identity you no longer use he
 search-action-identity-protect = Protect an identity's key
 search-action-identity-protect-subtitle = Move an identity's key from a plain file into protected storage
 
-# A new device another of yours found: the banner that asks the person here.
-pairing-asks-title = A device asks to be you
-pairing-asks-body = { $device }{ $from }, { $when }. Approving lets it act as you. Only approve if it shows { $code }.
-pairing-asks-via = {" "}(found by your { $device })
-pairing-approve = Approve { $code }
-pairing-decline = Decline
 
 # Workspace settings
 workspace-settings-title = Workspace settings
@@ -1245,9 +1239,6 @@ profile-agent-undo-run = Undo run
 profile-agent-take-over = Take over
 profile-agent-revoke = Revoke access
 profile-agent-now = Now
-task-programs-resource = Task programs
-task-programs-run = Run a program
-task-programs-run-detail = Runs a program as a step of the task, and answers what it read or changed.
 agent-tools-resource = Agent tools
 agent-tools-list = List the tools
 agent-tools-list-detail = Lists the tools an agent works through in its session.

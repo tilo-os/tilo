@@ -42,27 +42,27 @@ use Imp::{
     FloatTanh, FloatToDegrees, FloatToRadians, FloatToStr, FloatTrunc, FontFamilies, ForeignRef,
     Grep, GroupBy, IdentPart, IntAbs, IntClamp, IntMax, IntMin, IntToStr, InvocationPop,
     InvocationPush, Invoke, Invoked, Invoker, IsError, IsSome, JsonDecode, JsonEncode, JsonParse,
-    Keep, Lenses, LinesRun, Links, ListAvg, ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf,
-    ListLen, ListNew, ListPrevious, ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey,
-    ListSumF, ListSumI, MadeFrom, MapGetH, MapGetValue, MapKeys, MapKeysValue, MapNew, MapPut,
-    MapPutValue, MapRemove, MapRemoveValue, MapSetAdd, MapSetRemove, MatchGroup, MayRead, Me,
-    Members, Mentions, MetaOf, MissingV, ModelCall, NoneV, Notify, Now, OfType, Outside, OutsideAt,
-    PageCall, PersonNamed, Phrase, Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice,
-    RandomFloat, RandomId, RandomInt, RandomShuffle, Reach, ReadText, ReadWith, RecNew, RecSetF,
-    RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI,
-    ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichAppended, RichEmbed, RichEmpty,
-    RichFromMarkdown, RichMarkdown, RichNew, RichPart, RichRelinked, RichTime, RowOpen, RunChanges,
-    SeenBy, SetAdd, SetRemove, SheetEdit, SheetEntry, SheetFile, SheetNumbers, SheetOfFile,
-    SheetRanges, SheetRecords, SheetValues, Single, SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI,
-    Speakers, StageReading, StateAt, StateGet, Steps, StrCmp, StrConcat, StrContains, StrEndsWith,
-    StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower, StrMatches, StrReplace, StrSlice, StrSplit,
-    StrStartsWith, StrToFloat, StrToInt, StrTrim, StrUpper, StrWords, Suggest, Take, TimeClock,
-    TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan, Today, TryInvoke, TupleGetF, TupleGetH,
-    TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor, UiBind,
-    UiBindBegin, UiBindState, UiBindStateAt, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI,
-    UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Viewer, WallClock,
-    WebBody, WebGet, WebHeaders, WebOk, WebPost, WebStatus, WebStatusText, WebText, Withdraw, Word,
-    WorkspaceMembers,
+    Keep, Lenses, LinesRun, Links, ListAvg, ListConcat, ListEnd, ListGetF, ListGetH, ListGetI,
+    ListIndexOf, ListLen, ListNew, ListPrevious, ListPushF, ListPushH, ListPushI, ListReverse,
+    ListSortByKey, ListSumF, ListSumI, MadeFrom, MapGetH, MapGetValue, MapKeys, MapKeysValue,
+    MapNew, MapPut, MapPutValue, MapRemove, MapRemoveValue, MapSetAdd, MapSetRemove, MatchGroup,
+    MayRead, Me, Members, Mentions, MetaOf, MissingV, ModelCall, NoneV, Notify, Now, OfType,
+    Outside, OutsideAt, PageCall, PersonNamed, Phrase, Print, PrintRows, ProposalNote, Query,
+    QueueBlock, RandomChoice, RandomFloat, RandomId, RandomInt, RandomShuffle, Reach, ReadText,
+    ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI,
+    ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichAppended,
+    RichEmbed, RichEmpty, RichFromMarkdown, RichMarkdown, RichNew, RichPart, RichRelinked,
+    RichTime, RowOpen, RunChanges, SeenBy, SetAdd, SetRemove, SheetEdit, SheetEntry, SheetFile,
+    SheetNumbers, SheetOfFile, SheetRanges, SheetRecords, SheetValues, Single, SomeF, SomeH, SomeI,
+    SortLit, SpaceF, SpaceI, Speakers, StageReading, StateAt, StateGet, Steps, StrCmp, StrConcat,
+    StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower, StrMatches,
+    StrReplace, StrSlice, StrSplit, StrStartsWith, StrToFloat, StrToInt, StrTrim, StrUpper,
+    StrWords, Suggest, Take, TimeClock, TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan, Today,
+    TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI,
+    UiAction, UiActions, UiAnchor, UiBind, UiBindBegin, UiBindState, UiBindStateAt, UiChild,
+    UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq,
+    VersionEnd, Versions, Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost,
+    WebStatus, WebStatusText, WebText, Withdraw, Word, WorkspaceMembers,
 };
 
 pub type HResult<T> = Result<T, HostFail>;
@@ -555,11 +555,11 @@ impl Core {
             | FloatCosh | FloatTanh | FloatGamma | FloatToRadians | FloatToDegrees | FloatSign
             | FloatTrunc | FloatFract | FloatIsFinite | FloatIsNan | ListSumI | ListSumF
             | ListAvg => self.num_import(imp, a),
-            ListNew | ListPushI | ListPushF | ListPushH | ListLen | CollCount | CollCounted
-            | CollEmpty | ListGetI | ListGetF | ListSortByKey | ListReverse | ListGetH
-            | ListEnd | ListIndexOf | ListPrevious | TupleNew | TupleSetI | TupleSetF
-            | TupleSetH | TupleGetI | TupleGetF | TupleGetH | SomeH | SomeI | SomeF | NoneV
-            | IsSome | UnwrapI | UnwrapF | UnwrapH => self.aggregate_import(imp, a),
+            ListNew | ListConcat | ListPushI | ListPushF | ListPushH | ListLen | CollCount
+            | CollCounted | CollEmpty | ListGetI | ListGetF | ListSortByKey | ListReverse
+            | ListGetH | ListEnd | ListIndexOf | ListPrevious | TupleNew | TupleSetI
+            | TupleSetF | TupleSetH | TupleGetI | TupleGetF | TupleGetH | SomeH | SomeI | SomeF
+            | NoneV | IsSome | UnwrapI | UnwrapF | UnwrapH => self.aggregate_import(imp, a),
             // An argument a call left out before one it gives: it is no value, and the
             // invocation has the default in its place before anything reads it.
             MissingV => self.ret_h(Value::Missing),

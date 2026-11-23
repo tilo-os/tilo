@@ -113,7 +113,11 @@ struct TurnTeam {
     agent: Agent,
     /// Where the turn tells its team, for a turn asked in a conversation: what it answers there,
     /// and as whom. A sub-agent it starts is told its job there, and each note.
-    telling: Option<(super::WorkspaceActionProvider, Caller, super::triggered::Where)>,
+    telling: Option<(
+        super::WorkspaceActionProvider,
+        Caller,
+        super::triggered::Where,
+    )>,
     /// What the turn is offered: nothing for a caller that is no turn of this agent.
     offered: Vec<CatalogueRow>,
 }
@@ -461,7 +465,10 @@ impl TurnTeam {
                                     .list()
                                     .await
                                     .ok()
-                                    .and_then(|list| list.get(&Id::from_raw(agent.clone())).map(|its| its.name.clone()))
+                                    .and_then(|list| {
+                                        list.get(&Id::from_raw(agent.clone()))
+                                            .map(|its| its.name.clone())
+                                    })
                                     .unwrap_or_else(|| agent.clone());
                                 if let Err(error) = self.tell(&agent, &name, &said).await {
                                     tracing::warn!(workspace = %self.workspace, %agent, %error, "a sub-agent was not told its note");

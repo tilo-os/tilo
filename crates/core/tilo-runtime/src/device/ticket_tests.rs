@@ -176,18 +176,23 @@ pub(super) async fn ask_device(
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one person adding a computer, from the ticket to its entry, read top to bottom"
-)]
-async fn a_computer_logged_in_with_a_ticket_enters_as_the_persons_device() {
-    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let (server_key, server_cert) = enrol(&root, "home-server", DeviceCapabilities::member());
-    let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
-    let state = tempfile::tempdir().unwrap();
+/// The person's own server on this machine's loopback, keeping their workspace "Studio" that
+/// their laptop entered, and the laptop's key, certificate and login to it.
+pub(super) struct Studio {
+    pub(super) server: tilo_server::daemon::Server,
+    pub(super) hosted: tilo_workspace_service::workspaces::Workspaces,
+    pub(super) workspace: String,
+    pub(super) laptop_key: SigningKey,
+    pub(super) laptop_cert: DeviceCert,
+    pub(super) login: tilo_device_identity::login::Device,
+}
+
+/// [`Studio`], for the person whose root is `root`, the server keeping its state in `state`.
+pub(super) async fn studio(root: &SigningKey, state: &std::path::Path) -> Studio {
+    let (server_key, server_cert) = enrol(root, "home-server", DeviceCapabilities::member());
+    let (laptop_key, laptop_cert) = enrol(root, "laptop", DeviceCapabilities::primary());
     let server = tilo_server::daemon::Server::start_with_relay_mode(
-        tilo_server::ServerConfig::loopback(state.path().join("server")),
+        tilo_server::ServerConfig::loopback(state.join("server")),
         tilo_server::daemon::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: server_key,
@@ -207,12 +212,37 @@ async fn a_computer_logged_in_with_a_ticket_enters_as_the_persons_device() {
         .enter(&workspace, &laptop_cert)
         .await
         .expect("a device of the person enters the workspace");
+    let login = login_to(&server, &workspace, (&laptop_cert, &server_cert));
+    Studio {
+        server,
+        hosted,
+        workspace,
+        laptop_key,
+        laptop_cert,
+        login,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one person adding a computer, from the ticket to its entry, read top to bottom"
+)]
+async fn a_computer_logged_in_with_a_ticket_enters_as_the_persons_device() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let state = tempfile::tempdir().unwrap();
+    let Studio {
+        server,
+        hosted,
+        workspace,
+        laptop_key,
+        laptop_cert,
+        login: laptop_login,
+    } = studio(&root, state.path()).await;
     // The server keeps the person's own workspace too, where their list of workspaces is.
     let own = tilo_workspace_service::workspaces::person_workspace::found(&hosted)
         .await
         .expect("the person's own workspace is founded on their server");
-
-    let laptop_login = login_to(&server, &workspace, (&laptop_cert, &server_cert));
 
     // `tilo device add` on the laptop: its daemon serves a ticket on its endpoint, its root
     // approving the computer that comes with it.

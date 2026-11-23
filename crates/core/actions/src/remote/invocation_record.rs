@@ -238,16 +238,15 @@ impl Invocations {
     fn refreshed(&self, id: &InvocationId) -> Option<Recorded> {
         let (provider, runs_as) = self.kept().by_id.get(id)?.route.clone();
         let state = provider.observe(&runs_as, id);
+        let ended = state
+            .as_ref()
+            .is_some_and(|state| state.update.is_terminal());
         let mut kept = self.kept();
         let recorded = kept.by_id.get_mut(id)?;
         if recorded.state.as_ref() != state.as_ref() {
             recorded.changes = recorded.changes.saturating_add(1);
         }
-        if state
-            .as_ref()
-            .is_some_and(|state| state.update.is_terminal())
-            && recorded.ended_ms.is_none()
-        {
+        if ended && recorded.ended_ms.is_none() {
             recorded.ended_ms = Some(tilo_clock::unix_now_ms());
         }
         recorded.state = state;

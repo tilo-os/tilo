@@ -457,8 +457,8 @@ gap 5: a workspace the host's service made is not admitted to the person's key	-
 gap 6: fixture has no restart, second person, mail stand-in	-	daemon-host-fixture	fixture
 gap 7: device asking its person is macOS-only	-	asks-as-records	asked records
 gap B: the daemon's own agent invokes nothing (session provider tickets: None)	test written, waiting on its run	one-dispatch	agent_on_device::a_logged_in_computers_agents_act_with_no_tab_open (the daemon's agent runs device#info); agent_on_device::a_key_reads_the_device_and_cannot_issue_a_ticket (a key's run reads the device, a ticket stays the person's)
-gap C: the daemon serves no presence (tilo_watch presence [])	-	one-dispatch	presence on the daemon
-gap D: no workspace agent roster on the daemon	-	one-dispatch	roster from the workspace's agent members
+gap C: the daemon serves no presence (tilo_watch presence [])	served in code, waiting on its run	one-dispatch	crates/core/tilo-runtime/src/device/services.rs RuntimeActionProvider::here (who_is_here beside the roster, PresentDevices) and ::changed (WatchScope::Here woken by who_is_here); agent_presence::
+gap D: no workspace agent roster on the daemon	-	port-agents	roster from the workspace's agent members; agent_member:: and computer_agent:: are port-agents' tests
 gap F: member_own needs the Discord app, daemon has no workspace bots	-	app-features	Discord row of the bots inventory
 gap list: tilo.invocations#list had its only implementation in agent-session invocations.rs (898c8e18496)	test written, waiting on r94a42e8e3e	one-dispatch	invocations::the_workspaces_invocations_are_read_and_followed_through_the_record_api: tilo.invocations read whole and by id through ResourceReads, followed by watch; moving invocations#list callers and deleting the action is the invocations provider owner's
 tilo-server tests/linux_terminal.rs (deleted by daemon-shells af669dd3a7d): stream refused to another device; attach to a kept session; typed lines recorded on the session	ok	daemon-shells	tilo-runtime tests/terminal_streams.rs (aa1de2fa4dc)
@@ -472,11 +472,11 @@ gap G: no account surface on a device daemon (account/workspaces#create, keys#mi
 gap H: a key minted on a personal daemon acts as its person; it must act with its own scoped grant and be refused owner-only changes	-	one-dispatch	in the one admission; before landing
 turn and asking flows (126 + 14 + 7; hosted_agent_turns/questions/asks, hosted_turn_*, hosted_secret_use, api_asks/questions, packaged_model)	ok	daemon-turns	to port on start_turn (daemon-turns 910b2d083c2): wait on tl Chat replacing Rust Chat and on asked records
 gap H2: Here::enter admits any key as the person (an unknown root's key got 200 on /v1/workspaces/{ws}/resources)	test written, waiting on r94a42e8e3e	one-dispatch	workspace_list::a_key_of_a_root_this_computer_does_not_know_reaches_nothing
-gap I: content puts/gets on the device's dispatch (RuntimeActionProvider leaves them None)	-	one-dispatch	wire to daemon-fold's workspace-service content/put.rs after it lands; no second copy
+gap I: content puts/gets on the device's dispatch (RuntimeActionProvider leaves them None)	served in code, waiting on its run	one-dispatch	crates/core/tilo-runtime/src/device/services.rs RuntimeActionProvider::content_puts (the action state's grant decision over content::shelf_puts, set as content_store in broker_services) and ::content_gets (content::shelf_gets on the content shelf), both through AdmittedContent; files_content::
 gap J: per-turn MCP session bound to a delegated caller's rules (McpServer::for_turn)	-	daemon-turns	turn engine
 gap K: document-read count for import/refresh cost tests	-	one-dispatch	a production metric the daemon exposes
 gap L: account workspaces#branch	-	account-surface	with gap G
-gap M: a web entry (site) announced by a device's daemon, for share links	-	one-dispatch	with pages
+gap M: a web entry (site) announced by a device's daemon, for share links	-	desktop page lane, tilo-server listener	the daemon announces the web entry its pages are served at; files_collab::the_server_mints_a_message_link_with_its_range
 gap N: slow_read needs a slow registered read; the old switch was a test shim	test written, waiting on its run	one-dispatch	files_collab::a_slow_read_leaves_its_thread_answering: a provider registered through Daemon::provide holds its thread on every call; a view of a record answers meanwhile
 gap O: the workspace's own tree is not published as an app on the daemon's /v1 and MCP path lookup (unknown_app workspace)	-	one-dispatch	publish workspace/* through the registry, with noun-commands' table
 gap P: no model gateway on a device (/model/ask goes to the account, 403)	-	one-dispatch	account/models#ask served from the device's dispatch

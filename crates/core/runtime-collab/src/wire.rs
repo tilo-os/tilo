@@ -246,18 +246,6 @@ pub enum Ask {
         action: String,
         local_document: bool,
     },
-    /// A call of the provider the endpoint serves on `channel` ([`shell::ShellCall::Provide`]):
-    /// a `tilo_actions::remote::RemoteActionFrame` request, as the device's dispatch admitted it,
-    /// answered as [`Answer::Action`]. `caller` is who the dispatch admitted it for (a
-    /// `tilo_actions::remote::KeptCaller` as JSON), which only the device's daemon says, on the
-    /// link it made for its own shell. What the person typed into the ask an approved call
-    /// answers travels beside the frame in `typed`, on this local connection alone, never in it.
-    Action {
-        channel: Handle,
-        frame: Vec<u8>,
-        caller: Vec<u8>,
-        typed: shell::Typed,
-    },
 }
 
 /// An endpoint's answer to an [`Ask`].
@@ -268,8 +256,6 @@ pub enum Answer {
     Page(String),
     /// An `ActionDirectoryResolution`, as JSON.
     Resolution(String),
-    /// The `tilo_actions::remote::RemoteActionFrame` answering an [`Ask::Action`].
-    Action(Vec<u8>),
 }
 
 /// One step of an approved check's reported progress.
@@ -671,27 +657,6 @@ mod tests {
             let bytes = FRAMING.encode_value(&receipt).unwrap();
             let read: HostFrame = FRAMING.read_value(&mut bytes.as_slice()).unwrap().unwrap();
             assert_eq!(read, receipt);
-        }
-
-        phase a_call_of_a_shell_provider_carries_typed_answers_beside_its_frame_and_never_shows_them;
-        // What a person typed into an ask travels to the shell's provider on the local link, and
-        // no log of the frame shows it.
-        {
-            let typed = shell::Typed(vec![zeroize::Zeroizing::new("hunter2".to_owned())]);
-            let ask = HostFrame::Ask {
-                id: 3,
-                ask: Ask::Action {
-                    channel: Handle(2),
-                    frame: br#"{"version":1}"#.to_vec(),
-                    caller: b"{}".to_vec(),
-                    typed,
-                },
-            };
-            let bytes = FRAMING.encode_value(&ask).unwrap();
-            let read: HostFrame = FRAMING.read_value(&mut bytes.as_slice()).unwrap().unwrap();
-            assert_eq!(read, ask);
-            let shown = format!("{read:?}");
-            assert!(!shown.contains("hunter2"), "a log shows no typed answer: {shown}");
         }
 
         phase a_roster_of_rows_without_their_optional_parts_round_trips;

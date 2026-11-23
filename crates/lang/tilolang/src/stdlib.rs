@@ -183,10 +183,16 @@ mod tests {
             );
         }
         assert!(!super::templates().is_empty());
+        // One view of the library is no template: `call_member` draws a person's call
+        // membership, which the library's own `call` view calls with a plain value.
+        let templates: Vec<&crate::ast::ViewDecl> = views(module)
+            .into_iter()
+            .filter(|view| crate::checker::is_template(view))
+            .collect();
         assert_eq!(
             super::templates().len(),
-            views(module).len(),
-            "every view the library declares is a template its callers expand"
+            templates.len(),
+            "every template view the library declares is expanded into its callers"
         );
         assert_eq!(
             super::library().compiled.ids.to_text(),
@@ -211,10 +217,14 @@ mod tests {
                 f.name
             );
         }
+        // A view that is no template is drawn by the library itself, so its module carries it
+        // beside its functions: `call_member` is the one view the library draws, called by its
+        // `call` view.
+        let own_views = views(module).len() - templates.len();
         assert_eq!(
             lines.len(),
-            meta.fns.len(),
-            "the library's module carries its functions and no other code: {lines:?}"
+            meta.fns.len() + own_views,
+            "the library's module carries its functions and the one view it draws: {lines:?}"
         );
         assert!(meta.app == APP, "the library compiles as its own package");
     }

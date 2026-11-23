@@ -509,3 +509,41 @@ fn an_answers_draft_is_the_answer_of_the_action_that_made_it() {
         "the draft it made is published under Mail, whose draft is what `answer` returns: {made}"
     );
 }
+
+/// A read that answers a list gives its value back: what the palette and an agent read of an
+/// action returning records (`find_text`), not just the resources it names.
+#[test]
+fn a_read_that_answers_a_list_gives_its_value() {
+    let (mut service, _) = service();
+    let notebook = service
+        .resources()
+        .into_iter()
+        .find(|resource| resource.kind == format!("tl.{APP}.Notebook"))
+        .expect("the notebook is published");
+    let started = service
+        .invoke(
+            notebook.id.as_str(),
+            "new_note",
+            &args(json!({"title": "Packing", "body": "- passport\n- charger"})),
+        )
+        .expect("a note is made");
+    let Started::Done(output) = started else {
+        panic!("a tilolang action is done once committed");
+    };
+    let note = output.resources.first().cloned().expect("the note it made");
+    service.settle();
+    let started = service
+        .invoke(
+            note.as_str(),
+            "find_text",
+            &args(json!({"text": "passport"})),
+        )
+        .expect("finding a word is done");
+    let Started::Done(output) = started else {
+        panic!("a read is done at once: {started:?}");
+    };
+    let found = output
+        .value
+        .unwrap_or_else(|| panic!("the read answers the paragraphs it found: {output:?}"));
+    assert_eq!(found.as_array().map(Vec::len), Some(1), "{found}");
+}

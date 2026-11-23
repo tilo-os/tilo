@@ -20,7 +20,7 @@ use tilo_workspace_service::apps::services::{
     Caller, ProcessServices, PublishedResources, Reading, ResourceWatch,
 };
 use tilo_workspace_service::apps::shell::{
-    ShellActions, ShellCaller, ShellDispatch, ShellLinks, ShellServices,
+    ShellActions, ShellCaller, ShellInvoked, ShellLinks, ShellServices,
 };
 use tilo_workspace_service::device_documents::{ServiceDocuments, ServiceWrites};
 use tilo_workspace_service::workspaces::Workspaces;
@@ -228,7 +228,11 @@ fn link(
 struct NoActions;
 
 impl ShellActions for NoActions {
-    fn dispatch(&self, _: &ShellCaller, _: Option<String>) -> ShellDispatch {
+    fn invoke(
+        &self,
+        _caller: &ShellCaller,
+        _request: tilo_actions::remote::InvokeRequest,
+    ) -> ShellInvoked {
         Box::pin(std::future::ready(Err(
             "the test's daemon answers no actions".to_owned(),
         )))

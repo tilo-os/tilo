@@ -44,7 +44,11 @@ pub struct Line {
 
 /// Where `agent`'s turn on `event` stands in its team, as `roster` holds it: none for an agent a
 /// person made.
-pub(super) fn line_of(roster: &WorkspaceAgents, agent: &Agent, event: &DocumentEvent) -> Option<Line> {
+pub(super) fn line_of(
+    roster: &WorkspaceAgents,
+    agent: &Agent,
+    event: &DocumentEvent,
+) -> Option<Line> {
     let sub = agent.sub.as_ref()?;
     let starter = roster
         .agents
@@ -95,7 +99,10 @@ pub(super) async fn tell(
     };
     let mut arguments = Map::new();
     arguments.insert("body".into(), mentioning(agent, name, text)?);
-    arguments.insert("reply_to".into(), json!(triggered::published(CHAT, &place.item)));
+    arguments.insert(
+        "reply_to".into(),
+        json!(triggered::published(CHAT, &place.item)),
+    );
     invoke_named(
         provider,
         caller,
@@ -213,7 +220,12 @@ impl ServerAgents {
 
     /// A turn of a sub-agent ended as `outcome`: its item says how it stands now, and when
     /// the work came from its line of starters, its starter is told.
-    pub(super) async fn sub_ended(&self, acting: &super::TurnScope, turn: &Turn, outcome: &Outcome) {
+    pub(super) async fn sub_ended(
+        &self,
+        acting: &super::TurnScope,
+        turn: &Turn,
+        outcome: &Outcome,
+    ) {
         if turn.agent.sub.is_none() {
             return;
         }

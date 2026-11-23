@@ -10,19 +10,13 @@
 //!   it: [`ShellCall`] carries what `tilo_peer_state::workspace_documents::DeviceDocuments` and
 //!   `DeviceWrites` ask, and the daemon signs and seals each write with the device's key, so the
 //!   shell holds no key of any workspace;
-//! - any action, as the person, as a `tilo_actions::remote::RemoteActionFrame` the daemon's one
-//!   dispatch answers ([`ShellCall::Action`]), the frame an app's connection carries
-//!   (`Service::RemoteAction`): a workspace's key access and membership and the host's own
-//!   operations among them, answered from a workspace the daemon keeps and forwarded to the
-//!   workspace's keeping device over tilo-actions/1 otherwise;
+//! - a key access or membership action of a workspace, or one of the host itself, as a typed
+//!   `tilo_actions::remote::InvokeRequest` ([`ShellCall::Invoke`]): the daemon answers it from a
+//!   workspace it keeps, and forwards it to the workspace's keeping device over tilo-actions/1
+//!   otherwise;
 //! - how each workspace stands (its people, its policy, its hosts and what this device may do
 //!   there): resources the daemon publishes and the shell watches on the same connection
 //!   ([`super::Operation::Services`], [`super::Operation::Watch`]).
-//!
-//! The other way, the shell serves providers on the daemon's dispatch ([`ShellCall::Provide`]):
-//! a call of one reaches the shell as [`super::Ask::Action`] on the handle its registration was
-//! answered with, carrying the same frames, and the registration goes when the shell closes that
-//! handle or its link.
 
 use serde::{Deserialize, Serialize};
 
@@ -86,13 +80,16 @@ pub enum ShellCall {
         workspace: String,
         documents: Vec<(String, String)>,
     },
-    /// A `tilo_actions::remote::RemoteActionFrame` request the shell makes as its person, answered
-    /// by the daemon's dispatch as [`ShellReply::Action`]: a call in `workspace`, or, in none, one
-    /// of the person's workspace list, of a workspace's key access and membership
-    /// (`RemoteActionTarget::workspace_governance`) or of the host's own operations.
-    Action {
+    /// A call of the device's one action dispatch, as the shell's person on this device: a
+    /// `tilo_actions::remote::RemoteActionMessage` as JSON. A `ResourceRead` reads resources of
+    /// the workspaces the device keeps, as the person's device reads them anywhere, follows
+    /// included; an `Invoke` runs a typed action of a resource of `workspace`, a workspace's key
+    /// access and membership action (`RemoteActionTarget::workspace_governance`) or one of the
+    /// host's own operations.
+    Invoke {
+        /// The workspace an action of one of its resources is asked in.
         workspace: Option<String>,
-        frame: Vec<u8>,
+        message: String,
     },
     /// The documents the device took a write to since this connection last asked, waited for
     /// until there is one: the device's own writes, its apps' and every other device's alike.
@@ -128,39 +125,6 @@ pub enum ShellCall {
         resource: String,
         certificate: String,
     },
-    /// Serve `provider` on the device's dispatch from now on, offering what `catalogue` lists
-    /// (a `tilo_actions::remote::CataloguePage` as JSON): answered with the handle each call of it
-    /// arrives on ([`ShellReply::Providing`], [`super::Ask::Action`]). Only a provider of the
-    /// shell's own ([`serves`]) that nothing else serves. Asked again for a provider it serves
-    /// already, the shell's catalogue of it is what `catalogue` lists from then on. It goes when
-    /// the shell closes the handle ([`super::Operation::Close`]) or its link, and a call it had not
-    /// answered fails.
-    Provide { provider: String, catalogue: String },
-}
-
-/// What the name of every provider a shell serves begins with, besides the session's own actions
-/// ([`tilo_actions::remote::session_actions::PROVIDER`]).
-pub const SHELL_PROVIDERS: &str = "session.";
-
-/// Whether `provider` is one a shell serves: its own, never one the device or an app answers.
-#[must_use]
-pub fn serves(provider: &str) -> bool {
-    provider == tilo_actions::remote::session_actions::PROVIDER
-        || provider
-            .strip_prefix(SHELL_PROVIDERS)
-            .is_some_and(|name| !name.is_empty())
-}
-
-/// What a person typed into the fields of an ask an approved call answers (a password, a
-/// passphrase), in the order the ask took them. It travels on the shell link alone, beside the
-/// call's frame and never in it, and is never shown in a log.
-#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Typed(pub Vec<zeroize::Zeroizing<String>>);
-
-impl std::fmt::Debug for Typed {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "Typed({} answers)", self.0.len())
-    }
 }
 
 /// A shell's ask of a workspace's vault and accounts. The vault opens on this device alone, so the
@@ -247,8 +211,9 @@ pub enum ShellReply {
     /// refused one. `None` when the workspace has no serving device to ask: one the device keeps
     /// itself.
     Served(Option<Result<(), String>>),
-    /// The `tilo_actions::remote::RemoteActionFrame` answering a [`ShellCall::Action`].
-    Action(Vec<u8>),
+    /// A [`ShellCall::Invoke`] once it settled: the value the action answered, or the readings a
+    /// read answered, as JSON; or why it failed.
+    Invoked(Result<String, String>),
     /// A [`ShellCall::Writes`]: each document written, as its workspace, app and record (`""` for
     /// the app's primary). `None` when the device took more than it kept told, so the shell reads
     /// everything it follows again.
@@ -268,8 +233,6 @@ pub enum ShellReply {
     Receipted(Result<(), String>),
     /// A [`ShellCall::Authorizes`]: allowed, or why not.
     Authorized(Result<(), String>),
-    /// A [`ShellCall::Provide`]: the handle the provider's calls arrive on.
-    Providing(super::Handle),
 }
 
 /// A document the device took a write to.

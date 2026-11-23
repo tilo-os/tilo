@@ -32,7 +32,9 @@ pub const SERVICES: [&str; 5] = [
 ];
 
 /// Whose work a device takes.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum WorkFrom {
     /// Nobody else's.
@@ -74,7 +76,9 @@ impl WorkFrom {
 }
 
 /// The states a device takes work in.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct WorkWhen {
     /// Take work only while the machine is charging.
@@ -86,7 +90,9 @@ pub struct WorkWhen {
 }
 
 /// The work this device takes.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Work {
     /// Whose work it takes.
@@ -100,7 +106,9 @@ pub struct Work {
     clippy::struct_excessive_bools,
     reason = "each service is offered or withdrawn on its own"
 )]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Services {
     pub workspace_replication: bool,
@@ -131,7 +139,9 @@ impl Services {
 
 /// The `device:server` resource: this device's server settings as the daemon
 /// reads and changes them.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct ServerSettings {
     /// Whether this device has a server configuration to change. A device
@@ -234,4 +244,15 @@ pub enum ServerSettingsAction {
         #[param("Whether the device offers it")]
         on: bool,
     },
+}
+
+/// The `device:server` resource as a view of another language reads and changes it: its
+/// reading ([`ServerSettings`]) as its fields and its actions ([`ServerSettingsAction`]) as its
+/// verbs, under the short kind the device's surface names (`server`).
+#[must_use]
+pub fn surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<ServerSettings, ServerSettingsAction>(
+        "server",
+        "Server settings",
+    )
 }

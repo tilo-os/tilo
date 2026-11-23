@@ -6,46 +6,41 @@
 //!   (`Daemon::start_shell`); no other process, whatever account it runs as.
 //! - Its documents: the daemon's own reads and writes of the workspaces it holds, each write
 //!   sealed with the keys of the document's group this device reads and signed as the device.
-//! - Its calls: every action it invokes reaches this device's one dispatch, as the person
-//!   ([`PersonDispatch`]), the dispatch the person's own runs reach. Founding a workspace here and
-//!   joining one by an invitation are the person's workspace list's actions; a change the person
-//!   makes to a workspace's people and settings is written as this device's own, into the
-//!   workspace this device keeps or its member copy; any other key access and membership action is
-//!   answered where this device keeps the workspace, and asked of the device keeping it over
-//!   tilo-actions/1 otherwise; the host's own operations are this device's workspace service's
-//!   ([`Kept`]).
+//! - Its asks: founding a workspace here and joining one by an invitation are the person's
+//!   workspace list's actions; a change the person makes to a workspace's people and settings is
+//!   written as this device's own, into the workspace this device keeps or its member copy; any
+//!   other key access and membership action is answered where this device keeps the workspace, and
+//!   asked of the device keeping it over tilo-actions/1 otherwise; the host's own operations are
+//!   this device's workspace service's ([`Actions`]).
 //! - How its workspaces stand: [`Standing`], read again whenever a workspace changes.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use runtime_collab::wire::{Event, Receipt};
 use serde_json::{Map, Value};
 use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
-    InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
+    ActionProvider as _, Caller, InvocationReceipt, InvokeArgument, InvokeRequest, ReceiptStatus,
 };
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::workspace_view::{CREATE, JOIN, LIST, Listed, MEMBERSHIP, resource};
 use tilo_workspace_service::apps::services::{PublishedResources, Reading, ResourceWatch};
 use tilo_workspace_service::apps::shell::{
-    ShellActions, ShellCaller, ShellDispatch, ShellLinks, ShellServices,
+    ShellActions, ShellCaller, ShellInvoked, ShellLinks, ShellServices,
 };
 use tilo_workspace_service::device_documents::{ServiceDocuments, ServiceWrites};
 use tilo_workspace_service::workspaces::standing;
 use tokio::sync::{Notify, mpsc, oneshot};
 
-use super::services::PersonDispatch;
 use super::workspaces::ServiceWorkspaces;
 
 /// What this device's dispatch answers its person's shell with, read again as `workspaces`
-/// changes. Its calls reach `dispatching` once the daemon serves it.
+/// changes.
 pub(crate) fn services(
     workspaces: &Arc<ServiceWorkspaces>,
     links: &Arc<ShellLinks>,
     socket: std::path::PathBuf,
-    dispatching: Arc<Dispatching>,
 ) -> ShellServices {
     let standing = Standing::new(Arc::clone(workspaces));
     standing.follow();
@@ -64,206 +59,31 @@ pub(crate) fn services(
         }),
         workspaces: copies,
         actions: Arc::new(Actions {
-            kept: Arc::new(Kept {
-                workspaces: Arc::clone(workspaces),
-                changed: Arc::clone(&standing.changed),
-            }),
-            dispatching,
-            by_workspace: Mutex::default(),
+            workspaces: Arc::clone(workspaces),
+            changed: Arc::clone(&standing.changed),
         }),
         standing,
     }
 }
 
-/// The one dispatch the person's calls reach, once the daemon's broker serves it.
-#[derive(Default)]
-pub(crate) struct Dispatching(OnceLock<PersonDispatch>);
-
-impl Dispatching {
-    /// The person's calls reach `person` from now on.
-    pub(crate) fn serve(&self, person: PersonDispatch) {
-        let _ = self.0.set(person);
-    }
-}
-
-/// What a shell's calls reach.
+/// What a shell's asks reach: this device's workspace service, and the devices keeping the
+/// workspaces it holds as a member, over tilo-actions/1.
 struct Actions {
-    kept: Arc<Kept>,
-    dispatching: Arc<Dispatching>,
-    /// The dispatch of each workspace a shell called in, admitted once.
-    by_workspace: Mutex<HashMap<String, Arc<dyn ActionProvider + Send + Sync>>>,
-}
-
-impl ShellActions for Actions {
-    fn dispatch(&self, caller: &ShellCaller, workspace: Option<String>) -> ShellDispatch {
-        let kept = Arc::clone(&self.kept);
-        let shell = *caller;
-        let Some(workspace) = workspace else {
-            let cert = kept.workspaces.device_cert();
-            let person = Caller::authenticated(cert.user_public_key, cert.device_public_key);
-            return Box::pin(std::future::ready(Ok((
-                Arc::new(Shell {
-                    kept,
-                    shell,
-                    workspace: None,
-                }) as Arc<dyn ActionProvider + Send + Sync>,
-                person,
-            ))));
-        };
-        let Some(person) = self.dispatching.0.get().cloned() else {
-            return Box::pin(std::future::ready(Err(
-                "this device's dispatch is not up yet".to_owned(),
-            )));
-        };
-        if shell.person != kept.workspaces.device_cert().user_public_key {
-            return Box::pin(std::future::ready(Err(
-                "this device acts for its own person only".to_owned(),
-            )));
-        }
-        let cached = self
-            .by_workspace
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&workspace)
-            .cloned();
-        let caller = person.caller(&workspace);
-        let admitted = match cached {
-            Some(dispatch) => Ok(dispatch),
-            None => person
-                .provider(&workspace)
-                .map(|provider| Arc::new(provider) as Arc<dyn ActionProvider + Send + Sync>)
-                .map_err(|error| error.to_string())
-                .inspect(|dispatch| {
-                    self.by_workspace
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .insert(workspace.clone(), Arc::clone(dispatch));
-                }),
-        };
-        Box::pin(std::future::ready(admitted.map(|dispatch| {
-            (
-                Arc::new(Shell {
-                    kept,
-                    shell,
-                    workspace: Some(dispatch),
-                }) as Arc<dyn ActionProvider + Send + Sync>,
-                caller,
-            )
-        })))
-    }
-}
-
-/// A shell's calls: those of the person's workspace list, a workspace's key access and
-/// membership and the host's own operations answered where they are decided ([`Kept`]), and every
-/// other one by the person's dispatch in the workspace it names.
-struct Shell {
-    kept: Arc<Kept>,
-    shell: ShellCaller,
-    workspace: Option<Arc<dyn ActionProvider + Send + Sync>>,
-}
-
-impl Shell {
-    fn in_workspace(&self) -> Result<&Arc<dyn ActionProvider + Send + Sync>, ActionCallError> {
-        self.workspace.as_ref().ok_or(ActionCallError::Refused {
-            reason: "the shell calls that in a workspace, and named none".into(),
-        })
-    }
-}
-
-/// Whether `request` is the person's workspace list's, a workspace's key access and membership,
-/// or the host's own: what this device answers where it is decided ([`ask`]).
-fn kept_here(request: &InvokeRequest) -> bool {
-    request.target.provider == tilo_server_protocol::workspaces::HOST_ACTIONS_PROVIDER
-        || tilo_actions::remote::workspace_governance_operation(&request.target.address).is_some()
-}
-
-impl ActionProvider for Shell {
-    fn query(
-        &self,
-        caller: &Caller,
-        query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        match self.in_workspace() {
-            Ok(dispatch) => dispatch.query(caller, query),
-            Err(refused) => Pending::ready(Err(refused)),
-        }
-    }
-
-    fn invoke(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        if kept_here(&request) {
-            return self.kept.invoke(self.shell, request);
-        }
-        match self.in_workspace() {
-            Ok(dispatch) => dispatch.invoke(caller, request),
-            Err(refused) => Pending::ready(Err(refused)),
-        }
-    }
-
-    fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
-        self.workspace.as_ref()?.observe(caller, id)
-    }
-
-    fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
-        self.workspace.as_ref()?.next_change(caller, id)
-    }
-
-    fn cancel(
-        &self,
-        caller: &Caller,
-        id: &tilo_actions::InvocationId,
-    ) -> Pending<Result<(), ActionCallError>> {
-        match self.in_workspace() {
-            Ok(dispatch) => dispatch.cancel(caller, id),
-            Err(refused) => Pending::ready(Err(refused)),
-        }
-    }
-}
-
-/// What this device answers of a shell's calls itself: its workspace service, and the devices
-/// keeping the workspaces it holds as a member, over tilo-actions/1.
-struct Kept {
     workspaces: Arc<ServiceWorkspaces>,
     /// Told once an ask settled, so the workspaces' standing is read again.
     changed: Arc<Notify>,
 }
 
-impl Kept {
-    /// `request` asked for `shell`, answered once it settled.
-    fn invoke(
-        &self,
-        shell: ShellCaller,
-        request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        let (done, receipt) = tilo_actions::remote::pending();
+impl ShellActions for Actions {
+    fn invoke(&self, caller: &ShellCaller, request: InvokeRequest) -> ShellInvoked {
         let workspaces = Arc::clone(&self.workspaces);
         let changed = Arc::clone(&self.changed);
-        let invocation = request.invocation;
-        tilo_rt::app().spawn(async move {
-            let answer = ask(&workspaces, shell, request).await;
+        let caller = *caller;
+        Box::pin(async move {
+            let answer = ask(&workspaces, caller, request).await;
             changed.notify_one();
-            let status = match answer {
-                Ok(value) => ReceiptStatus::Completed {
-                    output: tilo_actions::ActionOutput {
-                        value: Some(value),
-                        ..tilo_actions::ActionOutput::default()
-                    },
-                },
-                Err(message) => ReceiptStatus::Failed {
-                    error: tilo_actions::ActionFailure {
-                        code: "refused".into(),
-                        message,
-                        details: None,
-                        retryable: false,
-                    },
-                },
-            };
-            done.complete(Ok(InvocationReceipt { invocation, status }));
-        });
-        receipt
+            answer
+        })
     }
 }
 

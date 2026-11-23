@@ -1,11 +1,13 @@
 //! The migration engine as a device's actions: `sources`, `connect`, `review`, `choose`, `start`,
-//! `status` and `undo` of provider `so.tilo.migrate` on the resource of the device that holds the
-//! data (`devices/<device>/migrate`). People, agents, the CLI and a migration's view call the same
-//! actions.
+//! `stop`, `status` and `undo` of provider `so.tilo.migrate` on the resource of the device that
+//! holds the data (`devices/<device>/migrate`). People, agents, the CLI and a migration's view call
+//! the same actions: the view by the package the resource is published as ([`PACKAGE`]).
 //!
 //! A run is one invocation of `start`: what it brings is said as that invocation's progress, and
-//! cancelling it stops the run after the item it is on, which a later `start` resumes. Each step
-//! runs on a thread of its own, as the device's provider answers at once and is followed.
+//! cancelling it stops the run after the item it is on, which a later `start` resumes. `stop`
+//! names the run by its source and cancels that invocation, for a caller that does not hold its
+//! id. Each step runs on a thread of its own, as the device's provider answers at once and is
+//! followed.
 //!
 //! A source's key or password is an argument of `connect` typed as a secret, so it is redacted
 //! wherever the invocation is shown or kept, and goes into the device's vault; the person's yes
@@ -14,13 +16,15 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
+use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use serde_json::{Map, Value};
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationLog,
-    InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending, Reservation,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Completer,
+    InvocationLog, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
+    Reservation,
 };
 use tilo_actions::{
     ActionFailure, ActionKind, ActionOutput, ActionParam, ActionSpec, EncodedAction, ExecutionMode,
@@ -33,6 +37,15 @@ use crate::engine::{self, Stopped, state::Place, writer::Workspace};
 
 /// The provider a device's migrations are published under.
 pub const PROVIDER: &str = "so.tilo.migrate";
+
+/// The package the migrations resource is published as, which code calls its actions by
+/// (`use so.tilo.migrate.engine as engine`): apart from the Migrations app, whose records the
+/// engine writes and whose view calls these actions.
+pub const PACKAGE: &str = "so.tilo.migrate.engine";
+
+/// The longest a follower of a step waits before looking at it again, when nothing it can be
+/// told of moved.
+const LOOK_AGAIN: Duration = Duration::from_secs(1);
 
 /// The resource a device's migrations are, for the device whose key is `device`.
 #[must_use]
@@ -66,14 +79,67 @@ pub struct Migrations {
     resources: Vec<ResourceSpec>,
     host: Arc<dyn Host>,
     log: Mutex<InvocationLog<Arc<Step>>>,
-    /// The sources a run is going for, by the invocation of `start` that runs it.
-    going: Arc<Mutex<HashMap<String, InvocationId>>>,
+    /// The sources a run is going for, each with the invocation of `start` that runs it.
+    going: Arc<Mutex<HashMap<String, (InvocationId, Arc<Step>)>>>,
+    /// Who waits for a step to move ([`ActionProvider::next_change`]).
+    moved: Arc<Moved>,
 }
 
 /// One invocation in flight or settled.
 struct Step {
     state: Mutex<InvocationState>,
     cancelled: AtomicBool,
+    moved: Arc<Moved>,
+}
+
+impl Step {
+    /// The step stands at `state` now, and whoever waits for it to move is told.
+    fn set(&self, state: InvocationState) {
+        *self.state.lock_recover() = state;
+        self.moved.wake();
+    }
+
+    /// Stop the step after the item it is on: what cancelling its invocation does.
+    fn stop(&self) -> Result<(), ActionCallError> {
+        if self.state.lock_recover().is_terminal() {
+            return Err(ActionCallError::NotCancellable {
+                reason: "the step already finished".into(),
+            });
+        }
+        // The run reads it before its next item.
+        self.cancelled.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+/// The waits for any step to move: each is answered when one does, or at the latest after
+/// [`LOOK_AGAIN`], so a follower never waits on a move it was not told of.
+#[derive(Default)]
+struct Moved(Mutex<Vec<Completer<()>>>);
+
+impl Moved {
+    fn wait(&self) -> Pending<()> {
+        let (completer, answer) = tilo_actions::remote::pending();
+        self.0.lock_recover().push(completer);
+        answer
+    }
+
+    fn wake(&self) {
+        for waiting in std::mem::take(&mut *self.0.lock_recover()) {
+            waiting.complete(());
+        }
+    }
+
+    /// Answer every wait at least every [`LOOK_AGAIN`], for as long as anything holds `moved`.
+    fn keep_answering(moved: Weak<Self>) {
+        std::thread::spawn(move || {
+            while let Some(moved) = moved.upgrade() {
+                moved.wake();
+                drop(moved);
+                std::thread::park_timeout(LOOK_AGAIN);
+            }
+        });
+    }
 }
 
 /// What each action is, takes and does.
@@ -221,6 +287,14 @@ fn declared() -> Vec<Declared> {
             execution: ExecutionMode::Background { cancellable: true },
         },
         Declared {
+            id: "stop",
+            label: "Stop",
+            description: "Stop the source's run after the item it is on, as cancelling its \
+                          `start` does; a later `start` resumes it.",
+            params: vec![source()],
+            execution: ExecutionMode::Immediate,
+        },
+        Declared {
             id: "status",
             label: "Status",
             description: "How each source's migration stands.",
@@ -249,6 +323,7 @@ fn declared() -> Vec<Declared> {
 /// The resource `resource` with an action for each step.
 fn resources(resource: &str) -> Vec<ResourceSpec> {
     let mut spec = ResourceSpec::new(resource, "devices.migrate", "Migrations");
+    spec.app_id = Some(PACKAGE.to_owned());
     for step in declared() {
         let type_id = format!("{PROVIDER}/{}", step.id);
         let encoded = type_id.clone();
@@ -277,12 +352,15 @@ impl Migrations {
     /// The migrations `host` runs, published on `resource`.
     #[must_use]
     pub fn new(resource: String, host: Arc<dyn Host>) -> Self {
+        let moved = Arc::new(Moved::default());
+        Moved::keep_answering(Arc::downgrade(&moved));
         Self {
             resources: resources(&resource),
             resource,
             host,
             log: Mutex::default(),
             going: Arc::default(),
+            moved,
         }
     }
 
@@ -321,6 +399,10 @@ impl Migrations {
 impl ActionProvider for Migrations {
     fn serves(&self, provider: &str) -> bool {
         provider == PROVIDER
+    }
+
+    fn published(&self) -> Vec<ResourceSpec> {
+        self.resources.clone()
     }
 
     fn query(
@@ -362,6 +444,7 @@ impl ActionProvider for Migrations {
                 InvocationUpdate::Accepted { invocation: id },
             )),
             cancelled: AtomicBool::new(false),
+            moved: Arc::clone(&self.moved),
         });
         let running = Running {
             id,
@@ -391,21 +474,19 @@ impl ActionProvider for Migrations {
             .map(|step| step.state.lock_recover().clone())
     }
 
+    fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
+        let step = self.log.lock_recover().get(caller, id).cloned()?;
+        // Asked for before looking, so a move between the two still answers it.
+        let moved = self.moved.wait();
+        if step.state.lock_recover().is_terminal() {
+            self.moved.wake();
+        }
+        Some(moved)
+    }
+
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
         let step = self.log.lock_recover().get(caller, id).cloned();
-        Pending::ready(match step {
-            None => Err(ActionCallError::UnknownInvocation),
-            Some(step) if step.state.lock_recover().is_terminal() => {
-                Err(ActionCallError::NotCancellable {
-                    reason: "the step already finished".into(),
-                })
-            }
-            Some(step) => {
-                // The run reads it before its next item.
-                step.cancelled.store(true, Ordering::SeqCst);
-                Ok(())
-            }
-        })
+        Pending::ready(step.map_or(Err(ActionCallError::UnknownInvocation), |step| step.stop()))
     }
 }
 
@@ -421,7 +502,7 @@ struct Running {
     id: InvocationId,
     step: Arc<Step>,
     host: Arc<dyn Host>,
-    going: Arc<Mutex<HashMap<String, InvocationId>>>,
+    going: Arc<Mutex<HashMap<String, (InvocationId, Arc<Step>)>>>,
     caller: Caller,
 }
 
@@ -449,7 +530,7 @@ impl Running {
                 },
             },
         };
-        *self.step.state.lock_recover() = InvocationState::new(self.id, update);
+        self.step.set(InvocationState::new(self.id, update));
     }
 
     /// What the step `action` answers.
@@ -471,7 +552,7 @@ impl Running {
             going
                 .lock_recover()
                 .get(source)
-                .is_some_and(|running| *running != own)
+                .is_some_and(|(running, _)| *running != own)
         };
         let cx = engine::Cx {
             place: &place,
@@ -541,6 +622,7 @@ impl Running {
                 }
                 self.start(&cx, source()?, flag("yes"))
             }
+            "stop" => self.stop(source()?),
             "status" => engine::status(&cx, text("source")),
             "undo" => {
                 let run = text("run").ok_or_else(|| anyhow!("undo takes a run"))?;
@@ -561,12 +643,12 @@ impl Running {
                     "{key} is already being brought over; its status says how far"
                 ));
             }
-            going.insert(key.to_owned(), self.id);
+            going.insert(key.to_owned(), (self.id, Arc::clone(&self.step)));
         }
         let sequence = AtomicU64::new(0);
         let mut progress = |line: &str| {
             let sequence = sequence.fetch_add(1, Ordering::Relaxed).saturating_add(1);
-            *self.step.state.lock_recover() = InvocationState::new(
+            self.step.set(InvocationState::new(
                 self.id,
                 InvocationUpdate::Progress {
                     invocation: self.id,
@@ -576,7 +658,7 @@ impl Running {
                     total: None,
                     message: Some(line.to_owned()),
                 },
-            );
+            ));
         };
         let mut confirm = |_: &str| -> Result<bool> { Ok(yes) };
         let stopping = || self.step.cancelled.load(Ordering::SeqCst);
@@ -601,6 +683,19 @@ impl Running {
             return Err(Stopped.into());
         }
         Ok(answer)
+    }
+
+    /// `stop`: the run going for `source` stops after the item it is on, as cancelling its
+    /// invocation of `start` stops it.
+    fn stop(&self, source: &str) -> Result<Value> {
+        let key = engine::registry::named(source)?.key;
+        let going = self.going.lock_recover().get(key).cloned();
+        let Some((run, step)) = going else {
+            return Err(anyhow!("nothing of {key} is being brought over"));
+        };
+        step.stop()
+            .map_err(|error| anyhow!("{key}'s run cannot stop: {}", error.said()))?;
+        Ok(serde_json::json!({ "source": key, "run": run.0.to_string() }))
     }
 }
 

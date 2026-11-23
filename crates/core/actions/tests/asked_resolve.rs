@@ -193,7 +193,15 @@ fn resolve(
     resolution: Offer,
     choice: Option<usize>,
 ) -> Result<(), ActionCallError> {
-    answered(host.store.resolve(at, by, &Resolve { resolution, choice }))
+    answered(host.store.resolve(
+        at,
+        by,
+        &Resolve {
+            resolution,
+            choice,
+            ..Resolve::default()
+        },
+    ))
 }
 
 fn refusal(result: Result<(), ActionCallError>) -> String {
@@ -454,10 +462,7 @@ fn a_forged_approve_is_refused() {
         .unwrap();
     let forged = |request: &InvokeRequest| {
         let mut request = request.clone();
-        request.confirmation = Some(Confirmation::Asked(Approval {
-            record: at.clone(),
-            choice: None,
-        }));
+        request.confirmation = Some(Confirmation::Asked(Approval::new(at.clone(), None)));
         request
     };
     let refused =

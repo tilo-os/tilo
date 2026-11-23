@@ -189,6 +189,79 @@ pub struct ReturnsSurface {
     pub ty: FieldType,
 }
 
+/// The type a parameter is published as, from its wire type. A resource is a resource of the
+/// kind it names, or of any kind: code passes the value it has, never its id's text. An object
+/// or a list says nothing more than its schema does ([`FieldType::Any`]).
+#[must_use]
+pub fn param_type(param: &crate::ActionParam) -> FieldType {
+    use crate::ParamType;
+    match param.ty {
+        ParamType::Text | ParamType::Secret | ParamType::DateTime => FieldType::Text,
+        ParamType::Resource => {
+            FieldType::Resource(param.resource_kind().unwrap_or_default().to_owned())
+        }
+        ParamType::Integer => FieldType::Int,
+        ParamType::Number => FieldType::Float,
+        ParamType::Boolean => FieldType::Bool,
+        ParamType::Object | ParamType::Array => FieldType::Any,
+    }
+}
+
+/// `action` as a verb taking `params`: its id and kind, and whether it destroys. The words a
+/// person reads of it are the catalogue's, not the surface's.
+#[must_use]
+pub fn verb_of(action: &crate::ActionSpec, params: Vec<ParamSurface>) -> VerbSurface {
+    VerbSurface {
+        id: action.id.clone(),
+        name: String::new(),
+        label: String::new(),
+        description: None,
+        kind: action.contract.settled_kind(),
+        destructive: action.contract.risk == crate::RiskLevel::Destructive,
+        incoming_message: false,
+        params,
+        returns: None,
+        writes: record_unit(),
+        field: None,
+    }
+}
+
+/// The resource `spec` as a surface: its kind and a verb for each of its actions, each
+/// parameter typed by its wire type ([`param_type`]). What a provider publishing it at a fixed
+/// address is compiled against: it stores no fields, so its verbs are called at that address.
+#[must_use]
+pub fn of_resource(spec: &crate::ResourceSpec) -> Surface {
+    let verbs = spec
+        .actions
+        .iter()
+        .map(|action| {
+            let params = action
+                .params()
+                .iter()
+                .map(|param| ParamSurface {
+                    name: param.name.to_string(),
+                    required: param.required,
+                    schema: serde_json::Value::Null,
+                    ty: param_type(param),
+                    within: None,
+                })
+                .collect();
+            verb_of(action, params)
+        })
+        .collect();
+    Surface {
+        kind: spec.kind.clone(),
+        label: String::new(),
+        version: 0,
+        person: false,
+        readers: None,
+        verbs,
+        fields: Vec::new(),
+        types: Vec::new(),
+        shows: Vec::new(),
+    }
+}
+
 /// The arguments of a call of `verb`, as `(name, value)`, with each argument of a parameter
 /// published as a field of another ([`ParamSurface::within`]) nested back under that
 /// parameter's name: what the action's API reads.

@@ -57,6 +57,8 @@ tilo-content = { version = "0.1.0", path = "../content", default-features = fals
 tracing.workspace = true
 tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
 tilo-canonical-json = { version = "0.1.0", path = "../../platform/tilo-canonical-json" }
+# What a person types for a secret take is wiped from memory once handed over.
+zeroize.workspace = true
 
 [dev-dependencies]
 postcard = { workspace = true, features = ["alloc"] }

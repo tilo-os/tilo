@@ -236,3 +236,67 @@ fn an_agent_lists_and_reads_the_window_a_persons_page_holds() {
         );
     });
 }
+
+/// The agent opens Sheets: the view stands on the person's layout, named as the agent's
+/// session's, and the shell of the person's computer reads its window there.
+#[cfg(unix)]
+#[test]
+fn a_view_an_agent_opens_stands_on_the_layout_the_persons_shell_reads() {
+    use runtime_collab::wire::shell::{ShellCall, ShellRead, ShellReply};
+    use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT};
+    host::run(|host| async move {
+        let agent = host.agent();
+        let (opened, failed) = act(&agent, "sheets#open", json!({})).await;
+        assert!(!failed, "the agent opens Sheets: {opened}");
+
+        // The person's computer: the shell the daemon admits, reading the layout as a session
+        // does.
+        let link = host.daemon().shell_link().unwrap();
+        link.set_nonblocking(true).unwrap();
+        let (shell, _) =
+            runtime_collab::ShellClient::open(tokio::net::UnixStream::from_std(link).unwrap());
+        let deadline = Instant::now() + READ_BOUND;
+        let (apps, opened_by) = loop {
+            let read = shell
+                .call(ShellCall::Read {
+                    workspace: host.workspace().to_owned(),
+                    app: DESKTOP_APP.to_owned(),
+                    resource: DESKTOP_DOCUMENT.to_owned(),
+                    since: None,
+                })
+                .await
+                .unwrap();
+            let layout = match read {
+                ShellReply::Read(ShellRead::Whole { bytes, .. }) => {
+                    automerge::AutoCommit::load(&bytes)
+                        .ok()
+                        .and_then(|layout| tilo_desktop_model::shared_resource::read(&layout, None))
+                }
+                _ => None,
+            };
+            let apps: Vec<String> = layout
+                .iter()
+                .flat_map(|layout| layout.tree.tabs())
+                .filter_map(|tab| match &tab.tile {
+                    tilo_desktop_model::TileContent::LocalApp { app_id, .. } => {
+                        Some(app_id.clone())
+                    }
+                    _ => None,
+                })
+                .collect();
+            if !apps.is_empty() || Instant::now() > deadline {
+                break (apps, layout.map(|layout| layout.opened_by.len()));
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        assert!(
+            apps.len() == 1 && apps[0].ends_with("sheets"),
+            "the layout holds the one window the agent showed: {apps:?}"
+        );
+        assert_eq!(
+            opened_by,
+            Some(1),
+            "the window names the agent session that opened it"
+        );
+    });
+}

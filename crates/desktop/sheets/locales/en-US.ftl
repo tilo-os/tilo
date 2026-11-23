@@ -768,31 +768,3 @@ so-tilo-workspace-settings-change-remove-custom-role = Delete a role and its rul
 so-tilo-workspace-settings-change-set-document-access = Set document access
 so-tilo-workspace-settings-change-show-tab = Show a tab
 so-tilo-workspace-settings-change-toggle-device = Show on a device
-
-## Add a device
-
-pair-device = Device pairing
-so-tilo-pair-device-link-copy = Copy the link
-so-tilo-pair-device-link-done = Close
-pair-device-title = Add a device
-pair-device-description = Scan the code or open the link on your new device to make it one of yours.
-pair-device-close = Close
-pair-device-link-label = The link
-pair-device-copy = Copy link
-pair-device-copied = Copied
-pair-device-code-alt = The pairing link as a code to scan
-pair-device-lasting = { $minutes ->
-    [one] Works once, for the next minute.
-   *[other] Works once, for the next { $minutes } minutes.
-}
-pair-device-in-tilo = On a computer with Tilo, paste the link into Join a workspace.
-pair-device-no-workspace = Open a workspace first: the link opens it on your new device.
-pair-device-no-host = This computer doesn't know where the workspace's host is yet. Open the workspace again, then add the device.
-pair-device-not-yours = This computer isn't signed in as you, so it can't let a new device in.
-pair-device-no-link = The link could not be made. Close this and try again.
-pair-device-ticket-description = Type this ticket on your new computer to make it one of yours.
-pair-device-ticket-label = The ticket
-pair-device-ticket-copy = Copy ticket
-pair-device-ticket-alt = The ticket as a code to scan
-pair-device-ticket-in-tilo = On the new computer, open Tilo and choose “Use your existing identity”, then type the ticket. Or run tilo login with it there.
-pair-device-ticket-asking = Asking this computer for a ticket…

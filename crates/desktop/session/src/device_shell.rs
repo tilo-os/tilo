@@ -7,12 +7,13 @@
 //! person's workspace list and each listed workspace's standing, keeps the last reading of each
 //! in the [`WorkspaceView`] the loop reads, and wakes the loop when one changed. Every change to
 //! a workspace (founding one, joining one, a governance action, the host's own operations) is an
-//! action the daemon's one dispatch answers on that connection, as the person.
+//! action the daemon answers on that connection.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use runtime_collab::ShellClient;
+use runtime_collab::wire::shell::{ShellCall, ShellReply};
 use tilo_actions::remote::{InvokeRequest, RemoteActionTarget};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::workspace_view::{LIST, Listed, resource};
@@ -25,10 +26,24 @@ struct Daemon {
 }
 
 impl Daemon {
-    /// Invoke `request` through the daemon's dispatch, as the person, answered with its output once
-    /// it settled.
+    /// Invoke `request` on the daemon, answered with its output once it settled.
     async fn invoke(self: Arc<Self>, request: InvokeRequest) -> Result<serde_json::Value, String> {
-        self.client.dispatch().settled(None, request).await
+        let message =
+            serde_json::to_string(&tilo_actions::remote::RemoteActionMessage::Invoke(request))
+                .map_err(|error| error.to_string())?;
+        let reply = self
+            .client
+            .call(ShellCall::Invoke {
+                workspace: None,
+                message,
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        let ShellReply::Invoked(update) = reply else {
+            return Err("this device's daemon answered an action with something else".to_owned());
+        };
+        serde_json::from_str(&update?)
+            .map_err(|error| format!("this device's daemon's answer does not read: {error}"))
     }
 }
 

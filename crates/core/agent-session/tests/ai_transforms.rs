@@ -20,13 +20,13 @@ use tilo_actions::outcome::{InvocationId, InvocationUpdate};
 use tilo_actions::params::{ActionParam, ParamType};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, CatalogueResource,
-    CatalogueRow, Confirmation, InvocationLog, InvocationReceipt, InvocationState, InvokeRequest,
+    CatalogueRow, InvocationLog, InvocationReceipt, InvocationState, InvokeRequest,
     Pending,
 };
 use tilo_agent_session::transform::{self, TransformModel};
 use tilo_automation::{
     AGENT_APP_ID, AGENT_TASK_ACTION, ActionCatalog, AskRequest, AutomationInvocationId, Binding,
-    CheckErrorKind, ConfirmationRequest, InvocationHooks, InvocationMode, InvocationOutcome,
+    CheckErrorKind, InvocationHooks, InvocationMode, InvocationOutcome,
     InvocationReport, InvocationRequest, InvocationTrigger, NoShortcuts, Shortcut, Step,
     StepFailure, StepKind, check, run,
 };
@@ -182,10 +182,6 @@ impl ActionProvider for AgentService {
 struct Unattended;
 
 impl InvocationHooks for Unattended {
-    fn confirm(&self, _request: ConfirmationRequest) -> Pending<Option<Confirmation>> {
-        Pending::ready(None)
-    }
-
     fn ask(&self, _request: AskRequest) -> Pending<Option<Value>> {
         Pending::ready(None)
     }
@@ -263,6 +259,7 @@ fn run_shortcut(
             from: None,
             parent: None,
             chain: Vec::new(),
+            approval: None,
         },
     ))
 }

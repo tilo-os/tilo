@@ -41,7 +41,7 @@ use std::collections::{HashMap, VecDeque};
 use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use launcher::run::tilolang_process::VerifiedInstance;
 use runtime_portal::process_link::{
@@ -210,6 +210,9 @@ pub struct Processes {
     follows_reinstalls: AtomicBool,
     /// What each app here plays, as the system's media controls hear it.
     playing: Mutex<Playing>,
+    /// The providers this device registered, whose packages each instance is handed
+    /// ([`InstanceRequest::provided`]).
+    provided: OnceLock<tilo_workspace_service::workspaces::providers::Providers>,
 }
 
 impl Processes {
@@ -249,6 +252,7 @@ impl Processes {
             generations: AtomicU64::new(1),
             follows_reinstalls: AtomicBool::new(false),
             playing: Mutex::new(Playing::default()),
+            provided: OnceLock::new(),
         })
     }
 
@@ -318,6 +322,28 @@ impl Processes {
         if let Some(told) = told {
             told(change);
         }
+    }
+
+    /// Hand each instance started from now on what `providers` publish.
+    pub fn read_provided_from(
+        &self,
+        providers: tilo_workspace_service::workspaces::providers::Providers,
+    ) {
+        let _ = self.provided.set(providers);
+    }
+
+    /// What the registered providers publish, as an instance is handed it: a JSON list, or
+    /// nothing where none publishes a package.
+    fn provided(&self) -> std::io::Result<String> {
+        let packages = self
+            .provided
+            .get()
+            .map(tilo_workspace_service::workspaces::providers::Providers::packages)
+            .unwrap_or_default();
+        if packages.is_empty() {
+            return Ok(String::new());
+        }
+        serde_json::to_string(&packages).map_err(std::io::Error::other)
     }
 
     fn running(&self) -> std::sync::MutexGuard<'_, HashMap<HostKey, Host>> {
@@ -472,6 +498,7 @@ impl Processes {
             },
             access: instance.access,
             link_home: instance.link_home.clone(),
+            provided: self.provided()?,
         };
         let fds = InstanceFds {
             broker: instance.collaboration,

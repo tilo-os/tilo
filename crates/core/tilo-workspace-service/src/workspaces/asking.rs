@@ -45,21 +45,7 @@ pub(crate) fn asked_by(caller: &Caller) -> AskedBy {
     }
 }
 
-/// Go on where the person approved `request`; else it waits for their yes, showing them
-/// `facts`.
-///
-/// # Errors
-/// [`ActionCallError::ConfirmationRequired`] with `facts`, for a call nobody approved.
-pub(crate) fn approved_or_asks(
-    request: &InvokeRequest,
-    facts: impl FnOnce() -> AskedFacts,
-) -> Result<(), ActionCallError> {
-    if request.approval().is_some() {
-        Ok(())
-    } else {
-        Err(ActionCallError::asks(facts()))
-    }
-}
+pub(crate) use tilo_actions::remote::asked::approved_or_asks;
 
 /// The person `caller` asks, as their key.
 fn asked_person(caller: &Caller) -> Option<[u8; 32]> {
@@ -105,7 +91,7 @@ fn telling(record: &RecordRef, facts: &AskedFacts) -> ToTell {
             arguments,
         }
     };
-    let actions = if facts.takes.is_some() {
+    let actions = if facts.answered_by.is_some() || !facts.takes.is_empty() {
         Vec::new()
     } else {
         vec![
@@ -118,7 +104,7 @@ fn telling(record: &RecordRef, facts: &AskedFacts) -> ToTell {
             agent: agent.id.clone(),
             name: agent.name.clone(),
         }),
-        AskedBy::App { .. } | AskedBy::Device(_) => None,
+        AskedBy::App { .. } | AskedBy::Device(_) | AskedBy::Program { .. } => None,
     };
     ToTell {
         id: Some(told_id(record)),
@@ -241,7 +227,8 @@ impl Workspaces {
     /// back to the dispatch that keeps it.
     pub fn keep_asked_in(&self, store: &Arc<AskedStore>) {
         let _ = self.inner.asked_store.set(Arc::clone(store));
-        self.action_service().admit_approvals_from(Arc::clone(store));
+        self.action_service()
+            .admit_approvals_from(Arc::clone(store));
         self.link_asked();
     }
 

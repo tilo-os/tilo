@@ -22,9 +22,11 @@ pub struct Callees {
     pub apps: HashMap<String, Meta>,
     /// The native apps among them, which a program invokes on their own documents.
     pub native: Rc<Native>,
-    /// The platform's apps, whose resources the session publishes under their own ids.
+    /// The platform's apps, whose resources the session publishes under their own ids, and the
+    /// packages of the providers the device registered ([`Callees::provide`]).
     pub published: HashSet<String>,
-    /// The resource each of the session's loose actions is published on, by the action's id.
+    /// The resource each loose action is published on, by the action's id: the session's (its
+    /// own ids), and a registered provider's (`<app>#<verb>`).
     pub addresses: BTreeMap<String, String>,
     /// The workspace the call is made in: what a dispatch serving more than one routes it by, so a
     /// call reaches a record in another workspace the person belongs to.
@@ -32,6 +34,18 @@ pub struct Callees {
 }
 
 impl Callees {
+    /// Call the actions of `packages`, which the providers this device registered publish, at
+    /// the addresses each registered them at: the package `tilolang check` read for the code is
+    /// the one they publish now.
+    pub fn provide(&mut self, packages: &[tilo_actions::remote::ProvidedPackage]) {
+        for package in packages {
+            let (meta, addresses) = crate::catalogue::provided(package);
+            self.published.insert(meta.app.clone());
+            self.addresses.extend(addresses);
+            self.apps.insert(meta.app.clone(), meta);
+        }
+    }
+
     /// The call `invocation` is at its app's action API, as JSON (`{app, resource, action,
     /// arguments}`, and `published` for one the session publishes); refused for an app this
     /// code may not use, failed for an invocation that does not fit what the app declares.
@@ -233,10 +247,14 @@ fn published_call(
     // A platform package's action is its published verb, by the same id (`show-surface`).
     let resource = match target {
         Some(target) => target.id_string(),
+        // The session's loose actions keep their own ids; a provider's are named by its app.
         None => addresses
             .get(action)
             .cloned()
-            .filter(|_| app == crate::platform_apps::SESSION_APP)
+            .filter(|_| {
+                app == crate::platform_apps::SESSION_APP
+                    || crate::catalogue::published_verb(app, action) != action.as_str()
+            })
             .ok_or_else(|| format!("`{action}` of {app} names no resource it is published on"))?,
     };
     let mut arguments = serde_json::Map::new();

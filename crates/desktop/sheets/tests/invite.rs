@@ -184,7 +184,7 @@ tilo_test_env::scenario! {
 
     phase the_choices_come_first_then_the_link_and_it_fits_without_scrolling;
     // In the order the person goes: the part and the person, then the link made at them, its code
-    // centred as Add a device draws its own, then the links that still work. At 720 by 900 all of
+    // centred, then the links that still work. At 720 by 900 all of
     // it stands above the Close button, with nothing to scroll.
     {
         let (mut app, _state) = mounted(sample(Some("made")));

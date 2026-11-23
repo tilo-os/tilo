@@ -49,6 +49,8 @@ pub(crate) struct Instances {
     processes: OnceLock<Arc<Processes>>,
     /// The member the device acts as: the one an instance that shows nothing is run for.
     person: OnceLock<String>,
+    /// The providers this device registered, whose packages every instance is handed.
+    provided: OnceLock<tilo_workspace_service::workspaces::providers::Providers>,
     made: Mutex<Vec<Made>>,
     next: AtomicU64,
 }
@@ -61,6 +63,7 @@ impl Instances {
             launcher_candidates,
             processes: OnceLock::new(),
             person: OnceLock::new(),
+            provided: OnceLock::new(),
             made: Mutex::default(),
             next: AtomicU64::new(1),
         }
@@ -71,13 +74,30 @@ impl Instances {
         let _ = self.person.set(person);
     }
 
+    /// Hand every instance the processes start what `providers` publish, from now on.
+    pub(crate) fn read_provided_from(
+        &self,
+        providers: tilo_workspace_service::workspaces::providers::Providers,
+    ) {
+        if let Some(processes) = self.processes.get() {
+            processes.read_provided_from(providers.clone());
+        }
+        let _ = self.provided.set(providers);
+    }
+
     /// The tilolang processes, through the launcher found first.
     pub(crate) fn processes(&self) -> Result<&Arc<Processes>, String> {
         if let Some(processes) = self.processes.get() {
             return Ok(processes);
         }
         let launcher = super::linux::resolve_launcher(&self.launcher_candidates)?;
-        Ok(self.processes.get_or_init(|| Processes::new(launcher)))
+        Ok(self.processes.get_or_init(|| {
+            let processes = Processes::new(launcher);
+            if let Some(providers) = self.provided.get() {
+                processes.read_provided_from(providers.clone());
+            }
+            processes
+        }))
     }
 
     /// Start an instance of `app` in `workspace` that shows nothing, to take the calls the

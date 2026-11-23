@@ -384,7 +384,7 @@ impl Workspaces {
                 Fact::new("username", mail.username.clone()),
             ],
             verb: "sign in".to_owned(),
-            takes: Some(format!(
+            answered_by: Some(format!(
                 "{}/{}#{}",
                 person_vault::PROVIDER,
                 person_vault::RESOURCE,

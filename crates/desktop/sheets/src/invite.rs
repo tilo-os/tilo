@@ -758,9 +758,8 @@ fn whose(invite: &Invite, choosing: &LocalState<Choosing>, at: usize) -> Element
     )
 }
 
-/// The link made at the choices, as Add a device shows its own: the code to
-/// scan, how long it works, and the link as text with the buttons that copy
-/// it, take it back and make another.
+/// The link made at the choices: the code to scan, how long it works, and the
+/// link as text with the buttons that copy it, take it back and make another.
 fn handover(
     invite: &Invite,
     created: &Created,

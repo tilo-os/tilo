@@ -5770,6 +5770,11 @@
           "name": "caret",
           "doc": "A caret on a surface rather than a field in a form: no well and no fill, only as wide as what it holds, growing as the words are typed. The canvas's caret.",
           "type": "bool"
+        },
+        {
+          "name": "secret",
+          "doc": "A secret: the field masks what it holds, never speaks or shows it in a screenshot, refuses Copy and Cut, and hands its value over only through the action it fires. For an API key or a password, where the app never reads the value back.",
+          "type": "bool"
         }
       ],
       "events": [

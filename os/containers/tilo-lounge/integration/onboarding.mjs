@@ -6,7 +6,7 @@
 // The story this drives, one step per mark below:
 //
 //   0. the person who runs the host arrives, and the stack's own owner adds
-//      them as an owner with `tilo do workspace/members#add` — how a fresh
+//      them as an owner with `tilo do workspace/members#admit` — how a fresh
 //      invitation-only Lounge gets its first member; the entry lets them in,
 //      and the workspace makes them an owner once they are;
 //   1. a stranger arrives: the entry's wait list, not the setup screen, and an
@@ -359,7 +359,7 @@ const arrive = async (page, {expected}) => {
 
 // -- the deployment's owners admit people ------------------------------------
 /** Make `user` (hex) an owner of the Lounge, as the stack's own owner does:
- * `stack.sh owner KEY` runs `tilo do workspace/members#add person=KEY role=owner`, the action
+ * `stack.sh owner KEY` runs `tilo do workspace/members#admit person=KEY role=owner`, the action
  * any owner takes, and the workspace's entry lets them in. */
 const addOwner = async user => {
   execFileSync('bash', [stack, 'owner', user], {stdio: ['ignore', 'inherit', 'inherit']});
@@ -452,7 +452,7 @@ try {
   // A fresh invitation-only Lounge has nobody in it: the people the
   // deployment's owners add are the ones its entry lets in, so the person who
   // runs it arrives first, and this run adds their key as an owner with
-  // `stack.sh owner`, which runs `tilo do workspace/members#add`.
+  // `stack.sh owner`, which runs `tilo do workspace/members#admit`.
   step('the operator the deployment made an owner being let in');
   const operator = await visit('operator', {setupDone: true});
   await arrive(operator, {expected: 'refused'});

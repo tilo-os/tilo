@@ -89,3 +89,7 @@ airdrop-error-failed = AirDrop-Übertragung fehlgeschlagen. Den Empfänger vor e
 airdrop-error-declined = Die AirDrop-Übertragung wurde vor dem Senden abgebrochen.
 
 device-agents-not-accepted = Dieses Gerät nimmt keine Agenten von deinen anderen Geräten an. Schalte „Agenten von meinen anderen Geräten annehmen“ in seinen Einstellungen unter Geräte ein.
+
+task-programs-resource = Aufgabenprogramme
+task-programs-run = Ein Programm ausführen
+task-programs-run-detail = Führt ein Programm als Schritt der Aufgabe aus und antwortet, was es gelesen oder geändert hat.

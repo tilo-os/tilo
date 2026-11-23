@@ -187,11 +187,6 @@ pub struct Options {
     /// that owns the machine, and `headless-owner-control.sock` for a headless one. `None` : there
     /// is none.
     pub admin_control: Option<std::path::PathBuf>,
-    /// The shell's end of the link the device's daemon made for this session, when the session
-    /// runs in a test's own process (`tilo_runtime::daemon::Running::link_shell`): what a session
-    /// the daemon started reads from `TILO_SHELL_FD` instead. `None`: that one.
-    #[cfg(unix)]
-    pub shell_link: Option<std::os::fd::OwnedFd>,
 }
 
 /// Which machine a session draws on.
@@ -448,8 +443,6 @@ impl Default for Options {
             launches: std::sync::Arc::default(),
             windows: compat_service::Assembly::system(),
             drives: None,
-            #[cfg(unix)]
-            shell_link: None,
         }
     }
 }

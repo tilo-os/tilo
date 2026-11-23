@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 /// 17 has a started host name its own certificate and address; 16 leaves which hosts hold a
 /// workspace to its owners' own
 /// actions (`tilo do workspace/servers#add` and `remove`); 15 leaves bringing people in to the
-/// workspace's own actions (`tilo do workspace/members#add` and `tilo do workspace/invitations#invite`,
+/// workspace's own actions (`tilo do workspace/members#admit` and `tilo do workspace/invitations#invite`,
 /// which its owners and administrators ask with their keys): the operator
 /// names its first owner at start. A reader of another version decodes no
 /// line of this.
