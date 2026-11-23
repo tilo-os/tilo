@@ -11,6 +11,7 @@
 pub mod compute;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
@@ -18,13 +19,19 @@ use iroh::endpoint::{Endpoint, presets};
 use iroh::protocol::Router;
 use tempfile::TempDir;
 
+use tilo_peer_state::actions::RemoteDevice;
+use tilo_peer_state::direct::{DirectSync, Heard, Reader};
+use tilo_server_client::LinkError;
+use tilo_server_client::link::{Dialer, Purpose};
+use tilo_server_protocol::refusal::Refusal;
+
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, UserIdentity, sign_device_cert,
 };
 
 use tilo_peer_state::join::{Role, decode_and_verify_invitation};
 use tilo_server::{
-    Envelope, ServerClient, ServerConfig, TrustPolicy, WorkspaceId,
+    ServerConfig, TrustPolicy, WorkspaceId,
     daemon::{Server, ServerIdentity},
     service::{ServiceConfig, ServiceIdentity, WorkspaceService},
     workspace_join::WorkspaceJoinClient,
@@ -496,79 +503,515 @@ pub async fn serve_with_keys(
     }
 }
 
-/// A session of `device` to the certified host `host` of its own person.
-pub async fn session_to(user: &TestUser, device: &TestDevice, host: &Hosted) -> ServerClient {
-    ServerClient::connect_v2_to_enrolled_home_peer(
-        device_endpoint(device).await,
-        host.host.node_addr(),
-        user.user_pk,
-        host.host.device_cert().device_public_key,
-        device.cert.clone(),
-        device.sk.clone(),
-        RevocationList::new(),
-    )
-    .await
-    .unwrap()
+/// A member device's link to one workspace on a host: its own copy of the workspace, seeded
+/// from what the host holds, the link it dialled and runs, and the host's actions asked from the
+/// same endpoint.
+///
+/// It is the same set-up a device's session makes: a dialer to the
+/// host, the member handshake on the link's first stream, and the workspace's records dialled
+/// over it. Nothing here speaks a protocol of its own.
+pub struct Linked {
+    /// This device's copy of the workspace, as its links sync it.
+    pub sync: DirectSync,
+    /// The host's actions in this workspace, asked as this device.
+    pub actions: RemoteDevice,
+    /// The host's device key: who the link is pinned to and requests are addressed to.
+    pub host: [u8; 32],
+    /// This device's signing key, for the requests it asks beside the link's.
+    sk: SigningKey,
+    /// The device this link belongs to, for the links it opens beside this one.
+    device: TestDevice,
+    /// The endpoint every link of this device runs from: a server keeps one connection per
+    /// endpoint id, so a device binds one and lends it. `None` over WebTransport, which has no
+    /// endpoint.
+    endpoint: Option<Endpoint>,
+    reader: Reader,
+    /// The endpoints the links run from: they live as long as this does.
+    dialer: Arc<Dialer>,
+    running: Option<tokio::task::JoinHandle<Result<(), Refusal>>>,
 }
 
-/// Wait until `client` receives the change `body`. The workspace's own
-/// changes before it (what its holders say of their copies, among others)
-/// are passed over.
-pub async fn receives(client: &ServerClient, body: &[u8]) {
-    tilo_test_env::within("the change arrives", async {
+impl Linked {
+    /// This device's key: who it asks and writes as.
+    #[must_use]
+    pub fn device(&self) -> [u8; 32] {
+        self.sync.device()
+    }
+
+    /// Read this device's copy of the workspace.
+    pub fn read<R>(&self, read: impl FnOnce(&tilo_peer_state::StatePeer) -> R) -> R {
+        self.sync.read(read)
+    }
+
+    /// Send `message` on the link, as this device.
+    ///
+    /// # Errors
+    ///
+    /// The link ended, or the message could not be signed or kept.
+    pub fn send(&self, message: neighbour_wire::NeighbourMsg) -> Result<(), String> {
+        self.sync.send(message)
+    }
+
+    /// Make and send `write`, keeping the message it returns as this device's write.
+    ///
+    /// # Errors
+    ///
+    /// The write was refused, or its frame could not be kept.
+    pub fn publish(
+        &self,
+        write: impl FnOnce(
+            &mut tilo_peer_state::StatePeer,
+        ) -> Result<neighbour_wire::NeighbourMsg, String>,
+    ) -> Result<neighbour_wire::NeighbourMsg, String> {
+        self.sync.publish(write)
+    }
+
+    /// The caller a request made on this device carries: its person, and this device.
+    #[must_use]
+    pub fn caller(&self, user: [u8; 32]) -> tilo_actions::remote::Caller {
+        tilo_actions::remote::Caller::authenticated(user, self.device())
+    }
+
+    /// The host's actions in `workspace`, asked over the actions link this device holds open to
+    /// it, as its session asks them ([`tilo_session_client::session`]): the same link a device
+    /// asks every action it makes on a host over.
+    ///
+    /// # Errors
+    ///
+    /// The host did not answer its actions link.
+    pub async fn asking_in(&self, workspace: &str) -> Result<RemoteDevice, Refusal> {
+        self.asking_device_in(workspace, self.host).await
+    }
+
+    /// [`Self::asking_in`], a request addressed to `target` rather than the host: a device of
+    /// the workspace, which the host passes the request on to.
+    ///
+    /// # Errors
+    ///
+    /// The host did not answer its actions link.
+    pub async fn asking_device_in(
+        &self,
+        workspace: &str,
+        target: [u8; 32],
+    ) -> Result<RemoteDevice, Refusal> {
+        let link = self.dialer.link(Purpose::Actions).await.map_err(refused)?;
+        let service = tilo_peer_state::actions::ActionService::new(
+            self.sk.clone(),
+            Arc::new(tilo_peer_state::actions::NoActions),
+        );
+        Ok(service.remote_over(Arc::new(link), target, workspace))
+    }
+
+    /// This device's link to `workspace` on `server`, from the endpoint its other links run
+    /// from: a device opens a link for each workspace it holds, and one endpoint under its key.
+    ///
+    /// # Errors
+    ///
+    /// The host refused the device, or the link did not open.
+    pub async fn reopen(&self, server: &Server, workspace: WorkspaceId) -> Result<Self, Refusal> {
+        #[cfg(feature = "web")]
+        let Some(endpoint) = &self.endpoint else {
+            return Self::open_web(server, &self.device, workspace).await;
+        };
+        #[cfg(not(feature = "web"))]
+        let Some(endpoint) = &self.endpoint else {
+            return Err(Refusal::Other("this device's link has no endpoint".into()));
+        };
+        let dialer = Arc::new(Dialer::from_endpoint(
+            tilo_server_client::ServerAddress::at(server.node_addr()),
+            endpoint.clone(),
+        ));
+        let workspaces = server.workspaces().expect("the server holds workspaces");
+        let asking = tilo_peer_state::actions::ActionService::new(
+            self.sk.clone(),
+            Arc::new(tilo_peer_state::actions::NoActions),
+        )
+        .remote(endpoint, &server.node_addr(), &workspace.to_string());
+        Self::joined(
+            workspaces,
+            &self.device,
+            workspace,
+            dialer,
+            asking,
+            Some(endpoint.clone()),
+            None,
+        )
+        .await
+    }
+
+    /// [`Self::reopen`] for a host a test runs itself ([`Hosted`]).
+    ///
+    /// # Errors
+    ///
+    /// The host refused the device, or the link did not open.
+    pub async fn reopen_hosted(
+        &self,
+        hosted: &Hosted,
+        workspace: WorkspaceId,
+    ) -> Result<Self, Refusal> {
+        #[cfg(feature = "web")]
+        let Some(endpoint) = &self.endpoint else {
+            return Self::open_hosted(hosted, &self.device, workspace).await;
+        };
+        #[cfg(not(feature = "web"))]
+        let Some(endpoint) = &self.endpoint else {
+            return Err(Refusal::Other("this device's link has no endpoint".into()));
+        };
+        let dialer = Arc::new(Dialer::from_endpoint(
+            tilo_server_client::ServerAddress::at(hosted.host.node_addr()),
+            endpoint.clone(),
+        ));
+        let workspaces = hosted.host.workspaces();
+        let asking = tilo_peer_state::actions::ActionService::new(
+            self.sk.clone(),
+            Arc::new(tilo_peer_state::actions::NoActions),
+        )
+        .remote(endpoint, &hosted.host.node_addr(), &workspace.to_string());
+        Self::joined(
+            workspaces,
+            &self.device,
+            workspace,
+            dialer,
+            asking,
+            Some(endpoint.clone()),
+            None,
+        )
+        .await
+    }
+
+    /// The next frame a link brought this device's copy, or `None` once the link ended.
+    pub async fn next(&mut self) -> Option<Heard> {
+        self.reader.recv().await
+    }
+
+    /// Ticks whenever this device's copy changed, by its own write or a link's.
+    #[must_use]
+    pub fn changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.sync.changes()
+    }
+
+    /// What the host made of this device's own writes, on this link.
+    #[must_use]
+    pub fn answers(&self) -> tokio::sync::broadcast::Receiver<tilo_peer_state::direct::Answered> {
+        self.sync.answers()
+    }
+
+    /// Wait until the link ends, from either end: the host refused the device, or closed the
+    /// link, or this device let it go.
+    ///
+    /// # Errors
+    ///
+    /// The host's refusal, when it ended the link with one.
+    pub async fn closed(&mut self) -> Result<(), Refusal> {
+        let Some(running) = self.running.take() else {
+            return Ok(());
+        };
+        match running.await {
+            Ok(answer) => answer,
+            Err(_) => Ok(()),
+        }
+    }
+
+    /// A device of `workspace` on the server `server`, dialling its records link as it holds the
+    /// workspace in the host's roster.
+    ///
+    /// # Errors
+    ///
+    /// The host refused the device, or the link did not open.
+    pub async fn open(
+        server: &Server,
+        device: &TestDevice,
+        workspace: WorkspaceId,
+    ) -> Result<Self, Refusal> {
+        let endpoint = device_endpoint(device).await;
+        let dialer = Arc::new(Dialer::from_endpoint(
+            tilo_server_client::ServerAddress::at(server.node_addr()),
+            endpoint.clone(),
+        ));
+        let workspaces = server.workspaces().expect("the server holds workspaces");
+        let asking = tilo_peer_state::actions::ActionService::new(
+            device.sk.clone(),
+            Arc::new(tilo_peer_state::actions::NoActions),
+        )
+        .remote(&endpoint, &server.node_addr(), &workspace.to_string());
+        Self::joined(
+            workspaces,
+            device,
+            workspace,
+            dialer,
+            asking,
+            Some(endpoint),
+            None,
+        )
+        .await
+    }
+
+    /// [`Self::open`], starting this device's copy from `seed`: what a device holds of the
+    /// workspace before its link opens, so what it lacks reaches it over the link.
+    ///
+    /// # Errors
+    ///
+    /// The host refused the device, or the link did not open.
+    pub async fn open_seeded(
+        server: &Server,
+        device: &TestDevice,
+        workspace: WorkspaceId,
+        seed: tilo_peer_state::StatePeer,
+    ) -> Result<Self, Refusal> {
+        let endpoint = device_endpoint(device).await;
+        let dialer = Arc::new(Dialer::from_endpoint(
+            tilo_server_client::ServerAddress::at(server.node_addr()),
+            endpoint.clone(),
+        ));
+        let workspaces = server.workspaces().expect("the server holds workspaces");
+        let asking = tilo_peer_state::actions::ActionService::new(
+            device.sk.clone(),
+            Arc::new(tilo_peer_state::actions::NoActions),
+        )
+        .remote(&endpoint, &server.node_addr(), &workspace.to_string());
+        Self::joined(
+            workspaces,
+            device,
+            workspace,
+            dialer,
+            asking,
+            Some(endpoint),
+            Some(seed),
+        )
+        .await
+    }
+
+    /// [`Self::open`] over the packet relay the host names, and nothing else: the shape a page's
+    /// transport has, which no socket address shortcuts.
+    ///
+    /// # Errors
+    ///
+    /// The host refused the device, or the link did not open.
+    pub async fn open_relayed(
+        server: &Server,
+        device: &TestDevice,
+        workspace: WorkspaceId,
+    ) -> Result<Self, Refusal> {
+        let relay = server
+            .node_addr()
+            .relay_urls()
+            .next()
+            .cloned()
+            .expect("the host names its packet relay");
+        let addr = iroh_base::EndpointAddr::new(server.node_addr().id).with_relay_url(relay);
+        let address = tilo_server_client::ServerAddress::at(addr.clone())
+            .over(tilo_server_client::Carrier::Relay);
+        let dialer = Arc::new(Dialer::new(
+            address,
+            Some(device.sk.verifying_key().to_bytes()),
+        ));
+        let endpoint = dialer.endpoint().await.map_err(refused)?;
+        let workspaces = server.workspaces().expect("the server holds workspaces");
+        let asking = tilo_peer_state::actions::ActionService::new(
+            device.sk.clone(),
+            Arc::new(tilo_peer_state::actions::NoActions),
+        )
+        .remote(&endpoint, &addr, &workspace.to_string());
+        Self::joined(
+            workspaces,
+            device,
+            workspace,
+            dialer,
+            asking,
+            Some(endpoint),
+            None,
+        )
+        .await
+    }
+
+    /// [`Self::open`] over the browser's WebTransport: the page's way, which a native device
+    /// can dial too. The device proves itself on each link's first stream.
+    ///
+    /// # Errors
+    ///
+    /// The host refused the device, or the link did not open.
+    #[cfg(feature = "web")]
+    pub async fn open_web(
+        server: &Server,
+        device: &TestDevice,
+        workspace: WorkspaceId,
+    ) -> Result<Self, Refusal> {
+        let workspaces = server.workspaces().expect("the server holds workspaces");
+        let address = tilo_server_client::ServerAddress::at(server.node_addr())
+            .with_web(server.web_link())
+            .over(tilo_server_client::Carrier::WebTransport);
+        let dialer = Arc::new(Dialer::new(
+            address,
+            Some(device.sk.verifying_key().to_bytes()),
+        ));
+        let asking = tilo_peer_state::actions::ActionService::new(
+            device.sk.clone(),
+            Arc::new(tilo_peer_state::actions::NoActions),
+        )
+        .remote_over(
+            Arc::new(dialer.link(Purpose::Actions).await.map_err(refused)?),
+            workspaces.host_device(),
+            &workspace.to_string(),
+        );
+        Self::joined(workspaces, device, workspace, dialer, asking, None, None).await
+    }
+
+    /// [`Self::open`] for a host a test runs itself ([`Hosted`]).
+    ///
+    /// # Errors
+    ///
+    /// The host refused the device, or the link did not open.
+    pub async fn open_hosted(
+        hosted: &Hosted,
+        device: &TestDevice,
+        workspace: WorkspaceId,
+    ) -> Result<Self, Refusal> {
+        let endpoint = device_endpoint(device).await;
+        let dialer = Arc::new(Dialer::from_endpoint(
+            tilo_server_client::ServerAddress::at(hosted.host.node_addr()),
+            endpoint.clone(),
+        ));
+        let workspaces = hosted.host.workspaces();
+        let asking = tilo_peer_state::actions::ActionService::new(
+            device.sk.clone(),
+            Arc::new(tilo_peer_state::actions::NoActions),
+        )
+        .remote(&endpoint, &hosted.host.node_addr(), &workspace.to_string());
+        Self::joined(
+            workspaces,
+            device,
+            workspace,
+            dialer,
+            asking,
+            Some(endpoint),
+            None,
+        )
+        .await
+    }
+
+    async fn joined(
+        workspaces: &Workspaces,
+        device: &TestDevice,
+        workspace: WorkspaceId,
+        dialer: Arc<Dialer>,
+        actions: RemoteDevice,
+        endpoint: Option<Endpoint>,
+        seed: Option<tilo_peer_state::StatePeer>,
+    ) -> Result<Self, Refusal> {
+        let host = workspaces.host_device();
+        let host_cert = workspaces.device_cert().clone();
+        let state = match seed {
+            Some(seed) => seed,
+            None => match Box::pin(workspaces.state(&workspace.to_string())).await {
+                Some(state) => state,
+                // The host holds no such workspace, and would refuse the dial the same way once
+                // it named it.
+                None => {
+                    return Err(Refusal::Other("the host holds no such workspace".into()));
+                }
+            },
+        };
+        let sync = DirectSync::new(state, device.sk.clone());
+        let link = dialer.link(Purpose::Records).await.map_err(refused)?;
+        link.prove_member(&device.cert, &device.sk, &host_cert)
+            .await
+            .map_err(refused)?;
+        let dialed = sync.dial_over(Arc::new(link), host).await?;
+        let reader = sync.reader();
+        let running = sync.clone();
+        let running = tokio::spawn(async move { dialed.run(&running).await });
+        Ok(Self {
+            sync,
+            actions,
+            host,
+            sk: device.sk.clone(),
+            device: device.clone(),
+            endpoint,
+            reader,
+            dialer,
+            running: Some(running),
+        })
+    }
+}
+
+impl Drop for Linked {
+    fn drop(&mut self) {
+        if let Some(running) = self.running.take() {
+            running.abort();
+        }
+    }
+}
+
+/// Why a link did not open, as the typed refusal the host gave or one of this side's own.
+fn refused(error: LinkError) -> Refusal {
+    match error {
+        LinkError::Refused(reason) => Refusal::NotAMember(reason),
+        LinkError::DeviceRevoked => Refusal::NotAMember("the device is revoked".into()),
+        LinkError::CertificateRejected => Refusal::NotAdmitted,
+        LinkError::ServerChanged => Refusal::Other("the host proved another device".into()),
+        other => Refusal::Other(other.to_string()),
+    }
+}
+
+/// A device of `workspace` that the host admits, or the typed refusal it gave.
+pub async fn try_connect(
+    server: &Server,
+    device: &TestDevice,
+    workspace: WorkspaceId,
+) -> Result<Linked, Refusal> {
+    Linked::open(server, device, workspace).await
+}
+
+/// A device of `workspace` that the host admits.
+pub async fn connect(server: &Server, device: &TestDevice, workspace: WorkspaceId) -> Linked {
+    try_connect(server, device, workspace)
+        .await
+        .expect("the workspace admits its own member")
+}
+
+/// The next frame `linked`'s copy takes that `want` accepts: the wait ends as soon as one
+/// arrives, and only a hang reaches the bound.
+pub async fn next(linked: &mut Linked, mut want: impl FnMut(&Heard) -> bool) -> Heard {
+    tilo_test_env::within("the next frame", async {
         loop {
-            if let Envelope::Delta { delta, .. } =
-                client.recv().await.expect("the session stays open")
-                && delta == body
-            {
-                break;
+            let heard = linked.next().await.expect("the link stays open");
+            if want(&heard) {
+                return heard;
             }
+        }
+    })
+    .await
+}
+
+/// Wait until `linked`'s copy holds what `holds` asks of it. The workspace's own changes
+/// before it are passed over.
+pub async fn receives(
+    linked: &mut Linked,
+    mut holds: impl FnMut(&tilo_peer_state::StatePeer) -> bool,
+) {
+    let mut changes = linked.changes();
+    tilo_test_env::within("the change arrives", async move {
+        loop {
+            if linked.read(&mut holds) {
+                return;
+            }
+            let _ = changes.recv().await;
         }
     })
     .await;
 }
 
-/// The publisher a shell is: a coedit session of `author` to `relay`, dialing
-/// as the shell dials an enrolled home peer, once the server has it.
-pub async fn publisher(
-    server: &TestServer,
-    user: &TestUser,
-    author: &TestDevice,
-    workspace: WorkspaceId,
-) -> tilo_server::ServerCoeditSession {
-    let publisher = tilo_server::ServerCoeditSession::join(
-        ServerClient::connect_v2_to_enrolled_home_peer(
-            client_endpoint().await,
-            server.server.node_addr(),
-            user.user_pk,
-            server.server.handle().mesh_profile().device,
-            author.cert.clone(),
-            author.sk.clone(),
-            RevocationList::new(),
-        )
-        .await
-        .unwrap(),
-        workspace,
-        author.device_pubkey(),
-    )
-    .unwrap();
-    tilo_test_env::within("the publisher's subscription", async {
-        while !matches!(
-            publisher.recv().await,
-            Some(tilo_server::Inbound::Ready { .. })
-        ) {}
-    })
-    .await;
-    publisher
+/// Whether `linked` hears nothing for `wait`.
+pub async fn quiet(linked: &mut Linked, wait: std::time::Duration) -> bool {
+    tokio::time::timeout(wait, linked.next()).await.is_err()
 }
 
-/// `author`'s documents at `routes`, as its `replica` holds them, enter
-/// `workspace` as a member's first write of a document does: whole, through
-/// `publisher`. Returns once the server holds every one.
+/// `author`'s documents at `routes`, as its own copy holds them, enter `workspace` as a member's
+/// first write of a document does: whole, through `linked`. Returns once the host holds every
+/// one.
 pub async fn found_documents(
     server: &TestServer,
-    publisher: &tilo_server::ServerCoeditSession,
-    replica: &mut tilo_peer_state::StatePeer,
+    linked: &Linked,
     author: &TestDevice,
     workspace: WorkspaceId,
     routes: &[(&str, &str)],
@@ -579,22 +1022,26 @@ pub async fn found_documents(
         .expect("the server holds workspaces");
     let mut changes = workspaces.governance_changes();
     for (app, id) in routes {
-        let document = replica
-            .document(app, id)
-            .expect("the replica holds the document");
-        let message = replica
-            .publication_mut()
-            .publish_document(app, id, document, &author.sk, std::time::SystemTime::now())
+        let document = linked
+            .read(|peer| peer.document(app, id))
+            .expect("the device holds the document");
+        let message = linked
+            .publish(|peer| {
+                peer.publication_mut().publish_document(
+                    app,
+                    id,
+                    document,
+                    &author.sk,
+                    std::time::SystemTime::now(),
+                )
+            })
             .unwrap();
-        let (route, kind) = neighbour_wire::retention(&message, false).unwrap();
+        let (_, kind) = neighbour_wire::retention(&message, false).unwrap();
         assert_eq!(
             kind,
             neighbour_wire::Retention::Checkpoint,
             "a whole document"
         );
-        publisher
-            .publish_checkpoint(route, postcard::to_allocvec(&message).unwrap())
-            .unwrap();
     }
     let workspace = workspace.to_string();
     tilo_test_env::within("the server to hold the founded documents", async {
@@ -613,54 +1060,6 @@ pub async fn found_documents(
         }
     })
     .await;
-}
-
-/// A client of `device` subscribed to `workspace` on the server at `addr`, once
-/// the server admits it.
-pub async fn connect(
-    user: &TestUser,
-    device: &TestDevice,
-    addr: iroh_base::EndpointAddr,
-    workspace: WorkspaceId,
-) -> ServerClient {
-    let client = ServerClient::connect(
-        client_endpoint().await,
-        addr,
-        user.user_pk,
-        device.cert.clone(),
-        device.sk.clone(),
-        RevocationList::new(),
-    )
-    .await
-    .unwrap();
-    client
-        .send(Envelope::Subscribe {
-            workspace_id: workspace,
-        })
-        .unwrap();
-    next(&client, |env| matches!(env, Envelope::Ready { .. })).await;
-    client
-}
-
-/// The next envelope from `client` that `want` accepts: the wait ends as soon
-/// as one arrives, and only a hang reaches the bound.
-pub async fn next(client: &ServerClient, mut want: impl FnMut(&Envelope) -> bool) -> Envelope {
-    tilo_test_env::within("the next envelope", async {
-        loop {
-            let env = client.recv().await.expect("session open");
-            if want(&env) {
-                return env;
-            }
-        }
-    })
-    .await
-}
-
-/// Whether `client` hears nothing for `wait` but its person's workspace list, which the server
-/// sends every session of theirs whenever the set of workspaces they have changes.
-pub async fn quiet(client: &ServerClient, wait: std::time::Duration) -> bool {
-    let heard = async { while let Some(Envelope::PersonalList { .. }) = client.recv().await {} };
-    tokio::time::timeout(wait, heard).await.is_err()
 }
 
 /// Wait until `server` has accepted `peer`'s subscription to `workspace`.

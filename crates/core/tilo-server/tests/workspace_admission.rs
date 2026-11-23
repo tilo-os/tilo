@@ -9,11 +9,11 @@
 )]
 
 use tilo_peer_state::join::Role;
-use tilo_server::{Envelope, Server, ServerClient, ServerConfig, TrustPolicy};
+use tilo_server::{Server, ServerConfig, TrustPolicy};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{
-    TestDevice, TestUser, client_endpoint, hold_workspace, invitation, member_devices, redeem,
+    Linked, TestDevice, TestUser, hold_workspace, invitation, member_devices, redeem,
 };
 use tilo_server::WorkspaceId;
 
@@ -65,48 +65,16 @@ async fn home_host() -> HomeHost {
     let laptop = host.owner.enrol("laptop", DeviceCapabilities::primary());
     let laptop_key = laptop.device_pubkey();
     hold_workspace(&host.server, OWNERS, &[&laptop.cert]).await;
-    let laptop = connect(&host.server, laptop).await;
-    assert!(
-        matches!(
-            subscribe(&laptop, OWNERS).await,
-            Some(Envelope::Ready { .. })
-        ),
-        "the owner's first device enters the owner's workspace"
-    );
+    let laptop = Linked::open(&host.server, &laptop, OWNERS)
+        .await
+        .expect("the owner's first device enters the owner's workspace");
     assert!(
         member_devices(&host.server, OWNERS)
             .await
             .contains(&laptop_key)
     );
+    drop(laptop);
     host
-}
-
-async fn connect(server: &Server, device: TestDevice) -> ServerClient {
-    ServerClient::connect_to_pinned_host(
-        client_endpoint().await,
-        server.node_addr(),
-        device.cert,
-        device.sk,
-        RevocationList::new(),
-    )
-    .await
-    .unwrap()
-}
-
-async fn subscribe(client: &ServerClient, workspace_id: WorkspaceId) -> Option<Envelope> {
-    client.send(Envelope::Subscribe { workspace_id }).unwrap();
-    tilo_test_env::within("server answered subscription", async {
-        loop {
-            match client.recv().await {
-                Some(answer @ (Envelope::Ready { .. } | Envelope::NotAuthorised { .. })) => {
-                    break Some(answer);
-                }
-                Some(_) => {}
-                None => break None,
-            }
-        }
-    })
-    .await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -128,20 +96,19 @@ async fn cross_user_device_is_not_admitted_into_a_workspace_it_does_not_hold() {
 
     // The governed workspace's root lets Bob's laptop through the handshake,
     // and into the workspace that admits it.
-    let bob = connect(&host.server, bob_laptop).await;
-    assert!(matches!(
-        subscribe(&bob, GOVERNED).await,
-        Some(Envelope::Ready { .. })
-    ));
+    let bob = Linked::open(&host.server, &bob_laptop, GOVERNED).await;
+    assert!(
+        bob.is_ok(),
+        "the workspace that admits Bob's device opens its link"
+    );
+    drop(bob);
 
     // The owner's workspace does not admit him, and does not remember him.
-    assert!(matches!(
-        subscribe(&bob, OWNERS).await,
-        Some(Envelope::NotAuthorised {
-            workspace_id: OWNERS,
-            ..
-        })
-    ));
+    let owners = Linked::open(&host.server, &bob_laptop, OWNERS).await;
+    assert!(
+        owners.is_err(),
+        "a cross-user device links the owner's workspace"
+    );
     assert!(
         !member_devices(&host.server, OWNERS)
             .await
@@ -150,13 +117,11 @@ async fn cross_user_device_is_not_admitted_into_a_workspace_it_does_not_hold() {
     );
 
     // Nor does he get a workspace bound on this host for him.
-    assert!(matches!(
-        subscribe(&bob, UNBOUND).await,
-        Some(Envelope::NotAuthorised {
-            workspace_id: UNBOUND,
-            ..
-        })
-    ));
+    let unbound = Linked::open(&host.server, &bob_laptop, UNBOUND).await;
+    assert!(
+        unbound.is_err(),
+        "a cross-user device bound a workspace on the owner's host"
+    );
     assert!(
         !host
             .state
@@ -173,27 +138,19 @@ async fn owner_device_still_enters_on_a_home_host() {
     let host = Box::pin(home_host()).await;
     let phone = host.owner.enrol("phone", DeviceCapabilities::primary());
     let phone_key = phone.device_pubkey();
-    let phone = connect(&host.server, phone).await;
-    assert!(matches!(
-        subscribe(&phone, OWNERS).await,
-        Some(Envelope::Ready {
-            workspace_id: OWNERS,
-            ..
-        })
-    ));
+    let phone = Linked::open(&host.server, &phone, OWNERS)
+        .await
+        .expect("an owner's device enters the owner's workspace");
+    drop(phone);
     // The workspace keeps no list of who came: the owner's root is a member,
     // so another device of theirs is admitted on its first arrival as this
     // one was.
     let tablet = host.owner.enrol("tablet", DeviceCapabilities::primary());
     let tablet_key = tablet.device_pubkey();
-    let tablet = connect(&host.server, tablet).await;
-    assert!(matches!(
-        subscribe(&tablet, OWNERS).await,
-        Some(Envelope::Ready {
-            workspace_id: OWNERS,
-            ..
-        })
-    ));
+    let tablet = Linked::open(&host.server, &tablet, OWNERS)
+        .await
+        .expect("another device of the owner's enters the same workspace");
+    drop(tablet);
     let kept = member_devices(&host.server, OWNERS).await;
     assert!(
         kept.contains(&phone_key) && kept.contains(&tablet_key),

@@ -1,5 +1,5 @@
-//! Same authenticated relay/1 client over a loopback packet relay, with no N0
-//! lookup or direct socket-address fallback (the browser's transport shape).
+//! The same certified device over a loopback packet relay, with no N0 lookup or
+//! direct socket-address fallback (the browser's transport shape).
 #![allow(
     clippy::significant_drop_tightening,
     reason = "relays, fixtures and guards deliberately stay alive until each test ends"
@@ -8,15 +8,18 @@
     clippy::too_many_lines,
     reason = "each test spells out one end-to-end scenario"
 )]
-use crate::common::TestUser;
-use iroh::{Endpoint, RelayMap, RelayMode, endpoint::presets};
-use iroh_base::EndpointAddr;
+use crate::common::{Linked, TestUser, hold_workspace};
+use automerge::{AutoCommit, ROOT, transaction::Transactable as _};
 use std::net::Ipv4Addr;
-use tilo_server::{Envelope, Server, ServerClient, ServerConfig, daemon::ServerIdentity};
+use tilo_server::{Server, ServerConfig, daemon::ServerIdentity};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
+/// The app and record a member writes through its link in these tests.
+const APP: &str = "test.app";
+const RECORD: &str = "note:1";
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn certified_clients_use_only_the_injected_packet_relay() {
+async fn certified_devices_use_only_the_injected_packet_relay() {
     let user = TestUser::fresh("browser transport test");
     let host = user.enrol("host", DeviceCapabilities::member());
     let a = user.enrol("browser-a", DeviceCapabilities::member());
@@ -52,7 +55,6 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
         .expect("the host advertises its own packet relay")
         .clone();
     assert!(url.as_str().starts_with("http://127.0.0.1:"), "{url}");
-    let mode = RelayMode::Custom(RelayMap::from(url.clone()));
     tilo_test_env::within(
         "custom packet relay must become online",
         server.endpoint.online(),
@@ -62,123 +64,53 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
         server.node_addr().relay_urls().collect::<Vec<_>>(),
         vec![&url]
     );
-    crate::common::hold_workspace(&server, workspace_id, &[&a.cert, &b.cert]).await;
-    // No IP addresses are passed to either client, as in a real browser.
-    let server_addr = EndpointAddr::new(server.node_addr().id).with_relay_url(url);
-    let endpoint_a = Endpoint::builder(presets::Minimal)
-        .relay_mode(mode.clone())
-        .bind_addr((Ipv4Addr::LOCALHOST, 0))
-        .unwrap()
-        .bind()
+    hold_workspace(&server, workspace_id, &[&a.cert, &b.cert]).await;
+
+    // No IP addresses are passed to either device, as in a real browser: each
+    // dials the relay and nothing else.
+    let first = Linked::open_relayed(&server, &a, workspace_id)
         .await
-        .unwrap();
-    let endpoint_b = Endpoint::builder(presets::Minimal)
-        .relay_mode(mode.clone())
-        .bind_addr((Ipv4Addr::LOCALHOST, 0))
-        .unwrap()
-        .bind()
+        .expect("the relay admits the first device");
+    let mut second = Linked::open_relayed(&server, &b, workspace_id)
         .await
-        .unwrap();
-    let page_a = endpoint_a.clone();
-    let page_b = endpoint_b.clone();
-    let first = ServerClient::connect(
-        endpoint_a,
-        server_addr.clone(),
-        user.user_pk,
-        a.cert.clone(),
-        a.sk.clone(),
-        RevocationList::new(),
-    )
-    .await
-    .unwrap();
-    let second = ServerClient::connect(
-        endpoint_b,
-        server_addr,
-        user.user_pk,
-        b.cert.clone(),
-        b.sk.clone(),
-        RevocationList::new(),
-    )
-    .await
-    .unwrap();
+        .expect("the relay admits the second device");
     // A page checks its server connection after a network change (an `online`
-    // event, or a wall-clock jump such as a throttled tab): the connection it
-    // was admitted over must stay usable, while asking for admission too.
-    page_a.network_change().await;
-    for (client, page) in [(&first, &page_a), (&second, &page_b)] {
-        client.send(Envelope::Subscribe { workspace_id }).unwrap();
-        page.network_change().await;
-        // A held workspace sends its own state before it is ready.
-        crate::common::next(client, |env| matches!(env, Envelope::Ready { .. })).await;
-    }
-    let mut directory =
-        tilo_user_identity::WorkspaceDirectory::new(user.user_pk, a.device_pubkey());
-    directory
-        .add_workspace(workspace_id, "Shared browser workspace")
+    // event, or a wall-clock jump such as a throttled tab): asking for
+    // admission again over the relay it already reached must still answer,
+    // and the connection it was admitted over stays usable.
+    let relinked = Linked::open_relayed(&server, &a, workspace_id)
+        .await
+        .expect("the device asks for a link again after a network change");
+    drop(relinked);
+
+    // A change the first device publishes reaches the second over the relay.
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "workspace", "Shared browser workspace")
         .unwrap();
-    let checkpoint = directory.save();
-    let body = tilo_server::CoeditPayload::Checkpoint {
-        channel: [9; 32],
-        body: checkpoint.clone(),
-    }
-    .encode()
-    .unwrap();
-    page_b.network_change().await;
+    let document = doc.save();
     first
-        .send(Envelope::Delta {
-            workspace_id,
-            author_device_public_key: a.device_pubkey(),
-            authored_at_ns: 1,
-            delta: body,
-            signature: [0; 64],
+        .publish(|peer| {
+            peer.publication_mut().publish_document(
+                APP,
+                RECORD,
+                document.clone(),
+                &a.sk,
+                std::time::SystemTime::now(),
+            )
         })
         .unwrap();
-    // The person's workspace list comes whenever their workspaces change; the change is what
-    // the second page is waiting for.
-    let received = crate::common::next(&second, |env| matches!(env, Envelope::Delta { .. })).await;
-    let Envelope::Delta {
-        author_device_public_key,
-        delta,
-        ..
-    } = received
-    else {
-        panic!("expected authenticated retained checkpoint, got {received:?}");
-    };
-    assert_eq!(author_device_public_key, a.device_pubkey());
-    let Some(tilo_server::CoeditPayload::Checkpoint { body, .. }) =
-        tilo_server::CoeditPayload::decode(&delta)
-    else {
-        panic!("expected checkpoint carrier");
-    };
-    let replica =
-        tilo_user_identity::WorkspaceDirectory::load(user.user_pk, b.device_pubkey(), &body)
-            .unwrap();
-    assert_eq!(replica.list_workspaces(), directory.list_workspaces());
+    crate::common::receives(&mut second, |peer| peer.document(APP, RECORD).is_some()).await;
+
     // A valid certificate of a person the operator does not list is still
     // rejected: membership follows the person, never a bare certificate.
     let outsider =
         TestUser::fresh("outsider").enrol("unlisted device", DeviceCapabilities::member());
-    let outsider_endpoint = Endpoint::builder(presets::Minimal)
-        .relay_mode(mode)
-        .bind_addr((Ipv4Addr::LOCALHOST, 0))
-        .unwrap()
-        .bind()
-        .await
-        .unwrap();
-    let outsider_client = ServerClient::connect_to_pinned_host(
-        outsider_endpoint,
-        EndpointAddr::new(server.node_addr().id)
-            .with_relay_url(server.node_addr().relay_urls().next().unwrap().clone()),
-        outsider.cert,
-        outsider.sk,
-        RevocationList::new(),
-    )
-    .await;
+    let outsider_link = Linked::open_relayed(&server, &outsider, workspace_id).await;
     assert!(
-        outsider_client.is_err(),
+        outsider_link.is_err(),
         "a person the operator does not list is refused at the handshake"
     );
-    first.close().await;
-    second.close().await;
+    drop(first);
+    drop(second);
     server.shutdown().await;
 }

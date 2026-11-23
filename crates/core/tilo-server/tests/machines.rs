@@ -1,5 +1,5 @@
 //! Machines the person planned to install, from making the plan through the
-//! session's own action API to the machine finishing its installation: the
+//! host's own action API to the machine finishing its installation: the
 //! device that made a person's root founds their workspace and plans a machine
 //! in it, the plan names the ticket's nonce, the machine is taken into
 //! its entry, reads its plan, asks about its disk, another device answers, and
@@ -12,17 +12,16 @@
 
 use std::sync::Arc;
 
-use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget};
+use tilo_actions::remote::{
+    InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
+};
 use tilo_actions::{ActionAddress, InvocationId};
-use tilo_server::ServerClient;
 use tilo_server::servers::{self, Servers, person_workspace_id};
 use tilo_server_protocol::{WorkSetting, WorkspaceId};
-use tilo_user_identity::{DeviceCapabilities, RevocationList};
+use tilo_user_identity::DeviceCapabilities;
 use tilo_workspace_service::workspaces::MemberDevice;
 
-use crate::common::{
-    Hosted, TestDevice, TestUser, device_endpoint, join_person_workspace, serve_in,
-};
+use crate::common::{Hosted, Linked, TestDevice, TestUser, join_person_workspace, serve_in};
 
 /// The provider and resource a server answers its own operations on.
 const HOST_PROVIDER: &str = "tilo.host";
@@ -61,27 +60,31 @@ async fn member_host(user: &TestUser, device: &TestDevice) -> Hosted {
     hosted
 }
 
-/// A session of `device` to its own `host`, as `tilo do` speaks to it.
-async fn own_session(user: &TestUser, device: &TestDevice, hosted: &Hosted) -> ServerClient {
-    ServerClient::connect_v2_to_own_device(
-        device_endpoint(device).await,
-        hosted.host.node_addr(),
-        user.user_pk,
-        hosted.host.device_cert().device_public_key,
-        device.cert.clone(),
-        device.sk.clone(),
-        RevocationList::new(),
-    )
-    .await
-    .unwrap()
+/// `device`'s link to the person's `host`, in their Servers workspace: how a
+/// device of theirs asks the host its own operations.
+async fn own_link(device: &TestDevice, hosted: &Hosted, workspace: WorkspaceId) -> Linked {
+    Linked::open_hosted(hosted, device, workspace)
+        .await
+        .expect("the host admits the person's device")
 }
 
-/// The host action `action` on `session`, and the value it answered.
-async fn host_action<T: serde::de::DeserializeOwned>(
-    session: &ServerClient,
+/// Take `device` into the person's Servers workspace `workspace`, as one of
+/// their own devices comes to hold it.
+async fn take_in(hosted: &Hosted, workspace: &str, device: &TestDevice) {
+    hosted
+        .host
+        .workspaces()
+        .enter(workspace, &device.cert)
+        .await
+        .expect("the workspace takes the person's device in");
+}
+
+/// The host's answer to `action` with `argument`, asked over `linked`.
+async fn host_answer(
+    linked: &Linked,
     action: &str,
     argument: serde_json::Value,
-) -> T {
+) -> RemoteActionMessage {
     let serde_json::Value::Object(argument) = argument else {
         panic!("arguments are an object");
     };
@@ -100,16 +103,31 @@ async fn host_action<T: serde::de::DeserializeOwned>(
         appearance: None,
         signed: None,
     };
-    let status = tilo_test_env::within(
+    tilo_test_env::within(
         "the host answers its own action",
-        tilo_server::workspaces::ask_host(session, invoke),
+        linked
+            .actions
+            .ask_message(RemoteActionMessage::Invoke(invoke)),
     )
     .await
-    .expect("the host answers");
-    let ReceiptStatus::Completed { output } = status else {
-        panic!("the host's own actions complete: {status:?}");
+    .expect("the host answers")
+}
+
+/// The host action `action` on `linked`'s host, and the value it answered.
+async fn host_action<T: serde::de::DeserializeOwned>(
+    linked: &Linked,
+    action: &str,
+    argument: serde_json::Value,
+) -> T {
+    let RemoteActionMessage::Receipt(receipt) = host_answer(linked, action, argument).await else {
+        panic!("an invocation is answered with a receipt");
     };
-    serde_json::from_value(output.value.unwrap_or_default()).expect("the answer reads")
+    match receipt.status {
+        ReceiptStatus::Completed { output } => {
+            serde_json::from_value(output.value.unwrap_or_default()).expect("the answer reads")
+        }
+        other => panic!("the host's own actions complete: {other:?}"),
+    }
 }
 
 /// The entry of the machine `key` as `host` reads it, once `done` holds for it:
@@ -152,12 +170,12 @@ async fn a_person_with_no_server_plans_a_machine_and_walks_it_through_its_instal
     let laptop_host = own_host(&alice, &laptop).await;
     // The command is typed at one of their devices, reaching the device that
     // holds their Servers workspace.
-    let session = own_session(&alice, &phone, &laptop_host).await;
     let admin = person_workspace_id(&alice.user_pk);
+    let workspace = WorkspaceId::parse(&admin).unwrap();
 
-    // `tilo machine add`: the choices make a plan document, and the session's
-    // own action API writes it into the person's Servers workspace. A device
-    // that holds none plans nothing: it waits to be taken in.
+    // `tilo machine add`: the choices make a plan document, and the host's own
+    // action API writes it into the person's Servers workspace. A device that
+    // holds none plans nothing: it waits to be taken in.
     // The machine's own key, as the image hands it one before it is certified.
     let machine_key = hex::encode([0x33_u8; 32]);
     // The plan names the ticket's nonce and expiry only; the ticket itself is
@@ -188,38 +206,23 @@ async fn a_person_with_no_server_plans_a_machine_and_walks_it_through_its_instal
         "token_file": token_file.display().to_string(),
         "installer_url": install_plan::INSTALLER_URL,
     });
-    let serde_json::Value::Object(map) = arguments.clone() else {
-        unreachable!("the arguments are an object")
-    };
-    let refused = tilo_server::workspaces::ask_host(
-        &session,
-        InvokeRequest {
-            invocation: InvocationId::new(),
-            target: RemoteActionTarget {
-                provider: HOST_PROVIDER.into(),
-                address: ActionAddress::new(HOST_RESOURCE.to_owned(), PLAN_MACHINE),
-            },
-            argument: InvokeArgument::Json(map),
-            context: None,
-            confirmation: None,
-            revision: None,
-            on_behalf_of: None,
-            wait_ms: None,
-            appearance: None,
-            signed: None,
-        },
-    )
-    .await
-    .expect("the host answers");
+    // A device that holds none plans nothing: the host holds no workspace of
+    // hers, and its link refuses the phone.
+    let unlinked = Linked::open_hosted(&laptop_host, &phone, workspace).await;
+    let refused = unlinked.err();
     assert!(
-        !matches!(refused, ReceiptStatus::Completed { .. }),
+        refused.is_some(),
         "a device without the person's workspace founds none to plan in: {refused:?}"
     );
     assert!(!servers::holds_person_workspace(laptop_host.host.workspaces()).await);
 
-    // The laptop made the person's root, so it founds their workspace.
+    // The laptop made the person's root, so it founds their workspace. The
+    // phone is one of their devices; it comes to hold the workspace as one of
+    // theirs does, and then asks the host what to plan.
     servers::found(laptop_host.host.workspaces()).await.unwrap();
-    let said: String = host_action(&session, PLAN_MACHINE, arguments).await;
+    take_in(&laptop_host, &admin, &phone).await;
+    let linked = own_link(&phone, &laptop_host, workspace).await;
+    let said: String = host_action(&linked, PLAN_MACHINE, arguments).await;
     assert!(
         said.contains("plan 0123456789abcdef0123456789abcdef"),
         "{said}"
@@ -232,7 +235,7 @@ async fn a_person_with_no_server_plans_a_machine_and_walks_it_through_its_instal
     // device takes it into its entry under its device key. The holders hand it
     // the Servers workspace from there.
     let _: serde_json::Value = host_action(
-        &session,
+        &linked,
         ADMIT_MACHINE,
         serde_json::json!({ "device": machine_key, "nonce": token_nonce.clone() }),
     )
@@ -577,6 +580,7 @@ async fn a_desktop_alone_hands_its_first_server_the_servers_workspace() {
     )
     .await;
     let admin = person_workspace_id(&alice.user_pk);
+    let workspace = WorkspaceId::parse(&admin).unwrap();
     let holders = desktop_host.host.workspaces().hosts(&admin).await.unwrap();
     assert_eq!(holders.len(), 2, "the desktop and the server hold it");
     assert!(
@@ -589,9 +593,10 @@ async fn a_desktop_alone_hands_its_first_server_the_servers_workspace() {
     // Another device of the person lists the server from the document, with
     // where it is dialled: what `tilo server` and Settings read.
     let phone = alice.enrol("phone", DeviceCapabilities::member());
-    let session = own_session(&alice, &phone, &desktop_host).await;
+    take_in(&desktop_host, &admin, &phone).await;
+    let linked = own_link(&phone, &desktop_host, workspace).await;
     let listed: Vec<tilo_server_protocol::servers::PersonServer> =
-        host_action(&session, LIST_SERVERS, serde_json::json!({})).await;
+        host_action(&linked, LIST_SERVERS, serde_json::json!({})).await;
     assert_eq!(
         listed,
         vec![tilo_server_protocol::servers::PersonServer {
@@ -716,40 +721,6 @@ async fn a_new_device_reads_the_wifi_and_devices_its_person_kept() {
     .await;
 }
 
-/// What the host answered for `action` on `session`: a refusal included.
-async fn host_status(
-    session: &ServerClient,
-    action: &str,
-    argument: serde_json::Value,
-) -> ReceiptStatus {
-    let serde_json::Value::Object(argument) = argument else {
-        panic!("arguments are an object");
-    };
-    tilo_test_env::within(
-        "the host answers its own action",
-        tilo_server::workspaces::ask_host(
-            session,
-            InvokeRequest {
-                invocation: InvocationId::new(),
-                target: RemoteActionTarget {
-                    provider: HOST_PROVIDER.into(),
-                    address: ActionAddress::new(HOST_RESOURCE.to_owned(), action),
-                },
-                argument: InvokeArgument::Json(argument),
-                context: None,
-                confirmation: None,
-                revision: None,
-                on_behalf_of: None,
-                wait_ms: None,
-                appearance: None,
-                signed: None,
-            },
-        ),
-    )
-    .await
-    .expect("the host answers")
-}
-
 /// A key `user` made for an agent of theirs to act in all their workspaces.
 fn agent_key(user: &TestUser) -> TestDevice {
     let sk = ed25519_dalek::SigningKey::from_bytes(&[0x4b; 32]);
@@ -787,7 +758,7 @@ async fn a_machine_keeps_its_disk_recovery_key_and_only_its_person_reads_it() {
     let cupboard = alice.enrol("cupboard", DeviceCapabilities::member());
     let phone = alice.enrol("phone", DeviceCapabilities::member());
     // The laptop takes part in its workspaces' channels, as a person's own device does: its
-    // keys open the vault. It lets other people's devices in, so one of them can ask.
+    // keys open the vault.
     let laptop_host = crate::common::serve_with_keys(
         &alice,
         &laptop,
@@ -803,10 +774,15 @@ async fn a_machine_keeps_its_disk_recovery_key_and_only_its_person_reads_it() {
     )
     .await;
     servers::found(laptop_host.host.workspaces()).await.unwrap();
+    let admin = person_workspace_id(&alice.user_pk);
+    let workspace = WorkspaceId::parse(&admin).unwrap();
     let machine_key = hex::encode(cupboard.device_pubkey());
 
-    // The installer, right after the machine logged in with its ticket.
-    let machine = own_session(&alice, &cupboard, &laptop_host).await;
+    // The installer, right after the machine logged in with its ticket: one of
+    // the person's devices, which comes to hold their Servers workspace as one
+    // of theirs does.
+    take_in(&laptop_host, &admin, &cupboard).await;
+    let machine = own_link(&cupboard, &laptop_host, workspace).await;
     let kept: String = host_action(
         &machine,
         KEEP_RECOVERY_KEY,
@@ -819,8 +795,10 @@ async fn a_machine_keeps_its_disk_recovery_key_and_only_its_person_reads_it() {
     );
 
     // `tilo server recovery-key cupboard` on another device of the person.
-    let session = own_session(&alice, &phone, &laptop_host).await;
-    let keys: Vec<RecoveryKey> = host_action(&session, RECOVERY_KEYS, serde_json::json!({})).await;
+    take_in(&laptop_host, &admin, &phone).await;
+    let phone_link = own_link(&phone, &laptop_host, workspace).await;
+    let keys: Vec<RecoveryKey> =
+        host_action(&phone_link, RECOVERY_KEYS, serde_json::json!({})).await;
     assert_eq!(
         keys,
         vec![RecoveryKey {
@@ -837,43 +815,33 @@ async fn a_machine_keeps_its_disk_recovery_key_and_only_its_person_reads_it() {
         serde_json::json!({ "key": "555555-666666-777777-888888" }),
     )
     .await;
-    let keys: Vec<RecoveryKey> = host_action(&session, RECOVERY_KEYS, serde_json::json!({})).await;
+    let keys: Vec<RecoveryKey> =
+        host_action(&phone_link, RECOVERY_KEYS, serde_json::json!({})).await;
     assert_eq!(keys.len(), 1, "{keys:?}");
     assert_eq!(keys[0].key, "555555-666666-777777-888888");
 
-    // An agent's key of the same person reads no recovery key, and keeps none.
-    let agents = own_session(&alice, &agent_key(&alice), &laptop_host).await;
-    for (action, argument) in [
-        (RECOVERY_KEYS, serde_json::json!({})),
-        (KEEP_RECOVERY_KEY, serde_json::json!({ "key": "999999" })),
-    ] {
-        let status = host_status(&agents, action, argument).await;
-        assert!(
-            !matches!(status, ReceiptStatus::Completed { .. }),
-            "an agent's key is refused {action}: {status:?}"
-        );
-    }
+    // An agent's key of the same person is no device of theirs the workspace
+    // holds: the host's link refuses it, so it reads no recovery key and keeps
+    // none.
+    let agent = agent_key(&alice);
+    let unlinked = Linked::open_hosted(&laptop_host, &agent, workspace).await;
+    let refused = unlinked.err();
+    assert!(
+        refused.is_some(),
+        "an agent's key of the same person reaches no recovery key: {refused:?}"
+    );
 
-    // Another person's device reaches the host and reads nothing there.
+    // Another person's device is refused the link, and reads nothing there.
     let bob = TestUser::fresh("Bob");
     let bobs = bob.enrol("laptop", DeviceCapabilities::primary());
-    let outsider = ServerClient::connect_v2_to_enrolled_home_peer(
-        device_endpoint(&bobs).await,
-        laptop_host.host.node_addr(),
-        alice.user_pk,
-        laptop_host.host.device_cert().device_public_key,
-        bobs.cert.clone(),
-        bobs.sk.clone(),
-        RevocationList::new(),
-    )
-    .await
-    .expect("the host lets another person's device in");
-    let status = host_status(&outsider, RECOVERY_KEYS, serde_json::json!({})).await;
+    let unlinked = Linked::open_hosted(&laptop_host, &bobs, workspace).await;
+    let refused = unlinked.err();
     assert!(
-        !matches!(status, ReceiptStatus::Completed { .. }),
-        "another person's device is refused: {status:?}"
+        refused.is_some(),
+        "another person's device reaches no recovery key: {refused:?}"
     );
-    let keys: Vec<RecoveryKey> = host_action(&session, RECOVERY_KEYS, serde_json::json!({})).await;
+    let keys: Vec<RecoveryKey> =
+        host_action(&phone_link, RECOVERY_KEYS, serde_json::json!({})).await;
     assert_eq!(
         keys[0].key, "555555-666666-777777-888888",
         "nothing else changed it"

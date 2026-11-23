@@ -7,9 +7,10 @@ use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use tilo_server::ServerClient;
 use tilo_server::certify::{ApproverDecision, ApproverReply};
 use tilo_server::daemon::{Server, ServerIdentity};
+use tilo_server_client::ServerAddress;
+use tilo_server_client::link::{Dialer, Purpose};
 use tilo_server_client::{Approver, CertificationOutcome, CertifyError, request_certification};
 use tilo_user_identity::{
     CERTIFICATION_SCHEMA_VERSION, CertificationPolicy, CertificationRequest, DeviceCapabilities,
@@ -151,24 +152,25 @@ async fn root_holder_certifies_a_browser_device_through_the_host() {
     assert!(server_cert.capabilities.can_own_workspaces);
     assert!(!issued.capabilities.can_admit_devices);
 
-    // The new certificate authenticates on the server ALPN with a signer.
-    let client = ServerClient::connect_with_signer(
-        client_endpoint().await,
-        host,
-        Some(user.user_pk),
-        Some(server_cert.device_public_key),
-        tilo_server_session::ClientCredentials {
-            cert: issued,
-            signer: &browser_key,
-            revocations: RevocationList::new(),
-            entering: None,
-        },
-    )
-    .await
-    .unwrap();
+    // The new certificate proves the device on the link's first stream, and
+    // the host proves itself as the certificate it was pinned by.
+    let dialer = Dialer::new(
+        ServerAddress::at(host),
+        Some(browser_key.verifying_key().to_bytes()),
+    );
+    let link = dialer
+        .link(Purpose::Records)
+        .await
+        .expect("the host answers a certified device's link");
+    link.prove_member(&issued, &browser_key, &server_cert)
+        .await
+        .expect("the host proves itself as the server the device pinned");
     assert_eq!(
-        client.server_peer.device_public_key,
-        server_cert.device_public_key
+        link.connection()
+            .expect("an iroh link")
+            .remote_id()
+            .as_bytes(),
+        &server_cert.device_public_key
     );
     approver.close();
 }
@@ -422,23 +424,23 @@ async fn devices_whose_clocks_run_ahead_of_the_hosts_pair_and_their_link_works_o
 
     // The host lets the new device in with it at once: its handshake reads
     // the certificate by the host's own clock, exactly.
-    let client = ServerClient::connect_with_signer(
-        client_endpoint().await,
-        host.clone(),
-        Some(user.user_pk),
-        Some(server_cert.device_public_key),
-        tilo_server_session::ClientCredentials {
-            cert: issued,
-            signer: &browser_key,
-            revocations: RevocationList::new(),
-            entering: None,
-        },
-    )
-    .await
-    .unwrap();
+    let dialer = Dialer::new(
+        ServerAddress::at(host.clone()),
+        Some(browser_key.verifying_key().to_bytes()),
+    );
+    let link = dialer
+        .link(Purpose::Records)
+        .await
+        .expect("the host answers the new device's link");
+    link.prove_member(&issued, &browser_key, &server_cert)
+        .await
+        .expect("the host reads the certificate by its own clock");
     assert_eq!(
-        client.server_peer.device_public_key,
-        server_cert.device_public_key
+        link.connection()
+            .expect("an iroh link")
+            .remote_id()
+            .as_bytes(),
+        &server_cert.device_public_key
     );
 
     // The allowance lets no link work twice: a second device that answers

@@ -23,11 +23,10 @@ use collab_types::{
 use ed25519_dalek::SigningKey;
 use key_group::{Access, GroupPeer};
 use neighbour_wire::NeighbourMsg;
-use tilo_server::{Inbound, ServerCoeditSession};
 use tilo_session_client::PeerStore as _;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use crate::native::{NativeDevice, connect, vault};
+use crate::native::{DeviceLink, NativeDevice, connect, vault};
 use crate::support::{
     Device, TestHost, enrol, hears, ready, restart_host, route, said, say, start_host, start_peer,
     start_peer_with_store, wait_for, workspace,
@@ -41,8 +40,8 @@ fn epoch(peer: &GroupPeer) -> u64 {
     }
 }
 
-/// `device`'s own session with the workspace on `host`.
-async fn session(host: &TestHost, root: &SigningKey, device: &Device) -> ServerCoeditSession {
+/// `device`'s own link to the workspace on `host`.
+async fn session(host: &TestHost, root: &SigningKey, device: &Device) -> DeviceLink {
     crate::support::place(&host.server, &device.cert).await;
     connect(
         &host.server,
@@ -156,28 +155,25 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
     // identity hello is not replayed: the workspace's governance carries its
     // certificate, and a newcomer takes it from there.
     let observer = enrol(&root, "observer", DeviceCapabilities::member());
-    let observer_session = session(&host, &root, &observer).await;
+    let mut observer_session = session(&host, &root, &observer).await;
     let retained_by = tokio::time::Instant::from_std(tilo_test_env::hang_deadline());
     loop {
-        let inbound = tokio::time::timeout_at(retained_by, observer_session.recv())
+        let heard = tokio::time::timeout_at(retained_by, observer_session.recv())
             .await
             .expect("the host to retain the laptop's edit")
-            .expect("observer session open");
-        let Inbound::Delta { author, data } = inbound else {
-            continue;
-        };
-        if author != laptop.native.key() {
+            .expect("observer link open");
+        if heard.author != laptop.native.key() {
             continue;
         }
-        match postcard::from_bytes::<NeighbourMsg>(&data) {
-            Ok(NeighbourMsg::IdentityHello { .. }) => {
+        match heard.message {
+            NeighbourMsg::IdentityHello { .. } => {
                 panic!("the laptop's hello was replayed beside the governance carrying it");
             }
-            Ok(NeighbourMsg::AppDocument { .. }) => break,
+            NeighbourMsg::AppDocument { .. } => break,
             _ => {}
         }
     }
-    observer_session.close().await;
+    drop(observer_session);
 
     // The browser joins the workspace and opens the note, its key held:
     // every signature it asks for answers later, as a `WebCrypto` key's does.
@@ -221,7 +217,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
     // The phone announces itself in the workspace, as every device does: the
     // browser vouches only for devices whose certificate the host relayed,
     // and holds a commit adding any other until its certificate arrives.
-    let phone_session = session(&host, &root, &phone).await;
+    let _phone_session = session(&host, &root, &phone).await;
     let mut phone_peer = GroupPeer::waiting(
         None,
         collab_types::WorkspaceId::parse(crate::support::WORKSPACE).unwrap(),

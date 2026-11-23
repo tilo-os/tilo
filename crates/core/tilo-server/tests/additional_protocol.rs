@@ -6,10 +6,10 @@ use iroh::endpoint::presets;
 use iroh::protocol::{AcceptError, DynProtocolHandler, ProtocolHandler};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tilo_server::{Envelope, Server, ServerClient, ServerConfig};
+use tilo_server::{Server, ServerConfig};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint};
+use crate::common::{Linked, TestUser, hold_workspace, wait_until_subscribed};
 
 const TEST_ALPN: &[u8] = b"tilo-workspace-join/test";
 const TEST_ALPN_TWO: &[u8] = b"tilo-shell-surface/test";
@@ -79,6 +79,10 @@ async fn extra_protocol_and_server_share_one_endpoint() {
     .unwrap();
     assert_eq!(server.node_addr().id, endpoint_addr.id);
 
+    // The workspaces' links and the two extra protocols share the one endpoint.
+    let workspace_id = tilo_server::WorkspaceId::from_u128(12);
+    hold_workspace(&server, workspace_id, &[&device.cert]).await;
+
     let client = test_server::direct_endpoint().await;
     let connection = client.connect(server.node_addr(), TEST_ALPN).await.unwrap();
     let (mut send, mut recv) = connection.open_bi().await.unwrap();
@@ -111,18 +115,16 @@ async fn extra_protocol_and_server_share_one_endpoint() {
     );
     drop(connection_two);
 
-    let server_client = ServerClient::connect(
-        client_endpoint().await,
-        server.node_addr(),
-        user.user_pk,
-        device.cert,
-        device.sk,
-        RevocationList::new(),
-    )
-    .await
-    .unwrap();
-    server_client.send(Envelope::Ping).unwrap();
-    assert!(matches!(server_client.recv().await, Some(Envelope::Pong)));
+    let server_client = Linked::open(&server, &device, workspace_id)
+        .await
+        .expect("the host answers its device's link beside its other protocols");
+    wait_until_subscribed(&server, workspace_id, &device.device_pubkey()).await;
+    assert!(
+        server
+            .is_subscribed(workspace_id, &device.device_pubkey())
+            .await,
+        "the device's link is one the host serves"
+    );
     drop(server_client);
     server.shutdown().await;
     assert!(shutdown.load(Ordering::SeqCst));

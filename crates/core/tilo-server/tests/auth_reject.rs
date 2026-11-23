@@ -1,26 +1,24 @@
 //! Auth-side integration checks:
 //!
-//! 1. A peer whose cert chains to a different user identity is
-//!    rejected during the handshake — `ServerClient::connect`
-//!    surfaces the error, no session is opened.
-//! 2. A peer whose device was revoked is rejected.
+//! 1. A device whose cert chains to a different user identity is
+//!    refused when it dials its workspace's link — no link opens.
+//! 2. A device its person revoked is refused the same way.
 //!
-//! Both cases exercise the wire handshake, not just the pure
-//! auth-module tests — an implementation bug on the server side
-//! (e.g. skipping the revocation check) would slip past the unit
-//! tests but fail here.
+//! Both cases exercise the wire handshake and the link's admission, not just
+//! the pure auth-module tests — an implementation bug on the server side
+//! (e.g. skipping the revocation check) would slip past the unit tests but
+//! fail here.
 
 #![allow(
     clippy::significant_drop_tightening,
     reason = "relays, fixtures and guards deliberately stay alive until each test ends"
 )]
 
-use tilo_server::ServerClient;
 use tilo_user_identity::{
     DeviceCapabilities, RevocationEntry, RevocationList, RevocationReason, sign_revocation_entry,
 };
 
-use crate::common::{TestUser, client_endpoint, spawn_server};
+use crate::common::{Linked, TestUser, hold_workspace, spawn_server};
 use tilo_server::WorkspaceId;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -44,22 +42,12 @@ async fn foreign_and_revoked_devices_are_rejected_and_disconnected() {
             &[&alice_ws_member.cert],
         ))
         .await;
-        let server_addr = server.server.node_addr();
 
-        // Bob's device tries to connect. Handshake must fail — the
-        // policy is AllowMatchingUser and Bob's cert chains to Bob's
-        // root, not Alice's.
-        let ep = client_endpoint().await;
-        let res = ServerClient::connect(
-            ep,
-            server_addr,
-            bob.user_pk,
-            bob_intruder.cert,
-            bob_intruder.sk,
-            RevocationList::new(),
-        )
-        .await;
-        assert!(res.is_err(), "cross-user client must be rejected");
+        // Bob's device dials Alice's server for the workspace. The host
+        // proves the device it admits, and Bob's cert chains to Bob's root,
+        // not Alice's: no link opens.
+        let refused = Linked::open(&server.server, &bob_intruder, WorkspaceId::from_u128(1)).await;
+        assert!(refused.is_err(), "cross-user device must be rejected");
     }
     // Phase `revoked_device_is_rejected`.
     {
@@ -89,32 +77,13 @@ async fn foreign_and_revoked_devices_are_rejected_and_disconnected() {
             revocations: revs,
         };
         let server = crate::common::start_server(cfg, identity).await.unwrap();
-        crate::common::hold_workspace(&server, WorkspaceId::from_u128(9), &[&good_dev.cert]).await;
-        let addr = server.node_addr();
+        hold_workspace(&server, WorkspaceId::from_u128(9), &[&good_dev.cert]).await;
 
-        // The revoked device tries to connect — must fail.
-        let ep = client_endpoint().await;
-        let rejected = ServerClient::connect(
-            ep,
-            addr.clone(),
-            user.user_pk,
-            bad_dev.cert.clone(),
-            bad_dev.sk.clone(),
-            RevocationList::new(),
-        )
-        .await;
+        // The revoked device dials the same link — refused.
+        let rejected = Linked::open(&server, &bad_dev, WorkspaceId::from_u128(9)).await;
         assert!(rejected.is_err(), "revoked device must be rejected");
 
-        let ep2 = client_endpoint().await;
-        let res_ok = ServerClient::connect(
-            ep2,
-            addr,
-            user.user_pk,
-            good_dev.cert,
-            good_dev.sk,
-            RevocationList::new(),
-        )
-        .await;
-        assert!(res_ok.is_ok(), "good device should still connect");
+        let admitted = Linked::open(&server, &good_dev, WorkspaceId::from_u128(9)).await;
+        assert!(admitted.is_ok(), "good device should still link");
     }
 }

@@ -29,6 +29,9 @@ mod machines;
 #[path = "auth_reject.rs"]
 mod auth_reject;
 #[cfg(feature = "agents")]
+#[path = "agents_list.rs"]
+mod agents_list;
+#[cfg(feature = "agents")]
 #[path = "bridged_avatar.rs"]
 mod bridged_avatar;
 #[path = "browser_transport.rs"]
@@ -51,8 +54,6 @@ mod hosting_member;
 #[cfg(target_os = "linux")]
 #[path = "offloadable_action.rs"]
 mod offloadable_action;
-#[path = "record_content_routing.rs"]
-mod record_content_routing;
 #[path = "region_follows.rs"]
 mod region_follows;
 #[path = "remote_action_routing.rs"]

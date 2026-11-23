@@ -21,6 +21,9 @@ tilo_automerge_isolate::test_worker!();
 #[path = "support/mod.rs"]
 mod support;
 
+#[path = "support/native.rs"]
+mod native;
+
 #[path = "barrier_of_workspace.rs"]
 mod barrier_of_workspace;
 #[path = "browser_root.rs"]

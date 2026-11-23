@@ -18,85 +18,43 @@
     reason = "one end-to-end scenario whose server and sessions live until it ends"
 )]
 
-use std::path::Path;
 use std::time::Duration;
 
+use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use tilo_action_policy::{Answer, Grant, Grantee, KindSet, roles, roles::governance};
 use tilo_actions::remote::{
-    CatalogueQuery, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame,
-    RemoteActionMessage, RemoteActionTarget, WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_INVITATIONS,
+    CatalogueQuery, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionMessage,
+    RemoteActionTarget, WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_INVITATIONS,
     workspace_governance_child, workspace_governance_resource,
 };
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_peer_state::join::Role;
-use tilo_server::transport::REMOTE_ACTION_ENVELOPE_VERSION;
 use tilo_server::workspaces::{
     CREATE_WORKSPACE, ENTER_WORKSPACE, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE,
     IssueInvitationRequest, IssuedInvitation, LIST_WORKSPACES, RemoveMemberRequest,
     WorkspaceSummary, Workspaces,
 };
-use tilo_server::{Envelope, Server, ServerClient, ServerConfig};
+use tilo_server::{Server, ServerConfig};
 use tilo_server_protocol::delegation::{Delegate, DelegateScope, Delegation};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestDevice, TestUser, device_endpoint, invitation, redeem};
+use crate::common::{Linked, TestDevice, TestUser, invitation, redeem};
 use tilo_server::WorkspaceId;
+
+/// The app and record a tenant writes through its link, and the field it writes.
+const APP: &str = "test.app";
+const RECORD: &str = "note:1";
 
 /// How long a refused write is given to surface anywhere before its absence
 /// counts as evidence.
 const QUIET: Duration = Duration::from_millis(500);
 
-async fn connect(server: &Server, device: &TestDevice) -> ServerClient {
-    try_connect(server, device).await.unwrap()
-}
-
-/// A connection the server may refuse at its handshake.
-async fn try_connect(
-    server: &Server,
-    device: &TestDevice,
-) -> Result<ServerClient, tilo_server::ClientError> {
-    ServerClient::connect_to_pinned_host(
-        device_endpoint(device).await,
-        server.node_addr(),
-        device.cert.clone(),
-        device.sk.clone(),
-        RevocationList::new(),
-    )
-    .await
-}
-
-/// The server's first answer to `client` subscribing to `workspace_id`.
-async fn subscribe(client: &ServerClient, workspace_id: WorkspaceId) -> Option<Envelope> {
-    client.send(Envelope::Subscribe { workspace_id }).unwrap();
-    tilo_test_env::within("the server answers the subscription", async {
-        loop {
-            match client.recv().await {
-                Some(answer @ (Envelope::Ready { .. } | Envelope::NotAuthorised { .. })) => {
-                    break Some(answer);
-                }
-                Some(_) => {}
-                None => break None,
-            }
-        }
-    })
-    .await
-}
-
-/// A session of `device` that the server admitted to `workspace_id`.
-async fn subscribed(
-    server: &Server,
-    device: &TestDevice,
-    workspace_id: WorkspaceId,
-) -> ServerClient {
-    let client = connect(server, device).await;
-    assert!(
-        matches!(
-            subscribe(&client, workspace_id).await,
-            Some(Envelope::Ready { .. })
-        ),
-        "the workspace admits its own member"
-    );
-    client
+/// The workspace through which `device` is a member, its link to it, or the
+/// typed refusal the host gave.
+async fn subscribed(server: &Server, device: &TestDevice, workspace_id: WorkspaceId) -> Linked {
+    Linked::open(server, device, workspace_id)
+        .await
+        .expect("the workspace admits its own member")
 }
 
 /// Admit `member`'s person to `workspace` as `role`, through an invitation the
@@ -193,89 +151,38 @@ fn rejected(answer: &RemoteActionMessage) -> bool {
     )
 }
 
-/// A retained delta carrying `marker`, as a device publishes one.
-fn retained_delta(marker: &[u8]) -> Vec<u8> {
-    tilo_server::coedit::CoeditPayload::RetainedDelta {
-        channel: [9; 32],
-        body: marker.to_vec(),
-    }
-    .encode()
-    .unwrap()
+/// The record a device wrote through its link, as `workspace`'s state holds it.
+async fn written(workspaces: &Workspaces, workspace: &str) -> Option<Vec<u8>> {
+    let state = workspaces.state(workspace).await?;
+    state.document(APP, RECORD)
 }
 
-fn persisted(root: &Path, marker: &[u8]) -> bool {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return false;
-    };
-    entries.flatten().any(|entry| {
-        let path = entry.path();
-        if path.is_dir() {
-            persisted(&path, marker)
-        } else {
-            std::fs::read(&path).is_ok_and(|bytes| carries(&bytes, marker))
-        }
+/// Whether the record carries `marker`.
+fn marked(bytes: &[u8], marker: &str) -> bool {
+    AutoCommit::load(bytes).is_ok_and(|doc| {
+        doc.get(ROOT, "marker")
+            .ok()
+            .flatten()
+            .is_some_and(|(value, _)| value.to_str() == Some(marker))
     })
 }
 
-/// Everything `client` receives until it has been quiet for [`QUIET`], or
-/// its session ends.
-async fn received_until_quiet(client: &ServerClient) -> Vec<Envelope> {
-    let mut received = Vec::new();
-    while let Ok(Some(envelope)) = tokio::time::timeout(QUIET, client.recv()).await {
-        received.push(envelope);
-        assert!(received.len() < 10_000, "an unbounded stream of envelopes");
-    }
-    received
-}
-
-fn carries(bytes: &[u8], marker: &[u8]) -> bool {
-    bytes.windows(marker.len()).any(|window| window == marker)
-}
-
-/// Whatever `client` receives within [`QUIET`], or `None`.
-async fn next_within_quiet(client: &ServerClient) -> Option<Envelope> {
-    tokio::time::timeout(QUIET, client.recv())
+/// Whatever `linked` receives within [`QUIET`], or `None`.
+async fn next_within_quiet(linked: &mut Linked) -> Option<tilo_peer_state::direct::Heard> {
+    tokio::time::timeout(QUIET, linked.next())
         .await
         .ok()
         .flatten()
 }
 
-/// A remote action from `client` to the server's own device `host`, in
-/// `workspace_id`.
-fn to_host(
-    client: &ServerClient,
-    host: &TestDevice,
-    workspace_id: WorkspaceId,
-    message: RemoteActionMessage,
-) {
-    client
-        .send(Envelope::RemoteAction {
-            workspace_id,
-            version: REMOTE_ACTION_ENVELOPE_VERSION,
-            to_device_public_key: host.device_pubkey(),
-            from_device_public_key: [0; 32],
-            from_user_public_key: [0; 32],
-            frame: RemoteActionFrame::new(message).encode().unwrap(),
-        })
-        .unwrap();
-}
-
-/// The server's answer to the remote action `client` sent last.
-async fn action_answer(client: &ServerClient) -> RemoteActionMessage {
-    tilo_test_env::within("the server answers the action", async {
-        loop {
-            match client.recv().await.expect("the session stays open") {
-                Envelope::RemoteAction { frame, .. } => {
-                    break RemoteActionFrame::decode(&frame).unwrap().message;
-                }
-                Envelope::RemoteActionUndeliverable { refusal, .. } => {
-                    panic!("the server did not answer: {refusal}")
-                }
-                _ => {}
-            }
-        }
-    })
+/// The host's answer to `message`, asked as `linked`'s device in `linked`'s workspace.
+async fn action_answer(linked: &Linked, message: RemoteActionMessage) -> RemoteActionMessage {
+    tilo_test_env::within(
+        "the server answers the action",
+        linked.actions.ask_message(message),
+    )
     .await
+    .expect("the server answers")
 }
 
 fn invite_action(workspace: &str) -> RemoteActionMessage {
@@ -295,33 +202,24 @@ fn invite_action(workspace: &str) -> RemoteActionMessage {
     })
 }
 
-/// The governance resources `client`'s catalogue lists in `workspace_id`.
-async fn governance_resources(
-    client: &ServerClient,
-    host: &TestDevice,
-    workspace_id: WorkspaceId,
-) -> Vec<String> {
-    to_host(
-        client,
-        host,
-        workspace_id,
-        RemoteActionMessage::CatalogueRequest {
-            correlation: 1,
-            query: CatalogueQuery {
+/// The governance resources `linked`'s catalogue lists.
+async fn governance_resources(linked: &Linked, user: [u8; 32]) -> Vec<String> {
+    use tilo_actions::remote::ActionProvider as _;
+    let page = tilo_test_env::within(
+        "the host answers the catalogue",
+        ActionProvider::query(
+            &linked.actions,
+            &linked.caller(user),
+            CatalogueQuery {
                 provider: Some(WORKSPACE_GOVERNANCE_PROVIDER.into()),
                 ..CatalogueQuery::default()
             },
-        },
-    );
-    let RemoteActionMessage::CatalogueResponse { result, .. } = action_answer(client).await else {
-        panic!("a catalogue request is answered with a page");
-    };
-    result
-        .unwrap()
-        .rows
-        .into_iter()
-        .map(|row| row.resource.id)
-        .collect()
+        ),
+    )
+    .await
+    .expect("the host answers")
+    .expect("a catalogue request is answered with a page");
+    page.rows.into_iter().map(|row| row.resource.id).collect()
 }
 
 /// A hosted server with two tenants' workspaces: Acme, where Ann invites, and
@@ -435,8 +333,7 @@ async fn one_tenants_inviter_reaches_nothing_in_another_tenants_workspace() {
         "list",
         serde_json::json!({}),
     );
-    to_host(&ann, &t.host, t.acme.workspace_id, own);
-    let own = action_answer(&ann).await;
+    let own = action_answer(&ann, own).await;
     assert!(
         completed(&own),
         "Ann lists her own workspace's invitations: {own:?}"
@@ -490,13 +387,7 @@ async fn one_tenants_inviter_reaches_nothing_in_another_tenants_workspace() {
         ),
     ];
     for (provider, resource, action, argument) in probes {
-        to_host(
-            &ann,
-            &t.host,
-            t.acme.workspace_id,
-            invocation(provider, resource, action, argument),
-        );
-        let answer = action_answer(&ann).await;
+        let answer = action_answer(&ann, invocation(provider, resource, action, argument)).await;
         assert!(
             rejected(&answer),
             "Ann ran {provider} {action} on Globex: {answer:?}"
@@ -537,52 +428,58 @@ async fn one_tenants_member_cannot_read_write_or_invoke_in_another_tenants_works
     let t = Box::pin(TwoTenants::start()).await;
     let before = t.globex_governance().await;
     let bob_in_globex = subscribed(&t.server, &t.bob_phone, t.globex.workspace_id).await;
-    received_until_quiet(&bob_in_globex).await;
 
-    // Reading: Ann's subscription to Globex is refused outright.
-    let ann_probe = connect(&t.server, &t.ann_laptop).await;
-    assert!(
-        matches!(
-            subscribe(&ann_probe, t.globex.workspace_id).await,
-            Some(Envelope::NotAuthorised { .. }) | None
-        ),
-        "Ann reads Globex"
-    );
-    drop(ann_probe);
+    // Reading: Ann's link to Globex is refused outright.
+    let ann_probe = Linked::open(&t.server, &t.ann_laptop, t.globex.workspace_id).await;
+    assert!(ann_probe.is_err(), "Ann reads Globex");
 
-    // Writing: a delta Ann addresses to Globex from her own workspace's session
-    // reaches no Globex member and is persisted nowhere on the server. (The
-    // server may end the session that sent it; that is a refusal too.)
-    let marker = b"acme-writes-into-globex-7f3c";
+    // Writing: a record Ann writes in her own workspace reaches no Globex
+    // member and is kept nowhere in Globex's state. (The link she would write
+    // through does not open; this is the write she would have made.)
     let ann_writer = subscribed(&t.server, &t.ann_laptop, t.acme.workspace_id).await;
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "marker", "acme-writes-into-globex-7f3c")
+        .unwrap();
+    let bytes = doc.save();
     ann_writer
-        .send(Envelope::Delta {
-            workspace_id: t.globex.workspace_id,
-            author_device_public_key: t.ann_laptop.device_pubkey(),
-            authored_at_ns: tilo_clock::unix_now_ns(),
-            delta: retained_delta(marker),
-            signature: [0; 64],
+        .publish(|peer| {
+            peer.publication_mut().publish_document(
+                APP,
+                RECORD,
+                bytes,
+                &t.ann_laptop.sk,
+                std::time::SystemTime::now(),
+            )
         })
         .unwrap();
-    let leaked = received_until_quiet(&bob_in_globex).await;
+    let workspaces_for_write = t.workspaces();
+    let leak = tokio::time::timeout(QUIET, async {
+        loop {
+            let leaked = written(&workspaces_for_write, &t.globex.workspace).await;
+            assert!(
+                !leaked.is_some_and(|bytes| marked(&bytes, "acme-writes-into-globex-7f3c")),
+                "Ann's write was kept in Globex"
+            );
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    assert!(leak.is_err(), "Ann's write was kept in Globex");
+    let leaked = bob_in_globex.read(|peer| peer.document(APP, RECORD));
     assert!(
-        !leaked.iter().any(|envelope| matches!(
-            envelope,
-            Envelope::Delta { delta, .. } if carries(delta, marker)
-        )),
-        "Bob received Ann's write: {leaked:?}"
+        !leaked.is_some_and(|bytes| marked(&bytes, "acme-writes-into-globex-7f3c")),
+        "Bob received Ann's write"
     );
-    assert!(
-        !persisted(t.state.path(), marker),
-        "Ann's write was persisted"
-    );
-    drop(ann_writer);
+    drop(ann_probe);
 
     // Invoking: Ann's catalogue in her own workspace lists Acme's governance and
     // nothing of Globex's, and invoking Globex's invite from her workspace does
     // nothing.
-    let ann_in_acme = subscribed(&t.server, &t.ann_laptop, t.acme.workspace_id).await;
-    let resources = governance_resources(&ann_in_acme, &t.host, t.acme.workspace_id).await;
+    let ann_in_acme = ann_writer
+        .reopen(&t.server, t.acme.workspace_id)
+        .await
+        .expect("the workspace admits Ann's device again");
+    let resources = governance_resources(&ann_in_acme, t.ann.user_pk).await;
     assert!(
         resources.contains(&workspace_governance_resource(&t.acme.workspace)),
         "Ann's own workspace offers her its governance: {resources:?}"
@@ -591,13 +488,9 @@ async fn one_tenants_member_cannot_read_write_or_invoke_in_another_tenants_works
         !resources.contains(&workspace_governance_resource(&t.globex.workspace)),
         "Ann's catalogue enumerates Globex: {resources:?}"
     );
-    to_host(
-        &ann_in_acme,
-        &t.host,
-        t.acme.workspace_id,
-        invite_action(&t.globex.workspace),
-    );
-    let RemoteActionMessage::Receipt(receipt) = action_answer(&ann_in_acme).await else {
+    let RemoteActionMessage::Receipt(receipt) =
+        action_answer(&ann_in_acme, invite_action(&t.globex.workspace)).await
+    else {
         panic!("an invocation is answered with a receipt");
     };
     assert!(
@@ -608,61 +501,57 @@ async fn one_tenants_member_cannot_read_write_or_invoke_in_another_tenants_works
     drop(ann_in_acme);
 
     // Addressed to Globex's workspace, the same action is not run.
-    let ann_foreign = subscribed(&t.server, &t.ann_laptop, t.acme.workspace_id).await;
-    to_host(
-        &ann_foreign,
-        &t.host,
-        t.globex.workspace_id,
-        invite_action(&t.globex.workspace),
-    );
-    let answer = tilo_test_env::within("the server answers Ann's foreign action", async {
-        loop {
-            match ann_foreign.recv().await {
-                Some(
-                    answer @ (Envelope::RemoteAction { .. }
-                    | Envelope::RemoteActionUndeliverable { .. }
-                    | Envelope::NotAuthorised { .. }),
-                ) => break Some(answer),
-                Some(_) => {}
-                None => break None,
-            }
-        }
-    })
+    let ann_foreign = ann_writer
+        .reopen(&t.server, t.acme.workspace_id)
+        .await
+        .expect("the workspace admits Ann's device again");
+    let globex_actions = ann_foreign
+        .asking_in(&t.globex.workspace)
+        .await
+        .expect("the host answers its actions link");
+    let answer = tilo_test_env::within(
+        "the server answers Ann's foreign action",
+        globex_actions.ask_message(invite_action(&t.globex.workspace)),
+    )
     .await;
-    if let Some(Envelope::RemoteAction { frame, .. }) = answer {
-        let message = RemoteActionFrame::decode(&frame).unwrap().message;
-        assert!(
-            !matches!(
-                &message,
-                RemoteActionMessage::Receipt(receipt)
-                    if matches!(receipt.status, ReceiptStatus::Completed { .. })
-            ),
-            "Ann invoked an action in Globex's workspace: {message:?}"
-        );
-    }
+    assert!(
+        !matches!(
+            answer,
+            Some(RemoteActionMessage::Receipt(receipt))
+                if matches!(receipt.status, ReceiptStatus::Completed { .. })
+        ),
+        "Ann invoked an action in Globex's workspace: {answer:?}"
+    );
+    drop(globex_actions);
     drop(ann_foreign);
 
-    // Nor may Ann address a Globex member's device directly.
-    let ann_direct = subscribed(&t.server, &t.ann_laptop, t.acme.workspace_id).await;
-    ann_direct
-        .send(Envelope::RemoteAction {
-            workspace_id: t.globex.workspace_id,
-            version: REMOTE_ACTION_ENVELOPE_VERSION,
-            to_device_public_key: t.bob_phone.device_pubkey(),
-            from_device_public_key: [0; 32],
-            from_user_public_key: [0; 32],
-            frame: RemoteActionFrame::new(invite_action(&t.globex.workspace))
-                .encode()
-                .unwrap(),
-        })
-        .unwrap();
-    let leaked = received_until_quiet(&bob_in_globex).await;
+    // Nor may Ann address a Globex member's device directly: she asks in
+    // Globex's workspace, addressed to Bob's device, and the host refuses her
+    // before it passes anything on.
+    let ann_direct = ann_writer
+        .reopen(&t.server, t.acme.workspace_id)
+        .await
+        .expect("the workspace admits Ann's device again");
+    let to_bob = ann_direct
+        .asking_device_in(&t.globex.workspace, t.bob_phone.device_pubkey())
+        .await
+        .expect("the host answers its actions link");
+    let direct = tilo_test_env::within(
+        "the server answers Ann's direct action",
+        to_bob.ask_message(invite_action(&t.globex.workspace)),
+    )
+    .await;
     assert!(
-        !leaked
-            .iter()
-            .any(|envelope| matches!(envelope, Envelope::RemoteAction { .. })),
-        "Bob received Ann's action: {leaked:?}"
+        !matches!(
+            direct,
+            Some(RemoteActionMessage::Receipt(receipt))
+                if matches!(receipt.status, ReceiptStatus::Completed { .. })
+        ),
+        "Ann reached Bob's device in Globex: {direct:?}"
     );
+    drop(to_bob);
+    drop(ann_direct);
+    drop(ann_writer);
     assert_eq!(t.globex_governance().await, before);
     t.server.shutdown().await;
 }
@@ -672,7 +561,7 @@ async fn a_removed_member_loses_access_at_once_and_other_tenants_keep_theirs() {
     // The fixture's setup future is larger than the lint's ceiling on the stack: it builds two
     // tenants' people, their devices and two governed workspaces.
     let t = Box::pin(TwoTenants::start()).await;
-    let ann_in_acme = subscribed(&t.server, &t.ann_laptop, t.acme.workspace_id).await;
+    let mut ann_in_acme = subscribed(&t.server, &t.ann_laptop, t.acme.workspace_id).await;
     let bob_in_globex = subscribed(&t.server, &t.bob_phone, t.globex.workspace_id).await;
     crate::common::wait_until_subscribed(
         &t.server,
@@ -695,35 +584,33 @@ async fn a_removed_member_loses_access_at_once_and_other_tenants_keep_theirs() {
 
     // `remove_member` returns once the server stops admitting Bob: his very
     // next write is refused, never fanned out or kept.
-    let marker = b"removed-member-writes-9d21";
-    bob_in_globex
-        .send(Envelope::Delta {
-            workspace_id: t.globex.workspace_id,
-            author_device_public_key: t.bob_phone.device_pubkey(),
-            authored_at_ns: tilo_clock::unix_now_ns(),
-            delta: retained_delta(marker),
-            signature: [0; 64],
-        })
-        .ok();
-    let answer = tilo_test_env::within("the server answers the removed member", async {
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "marker", "removed-member-writes-9d21")
+        .unwrap();
+    let bytes = doc.save();
+    let _ = bob_in_globex.publish(|peer| {
+        peer.publication_mut().publish_document(
+            APP,
+            RECORD,
+            bytes,
+            &t.bob_phone.sk,
+            std::time::SystemTime::now(),
+        )
+    });
+    let workspaces_for_write = t.workspaces();
+    let kept = tokio::time::timeout(QUIET, async {
         loop {
-            match bob_in_globex.recv().await {
-                Some(answer @ Envelope::NotAuthorised { .. }) => break Some(answer),
-                Some(_) => {}
-                None => break None,
-            }
+            let leaked = written(&workspaces_for_write, &t.globex.workspace).await;
+            assert!(
+                !leaked.is_some_and(|bytes| marked(&bytes, "removed-member-writes-9d21")),
+                "a removed member's write was kept"
+            );
+            tokio::task::yield_now().await;
         }
     })
     .await;
-    assert!(
-        matches!(answer, Some(Envelope::NotAuthorised { .. }) | None),
-        "{answer:?}"
-    );
-    assert!(
-        !persisted(t.state.path(), marker),
-        "a removed member's write was kept"
-    );
-    tilo_test_env::within("the removed member's subscription ends", async {
+    assert!(kept.is_err(), "a removed member's write was kept");
+    tilo_test_env::within("the removed member's link ends", async {
         while t
             .server
             .is_subscribed(t.globex.workspace_id, &t.bob_phone.device_pubkey())
@@ -733,15 +620,9 @@ async fn a_removed_member_loses_access_at_once_and_other_tenants_keep_theirs() {
         }
     })
     .await;
-    // A fresh connection is not admitted either: the handshake or the
-    // subscription refuses it.
-    if let Ok(again) = try_connect(&t.server, &t.bob_phone).await {
-        let answer = subscribe(&again, t.globex.workspace_id).await;
-        assert!(
-            matches!(answer, Some(Envelope::NotAuthorised { .. }) | None),
-            "a removed member subscribed again: {answer:?}"
-        );
-    }
+    // A fresh link is not admitted either.
+    let again = bob_in_globex.reopen(&t.server, t.globex.workspace_id).await;
+    assert!(again.is_err(), "a removed member linked Globex again");
 
     // Acme is untouched by Globex's decision.
     assert!(
@@ -750,10 +631,7 @@ async fn a_removed_member_loses_access_at_once_and_other_tenants_keep_theirs() {
             .await
     );
     assert!(
-        !matches!(
-            next_within_quiet(&ann_in_acme).await,
-            Some(Envelope::NotAuthorised { .. })
-        ),
+        next_within_quiet(&mut ann_in_acme).await.is_none(),
         "Globex's removal cut Acme's member"
     );
     t.server.shutdown().await;
@@ -867,12 +745,9 @@ async fn an_agent_never_governs_and_reaches_no_workspace_outside_its_delegation(
     );
 
     // Outside its delegation it is not admitted to a workspace at all.
-    let probe = connect(&t.server, &agent).await;
+    let probe = Linked::open(&t.server, &agent, t.globex.workspace_id).await;
     assert!(
-        matches!(
-            subscribe(&probe, t.globex.workspace_id).await,
-            Some(Envelope::NotAuthorised { .. }) | None
-        ),
+        probe.is_err(),
         "the agent reads a workspace its delegation does not name"
     );
     t.server.shutdown().await;

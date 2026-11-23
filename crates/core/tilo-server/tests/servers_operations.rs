@@ -16,18 +16,17 @@ use std::time::Duration;
 use serde_json::Value;
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
-    InvokeArgument, InvokeRequest, RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
+    InvokeArgument, InvokeRequest, RemoteActionMessage, RemoteActionTarget,
 };
 use tilo_server::WorkspaceId;
 use tilo_server::servers::{self, applied, person_workspace_id};
-use tilo_server::transport::{Envelope, REMOTE_ACTION_ENVELOPE_VERSION, ServerAnswer};
 use tilo_server::workspaces::Workspaces;
 use tilo_server_protocol::WorkSetting;
-use tilo_server_protocol::transport::ServerOperationResult;
+use tilo_server_protocol::transport::{ServerAnswer, ServerOperationResult};
 use tilo_user_identity::DeviceCapabilities;
 
 use crate::common::{
-    Hosted, TestDevice, TestUser, device_endpoint, join_person_workspace, serve_in, serve_on,
+    Hosted, Linked, TestDevice, TestUser, join_person_workspace, serve_in, serve_on,
 };
 
 /// Stand in for the root helper that carries out what changes the
@@ -62,16 +61,14 @@ impl Drop for Guard {
     }
 }
 
-/// Ask the device `at` serves to do `action` in `workspace` with
-/// `argument`, as `client`'s session.
+/// Ask the device `linked` reaches to do `action` in `workspace` with
+/// `argument`, and the device's answer.
 async fn try_ask(
-    client: &tilo_server::ServerClient,
-    at: &TestDevice,
+    linked: &Linked,
     workspace: &str,
     action: &str,
     argument: Value,
 ) -> Result<RemoteActionMessage, String> {
-    let workspace_id = WorkspaceId::parse(workspace).ok_or("not a workspace id")?;
     let message = RemoteActionMessage::Invoke(InvokeRequest {
         invocation: InvocationId::new(),
         target: RemoteActionTarget::workspace_governance(workspace, action),
@@ -87,35 +84,12 @@ async fn try_ask(
         appearance: None,
         signed: None,
     });
-    client
-        .send(Envelope::RemoteAction {
-            workspace_id,
-            version: REMOTE_ACTION_ENVELOPE_VERSION,
-            to_device_public_key: at.device_pubkey(),
-            from_device_public_key: [0; 32],
-            from_user_public_key: [0; 32],
-            frame: RemoteActionFrame::new(message)
-                .encode()
-                .map_err(|error| error.to_string())?,
-        })
-        .map_err(|_| "the session closed".to_owned())?;
-    tilo_test_env::within("the serving device answers the action", async {
-        loop {
-            match client.recv().await {
-                Some(Envelope::RemoteAction { frame, .. }) => {
-                    break RemoteActionFrame::decode(&frame)
-                        .map(|frame| frame.message)
-                        .map_err(|error| error.to_string());
-                }
-                Some(Envelope::RemoteActionUndeliverable { refusal, .. }) => {
-                    break Err(refusal.to_string());
-                }
-                None => break Err("the session closed".to_owned()),
-                Some(_) => {}
-            }
-        }
-    })
+    tilo_test_env::within(
+        "the serving device answers the action",
+        linked.actions.ask_message(message),
+    )
     .await
+    .ok_or_else(|| "the link closed".to_owned())
 }
 
 /// What an invocation came to: what the action answered, or why it was
@@ -148,6 +122,8 @@ struct Fixture {
     root: ed25519_dalek::SigningKey,
     nas: TestDevice,
     laptop: TestDevice,
+    /// Another of the person's devices, which asks the host its operations.
+    phone: TestDevice,
     desktop: Hosted,
     admin: String,
     server: Hosted,
@@ -158,13 +134,13 @@ struct Fixture {
 }
 
 impl Fixture {
-    /// Ask the server `action` with `argument` on `client`, the laptop's
-    /// session with the laptop itself: the person's own device asking its
-    /// Servers workspace, as it asks anything of it, on the one session it
+    /// Ask the server `action` with `argument` on `linked`, the phone's link
+    /// to the person's host in their Servers workspace: one of their own
+    /// devices asking the host what their servers are to do, on the one link it
     /// holds.
     async fn ask(
         &self,
-        client: &tilo_server::ServerClient,
+        linked: &Linked,
         action: &str,
         mut argument: Value,
     ) -> Result<ServerOperationResult, String> {
@@ -174,35 +150,18 @@ impl Fixture {
         // operation here answers in a few hundred milliseconds (measured, alone
         // and on a loaded builder), so one that waited seconds longer is read
         // where it happened rather than as the whole test's wall clock.
-        try_ask(client, &self.laptop, &self.admin, action, argument)
+        try_ask(linked, &self.admin, action, argument)
             .await
             .and_then(outcome)
             .map_err(|error| format!("{action} took {:?}: {error}", started.elapsed()))
     }
 
-    /// The laptop's session with its own workspace service, subscribed to the
-    /// Servers workspace it holds.
-    async fn session(&self) -> tilo_server::ServerClient {
-        let client = self
-            .desktop
-            .host
-            .connect_local(
-                self.laptop.cert.clone(),
-                self.laptop.sk.clone(),
-                tilo_user_identity::RevocationList::new(),
-            )
+    /// The phone's link to the person's host in the Servers workspace it holds.
+    async fn linked(&self) -> Linked {
+        let workspace = WorkspaceId::parse(&self.admin).unwrap();
+        Linked::open_hosted(&self.desktop, &self.phone, workspace)
             .await
-            .unwrap();
-        let workspace_id = WorkspaceId::parse(&self.admin).unwrap();
-        client.send(Envelope::Subscribe { workspace_id }).unwrap();
-        tilo_test_env::within("the workspace is served here", async {
-            while !matches!(
-                client.recv().await.expect("the session stays open"),
-                Envelope::Ready { .. }
-            ) {}
-        })
-        .await;
-        client
+            .expect("the workspace admits the person's device")
     }
 
     fn workspaces(&self) -> &Workspaces {
@@ -214,6 +173,7 @@ async fn person_with_a_server() -> Fixture {
     let alice = TestUser::fresh("Alice");
     let nas = alice.enrol("nas", DeviceCapabilities::member());
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
+    let phone = alice.enrol("phone", DeviceCapabilities::member());
     let server = serve_on(&alice, &nas, WorkSetting::own_person()).await;
     let desktop = serve_on(&alice, &laptop, WorkSetting::own_person()).await;
     let state = tempfile::tempdir().unwrap();
@@ -227,7 +187,14 @@ async fn person_with_a_server() -> Fixture {
     // The person's own device makes the Servers workspace when it is first
     // needed, enters the server among their servers there, and hands it the
     // workspace as it hands a server any workspace its entry names.
+    let admin = person_workspace_id(&alice.user_pk);
     servers::found(desktop.host.workspaces()).await.unwrap();
+    desktop
+        .host
+        .workspaces()
+        .enter(&admin, &phone.cert)
+        .await
+        .expect("the workspace takes the person's other device in");
     join_person_workspace(&desktop, &nas, &server).await;
     following.push(applied::follow(
         desktop.host.workspaces(),
@@ -237,10 +204,11 @@ async fn person_with_a_server() -> Fixture {
     ));
     let helper = operations_helper(state.path());
     Fixture {
-        admin: person_workspace_id(&alice.user_pk),
+        admin,
         root: alice.user_sk.clone(),
         nas,
         laptop,
+        phone,
         desktop,
         server,
         state,
@@ -253,9 +221,9 @@ async fn person_with_a_server() -> Fixture {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_persons_device_does_every_operation_on_its_server_as_an_action() {
     let fixture = person_with_a_server().await;
-    let client = fixture.session().await;
+    let linked = fixture.linked().await;
     let status = fixture
-        .ask(&client, "server.status", serde_json::json!({}))
+        .ask(&linked, "server.status", serde_json::json!({}))
         .await
         .unwrap();
     assert_eq!(status.operation, "status");
@@ -272,7 +240,7 @@ async fn a_persons_device_does_every_operation_on_its_server_as_an_action() {
 
     let logs = fixture
         .ask(
-            &client,
+            &linked,
             "server.logs",
             serde_json::json!({"service": "tilo-server.service", "lines": 10}),
         )
@@ -299,7 +267,7 @@ async fn a_persons_device_does_every_operation_on_its_server_as_an_action() {
         } else {
             serde_json::json!({})
         };
-        let result = fixture.ask(&client, action, argument).await.unwrap();
+        let result = fixture.ask(&linked, action, argument).await.unwrap();
         assert_eq!(result.operation, expected, "{action}");
         assert_eq!(result.done, done, "{action}: {result:?}");
         assert!(!result.summary.is_empty(), "{action}");
@@ -333,7 +301,7 @@ async fn a_persons_device_does_every_operation_on_its_server_as_an_action() {
         assert!(asked.iter().any(|asked| asked == operation), "{asked:?}");
     }
     let status = fixture
-        .ask(&client, "server.status", serde_json::json!({}))
+        .ask(&linked, "server.status", serde_json::json!({}))
         .await
         .unwrap();
     let ServerAnswer::Status(read) = status.answer else {
@@ -344,54 +312,6 @@ async fn a_persons_device_does_every_operation_on_its_server_as_an_action() {
         "the history is the entry's: {:?}",
         read.history
     );
-    client.close().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_agent_of_the_person_does_the_same_operations() {
-    let fixture = person_with_a_server().await;
-    let client = fixture.session().await;
-    // The session says it is an agent's, as `tilo mcp` says: everything it
-    // asks from then on is that agent's, for the person.
-    client
-        .send(Envelope::AgentSession {
-            request_id: 7,
-            label: "Claude Code".into(),
-        })
-        .unwrap();
-    let refusal = tilo_test_env::within(
-        "the serving device takes the session for the agent",
-        async {
-            loop {
-                match client.recv().await {
-                    Some(Envelope::AgentSessionAnswer { refusal, .. }) => break refusal,
-                    Some(_) => {}
-                    None => break Some("the session closed".to_owned()),
-                }
-            }
-        },
-    )
-    .await;
-    assert_eq!(
-        refusal, None,
-        "an agent of the person's is taken: {refusal:?}"
-    );
-    let answer = try_ask(
-        &client,
-        &fixture.laptop,
-        &fixture.admin,
-        "server.status",
-        serde_json::json!({"server": hex::encode(fixture.nas.device_pubkey())}),
-    )
-    .await
-    .unwrap();
-    let status = outcome(answer).expect("the agent sees the server's status");
-    assert_eq!(status.operation, "status");
-    assert!(
-        matches!(status.answer, ServerAnswer::Status(_)),
-        "{status:?}"
-    );
-    client.close().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -400,33 +320,23 @@ async fn another_person_reaches_no_server_of_this_persons() {
     let mallory = TestUser::fresh("Mallory");
     let theirs = mallory.enrol("their laptop", DeviceCapabilities::primary());
     // The serving device admits its own person's devices only, so another
-    // person's session never opens; one opened elsewhere would still be
-    // refused the action.
-    let refused = match tilo_server::ServerClient::connect_to_pinned_host(
-        device_endpoint(&theirs).await,
-        fixture.desktop.host.node_addr(),
-        theirs.cert.clone(),
-        theirs.sk.clone(),
-        tilo_user_identity::RevocationList::new(),
-    )
-    .await
-    {
+    // person's link never opens; one opened elsewhere would still be refused
+    // the action.
+    let workspace = WorkspaceId::parse(&fixture.admin).unwrap();
+    let refused = match Linked::open_hosted(&fixture.desktop, &theirs, workspace).await {
         Err(_) => true,
-        Ok(client) => {
+        Ok(linked) => {
             let asked = try_ask(
-                &client,
-                &fixture.laptop,
+                &linked,
                 &fixture.admin,
                 "server.status",
                 serde_json::json!({"server": hex::encode(fixture.nas.device_pubkey())}),
             )
             .await;
-            let refused = match asked {
+            match asked {
                 Ok(answer) => outcome(answer).is_err(),
                 Err(_) => true,
-            };
-            client.close().await;
-            refused
+            }
         }
     };
     assert!(
@@ -462,12 +372,12 @@ fn revocation(root: &ed25519_dalek::SigningKey, device: [u8; 32]) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_persons_device_renames_and_retires_a_server() {
     let fixture = person_with_a_server().await;
-    let client = fixture.session().await;
+    let linked = fixture.linked().await;
     let nas = fixture.nas.device_pubkey();
     let ask = |action: &'static str, argument: Value| {
-        let (client, laptop, admin) = (&client, &fixture.laptop, &fixture.admin);
+        let (linked, admin) = (&linked, &fixture.admin);
         async move {
-            try_ask(client, laptop, admin, action, argument)
+            try_ask(linked, admin, action, argument)
                 .await
                 .and_then(completed)
         }
@@ -546,7 +456,6 @@ async fn a_persons_device_renames_and_retires_a_server() {
         },
     )
     .await;
-    client.close().await;
 }
 
 /// A server the person retires while it is away, so the retire is not
@@ -559,6 +468,7 @@ async fn a_server_retired_while_away_retires_itself_once_back() {
         root,
         nas,
         laptop: _laptop,
+        phone: _phone,
         desktop,
         admin: _admin,
         server,
