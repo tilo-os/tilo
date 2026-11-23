@@ -50,6 +50,32 @@ class StagedWordsThatGoTests(unittest.TestCase):
             any(STAND_IN in problem for problem in problems), problems
         )
 
+    def asked_of_the_tree(self):
+        """The staged check's verdict, and every set of names it looked up in the tree."""
+        asked = []
+        in_head = words.in_head
+
+        def recording(root, names):
+            asked.append(set(names))
+            return in_head(root, names)
+
+        words.in_head = recording
+        try:
+            problems = words.staged_problems(self.root, words.load_rows())
+        finally:
+            words.in_head = in_head
+        return problems, [names for names in asked if names]
+
+    def test_the_tree_is_asked_only_about_a_name_the_table_could_reject(self):
+        self.commit({"src/lib.rs": "fn main() {}\n"})
+        ordinary = "fn main() { let total = 1; if total > 0 { return; } }\n"
+        self.stage("src/lib.rs", ordinary)
+        self.assertEqual(self.asked_of_the_tree(), ([], []))
+        self.stage("src/lib.rs", f"{ordinary}struct {STAND_IN};\n")
+        problems, asked = self.asked_of_the_tree()
+        self.assertTrue(any(STAND_IN in problem for problem in problems), problems)
+        self.assertEqual(asked, [{STAND_IN}])
+
     def test_a_commit_that_only_calls_a_name_the_tree_holds_passes(self):
         self.commit({"src/mail_double.rs": f"struct {STAND_IN};\n"})
         self.stage("src/lib.rs", f"fn main() {{ let _ = {STAND_IN}; }}\n")

@@ -307,22 +307,26 @@ def staged_problems(root: Path, rows: list[dict]) -> list[str]:
             newer = body.count(literal) - before_body.count(literal)
             if newer > 0:
                 added_texts[literal] += newer
-    added_names = set(added) - in_head(root, set(added))
-    split = {identifier: words(identifier) for identifier in added_names}
+    split = {identifier: words(identifier) for identifier in added}
 
     def holding(terms: list[str]) -> set[str]:
         runs = [tuple(term.split()) for term in terms if not term.startswith("=")]
         whole = {tuple(term[1:].split()) for term in terms if term.startswith("=")}
         return {
             identifier
-            for identifier in added_names
+            for identifier in added
             if split[identifier] in whole or any(holds(split[identifier], run) for run in runs)
         }
 
+    # Only a name that holds a row's words can be reported, so only those are looked up in the
+    # tree. A commit's ordinary identifiers (`if`, `let`, `total`) are never asked about: one
+    # `git grep` with a pattern for each of them took minutes on a commit of a few lines.
+    rejected = {row["row"]: holding(row.get("idents", [])) for row in rows}
+    held = in_head(root, {name for names in rejected.values() for name in names})
     known = in_head(root, {literal for literal in literals if added_texts[literal]})
     problems = []
     for row in rows:
-        names = holding(row.get("idents", []))
+        names = rejected[row["row"]] - held
         names |= {text for text in row.get("text", []) if added_texts[text] and text not in known}
         if names:
             problems.append(f"'{row['row']}': new names {', '.join(sorted(names))}")
