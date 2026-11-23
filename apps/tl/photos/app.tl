@@ -5,6 +5,8 @@ app so.tilo.photos "Photos" (
     keywords: ["photo", "photos", "picture", "pictures", "image", "images", "album", "albums", "favorites", "gallery", "camera roll", "foto", "fotos", "bild", "bilder", "alben", "favoriten"],
 )
 
+use so.tilo.vision as vision
+
 /// A photo in the library: its name, the address of its picture, and what the library knows of
 /// it. The address names the bytes in the workspace's content store, so every member of the
 /// workspace reads the same picture wherever the library reached them.
@@ -215,6 +217,37 @@ action rotate_left(p: Photo) uses image (icon: .rotate_ccw, label: "Rotate left"
 action reset_edits(p: Photo) (label: "Reset edits", group: "Edits") {
     p.rotation = 0
     p.edited = ""
+}
+
+/// Keeps the part of the photograph its person chose: `x`, `y`, `width` and `height` are
+/// fractions of the picture as the window shows it, so every member and device reads the crop.
+action crop_photo(p: Photo, x: Float, y: Float, width: Float, height: Float) uses image (
+    icon: .crop,
+    label: "Crop",
+    group: "Edits",
+) {
+    if width <= 0.0 or height <= 0.0 {
+        return
+    }
+    match File.at(p.name, shown_picture(p)).cropped(x, y, width, height) {
+        .ok(cropped) => {
+            p.edited = cropped.url
+        }
+        .err(_) => {}
+    }
+}
+
+/// The day a capture time names, as a person reads it: the camera's `2026:07:12 18:16:00` and
+/// an ISO `2026-07-12T18:16:00Z` both name the day first.
+fn capture_day(when: Text) -> Text {
+    if when.contains("T") {
+        when.split("T").at(0) ?? when
+    } else if when.contains(" ") { when.split(" ").at(0) ?? when } else { when }
+}
+
+/// The day as a person writes it: `2026-07-12`, never the camera's colons.
+fn day_word(day: Text) -> Text {
+    day.replace(":", "-")
 }
 
 /// The picture a window shows for `p`: the person's edited one where they made one, else the
@@ -442,7 +475,7 @@ fn shown(lib: Library, place: Text, p: Photo) -> Bool {
     } else if place == "folders" {
         p.folder != ""
     } else if place == "places" {
-        p.location != ""
+        p.location != "" or p.latitude != 0.0 or p.longitude != 0.0
     } else if let person = lib.people.find(x -> x.id == place) {
         person.photos.contains(p.id)
     } else if let album = lib.albums.find(a -> a.id == place) {
@@ -483,6 +516,8 @@ view library(lib: Library) {
     state zoom: Float = 1.0
     state confirming: Bool = false
     state shared: Text = ""
+    state cropping: Bool = false
+    state crop_edges: List<Float> = [0.0, 0.0, 1.0, 1.0]
     ui.NavShell(
         content_kind: .page,
         title: if let p = lib.photos.find(x -> x.id == viewing) {
@@ -531,6 +566,22 @@ view library(lib: Library) {
                 if not lib.photos.is_empty() {
                     ui.Button("Present", icon: .play) {
                         on press: set(slide, 0).then(set(presenting, true))
+                    }
+                }
+                if vision.analysis.phase == "running" {
+                    ui.Button(
+                        "Analyzing {vision.analysis.completed} of {vision.analysis.total}",
+                        icon: .pause,
+                    ) {
+                        on press: vision.pause(vision.analysis)
+                    }
+                } else if vision.analysis.phase == "paused" {
+                    ui.Button("Analysis paused", icon: .play) {
+                        on press: vision.resume(vision.analysis)
+                    }
+                } else if not lib.photos.is_empty() {
+                    ui.Button("Analyze photos", icon: .sparkles) {
+                        on press: vision.start(vision.analysis)
                     }
                 }
             }
@@ -585,12 +636,16 @@ view library(lib: Library) {
                 present(lib, slide, presenting)
             } else if let p = lib.photos.find(x -> x.id == viewing) {
                 ui.PageSlide(level: 1) {
-                    viewer(lib, p, viewing, zoom, confirming, shared)
+                    viewer(lib, p, viewing, zoom, confirming, shared, cropping, crop_edges)
                 }
             } else if place == "people" {
                 people_list(lib, place, viewing)
             } else if lib.photos.filter(p -> shown(lib, place, p)).is_empty() {
                 empty_place(lib, place)
+            } else if place == "timeline" {
+                timeline_page(lib, viewing)
+            } else if place == "places" {
+                places_page(lib, viewing)
             } else {
                 library_grid(lib, place, viewing, selecting, selection, confirming, shared)
             }
@@ -705,6 +760,83 @@ view library_grid(
     }
 }
 
+/// The library by the day each photograph was taken: newest first, a heading for each day and
+/// its photographs under it, and those the camera gave no time for at the end.
+view timeline_page(lib: Library, viewing: State<Text>) {
+    let dated = lib.photos.filter(p -> p.captured_at != "").sort_by(p -> p.captured_at, desc)
+    let undated = lib.photos.filter(p -> p.captured_at == "")
+    stack(gap: .section, fill) {
+        for day in dated.group(p -> capture_day(p.captured_at)).sort_by(g -> g.key, desc) {
+            stack(gap: .related) {
+                ui.Text(day_word(day.key), role: .subheading)
+                ui.MediaGrid(size: .small, fill) {
+                    for p in day.items {
+                        ui.MediaCard(p, title: p.name, picture: card_picture(p)) {
+                            on activate: set(viewing, p.id)
+                        }
+                    }
+                }
+            }
+        }
+        if not undated.is_empty() {
+            stack(gap: .related) {
+                ui.Text("No capture date", role: .subheading)
+                ui.MediaGrid(size: .small, fill) {
+                    for p in undated {
+                        ui.MediaCard(p, title: p.name, picture: card_picture(p)) {
+                            on activate: set(viewing, p.id)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The places the library's photographs were taken: a map with a pin for each one that says
+/// where it was taken, opening the photograph, and the ones whose place is only a name under it.
+view places_page(lib: Library, viewing: State<Text>) {
+    let mapped = lib.photos.filter(p -> p.latitude != 0.0 or p.longitude != 0.0)
+    let named = lib.photos.filter(
+        p -> p.location != "" and p.latitude == 0.0 and p.longitude == 0.0,
+    )
+    stack(gap: .group, fill) {
+        if let first = mapped.first() {
+            ui.Map(
+                name: "Places",
+                latitude: first.latitude,
+                longitude: first.longitude,
+                zoom: 0.2,
+                aspect: 1.6,
+            ) {
+                for p in mapped {
+                    ui.MapPin(
+                        name: p.name,
+                        latitude: p.latitude,
+                        longitude: p.longitude,
+                        width: 360,
+                        height: 260,
+                    ) {
+                        ui.MediaCard(p, title: p.name, picture: card_picture(p)) {
+                            on activate: set(viewing, p.id)
+                        }
+                    }
+                }
+            }
+        }
+        if not named.is_empty() {
+            ui.Text("Named places", role: .caption, secondary: true)
+            ui.MediaGrid(size: .small, fill) {
+                for p in named {
+                    ui.MediaCard(p, title: p.name, picture: card_picture(p)) {
+                        on activate: set(viewing, p.id)
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// What a place says while it holds no photos.
 view empty_place(lib: Library, place: Text) {
     if place == "favorites" {
@@ -753,6 +885,8 @@ view viewer(
     zoom: State<Float>,
     confirming: State<Bool>,
     shared: State<Text>,
+    cropping: State<Bool>,
+    crop_edges: State<List<Float>>,
 ) {
     stack(padding: .group, gap: .related, max: 72rem) {
         row(gap: .related, align: .center, wrap: true) {
@@ -766,7 +900,7 @@ view viewer(
                 on press: set(zoom, 1.0)
             }
             ui.Button("Back", icon: .arrow_left) {
-                on press: set(viewing, "")
+                on press: set(viewing, "").then(set(cropping, false))
             }
             ui.Button("Previous", icon: .chevron_left) {
                 on press: set(viewing, previous_id(lib, p))
@@ -782,6 +916,9 @@ view viewer(
             }
             ui.Button("Rotate right", icon: .rotate_cw) {
                 on press: rotate_right(p)
+            }
+            ui.Button("Crop", icon: .crop) {
+                on press: set(cropping, true)
             }
             if p.edited != "" {
                 ui.Button("Reset edits", icon: .undo_2) {
@@ -806,7 +943,37 @@ view viewer(
                 }
             }
         }
-        ui.ImageViewer(shown_picture(p), alt: p.name, aspect: 1.5, zoom: zoom)
+        if cropping {
+            ui.ImageCropEditor(
+                shown_picture(p),
+                left: crop_edges.at(0) ?? 0.0,
+                top: crop_edges.at(1) ?? 0.0,
+                right: crop_edges.at(2) ?? 1.0,
+                bottom: crop_edges.at(3) ?? 1.0,
+                aspect: 1.5,
+            ) {
+                on change(edges: List<Float>): set(crop_edges, edges)
+            }
+            row(gap: .related, align: .center, wrap: true) {
+                ui.Text("Drag the corners to the part you keep.", role: .caption, secondary: true)
+                ui.Button("Apply crop", icon: .check, role: .primary) {
+                    on press: set(cropping, false).then(
+                        crop_photo(
+                            p,
+                            crop_edges.at(0) ?? 0.0,
+                            crop_edges.at(1) ?? 0.0,
+                            (crop_edges.at(2) ?? 1.0) - (crop_edges.at(0) ?? 0.0),
+                            (crop_edges.at(3) ?? 1.0) - (crop_edges.at(1) ?? 0.0),
+                        ),
+                    )
+                }
+                ui.Button("Cancel") {
+                    on press: set(cropping, false)
+                }
+            }
+        } else {
+            ui.ImageViewer(shown_picture(p), alt: p.name, aspect: 1.5, zoom: zoom)
+        }
         ui.Text(p.name, role: .title)
         if p.captured_at != "" {
             ui.Text(p.captured_at, role: .caption, secondary: true)
