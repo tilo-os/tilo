@@ -406,3 +406,41 @@ fn a_receiver_refuses_a_members_admission_whose_log_was_changed() {
         }),
     );
 }
+
+/// A device of the owner's that redeems an invitation comes in on its certificate: every copy
+/// admits the change that records it even when the invitation had expired by the time the
+/// change was written. Anyone else's expired invitation still admits nobody.
+#[test]
+fn an_owners_device_comes_in_on_an_expired_invitation_and_nobody_else_does() {
+    let (mut peer, owner_key, _, _, now) = crate::admission_tests::seeded();
+    let owner = peer.owner_certificates()[0].clone();
+    let later = now + std::time::Duration::from_secs(60);
+    let own = device(1, 90);
+    let invited = redemption(&peer, &owner, &owner_key, &own, Role::Viewer, 91, now);
+    let mut writer = peer.clone();
+    assert!(
+        writer
+            .governance_mut()
+            .admit_invited_member(&invited, &owner_key, later)
+            .unwrap()
+    );
+    let NeighbourMsg::SyncResp { changes, workspace } = writer.workspace_message() else {
+        panic!("workspace message is a SyncResp")
+    };
+    peer.receive_from(
+        TransportOrigin::ServerDelta(owner.device_public_key),
+        NeighbourMsg::SyncResp { changes, workspace },
+        later,
+    )
+    .unwrap();
+    assert!(peer.permissions(own.1.device_public_key, later).is_ok());
+
+    let guest = device(92, 93);
+    let invited = redemption(&peer, &owner, &owner_key, &guest, Role::Viewer, 94, now);
+    let refused = peer
+        .clone()
+        .governance_mut()
+        .admit_invited_member(&invited, &owner_key, later)
+        .unwrap_err();
+    assert!(refused.contains("expired"), "{refused}");
+}
