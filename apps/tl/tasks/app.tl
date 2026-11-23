@@ -870,6 +870,18 @@ action detach(t: Task, attachment: File) (icon: .x, label: "Remove attachment") 
     t.attachments.remove(attachment)
 }
 
+/// Opens the attachment `attachment` in the app that opens its kind: the file a task holds
+/// reaches that app as the same content both read, never as a path neither has.
+action open_attachment(t: Task, attachment: File) uses files (
+    icon: .external_link,
+    label: "Open attachment",
+) {
+    match File.open(attachment) {
+        .ok(_) => {}
+        .err(_) => {}
+    }
+}
+
 /// Imports files as tasks: one task for each file, under the project `p` when one is named, the
 /// file attached to it. A file of the same name already carried by a task is not imported twice.
 action import_files(files: List<File>, p: Option<Project> = .none) -> List<Task> (
@@ -1865,10 +1877,10 @@ template view task_body(t: Task) {
             if not t.attachments.is_empty() {
                 row(gap: .related, wrap: true) {
                     for a in t.attachments {
-                        // Opening a file is the platform's: the chip hands it to the app that
-                        // shows that kind of file once the shared `File.open` is here, and
-                        // offers taking it off the task meanwhile.
+                        // Opening an attachment is the platform's: the chip hands the file to the
+                        // app that opens its kind, and offers taking it off the task beside that.
                         ui.Chip(a.name, icon: .paperclip) {
+                            on press: open_attachment(t, a)
                             on remove: detach(t, a)
                         }
                     }
