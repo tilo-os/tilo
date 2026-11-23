@@ -747,11 +747,36 @@ mod tests {
 
 #[cfg(test)]
 mod applications_encoding_tests {
+    use sha2::{Digest, Sha256};
+
     #[test]
     fn native_receiving_digest_has_explicit_recursive_sorted_encoding() {
         let value: serde_json::Value =
             serde_json::from_str(r#"{"z":{"b":2,"a":1},"a":[{"y":4,"x":3}]}"#).unwrap();
         let canonical = serde_json::to_vec(&super::sorted_value(&value)).unwrap();
         assert_eq!(canonical, br#"{"a":[{"x":3,"y":4}],"z":{"a":1,"b":2}}"#);
+    }
+
+    #[test]
+    fn native_receiving_digest_pins_nested_unsorted_values() {
+        let cases = [
+            (
+                "nested_array_and_utf8",
+                r#"{"z":{"b":2,"a":1},"a":[{"y":4,"x":3}],"m":"café\n"}"#,
+                "ca3f6b25194111e30aff78445a980cbda124386a2dbdba605a8d421866fed1e1",
+            ),
+            (
+                "deep_receipt_shape",
+                r#"{"receiving":{"selected_data_sha256":"dddd","commits":{"runtime/b":"2222","app/a":"1111"},"deployments":2},"tools":{"/usr/bin/unshare":"u","/usr/bin/flatpak":"f"},"schema":1,"extra":{"\uD83D\uDE00":true,"":false,"A":0,"a":[null,-1,0.5]}}"#,
+                "4ca77a62b990e7bddfd012611b03093ee88cb38d70614918828075d5168dc593",
+            ),
+        ];
+        for (name, input, expected_hex) in cases {
+            let value: serde_json::Value = serde_json::from_str(input).unwrap();
+            let digest = hex::encode(Sha256::digest(
+                serde_json::to_vec(&super::sorted_value(&value)).unwrap(),
+            ));
+            assert_eq!(digest, expected_hex, "digest row {name}");
+        }
     }
 }
