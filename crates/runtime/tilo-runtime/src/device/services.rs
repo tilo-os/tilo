@@ -94,6 +94,8 @@ pub struct Daemon {
     /// The endpoint's router, held so the workspace host, the device actions, the work this
     /// device takes and a ticket's certify call answer for as long as this runtime runs.
     _endpoint_router: iroh::protocol::Router,
+    /// The person's other devices, asked from this runtime's endpoint as this device.
+    other_devices: Option<crate::other_devices::OtherDevices>,
     /// The apps installed for this profile: what each publishes, before it runs here.
     apps: Arc<apps::Apps>,
     /// The login this daemon serves, when this computer logged in.
@@ -483,6 +485,7 @@ impl Daemon {
         Ok(Self {
             policy_origin,
             broker,
+            other_devices: other_devices(&workspaces),
             apps,
             workspaces,
             _identity: identity_broker,
@@ -807,6 +810,11 @@ impl RuntimeServices for Daemon {
 
     fn start_in_dev_mode(root: &Path, stage: &mut dyn FnMut(&str)) -> io::Result<Self> {
         Self::start(root, stage, Serving::Dev, None)
+    }
+
+    /// The person's other devices, as this device asks them.
+    fn other_devices(&self) -> Option<crate::other_devices::OtherDevices> {
+        self.other_devices.clone()
     }
 
     fn workspace(&self) -> &str {
@@ -1820,3 +1828,53 @@ impl tilo_identity::broker::PersonResourceTypes for AttachedSurfaces {
 #[cfg(test)]
 #[path = "services_tests.rs"]
 pub(crate) mod tests;
+
+/// The person's other devices, asked from this runtime's endpoint as this device: what the
+/// forwarding tool lists, and what a `--connect --device` client is carried through.
+fn other_devices(
+    workspaces: &Arc<ServiceWorkspaces>,
+) -> Option<crate::other_devices::OtherDevices> {
+    let (actions, endpoint, runtime) = workspaces.turn_action_service()?;
+    let cert = workspaces.device_cert().clone();
+    let signer = workspaces.signer();
+    let revocations = {
+        let mut revocations = tilo_user_identity::RevocationList::new();
+        for (_, _, peer) in workspaces.held() {
+            for entry in peer.revocations() {
+                let _ = revocations.insert(entry);
+            }
+        }
+        revocations
+    };
+    let keys = tilo_workspace_service::agents::agent_keys::this_device().ok()?;
+    Some(crate::other_devices::OtherDevices::new(
+        actions,
+        endpoint,
+        runtime,
+        (cert.user_public_key, cert.device_public_key),
+        (cert, signer),
+        revocations,
+        keys,
+        Arc::new(Known(Arc::downgrade(workspaces))),
+    ))
+}
+
+/// The workspaces this device holds, as its other devices are looked up in them. Whether one of
+/// them is connected here now is not known: each is asked, and says so when it is away.
+struct Known(std::sync::Weak<ServiceWorkspaces>);
+
+impl crate::other_devices::Whereabouts for Known {
+    fn workspaces(&self) -> Vec<String> {
+        self.0.upgrade().map_or_else(Vec::new, |workspaces| {
+            workspaces
+                .held()
+                .into_iter()
+                .map(|(workspace, ..)| workspace.to_string())
+                .collect()
+        })
+    }
+
+    fn reachable(&self, _workspace: &str, _device: [u8; 32]) -> bool {
+        true
+    }
+}

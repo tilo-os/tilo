@@ -52,6 +52,10 @@ pub trait AgentKeys: Send + Sync {
         key: &[u8; 32],
         request: &mut InvokeRequest,
     ) -> Result<(), String>;
+
+    /// The certificate of `key`, a key [`Self::grant`] gave, and the key itself: what signs, as
+    /// the agent, the invocations a connection carries to another device.
+    fn made(&self, key: &[u8; 32]) -> Option<(DeviceCert, SigningKey)>;
 }
 
 /// What separates the statement an agent's key is made from from anything else a root signs.
@@ -185,6 +189,10 @@ impl AgentKeys for FleetAgentKeys {
         request.signed = Some(Box::new(invocation));
         Ok(())
     }
+
+    fn made(&self, key: &[u8; 32]) -> Option<(DeviceCert, SigningKey)> {
+        self.made.lock_recover().get(key).cloned()
+    }
 }
 
 /// The keys this device's agents sign with, made from the identity store the process's
@@ -253,6 +261,37 @@ impl AgentSigner {
         self.keys
             .sign(self.workspace, &self.key, request)
             .map_err(|reason| ActionCallError::Refused { reason })
+    }
+
+    /// The certificate this agent's key's person's root signed for it, and a signer that signs
+    /// with the key itself: what a connection to another device signs its invocations as, so the
+    /// device that answers checks them as this agent's.
+    ///
+    /// # Errors
+    /// The key was not made on this device.
+    pub fn signing(
+        &self,
+    ) -> Result<(DeviceCert, Arc<dyn collab_types::signer::DeviceSigner>), String> {
+        let (cert, key) = self
+            .keys
+            .made(&self.key)
+            .ok_or("the agent's key was not made on this device")?;
+        Ok((cert, Arc::new(KeySigner(key))))
+    }
+}
+
+/// One agent key this device made, as the signer of the invocations it sends.
+struct KeySigner(SigningKey);
+
+impl collab_types::signer::DeviceSigner for KeySigner {
+    fn device_public_key(&self) -> [u8; 32] {
+        self.0.verifying_key().to_bytes()
+    }
+
+    fn sign(&self, message: Vec<u8>) -> collab_types::signer::SignFuture<'_> {
+        let signature: ed25519_dalek::Signature =
+            ed25519_dalek::Signer::sign(&self.0, message.as_slice());
+        Box::pin(std::future::ready(Ok(signature.to_bytes())))
     }
 }
 

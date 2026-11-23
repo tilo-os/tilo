@@ -199,6 +199,7 @@ pub fn serve(profile: &Path, dev: bool) -> io::Result<()> {
         },
         search,
         media: session.media(),
+        other_devices: session.other_devices(),
     };
     native.serve_the_person(endpoint);
     // The device is served until the daemon is told to stop, or another takes the device over:
@@ -256,10 +257,11 @@ impl Native {
         let answers = self.answers.seated(seated.clone());
         Endpoint {
             session_factory: Arc::new(move || {
-                Ok(McpServer::new(
+                Ok(McpServer::for_agent(
                     answers.clone(),
                     String::new(),
-                    String::new(),
+                    "agent",
+                    "",
                 ))
             }),
             // No workspace is served on it.
@@ -370,6 +372,9 @@ struct Endpoint<H> {
     search: Arc<OnceLock<Arc<tilo_os_search::OsSearch>>>,
     /// Where answers read the content actions produced.
     media: Option<Arc<dyn tilo_mcp::MediaReader>>,
+    /// The person's other devices, which a `--connect --device` client is carried to and the
+    /// `tilo_devices` tool lists; `None` for an endpoint that reaches none.
+    other_devices: Option<crate::other_devices::OtherDevices>,
 }
 
 /// The sessions of the native endpoint, each admitted to `session`'s workspace when its
@@ -440,6 +445,10 @@ fn search_once_held(
     Ok(())
 }
 
+/// The longest first line a native connection is read for before it is served: a forward to
+/// another device, or the first request of any other.
+const FIRST_LINE: u64 = 64 * 1024;
+
 /// Connections the native endpoint serves at once.
 const MAX_CONNECTIONS: usize = 64;
 /// What a connection past [`MAX_CONNECTIONS`] is told before it is closed.
@@ -474,19 +483,53 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
         let status = self.status.clone();
         let search = Arc::clone(&self.search);
         let media = self.media.clone();
+        let other_devices = self.other_devices.clone();
         std::thread::Builder::new()
             .name("tilo-native-mcp".into())
             .spawn(move || {
                 let _slot = slot;
-                let input = match stream.try_clone() {
-                    Ok(clone) => clone,
+                // The first line says whether the client asks to be carried to another
+                // device's MCP server; anything else is served here, that line first.
+                let mut reader = match stream.try_clone() {
+                    Ok(clone) => BufReader::new(clone),
                     Err(error) => {
                         tracing::debug!(%error, "native runtime client socket");
                         return;
                     }
                 };
+                let mut first = Vec::new();
+                if let Err(error) = (&mut reader).take(FIRST_LINE).read_until(b'\n', &mut first) {
+                    tracing::debug!(%error, "native runtime client disconnected");
+                    return;
+                }
+                if let Some(forward) = first
+                    .strip_suffix(b"\n")
+                    .and_then(tilo_mcp::devices::forward_request)
+                {
+                    match &other_devices {
+                        // A client asks for nothing more before it is told whether the
+                        // connection opened.
+                        Some(other_devices) if reader.buffer().is_empty() => {
+                            other_devices.serve_forward(stream, &forward);
+                        }
+                        Some(_) => tilo_mcp::devices::refuse_forward(
+                            stream,
+                            "a forward is the only line before its answer".into(),
+                        ),
+                        None => tilo_mcp::devices::refuse_forward(
+                            stream,
+                            "this runtime reaches none of your other devices".into(),
+                        ),
+                    }
+                    return;
+                }
+                let input = io::Cursor::new(first).chain(reader);
                 let server = match factory() {
-                    Ok(server) => Arc::new(server.with_media(media)),
+                    Ok(server) => Arc::new(server.with_media(media).with_devices(
+                        other_devices.map(|other_devices| {
+                            Arc::new(other_devices) as Arc<dyn tilo_mcp::devices::DeviceDirectory>
+                        }),
+                    )),
                     Err(error) => {
                         tracing::debug!(%error, "native MCP session admission unavailable");
                         return;
@@ -599,7 +642,12 @@ pub(crate) async fn answer_open(search: &tilo_os_search::OsSearch, request: &Val
 ///
 /// `workspace` is the workspace the client asks this desktop's MCP server for, written into
 /// its `initialize`.
-pub fn connect(profile: &Path, standalone: bool, workspace: Option<&str>) -> io::Result<()> {
+pub fn connect(
+    profile: &Path,
+    standalone: bool,
+    forward: Option<&tilo_mcp::devices::Forward>,
+    workspace: Option<&str>,
+) -> io::Result<()> {
     let route = tilo_mcp::session_api::route(
         standalone,
         tilo_mcp::session_api::environment_server(std::env::var_os(
@@ -611,7 +659,7 @@ pub fn connect(profile: &Path, standalone: bool, workspace: Option<&str>) -> io:
         ),
         Path::exists,
     )?;
-    let stream = match route {
+    let mut stream = match route {
         tilo_mcp::session_api::Route::Session(server) => {
             tilo_files::native::socket::connect(&server)
                 .map_err(|error| tilo_mcp::session_api::unreachable_server(&server, &error))?
@@ -627,6 +675,9 @@ pub fn connect(profile: &Path, standalone: bool, workspace: Option<&str>) -> io:
             tilo_files::native::socket::connect(&native_socket(profile)?)?
         }
     };
+    if let Some(forward) = forward {
+        tilo_mcp::devices::ask_forward(&mut stream, forward)?;
+    }
     bridge_stdio(
         stream,
         Asking {
