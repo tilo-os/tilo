@@ -82,6 +82,9 @@ pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Resu
             app.payload_root.clone().into_os_string(),
         ));
     }
+    if let Some(runtime) = runtime.as_deref() {
+        env.extend(gstreamer_env(runtime));
+    }
     let (capabilities, egress) = apps.launch_capabilities(app, &manifest);
     let request = launcher_macos::LaunchRequest {
         package_id: app.app_id.to_string(),
@@ -107,6 +110,101 @@ pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Resu
     let pid = u32::try_from(launched.pid())
         .map_err(|_| format!("{} started with an invalid pid", app.app_id))?;
     Ok(Launch { pid, app: launched })
+}
+
+/// Install the runtime packages the running Tilo.app carries (`Contents/Resources/runtimes/<package
+/// root>.tapp`, the tilolang runtime among them) that this profile does not have yet, through the
+/// one installer, as the Store installs any package: each must be the exact package its sealed
+/// name says and its bundle signed by a publisher the app lists. Once installed, a runtime updates
+/// from the registry like every package; a later Tilo.app does not put back an older one.
+pub(super) fn install_carried_runtimes(catalog: &package_store::Catalog) {
+    use package_store::installer;
+    let Some(carried) = std::env::current_exe()
+        .and_then(std::fs::canonicalize)
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.parent()?.join("Resources/runtimes")))
+        .filter(|dir| dir.is_dir())
+    else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(&carried) else {
+        return;
+    };
+    let installed: Vec<String> = catalog
+        .list()
+        .map(|packages| packages.into_iter().map(|p| p.package_id_hex).collect())
+        .unwrap_or_default();
+    let store = match package_store::PackageStore::from_env() {
+        Ok(store) => store,
+        Err(error) => {
+            tracing::warn!(%error, "no package store for the runtimes Tilo.app carries");
+            return;
+        }
+    };
+    for path in entries.flatten().map(|entry| entry.path()) {
+        let Some(root) = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .filter(|stem| path.extension().is_some_and(|ext| ext == "tapp"))
+            .filter(|stem| stem.len() == 64 && stem.bytes().all(|b| b.is_ascii_hexdigit()))
+        else {
+            continue;
+        };
+        if installed.iter().any(|id| id.eq_ignore_ascii_case(root)) {
+            continue;
+        }
+        let request = installer::Request {
+            trust: installer::Trust {
+                require_package_root: Some(root.to_owned()),
+                // No attestor vouches for the app's own publisher: the package root, sealed in the
+                // app's signature, is what this trusts.
+                allow_self_signed: true,
+                ..installer::Trust::default()
+            },
+            ..installer::Request::default()
+        };
+        match installer::install(
+            &store,
+            catalog,
+            &installer::Candidate::staged(&path, "Tilo.app"),
+            &request,
+            None,
+        ) {
+            Ok(_) | Err(installer::Error::AlreadyInstalled(_)) => {}
+            Err(error) => {
+                tracing::warn!(%error, package = %root, "a runtime Tilo.app carries did not install")
+            }
+        }
+    }
+}
+
+/// Where the GStreamer a runtime package carries beside its binaries (`lib/gstreamer`, the tilolang
+/// runtime's on an Apple silicon Mac) finds its plugins, scanner, fonts and subtitle data: only
+/// in the runtime, which the sandbox lets the app read and nothing write. The registry and the
+/// font cache go to the app's own cache directory, as everything it caches does.
+fn gstreamer_env(runtime: &std::path::Path) -> Vec<(OsString, OsString)> {
+    let root = runtime.join("lib/gstreamer");
+    if !root.is_dir() {
+        return Vec::new();
+    }
+    let plugins = root.join("PlugIns");
+    let scanner = root.join("Helpers/gst-plugin-scanner");
+    let fonts = root.join("Resources/fontconfig");
+    [
+        ("GST_PLUGIN_SYSTEM_PATH_1_0", plugins.clone()),
+        ("GST_PLUGIN_SYSTEM_PATH", plugins),
+        ("GST_PLUGIN_PATH_1_0", std::path::PathBuf::new()),
+        ("GST_PLUGIN_PATH", std::path::PathBuf::new()),
+        ("GST_PLUGIN_SCANNER_1_0", scanner.clone()),
+        ("GST_PLUGIN_SCANNER", scanner),
+        ("FONTCONFIG_FILE", fonts.join("fonts.conf")),
+        ("FONTCONFIG_PATH", fonts),
+        ("PANGOCAIRO_BACKEND", "fontconfig".into()),
+        ("LIBTHAI_DICTDIR", root.join("Resources/libthai")),
+    ]
+    .into_iter()
+    .map(|(key, value)| (OsString::from(key), value.into_os_string()))
+    .collect()
 }
 
 /// The file chooser a confined app asks for over its end of a socket pair:

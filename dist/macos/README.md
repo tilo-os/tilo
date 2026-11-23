@@ -15,11 +15,26 @@ Tilo.app/Contents/
   MacOS/Tilo                          the store binary (CFBundleExecutable), universal
   MacOS/tilo-runtime                  the runtime, universal
   MacOS/tilo-runtime-update           the self-updater, universal
-  MacOS/tilolang-app                  the tilolang runtime every tilolang app runs on, universal
   MacOS/tilolang-process              the tilolang host, universal
+  Resources/runtimes/<root>.tapp      the tilolang runtime package, named by its package root
+  Resources/runtime-bundle-trusted-publishers.txt
+                                      the runtime publishers this Mac trusts
   Library/LaunchAgents/so.tilo.runtime.plist
   Library/LaunchAgents/so.tilo.runtime.update.plist
 ```
+
+The tilolang runtime every tilolang app runs on is a registry runtime package
+(`so.tilo.runtime.tilolang`), packed as Linux packs it
+(`tools/apps/pack-runtime-package.sh ... macos`): a universal `tilolang-app`
+and `tilolang-process`, and under `lib/gstreamer/` the reviewed GStreamer
+closure the arm64 `tilolang-app` decodes video with, relocated from the
+building Mac's Homebrew (`collection_local_runtime.py tilolang`, which refuses
+a closure that differs from the reviewed lists in
+`collection_media_runtime.py`). The daemon installs the package Tilo.app
+carries on its first start, through the installer the Store uses: the
+architecture and publisher checks apply, and a Mac trusts only the publishers
+its Tilo.app lists. Later versions arrive from the registry.
+`runtime_plays.py` proves a staged runtime plays a generated clip.
 
 Opening Tilo starts the store, which finds the sibling `tilo-runtime` (the
 lookup in `crates/runtime/runtime-portal/src/native.rs`) and re-executes

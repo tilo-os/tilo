@@ -93,6 +93,10 @@ impl Apps {
             home.as_deref().map_or_else(PathBuf::new, data_home),
             launcher_candidates(),
         );
+        #[cfg(target_os = "macos")]
+        if let Some(catalog) = apps.catalog.as_ref() {
+            macos::install_carried_runtimes(catalog);
+        }
         apps.register_installed_surfaces();
         apps
     }
