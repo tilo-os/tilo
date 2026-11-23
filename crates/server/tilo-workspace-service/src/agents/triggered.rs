@@ -44,9 +44,9 @@ pub const CHAT: &str = "so.tilo.lang.chat";
 /// The kind of a message of [`CHAT`].
 pub const MESSAGE: &str = "tl.so.tilo.lang.chat.Message";
 /// tilolang Tasks, whose tasks are assigned to an agent.
-pub const TASKS: &str = "so.tilo.lang.tasks";
+pub const TASKS: &str = "so.tilo.tasks";
 /// The kind of a task of [`TASKS`].
-pub const TASK: &str = "tl.so.tilo.lang.tasks.Task";
+pub const TASK: &str = "tl.so.tilo.tasks.Task";
 /// tilolang Mail, whose received messages an agent answers.
 pub const MAIL: &str = "so.tilo.mail";
 /// The kind of a message of [`MAIL`].
