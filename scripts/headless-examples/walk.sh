@@ -43,16 +43,18 @@ rm -rf -- "$out/now"
 mkdir -p -- "$out"
 
 status=0
-t test -C "$repo_root" "app-walk/$check" ${inputs[@]+"${inputs[@]}"} --json > "$out/run.json" || status=$?
-run=$(python3 -c 'import json,sys
-for line in open(sys.argv[1]):
-    line = line.strip()
-    if not line.startswith("{"): continue
-    try: doc = json.loads(line)
-    except ValueError: continue
-    run = doc.get("run") or doc.get("run_id") or (doc.get("result") or {}).get("run")
-    if run: print(run); break' "$out/run.json")
-[[ -n $run ]] || { echo "t named no run (see $out/run.json)" >&2; exit 1; }
+# The run's id is what --detach prints; its stream never names it.
+run=$(t test -C "$repo_root" "app-walk/$check" ${inputs[@]+"${inputs[@]}"} --detach \
+    | grep -oE '^r[0-9a-f]{10}' | head -1) || true
+[[ -n $run ]] || { echo "t started no run for app-walk/$check" >&2; exit 1; }
+echo "run $run: app-walk/$check" >&2
+# Followed in pieces: one follow ends after ten minutes, a walk behind a session build takes longer.
+while true; do
+    code=0
+    timeout 590 t follow -C "$repo_root" "$run" > "$out/run.log" 2>&1 || code=$?
+    [[ $code -eq 124 ]] || break
+done
+[[ $code -eq 0 ]] || status=$code
 t outputs -C "$repo_root" "app-walk/$check" --run "$run" --to "$out/now" > /dev/null
 now=$(find "$out/now" -path "*/$walk/walk.json" -printf '%h\n' | head -1)
 [[ -n $now ]] || now=$(find "$out/now" -name walk.json -printf '%h\n' | head -1)
