@@ -1200,14 +1200,23 @@ class Walk:
 
     def quit_app(self) -> None:
         """End the app, not only its window: the next launch is a cold start,
-        which is what a person who starts a note the moment it opens meets."""
+        which is what a person who starts a note the moment it opens meets.
+        A person quits an app by closing its last window, and the app ends with
+        it; one that stays is ended as a person ends an app that will not."""
         window = self.window_of()
         if window is None:
             return
-        self.session.invoke(SHELL, SHELL_RESOURCE, "force-quit-app",
-                            {"tab": str(window["tab"])})
-        until_value(f"the window of {self.v['id']} to go",
-                    lambda: self.window_of() is None, 60)
+        self.close_window()
+        try:
+            until_value(f"the app {self.v['id']} to end",
+                        lambda: not self.session.processes(self.v["id"]), 15)
+        except Failed:
+            # The app did not end on its own: a force quit is the person's own,
+            # never a crash the shell reports.
+            self.session.invoke(SHELL, SHELL_RESOURCE, "force-quit-app",
+                                {"tab": str(window["tab"])})
+            until_value(f"the app {self.v['id']} to end",
+                        lambda: not self.session.processes(self.v["id"]), 30)
 
     def set_dark(self, dark: bool) -> None:
         """Switch the desktop's appearance, through the action the person's

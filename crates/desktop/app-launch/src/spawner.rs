@@ -831,12 +831,20 @@ impl Spawner {
     }
 
     /// End the launch whose app runs as the process `pid`, as the person's own quit does: the end
-    /// is theirs, so no notice says it stopped working. Whether a launch of this session runs it.
+    /// is theirs, so no notice says it stopped working. Whether a launch of this session runs it:
+    /// a sandboxed app is a child of the launcher this session started, so the launch is found up
+    /// the process tree, the nearest one first.
     pub fn end_pid(&self, pid: u32) -> bool {
-        let found = running(&self.running)
+        let launched: Vec<(u64, u32)> = running(&self.running)
             .iter()
-            .find(|(_, app)| app.pid == pid)
-            .map(|(id, _)| *id);
+            .map(|(id, app)| (*id, app.pid))
+            .collect();
+        let found = crate::links::ancestry(pid).into_iter().find_map(|process| {
+            launched
+                .iter()
+                .find(|(_, launch)| *launch == process)
+                .map(|(id, _)| *id)
+        });
         let Some(id) = found else {
             return false;
         };
@@ -1833,6 +1841,55 @@ mod tests {
             !spawner.end_pid(u32::MAX),
             "a process no launch of this session runs is not one"
         );
+    }
+
+    /// A sandboxed app is a child of the launcher this session started: a quit naming the app's
+    /// own process still finds its launch, and its end is the person's.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_app_under_its_launcher_is_ended_as_the_persons_own_quit() {
+        let mut spawner = Spawner::default();
+        let launch = spawner
+            .start(&shell("sleep infinity & wait", BTreeMap::new()))
+            .expect("starts");
+        let app = child_of(launch.pid);
+        assert!(
+            spawner.end_pid(app),
+            "the launch that runs the app is found up the process tree"
+        );
+        let ended = events(&spawner, 1);
+        assert_eq!(ended[0].id, launch.id);
+        assert!(
+            ended[0].asked_to_end,
+            "the quit is the person's, never a crash"
+        );
+        // No scope holds the app here, so it outlives the launcher it was started from: the
+        // test ends it.
+        // SAFETY: a plain pid signal.
+        unsafe { libc::kill(i32::try_from(app).expect("a pid fits"), libc::SIGKILL) };
+        tilo_test_env::exited("the app the test ended", app);
+    }
+
+    /// The first process the shell `pid` started, once it has.
+    #[cfg(target_os = "linux")]
+    fn child_of(pid: u32) -> u32 {
+        let started = Instant::now();
+        loop {
+            if let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) {
+                for task in tasks.flatten() {
+                    if let Ok(children) = std::fs::read_to_string(task.path().join("children"))
+                        && let Some(child) = children.split_whitespace().next()
+                    {
+                        return child.parse().expect("a pid fits");
+                    }
+                }
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "the launch started no child"
+            );
+            std::thread::park_timeout(Duration::from_millis(5));
+        }
     }
 
     /// A package's launch starts without forking the session, and with none of the descriptors the
