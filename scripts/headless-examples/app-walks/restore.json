@@ -83,7 +83,12 @@
           }
         },
         {
-          "wait_for": "actions"
+          "wait_for": {
+            "actions": {
+              "app": "so.tilo.mail",
+              "within": 120
+            }
+          }
         },
         {
           "do_app": {

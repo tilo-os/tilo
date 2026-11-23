@@ -532,6 +532,50 @@ class OpsOnAnotherDevice(unittest.TestCase):
         self.assertEqual(walk.devices_of({"rust": {}}), [{"name": ""}])
 
 
+class WaitingForAnotherAppsActions(unittest.TestCase):
+    """`wait_for: {"actions": {"app": ...}}` holds a step to the actions another app
+    publishes. A window the shell restored beside the walk's own app is alive only
+    when its app publishes them: a dead one publishes nothing, and a step that says
+    it is alive must fail rather than pass on the walk's own app."""
+
+    class Session:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def actions(self, _query=""):
+            return self.rows
+
+    @staticmethod
+    def row(app, operation):
+        return {"app_id": app,
+                "action": {"address": {"resource": f"tl.{app}.Root", "action": operation}}}
+
+    def walk_of(self, session):
+        spec = {"rust": {"id": "so.tilo.calendar"}, "steps": []}
+        return walk.Walk(spec, "rust", Path("/nonexistent"), Path("/nonexistent"),
+                         session=session)
+
+    def test_the_actions_counted_are_the_named_apps_and_not_the_walks_own(self):
+        calendar = self.walk_of(self.Session([self.row("so.tilo.calendar", "new_event")]))
+        self.assertEqual(calendar.op({"wait_for": "actions"}), {"actions": 1})
+
+        restored = self.walk_of(self.Session([
+            self.row("so.tilo.calendar", "new_event"),
+            self.row("so.tilo.mail", "new_draft")]))
+        self.assertEqual(
+            restored.op({"wait_for": {"actions": {"app": "so.tilo.mail"}}}),
+            {"actions": 1})
+
+    def test_an_app_that_publishes_no_action_fails_the_step(self):
+        calendar = self.walk_of(self.Session([self.row("so.tilo.calendar", "new_event")]))
+        with self.assertRaisesRegex(walk.Failed, "so.tilo.mail to publish its actions"):
+            calendar.op({"wait_for": {"actions": {"app": "so.tilo.mail", "within": 0.05}}})
+        # A row that names the app but runs nothing is no action it publishes.
+        listed_only = self.walk_of(self.Session([{"app_id": "so.tilo.mail", "action": None}]))
+        with self.assertRaisesRegex(walk.Failed, "so.tilo.mail to publish its actions"):
+            listed_only.op({"wait_for": {"actions": {"app": "so.tilo.mail", "within": 0.05}}})
+
+
 class KeepingWhatAnAnswerSaid(unittest.TestCase):
     ANSWER = {"devices": [{"label": "laptop", "id": "a1"}, {"label": "phone", "id": "b2"}],
               "layout": {"revision": 7, "displays": [{"rect": [0, 0, 1920, 1080]}]}}

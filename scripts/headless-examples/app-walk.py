@@ -1501,19 +1501,26 @@ class Walk:
     def op_wait_for(self, value) -> dict:
         """Wait for what a person waits for before going on: a control of the
         app's, its window, the actions it publishes, a note it holds, or the
-        title its window wears (the note it shows)."""
+        title its window wears (the note it shows). `{"actions": {"app": ...}}`
+        waits on another app's actions, named by its id: a window restored
+        beside this walk's app is alive only when that app publishes them."""
         if value == "window":
             until_value(f"the window of {self.v['id']}", self.window_of, 120)
             return {"window": True}
-        if value == "actions":
+        if value == "actions" or (isinstance(value, dict) and "actions" in value):
+            named = value["actions"] if isinstance(value, dict) else self.v["id"]
+            if isinstance(named, dict):
+                app, within = named["app"], float(named.get("within", 120))
+            else:
+                app, within = named, 120.0
             # The app is ready when it publishes what it can do: a window that
             # is drawn for a client still connecting publishes nothing.
             def listed():
                 return [a for a in self.session.actions("")
-                        if a.get("app_id") == self.v["id"] and address(a)]
+                        if a.get("app_id") == app and address(a)]
 
             return {"actions": len(until_value(
-                f"{self.v['id']} to publish its actions", listed, 120))}
+                f"{app} to publish its actions", listed, within))}
         if value == "note":
             # Waited for is the app's own read of its notes answering at all: an
             # empty notebook answers zero, which is an answer.
