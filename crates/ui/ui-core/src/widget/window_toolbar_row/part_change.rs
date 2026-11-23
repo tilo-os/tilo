@@ -1,14 +1,14 @@
 //! Parts arriving, leaving and changing places in one tab's row, on the standard list change
-//! ([`ListChange`]): a part the app adds fades in where it stands, one it takes away fades out
-//! where it stood, and the parts that stay glide from their old places to their new ones. Reduced
-//! motion: the parts land, and arrivals and departures still fade.
+//! ([`RowMotions`], as a list's rows and a stack's parts move): a part the app adds fades in where it
+//! stands, one it takes away fades out where it stood, and the parts that stay glide from their old
+//! places to their new ones. Reduced motion: the parts land, and arrivals and departures still fade.
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use vello::kurbo::{Rect, Vec2};
 
 use super::{Part, Parts, WindowToolbar};
-use crate::motion::{Direction, ListChange, MotionValue};
+use crate::collection_transition::RowMotions;
 use crate::time::Instant;
 use crate::tokens::{EffectiveMotion, MotionSource};
 
@@ -96,25 +96,28 @@ pub(super) fn placed(toolbar: &WindowToolbar, parts: &Parts) -> Vec<(PartKey, Re
     out
 }
 
+/// A part the app took away, fading out where it was drawn: the row it was painted in, its box
+/// there, how far from that box it was drawn when it left, and its opacity.
 pub(super) struct Leaving {
-    key: PartKey,
     pub(super) from: Rc<(WindowToolbar, Parts)>,
     pub(super) rect: Rect,
     pub(super) offset: Vec2,
-    opacity: MotionValue<f64>,
+    pub(super) opacity: f32,
 }
 
-impl Leaving {
-    pub(super) fn opacity(&self, now: Instant) -> f32 {
-        crate::num::f32_of_f64(self.opacity.get(now).clamp(0.0, 1.0))
-    }
-}
-
-#[derive(Default)]
 pub(super) struct PartChanges {
-    arriving: HashMap<PartKey, MotionValue<f64>>,
-    moving: HashMap<PartKey, MotionValue<Vec2>>,
-    leaving: Vec<Leaving>,
+    rows: RowMotions<PartKey, Vec2>,
+    /// What each part fading out was painted in, and its box there.
+    left: HashMap<PartKey, (Rc<(WindowToolbar, Parts)>, Rect)>,
+}
+
+impl Default for PartChanges {
+    fn default() -> Self {
+        Self {
+            rows: RowMotions::default().fading_out_leavers(),
+            left: HashMap::new(),
+        }
+    }
 }
 
 pub(super) type Pose = (f32, Vec2);
@@ -130,102 +133,70 @@ impl PartChanges {
         // The app changed the row: it moves unless a key just asked for the
         // change, which lands.
         let source = crate::motion::recent_input(now).unwrap_or(MotionSource::Pointer);
-        let fade_in = ListChange::FADE.timing(Direction::Enter, motion, source);
-        let fade_out = ListChange::FADE.timing(Direction::Exit, motion, source);
-        let glide = ListChange::MOVE.timing(Direction::Enter, motion, source);
         let old = placed(&before.0, &before.1);
         let new = placed(toolbar, parts);
-        for (key, rect) in &new {
-            if let Some((_, was)) = old.iter().find(|(was, _)| was == key) {
-                let drawn = was.origin() + self.offset(key, now);
-                let offset = drawn - rect.origin();
-                if offset.hypot() <= 0.5 {
-                    self.moving.remove(key);
-                    continue;
-                }
-                let mut value = MotionValue::new(offset).with_tolerance(0.25);
-                value.set(Vec2::ZERO, glide, now);
-                self.moving.insert(key.clone(), value);
-            } else {
-                let from = self
-                    .leaving
-                    .iter()
-                    .position(|leaving| leaving.key == *key)
-                    .map_or(0.0, |i| self.leaving.remove(i).opacity.get(now));
-                let mut value = MotionValue::new(from);
-                value.set(1.0, fade_in, now);
-                self.moving.remove(key);
-                self.arriving.insert(key.clone(), value);
-            }
-        }
+        let at = |placed: &[(PartKey, Rect)]| {
+            placed
+                .iter()
+                .map(|(key, rect)| (key.clone(), rect.origin().to_vec2()))
+                .collect::<Vec<_>>()
+        };
+        self.rows.capture(at(&old), true, Some(source));
+        self.rows.start(at(&new), motion, now);
         for (key, rect) in old {
-            if new.iter().any(|(stays, _)| *stays == key) {
-                continue;
+            if !new.iter().any(|(stays, _)| *stays == key) {
+                self.left.insert(key, (Rc::clone(&before), rect));
             }
-            let from = self
-                .arriving
-                .remove(&key)
-                .map_or(1.0, |value| value.get(now));
-            let offset = self.offset(&key, now);
-            self.moving.remove(&key);
-            let mut opacity = MotionValue::new(from);
-            opacity.set(0.0, fade_out, now);
-            self.leaving.push(Leaving {
-                key,
-                from: Rc::clone(&before),
-                rect,
-                offset,
-                opacity,
-            });
         }
         self.prune(now);
     }
 
     pub(super) fn offset(&self, key: &PartKey, now: Instant) -> Vec2 {
-        self.moving
-            .get(key)
-            .map_or(Vec2::ZERO, |value| value.get(now))
+        self.rows.pose(key, now).0
     }
 
     pub(super) fn poses(&self, now: Instant) -> HashMap<PartKey, Pose> {
-        let mut poses: HashMap<PartKey, Pose> = HashMap::new();
-        for (key, value) in &self.moving {
-            poses.insert(key.clone(), (1.0, value.get(now)));
-        }
-        for (key, value) in &self.arriving {
-            let opacity = crate::num::f32_of_f64(value.get(now).clamp(0.0, 1.0));
-            poses.entry(key.clone()).or_insert((1.0, Vec2::ZERO)).0 = opacity;
-        }
-        poses
+        self.rows
+            .moving(now)
+            .map(|(key, offset, opacity)| (key.clone(), (opacity, offset)))
+            .collect()
     }
 
-    pub(super) fn leaving(&self) -> &[Leaving] {
-        &self.leaving
+    pub(super) fn leaving(&self, now: Instant) -> Vec<Leaving> {
+        self.rows
+            .leaving(now)
+            .filter_map(|(key, at, opacity)| {
+                let (from, rect) = self.left.get(key)?;
+                Some(Leaving {
+                    from: Rc::clone(from),
+                    rect: *rect,
+                    offset: at - rect.origin().to_vec2(),
+                    opacity,
+                })
+            })
+            .collect()
     }
 
     pub(super) fn is_moving(&self, now: Instant) -> bool {
-        self.moving.values().any(|value| value.is_moving(now))
-            || self.arriving.values().any(|value| value.is_moving(now))
-            || self
-                .leaving
-                .iter()
-                .any(|leaving| leaving.opacity.is_moving(now))
+        self.rows.is_moving(now)
     }
 
     pub(super) fn glides(&self, now: Instant) -> bool {
-        self.moving.values().any(|value| value.is_moving(now))
+        self.rows.glides(now)
     }
 
     pub(super) fn prune(&mut self, now: Instant) {
-        self.moving.retain(|_, value| value.is_moving(now));
-        self.arriving.retain(|_, value| value.is_moving(now));
-        self.leaving
-            .retain(|leaving| leaving.opacity.is_moving(now));
+        self.rows.settle(now);
+        let leaving: Vec<PartKey> = self
+            .rows
+            .leaving(now)
+            .map(|(key, ..)| key.clone())
+            .collect();
+        self.left.retain(|key, _| leaving.contains(key));
     }
 
     pub(super) fn clear(&mut self) {
-        self.moving.clear();
-        self.arriving.clear();
-        self.leaving.clear();
+        self.rows.clear();
+        self.left.clear();
     }
 }

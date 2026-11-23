@@ -136,8 +136,8 @@ impl ToolbarRow {
         incoming: f32,
     ) {
         let now = crate::motion::frame_now();
-        for leaving in self.part_changes.leaving() {
-            let opacity = leaving.opacity(now) * incoming;
+        for leaving in self.part_changes.leaving(now) {
+            let opacity = leaving.opacity * incoming;
             if opacity <= 0.0 {
                 continue;
             }

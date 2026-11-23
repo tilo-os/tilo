@@ -178,12 +178,17 @@ impl<K: Clone + Eq + std::hash::Hash, P: Animatable> RowMotions<K, P> {
                     .iter()
                     .filter(|(key, _)| !shown.iter().any(|(now_shown, _)| now_shown == key));
                 for (key, top) in gone {
-                    let mut fade = crate::motion::MotionValue::new(1.0);
+                    // It fades from where and how it was drawn: a row still on its way in or
+                    // across leaves from there, never from where it was laid out.
+                    let (drawn, from) = self.rows.remove(key).map_or((zero(), 1.0), |row| {
+                        (row.offset.get(now), row.fade.get(now))
+                    });
+                    let mut fade = crate::motion::MotionValue::new(from);
                     fade.set(0.0, fade_out, now);
                     leaving.retain(|row| row.key != *key);
                     leaving.push(LeavingRow {
                         key: key.clone(),
-                        top: *top,
+                        top: plus(*top, drawn),
                         fade,
                     });
                 }
@@ -202,8 +207,16 @@ impl<K: Clone + Eq + std::hash::Hash, P: Animatable> RowMotions<K, P> {
                         entry.offset.set(zero(), shift, now);
                     }
                     None if change.arrivals_fade => {
+                        // A row coming back while it fades out comes back from how it is drawn.
+                        let mut from = 0.0;
+                        if let Some(leaving) = self.leaving.as_mut()
+                            && let Some(at) = leaving.iter().position(|row| row.key == key)
+                        {
+                            from = leaving.remove(at).fade.get(now);
+                        }
                         let entry = self.rows.entry(key).or_insert_with(RowMotion::rest);
-                        entry.fade.snap(0.0);
+                        entry.offset.snap(zero());
+                        entry.fade.snap(from);
                         entry.fade.set(1.0, fade, now);
                     }
                     _ => {}
@@ -259,6 +272,21 @@ impl<K: Clone + Eq + std::hash::Hash, P: Animatable> RowMotions<K, P> {
         self.rows
             .get(key)
             .map_or((zero(), 1.0), |row| (row.offset(now), row.opacity(now)))
+    }
+
+    /// The rows on their way at `now`: each one's key, how far from its laid-out place it is drawn,
+    /// and its opacity.
+    pub fn moving(&self, now: Instant) -> impl Iterator<Item = (&K, P, f32)> {
+        self.rows
+            .iter()
+            .filter(move |(_, row)| row.is_moving(now))
+            .map(move |(key, row)| (key, row.offset(now), row.opacity(now)))
+    }
+
+    /// Whether any row is still moving across at `now`, rather than only fading.
+    #[must_use]
+    pub fn glides(&self, now: Instant) -> bool {
+        self.rows.values().any(|row| row.offset.is_moving(now))
     }
 
     /// When the last row on its way rests; `None` when none is.

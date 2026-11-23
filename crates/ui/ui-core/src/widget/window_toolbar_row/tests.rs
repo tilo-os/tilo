@@ -1451,10 +1451,10 @@ tilo_test_env::scenario! {
         without_reload.actions.clear();
         with_monotonic_time(t0, || {
             changed_to(&mut row, &without_reload, &theme);
-            let leaving = row.part_changes.leaving();
+            let leaving = row.part_changes.leaving(t0);
             assert_eq!(leaving.len(), 1, "reload fades out");
             assert_eq!(leaving[0].rect, reload, "where it stood");
-            assert!(leaving[0].opacity(t0) > 0.95, "from whole");
+            assert!(leaving[0].opacity > 0.95, "from whole");
             assert_ne!(
                 row.part_at(reload.center()),
                 Some(Part::Action(0)),
@@ -1464,7 +1464,7 @@ tilo_test_env::scenario! {
         let end = later(t0);
         with_monotonic_time(end, || {
             row.start_part_change(&theme);
-            assert!(row.part_changes.leaving().is_empty(), "and is gone");
+            assert!(row.part_changes.leaving(end).is_empty(), "and is gone");
             assert!(!row.needs_animation_frame());
         });
     }
