@@ -137,17 +137,24 @@ pub struct ImageModelResource;
 #[row(kind = "vision.analysis", label = "Photo analysis")]
 pub struct AnalysisResource;
 
+/// The objects and pets a picture holds, as the API carries a list.
+pub type FoundWords = Vec<String>;
+
+/// The groups of pictures a face model found the same face in, each a list of the pictures'
+/// addresses, as the API carries a list of lists.
+pub type FaceGroups = Vec<Vec<String>>;
+
 /// What the image model offers.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.vision.image-model")]
 pub enum ImageModelEffect {
     /// Describe a picture
     ///
-    /// What it shows, in a sentence, with the model and revision that said
-    /// it. The picture is sent to the provider the AI settings hub chose,
-    /// which keeps the key this device uses.
+    /// What it shows, in a sentence. The picture is sent to the provider the
+    /// AI settings hub chose, which keeps the key this device uses; the
+    /// model that answered is the image model's own reading.
     #[effect(kind = "outside")]
-    #[effect(returns)]
+    #[effect(returns = String)]
     Describe {
         #[param("The picture's address in the content store")]
         image: String,
@@ -156,7 +163,7 @@ pub enum ImageModelEffect {
     ///
     /// The words it holds, read on this device. Needs no language model, so it
     /// answers on a device with none.
-    #[effect(returns, kind = "read")]
+    #[effect(returns = String, kind = "read")]
     Ocr {
         #[param("The picture's address in the content store")]
         image: String,
@@ -165,21 +172,21 @@ pub enum ImageModelEffect {
     },
     /// Name what a picture shows
     ///
-    /// The objects and pets in it, from the same model `describe` asks.
+    /// The objects and pets in it, as words: the objects first, then the
+    /// pets, from the same model `describe` asks.
     #[effect(kind = "outside")]
-    #[effect(returns)]
+    #[effect(returns = FoundWords)]
     Tags {
         #[param("The picture's address in the content store")]
         image: String,
     },
     /// Find pictures of the same face
     ///
-    /// The groups of pictures a face model found the same face in. The model
-    /// never receives a name, a person or a photograph's own id: each picture
-    /// is named by its address here, and a cluster names the pictures it
-    /// joined.
+    /// The groups of pictures a face model found the same face in, each a list
+    /// of the pictures' addresses. The model never receives a name, a person or
+    /// a photograph's own id: each picture is named by its address here.
     #[effect(kind = "outside")]
-    #[effect(returns)]
+    #[effect(returns = FaceGroups)]
     Faces {
         #[param("The pictures' addresses in the content store, at most twelve")]
         images: Vec<String>,
@@ -324,11 +331,7 @@ impl VisionService {
             ImageModelEffect::Describe { image } => {
                 let picture = self.picture(&image)?;
                 let analysis = self.model.analyze(&picture).map_err(Self::refusal)?;
-                serde_json::json!({
-                    "description": analysis.description,
-                    "model": analysis.model,
-                    "revision": analysis.revision,
-                })
+                Value::String(analysis.description)
             }
             ImageModelEffect::Ocr { image, language } => {
                 let picture = self.picture(&image)?;
@@ -336,17 +339,19 @@ impl VisionService {
                     .model
                     .ocr(&picture, language.as_deref().unwrap_or("eng"))
                     .map_err(Self::refusal)?;
-                serde_json::json!({ "text": text })
+                Value::String(text)
             }
             ImageModelEffect::Tags { image } => {
                 let picture = self.picture(&image)?;
                 let analysis = self.model.analyze(&picture).map_err(Self::refusal)?;
-                serde_json::json!({
-                    "objects": analysis.objects,
-                    "pets": analysis.pets,
-                    "model": analysis.model,
-                    "revision": analysis.revision,
-                })
+                // The value the API carries as a `List<Text>`: the list is a tagged object.
+                let words: Vec<Value> = analysis
+                    .objects
+                    .into_iter()
+                    .chain(analysis.pets)
+                    .map(Value::String)
+                    .collect();
+                serde_json::json!({ "list": words })
             }
             ImageModelEffect::Faces { images } => {
                 if images.is_empty() || images.len() > crate::engine::MAX_FACE_BATCH {
@@ -360,7 +365,16 @@ impl VisionService {
                     pictures.push((address.clone(), self.picture(&address)?));
                 }
                 let batch = self.model.faces(&pictures).map_err(Self::refusal)?;
-                serde_json::to_value(&batch).unwrap_or(Value::Null)
+                let groups: Vec<Value> = batch
+                    .clusters
+                    .into_iter()
+                    .map(|cluster| {
+                        let pictures: Vec<Value> =
+                            cluster.images.into_iter().map(Value::String).collect();
+                        serde_json::json!({ "list": pictures })
+                    })
+                    .collect();
+                serde_json::json!({ "list": groups })
             }
         };
         Ok(Started::Done(ActionOutput {

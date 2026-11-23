@@ -8,7 +8,7 @@
         {
           "id": "describe",
           "label": "Describe a picture",
-          "description": "Describe a picture What it shows, in a sentence, with the model and revision that said it. The picture is sent to the provider the AI settings hub chose, which keeps the key this device uses.",
+          "description": "Describe a picture What it shows, in a sentence. The picture is sent to the provider the AI settings hub chose, which keeps the key this device uses; the model that answered is the image model's own reading.",
           "kind": "outside",
           "params": [
             {
@@ -19,7 +19,13 @@
               },
               "type": "text"
             }
-          ]
+          ],
+          "returns": {
+            "schema": {
+              "type": "string"
+            },
+            "type": "text"
+          }
         },
         {
           "id": "ocr",
@@ -48,12 +54,18 @@
                 "option": "text"
               }
             }
-          ]
+          ],
+          "returns": {
+            "schema": {
+              "type": "string"
+            },
+            "type": "text"
+          }
         },
         {
           "id": "tags",
           "label": "Name what a picture shows",
-          "description": "Name what a picture shows The objects and pets in it, from the same model `describe` asks.",
+          "description": "Name what a picture shows The objects and pets in it, as words: the objects first, then the pets, from the same model `describe` asks.",
           "kind": "outside",
           "params": [
             {
@@ -64,12 +76,23 @@
               },
               "type": "text"
             }
-          ]
+          ],
+          "returns": {
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": {
+              "list": "text"
+            }
+          }
         },
         {
           "id": "faces",
           "label": "Find pictures of the same face",
-          "description": "Find pictures of the same face The groups of pictures a face model found the same face in. The model never receives a name, a person or a photograph's own id: each picture is named by its address here, and a cluster names the pictures it joined.",
+          "description": "Find pictures of the same face The groups of pictures a face model found the same face in, each a list of the pictures' addresses. The model never receives a name, a person or a photograph's own id: each picture is named by its address here.",
           "kind": "outside",
           "params": [
             {
@@ -85,7 +108,23 @@
                 "list": "text"
               }
             }
-          ]
+          ],
+          "returns": {
+            "schema": {
+              "items": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "type": "array"
+            },
+            "type": {
+              "list": {
+                "list": "text"
+              }
+            }
+          }
         }
       ],
       "fields": [

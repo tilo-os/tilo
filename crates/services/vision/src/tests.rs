@@ -206,10 +206,10 @@ tilo_test_env::scenario! {
         .expect("the model answers") else {
             panic!("describe answers at once");
         };
+        // The sentence, as text: the value a caller reads back, with the reading
+        // naming the model that said it.
         let value = output.value.expect("describe answers with a value");
-        assert_eq!(value["description"], "A dog beside a bicycle");
-        assert_eq!(value["model"], "vision-1");
-        assert_eq!(value["revision"], "a".repeat(40));
+        assert_eq!(value, serde_json::json!("A dog beside a bicycle"));
 
         let Started::Done(output) = invoke(
             &mut service,
@@ -221,9 +221,12 @@ tilo_test_env::scenario! {
         .expect("the model answers") else {
             panic!("tags answers at once");
         };
+        // The objects and then the pets, as the list the API carries.
         let value = output.value.expect("tags answers with a value");
-        assert_eq!(value["objects"], serde_json::json!(["dog", "bicycle"]));
-        assert_eq!(value["pets"], serde_json::json!(["dog"]));
+        assert_eq!(
+            value,
+            serde_json::json!({"list": ["dog", "bicycle", "dog"]})
+        );
     }
 
     phase a_stranger_is_refused;
@@ -507,5 +510,8 @@ fn the_addresses_route_through_the_sessions_one_catalogue() {
     else {
         panic!("describe answers at once");
     };
-    assert_eq!(output.value.expect("a value")["description"], "A dog");
+    assert_eq!(
+        output.value.expect("a value"),
+        serde_json::json!("A dog")
+    );
 }
