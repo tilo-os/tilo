@@ -156,6 +156,29 @@ class TheStepFiles(unittest.TestCase):
                     self.assert_named_both(path, step, op, inner, named)
 
 
+class TheSessionAWalkStartsIn(unittest.TestCase):
+    """Every walk's own session starts from the environment app-walk.py gives it, a walk of
+    one device included: that one has no device environment, and its start crashed on it."""
+
+    def test_every_walk_starts_its_own_session_beside_its_local_services(self):
+        state = Path("/walk-state")
+        for path, spec in steps():
+            with self.subTest(walk=path.stem):
+                env = walk.first_device_env(state, spec)
+                self.assertTrue(all(isinstance(k, str) and isinstance(v, str)
+                                    for k, v in env.items()), env)
+                self.assertEqual(env["TILO_PROJECTOR_RUNTIME_DIR"], str(state / "projector"))
+                self.assertEqual(walk.LAN_NETWORKS_ENV in env,
+                                 len(walk.devices_of(spec)) > 1, env)
+
+    def test_a_walk_of_one_device_and_one_of_two_both_start(self):
+        state = Path("/walk-state")
+        one = walk.first_device_env(state, {"app": "one"})
+        self.assertNotIn(walk.LAN_NETWORKS_ENV, one)
+        two = walk.first_device_env(state, {"app": "two", "devices": ["laptop", "phone"]})
+        self.assertEqual(two[walk.LAN_NETWORKS_ENV], "127.0.0.1")
+
+
 class ThePageItWrites(unittest.TestCase):
     def test_a_step_shows_both_versions_snapshots_and_what_each_found(self):
         import tempfile

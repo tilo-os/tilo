@@ -603,6 +603,12 @@ def devices_env(spec: dict) -> dict | None:
     return {LAN_NETWORKS_ENV: "127.0.0.1", "RUST_LOG": os.environ.get("RUST_LOG", DEVICES_LOG)}
 
 
+def first_device_env(state: Path, spec: dict) -> dict:
+    """The environment the walk's own session starts with: where its local services listen, and for a walk of
+    several devices what lets them meet; a walk of one adds nothing for devices."""
+    return {**session_env(state), **(devices_env(spec) or {})}
+
+
 def split_on(op: dict, default: str | None) -> tuple[str | None, dict]:
     """The device an op runs on and the op without that word: `{"on": "phone", "must": [...]}`
     runs `must` on the phone, an op saying nothing runs on the step's device (`default`, the
@@ -2442,7 +2448,7 @@ class Walk:
             self.session.start(apps=apps_of(spec, self.variant),
                                fresh=True, out=self.out / "logs", tag=self.variant,
                                tapps=tapps, session_args=session_args_of(spec, self.variant),
-                               env={**session_env(self.state), **(devices_env(spec) or {})})
+                               env=first_device_env(self.state, spec))
             try:
                 self.devices = start_devices(spec, self.variant, self.session, self.state,
                                              self.out, apps_of(spec, self.variant), tapps)
@@ -3071,7 +3077,7 @@ def main() -> int:
                 began = time.monotonic()
                 session.start(apps=apps, fresh=True, out=out / "logs", tag=variant, tapps=tapps,
                               session_args=session_args_of(first, variant),
-                              env={**session_env(state), **(devices_env(first) or {})})
+                              env=first_device_env(state, first))
                 try:
                     devices = start_devices(first, variant, session, state, out, apps, tapps)
                 except BaseException:
