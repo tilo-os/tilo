@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 
-use crate::model::{Addr, CellFormat, a1_to_addr, addr_to_a1, date_to_serial, serial_to_ymd};
 use crate::Sheet;
+use crate::model::{Addr, CellFormat, a1_to_addr, addr_to_a1, date_to_serial, serial_to_ymd};
 
 /// The most cells one write changes.
 pub const MAX_WRITES: usize = 10_000;
@@ -341,8 +341,9 @@ pub fn set_records(sheet: &Sheet, request: &RecordsRequest<'_>) -> Result<Writes
         return Err("give at least one record".into());
     }
     if request.key.is_some() && request.row.is_some() {
-        return Err("give `key` to update rows by their key, or `row` to write at a row, not both"
-            .into());
+        return Err(
+            "give `key` to update rows by their key, or `row` to write at a row, not both".into(),
+        );
     }
     let Some(columns) = Columns::of_sheet(sheet) else {
         if !sheet.cells.is_empty() {
@@ -419,8 +420,8 @@ pub fn upsert(
     };
     let mut keys = Vec::new();
     for (key, wanted) in matching {
-        let text = key_text(wanted)
-            .ok_or_else(|| format!("`match` gives `{key}` no cell value"))?;
+        let text =
+            key_text(wanted).ok_or_else(|| format!("`match` gives `{key}` no cell value"))?;
         keys.push((columns.column(key)?, text));
     }
     let mut rows: Vec<u32> = sheet
@@ -441,7 +442,10 @@ pub fn upsert(
     };
     let found: Vec<u32> = rows
         .into_iter()
-        .filter(|row| keys.iter().all(|(col, text)| same_key(held(*col, *row), text)))
+        .filter(|row| {
+            keys.iter()
+                .all(|(col, text)| same_key(held(*col, *row), text))
+        })
         .collect();
     let (row, record) = match found.as_slice() {
         [] => (next_free_row(sheet), inserted),

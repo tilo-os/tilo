@@ -9,7 +9,6 @@ mod cases {
     const TASKS: &str = crate::common::TASKS_SOURCE;
     /// What a task's page says about it: tasks are made from discussions of them.
     const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
-    const AGENT: &str = include_str!("../../../../apps/tl/agent/app.tl");
 
     /// An app installed in a workspace of its own: its actions runnable, its views openable.
     struct Installed {
@@ -26,9 +25,7 @@ mod cases {
         let rt = Runtime::new(store, auth.clone()).unwrap();
         let discussion = App::compile(DISCUSSION, &[]);
         auth.trust(&discussion.load(&rt));
-        let agent = App::compile(AGENT, &[]);
-        auth.trust(&agent.load(&rt));
-        let app = App::compile(TASKS, &[discussion.meta().clone(), agent.meta().clone()]);
+        let app = App::compile(TASKS, &[discussion.meta().clone()]);
         auth.trust(&app.load(&rt));
         Installed {
             rt,

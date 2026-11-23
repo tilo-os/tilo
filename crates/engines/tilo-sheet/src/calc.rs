@@ -91,7 +91,12 @@ fn model_of(sheets: Sheets<'_>) -> Option<Model<'static>> {
             // The engine names sheets in its formulas as written; a lookup miss only costs the
             // name table, never a refused input.
             let _ = &names;
-            let _ = model.set_user_input(index, row.saturating_add(1), column.saturating_add(1), rename_bang(input));
+            let _ = model.set_user_input(
+                index,
+                row.saturating_add(1),
+                column.saturating_add(1),
+                rename_bang(input),
+            );
         }
     }
     model.evaluate();
@@ -173,8 +178,14 @@ mod tests {
         let sheets = [("Sheet1".to_owned(), raw.clone())];
         let values = evaluate(&sheets, 0);
         assert_eq!(values.get(&(0, 2)), Some(&CellValue::Number(5.0)));
-        let second = [("Sheet1".to_owned(), raw), ("Rates".to_owned(), HashMap::new())];
-        assert_eq!(evaluate(&second, 0).get(&(0, 2)), Some(&CellValue::Number(5.0)));
+        let second = [
+            ("Sheet1".to_owned(), raw),
+            ("Rates".to_owned(), HashMap::new()),
+        ];
+        assert_eq!(
+            evaluate(&second, 0).get(&(0, 2)),
+            Some(&CellValue::Number(5.0))
+        );
     }
 
     #[test]
@@ -182,6 +193,9 @@ mod tests {
         let mut raw: HashMap<Addr, String> = HashMap::new();
         raw.insert((0, 0), "=1/0".into());
         let values = evaluate(&[("S".to_owned(), raw)], 0);
-        assert_eq!(values.get(&(0, 0)), Some(&CellValue::Error(FormulaError::Div0)));
+        assert_eq!(
+            values.get(&(0, 0)),
+            Some(&CellValue::Error(FormulaError::Div0))
+        );
     }
 }

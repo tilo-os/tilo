@@ -190,7 +190,11 @@ pub fn moved_range(change: &Change, sheet: &str, area: &str) -> Option<String> {
     Some(if start == end {
         addr_to_a1(start.0, start.1)
     } else {
-        format!("{}:{}", addr_to_a1(start.0, start.1), addr_to_a1(end.0, end.1))
+        format!(
+            "{}:{}",
+            addr_to_a1(start.0, start.1),
+            addr_to_a1(end.0, end.1)
+        )
     })
 }
 
@@ -214,7 +218,10 @@ fn format(
         for column in start.0..=end.0 {
             let reference = addr_to_a1(column, row);
             if let Some(code) = code {
-                if matches!(CellFormat::parse_code(code), None | Some(CellFormat::General)) {
+                if matches!(
+                    CellFormat::parse_code(code),
+                    None | Some(CellFormat::General)
+                ) {
                     sheet.formats.remove(&reference);
                 } else {
                     sheet.formats.insert(reference.clone(), code.to_owned());
@@ -340,8 +347,22 @@ fn shift_keys<V>(cells: BTreeMap<String, V>, edit: GridEdit) -> BTreeMap<String,
 fn shift_reference(reference: &str, edit: GridEdit) -> Option<String> {
     let addr = a1_to_addr(reference)?;
     let moved = match edit {
-        GridEdit::InsertRow(at) => (addr.0, if addr.1 >= at { addr.1.saturating_add(1) } else { addr.1 }),
-        GridEdit::InsertColumn(at) => (if addr.0 >= at { addr.0.saturating_add(1) } else { addr.0 }, addr.1),
+        GridEdit::InsertRow(at) => (
+            addr.0,
+            if addr.1 >= at {
+                addr.1.saturating_add(1)
+            } else {
+                addr.1
+            },
+        ),
+        GridEdit::InsertColumn(at) => (
+            if addr.0 >= at {
+                addr.0.saturating_add(1)
+            } else {
+                addr.0
+            },
+            addr.1,
+        ),
         GridEdit::DeleteRow(at) => match addr.1.cmp(&at) {
             std::cmp::Ordering::Equal => return None,
             std::cmp::Ordering::Greater => (addr.0, addr.1.saturating_sub(1)),
@@ -381,15 +402,22 @@ fn sort(
         let reference = addr_to_a1(by, row);
         match shown.cells.get(&reference) {
             None => (2, 0.0, String::new()),
-            Some(cell) if cell.kind == "number" => {
-                (0, cell.shown.replace([',', ' '], "").parse::<f64>().unwrap_or(0.0), String::new())
-            }
+            Some(cell) if cell.kind == "number" => (
+                0,
+                cell.shown
+                    .replace([',', ' '], "")
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+                String::new(),
+            ),
             Some(cell) => (1, 0.0, cell.shown.to_lowercase()),
         }
     };
     let mut rows: Vec<u32> = (start.1..=end.1).collect();
     rows.sort_by(|a, b| {
-        let order = key(*a).partial_cmp(&key(*b)).unwrap_or(std::cmp::Ordering::Equal);
+        let order = key(*a)
+            .partial_cmp(&key(*b))
+            .unwrap_or(std::cmp::Ordering::Equal);
         if descending { order.reverse() } else { order }
     });
     let cells = &sheet.cells;
@@ -421,12 +449,7 @@ fn sort(
 }
 
 /// Extend the cells of `source` over `target`, as the fill handle does.
-fn fill_range(
-    sheets: &mut [Sheet],
-    name: &str,
-    source: &str,
-    target: &str,
-) -> Result<(), String> {
+fn fill_range(sheets: &mut [Sheet], name: &str, source: &str, target: &str) -> Result<(), String> {
     let (from, to) = range_of(source)?;
     let (start, end) = range_of(target)?;
     let (d_cols, d_rows) = (
@@ -451,10 +474,14 @@ fn fill_range(
     let sheet = sheet_of(sheets, name)?;
     let value_of = |addr: Addr| {
         let reference = addr_to_a1(addr.0, addr.1);
-        let cell = shown_sheet.cells.get(&reference).cloned().unwrap_or(CellShown {
-            kind: "empty".into(),
-            ..CellShown::default()
-        });
+        let cell = shown_sheet
+            .cells
+            .get(&reference)
+            .cloned()
+            .unwrap_or(CellShown {
+                kind: "empty".into(),
+                ..CellShown::default()
+            });
         let number = cell.shown.replace([',', ' '], "").parse::<f64>().ok();
         let value = match cell.kind.as_str() {
             "number" => number.map_or(CellValue::Empty, CellValue::Number),
@@ -669,7 +696,9 @@ mod tests {
     #[test]
     fn sorting_reorders_rows_by_a_column_and_keeps_their_formulas_relative() {
         let mut book = book();
-        book.sheets[0].cells.insert("B1".to_owned(), "=A1*2".to_owned());
+        book.sheets[0]
+            .cells
+            .insert("B1".to_owned(), "=A1*2".to_owned());
         let change = Change::SortRows {
             sheet: "Sheet1".into(),
             range: "A1:B2".into(),

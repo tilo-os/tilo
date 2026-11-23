@@ -12,7 +12,6 @@ mod cases {
     const TODO: &str = crate::common::TASKS_SOURCE;
     const NOTES: &str = include_str!("../../../../apps/tl/notes/app.tl");
     const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
-    const AGENT: &str = include_str!("../../../../apps/tl/agent/app.tl");
 
     struct World {
         rt: Runtime,
@@ -30,10 +29,8 @@ mod cases {
         let rt = Runtime::new(AmStore::new(), auth.clone()).unwrap();
         let discussion = App::compile(DISCUSSION, &[]);
         discussion.load(&rt);
-        let agent = App::compile(AGENT, &[]);
-        agent.load(&rt);
-        let todo = App::compile(TODO, &[discussion.meta().clone(), agent.meta().clone()]);
-        let notes_app = App::compile(NOTES, &[discussion.meta().clone(), agent.meta().clone()]);
+        let todo = App::compile(TODO, &[discussion.meta().clone()]);
+        let notes_app = App::compile(NOTES, &[discussion.meta().clone()]);
         todo.load(&rt);
         notes_app.load(&rt);
         let list = rt.create("Tasks").unwrap();

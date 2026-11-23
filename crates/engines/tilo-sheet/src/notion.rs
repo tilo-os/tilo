@@ -1,6 +1,5 @@
 //! Import of a Notion export: each database becomes a sheet.
 
-
 use std::collections::BTreeMap;
 
 use serde_json::Value;
@@ -73,8 +72,8 @@ fn looks_like_archive(bytes: &[u8]) -> bool {
 }
 
 fn tables_from_archive(bytes: &[u8], words: &Words) -> Result<Vec<ImportedTable>, String> {
-    let mut parts = read_zip_parts(bytes, &archive_limits())
-        .map_err(|_| words.archive_invalid.clone())?;
+    let mut parts =
+        read_zip_parts(bytes, &archive_limits()).map_err(|_| words.archive_invalid.clone())?;
     parts.sort_by(|(left, _), (right, _)| left.cmp(right));
     let mut tables = Vec::new();
     for (name, part) in parts {
@@ -138,8 +137,7 @@ fn table_name(name: &str, words: &Words) -> String {
 }
 
 fn tables_from_listing(bytes: &[u8], words: &Words) -> Result<Vec<ImportedTable>, String> {
-    let value: Value =
-        serde_json::from_slice(bytes).map_err(|_| words.unreadable.clone())?;
+    let value: Value = serde_json::from_slice(bytes).map_err(|_| words.unreadable.clone())?;
     let blocks: Vec<&Value> = match &value {
         Value::Array(entries) => entries.iter().collect(),
         Value::Object(_) => value

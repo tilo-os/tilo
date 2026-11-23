@@ -12,7 +12,7 @@ fn repo() -> PathBuf {
 }
 
 fn chat_dir() -> PathBuf {
-    repo().join("crates/platform/tilolang-tilo/tests/native-chat")
+    repo().join("crates/lang/tilolang-tilo/tests/native-chat")
 }
 
 /// The block of `text` that starts with the line `head` and ends at the closing brace.

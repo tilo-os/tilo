@@ -47,7 +47,12 @@ impl Format {
             "tsv" | "tab" => Self::Tsv,
             "zip" | "notion" => Self::Csv,
             _ => {
-                let media = lower.split(';').next().unwrap_or_default().trim().to_owned();
+                let media = lower
+                    .split(';')
+                    .next()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_owned();
                 match media.as_str() {
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => {
                         Self::Xlsx
@@ -132,9 +137,10 @@ impl Book {
 
     /// The sheet `name` (or id) names.
     fn sheet(&self, name: &str) -> Option<&Sheet> {
-        self.sheets
-            .iter()
-            .find(|sheet| sheet.name == name || crate::refs::fold_sheet(&sheet.name) == crate::refs::fold_sheet(name))
+        self.sheets.iter().find(|sheet| {
+            sheet.name == name
+                || crate::refs::fold_sheet(&sheet.name) == crate::refs::fold_sheet(name)
+        })
     }
 }
 
@@ -191,10 +197,7 @@ pub fn values(book: &Book) -> Vec<ShownSheet> {
                     continue;
                 };
                 let value = computed.get(&addr).cloned().unwrap_or(CellValue::Empty);
-                let format = formats
-                    .get(&addr)
-                    .copied()
-                    .unwrap_or(CellFormat::General);
+                let format = formats.get(&addr).copied().unwrap_or(CellFormat::General);
                 let kind = match &value {
                     CellValue::Empty => {
                         if raw.trim().is_empty() {
@@ -304,8 +307,7 @@ pub fn sheet_rows(sheets: &[Sheet]) -> Vec<Vec<Vec<String>>> {
                 sheet.name.clone(),
                 if sheet.hidden { "1" } else { "0" }.to_owned(),
             ]];
-            let mut references: BTreeSet<&str> =
-                sheet.cells.keys().map(String::as_str).collect();
+            let mut references: BTreeSet<&str> = sheet.cells.keys().map(String::as_str).collect();
             references.extend(sheet.formats.keys().map(String::as_str));
             references.extend(sheet.bold.iter().map(String::as_str));
             for reference in references {
@@ -350,7 +352,8 @@ pub fn import(
     }
     match format {
         Format::Csv | Format::Tsv => {
-            let text = std::str::from_utf8(bytes).map_err(|_| "the table is not text".to_owned())?;
+            let text =
+                std::str::from_utf8(bytes).map_err(|_| "the table is not text".to_owned())?;
             let separator = if format == Format::Tsv { '\t' } else { ',' };
             let cells = csv::parse_separated(text, separator);
             let name = sheet_name(name);
@@ -503,7 +506,9 @@ fn sheet_of_table(table: xlsx::SheetTable) -> Sheet {
                 sheet.cells.insert(reference.clone(), input);
             }
             if cell.format != CellFormat::General {
-                sheet.formats.insert(reference.clone(), cell.format.as_str());
+                sheet
+                    .formats
+                    .insert(reference.clone(), cell.format.as_str());
             }
             if cell.bold {
                 sheet.bold.push(reference);
@@ -636,7 +641,9 @@ mod tests {
             currency: String::new(),
             language: String::new(),
         };
-        book.sheets[0].cells.insert("C1".to_owned(), "=A2+B2".to_owned());
+        book.sheets[0]
+            .cells
+            .insert("C1".to_owned(), "=A2+B2".to_owned());
         let bytes = export(&book, Format::Csv).unwrap();
         let text = String::from_utf8(bytes).unwrap();
         assert!(text.starts_with("a,b,3\n"), "{text}");

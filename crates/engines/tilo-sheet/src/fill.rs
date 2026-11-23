@@ -5,7 +5,6 @@
 
 use crate::model::{CellFormat, CellValue, date_to_serial, serial_to_ymd};
 
-
 /// One source cell: its raw input, its computed value and its display format.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FillCell {
@@ -348,11 +347,7 @@ fn line_value(vals: &[f64], p: usize) -> f64 {
             x * x
         })
         .sum();
-    let sxy: f64 = vals
-        .iter()
-        .enumerate()
-        .map(|(i, v)| as_f64(i) * v)
-        .sum();
+    let sxy: f64 = vals.iter().enumerate().map(|(i, v)| as_f64(i) * v).sum();
     let n_sxx = n * sxx;
     let sx_squared = sx * sx;
     let denom = n_sxx - sx_squared;
@@ -497,9 +492,8 @@ fn days_in_month(y: i64, m: u32) -> u32 {
     let Ok(month) = i8::try_from(m) else {
         return 31;
     };
-    jiff::civil::Date::new(year, month, 1).map_or(31, |first| {
-        first.days_in_month().unsigned_abs().into()
-    })
+    jiff::civil::Date::new(year, month, 1)
+        .map_or(31, |first| first.days_in_month().unsigned_abs().into())
 }
 
 #[cfg(test)]

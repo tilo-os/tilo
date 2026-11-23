@@ -3,8 +3,8 @@
 //! the format to show it in; formulas and quoted text pass through untouched.
 
 use crate::model::{CellFormat, date_to_serial};
-use tilo_formats::{Currency, DateStyle};
 use tilo_formats::TimeStyle;
+use tilo_formats::{Currency, DateStyle};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Inferred {

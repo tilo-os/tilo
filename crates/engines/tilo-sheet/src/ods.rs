@@ -154,7 +154,8 @@ mod tests {
     )]
     fn ods_round_trips_values_styles_and_formulas() {
         {
-            let back = parse_ods(&ods_bytes(std::slice::from_ref(&sample_table())).unwrap()).unwrap();
+            let back =
+                parse_ods(&ods_bytes(std::slice::from_ref(&sample_table())).unwrap()).unwrap();
             assert_eq!(back.len(), 1);
             assert_eq!(back[0].name, "Budget");
             assert_eq!(back[0].rows[0][0].as_ref().unwrap().raw, "Item");

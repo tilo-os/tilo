@@ -750,7 +750,7 @@ package = "tilolang-cli"
 # a native app's surface, and the build test reads where the runtime names its platforms. The
 # copy they all stage from is `tests/support`, which names the packages' directory.
 inputs = [
-  "crates/platform/tilolang-tilo/tests/native-chat/",
+  "crates/lang/tilolang-tilo/tests/native-chat/",
   "apps/tl/",
   "apps/clocks/surface.toml",
   "crates/lang/tilolang-process/tilo-runtime.toml",
@@ -802,7 +802,7 @@ package = "tilolang-tilo"
 inputs = [
   "apps/tl/",
   "apps/tl/gallery/",
-  "crates/platform/tilolang-tilo/tests/native-chat/",
+  "crates/lang/tilolang-tilo/tests/native-chat/",
   "crates/lang/tilolang-tilo/tests/native-tasks/surface.toml",
   "crates/lang/tilolang/tests/fixtures/",
   "crates/session/session/device-surface.json",
@@ -882,7 +882,7 @@ package = "tilolang-process"
 inputs = [
   "apps/tl/",
   "apps/tl/gallery/",
-  "crates/platform/tilolang-tilo/tests/native-chat/",
+  "crates/lang/tilolang-tilo/tests/native-chat/",
   "crates/lang/tilolang-tilo/tests/native-tasks/surface.toml",
   "crates/sdk/tilo-app-window/locales/",
   "crates/lang/tilolang-tilo/tests/legacy/rust_notes.hex",

@@ -2,8 +2,8 @@
 //! touches the document or the renderer; cells are `(col, row)` internally and A1 at the edges.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use tilo_formats::{Currency, DateStyle};
 use tilo_formats::TimeStyle;
+use tilo_formats::{Currency, DateStyle};
 
 /// Zero-based column index. `0` is column `A`.
 pub type Col = u32;
@@ -587,12 +587,12 @@ impl LanguageWords {
 impl tilo_formats::Words for LanguageWords {
     fn word(&self, key: &str, args: &[(&str, tilo_formats::Word)]) -> String {
         let arg = |name: &str| {
-            args.iter().find(|(key, _)| *key == name).map_or_else(String::new, |(_, value)| {
-                match value {
+            args.iter()
+                .find(|(key, _)| *key == name)
+                .map_or_else(String::new, |(_, value)| match value {
                     tilo_formats::Word::Text(text) => text.clone(),
                     tilo_formats::Word::Number(number) => number.to_string(),
-                }
-            })
+                })
         };
         match key {
             "format-clock-hours" => {
@@ -670,7 +670,11 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let Ok(day) = jiff::civil::Date::from_unix_epoch_day(i32::try_from(z).unwrap_or(0)) else {
         return (1970, 1, 1);
     };
-    (i64::from(day.year()), day.month().unsigned_abs().into(), day.day().unsigned_abs().into())
+    (
+        i64::from(day.year()),
+        day.month().unsigned_abs().into(),
+        day.day().unsigned_abs().into(),
+    )
 }
 
 /// Days since the Unix epoch for a civil date, with the year bounded first.
@@ -716,12 +720,12 @@ pub(crate) struct TestWords;
 impl tilo_formats::Words for TestWords {
     fn word(&self, key: &str, args: &[(&str, tilo_formats::Word)]) -> String {
         let arg = |name: &str| {
-            args.iter().find(|(key, _)| *key == name).map_or_else(String::new, |(_, value)| {
-                match value {
+            args.iter()
+                .find(|(key, _)| *key == name)
+                .map_or_else(String::new, |(_, value)| match value {
                     tilo_formats::Word::Text(text) => text.clone(),
                     tilo_formats::Word::Number(number) => number.to_string(),
-                }
-            })
+                })
         };
         match key {
             "format-clock-hours" => "12".into(),
@@ -802,10 +806,22 @@ mod tests {
 
         {
             let serial = date_to_serial(2023, 3, 15);
-            assert_eq!(serial_to_date(serial, DateStyle::Iso, &TestWords), "2023-03-15");
-            assert_eq!(serial_to_date(serial, DateStyle::Us, &TestWords), "03/15/2023");
-            assert_eq!(serial_to_date(serial, DateStyle::Eu, &TestWords), "15/03/2023");
-            assert_eq!(serial_to_date(serial, DateStyle::Long, &TestWords), "15 Mar 2023");
+            assert_eq!(
+                serial_to_date(serial, DateStyle::Iso, &TestWords),
+                "2023-03-15"
+            );
+            assert_eq!(
+                serial_to_date(serial, DateStyle::Us, &TestWords),
+                "03/15/2023"
+            );
+            assert_eq!(
+                serial_to_date(serial, DateStyle::Eu, &TestWords),
+                "15/03/2023"
+            );
+            assert_eq!(
+                serial_to_date(serial, DateStyle::Long, &TestWords),
+                "15 Mar 2023"
+            );
             for style in DateStyle::ALL {
                 assert_eq!(date_style_from_code(date_style_code(style)), Some(style));
             }
@@ -824,7 +840,10 @@ mod tests {
             assert_eq!(serial_to_time(0.5, TimeStyle::H12, &TestWords), "12:00 PM");
             let serial = (14.0 * 3600.0 + 5.0 * 60.0) / 86400.0;
             assert_eq!(serial_to_time(serial, TimeStyle::H24, &TestWords), "14:05");
-            assert_eq!(serial_to_time(serial, TimeStyle::H12, &TestWords), "2:05 PM");
+            assert_eq!(
+                serial_to_time(serial, TimeStyle::H12, &TestWords),
+                "2:05 PM"
+            );
             for style in TimeStyle::ALL {
                 assert_eq!(time_style_from_code(time_style_code(style)), Some(style));
             }
