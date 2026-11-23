@@ -262,6 +262,8 @@ struct Local {
     session: PathBuf,
     package: String,
     child: Option<Child>,
+    /// The window's stdin: it ends when this closes ([`crate::run::lifeline`]).
+    lifeline: Option<std::io::PipeWriter>,
 }
 
 impl Local {
@@ -283,6 +285,7 @@ impl Local {
             session,
             package: String::new(),
             child: None,
+            lifeline: None,
         })
     }
 
@@ -335,8 +338,9 @@ impl Local {
             .env(PACKAGE_ID_ENV, &self.package)
             .env(UPDATES_ENV, &self.updates)
             .env("TILO_DEV_SESSION", &self.session)
-            .env("TILO_RUNTIME_STANDALONE", "1")
-            .stdin(Stdio::null());
+            .env("TILO_RUNTIME_STANDALONE", "1");
+        let lifeline = crate::run::lifeline(&mut command)
+            .map_err(|error| format!("running {}: {error}", runtime.display()))?;
         attach_loader_path(&mut command, runtime, loaders)?;
         bounded_command::without_console_window(&mut command);
         let child = command
@@ -349,6 +353,7 @@ impl Local {
             child.id()
         );
         self.child = Some(child);
+        self.lifeline = Some(lifeline);
         Ok(())
     }
 
@@ -390,12 +395,8 @@ impl Local {
         let Some(mut child) = self.child.take() else {
             return;
         };
-        #[cfg(unix)]
-        if let Ok(pid) = i32::try_from(child.id())
-            && let Some(pid) = rustix::process::Pid::from_raw(pid)
-        {
-            let _ = rustix::process::kill_process(pid, rustix::process::Signal::TERM);
-        }
+        // Its stdin closing asks it to stop, as SIGTERM does.
+        drop(self.lifeline.take());
         let _ = bounded_command::wait_or_kill(&mut child, STOP_GRACE);
     }
 }

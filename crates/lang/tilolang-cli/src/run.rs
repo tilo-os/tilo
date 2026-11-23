@@ -11,11 +11,11 @@
 //! From then on it is `tilolang dev` over those sessions ([`crate::dev`]): every saved `.tl`
 //! file reaches the running app, with its state.
 
+use std::io::PipeWriter;
 use std::path::PathBuf;
 use std::process::{Child, Command};
-use std::sync::{Arc, Mutex, PoisonError, mpsc};
-
-use rustix::process::{Pid, Signal, WaitId, WaitIdOptions, waitid};
+use std::sync::mpsc;
+use std::thread::JoinHandle;
 
 use tilo_files::native::Watcher;
 
@@ -73,7 +73,7 @@ fn session_command(
     let mut command = Command::new(repo.join(session::SESSION_SCRIPT));
     command.arg("--state").arg(base.join("a"));
     command
-        .args(["--no-build", "--apps", ""])
+        .args(["--no-build", "--until-stdin-closes", "--apps", ""])
         .arg("--ready")
         .arg(ready);
     for app in apps {
@@ -88,40 +88,44 @@ fn session_command(
     command
 }
 
-/// The session script this tool started. Dropping it stops the session, unless it has ended, and
+/// Make the stdin of the process `command` starts a pipe whose write end only the answer holds:
+/// it closes when the answer drops, and when this tool ends however it ends (the kernel closes it
+/// then), and the process ends when it reads that.
+pub(crate) fn lifeline(command: &mut Command) -> std::io::Result<PipeWriter> {
+    let (stdin, lifeline) = std::io::pipe()?;
+    command.stdin(stdin);
+    Ok(lifeline)
+}
+
+/// The session script this tool started on its [`lifeline`]. Dropping it ends the session and
 /// waits until it has.
-struct Started(Arc<Mutex<Child>>);
+struct Started {
+    lifeline: Option<PipeWriter>,
+    waiter: Option<JoinHandle<()>>,
+}
 
 impl Started {
     /// Own `child`, and send `wakes` its end when it ends.
-    fn watch(child: Child, wakes: mpsc::Sender<Wake>) -> Self {
-        let pid = Pid::from_child(&child);
-        let child = Arc::new(Mutex::new(child));
-        let waiter = Arc::clone(&child);
-        std::thread::spawn(move || {
-            // Wait for the end without reaping it: the process id stays this child's until the
-            // lock's holder has seen it end, so a stop never signals another process.
-            let options = WaitIdOptions::EXITED | WaitIdOptions::NOWAIT;
-            while matches!(
-                waitid(WaitId::Pid(pid), options),
-                Err(rustix::io::Errno::INTR)
-            ) {}
-            let status = waiter.lock().unwrap_or_else(PoisonError::into_inner).wait();
-            let _ = wakes.send(Wake::Ended(status));
+    fn watch(mut child: Child, lifeline: PipeWriter, wakes: mpsc::Sender<Wake>) -> Self {
+        let waiter = std::thread::spawn(move || {
+            let _ = wakes.send(Wake::Ended(child.wait()));
         });
-        Self(child)
+        Self {
+            lifeline: Some(lifeline),
+            waiter: Some(waiter),
+        }
     }
 }
 
 impl Drop for Started {
     fn drop(&mut self) {
-        let mut child = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        if !matches!(child.try_wait(), Ok(None)) {
-            return;
+        drop(self.lifeline.take());
+        if let Some(waiter) = self.waiter.take() {
+            if !waiter.is_finished() {
+                eprintln!("==> stopping the nested session");
+            }
+            let _ = waiter.join();
         }
-        eprintln!("==> stopping the nested session");
-        let _ = rustix::process::kill_process(Pid::from_child(&child), Signal::TERM);
-        let _ = child.wait();
     }
 }
 
@@ -187,10 +191,10 @@ pub fn run(options: &RunOptions) -> Result<(), String> {
     let ready = base.join("ready.json");
     let _ = std::fs::remove_file(&ready);
     let mut command = session_command(&repo, options, &base, &ready, &apps);
-    let child = command
-        .spawn()
-        .map_err(|error| format!("starting the nested session: {error}"))?;
-    let _session = Started::watch(child, sender.clone());
+    let starting = |error| format!("starting the nested session: {error}");
+    let lifeline = lifeline(&mut command).map_err(starting)?;
+    let child = command.spawn().map_err(starting)?;
+    let _session = Started::watch(child, lifeline, sender.clone());
     wait_for_file(&ready, &wakes, &sender)?;
     dev.open()?;
     if let Some(bin) = dev.bin() {
@@ -217,32 +221,35 @@ mod tests {
     tilo_test_env::scenario! {
         fn a_started_session_is_stopped_with_its_run;
 
-        phase dropping_a_started_session_stops_it;
-        // A run that ends, however it ends, stops the session it started and waits until it has.
+        phase dropping_a_started_session_ends_it;
+        // A run that ends, however it ends, ends the session it started and waits until it has:
+        // `cat` plays a session that ends when its stdin closes.
         {
-            let child = Command::new("sleep")
-                .arg("600")
-                .spawn_locked()
-                .expect("a process stands in for the session");
+            let mut command = Command::new("cat");
+            let lifeline = lifeline(&mut command).expect("a pipe");
+            let child = command.spawn_locked().expect("a session");
             let (sender, ends) = mpsc::channel();
-            drop(Started::watch(child, sender));
-            let Ok(Wake::Ended(status)) = ends.recv() else {
-                panic!("the session's end");
-            };
-            let status = status.expect("its status");
-            assert!(!status.success(), "{status}");
-        }
-
-        phase a_session_that_ended_is_not_signalled;
-        {
-            let child = Command::new("true").spawn_locked().expect("a process");
-            let (sender, ends) = mpsc::channel();
-            let started = Started::watch(child, sender);
-            let Ok(Wake::Ended(status)) = ends.recv() else {
-                panic!("its end");
+            drop(Started::watch(child, lifeline, sender));
+            let Ok(Wake::Ended(status)) = ends.try_recv() else {
+                panic!("ended before the drop returned");
             };
             assert!(status.expect("its status").success());
-            drop(started);
+        }
+
+        phase a_killed_tool_ends_its_session;
+        // The kernel closes a killed tool's end: a `sleep` playing the tool holds the only one.
+        {
+            let mut session = Command::new("cat");
+            let lifeline = lifeline(&mut session).expect("a pipe");
+            let mut session = session.spawn_locked().expect("a session");
+            let mut tool = Command::new("sleep")
+                .arg("600")
+                .stdout(lifeline)
+                .spawn_locked()
+                .expect("a tool");
+            tool.kill().expect("SIGKILL");
+            let _ = tool.wait();
+            assert!(session.wait().expect("its status").success());
         }
     }
 }
