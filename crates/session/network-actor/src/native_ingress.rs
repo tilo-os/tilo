@@ -414,35 +414,8 @@ impl ActorState {
             if let Err(error) = sent {
                 tracing::debug!(%error, "native publication remains in durable ownership");
             }
-            // A sealed write that waited held past its epoch leaves only renewed: the
-            // workspace's host refuses it as it was. Renewed, it goes on the next pass.
-            if link.sending.held() > 0 {
-                let (owner, signer, tx) = (
-                    owner.clone(),
-                    Arc::clone(&identity.signer),
-                    self.internal_tx.clone(),
-                );
-                tokio::spawn(async move {
-                    match owner
-                        .renew_outgoing(workspace, signer.as_ref(), tilo_clock::wall())
-                        .await
-                    {
-                        Ok(0) => {}
-                        Ok(renewed) => {
-                            tracing::info!(ws = %ws, renewed, "this device's expired sealed writes are renewed for its link");
-                            let _ = tx.send(InternalEvent::NativeRetired { ws }).await;
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error, ws = %ws, "expired sealed writes stay unrenewed");
-                        }
-                    }
-                });
-            }
-            tokio::task::spawn_blocking(move || {
-                if let Err(error) = owner.retire_outgoing(workspace) {
-                    tracing::warn!(%error, "native publication retirement not committed");
-                }
-            });
+            // A frame this device wrote left its record as the link took it; nothing waits to be
+            // retired when the other end answers.
         } else {
             tracing::debug!(
                 ws = %ws,
@@ -453,41 +426,24 @@ impl ActorState {
         }
         self.tell_unsynced(ws);
     }
-    /// The device workspace `ws`'s link reaches answered this device's writes `answers`: they
-    /// leave its ownership as a server host's answers do, a refused one with the verdict the workspace
-    /// files for its writer, and what waited behind them goes out.
+    /// The device workspace `ws`'s link reaches answered this device's writes `answers`: a
+    /// refusal is the other end's, and says what it could not take; what went is already out of
+    /// this device's record.
     pub(super) fn native_answered(
         &self,
         ws: WorkspaceId,
         answers: Vec<tilo_peer_state::direct::Answered>,
     ) {
-        let Some(route) = self.native_routes.entries.get(&ws) else {
-            return;
-        };
-        let (owner, workspace) = (route.connect.owner().clone(), route.connect.workspace());
-        let answers: std::collections::BTreeMap<_, _> = answers
-            .into_iter()
-            .map(|answered| {
-                let answer = match answered.kept {
-                    tilo_peer_state::direct::Kept::Durable => {
-                        tilo_peer_state::owner::HostAnswer::Durable(answered.seq)
-                    }
-                    tilo_peer_state::direct::Kept::Refused => {
-                        tilo_peer_state::owner::HostAnswer::Refused
-                    }
-                };
-                (answered.write, answer)
-            })
-            .collect();
-        let tx = self.internal_tx.clone();
-        tokio::task::spawn_blocking(move || match owner.retire_answered(workspace, &answers) {
-            Ok(()) => {
-                let _ = tx.blocking_send(InternalEvent::NativeRetired { ws });
+        for answered in &answers {
+            if matches!(answered.kept, tilo_peer_state::direct::Kept::Refused) {
+                tracing::warn!(ws = %ws, write = ?answered.write, "a peer refused this device's write");
             }
-            Err(error) => {
-                tracing::warn!(%error, ws = %ws, "answered writes stay in this device's ownership");
-            }
-        });
+        }
+        if !answers.is_empty() {
+            let _ = self
+                .internal_tx
+                .try_send(InternalEvent::NativeRetired { ws });
+        }
     }
 
     pub(super) fn native_connect(&mut self, connect: Connect) {

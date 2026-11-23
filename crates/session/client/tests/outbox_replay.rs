@@ -23,10 +23,7 @@ use crate::support::{
 /// How many of `peer`'s writes to the workspace its replica's ownership still holds.
 fn unadmitted(peer: &Link) -> usize {
     let workspace = tilo_desktop_model::WorkspaceId::parse(crate::support::WORKSPACE).unwrap();
-    peer.engine()
-        .owner()
-        .unadmitted_writes(workspace)
-        .unwrap_or_default()
+    peer.engine().owner().frames(workspace).len()
 }
 
 /// An edit published before the page holds its route's keys waits for

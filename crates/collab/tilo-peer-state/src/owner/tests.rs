@@ -326,7 +326,7 @@ tilo_test_env::scenario! {
         let (intent, mut bootstrap, _, _, now) = raw_fixture();
         bootstrap.governance_messages = vec![
             postcard::to_stdvec(&NeighbourMsg::SyncResp {
-                changes: vec![hex::decode(CRASHING_CHANGE).unwrap()],
+                changes: vec![vec![0xff; 8]],
                 workspace: WORKSPACE.into(),
             })
             .unwrap(),
@@ -473,21 +473,21 @@ tilo_test_env::scenario! {
                 view.read_document(reader, APP, "", known, usize::MAX, joined.now)
             })
         };
-        crate::owner::document_read::reset_captures();
+        crate::document_read::reset_captures();
         let Ok(DocumentRead::Captured(document)) = read(member, None) else {
             panic!("the first read admits the document");
         };
         assert!(
-            crate::owner::document_read::captures() > 0,
+            crate::document_read::captures() > 0,
             "a first read captures the document so the counter can see a later skip"
         );
-        let captures = crate::owner::document_read::captures();
+        let captures = crate::document_read::captures();
         assert!(matches!(
             read(member, Some(document.revision)),
             Ok(DocumentRead::Unchanged(revision)) if revision == document.revision
         ));
         assert_eq!(
-            crate::owner::document_read::captures(),
+            crate::document_read::captures(),
             captures,
             "an idle reread of the same revision must not capture the document"
         );
@@ -519,7 +519,7 @@ tilo_test_env::scenario! {
                     .map(|revision| revision.map(|revision| revision == known))
             })
         };
-        crate::owner::document_read::reset_captures();
+        crate::document_read::reset_captures();
         assert_eq!(holds(member, document.revision), Ok(Some(true)));
         assert_eq!(
             holds(member, [0; 32]),
@@ -527,7 +527,7 @@ tilo_test_env::scenario! {
             "another revision is not held"
         );
         assert_eq!(
-            crate::owner::document_read::captures(),
+            crate::document_read::captures(),
             0,
             "answered from the admitted heads, without capturing the document again"
         );

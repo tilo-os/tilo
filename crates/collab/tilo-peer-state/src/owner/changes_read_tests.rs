@@ -81,12 +81,12 @@ tilo_test_env::scenario! {
         let member = member().verifying_key().to_bytes();
         let held = full(&joined, member);
         commit(&joined, |chat| chat.put(ROOT, "topic", "edited").unwrap());
-        crate::owner::document_read::reset_captures();
+        crate::document_read::reset_captures();
         let Ok(DocumentRead::Changes(read)) = changes(&joined, member, &held.heads, usize::MAX) else {
             panic!("the member is handed the changes since what it holds");
         };
         assert_eq!(
-            crate::owner::document_read::captures(),
+            crate::document_read::captures(),
             0,
             "the changes come from the committed document, not a whole capture"
         );

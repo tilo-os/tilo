@@ -40,7 +40,8 @@ async fn a_device_that_may_not_write_refuses_its_own_change_and_files_why() {
             now,
         )?;
         let mut envelope = envelope;
-        collab_types::sign_op(&mut envelope, &crate::owner::testing::member_key())?;
+        collab_types::sign_op(&mut envelope, &crate::owner::testing::member_key())
+            .map_err(|error| error.to_string())?;
         Ok((envelope, change.unwrap().0))
     }
 

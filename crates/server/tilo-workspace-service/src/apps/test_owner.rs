@@ -40,8 +40,11 @@ struct Stored {
     generation: u64,
 }
 
-/// What the owner has durably committed.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// What the fixture's record last committed.
+#[allow(
+    dead_code,
+    reason = "the fixture's surface is what the broker's tests need of it"
+)]
 pub struct Status {
     pub workspace: String,
     pub generation: u64,
@@ -78,6 +81,10 @@ fn writer_seed(workspace: &str) -> Result<Vec<u8>, String> {
         .ok_or_else(|| "writer seed missing".to_string())
 }
 
+#[allow(
+    dead_code,
+    reason = "the fixture's surface is what the broker's tests need of it"
+)]
 impl SessionOwner {
     /// A new workspace under `dir`, governed by a fresh device with a Writer record.
     pub fn initialize(dir: &Path) -> Result<Self, String> {
@@ -391,6 +398,10 @@ pub mod writes {
         /// Whether a commit is waiting for the owner's turn now. The broker
         /// hands a commit over before it waits for the owner's answer, so
         /// once a call that would have committed returned, its commit shows.
+        #[allow(
+            dead_code,
+            reason = "the fixture's surface is what the broker's tests need of it"
+        )]
         pub fn is_empty(&self) -> bool {
             self.receiver.is_empty()
         }

@@ -1,3 +1,4 @@
+use crate::NeighbourMsg;
 use crate::join::{self, JoinTransportRequest, JoinTransportResponse};
 use crate::owner::{NativeWorkspaceOwner, VerifiedNativeEnrollmentIntent, open_file, testing};
 use collab_types::CommitNamed as _;
@@ -125,7 +126,7 @@ fn fixture_with(
         key,
         certificate,
         now,
-        governor,
+        workspace: governor,
     }
 }
 
@@ -410,7 +411,6 @@ async fn a_write_costs_what_it_changed_however_long_the_record_history() {
     let mut costs = Vec::with_capacity(WRITES);
     let mut reads = Vec::with_capacity(WRITES);
     let mut times = Vec::with_capacity(WRITES);
-    let mut order = 0_u64;
     for n in 0..WRITES {
         let request = signed_write_to(&fixture, workspace, &mut record, &format!("k{n}"));
         let before = written();
@@ -500,7 +500,6 @@ async fn a_workspace_past_any_size_takes_writes_at_what_they_change() {
     };
     let mut costs = Vec::with_capacity(DOCUMENTS);
     let mut times = Vec::with_capacity(DOCUMENTS);
-    let mut order = 0_u64;
     for n in 0..DOCUMENTS {
         let document = format!("r{n}");
         let before = written(&fixture.owner);
@@ -745,7 +744,7 @@ async fn a_write_commits_at_what_it_changed_however_many_documents() {
     };
     let fixtures = SIZES.map(|size| {
         let fixture = fixture();
-        documents(&fixture, workspace, 0..size, &mut 0);
+        documents(&fixture, workspace, 0..size);
         fixture
     });
     // The two workspaces take their writes in turns, so whatever else the

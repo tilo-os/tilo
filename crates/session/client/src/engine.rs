@@ -1763,10 +1763,6 @@ mod tests {
         let (app, doc) = ("so.tilo.notes", "note");
         let device = engine.identity.device_cert.device_public_key;
         let now = tilo_clock::wall();
-        let artifact = collab_types::document_artifact_id(app, &workspace.to_string(), doc);
-        let frame = collab_types::DocumentMutation::Snapshot(written.to_vec())
-            .encode()
-            .expect("a frame");
         pollster::block_on(engine.owner.write_local(
             workspace,
             device,

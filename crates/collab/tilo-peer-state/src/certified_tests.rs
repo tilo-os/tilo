@@ -1,10 +1,14 @@
 use super::*;
 use crate::join::{self, InviteGrant, JoinChallenge, JoinCompleteRequest, Role};
+use crate::join::{JoinBootstrap, JoinTransportRequest, TransportHint, VerifiedJoin};
 use crate::owner::testing::member_certificate as certificate;
+use crate::owner::{PendingEnrollmentId, VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
 use crate::{SeedState, StatePeer, seed_workspace};
 use ed25519_dalek::SigningKey;
 use std::time::{Duration, SystemTime};
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
+use tilo_desktop_model::WorkspaceId;
+use tilo_user_identity::DeviceCert;
 use tilo_user_identity::RevocationList;
 
 fn actual_redemption() -> (

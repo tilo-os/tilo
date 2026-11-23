@@ -219,7 +219,6 @@ async fn a_joiner_gets_the_history_and_writes_right_away() {
             .receive(
                 TransportOrigin::ServerDelta(a_key.verifying_key().to_bytes()),
                 message,
-                tilo_clock::wall(),
             )
             .unwrap();
     }

@@ -450,12 +450,6 @@ mod tests {
             generation: 0,
             continuity: 0,
             publication: None,
-            workspace_memberships: BTreeMap::new(),
-            effect_receipts: BTreeMap::new(),
-            shortcut_change: None,
-            effect_history_root: None,
-            join_admissions: BTreeMap::new(),
-            kept_compactions: Vec::new(),
         };
         let mut record = NativeAuthorityStorage {
             revision,

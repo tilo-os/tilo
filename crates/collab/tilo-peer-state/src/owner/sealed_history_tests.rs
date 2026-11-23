@@ -8,6 +8,7 @@ use automerge::{ActorId, ChangeHash};
 use collab_types::{ContentRetention, DocumentMutation, EncryptionMetadata, OpKind};
 use key_group::ContentKeys;
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 /// The chat document's keys, as a member holding them compacts with.
 pub(super) struct Held(pub(super) ContentKeys);

@@ -226,6 +226,27 @@ pub(crate) struct StoredOutgoing {
     incremental: bool,
 }
 
+#[cfg(test)]
+impl StoredOutgoing {
+    /// A write of `bytes` named by `id` in each of its bytes.
+    pub(crate) fn sample(id: u8, bytes: Vec<u8>) -> Self {
+        Self {
+            ordinal: 3,
+            id: [id; 32],
+            bytes,
+            binding: RecordBinding {
+                workspace: "workspace".into(),
+                target: RecordTarget::RefusedDirectPair,
+                request_digest: [1; 32],
+                basis: [2; 32],
+            },
+            timestamp_ns: 5,
+            channel: [9; 32],
+            incremental: true,
+        }
+    }
+}
+
 /// A write's binding as an earlier build recorded it
 /// (`owner_commit::CommitBinding`), kept byte for byte so a journal that
 /// encodes one still replays. The variants stay at their encoded positions.
