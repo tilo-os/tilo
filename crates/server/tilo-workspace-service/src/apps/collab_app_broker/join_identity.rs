@@ -316,10 +316,25 @@ pub(super) fn admit_verified_join_at(
 }
 
 /// Whether the launched app `app` may join `route` in its person's own
-/// workspace: only a record of the person's whose kind its surface declares
-/// (its own, or another app's it reads). The person's workspace holds nothing
-/// else for an app.
+/// workspace: its own route naming no record, which holds none; one of the
+/// workspace's records, when it is the record's app or declares that it reads
+/// that app's kinds, the workspace's grants deciding each change; or a record
+/// of the person's whose kind its surface declares (its own, or another app's
+/// it reads). The person's workspace holds nothing else for an app.
 pub(super) fn person_document_join(app: &str, route: &CrdtRoute) -> Result<(), String> {
+    let own_route = route.app_id.is_empty() || route.app_id == app;
+    if own_route && route.document_id.is_empty() {
+        return Ok(());
+    }
+    if collab_types::shared_workspace_document(&route.app_id, &route.document_id).is_some() {
+        if own_route || collab_types::app_surface::reads_app(app, &route.app_id) {
+            return Ok(());
+        }
+        return Err(format!(
+            "{app} declares no read of {}'s resources",
+            route.app_id
+        ));
+    }
     let kind = collab_types::person_resource_type(&route.document_id)
         .ok_or("an app joins the person's workspace only for one of their records")?;
     if !collab_types::app_surface::keeps_person_resource(app, kind) {
