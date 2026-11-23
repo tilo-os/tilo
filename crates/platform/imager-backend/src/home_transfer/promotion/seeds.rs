@@ -2,7 +2,6 @@
 use super::*;
 pub(super) use crate::home_transfer::seeds::RecoveryBinding;
 use crate::home_transfer::seeds::{Authority, Generated, relative, stamp};
-use std::os::fd::AsFd as _;
 use std::os::unix::fs::MetadataExt as _;
 const SEED_LIMIT: u64 = 4 * 1024 * 1024;
 
