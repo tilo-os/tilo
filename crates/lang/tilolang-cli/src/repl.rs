@@ -287,14 +287,13 @@ impl<'a> Repl<'a> {
     /// `find words`: what the workspace holds that matches, best first.
     async fn find(&self, query: &str) -> Vec<String> {
         let route = format!(
-            "/v1/workspaces/{}/search?q={}",
-            self.workspace,
-            tilo_api::client::encode_query(query)
+            "/v1/workspaces/{}/resources/search/actions/find",
+            self.workspace
         );
-        match self.client.get(&route).await {
+        match self.client.post(&route, &json!({ "query": query })).await {
             Ok(found) => {
                 let hits: Vec<String> = found
-                    .get("hits")
+                    .pointer("/result/hits")
                     .and_then(Json::as_array)
                     .into_iter()
                     .flatten()

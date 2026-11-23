@@ -736,15 +736,17 @@ fn pressing_a_device_with_nothing_playing_opens_its_settings() {
             .unwrap_or_default()
     });
     assert_eq!(
-        host.invoked
-            .borrow()
-            .first()
-            .map(|(target, arguments)| (target.clone(), arguments["anchor"].clone())),
+        host.invoked.borrow().first().cloned(),
         Some((
-            application_action_target(&workspace, "so.tilo.settings", "settings.root", "open"),
-            serde_json::json!("settings.section:devices_sync")
+            application_action_target(
+                &workspace,
+                "so.tilo.settings",
+                "settings.section:devices_sync",
+                "open-pane"
+            ),
+            serde_json::Map::default()
         )),
-        "a device without a screen is managed on the devices page"
+        "a device without a screen is managed on the devices page, through the page's own row"
     );
 
     // With media continuity turned off, what plays here stays here: the press opens the device's

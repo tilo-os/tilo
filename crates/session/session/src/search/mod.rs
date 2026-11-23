@@ -1677,7 +1677,13 @@ pub(crate) fn found_all(
         if lead.is_some_and(|lead| at < lead) {
             continue;
         }
-        if !out.iter().any(|seen| seen.resource == found.resource) {
+        // Two rows naming one resource with the arguments that open it are one
+        // result: a page of Settings and another page are distinct resources,
+        // and two items a record holds are distinct anchors.
+        if !out
+            .iter()
+            .any(|seen| seen.resource == found.resource && seen.arguments == found.arguments)
+        {
             out.push(found);
         }
     }
@@ -1689,19 +1695,14 @@ pub(crate) fn found_all(
 /// the machine's own app).
 fn found_of(hit: &tilo_desktop_search::Hit) -> Option<Found> {
     let (resource, open, arguments) = match &hit.target {
-        // An item opened through its record's `open` is the item: it opens through its own.
-        Target::Invoke(invoke) => match invoke.arguments.get(tilo_desktop_search::OPEN_ANCHOR) {
-            Some(serde_json::Value::String(item)) if *item != invoke.address.resource => (
-                item.clone(),
-                Some(invoke.address.action.clone()),
-                serde_json::Map::new(),
-            ),
-            _ => (
-                invoke.address.resource.as_str().to_owned(),
-                Some(invoke.address.action.clone()),
-                invoke.arguments.clone(),
-            ),
-        },
+        // A row runs the action its hit names, where the hit names it: the
+        // resource's own action, or the `open` of the resource holding an item,
+        // told the item as its anchor.
+        Target::Invoke(invoke) => (
+            invoke.address.resource.as_str().to_owned(),
+            Some(invoke.address.action.clone()),
+            invoke.arguments.clone(),
+        ),
         Target::Action(action) => (
             action.resource.as_str().to_owned(),
             Some(action.spec.id.clone()),

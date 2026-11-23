@@ -146,7 +146,8 @@ fn session_installing(asked: Rc<Asked>, apps: &[(&str, &str)]) -> Session {
 
 /// Settings' pages are the session's own search source, so every desktop a session runs finds
 /// them — the web page's, which offers the pages its own Settings has. "dark mode" is the Theme
-/// setting on the Appearance page, and Enter opens Settings at it.
+/// setting on the Appearance page, and Enter shows it through the action Settings publishes for
+/// a setting, told which one it is.
 #[test]
 fn settings_search_finds_the_appearance_theme_and_enter_opens_it() {
     let _settled = ui::motion::testing::settled();
@@ -188,9 +189,58 @@ fn settings_search_finds_the_appearance_theme_and_enter_opens_it() {
     let (target, arguments) = asked.invoked.borrow()[0].clone();
     assert_eq!(
         target,
-        application_action_target(&workspace, SETTINGS_APP, "settings.root", "open")
+        application_action_target(&workspace, SETTINGS_APP, "settings.root", "show-setting"),
+        "a setting is shown by the action Settings publishes for one"
     );
-    assert_eq!(arguments["anchor"], "settings.setting:appearance.style");
+    assert_eq!(arguments["setting"], "appearance.style");
+}
+
+/// A page's row runs the action the page's own row of Settings publishes, at the page's own
+/// address: it asks nothing of an `open` on Settings' root resource, which Settings never
+/// offers, so pressing it opens Settings where a person sees the page.
+#[test]
+fn a_page_found_in_search_runs_that_pages_own_action() {
+    let _settled = ui::motion::testing::settled();
+    let asked = Rc::new(Asked::default());
+    let mut session = session(Rc::clone(&asked));
+    session.step(Duration::from_millis(1)).unwrap();
+    let workspace = session.handle().read(|tree| {
+        tree.active_workspace()
+            .map(|workspace| workspace.id().to_string())
+            .expect("workspace")
+    });
+    search_for(&mut session, "accounts");
+    let page = row(&session, "Accounts").unwrap_or_else(|| {
+        panic!(
+            "accounts is a page of Settings: {:?}",
+            rows(&session)
+                .into_iter()
+                .map(|row| row.label)
+                .collect::<Vec<_>>()
+        )
+    });
+    invoke(
+        &mut session,
+        page.id.as_str(),
+        "choose-search-row",
+        serde_json::json!({}),
+    );
+    until(&mut session, |_| !asked.invoked.borrow().is_empty());
+    let (target, arguments) = asked.invoked.borrow()[0].clone();
+    assert_eq!(
+        target,
+        application_action_target(
+            &workspace,
+            SETTINGS_APP,
+            "settings.section:external_accounts",
+            "open-pane"
+        ),
+        "the page's own row shows it"
+    );
+    assert!(
+        arguments.is_empty(),
+        "the row binds its pane: {arguments:?}"
+    );
 }
 
 /// Run frames until `done` holds.
@@ -923,10 +973,10 @@ fn search_opens_by_its_action_and_runs_an_app_and_a_setting_by_address() {
     let (target, arguments) = asked.invoked.borrow()[1].clone();
     assert_eq!(
         target,
-        application_action_target(&workspace, SETTINGS_APP, "settings.root", "open"),
-        "the setting opens in Settings by its address"
+        application_action_target(&workspace, SETTINGS_APP, "settings.root", "show-setting"),
+        "the setting is shown by the action Settings publishes for one"
     );
-    assert_eq!(arguments["anchor"], "settings.setting:keyboard.layout");
+    assert_eq!(arguments["setting"], "keyboard.layout");
 }
 
 #[test]

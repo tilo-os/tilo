@@ -1125,14 +1125,19 @@ impl Api {
             .unwrap_or_else(|| panic!("it takes {name}: {action}"))
     }
 
-    /// What search finds for `query`, best first.
+    /// What search finds for `query`, best first: the `search#find` action's answer.
     pub fn find(&self, session: &mut Session, query: &str) -> Vec<Value> {
-        let route = format!("search?q={}", tilo_api::client::encode_query(query));
         let found = self
-            .send(&route, None)
+            .send(
+                "resources/search/actions/find",
+                Some(json!({ "query": query })),
+            )
             .answer(session)
             .unwrap_or_else(|why| panic!("search for {query}: {why}"));
-        found["hits"].as_array().cloned().unwrap_or_default()
+        found["result"]["hits"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// The session's whole answer to `program` in this program session: the lines the model
