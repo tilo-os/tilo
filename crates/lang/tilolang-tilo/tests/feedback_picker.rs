@@ -120,7 +120,11 @@ fn action(host: &Host, name: &str) -> String {
         .clone()
 }
 
-fn invoke(host: &Host, name: &str, args: Vec<Value>) -> Value {
+/// Run the shell's action `name` on its document `root`, as a press or an agent's call does: the
+/// document first, then the arguments it declares.
+fn invoke(host: &Host, root: &ResourceRef, name: &str, args: Vec<Value>) -> Value {
+    let mut args = vec![Value::resource(root)];
+    args.extend(args);
     match host
         .runtime()
         .invoke_action(
@@ -184,7 +188,7 @@ tilo_test_env::scenario! {
     phase the_picker_opens_over_the_windows_and_nothing_is_picked_yet;
     {
         let (host, asked, root) = shell();
-        invoke(&host, "report_problem", vec![]);
+        invoke(&host, &root, "report_problem", vec![]);
         assert_eq!(
             host.runtime().read(&root, "reporting").unwrap(),
             Value::Bool(true),
@@ -197,8 +201,8 @@ tilo_test_env::scenario! {
     phase a_pick_names_the_window_and_opens_the_report_about_it;
     {
         let (host, asked, root) = shell();
-        invoke(&host, "report_problem", vec![]);
-        invoke(&host, "pick_report_window", vec![Value::text("2")]);
+        invoke(&host, &root, "report_problem", vec![]);
+        invoke(&host, &root, "pick_report_window", vec![Value::text("2")]);
         assert_eq!(
             host.runtime().read(&root, "reporting").unwrap(),
             Value::Bool(false),
@@ -223,10 +227,11 @@ tilo_test_env::scenario! {
     phase a_rectangle_picks_the_window_it_covers;
     {
         let (host, asked, root) = shell();
-        invoke(&host, "report_problem", vec![]);
+        invoke(&host, &root, "report_problem", vec![]);
         // Across the second card of the picker's three-across grid.
         invoke(
             &host,
+            &root,
             "pick_report_region",
             vec![Value::List(vec![
                 Value::Int(520),
@@ -246,9 +251,10 @@ tilo_test_env::scenario! {
     phase a_rectangle_over_no_window_keeps_the_picker_up_with_its_outline;
     {
         let (host, asked, root) = shell();
-        invoke(&host, "report_problem", vec![]);
+        invoke(&host, &root, "report_problem", vec![]);
         invoke(
             &host,
+            &root,
             "pick_report_region",
             vec![Value::List(vec![
                 Value::Int(5000),
@@ -279,8 +285,8 @@ tilo_test_env::scenario! {
     phase cancel_leaves_with_nothing_attached;
     {
         let (host, asked, root) = shell();
-        invoke(&host, "report_problem", vec![]);
-        invoke(&host, "cancel_report", vec![]);
+        invoke(&host, &root, "report_problem", vec![]);
+        invoke(&host, &root, "cancel_report", vec![]);
         assert_eq!(
             host.runtime().read(&root, "reporting").unwrap(),
             Value::Bool(false)
