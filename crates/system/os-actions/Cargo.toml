@@ -24,7 +24,7 @@ tilo-paths.workspace = true
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 uuid.workspace = true
 bounded-command = { path = "../../platform/bounded-command" }
-# The default audio device controls the dispatcher drives.
+# What is capturing sound and whether the microphone is muted (src/privacy.rs).
 media = { package = "tilo-media", path = "../../engines/tilo-media" }
 libc.workspace = true
 rustix = { workspace = true, features = ["fs", "net", "process"] }

@@ -104,8 +104,6 @@ pub mod account_probe {
 }
 pub mod device_fleet;
 #[cfg(feature = "tilo-os")]
-pub mod dispatcher;
-#[cfg(feature = "tilo-os")]
 pub(crate) mod input_sources;
 #[cfg(feature = "tilo-os")]
 pub(crate) mod installed;

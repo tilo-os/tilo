@@ -77,7 +77,6 @@ pub use linux_virtual_gamepad::{
     LinuxGamepadDevice, LinuxGamepadDeviceProvider, LinuxVirtualGamepadFactory,
     UinputGamepadDeviceProvider,
 };
-use media::audio::default_node::{self, DefaultNode};
 pub use modem::{
     MobileProfile, MobileReading, ModemChange, ModemError, ModemFailure, ModemInfo, ModemState,
     NetworkModes, Registration, SimCard, SimKind, SimLock, Technology, Traffic, UnlockRetries,
@@ -163,10 +162,8 @@ pub(crate) fn block_on<T>(
         .map_err(|error| error.to_string())?
 }
 
-/// A radio operation prepared on the owning session thread and run by its worker; it carries no
-/// borrowed dispatcher or credential.
-pub type RadioWork = Box<dyn FnOnce() -> Result<Option<RadioState>, String> + Send>;
-
+/// A change to the radios that is checked afterwards: a switch may hold a radio off although the
+/// change was taken.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RadioChange {
     Wifi(bool),
@@ -174,15 +171,15 @@ pub enum RadioChange {
 }
 
 impl RadioChange {
-    pub fn execute(self, dispatcher: &dyn Dispatcher) -> Result<(), String> {
+    /// Makes the change and reads the radios back.
+    pub fn apply(self) -> Result<RadioState, String> {
         match self {
-            Self::Wifi(enabled) => dispatcher.set_wifi(enabled),
-            Self::Airplane(enabled) => dispatcher.set_airplane_mode(enabled),
+            Self::Wifi(enabled) => network::set_wifi_radio(enabled),
+            Self::Airplane(enabled) => {
+                network::set_airplane_mode(enabled)?;
+                network::get_radio_state()
+            }
         }
-    }
-
-    pub fn run(self, dispatcher: &dyn Dispatcher) -> Result<Option<RadioState>, String> {
-        dispatcher.apply_radio_change(self)
     }
 
     /// Whether `radios`, read after this change, show it happened; otherwise why not.
@@ -193,166 +190,6 @@ impl RadioChange {
             Self::Airplane(true) => Err("a radio stayed on".into()),
             Self::Airplane(false) => network::wifi_change_outcome(true, radios),
         }
-    }
-}
-
-/// The side effects of the OS actions: the production impl forwards to this crate's functions, tests
-/// record what was asked.
-pub trait Dispatcher {
-    fn set_brightness(&self, pct: f32) -> Result<(), String>;
-    /// Sets one monitor, named by its DRM connector (`eDP-1`, `DP-2`), to `pct` percent; applied in the
-    /// background, returns once queued.
-    fn set_display_brightness(&self, connector: &str, pct: f32) -> Result<(), String> {
-        if brightness::BrightnessService::global().set(connector, pct) {
-            Ok(())
-        } else {
-            Err(format!("{connector} has no brightness control"))
-        }
-    }
-    fn set_volume(&self, pct: f32) -> Result<(), String>;
-    fn set_wifi(&self, enabled: bool) -> Result<(), String>;
-    /// Prepares an owned radio operation without starting it; an impl that only changes radios
-    /// synchronously returns `None`.
-    fn prepare_radio_change(&self, _change: RadioChange) -> Option<RadioWork> {
-        None
-    }
-    /// Makes a radio change and reads the radios back; `None` when the impl cannot read them, and its
-    /// caller does.
-    fn apply_radio_change(&self, change: RadioChange) -> Result<Option<RadioState>, String> {
-        match change {
-            RadioChange::Wifi(enabled) => self.set_wifi(enabled),
-            RadioChange::Airplane(enabled) => self.set_airplane_mode(enabled),
-        }
-        .map(|()| None)
-    }
-
-    fn set_bluetooth(&self, enabled: bool) -> Result<(), String>;
-    fn connect_bluetooth(&self, address: &str) -> Result<(), String> {
-        bluez::connect_address(address)
-    }
-    fn disconnect_bluetooth(&self, address: &str) -> Result<(), String> {
-        bluez::disconnect_address(address)
-    }
-    fn scan_bluetooth(&self, on: bool) -> Result<(), String> {
-        if on {
-            bluez::start_scan()
-        } else {
-            bluez::stop_scan()
-        }
-    }
-    /// Pairs the device at `address`, trusting and connecting it; what its agent asks to compare is put
-    /// to the person.
-    fn pair_bluetooth(&self, address: &str) -> Result<(), String> {
-        bluez::pair_handoff(address)
-    }
-    fn forget_bluetooth(&self, address: &str) -> Result<(), String> {
-        bluez::forget_address(address)
-    }
-    fn set_wired(&self, enabled: bool) -> Result<(), String> {
-        let _ = enabled;
-        Err("wired networking is not supported by this dispatcher".into())
-    }
-    fn set_airplane_mode(&self, enabled: bool) -> Result<(), String> {
-        network::set_airplane_mode(enabled)
-    }
-    fn set_hotspot(&self, enabled: bool) -> Result<(), String> {
-        network::set_hotspot(enabled)
-    }
-    fn set_mobile_broadband(&self, enabled: bool) -> Result<(), String> {
-        network::set_mobile_broadband(enabled)
-    }
-    fn set_vpn_connection(&self, name: &str, enabled: bool) -> Result<(), String> {
-        network::set_vpn_connection(name, enabled)
-    }
-    fn connect_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String>;
-    fn connect_hidden_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String> {
-        let _ = (ssid, password);
-        Err("joining a network with a hidden name is not supported by this dispatcher".into())
-    }
-    fn forget_network(&self, profile: &str) -> Result<(), String> {
-        let _ = profile;
-        Err("forgetting saved networks is not supported by this dispatcher".into())
-    }
-    fn set_network_autoconnect(&self, profile: &str, on: bool) -> Result<(), String> {
-        let _ = (profile, on);
-        Err("saved network autoconnect is not supported by this dispatcher".into())
-    }
-    fn set_power_profile(&self, profile: PowerProfile) -> Result<(), String>;
-    fn toggle_mute(&self) -> Result<(), String> {
-        default_node::toggle_mute(DefaultNode::Sink)
-    }
-    /// Sets the sink mute state explicitly: the volume-up key must clear mute whatever it was, and a
-    /// toggle could silence an audible sink.
-    fn set_mute(&self, muted: bool) -> Result<(), String> {
-        default_node::set_mute(DefaultNode::Sink, muted)
-    }
-    fn brightness(&self) -> Result<f32, String> {
-        display::get_brightness()
-    }
-    fn keyboard_backlight(&self) -> Result<KeyboardBacklight, String> {
-        keyboard_backlight::get_keyboard_backlight()
-    }
-    fn set_keyboard_backlight(&self, level: u32) -> Result<(), String> {
-        keyboard_backlight::set_keyboard_backlight(level)
-    }
-}
-
-/// The production dispatcher: every method forwards to this crate's function of the same name.
-#[derive(Default, Clone, Copy, Debug)]
-pub struct RealDispatcher;
-
-impl Dispatcher for RealDispatcher {
-    fn prepare_radio_change(&self, change: RadioChange) -> Option<RadioWork> {
-        Some(Box::new(move || Self.apply_radio_change(change)))
-    }
-    fn apply_radio_change(&self, change: RadioChange) -> Result<Option<RadioState>, String> {
-        match change {
-            RadioChange::Wifi(enabled) => network::set_wifi_radio(enabled).map(Some),
-            RadioChange::Airplane(enabled) => {
-                network::set_airplane_mode(enabled)?;
-                network::get_radio_state().map(Some)
-            }
-        }
-    }
-
-    fn set_brightness(&self, pct: f32) -> Result<(), String> {
-        display::set_brightness(pct)
-    }
-    fn set_volume(&self, pct: f32) -> Result<(), String> {
-        default_node::set_volume(DefaultNode::Sink, pct)
-    }
-    fn set_wifi(&self, enabled: bool) -> Result<(), String> {
-        network::set_wifi(enabled)
-    }
-    fn set_bluetooth(&self, enabled: bool) -> Result<(), String> {
-        bluez::set_powered(enabled)
-    }
-    fn connect_bluetooth(&self, address: &str) -> Result<(), String> {
-        bluez::connect_address(address)
-    }
-    fn disconnect_bluetooth(&self, address: &str) -> Result<(), String> {
-        bluez::disconnect_address(address)
-    }
-    fn set_wired(&self, enabled: bool) -> Result<(), String> {
-        network::set_wired(enabled)
-    }
-    fn connect_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String> {
-        network::connect_wifi(ssid, password)
-    }
-    fn connect_hidden_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String> {
-        network_settings::connect_hidden_wifi(ssid, password)
-    }
-    fn forget_network(&self, profile: &str) -> Result<(), String> {
-        network::forget_network_profile(profile)
-    }
-    fn set_network_autoconnect(&self, profile: &str, on: bool) -> Result<(), String> {
-        network::set_network_autoconnect(profile, on)
-    }
-    fn set_power_profile(&self, profile: PowerProfile) -> Result<(), String> {
-        power::set_power_profile(profile)
-    }
-    fn toggle_mute(&self) -> Result<(), String> {
-        default_node::toggle_mute(DefaultNode::Sink)
     }
 }
 
