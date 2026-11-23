@@ -1,68 +1,25 @@
-//! A coding harness's model endpoint, in its provider's own words.
+//! Anthropic's Messages, as a program asks its model in them.
 //!
-//! A harness asks a model the way its provider is asked: Claude Code posts to
-//! `/v1/messages` and reads Anthropic's Messages answers. That address is its
-//! run's own endpoint ([`super::endpoint`]), and what it asks is answered by the
-//! model the workspace chose for the sub-agent's kind of work, whichever provider
-//! that is. This module is the two translations and
-//! nothing else: a request in the provider's shape into the host's own
-//! [`ModelRequest`], and the host's [`ModelResponse`] or refusal back into the
-//! provider's shape, whole or as the provider's stream of events.
+//! Claude Code posts to `/v1/messages` and reads Messages answers. This module
+//! is the two translations and nothing else: a request in that shape into the
+//! host's own [`ModelRequest`], and the host's [`ModelResponse`] or refusal
+//! back into that shape, whole or as its stream of events.
 //!
 //! What does not cross: a provider's own tools (only the provider runs them),
-//! reasoning (the host shows none of it to a harness, so none comes back to
-//! be signed), and the model's name, which the harness is told back as it
-//! said it: the person's choice answers, not the harness's.
+//! reasoning (the host shows none of it to a program, so none comes back to
+//! be signed), and the model's name, which the program is told back as it
+//! said it: the person's choice answers, not the program's.
 
 use serde_json::{Map, Value, json};
 
+use super::{Answer, Asked, DEFAULT_OUTPUT_TOKENS, EVENTS, JSON, NOT_PASSED};
 use crate::workspaces::person_model::protocol::{
     Content, ErrorKind, Message, ModelError, ModelRequest, ModelResponse, Role, StopReason,
     ToolCall, ToolChoice, ToolDefinition, ToolResult,
 };
 
-/// The most of a request's body the host reads: a whole conversation with
-/// its pictures.
-pub const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
-
-/// What an answer may take when the harness names no limit.
-const DEFAULT_OUTPUT_TOKENS: u32 = 4096;
-
-/// What a harness sent beside words that this endpoint does not pass on.
-const NOT_PASSED: &str = "[something was attached here that this model endpoint does not pass on]";
-
-/// A request a harness made of its model.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Asked {
-    pub request: ModelRequest,
-    /// The model the harness named: said back to it, never followed.
-    pub model: String,
-    /// Whether it reads its answer as a stream of events.
-    pub stream: bool,
-}
-
-/// What a request at the endpoint is.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Wanted {
-    /// An answer of the model.
-    Message(Box<Asked>),
-    /// How many tokens a request would be, about.
-    Count(u64),
-}
-
-/// An answer in the provider's shape.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Answer {
-    pub status: u16,
-    pub content_type: &'static str,
-    pub body: Vec<u8>,
-}
-
-const JSON: &str = "application/json";
-const EVENTS: &str = "text/event-stream";
-
 /// A failure in the provider's shape: `kind` is the provider's own word for
-/// it, which decides whether the harness asks again.
+/// it, which decides whether the program asks again.
 #[must_use]
 pub fn failure(status: u16, kind: &str, words: &str) -> Answer {
     Answer {
@@ -76,10 +33,10 @@ pub fn failure(status: u16, kind: &str, words: &str) -> Answer {
 
 /// Why the workspace's model did not answer, as the provider would say it: the status, the
 /// provider's word, and the reason in words a person can act on. Only what may pass by itself is
-/// said in a way a harness asks again for; a limit, a missing key or a missing choice ends its
+/// said in a way a program asks again for; a limit, a missing key or a missing choice ends its
 /// turn.
 #[must_use]
-pub fn refused(error: &ModelError) -> (u16, &'static str, String) {
+pub fn refusal(error: &ModelError) -> (u16, &'static str, String) {
     let (status, kind) = match error.kind {
         ErrorKind::Authentication => (401, "authentication_error"),
         ErrorKind::PermissionDenied | ErrorKind::Refused => (403, "permission_error"),
@@ -97,29 +54,18 @@ pub fn refused(error: &ModelError) -> (u16, &'static str, String) {
     (status, kind, error.message.clone())
 }
 
-/// What the request `method` `path` with `body` asks of the endpoint, or the
-/// answer that says why it is nothing this endpoint does.
-pub fn wanted(method: &str, path: &str, body: &[u8]) -> Result<Wanted, Answer> {
-    let route = path.split('?').next().unwrap_or_default();
-    match (method, route.trim_end_matches('/')) {
-        ("POST", "/v1/messages") => parse(body)
-            .map(|asked| Wanted::Message(Box::new(asked)))
-            .map_err(|why| failure(400, "invalid_request_error", &why)),
-        // About four bytes a token: the harness only sizes its context by it.
-        ("POST", "/v1/messages/count_tokens") => Ok(Wanted::Count(
-            u64::try_from(body.len() / 4).unwrap_or(u64::MAX),
-        )),
-        _ => Err(failure(
-            404,
-            "not_found_error",
-            "this endpoint answers model messages and nothing else",
-        )),
-    }
+/// Why the workspace's model did not answer, as a Messages error.
+#[must_use]
+pub fn refused(error: &ModelError) -> Answer {
+    let (status, kind, words) = refusal(error);
+    failure(status, kind, &words)
 }
 
-/// The answer to a count of tokens.
+/// The answer to a count of tokens: about four bytes a token, as the program
+/// only sizes its context by it.
 #[must_use]
-pub fn counted(tokens: u64) -> Answer {
+pub fn counted(body: &[u8]) -> Answer {
+    let tokens = u64::try_from(body.len() / 4).unwrap_or(u64::MAX);
     Answer {
         status: 200,
         content_type: JSON,
@@ -127,7 +73,30 @@ pub fn counted(tokens: u64) -> Answer {
     }
 }
 
-fn parse(body: &[u8]) -> Result<Asked, String> {
+/// The model's answer to `asked`, whole or as the stream it asked for.
+#[must_use]
+pub fn answer(response: &ModelResponse, asked: &Asked) -> Answer {
+    let said = message(
+        response,
+        &asked.model,
+        &format!("msg_{}", uuid::Uuid::new_v4().simple()),
+    );
+    if asked.stream {
+        Answer {
+            status: 200,
+            content_type: EVENTS,
+            body: events(&said),
+        }
+    } else {
+        whole(&said)
+    }
+}
+
+/// A request in Messages' shape, as the host asks its model.
+///
+/// # Errors
+/// Why the request is no Messages request, in words.
+pub fn asked(body: &[u8]) -> Result<Asked, String> {
     let value: Value = serde_json::from_slice(body)
         .map_err(|error| format!("the request is not JSON: {error}"))?;
     let object = value.as_object().ok_or("the request is not an object")?;
@@ -199,7 +168,7 @@ fn words(value: &Value) -> String {
     }
 }
 
-/// A picture block the harness sent inline; one it only names by an address
+/// A picture block the program sent inline; one it only names by an address
 /// is not fetched, and said so.
 fn picture(block: &Map<String, Value>) -> Content {
     let source = block.get("source").and_then(Value::as_object);
@@ -221,7 +190,7 @@ fn picture(block: &Map<String, Value>) -> Content {
     }
 }
 
-/// A tool's result as the harness sent it: its words, and the pictures it
+/// A tool's result as the program sent it: its words, and the pictures it
 /// carried, which follow it as a message of their own.
 fn result(block: &Map<String, Value>, pictures: &mut Vec<Content>) -> ToolResult {
     let mut content = String::new();
@@ -259,7 +228,7 @@ fn result(block: &Map<String, Value>, pictures: &mut Vec<Content>) -> ToolResult
     }
 }
 
-/// One turn of the harness's conversation, added to `messages` as the host
+/// One turn of the program's conversation, added to `messages` as the host
 /// writes one: a tool's results are a message of their own before what the
 /// person's side says beside them.
 fn said(turn: &Value, messages: &mut Vec<Message>) -> Result<(), String> {
@@ -303,7 +272,7 @@ fn said(turn: &Value, messages: &mut Vec<Message>) -> Result<(), String> {
                 input: block.get("input").cloned().unwrap_or_else(|| json!({})),
                 extra_content: None,
             })),
-            // Reasoning the harness kept is not sent again: the host shows
+            // Reasoning the program kept is not sent again: the host shows
             // it none, so it has none of this conversation's to send.
             (Role::Assistant, "thinking" | "redacted_thinking") => {}
             _ => content.push(Content::Text {
@@ -324,7 +293,7 @@ fn said(turn: &Value, messages: &mut Vec<Message>) -> Result<(), String> {
     Ok(())
 }
 
-/// A tool the harness runs itself. One that only its provider runs (it has
+/// A tool the program runs itself. One that only its provider runs (it has
 /// a type of the provider's own) is not offered to another model.
 fn tool(tool: &Value) -> Option<ToolDefinition> {
     let own = tool
@@ -398,20 +367,14 @@ pub fn message(response: &ModelResponse, model: &str, id: &str) -> Value {
     })
 }
 
-/// A whole answer, for a harness that did not ask for a stream.
+/// A whole answer, for a program that did not ask for a stream.
 #[must_use]
-pub fn whole(message: &Value) -> Answer {
+fn whole(message: &Value) -> Answer {
     Answer {
         status: 200,
         content_type: JSON,
         body: message.to_string().into_bytes(),
     }
-}
-
-/// The head of an answer that is a stream of events.
-#[must_use]
-pub const fn stream_begins() -> (u16, &'static str) {
-    (200, EVENTS)
 }
 
 fn event(name: &str, data: &Value) -> String {
@@ -483,5 +446,5 @@ pub fn events(message: &Value) -> Vec<u8> {
 }
 
 #[cfg(test)]
-#[path = "model_endpoint_tests.rs"]
+#[path = "messages_tests.rs"]
 mod tests;

@@ -1,21 +1,13 @@
 # Model gateway
 
-The native service core is `service::Gateway`. It accepts a host-authenticated
-`caller::Session`, not an app ID from an RPC request. The Unix launcher/FD
-adapter and command line remain available as `tilo-model-gateway`.
-
-`http_service::HttpService` is a small HTTP/1 adapter with an injected
-`SessionAuthorizer`. A server or another authenticated host can mount `handle`
-or pass an accepted TLS stream to `serve_io`; no server/node runtime is required.
-The authorizer must validate session audience and revocation, and origin/CSRF
-when using cookies. Settings identity alone is insufficient for credential
-status/set/remove: the session must explicitly grant credential management.
-There is no credential-read operation.
+`tilo-model-gateway` is the service apps reach over the descriptor their
+launcher hands them. The launcher's handoff names the app; nothing in a
+request's JSON can change who is asking. Programs that speak a provider's own
+HTTP dialect (Messages, chat completions) ask this computer's one model
+endpoint in the daemon instead, which answers from the model the workspace
+chose.
 
 The service is single-user: caller roles are capabilities, not tenant identities.
-Run separate processes with isolated configuration, storage and credential storage
-for different users, and route each authenticated session only to its user's
-instance. Do not put grants for unrelated users in one session directory.
 
 ## Build features
 
@@ -25,12 +17,12 @@ Do not enable server features on standalone UI builds.
 
 | Feature | Deployment |
 | --- | --- |
-| `server` | Hosted providers and the light HTTP/Unix service, without local inference. |
+| `server` | Hosted providers and the Unix service, without local inference. |
 | `local-models` | Full native gateway with installed segmentation models; includes `server`. |
 | `host-backend` | Trusted-host model backend; includes `server`, not local inference. |
 
-Both service binaries require `server`. Desktop packaging selects `local-models`;
-HTTP relays need only `server`. `host-backend` is for trusted hosts, never apps.
+The service binary requires `server`. Desktop packaging selects `local-models`.
+`host-backend` is for trusted hosts, never apps.
 
 ```sh
 # Desktop gateway (normally socket-activated by the user service).
@@ -39,66 +31,22 @@ cargo run -p tilo-model-gateway --features local-models --bin tilo-model-gateway
 cargo check -p tilo-model-gateway --features host-backend --all-targets
 ```
 
-## Standalone service
+## Clients
 
-`tilo-model-http` binds loopback and uses `SessionDirectory`, an adapter for
-host-issued expiring bearer sessions. It does not create identities or accept
-an app-ID header/JSON override. The trusted host must generate a random 32-byte
-hex bearer and privately deliver it to its authenticated browser session.
+`transport::FdTransport` implements the async, transport-neutral `Transport`
+(`Request` → intermediate `Response` events → final `Response`) over the
+launcher's descriptor. `transport::ModelClient<T>` adapts any transport to the
+portable `agent_provider_config::protocol::ModelBackend` for one selected
+profile/model.
 
-Create an owner-only session directory. Each grant is an owner-only regular
-file named with the lowercase SHA-256 hex digest of the **ASCII bearer**:
-
-```json
-{"caller":"agent","expires_unix_ms":1790000000000}
-```
-
-Use an actual future expiry. Allowed callers are `agent`, `chat`, `photos`,
-`settings`. Chat receives only tool-disabled text completion without tool
-history; it cannot acquire the other callers' operations.
-For a separately authorized Settings management session only, add
-`"manage_credentials":true`. Never put provider keys in these files. Deleting
-or changing a grant revokes in-flight calls within 100 ms; expired sessions
-cannot start requests. Non-private directories/files and symlinks are refused.
-Session issuance belongs to the authenticated host, not this service.
-
-```sh
-cargo run -p tilo-model-gateway --features server --bin tilo-model-http -- \
-  --session-directory "$XDG_RUNTIME_DIR/model-sessions"
-```
-
-Terminate public HTTPS at a trusted proxy and route same-origin `/model/rpc`
-to the loopback listener (default `127.0.0.1:8765`). Do not expose cleartext HTTP
-publicly. No permissive CORS policy is installed. Configure providers on the
-server, using the same settings and credential store as the native gateway.
-
-## Browser client
-
-`transport::FetchTransport` implements the async, transport-neutral
-`Transport` (`Request` → intermediate `Response` events → final `Response`).
-It uses `tilo-net`, which uses browser fetch on the web; it requires an HTTPS
-`/model/rpc` URL and the host session bearer, never a provider API key. Install
-it in the host's model backend rather than a process-global singleton.
-`transport::ModelClient<T>` adapts any transport to the portable
-`agent_provider_config::protocol::ModelBackend` for one selected profile/model.
-
-A page whose server lends no model service keeps no provider key and asks no
-provider itself: its windows ask the person's own model on their workspace
-server (the `tilo.models` `ask` action), which the server answers with the key the
-person's vault keeps there, as it answers their hosted agents.
-
-HTTP responses are no-store NDJSON. Requests/individual events are capped at
-2 MiB, intermediate events have a bounded eight-frame queue and event count,
-and active calls/connections and deadlines are bounded. Returning false from
-the event callback or dropping the call future cancels fetch; disconnect and
-session revocation drop server-side provider work. A slow reader cannot retain
-a call indefinitely. Already-started blocking credential-store mutations are
-not rolled back by disconnect/revocation.
+A page keeps no provider key and asks no provider itself: its windows ask the
+person's own model on their workspace server (the `tilo.models` `ask` action),
+which the server answers with the key the person's vault keeps there, as it
+answers their hosted agents.
 
 ## Production path
 
-Native launcher-bound clients and browser host-injected clients share this
-service core. Chat's standalone bootstrap installs `Models::from_launcher()`;
+Chat's standalone bootstrap installs `Models::from_launcher()`;
 component mounts capture `ProcessContext::models()` independently. Agent consumes
 the portable stream and publishes negotiated, authenticated task presentation,
 so Chat readers need no provider connection. The explicit Chat assistant controls

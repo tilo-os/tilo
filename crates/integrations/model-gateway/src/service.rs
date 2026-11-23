@@ -79,6 +79,7 @@ use tilo_app_id::apps::AGENT as AGENT_APP;
 use tilo_app_id::apps::CANVAS as CANVAS_APP;
 use tilo_app_id::apps::CHAT as CHAT_APP;
 use tilo_app_id::apps::PHOTOS as PHOTOS_APP;
+#[cfg(test)]
 use tilo_app_id::apps::SETTINGS as SETTINGS_APP;
 /// The session's own image model service: a platform package, not an
 /// installed app, so it has no first-party app constant. It asks the fixed
@@ -158,52 +159,6 @@ fn serve(socket: &Path) -> Result<(), String> {
             serve_on(listener, http, MAX_CLIENTS, HANDOFF_TIMEOUT, same_user).await
         })
         .map_err(|error| error.to_string())?
-}
-
-/// Reusable native service core. The caller is bound by host authentication,
-/// not deserialized from a model request. Adapters own connection lifetimes
-/// and cancel work by dropping the returned future.
-#[derive(Clone)]
-pub struct Gateway {
-    http: reqwest::Client,
-}
-impl Gateway {
-    /// # Errors
-    /// Returns an error if the provider HTTP client cannot be initialized.
-    pub fn new() -> Result<Self, String> {
-        Ok(Self {
-            http: provider_client()?,
-        })
-    }
-
-    pub async fn execute(
-        &self,
-        session: &dyn crate::caller::Session,
-        request: Request,
-        emit: &mut (dyn FnMut(&Response) -> bool + Send),
-    ) -> Response {
-        if !crate::caller::permitted(session, &request) {
-            return Response::failure(ModelError::new(ErrorKind::PermissionDenied));
-        }
-        let caller = match session.caller() {
-            crate::caller::Caller::Agent => AGENT_APP,
-            crate::caller::Caller::Chat => CHAT_APP,
-            crate::caller::Caller::Photos => PHOTOS_APP,
-            crate::caller::Caller::Settings => SETTINGS_APP,
-        };
-        let revoked = async {
-            loop {
-                if !session.active() {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-        };
-        tokio::select! {
-            response = handle_streaming(caller, request, &self.http, emit) => response,
-            () = revoked => Response::failure(ModelError::new(ErrorKind::PermissionDenied)),
-        }
-    }
 }
 
 /// The one keep-alive HTTP client every provider request shares, so

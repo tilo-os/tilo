@@ -4,7 +4,8 @@
 //! ([`working_copy`]), as the user the engine runs as. Its output is read line by line into
 //! what it said ([`Heard`]); a message for it goes to its input; a stop ends it and every
 //! process it started, which share its process group. Its model and Tilo's MCP server are
-//! answered at a loopback endpoint of the run's own ([`super::endpoint`]), so the workspace's
+//! answered at this computer's one model endpoint, under the run's own admission
+//! ([`crate::agents::endpoint`]), so the workspace's
 //! model key never reaches it.
 
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
@@ -18,8 +19,8 @@ use std::time::Duration;
 use tilo_lock::MutexRecover as _;
 use tilo_workspace_agent::Coding;
 
-use super::endpoint::{Endpoint, Serves};
 use super::harness::{Harness, Says, Start};
+use crate::agents::endpoint::{Admission, Serves};
 
 /// How long a harness that was asked to end is given before it is killed.
 const STOP_GRACE: Duration = Duration::from_secs(5);
@@ -80,7 +81,7 @@ pub(super) struct Run {
     exited: Arc<AtomicBool>,
     spent: Arc<AtomicU64>,
     /// Answers its model and Tilo for as long as the run is held.
-    _endpoint: Endpoint,
+    _admission: Admission,
 }
 
 impl Run {
@@ -98,9 +99,9 @@ impl Run {
     ) -> Result<Self, String> {
         let directory = working_copy(coding)?;
         let spent = Arc::new(AtomicU64::new(0));
-        let endpoint = Endpoint::open(serves, Arc::clone(&spent))
-            .map_err(|error| format!("The coding agent's model endpoint did not open: {error}"))?;
-        let program = harness.program(start, &endpoint.endpoints());
+        let admission = Admission::admit(serves, Arc::clone(&spent))
+            .map_err(|error| format!("This computer's model endpoint did not open: {error}"))?;
+        let program = harness.program(start, &admission.endpoints());
         let (name, arguments) = program
             .argv
             .split_first()
@@ -183,7 +184,7 @@ impl Run {
             stopping,
             exited,
             spent,
-            _endpoint: endpoint,
+            _admission: admission,
         })
     }
 

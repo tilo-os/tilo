@@ -95,6 +95,8 @@ mod calendars;
 mod carried;
 #[cfg(test)]
 mod device_turn_tests;
+#[cfg(unix)]
+mod endpoint;
 mod engine_actions;
 mod going;
 mod instructions;

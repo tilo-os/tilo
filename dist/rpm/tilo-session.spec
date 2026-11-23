@@ -253,8 +253,6 @@ install -Dpm 0755 apps/bin/tilo-model-manager %{buildroot}%{_libexecdir}/tilo/ti
 ln -s ../libexec/tilo/tilo-model-manager %{buildroot}%{_bindir}/tilo-model-manager
 install -Dpm 0755 apps/bin/tilo-model-gateway %{buildroot}%{_libexecdir}/tilo/tilo-model-gateway
 ln -s ../libexec/tilo/tilo-model-gateway %{buildroot}%{_bindir}/tilo-model-gateway
-install -Dpm 0755 apps/bin/tilo-model-http %{buildroot}%{_libexecdir}/tilo/tilo-model-http
-ln -s ../libexec/tilo/tilo-model-http %{buildroot}%{_bindir}/tilo-model-http
 install -Dpm 0755 apps/libexec/tilo-cli-shim %{buildroot}%{_libexecdir}/tilo-cli-shim
 install -Dpm 0755 apps/libexec/tilo-package-service %{buildroot}%{_libexecdir}/tilo-package-service
 install -Dpm 0755 apps/libexec/tilo-ush %{buildroot}%{_libexecdir}/tilo-ush
@@ -389,8 +387,6 @@ done
 %{_libexecdir}/tilo/tilo-model-manager
 %{_bindir}/tilo-model-gateway
 %{_libexecdir}/tilo/tilo-model-gateway
-%{_bindir}/tilo-model-http
-%{_libexecdir}/tilo/tilo-model-http
 %{_libexecdir}/tilo-cli-shim
 %{_libexecdir}/tilo-package-service
 %{_libexecdir}/tilo-ush

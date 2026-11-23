@@ -69,7 +69,7 @@ if (( run_cargo )); then
         --bin tilo-app-package --bin tilo-install --bin tilo-runtime-bundle \
         --bin tilo-cli-shim --bin tilo-package-service --bin app --bin tilo-ush \
         --bin tilo-model-catalog --bin tilo-model-manager --bin tilo-speech-worker \
-        --bin tilo-model-gateway --bin tilo-model-http --bin imager \
+        --bin tilo-model-gateway --bin imager \
         --bin fs --bin tilo-linux-vm --bin tilolang-process )
     say "cargo build --release (runtime host, no default features)"
     # The runtime package also owns developer tools such as `tilo-control`.
@@ -89,7 +89,7 @@ target_dir=${CARGO_TARGET_DIR:-$repo_root/target}
 target_dir=$(realpath -m "$target_dir")
 rel=${TILO_BIN_DIR:-$target_dir/release}
 for bin in tilo-session tilo-runtime tilolang-process fs imager tilo-launcher tilo-unlock-helper tilo-flight-recorder tilo-session-report tilo-install tilo-runtime-bundle \
-           tilo-cli-shim tilo-package-service tilo-ush tilo-model-manager tilo-model-gateway tilo-model-http \
+           tilo-cli-shim tilo-package-service tilo-ush tilo-model-manager tilo-model-gateway \
            tilo-linux-vm app; do
     [[ -x $rel/$bin ]] || { echo "missing $rel/$bin — run without --no-cargo" >&2; exit 1; }
 done
@@ -148,7 +148,6 @@ install -pm 0755 "$rel/tilo-app-package" "$app_stage/bin/tilo-app-package"
 install -pm 0755 "$rel/tilo-runtime-bundle" "$app_stage/bin/tilo-runtime-bundle"
 install -pm 0755 "$rel/tilo-model-manager" "$app_stage/bin/tilo-model-manager"
 install -pm 0755 "$rel/tilo-model-gateway" "$app_stage/bin/tilo-model-gateway"
-install -pm 0755 "$rel/tilo-model-http" "$app_stage/bin/tilo-model-http"
 install -pm 0755 "$rel/tilo-cli-shim" "$app_stage/libexec/tilo-cli-shim"
 install -pm 0755 "$rel/tilo-package-service" "$app_stage/libexec/tilo-package-service"
 install -pm 0755 "$rel/tilo-ush" "$app_stage/libexec/tilo-ush"

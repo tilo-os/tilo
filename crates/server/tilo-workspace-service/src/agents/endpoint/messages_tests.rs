@@ -4,14 +4,7 @@ use super::*;
 use crate::workspaces::person_model::protocol::Usage;
 
 fn asked(body: &Value) -> Asked {
-    match wanted(
-        "POST",
-        "/v1/messages?beta=true",
-        body.to_string().as_bytes(),
-    ) {
-        Ok(Wanted::Message(asked)) => *asked,
-        other => panic!("expected a model message, got {other:?}"),
-    }
+    super::asked(body.to_string().as_bytes()).expect("a Messages request")
 }
 
 fn answered(content: Vec<Content>, stop_reason: StopReason, usage: Usage) -> ModelResponse {
@@ -137,24 +130,16 @@ tilo_test_env::scenario! {
 
     phase what_is_no_model_message_is_refused_in_the_providers_shape;
     {
-        for (method, path, body, status, kind) in [
-            ("POST", "/v1/messages", &b"not json"[..], 400, "invalid_request_error"),
-            ("POST", "/v1/messages", &b"{\"model\": \"m\"}"[..], 400, "invalid_request_error"),
-            (
-                "POST",
-                "/v1/messages",
-                &b"{\"messages\": [{\"role\": \"system\", \"content\": \"x\"}]}"[..],
-                400,
-                "invalid_request_error",
-            ),
-            ("GET", "/v1/models", &b""[..], 404, "not_found_error"),
-            ("POST", "/v1/complete", &b"{}"[..], 404, "not_found_error"),
+        for body in [
+            &b"not json"[..],
+            &b"{\"model\": \"m\"}"[..],
+            &b"{\"messages\": [{\"role\": \"system\", \"content\": \"x\"}]}"[..],
         ] {
-            let refused = wanted(method, path, body).unwrap_err();
+            let why = super::asked(body).unwrap_err();
+            let refused = failure(400, "invalid_request_error", &why);
             let said: Value = serde_json::from_slice(&refused.body).unwrap();
-            assert_eq!(refused.status, status, "{method} {path}");
             assert_eq!(said["type"], "error");
-            assert_eq!(said["error"]["type"], kind, "{method} {path}");
+            assert_eq!(said["error"]["type"], "invalid_request_error");
             assert!(!said["error"]["message"].as_str().unwrap().is_empty());
         }
     }
@@ -163,11 +148,7 @@ tilo_test_env::scenario! {
     {
         let body = vec![b'x'; 4000];
         assert_eq!(
-            wanted("POST", "/v1/messages/count_tokens", &body).unwrap(),
-            Wanted::Count(1000)
-        );
-        assert_eq!(
-            serde_json::from_slice::<Value>(&counted(1000).body).unwrap(),
+            serde_json::from_slice::<Value>(&counted(&body).body).unwrap(),
             json!({"input_tokens": 1000})
         );
     }
@@ -296,7 +277,7 @@ tilo_test_env::scenario! {
             kind: ErrorKind::PermissionDenied,
             message: "Coder has used today's $5 limit.".into(),
         };
-        let (status, kind, words) = refused(&day);
+        let (status, kind, words) = refusal(&day);
         assert_eq!((status, kind), (403, "permission_error"), "a day's limit ends the turn");
         assert!(words.contains("Coder") && words.contains("$5"), "{words}");
         for (error, status, kind) in [
@@ -307,7 +288,7 @@ tilo_test_env::scenario! {
             (ErrorKind::ContextLimit, 400, "invalid_request_error"),
             (ErrorKind::CreditsExhausted, 402, "billing_error"),
         ] {
-            let (said_status, said_kind, words) = refused(&ModelError::new(error));
+            let (said_status, said_kind, words) = refusal(&ModelError::new(error));
             assert_eq!((said_status, said_kind), (status, kind), "{error:?}");
             assert!(!words.is_empty());
         }
@@ -316,6 +297,7 @@ tilo_test_env::scenario! {
             serde_json::from_slice::<Value>(&whole.body).unwrap(),
             json!({"type": "error", "error": {"type": "permission_error", "message": words}})
         );
-        assert_eq!(stream_begins(), (200, "text/event-stream"));
+        let answered = refused(&day);
+        assert_eq!((answered.status, answered.content_type), (403, "application/json"));
     }
 }

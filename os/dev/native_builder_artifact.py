@@ -24,7 +24,7 @@ ROOTS = ('out', 'usr/lib/tilo-runtime', 'usr/share/tilo-apps')
 ANCESTORS = {'usr', 'usr/lib', 'usr/share'}
 IMAGE_TREE = re.compile(r'usr/share/tilo-apps/pkgs/[0-9a-f]{64}/.+')
 PURPOSE = 'tilo-development-native-builder'
-REQUIRED = ('shell fs tilo-model-manager tilo-speech-worker tilo-model-gateway tilo-model-http tilo-secret-service '
+REQUIRED = ('shell fs tilo-model-manager tilo-speech-worker tilo-model-gateway tilo-secret-service '
             'tilo-server tilo-greeter tilo-installer '
             'tilo-firstboot-home-seeds tilo-installer-prepared-setup-extract tilo-prepared-setup '
             'tilo-runtime tilo-runtime-bundle tilo-launcher tilo-package-service tilo-unlock-helper tilo-rollback tilo-crypto tilo-image-trust tilo-device-key-init '

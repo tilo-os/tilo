@@ -75,7 +75,7 @@ class RpmBuildGraphTest(unittest.TestCase):
             for feature in support[i + 1].split(",")
         }
         self.assertIn("tilo-model-gateway/local-models", selected_features)
-        self.assertIn("tilo-model-http", bins)
+        self.assertIn("tilo-model-gateway", bins)
         expected = {
             "imager",
             "fs",
@@ -163,18 +163,17 @@ class RpmBuildGraphTest(unittest.TestCase):
             [
                 "-p", "tilo-model-gateway",
                 "--bin", "tilo-model-gateway",
-                "--bin", "tilo-model-http",
                 "--features", "tilo-model-gateway/local-models",
             ],
         )
-        # Install only the declared executables: HTTP admission/session inputs
+        # Install only the declared executables: session and credential inputs
         # belong to the caller, never to the image or development extension.
         with tempfile.TemporaryDirectory(prefix="model-gateway-package-") as temporary:
             root = Path(temporary)
             outputs = root / "outputs"
             outputs.mkdir()
             for name in (
-                "tilo-model-gateway", "tilo-model-http",
+                "tilo-model-gateway",
                 "sessions.json", "credentials.json",
             ):
                 (outputs / name).write_text(name)
@@ -195,9 +194,7 @@ class RpmBuildGraphTest(unittest.TestCase):
                 },
                 {
                     "usr/bin/tilo-model-gateway",
-                    "usr/bin/tilo-model-http",
                     "usr/libexec/tilo/tilo-model-gateway",
-                    "usr/libexec/tilo/tilo-model-http",
                 },
             )
             for binary in (destination / "usr/libexec/tilo").iterdir():
@@ -212,7 +209,6 @@ class RpmBuildGraphTest(unittest.TestCase):
                 },
                 {
                     "tilo-model-gateway": "../libexec/tilo/tilo-model-gateway",
-                    "tilo-model-http": "../libexec/tilo/tilo-model-http",
                 },
             )
 
