@@ -4320,10 +4320,10 @@ run = "bash tools/ci/windows/build.sh runtime {arch} /target/windows/sdk/sdk-{ar
 needs = ["build/windows-sdk-{arch}"]
 image = "registry.tilo.so/tilo/tilo-builder@sha256:da7c1556f8a38b33e5e85f8086bbd162194a2377e56898481000cefb4412fa9d"
 outputs = ["/target/windows/{arch}/runtime/tilo-runtime.exe", "/target/windows/{arch}/runtime/tilo-runtime.exe.sha256"]
-# The device daemon and both tilolang runtime programs, cross-built for a
-# platform nothing else here builds: too slow for every head, but the only
-# thing that keeps the Windows port compiling, so main's newest head gets it
-# whenever t has room, bisected when it breaks.
+# The device daemon and both tilolang runtime programs cross-built for a
+# platform no other check builds them for: too slow for every head, but the
+# only thing that keeps the Windows port compiling, so main's newest head
+# gets it whenever t has room, bisected when it breaks.
 on = ["idle"]
 [check.matrix]
 arch = ["x86_64", "aarch64"]

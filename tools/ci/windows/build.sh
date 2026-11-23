@@ -101,8 +101,8 @@ print(paths[0])' "${TMPDIR:-/tmp}/imager-tests.json")"
     # The daemon and the tilolang runtime programs of a Tilo desktop: cross-built
     # so that a platform arm which stops compiling is a failed check, and so the
     # x86_64 daemon can be run under Wine to prove it refuses legibly. The
-    # daemon's windows port is partial: it compiles, and its CLI answers the
-    # refusal until identity, sync and sandbox have Windows bodies.
+    # daemon's Windows port is partial: it compiles, and its CLI answers the
+    # refusal until its services have Windows bodies.
     cargo xwin build --locked -p tilo-runtime -p tilolang-app -p tilolang-process --target "$target"
     mkdir -p "$out"
     install -m 0644 "${CARGO_TARGET_DIR:-target}/$target/debug/tilo-runtime.exe" "$out/tilo-runtime.exe"
