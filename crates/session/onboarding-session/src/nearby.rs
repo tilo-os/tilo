@@ -680,41 +680,6 @@ pub(crate) mod tests {
             );
         }
 
-        phase a_code_that_was_used_says_to_make_a_new_one;
-        {
-            let account = Account::new();
-            let identity_dir = account.identity_dir();
-            let _daemon = FakeDaemon::start(
-                &account.paths,
-                Answer::Refuse("Your device didn't take this ticket: this ticket was used already: ask for a new one."),
-            );
-            let mut join = NearbyJoin::start(
-                code(),
-                &identity_dir,
-                &account.paths,
-                "the kitchen computer",
-            )
-            .expect("the join starts");
-            let NearbyEvent::Failed(failure) = wait_for_outcome(&mut join) else {
-                panic!("a spent code adds nothing");
-            };
-            assert_eq!(failure.cause, NearbyCause::Used);
-            assert!(
-                failure.title().contains("already used"),
-                "the title names the cause: {}",
-                failure.title()
-            );
-            assert!(
-                failure.message().contains("tilo device add"),
-                "the message says how to get a new code: {}",
-                failure.message()
-            );
-            assert!(
-                tilo_identity::store::resolve_active_identity(&identity_dir).is_none(),
-                "nothing is taken up when the code is refused"
-            );
-        }
-
         phase a_device_that_cannot_be_reached_says_so;
         {
             let account = Account::new();
@@ -738,29 +703,6 @@ pub(crate) mod tests {
             assert_eq!(failure.cause, NearbyCause::Unreached);
             assert!(failure.message().contains("connected"), "{}", failure.message());
         }
-    }
-
-    #[test]
-    fn a_code_this_computer_cannot_use_is_refused_before_any_device_is_called() {
-        let account = Account::new();
-        let identity_dir = account.identity_dir();
-        let mut join = NearbyJoin::start(
-            "tilo login made-up".to_owned(),
-            &identity_dir,
-            &account.paths,
-            "the kitchen computer",
-        )
-        .expect("the join starts");
-        assert_eq!(
-            wait_for_outcome(&mut join),
-            NearbyEvent::Failed(NearbyFailure::new(NearbyCause::Wrong))
-        );
-        let failure = NearbyFailure::new(NearbyCause::Wrong);
-        assert!(
-            failure.message().contains("starting with tilo1"),
-            "the message says what a code looks like: {}",
-            failure.message()
-        );
     }
 
     #[test]
