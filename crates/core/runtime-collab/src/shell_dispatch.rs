@@ -59,9 +59,7 @@ impl ShellDispatch {
         workspace: Option<String>,
         message: RemoteActionMessage,
     ) -> Result<RemoteActionMessage, ActionCallError> {
-        let unavailable = |reason: String| ActionCallError::Unavailable {
-            reason: reason.into(),
-        };
+        let unavailable = |reason: String| ActionCallError::Unavailable { reason };
         let frame = RemoteActionFrame::new(message)
             .encode()
             .map_err(|error| unavailable(error.to_string()))?;
@@ -380,7 +378,11 @@ impl ShellClient {
 
     /// Tell the daemon `provider` offers what `catalogue` lists, answered with the handle its
     /// calls arrive on.
-    async fn offer(&self, provider: &str, catalogue: &CataloguePage) -> Result<Handle, NotAvailable> {
+    async fn offer(
+        &self,
+        provider: &str,
+        catalogue: &CataloguePage,
+    ) -> Result<Handle, NotAvailable> {
         let catalogue = serde_json::to_string(catalogue)
             .map_err(|error| NotAvailable::Refused(error.to_string()))?;
         match self
@@ -399,7 +401,10 @@ impl ShellClient {
 }
 
 /// `ask`, a call of a provider the shell serves, answered by `answers` as the caller it names.
-async fn serve(answers: &Arc<dyn ActionProvider + Send + Sync>, ask: Ask) -> Result<Answer, String> {
+async fn serve(
+    answers: &Arc<dyn ActionProvider + Send + Sync>,
+    ask: Ask,
+) -> Result<Answer, String> {
     let Ask::Action {
         frame,
         caller,
