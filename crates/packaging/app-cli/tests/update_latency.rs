@@ -1,5 +1,4 @@
-//! What `app update` costs on a network far away: a registry that answers slowly, many apps, and the
-//! requests each update makes.
+//! What `app update` fetches and costs: only what changed, over a registry that answers slowly.
 
 #![allow(
     clippy::unwrap_used,
@@ -190,16 +189,18 @@ pub(crate) fn snapshot(
     snapshot
 }
 
-/// Publish `version` of every app, each with the compressed twin the store
-/// keeps beside a package, and return the registry entries.
+/// Publish the given version of every app, each with the compressed twin the
+/// store keeps beside a package, and return the registry entries.
 fn publish(
     registry: &FarRegistry,
     base: &str,
-    version: &str,
+    versions: &[&str],
 ) -> Vec<registry_types::RegistryEntry> {
-    (0..APPS)
-        .map(|index| {
-            let id = format!("so.tilo.update-latency-{index}");
+    versions
+        .iter()
+        .enumerate()
+        .map(|(index, version)| {
+            let id = app_id(index);
             let tapp = author_tapp_version(&id, version, &test_publisher());
             let path = format!("/artifacts/{id}-{version}.tapp");
             registry.put(
@@ -212,8 +213,19 @@ fn publish(
         .collect()
 }
 
+fn app_id(index: usize) -> String {
+    format!("so.tilo.update-latency-{index}")
+}
+
+fn app_update() -> std::process::Output {
+    std::process::Command::new(tilo_test_env::package_binary!("app"))
+        .arg("update")
+        .output_locked()
+        .unwrap()
+}
+
 #[test]
-fn updating_every_app_overlaps_downloads_and_reuses_connections() {
+fn an_update_fetches_only_what_changed_and_overlaps_the_downloads_it_needs() {
     let registry = FarRegistry::default();
     let base = registry.start();
     let owner = SigningKey::from_bytes(&[23_u8; 32]);
@@ -224,22 +236,78 @@ fn updating_every_app_overlaps_downloads_and_reuses_connections() {
         &[("XDG_DATA_HOME", data.path())],
     );
 
-    let first = snapshot(publish(&registry, &base, "1.0.0"), &owner, None);
-    registry.put("/entries", serde_json::to_vec(&first).unwrap());
+    let versions = vec!["1.0.0"; APPS];
+    let first = snapshot(publish(&registry, &base, &versions), &owner, None);
+    registry.put_catalogue(&first);
+    let started = Instant::now();
     for offer in app_cli::available().apps {
         app_cli::install::install_app(&offer).unwrap();
     }
+    eprintln!(
+        "perf installing {APPS} apps one by one: {:?}",
+        started.elapsed()
+    );
     assert_eq!(package_store::list_installed().unwrap().len(), APPS);
+    registry.take_seen();
 
-    let second = snapshot(publish(&registry, &base, "2.0.0"), &owner, Some(&first));
-    registry.put("/entries", serde_json::to_vec(&second).unwrap());
+    // Nothing changed: the catalogue is asked once and answers not-modified.
+    let not_modified = registry.not_modified();
+    let nothing = app_update();
+    assert!(
+        nothing.status.success(),
+        "app update: {}\n{}",
+        String::from_utf8_lossy(&nothing.stdout),
+        String::from_utf8_lossy(&nothing.stderr)
+    );
+    assert_eq!(registry.take_seen(), ["/entries"]);
+    assert_eq!(registry.not_modified() - not_modified, 1);
+
+    // One app changed: exactly its package is fetched, and only it moves.
+    let mut one_changed = versions.clone();
+    one_changed[1] = "1.0.1";
+    let second = snapshot(
+        publish(&registry, &base, &one_changed),
+        &owner,
+        Some(&first),
+    );
+    registry.put_catalogue(&second);
+    let one = app_update();
+    assert!(
+        one.status.success(),
+        "app update: {}\n{}",
+        String::from_utf8_lossy(&one.stdout),
+        String::from_utf8_lossy(&one.stderr)
+    );
+    let seen = registry.take_seen();
+    let fetched = artifacts(&seen);
+    assert_eq!(fetched.len(), 1, "{fetched:?}");
+    assert!(
+        fetched
+            .first()
+            .is_some_and(|path| path.contains(&format!("{}-1.0.1", app_id(1)))),
+        "{fetched:?}"
+    );
+    let rows = package_store::list_installed().unwrap();
+    assert_eq!(rows.len(), APPS);
+    for row in &rows {
+        let expected = if row.id == app_id(1) {
+            "1.0.1"
+        } else {
+            "1.0.0"
+        };
+        assert_eq!(row.version, expected, "{}", row.id);
+    }
+
+    // Every app changed, over a far registry: one catalogue for the whole run,
+    // downloads that overlap instead of queueing, and one connection carrying
+    // the next download once open.
+    let all_new = vec!["2.0.0"; APPS];
+    let third = snapshot(publish(&registry, &base, &all_new), &owner, Some(&second));
+    registry.put_catalogue(&third);
     registry.far.store(true, Ordering::SeqCst);
 
     let started = Instant::now();
-    let update = std::process::Command::new(tilo_test_env::package_binary!("app"))
-        .arg("update")
-        .output_locked()
-        .unwrap();
+    let update = app_update();
     let elapsed = started.elapsed();
     assert!(
         update.status.success(),
@@ -271,4 +339,11 @@ fn updating_every_app_overlaps_downloads_and_reuses_connections() {
         connections <= app_cli::install::PARALLEL_DOWNLOADS + 1,
         "{connections} connections for {requests} requests"
     );
+}
+
+fn artifacts(seen: &[String]) -> Vec<&str> {
+    seen.iter()
+        .map(String::as_str)
+        .filter(|path| path.starts_with("/artifacts/"))
+        .collect()
 }

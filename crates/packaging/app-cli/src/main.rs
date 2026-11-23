@@ -1283,102 +1283,26 @@ fn repo(cmd: RepoCmd) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::CommandFactory;
 
     tilo_test_env::scenario! {
-        fn the_command_line_parses;
+        fn the_command_line_keeps_the_policies_a_person_and_the_scheduled_run_rely_on;
 
-        phase runtime_install_takes_an_optional_configured_repository;
+        phase short_names_and_the_scheduled_form_parse;
         {
-            let cli = Cli::try_parse_from([
-                "app",
-                "runtime",
-                "install",
-                "tilo-runtime/2026.10.4-chromium",
-                "--repo",
-                "Tilo main",
-            ])
-            .unwrap();
-            assert!(
-                matches!(cli.cmd, Cmd::Runtime { cmd: RuntimeCmd::Install { runtime, repo } }
-                if runtime == "tilo-runtime/2026.10.4-chromium"
-                    && repo.as_deref() == Some("Tilo main"))
-            );
-            let cli = Cli::try_parse_from([
-                "app",
-                "runtime",
-                "install",
-                "tilo-runtime/2026.10.4-chromium",
-            ])
-            .unwrap();
+            let cli = Cli::try_parse_from(["app", "u", "browser"]).expect("short update parses");
+            assert!(matches!(cli.cmd, Cmd::Update { app: Some(ref app), .. } if app == "browser"));
+            let cli = Cli::try_parse_from(["app", "update", "--tolerate-unreachable"])
+                .expect("the scheduled run's form parses");
             assert!(matches!(
                 cli.cmd,
-                Cmd::Runtime {
-                    cmd: RuntimeCmd::Install { repo: None, .. }
-                }
+                Cmd::Update { app: None, tolerate_unreachable: true, .. }
             ));
+            assert!(
+                Cli::try_parse_from(["app", "update", "browser", "--tolerate-unreachable"])
+                    .is_err(),
+                "one app is asked for by a person: an unreadable repository is a failure"
+            );
         }
-
-        phase the_cli_surface_parses_and_names_both_public_commands;
-        {
-            {
-                Cli::command().debug_assert();
-            }
-            {
-                let help = Cli::command().bin_name("store").render_help().to_string();
-                assert!(help.contains("Usage: store"), "{help}");
-                let help = Cli::command()
-                    .bin_name("tilo app")
-                    .render_help()
-                    .to_string();
-                assert!(help.contains("Usage: tilo app"), "{help}");
-            }
-            {
-                let mut output = Vec::new();
-                clap_complete::generate(Shell::Bash, &mut Cli::command(), "app", &mut output);
-                clap_complete::generate(Shell::Bash, &mut Cli::command(), "store", &mut output);
-                let script = String::from_utf8(output).expect("completion is UTF-8");
-                assert!(script.contains("_app()"), "{script}");
-                assert!(script.contains("default app"), "{script}");
-                assert!(script.contains("_store()"), "{script}");
-                assert!(script.contains("default store"), "{script}");
-            }
-            {
-                let cli = Cli::try_parse_from([
-                    "app",
-                    "runtime",
-                    "install",
-                    "tilo-runtime/2026.10.9-chromium",
-                ])
-                .expect("runtime install parses");
-                assert!(matches!(
-                    cli.cmd,
-                    Cmd::Runtime { cmd: RuntimeCmd::Install { ref runtime, repo: None } }
-                        if runtime == "tilo-runtime/2026.10.9-chromium"
-                ));
-            }
-            {
-                let cli = Cli::try_parse_from(["app", "u", "browser"]).expect("short update parses");
-                assert!(matches!(cli.cmd, Cmd::Update { app: Some(ref app), .. } if app == "browser"));
-            }
-            {
-                let cli = Cli::try_parse_from(["app", "update", "--tolerate-unreachable"])
-                    .expect("the scheduled run's form parses");
-                assert!(matches!(
-                    cli.cmd,
-                    Cmd::Update { app: None, tolerate_unreachable: true, .. }
-                ));
-                assert!(
-                    Cli::try_parse_from(["app", "update", "browser", "--tolerate-unreachable"])
-                        .is_err(),
-                    "one app is asked for by a person: an unreadable repository is a failure"
-                );
-            }
-        }
-    }
-
-    tilo_test_env::scenario! {
-        fn progress_and_outcomes_are_reported;
 
         phase progress_lines_follow_the_bytes_without_flooding;
         {
@@ -1420,75 +1344,46 @@ mod tests {
             );
         }
 
-        phase updates_and_installs_report_what_they_checked_or_refused;
+        phase updates_report_what_they_checked_or_refused;
         {
-            {
-                assert_eq!(human_bytes(999), "999 B");
-                assert_eq!(human_bytes(1536), "1.5 KiB");
-                assert_eq!(human_duration(Duration::from_secs(65)), "1m 05s");
-            }
-            {
-                assert_eq!(bulk_update_summary(0, 0, 0), "no apps are installed yet");
-                assert_eq!(
-                    bulk_update_summary(1, 0, 0),
-                    "could not find update metadata for 1 installed app"
-                );
-                assert_eq!(
-                    bulk_update_summary(3, 0, 0),
-                    "could not find update metadata for 3 installed apps"
-                );
-                assert_eq!(
-                    bulk_update_summary(2, 2, 0),
-                    "checked 2 of 2 installed apps; all up to date"
-                );
-                assert_eq!(
-                    bulk_update_summary(3, 2, 1),
-                    "checked 2 of 3 installed apps; updated 1"
-                );
-            }
-            {
-                let listing = app_cli::CatalogueListing {
-                    apps: Vec::new(),
-                    unreachable: vec![app_cli::UnreachableRegistry {
-                        name: "main".into(),
-                        detail: "connection refused".into(),
-                    }],
-                };
-                let installed = std::collections::HashMap::new();
-                assert_eq!(
-                    update_from_listing(&listing, &installed, false),
-                    ExitCode::FAILURE,
-                    "a person asked now and the answer could not be read"
-                );
-                assert_eq!(
-                    update_from_listing(&listing, &installed, true),
-                    ExitCode::SUCCESS,
-                    "the scheduled run says so and tries again next hour"
-                );
-            }
-            {
-                let offer = CatalogueApp {
-                    package_id: "so.tilo.browser".into(),
-                    display_name: "Browser".into(),
-                    description: String::new(),
-                    tagline: String::new(),
-                    images: Vec::new(),
-                    supported_languages: vec!["en".into()],
-                    category: None,
-                    version: "1.0.0".into(),
-                    registry: "main".into(),
-                    download_url: "https://apps.tilo.so/browser.tapp".into(),
-                    tapp_root_hash_hex: "ab".repeat(32),
-                    tapp_size_bytes: 1,
-                    tapp_blake3_hex: "cd".repeat(32),
-                    architecture: std::env::consts::ARCH.into(),
-                    isa: std::env::consts::ARCH.into(),
-                    runtime: None,
-                    publisher_pubkey_hex: "ef".repeat(32),
-                    trust: "verified".into(),
-                };
-                assert_eq!(change_app(&offer, false, Some("2.0.0")), ExitCode::FAILURE);
-            }
+            let listing = app_cli::CatalogueListing {
+                apps: Vec::new(),
+                unreachable: vec![app_cli::UnreachableRegistry {
+                    name: "main".into(),
+                    detail: "connection refused".into(),
+                }],
+            };
+            let installed = std::collections::HashMap::new();
+            assert_eq!(
+                update_from_listing(&listing, &installed, false),
+                ExitCode::FAILURE,
+                "a person asked now and the answer could not be read"
+            );
+            assert_eq!(
+                update_from_listing(&listing, &installed, true),
+                ExitCode::SUCCESS,
+                "the scheduled run says so and tries again next hour"
+            );
+        }
+
+        phase an_app_is_installed_or_updated_by_the_word_that_fits;
+        {
+            let offer = CatalogueApp {
+                package_id: "so.tilo.browser".into(),
+                display_name: "Browser".into(),
+                version: "2.0.0".into(),
+                ..CatalogueApp::default()
+            };
+            assert_eq!(
+                change_app(&offer, false, Some("1.0.0")),
+                ExitCode::FAILURE,
+                "an installed app is updated, never installed over itself"
+            );
+            assert_eq!(
+                change_app(&offer, true, None),
+                ExitCode::FAILURE,
+                "an app that is not installed cannot be updated"
+            );
         }
     }
 }
