@@ -43,3 +43,55 @@ pub fn hand_down(command: &mut Command, mut handed: Vec<(RawFd, RawFd)>, latency
         });
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[allow(clippy::unwrap_used, reason = "test fixtures")]
+mod tests {
+    use runtime_portal::process_link::{self, CHILD_FD, FromProcess, Packet as _};
+    use std::os::fd::AsRawFd as _;
+    use std::process::{Command, Stdio};
+
+    /// Set in the process [`a_link_handed_as_stdin_reaches_the_sandbox`] starts.
+    const TAKER: &str = "TILO_LAUNCHER_LINK_TAKER";
+
+    /// A launcher started as the session starts it ([`process_link::spawn`], the link on its
+    /// stdin) takes the link and hands it to the program it starts with stdin `/dev/null`, as the
+    /// tilolang host's sandbox is: the program finds the link at [`CHILD_FD`], and the link
+    /// answers the session.
+    #[test]
+    fn a_link_handed_as_stdin_reaches_the_sandbox() {
+        if std::env::var_os(TAKER).is_some() {
+            let link = process_link::take().unwrap();
+            let mut sandbox = Command::new("sh");
+            sandbox
+                .args([
+                    "-c",
+                    &format!("[ -S /proc/self/fd/{CHILD_FD} ] && ! [ -S /proc/self/fd/0 ]"),
+                ])
+                .stdin(Stdio::null());
+            super::hand_down(&mut sandbox, vec![(link.as_raw_fd(), CHILD_FD)], false);
+            assert!(
+                sandbox.status().unwrap().success(),
+                "the link is at its slot, not stdin"
+            );
+            FromProcess::Serves.send(&link).unwrap();
+            return;
+        }
+        let mut launcher = Command::new(std::env::current_exe().unwrap());
+        launcher
+            .args([
+                "--exact",
+                "inherit::tests::a_link_handed_as_stdin_reaches_the_sandbox",
+            ])
+            .env(TAKER, "1");
+        let (link, mut child) = process_link::spawn(launcher).unwrap();
+        assert!(
+            child.wait().unwrap().success(),
+            "the launcher handed its link on"
+        );
+        assert!(
+            process_link::take_serves(&link).unwrap(),
+            "the taken link answers"
+        );
+    }
+}

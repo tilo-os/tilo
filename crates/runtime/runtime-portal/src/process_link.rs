@@ -539,6 +539,11 @@ pub fn try_clone(link: &Descriptor) -> io::Result<Descriptor> {
 }
 
 /// The link the launcher handed this process, taken once.
+///
+/// A link handed as stdin ([`spawn`]) is moved off it, and stdin reads `/dev/null` from then on:
+/// a child this process starts sets up its stdin before anything else, which would otherwise
+/// replace the link before the child is handed it, and a child left the default stdin would
+/// share the link.
 #[must_use]
 pub fn take() -> Option<Descriptor> {
     #[cfg(target_os = "linux")]
@@ -550,10 +555,36 @@ pub fn take() -> Option<Descriptor> {
         }
         // SAFETY: the launcher handed this descriptor to the process for the link alone, and the
         // flag above lets it be owned exactly once.
-        Some(unsafe { std::os::fd::FromRawFd::from_raw_fd(fd) })
+        let link: Descriptor = unsafe { std::os::fd::FromRawFd::from_raw_fd(fd) };
+        if fd != 0 {
+            return Some(link);
+        }
+        match off_stdin(link) {
+            Ok(link) => Some(link),
+            Err(error) => {
+                eprintln!("tilo-portal: the process link could not be moved off stdin: {error}");
+                None
+            }
+        }
     }
     #[cfg(not(target_os = "linux"))]
     None
+}
+
+/// `link`, handed as descriptor 0, at a descriptor of its own, with `/dev/null` at 0.
+#[cfg(target_os = "linux")]
+fn off_stdin(link: Descriptor) -> io::Result<Descriptor> {
+    use std::os::fd::{AsRawFd as _, IntoRawFd as _};
+    let moved = link.try_clone()?;
+    let null = std::fs::File::open("/dev/null")?;
+    // SAFETY: both are this process's own descriptors; dup2 replaces the link at 0 with
+    // `/dev/null` in one step, so 0 is never closed in between.
+    if unsafe { libc::dup2(null.as_raw_fd(), 0) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    // Descriptor 0 is `/dev/null` now, stdin's own: dropping `link` would close it.
+    let _ = link.into_raw_fd();
+    Ok(moved)
 }
 
 /// Start `command` with the other end of a new link as its stdin, named by [`FD_ENV`] ([`take`]
