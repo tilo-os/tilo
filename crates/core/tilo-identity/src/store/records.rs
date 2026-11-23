@@ -2866,7 +2866,7 @@ mod identity_record_vector_tests {
         }
 
         let dir = tempfile::tempdir().unwrap();
-        super::ensure_private_dir(dir.path()).unwrap();
+        tilo_files::native::private::directory(dir.path()).unwrap();
         let primary = dir.path().join("primary.json");
         super::replace(&primary, schema_1, super::Privacy::OwnerOnly).unwrap();
         signs_as_the_root(&load_from_bytes(schema_1).unwrap());
