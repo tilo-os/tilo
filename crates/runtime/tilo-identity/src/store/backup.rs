@@ -469,15 +469,19 @@ fn new_temp_path(parent: &Path) -> io::Result<PathBuf> {
     ))
 }
 
-/// Atomically publish without replacement. Linux's `renameat2` is the normal
-/// path. Filesystems that do not implement it may still support hard links;
-/// that fallback retains no-replace semantics and is followed by a directory
+/// Atomically publish without replacement through
+/// [`tilo_files::native::rename_file_noreplace`]. On Linux, Android, and Apple
+/// systems it attempts the exclusive rename (`renameat2(RENAME_NOREPLACE)` /
+/// `renameatx_np(RENAME_EXCL)`) and falls back to a no-follow hard link and
+/// unlink on `EINVAL`, `ENOSYS`, or `ENOTSUP`; other targets take the
+/// hard-link-then-unlink path directly. Unlinking `temp` failing after the
+/// link is returned as an error, and callers follow success with a directory
 /// fsync. A filesystem supporting neither is refused rather than risking an
 /// attacker swapping in a destination between a preflight check and rename.
 fn publish_new_file(temp: &Path, destination: &Path) -> io::Result<()> {
-    match host_fs::rename_file_noreplace(temp, destination)? {
-        host_fs::FileRename::Moved => Ok(()),
-        host_fs::FileRename::SourceUnlinkFailed(error) => Err(error),
+    match tilo_files::native::rename_file_noreplace(temp, destination)? {
+        tilo_files::native::FileRename::Moved => Ok(()),
+        tilo_files::native::FileRename::SourceUnlinkFailed(error) => Err(error),
     }
 }
 

@@ -168,10 +168,13 @@ pub(super) fn bind_socket_stage(
 }
 
 pub(super) fn rename_socket_noreplace(source: &Path, destination: &Path) -> std::io::Result<()> {
-    match host_fs::rename_file_noreplace(source, destination) {
-        // Once the Linux fallback hard link succeeds, the destination socket
-        // is published even if unlinking the staging name then fails.
-        Ok(host_fs::FileRename::Moved | host_fs::FileRename::SourceUnlinkFailed(_)) => Ok(()),
+    match tilo_files::native::rename_file_noreplace(source, destination) {
+        // Once the fallback hard link succeeds, the destination socket is
+        // published even if unlinking the staging name then fails.
+        Ok(
+            tilo_files::native::FileRename::Moved
+            | tilo_files::native::FileRename::SourceUnlinkFailed(_),
+        ) => Ok(()),
         Err(error) if error.raw_os_error() == Some(libc::EEXIST) => Err(std::io::Error::new(
             std::io::ErrorKind::AddrInUse,
             "broker socket destination appeared during publication",

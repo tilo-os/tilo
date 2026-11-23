@@ -992,10 +992,13 @@ pub fn load_or_create_device_key(
 // caller's temporary-file cleanup without relying on a diverging result value.
 #[cfg(not(windows))]
 fn claim_identity_name(source: &Path, destination: &Path) -> io::Result<()> {
-    match host_fs::rename_file_noreplace(source, destination) {
-        // Once the Linux fallback hard link succeeds, the destination holds
-        // the key even if unlinking the temporary name then fails.
-        Ok(host_fs::FileRename::Moved | host_fs::FileRename::SourceUnlinkFailed(_)) => Ok(()),
+    match tilo_files::native::rename_file_noreplace(source, destination) {
+        // Once the fallback hard link succeeds, the destination holds the key
+        // even if unlinking the temporary name then fails.
+        Ok(
+            tilo_files::native::FileRename::Moved
+            | tilo_files::native::FileRename::SourceUnlinkFailed(_),
+        ) => Ok(()),
         Err(error) => Err(error),
     }
 }

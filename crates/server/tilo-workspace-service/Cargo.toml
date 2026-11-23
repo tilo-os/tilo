@@ -34,7 +34,7 @@ session-pages = ["device-keys", "dep:tilo-session-client"]
 fixture-servers = ["tilo-web-search?/fixture-servers"]
 
 # A device serves its apps: their wire, launch, actions, invocation journal and consent.
-apps = ["dep:host-fs", "dep:launcher", "dep:parking_lot", "dep:registry-types", "dep:reqwest", "dep:runtime-collab", "dep:tilo-canonical-json", "dep:tilo-identity-client", "dep:runtime-portal", "dep:rustix", "dep:tilo-advisory-lock", "dep:tilo-app-package", "content", "dep:tilo-identity", "device-keys", "dep:collaboration", "dep:wire-frame", "postcard/alloc", "tilo-files/json", "dep:jiff"]
+apps = ["dep:launcher", "dep:parking_lot", "dep:registry-types", "dep:reqwest", "dep:runtime-collab", "dep:tilo-canonical-json", "dep:tilo-identity-client", "dep:runtime-portal", "dep:rustix", "dep:tilo-advisory-lock", "dep:tilo-app-package", "content", "dep:tilo-identity", "device-keys", "dep:collaboration", "dep:wire-frame", "postcard/alloc", "tilo-files/json", "dep:jiff"]
 
 [dependencies]
 # The device's one store, which apps write and read their resources in.
@@ -131,7 +131,6 @@ bytes = { workspace = true, optional = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
-host-fs = { path = "../../system/host-fs", optional = true }
 # The device's link, its files and its processes: what a page reaches through
 # its own host instead, and holds over its own durable store.
 iroh.workspace = true
