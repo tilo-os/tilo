@@ -31,9 +31,9 @@ TimeoutStopSec=10s
 # unit a user namespace of its own (PrivateUsers) for any mount, IPC, clock,
 # hostname or control-group protection, and in it root is unmapped: the key's
 # owner reads as 65534, the key reader refuses it, and the Terminal gets no
-# shell. So the unit sandboxes only with what needs no namespace. The guest
-# needs no more from it: Bubblewrap unshares the guest and ush installs seccomp
-# and Landlock before starting its shell.
+# shell. So the unit sets no namespace directive: the supervisor runs as the
+# person with no capabilities and reaches nothing more without them. The guest
+# is confined by Bubblewrap, then ush's seccomp and Landlock, before its shell.
 RestrictRealtime=yes
 LockPersonality=yes
 RemoveIPC=yes
