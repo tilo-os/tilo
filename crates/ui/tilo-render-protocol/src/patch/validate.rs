@@ -759,7 +759,6 @@ impl<'a> Validator<'a> {
                 if answer.len() > super::MAX_PAGE_BYTES {
                     return Err(Refused::invalid("over the limit of bytes in a page answer"));
                 }
-                Ok(())
             }
             ToApp::Back
             | ToApp::Answer(_)
