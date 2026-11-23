@@ -1202,6 +1202,17 @@ impl AccountsPane {
         self
     }
 
+    /// The session the pane keeps a typed password in the workspace's vault through, and asks
+    /// for an account's sign-in: the one its window captured, or a test's stand-in.
+    #[must_use]
+    pub fn with_session_secrets(
+        mut self,
+        session: ui::collaboration::browser_service_sessions::Client,
+    ) -> Self {
+        self.session_secrets = Some(session);
+        self
+    }
+
     #[must_use]
     pub fn with_browser_opener(mut self, opener: std::sync::Arc<dyn BrowserOpener>) -> Self {
         self.opener = opener;
