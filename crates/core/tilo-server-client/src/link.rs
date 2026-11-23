@@ -75,7 +75,6 @@ impl Purpose {
     /// iroh is dialled by the live session itself, which owns its ALPN.
     const fn alpn(self) -> Option<&'static [u8]> {
         match self {
-            Self::Session => Some(tilo_server_protocol::transport::ALPN),
             Self::Certify => Some(tilo_server_protocol::certify::CERTIFY_ALPN),
             Self::LiveSession => None,
             Self::Records => Some(tilo_server_protocol::transport::DIRECT_ALPN),

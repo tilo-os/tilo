@@ -256,7 +256,7 @@ impl Unanswering {
         let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
             .relay_mode(iroh::RelayMode::Disabled)
             .secret_key(secret)
-            .alpns(vec![tilo_server_protocol::transport::ALPN.to_vec()])
+            .alpns(vec![tilo_server_protocol::transport::DIRECT_ALPN.to_vec()])
             .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
             .unwrap()
             .bind()
