@@ -78,6 +78,10 @@ type Message {
     /// The reactions it had in the native Chat, each emoji with how many reacted with it: who
     /// reacted there is not carried, since this app names people only as its own members.
     reacted: Text = ""
+    /// What people gave it where it was written, for a message relayed here from another
+    /// service: each emoji, who gave it there, and the name that place shows for them. Kept
+    /// apart from `reactions`, which holds this app's members, and shown under their name there.
+    relayed_reactions: Collection<RelayedReaction>
     /// The files it carries, handed over with it: what a bridge relays from another service, and
     /// what anyone sends with a message.
     attachments: Collection<Attached>
@@ -144,6 +148,16 @@ type Attached {
     size: Int = 0
     /// The address its bytes read at: `tilo-blob://<hash>`.
     blob: Text
+}
+
+/// A reaction someone gave a message where it was written, relayed here with the message: its
+/// emoji, the account there that gave it, and the name that place shows for them.
+type RelayedReaction {
+    emoji: Text
+    /// Who gave it there, as the relay names them: the service and the account (`discord/3001`).
+    persona: Text
+    /// The name that place shows for them.
+    by: Text
 }
 
 /// A piece of a message kept as parts rather than as rich text: its text, or a block's source.
@@ -617,6 +631,41 @@ fn said_from(emoji: List<Text>, at: Int, told: List<Text>) -> Text {
     } else { "" }
 }
 
+/// The reactions a message was given where it was written (`reactions`), as words: each emoji
+/// with who gave it there, in the order they first gave it.
+fn relayed_said(reactions: List<RelayedReaction>) -> Text {
+    relayed_from(reactions, 0, [])
+}
+
+/// [`relayed_said`] of `all` from the `at`th, past the emoji already `told`.
+fn relayed_from(all: List<RelayedReaction>, at: Int, told: List<Text>) -> Text {
+    if let r = all.at(at) {
+        if told.contains(r.emoji) {
+            relayed_from(all, at + 1, told)
+        } else {
+            let here = "{r.emoji} {relayed_names(all, r.emoji)}"
+            let rest = relayed_from(all, at + 1, [told, [r.emoji]].flat_map(x -> x))
+            if rest == "" { here } else { "{here}  {rest}" }
+        }
+    } else { "" }
+}
+
+/// Who `all` says gave `emoji`, by the names they go by there, the first three and how many
+/// others when there are more.
+fn relayed_names(all: List<RelayedReaction>, emoji: Text) -> Text {
+    let names = all.filter(r -> r.emoji == emoji).map(r -> r.by)
+    if names.len() <= 3 {
+        names.join(", ")
+    } else {
+        let others = names.len() - 3
+        if others == 1 {
+            "{names.take(3).join(", ")} and one other"
+        } else {
+            "{names.take(3).join(", ")} and {others} others"
+        }
+    }
+}
+
 /// The emoji a native reaction's key names: what stands before its first separator. The key
 /// ends in who reacted, written in hex, after the last one.
 fn emoji_of(key: Text) -> Text {
@@ -761,6 +810,47 @@ action relay(
         )
     }
     sent
+}
+
+/// Relays a reaction someone gave a message where it was written, as that place names them: the
+/// counterpart of `relay` for a reaction. A bridge carrying another service's conversation here
+/// makes these, so a reaction made there shows under the person's name rather than the bridge's;
+/// `given` false takes it back. The reaction's history names the bridge, and the message says
+/// whom it relays.
+action relay_reaction(
+    m: Message,
+    emoji: Text,
+    persona: Text,
+    by: Text,
+    given: Bool = true,
+) (
+    icon: .smile_plus,
+    label: "Relay a reaction",
+    did: "relayed a reaction",
+) {
+    require emoji.trim() != "" "Say which emoji"
+    require persona.trim() != "" "Say who gave the reaction"
+    require by.trim() != "" "Say what they are called there"
+    let held = m.relayed_reactions.filter(
+        r -> r.emoji == emoji.trim() and r.persona == persona.trim(),
+    )
+    if given {
+        if held.is_empty() {
+            m.relayed_reactions.insert(
+                RelayedReaction(emoji: emoji.trim(), persona: persona.trim(), by: by.trim()),
+                key: "reaction:{emoji.trim()}/{persona.trim()}",
+            )
+        } else {
+            // The name that place shows may have changed since: it says the current one.
+            for r in held {
+                r.by = by.trim()
+            }
+        }
+    } else {
+        for r in held {
+            m.relayed_reactions.remove(r)
+        }
+    }
 }
 
 /// Deletes a channel and what was said in it, from the sidebar or the category it is in.
@@ -1502,6 +1592,9 @@ view message(
         ui.Reactions(reactions: m.reactions) {
             on toggle(e): react(m, e)
         }
+    }
+    if not m.relayed_reactions.is_empty() {
+        ui.Text(relayed_said(m.relayed_reactions.map(r -> r)), role: .caption, secondary: true)
     }
     if let t = m.thread {
         std.thread_chip(t, count: t.messages.len())

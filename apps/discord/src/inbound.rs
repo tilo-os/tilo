@@ -82,12 +82,16 @@ pub struct RemoveItem {
     pub reason: String,
 }
 
-/// A reaction the bot adds or takes back on a Chat message for a Discord member: Chat's `react`,
-/// which adds the bot's own reaction or takes it back.
+/// A reaction the bot relays onto a Chat message for a Discord member: Chat's `relay_reaction`,
+/// which shows it under that member's name rather than the bot's.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ReactItem {
     pub message: String,
     pub emoji: String,
+    /// Who gave it there: the service and the account, `discord/3001`.
+    pub persona: String,
+    /// The name Discord shows for them.
+    pub by: String,
 }
 
 /// `offer-link` or `offer-sign-in`: a Discord account Discord vouched for,
@@ -528,9 +532,32 @@ pub fn plan_reaction(
         .message(&mapped.tilo)
         .map(|message| message.reactions)
         .unwrap_or_default();
+    let emoji = crate::emoji::to_tilo(&event.emoji, &held);
+    let persona = {
+        let who = persona(&event.user_id);
+        format!("{}/{}", who.service, who.account)
+    };
+    // Discord names who took a reaction off by id alone: they show under
+    // the name their reaction was relayed with, else under their id.
+    let by = if event.user_name.is_empty() {
+        chat.message(&mapped.tilo)
+            .and_then(|message| {
+                message
+                    .relayed
+                    .iter()
+                    .find(|reaction| reaction.persona == persona && reaction.emoji == emoji)
+                    .map(|reaction| reaction.by.clone())
+            })
+            .filter(|by| !by.trim().is_empty())
+            .unwrap_or_else(|| event.user_id.clone())
+    } else {
+        event.user_name.clone()
+    };
     let item = ReactItem {
         message: mapped.tilo.clone(),
-        emoji: crate::emoji::to_tilo(&event.emoji, &held),
+        emoji,
+        persona,
+        by,
     };
     if added {
         plan.reacts.push(item);

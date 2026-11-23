@@ -525,6 +525,8 @@ tilo_test_env::scenario! {
         let plan = plan_reaction(&g, &event, &empty(), false);
         assert_eq!(plan.unreacts[0].message, at("m1"));
         assert_eq!(plan.unreacts[0].emoji, ":tilo_hello:");
+        assert_eq!(plan.unreacts[0].persona, "discord/u8", "the account there");
+        assert_eq!(plan.unreacts[0].by, "bo", "the name it goes by there");
         assert!(plan.reacts.is_empty());
     }
 
@@ -555,7 +557,7 @@ tilo_test_env::scenario! {
     {
         let mut g = guild();
         g.map.push(mapping(MappedKind::Message, &at("m1"), "dm1"));
-        let chat = reacting("🎉", "u_ada");
+        let chat = relayed("🎉", "discord/u8", "Bo");
         // Discord's removal names the member by id, without their name.
         let removed = ReactionChanged {
             message_id: "dm1".into(),
@@ -565,6 +567,11 @@ tilo_test_env::scenario! {
         };
         let plan = plan_reaction(&g, &removed, &chat, false);
         assert_eq!(plan.unreacts[0].emoji, "🎉");
+        assert_eq!(plan.unreacts[0].persona, "discord/u8");
+        assert_eq!(
+            plan.unreacts[0].by, "Bo",
+            "the name their reaction was relayed with"
+        );
         assert!(plan.reacts.is_empty());
     }
 
@@ -839,6 +846,35 @@ fn reacting(emoji: &str, person: &str) -> crate::tilo::ChatRead {
         "fields": {"body": "x", "by": "", "written_in": "", "written": 0,
                    "reactions": {emoji: {"count": 1,
                        "items": [{"actor": {"member": {"person": person}}}]}}},
+    });
+    let channel = json!({
+        "item": at("c1"),
+        "kind": "tl.so.tilo.chat.TextChannel",
+        "id": "c1",
+        "fields": {"name": "general", "topic": "", "messages": {"items": [message]}},
+    });
+    crate::tilo::ChatRead::of(&json!({"records": [{
+        "item": at("root"),
+        "kind": "tl.so.tilo.chat.Conversations",
+        "fields": {"channels": {"items": [channel]}},
+    }]}))
+}
+
+/// Chat holding message `m1` with a reaction the bridge relayed for `persona`, named `by`.
+fn relayed(emoji: &str, persona: &str, by: &str) -> crate::tilo::ChatRead {
+    let message = json!({
+        "item": at("m1"),
+        "kind": "tl.so.tilo.chat.Message",
+        "id": "m1",
+        "created": {"who": {"actor": {"member": {"person": "u_ada"}}},
+                    "at": "2026-01-01T00:00:00Z"},
+        "fields": {"body": "x", "by": "", "written_in": "", "written": 0,
+                   "reactions": {},
+                   "relayed_reactions": {"items": [{
+                       "item": at("r1"),
+                       "kind": "tl.so.tilo.chat.RelayedReaction",
+                       "fields": {"emoji": emoji, "persona": persona, "by": by},
+                   }]}},
     });
     let channel = json!({
         "item": at("c1"),

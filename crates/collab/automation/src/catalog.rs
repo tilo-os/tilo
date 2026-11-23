@@ -52,26 +52,37 @@ pub fn quick_action_arguments(input: &ActionParam, resource: &str) -> Map<String
     arguments
 }
 
-/// The first row among `rows` that offers the action `key` names at
-/// `target`: its app, its id, and a resource of its kind or a sub-kind.
+/// The row among `rows` that offers the action `key` names at `target`: its app, its id, and a
+/// resource of its kind or a sub-kind. A kind's own row answers before one of a kind under it:
+/// a package publishes the actions that act on several kinds (`send` to a channel, a thread or
+/// a direct conversation) with the target among their arguments, and its rows for the kinds
+/// under it publish the same action with the target taken out.
 pub(crate) fn find_row<'r>(
     rows: impl IntoIterator<Item = &'r CatalogueRow>,
     key: &ActionKey,
     target: ResourceTarget<'_>,
 ) -> Option<&'r CatalogueRow> {
-    rows.into_iter().find(|row| {
-        row.app_id == key.app
-            && kind_matches(&key.kind, &row.resource.kind)
-            && row
-                .action
-                .as_ref()
-                .is_some_and(|descriptor| descriptor.address.action == key.action)
-            && match target {
-                ResourceTarget::Id(id) => row.resource.id == id,
-                ResourceTarget::Kind(kind) => kind_matches(kind, &row.resource.kind),
-                ResourceTarget::Any => true,
-            }
-    })
+    let matching: Vec<&CatalogueRow> = rows
+        .into_iter()
+        .filter(|row| {
+            row.app_id == key.app
+                && kind_matches(&key.kind, &row.resource.kind)
+                && row
+                    .action
+                    .as_ref()
+                    .is_some_and(|descriptor| descriptor.address.action == key.action)
+                && match target {
+                    ResourceTarget::Id(id) => row.resource.id == id,
+                    ResourceTarget::Kind(kind) => kind_matches(kind, &row.resource.kind),
+                    ResourceTarget::Any => true,
+                }
+        })
+        .collect();
+    let exact = matching
+        .iter()
+        .find(|row| row.resource.kind == key.kind)
+        .copied();
+    exact.or_else(|| matching.first().copied())
 }
 
 /// Descriptors known at save time: the rows one or more `query` pages

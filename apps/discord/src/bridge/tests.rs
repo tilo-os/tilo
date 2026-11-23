@@ -178,7 +178,7 @@ tilo_test_env::scenario! {
         assert!(!second.again);
     }
 
-    phase a_discord_reaction_is_the_bots_own_reaction_on_the_mapped_message;
+    phase a_discord_reaction_is_relayed_onto_the_mapped_message_under_its_givers_name;
     {
         let mut g = guild();
         g.map.push(mapping(MappedKind::Message, &at("m1"), "dm1"));
@@ -192,6 +192,8 @@ tilo_test_env::scenario! {
         let react = &planned.chat_reacts[0];
         assert_eq!(react["message"], at("m1"));
         assert_eq!(react["emoji"], ":party:");
+        assert_eq!(react["persona"], "discord/d7");
+        assert_eq!(react["by"], "Dee");
         // The bot's own reaction comes back from Discord as nothing.
         let echo = discord(
             source::REACTION_REMOVED,
@@ -373,6 +375,25 @@ tilo_test_env::scenario! {
             "item": {"kind": "tl.so.tilo.chat.Message", "id": "m1"},
         });
         assert!(!read(&reacted, &pinned).again, "{:?}", read(&reacted, &pinned));
+    }
+
+    phase a_reaction_relayed_from_elsewhere_is_not_sent_back;
+    {
+        let mut g = guild();
+        g.map.push(mapping(MappedKind::Message, &at("m1"), "dm1"));
+        let relayed = json!({
+            "kind": "tl.so.tilo.chat.Message",
+            "did": verb("relay_reaction"),
+            "item": {"kind": "tl.so.tilo.chat.Message", "id": "m1"},
+            "actor": actor("u_bo"),
+            "arguments": {"emoji": "🎉", "persona": "discord/3001", "by": "Bo", "given": true},
+        });
+        let plan = planned(&g, &relayed);
+        assert!(
+            plan.reacts.is_empty() && plan.unreacts.is_empty(),
+            "{plan:?}"
+        );
+        assert!(!plan.again, "a relayed reaction unblocks nothing");
     }
 }
 

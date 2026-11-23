@@ -97,6 +97,9 @@ d-mmlcexsa = Written
 d-jcgolgdf = Reacted
     .doc = The reactions it had in the native Chat, each emoji with how many reacted with it: who reacted there is not carried, since this app names people only as its own members.
 
+d-6luxdz2x = Relayed reactions
+    .doc = What people gave it where it was written, for a message relayed here from another service: each emoji, who gave it there, and the name that place shows for them.
+
 d-n7d27huf = Attachments
     .doc = The files it carries, handed over with it: what a bridge relays from another service, and what anyone sends with a message.
 
@@ -187,6 +190,21 @@ d-wu2n7dpm = Blob
     .doc = The address its bytes read at: `tilo-blob://<hash>`.
 
 d-5rctnita-filter-size = Size
+
+d-3kzifrct = Relayed reaction
+    .doc = A reaction someone gave a message where it was written, relayed here with the message: its emoji, the account there that gave it, and the name that place shows for them.
+    .noun = { $count ->
+        [one] relayed reaction
+       *[other] relayed reactions
+    }
+
+d-r2zcptjt = Emoji
+
+d-awgtnj33 = Persona
+    .doc = Who gave it there, as the relay names them: the service and the account (`discord/3001`).
+
+d-hammizbi = By
+    .doc = The name that place shows for them.
 
 d-yx5sbebu = Part
     .doc = A piece of a message kept as parts rather than as rich text: its text, or a block's source.
@@ -394,6 +412,21 @@ d-6372fg6z-attachments = Attachments
 
 d-6372fg6z-reply_to = Reply to
 
+d-bhn35nvx = Relay a reaction
+    .doc = Relays a reaction someone gave a message where it was written, as that place names them: the counterpart of `relay` for a reaction.
+    .did = relayed a reaction
+    .w-say-which-emoji = Say which emoji
+    .w-say-who-gave-the-reaction = Say who gave the reaction
+    .w-say-what-they-are-called-there = Say what they are called there
+
+d-bhn35nvx-emoji = Emoji
+
+d-bhn35nvx-persona = Persona
+
+d-bhn35nvx-by = By
+
+d-bhn35nvx-given = Given
+
 d-jozxp5qy = Delete channel
     .doc = Deletes a channel and what was said in it, from the sidebar or the category it is in.
 
@@ -485,6 +518,8 @@ d-v6wnfixl = Report problem~present
 d-dgrvpxre = Send view~present
 
 d-psjj65el = Relay~present
+
+d-xjtinzwn = Relay reaction~present
 
 d-gwrwo3w5 = Delete category~present
 

@@ -81,6 +81,9 @@ d-mmlcexsa = Geschrieben
 d-jcgolgdf = Reagiert
     .doc = Die Reaktionen, die sie im nativen Chat hatte, jedes Emoji mit der Zahl derer, die damit reagiert haben: wer dort reagiert hat, wird nicht übernommen, da diese App Personen nur als ihre eigenen Mitglieder nennt.
 
+d-6luxdz2x = Weitergeleitete Reaktionen
+    .doc = Was ihr dort, wo sie geschrieben wurde, gegeben wurde, bei einer hierher weitergeleiteten Nachricht aus einem anderen Dienst: jedes Emoji, wer es dort gab und der Name, den jener Ort dafür zeigt. Getrennt von `reactions`, das die Mitglieder dieser App hält, und dort unter diesem Namen gezeigt.
+
 d-hk2t6bvk-filter-pinned = Angeheftet
 
 d-6qpql3pg = Thread
@@ -516,6 +519,21 @@ d-6372fg6z-written = Geschrieben
 
 d-6372fg6z-reply_to = Antwort auf
 
+d-bhn35nvx = Reaktion weiterleiten
+    .doc = Leitet eine Reaktion weiter, die jemand einer Nachricht dort gab, wo sie geschrieben wurde, so wie jener Ort die Person nennt: das Gegenstück zu „Weiterleiten“ für eine Reaktion.
+    .did = hat eine Reaktion weitergeleitet
+    .w-say-which-emoji = Sag, welches Emoji
+    .w-say-who-gave-the-reaction = Sag, wer die Reaktion gab
+    .w-say-what-they-are-called-there = Sag, wie die Person dort heißt
+
+d-bhn35nvx-emoji = Emoji
+
+d-bhn35nvx-persona = Konto
+
+d-bhn35nvx-by = Von
+
+d-bhn35nvx-given = Gegeben
+
 d-jozxp5qy-from = Aus
 
 d-jozxp5qy-ch = Kanal
@@ -523,6 +541,8 @@ d-jozxp5qy-ch = Kanal
 d-uukhgkjq-c = Kategorie
 
 d-psjj65el = Weiterleiten~present
+
+d-xjtinzwn = Reaktion weiterleiten~present
 
 d-gwrwo3w5 = Kategorie löschen~present
 
@@ -548,6 +568,21 @@ d-wu2n7dpm = Inhalt
     .doc = Die Adresse, unter der ihre Bytes liegen: `tilo-blob://<hash>`.
 
 d-5rctnita-filter-size = Größe
+
+d-3kzifrct = Weitergeleitete Reaktion
+    .doc = Eine Reaktion, die jemand einer Nachricht dort gab, wo sie geschrieben wurde, und die mit ihr hierher weitergeleitet wurde: ihr Emoji, das Konto dort, das sie gab, und der Name, den jener Ort dafür zeigt.
+    .noun = { $count ->
+        [one] weitergeleitete Reaktion
+       *[other] weitergeleitete Reaktionen
+    }
+
+d-r2zcptjt = Emoji
+
+d-awgtnj33 = Konto
+    .doc = Wer sie dort gab, wie die Weiterleitung die Person nennt: der Dienst und das Konto (`discord/3001`).
+
+d-hammizbi = Von
+    .doc = Der Name, den jener Ort dafür zeigt.
 
 d-6372fg6z-attachments = Anhänge
 

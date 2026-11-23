@@ -3261,6 +3261,13 @@ impl ResourceStore {
                 .as_ref()
                 .map(actor_text)
                 .unwrap_or_default(),
+            // The arguments of an action someone invoked, never a bound control's edit or the
+            // platform's own write: those carry what the document already holds, or a mark.
+            args: if note.action.starts_with('$') {
+                Vec::new()
+            } else {
+                note.args.as_array().cloned().unwrap_or_default()
+            },
             moment: self.next_moment(note.at.as_deref()),
             signed: self.inner.serving_signed.borrow().clone(),
         }

@@ -105,6 +105,17 @@ fn guild(id: &str, action: &str, args: &[(&str, Binding)]) -> Step {
     )
 }
 
+/// A record named by a reference, as a parameter that picks one takes it
+/// ([`resource_reference_schema`]): its app, its kind, its id, and the label, which nothing reads.
+fn reference(kind: Binding, id: Binding) -> Binding {
+    Binding::Object(BTreeMap::from([
+        ("app".to_owned(), Binding::Literal(json!(CHAT_APP))),
+        ("id".to_owned(), id),
+        ("kind".to_owned(), kind),
+        ("label".to_owned(), Binding::Literal(json!(""))),
+    ]))
+}
+
 /// A Chat action on the target `selector`.
 fn chat(id: &str, kind: &str, action: &str, selector: Selector, args: &[(&str, Binding)]) -> Step {
     invoke(id, ActionKey::new(CHAT_APP, kind, action), selector, args)
@@ -528,9 +539,14 @@ fn pass() -> Vec<Step> {
             vec![on_item(
                 "chat-react",
                 MESSAGE,
-                "react",
+                "relay_reaction",
                 "message",
-                &[("emoji", item("emoji"))],
+                &[
+                    ("emoji", item("emoji")),
+                    ("persona", item("persona")),
+                    ("by", item("by")),
+                    ("given", Binding::Literal(json!(true))),
+                ],
             )],
         ),
         each(
@@ -538,9 +554,14 @@ fn pass() -> Vec<Step> {
             vec![on_item(
                 "chat-unreact",
                 MESSAGE,
-                "react",
+                "relay_reaction",
                 "message",
-                &[("emoji", item("emoji"))],
+                &[
+                    ("emoji", item("emoji")),
+                    ("persona", item("persona")),
+                    ("by", item("by")),
+                    ("given", Binding::Literal(json!(false))),
+                ],
             )],
         ),
         each(
@@ -678,7 +699,7 @@ fn pass() -> Vec<Step> {
             vec![on_chat(
                 "drop-category",
                 "delete_category",
-                &[("c", item("category"))],
+                &[("c", reference(text(CATEGORY), item("category")))],
             )],
         ),
         each("chat_moves", moved()),
@@ -769,7 +790,7 @@ fn dropped_channel() -> Vec<Step> {
         "delete_channel",
         &[
             ("from", union(item("from_kind"), item("from"))),
-            ("ch", item("channel")),
+            ("ch", reference(item("kind"), item("channel"))),
         ],
     )]
 }

@@ -19,6 +19,18 @@ pub struct Reaction {
     pub member: Option<MemberId>,
 }
 
+/// A reaction the bridge relayed onto a Chat message for someone elsewhere: its emoji, the
+/// account there that gave it, and the name that place shows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RelayedReaction {
+    /// A Unicode emoji, or a workspace emoji as `:name:`.
+    pub emoji: String,
+    /// The service and account that gave it, `discord/3001`.
+    pub persona: String,
+    /// The name that place shows for them.
+    pub by: String,
+}
+
 /// A file a message carries, as Chat keeps it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Attachment {
@@ -59,6 +71,9 @@ pub struct Message {
     /// The thread root it answers in, when it was posted in a thread.
     pub parent: Option<String>,
     pub reactions: Vec<Reaction>,
+    /// The reactions the bridge relayed for people elsewhere, which Chat shows under the names
+    /// they go by there.
+    pub relayed: Vec<RelayedReaction>,
     /// The files it carries, which go across as Discord attachments.
     pub attachments: Vec<Attachment>,
     /// Who wrote it where it was written, as that place named them, for a relayed message.
@@ -262,6 +277,7 @@ impl ChatRead {
             text: text(row, "body"),
             parent: parent.map(str::to_owned),
             reactions: reactions(row),
+            relayed: relayed_reactions(row),
             attachments: attachments(row),
             by: text(row, "by"),
             written_in: text(row, "written_in"),
@@ -500,6 +516,38 @@ fn reactions(row: &Value) -> Vec<Reaction> {
     out
 }
 
+/// The reactions the bridge relayed onto a message for people elsewhere: each `RelayedReaction`
+/// row's emoji, the account there that gave it, and the name that place shows.
+fn relayed_reactions(row: &Value) -> Vec<RelayedReaction> {
+    let Some(items) = row
+        .get("fields")
+        .and_then(|fields| fields.get("relayed_reactions"))
+        .and_then(|relayed| relayed.get("items"))
+        .and_then(Value::as_array)
+    else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|entry| {
+            let reaction = entry.get("fields").unwrap_or(entry);
+            Some(RelayedReaction {
+                emoji: reaction.get("emoji").and_then(Value::as_str)?.to_owned(),
+                persona: reaction
+                    .get("persona")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                by: reaction
+                    .get("by")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+            })
+        })
+        .collect()
+}
+
 /// The files a message carries: each `Attached` row's name, media, size and content address.
 fn attachments(row: &Value) -> Vec<Attachment> {
     let Some(items) = row
@@ -720,6 +768,9 @@ mod tests {
                 "written_in": "Discord",
                 "written": 5,
                 "reactions": {"👍": {"count": 1, "items": [{"actor": {"member": {"bot": "b1"}}}]}},
+                "relayed_reactions": {"items": [{"item": "tl:so.tilo.chat:r1",
+                    "kind": "tl.so.tilo.chat.RelayedReaction",
+                    "fields": {"emoji": "🎉", "persona": "discord/3001", "by": "Bo"}}]},
                 "attachments": {"items": [{"item": "tl:so.tilo.chat:a1",
                     "kind": "tl.so.tilo.chat.Attached",
                     "fields": {"name": "a.png", "media": "image/png", "size": 5,
@@ -741,6 +792,14 @@ mod tests {
         let m = chat.message("m1").unwrap();
         assert_eq!(m.reactions[0].emoji, "👍");
         assert_eq!(m.reactions[0].member, Some(MemberId::bot("b1")));
+        assert_eq!(
+            m.relayed,
+            [RelayedReaction {
+                emoji: "🎉".into(),
+                persona: "discord/3001".into(),
+                by: "Bo".into(),
+            }]
+        );
         assert_eq!(m.attachments[0].blob, "abcd");
         assert_eq!(m.attachments[0].size, Some(5));
         assert_eq!(

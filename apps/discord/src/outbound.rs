@@ -344,9 +344,9 @@ pub fn plan_delete(
 
 /// The bot's reaction plan after a Tilo reaction with `emoji` was added
 /// (`added`) or taken back: the bot reacts once while any Tilo person has
-/// the emoji, and takes it back with the last one. Reactions the bridge
-/// made for Discord users do not count (Discord shows those itself), so
-/// nothing mirrored in comes back out. A workspace emoji goes across only
+/// the emoji, and takes it back with the last one. A reaction relayed here
+/// for a Discord member is that member's own and Discord shows it itself,
+/// so nothing mirrored in comes back out. A workspace emoji goes across only
 /// as the server's emoji of its name ([`emoji::to_discord`]).
 #[must_use]
 pub fn plan_reaction(

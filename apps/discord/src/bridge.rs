@@ -421,6 +421,8 @@ fn tilo_change(plan: &mut BridgePlan, read: Reading<'_>, verb: &str, message: &s
                 plan.unreacts.extend(values(unreacts));
             }
         }
+        // A reaction the bridge relayed from Discord is already there: it is not sent back.
+        "relay_reaction" => {}
         verb => reconcile(plan, read, ARRANGES.contains(&verb)),
     }
 }
@@ -755,7 +757,14 @@ fn inbound_plan(plan: &mut BridgePlan, read: Reading<'_>, inbound: InboundPlan) 
             json!({ "message": r.message, "channel": channel, "channel_kind": kind,
                     "reason": r.reason })
         }));
-    let reaction = |r: inbound::ReactItem| json!({ "message": r.message, "emoji": r.emoji });
+    let reaction = |r: inbound::ReactItem| {
+        json!({
+            "message": r.message,
+            "emoji": r.emoji,
+            "persona": r.persona,
+            "by": r.by,
+        })
+    };
     plan.chat_reacts
         .extend(inbound.reacts.into_iter().map(reaction));
     plan.chat_unreacts

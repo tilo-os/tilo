@@ -38,6 +38,11 @@ pub struct Stamp {
     /// is the invoker's, and it says who proposed it.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub suggested_by: String,
+    /// The arguments the action was invoked with, in the order it declares them, as the runtime
+    /// recorded them: what a program following the change reads as the verb's arguments. Empty
+    /// where the change names no arguments of its own (an edit, an undo).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<serde_json::Value>,
     /// When the writer wrote it, by its clock, as a number that orders: the order a resource's
     /// versions read in across the documents it is kept in, and what tells two writes of one
     /// invocation apart. Zero where the writer kept none.

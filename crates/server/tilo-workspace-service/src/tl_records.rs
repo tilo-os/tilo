@@ -327,6 +327,32 @@ pub struct Opened {
     run_of: Option<String>,
 }
 
+/// The arguments `declared` (an action of `meta`) was invoked with, by the names its parameters
+/// declare, from `values` the position they were given in: what a program following the change
+/// reads as the verb's arguments. Empty when the change recorded none (a change not made by
+/// invoking the action).
+fn named_arguments(
+    meta: &tilolang_tilo::runtime::meta::Meta,
+    declared: &tilolang_tilo::runtime::meta::ActionMeta,
+    values: &[Json],
+) -> Map<String, Json> {
+    // An action that acts on a record takes it as its first parameter: a call that gives the
+    // record among its arguments carries it there, and one whose caller named it apart does not.
+    let target = usize::from(meta.target_of(&declared.params).is_some());
+    let skip = if values.len() >= declared.params.len() {
+        target
+    } else {
+        0
+    };
+    declared
+        .params
+        .iter()
+        .zip(values)
+        .skip(skip)
+        .map(|(param, value)| (param.name.clone(), value.clone()))
+        .collect()
+}
+
 impl Opened {
     /// Open the record `store` holds through `packages` for `viewer`: the member as whom the
     /// platform's own writes are made. `policy` is the workspace's, as this device reads it:
@@ -688,6 +714,9 @@ impl Opened {
             let actor = stamp
                 .invoked_by()
                 .map_or_else(|| tilo_actions::Acting::person(String::new()), Into::into);
+            let arguments = action.map_or_else(Map::new, |(meta, declared)| {
+                named_arguments(meta, declared, &stamp.args)
+            });
             events.push((
                 DocumentEvent {
                     workspace: workspace.to_owned(),
@@ -699,7 +728,7 @@ impl Opened {
                     kind,
                     change: change.hash().to_string(),
                     actor,
-                    arguments: Map::new(),
+                    arguments,
                     item,
                     before: None,
                     after: None,
