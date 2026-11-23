@@ -197,10 +197,7 @@ impl Invocations {
 
     /// `id`'s record, its state asked of the provider it runs at and kept.
     fn refreshed(&self, id: &InvocationId) -> Option<Recorded> {
-        let (provider, runs_as) = {
-            let kept = self.kept();
-            kept.by_id.get(id)?.route.clone()
-        };
+        let (provider, runs_as) = self.kept().by_id.get(id)?.route.clone();
         let state = provider.observe(&runs_as, id);
         let mut kept = self.kept();
         let recorded = kept.by_id.get_mut(id)?;

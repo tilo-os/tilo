@@ -100,7 +100,7 @@ pub fn call(name: &str, args: &Value) -> Result<Value, String> {
 /// The JSON `env` names, or else the workspace's reading `action`.
 fn reading(env: &str, action: &str) -> Option<Value> {
     match std::env::var_os(env) {
-        Some(json) => serde_json::from_str(&String::from_utf8_lossy(&json)).ok(),
+        Some(json) => serde_json::from_str(&json.to_string_lossy()).ok(),
         None => call(action, &Value::Object(serde_json::Map::new())).ok(),
     }
 }
