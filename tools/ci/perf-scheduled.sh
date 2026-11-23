@@ -142,7 +142,13 @@ case $group in
       -- --ignored --exact --nocapture --test-threads=1 2>&1 | tee "$out/palette-keystroke.log"
     ;;
   server)
+    cargo build --locked --release -p tilo-server --example server_load
     cargo run --locked -p tilo-server --example keystroke_writes | tee "$out/keystroke-writes.log"
+    env_json release none kvm > "$out/env.json"
+    "$target/release/examples/server_load" --members 100 --minutes 10 --server-cpus 2 \
+      --out "$out/run" | tee "$out/server-load.log"
+    python3 tools/perf/adapters.py server-load --env-json "$out/env.json" "$out/run/server-load.json" \
+      > "$out/server.jsonl"
     ;;
   *)
     echo "unknown KPI group: $group" >&2
