@@ -132,14 +132,123 @@ fn the_panel_opened_from_the_bar_shows_what_the_services_publish() {
     );
 
     // The battery the session publishes is the charge the panel shows: a
-    // pack that moves redraws it.
+    // pack that moves redraws it, including when only its minutes left move.
     let at_42 = settled(session);
     save(&at_42, "session-quick-settings-battery-42");
     laptop.pack.charge_to(84);
     let at_84 = changed(session, &at_42);
     save(&at_84, "session-quick-settings-battery-84");
+    laptop.pack.set_minutes_left(Some(135));
+    session.settle_services();
+    assert_eq!(
+        session.read(BATTERY).expect("the battery is published")["minutes_left"],
+        json!(135),
+        "the power service publishes remaining minutes"
+    );
+    let with_minutes = changed(session, &at_84);
+    save(&with_minutes, "session-quick-settings-battery-minutes");
 
     session.stop_surface("quick-settings");
+}
+
+#[test]
+fn a_published_displays_reading_lands_with_the_sessions_level() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use os_actions::BrightnessKind;
+    use os_actions::brightness::MonitorLevel;
+    use tilo_color_pipeline::hdr_display::DisplayCapabilities;
+    use tilo_compositor::OutputInfo;
+    use tilo_quick_settings::QuickSettingsState;
+    use tilo_quick_settings::host::FixtureHost;
+    use tilo_session::displays::{Backlights, Displays as DisplaysService, RESOURCE as DISPLAYS};
+
+    struct FixedBacklights(Vec<MonitorLevel>);
+
+    impl Backlights for FixedBacklights {
+        fn levels(&self) -> Vec<MonitorLevel> {
+            self.0.clone()
+        }
+
+        fn set(&self, _connector: &str, _percent: f32) -> bool {
+            false
+        }
+
+        fn show_only(&self, _connectors: &[String]) {}
+
+        fn software_levels(&self) -> Vec<(String, f32)> {
+            Vec::new()
+        }
+    }
+
+    let _settings = settings_store::scoped_source(Some(Arc::new(
+        settings_store::HostDocument::new(Map::new(), |_| Ok(())),
+    )));
+
+    let output = |name: &str, label: &str| OutputInfo {
+        name: name.into(),
+        monitor: name.into(),
+        label: label.into(),
+        enabled: true,
+        rect: Some((0, 0, 1280, 800)),
+        scale: 1.0,
+        description: None,
+        colour: DisplayCapabilities::sdr_default(),
+    };
+
+    let service = DisplaysService::new(
+        Some(Box::new(FixedBacklights(vec![
+            MonitorLevel {
+                connector: "eDP-1".into(),
+                level: 0.4,
+                kind: BrightnessKind::Backlight,
+            },
+            MonitorLevel {
+                connector: "HDMI-A-1".into(),
+                level: 0.8,
+                kind: BrightnessKind::Backlight,
+            },
+        ]))),
+        Rc::new(RefCell::new(Vec::new())),
+    );
+    service.land(
+        Some("HDMI-A-1".into()),
+        &[output("eDP-1", "eDP-1"), output("HDMI-A-1", "Dell U2720Q")],
+    );
+    let text = service
+        .read(DISPLAYS)
+        .expect("the displays service publishes")
+        .to_string();
+
+    let host = FixtureHost::new(QuickSettingsState::unread());
+    assert!(host.land(DISPLAYS, &text));
+    host.read(|state| {
+        assert!(state.brightness_available);
+        assert!((state.brightness - 0.8).abs() < f32::EPSILON);
+        assert_eq!(state.focused_display.as_deref(), Some("HDMI-A-1"));
+        assert_eq!(state.displays.len(), 2);
+        assert_eq!(state.displays[0].connector, "HDMI-A-1");
+        assert_eq!(state.displays[0].name, "Dell U2720Q");
+        assert!((state.displays[0].level - 0.8).abs() < f32::EPSILON);
+        assert_eq!(state.displays[1].connector, "eDP-1");
+        assert!((state.displays[1].level - 0.4).abs() < f32::EPSILON);
+    });
+
+    let undimmable = DisplaysService::new(None, Rc::new(RefCell::new(Vec::new())));
+    undimmable.land(
+        Some("HDMI-A-1".into()),
+        &[output("HDMI-A-1", "Dell U2720Q")],
+    );
+    let text = undimmable
+        .read(DISPLAYS)
+        .expect("the displays service publishes")
+        .to_string();
+    assert!(host.land(DISPLAYS, &text));
+    host.read(|state| {
+        assert!(!state.brightness_available);
+        assert!(state.displays.is_empty());
+    });
 }
 
 /// A sound card with no output publishes nothing to set: the panel offers no
@@ -1018,6 +1127,7 @@ struct Pack {
 #[derive(Default)]
 struct Charge {
     percent: u8,
+    minutes_left: Option<u32>,
     moved: bool,
 }
 
@@ -1026,6 +1136,13 @@ impl Pack {
     fn charge_to(&self, percent: u8) {
         let mut charge = self.charge.lock().expect("the pack");
         charge.percent = percent;
+        charge.moved = true;
+    }
+
+    /// Report `minutes_left` until empty, without changing the charge percent.
+    fn set_minutes_left(&self, minutes_left: Option<u32>) {
+        let mut charge = self.charge.lock().expect("the pack");
+        charge.minutes_left = minutes_left;
         charge.moved = true;
     }
 }
@@ -1038,11 +1155,14 @@ impl Service for Pack {
     fn read(&self, resource: &str) -> Option<Value> {
         let charge = self.charge.lock().expect("the pack");
         (resource == BATTERY).then(|| {
-            json!({
-                "present": true,
-                "percentage": charge.percent,
-                "state": "discharging",
-                "minutes_left": null,
+            tilo_service::reading(&power::Battery {
+                present: true,
+                percentage: charge.percent,
+                state: tilo_power_mgmt::BatteryState::Discharging,
+                on_battery: true,
+                minutes_left: charge.minutes_left,
+                charge_limit: None,
+                notice: None,
             })
         })
     }

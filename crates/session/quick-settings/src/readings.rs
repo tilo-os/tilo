@@ -14,7 +14,9 @@
 use std::sync::{Arc, Mutex};
 
 use connectivity::model::{Bluetooth, Network, Vpn};
+use power::{Battery, Sleep};
 use serde::Deserialize;
+use tilo_system_resources::update::Update;
 use ui::serde_json;
 
 use crate::PowerProfile;
@@ -141,9 +143,9 @@ pub(crate) fn land(readings: &Readings, resource: &str, text: &str) -> bool {
         BATTERY => parse::<Battery>(readings, resource, text, land_battery),
         SLEEP => parse::<Sleep>(readings, resource, text, land_sleep),
         SYSTEM_UPDATE => parse::<Update>(readings, resource, text, |state, update| {
-            state.firmware_updates.clone_from(&update.firmware);
+            state.firmware_updates = update.firmware;
         }),
-        DISPLAYS => parse::<Displays>(readings, resource, text, land_displays),
+        DISPLAYS => parse::<DisplaysReading>(readings, resource, text, land_displays),
         NOTIFICATIONS => {
             parse::<crate::hosted::NotificationCentre>(readings, resource, text, land_notifications)
         }
@@ -260,7 +262,7 @@ fn land_sleep(state: &mut QuickSettingsState, sleep: &Sleep) {
     }
 }
 
-fn land_displays(state: &mut QuickSettingsState, reading: &Displays) {
+fn land_displays(state: &mut QuickSettingsState, reading: &DisplaysReading) {
     let mut levels = reading
         .displays
         .iter()
@@ -273,9 +275,8 @@ fn land_displays(state: &mut QuickSettingsState, reading: &Displays) {
         })
         .collect();
     crate::focused_display_first(&mut levels, reading.focused.as_deref());
-    let brightness = reading.brightness();
-    state.brightness_available = brightness.is_some();
-    if let Some(brightness) = brightness {
+    state.brightness_available = reading.level.is_some();
+    if let Some(brightness) = reading.level {
         state.brightness = brightness;
     }
     state.focused_display.clone_from(&reading.focused);
@@ -325,74 +326,264 @@ fn profile_named(name: &str) -> Option<PowerProfile> {
     }
 }
 
-/// The sleep policy, as the power service publishes it: enough of it to name
-/// the profile in force, the ones offered, and what holds the machine awake.
-#[derive(Default, Deserialize)]
-#[serde(default, rename_all = "kebab-case")]
-pub(crate) struct Sleep {
-    holds: Vec<String>,
-    profile: Option<String>,
-    profiles: Vec<String>,
-}
-
-/// The system update, as the system service publishes it.
-#[derive(Default, Deserialize)]
-#[serde(default, rename_all = "kebab-case")]
-pub(crate) struct Update {
-    firmware: Option<usize>,
-}
-
-/// The pack, as the power service publishes it.
-#[derive(Deserialize)]
-#[serde(default, rename_all = "kebab-case")]
-pub(crate) struct Battery {
-    present: bool,
-    percentage: u8,
-    state: tilo_power_mgmt::BatteryState,
-    minutes_left: Option<u32>,
-}
-
-impl Default for Battery {
-    fn default() -> Self {
-        Self {
-            present: false,
-            percentage: 0,
-            state: tilo_power_mgmt::BatteryState::Unknown,
-            minutes_left: None,
-        }
-    }
-}
-
 /// The displays, as the session publishes them: enough of each to show its
-/// slider.
+/// slider. The publisher's `Reading` lives in `tilo-session`, which depends on
+/// this crate.
 #[derive(Default, Deserialize)]
-#[serde(default, rename_all = "kebab-case")]
-pub(crate) struct Displays {
+#[serde(default)]
+pub(crate) struct DisplaysReading {
     displays: Vec<Display>,
     focused: Option<String>,
+    level: Option<f32>,
 }
 
 #[derive(Default, Deserialize)]
-#[serde(default, rename_all = "kebab-case")]
+#[serde(default)]
 pub(crate) struct Display {
     connector: String,
     name: String,
     brightness: Option<f32>,
 }
 
-impl Displays {
-    /// How bright the display the person works on is, when it can be dimmed,
-    /// else the first display that can: the level the panel's one slider
-    /// shows.
-    fn brightness(&self) -> Option<f32> {
-        self.focused
-            .as_deref()
-            .and_then(|focused| {
-                self.displays
-                    .iter()
-                    .find(|display| display.connector == focused)
-            })
-            .and_then(|display| display.brightness)
-            .or_else(|| self.displays.iter().find_map(|display| display.brightness))
+#[cfg(test)]
+mod tests {
+    use audio::sound::{Device, Sound};
+    use connectivity::model::{Link, LinkKind, VpnProfile, Wifi};
+    use tilo_power_mgmt::{BatterySnapshot, BatteryState, BatteryTime, PowerAction};
+
+    use super::*;
+
+    fn published(value: &impl serde::Serialize) -> String {
+        tilo_service::reading(value).to_string()
+    }
+
+    fn isolated_settings(
+        doc: serde_json::Map<String, serde_json::Value>,
+    ) -> settings_store::SourceScope {
+        settings_store::scoped_source(Some(Arc::new(settings_store::HostDocument::new(
+            doc,
+            |_| Ok(()),
+        ))))
+    }
+
+    #[test]
+    fn a_published_battery_reading_lands_with_its_minutes() {
+        let _settings = isolated_settings(serde_json::Map::new());
+        let readings = Readings::new(QuickSettingsState::unread());
+        let discharging = Battery {
+            present: true,
+            percentage: 76,
+            state: BatteryState::Discharging,
+            on_battery: true,
+            minutes_left: Some(214),
+            charge_limit: None,
+            notice: None,
+        };
+        let wire = tilo_service::reading(&discharging);
+        assert_eq!(wire["minutes_left"], serde_json::json!(214));
+        assert_eq!(wire["on_battery"], serde_json::json!(true));
+        assert!(land(&readings, BATTERY, &wire.to_string()));
+        readings.read(|state| {
+            assert_eq!(
+                state.status.battery,
+                Some(BatterySnapshot {
+                    present: true,
+                    percent: 76,
+                    state: BatteryState::Discharging,
+                })
+            );
+            assert_eq!(state.status.battery_time, Some(BatteryTime::ToEmpty(214)));
+            assert!(
+                crate::faces::battery_time_text(state).is_some(),
+                "the panel formats the remaining minutes"
+            );
+        });
+
+        let charging = Battery {
+            present: true,
+            percentage: 80,
+            state: BatteryState::Charging,
+            on_battery: false,
+            minutes_left: Some(45),
+            charge_limit: None,
+            notice: None,
+        };
+        assert!(land(&readings, BATTERY, &published(&charging)));
+        readings.read(|state| {
+            assert_eq!(state.status.battery_time, Some(BatteryTime::ToFull(45)));
+        });
+
+        let unknown_rate = Battery {
+            minutes_left: None,
+            ..charging
+        };
+        assert!(land(&readings, BATTERY, &published(&unknown_rate)));
+        readings.read(|state| {
+            assert_eq!(state.status.battery_time, None);
+        });
+    }
+
+    #[test]
+    fn a_published_sleep_reading_lands_its_holds_and_profiles() {
+        let _settings = isolated_settings(serde_json::Map::new());
+        let readings = Readings::new(QuickSettingsState::unread());
+        let sleep = Sleep {
+            blank_minutes: Some(10),
+            lock_minutes: Some(5),
+            suspend_minutes: None,
+            lock_on_sleep: true,
+            lid_close: PowerAction::Lock,
+            power_key: PowerAction::Suspend,
+            held_awake: true,
+            holds: vec!["Video Player".into()],
+            profile: Some("power-saver".into()),
+            profiles: vec![
+                "power-saver".into(),
+                "balanced".into(),
+                "performance".into(),
+            ],
+        };
+        assert!(land(&readings, SLEEP, &published(&sleep)));
+        readings.read(|state| {
+            assert_eq!(state.awake_holders, ["Video Player"]);
+            assert_eq!(state.power_profile, PowerProfile::Saver);
+            assert_eq!(
+                state.power_profiles,
+                [
+                    PowerProfile::Saver,
+                    PowerProfile::Balanced,
+                    PowerProfile::Performance,
+                ]
+            );
+        });
+    }
+
+    #[test]
+    fn a_published_update_reading_lands_its_firmware_count() {
+        let _settings = isolated_settings(serde_json::Map::new());
+        let readings = Readings::new(QuickSettingsState::unread());
+        let update = Update {
+            firmware: Some(3),
+            restart_needed: true,
+            desktop_pending: true,
+            ..Update::default()
+        };
+        assert!(land(&readings, SYSTEM_UPDATE, &published(&update)));
+        readings.read(|state| {
+            assert_eq!(state.firmware_updates, Some(3));
+        });
+
+        let none = Update::default();
+        assert!(land(&readings, SYSTEM_UPDATE, &published(&none)));
+        readings.read(|state| {
+            assert_eq!(state.firmware_updates, None);
+        });
+    }
+
+    #[test]
+    fn published_connectivity_sound_and_hosted_readings_round_trip() {
+        let mut doc = serde_json::Map::new();
+        doc.insert(
+            settings_store::notification_policy::SECTION.into(),
+            serde_json::json!({ "do_not_disturb": true }),
+        );
+        let _settings = isolated_settings(doc);
+        let readings = Readings::new(QuickSettingsState::unread());
+
+        let network = Network {
+            wifi: Wifi {
+                available: true,
+                on: true,
+                ..Wifi::default()
+            },
+            link: Some(Link {
+                kind: LinkKind::Wifi,
+                name: Some("Home".into()),
+                signal: 4,
+            }),
+            ..Network::default()
+        };
+        assert!(land(&readings, NETWORK, &published(&network)));
+
+        let bluetooth = Bluetooth {
+            available: true,
+            on: true,
+            discovering: true,
+            ..Bluetooth::default()
+        };
+        assert!(land(&readings, BLUETOOTH, &published(&bluetooth)));
+
+        let vpn = Vpn {
+            profiles: vec![VpnProfile {
+                name: "Work".into(),
+                id: "work-vpn".into(),
+                kind: "wireguard".into(),
+                connected: true,
+            }],
+            ..Vpn::default()
+        };
+        assert!(land(&readings, VPN, &published(&vpn)));
+
+        let sound = Sound {
+            output: Some(40),
+            volume: Some(0.55),
+            muted: false,
+            outputs: vec![Device {
+                node: 40,
+                name: "node-40".into(),
+                label: "Speakers".into(),
+                chosen: true,
+                volume: Some(0.55),
+                muted: false,
+                channels: 2,
+                codec: None,
+            }],
+            ..Sound::default()
+        };
+        assert!(land(&readings, SOUND, &published(&sound)));
+
+        let centre = crate::hosted::NotificationCentre {
+            count: 4,
+            ..crate::hosted::NotificationCentre::default()
+        };
+        assert!(land(&readings, NOTIFICATIONS, &published(&centre)));
+
+        let copies = vec![crate::hosted::ClipboardCopy {
+            key: "c1".into(),
+            mime: "text/plain;charset=utf-8".into(),
+            text: Some("hello".into()),
+            created_ms: 1_000,
+            pinned: true,
+            from: Some("laptop".into()),
+        }];
+        assert!(land(&readings, CLIPBOARD, &published(&copies)));
+
+        let devices = crate::hosted::DevicesReading {
+            devices: vec![crate::hosted::PersonalDevice {
+                id: "phone".into(),
+                label: "Phone".into(),
+                online: true,
+                nearby: false,
+                local: false,
+                display: false,
+                wakeable: false,
+                audio_output: false,
+            }],
+            ..crate::hosted::DevicesReading::default()
+        };
+        assert!(land(&readings, DEVICES, &published(&devices)));
+
+        readings.read(|state| {
+            assert_eq!(state.network, network);
+            assert_eq!(state.status.link, network.link);
+            assert_eq!(state.bluetooth, bluetooth);
+            assert_eq!(state.vpn, vpn);
+            assert!(state.volume_available);
+            assert_eq!(state.volume_level(), 0.55);
+            assert_eq!(state.notifications, 4);
+            assert!(state.do_not_disturb);
+            assert_eq!(state.clipboard.total, 1);
+            assert_eq!(state.personal_devices, Some(1));
+        });
     }
 }
