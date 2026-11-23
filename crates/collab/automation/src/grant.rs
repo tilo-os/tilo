@@ -500,7 +500,7 @@ fn add(
 /// the row the step found is published under. The step is decided at each of them, since which
 /// one it reaches is known only when it runs.
 #[must_use]
-pub(crate) fn decision_kinds<'d>(descriptor: &'d ActionDescriptor) -> Vec<&'d str> {
+pub(crate) fn decision_kinds(descriptor: &ActionDescriptor) -> Vec<&str> {
     decision_kinds_of(descriptor).unwrap_or_else(|| vec![descriptor.resource_kind.as_str()])
 }
 
