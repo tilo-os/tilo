@@ -44,6 +44,12 @@ impl DeviceLink {
         self.reader.recv().await
     }
 
+    /// Let the link go, as a closed session does.
+    pub async fn close(mut self) {
+        self.running.abort();
+        let _ = (&mut self.running).await;
+    }
+
     /// Read this device's copy of the workspace.
     pub fn read<R>(&self, read: impl FnOnce(&StatePeer) -> R) -> R {
         self.sync.read(read)
@@ -154,6 +160,11 @@ impl NativeDevice {
 
     pub fn key(&self) -> [u8; 32] {
         self.device.key.verifying_key().to_bytes()
+    }
+
+    /// Let this device's link go, as a closed session does.
+    pub async fn close(self) {
+        self.link.close().await;
     }
 
     fn deliver(&mut self, message: impl FnOnce(String, u64) -> NeighbourMsg) {

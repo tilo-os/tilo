@@ -160,7 +160,7 @@ async fn a_page_and_the_other_persons_desktop_talk_in_their_conversations_record
     // The page reads what the desktop wrote.
     hears(&bob, &route, "and one back from Alice's desktop").await;
 
-    desktop.session.close().await;
+    desktop.close().await;
     bob.close();
     drop(host.web);
     host.server.shutdown().await;
