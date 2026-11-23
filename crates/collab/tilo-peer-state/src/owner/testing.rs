@@ -32,13 +32,12 @@ pub(crate) fn document_on_disk(path: &std::path::Path) -> Vec<(std::path::PathBu
 /// # Panics
 /// `device` is not in `peer`'s roster.
 #[must_use]
-pub fn invoker_of(peer: &StatePeer, device: [u8; 32]) -> tilo_actions::ActionInvoker {
-    let cert = peer
-        .certificates()
+pub fn person_of(peer: &StatePeer, device: [u8; 32]) -> [u8; 32] {
+    peer.certificates()
         .into_iter()
         .find(|cert| cert.device_public_key == device)
-        .unwrap();
-    tilo_actions::ActionInvoker::person(hex::encode(cert.user_public_key))
+        .unwrap()
+        .user_public_key
 }
 
 pub const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";

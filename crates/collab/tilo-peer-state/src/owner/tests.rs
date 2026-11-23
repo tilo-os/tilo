@@ -140,7 +140,7 @@ fn edit_from_view(
     let mut chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
     let before = chat.get_heads();
     chat.put(ROOT, "topic", topic).unwrap();
-    chat.commit_edit("fixture", "topic");
+    chat.commit_edit("fixture", "topic", &view.peer().owner());
     let message = view.peer().clone().publication_mut().publish_incremental(
         APP,
         "",

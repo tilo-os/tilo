@@ -580,9 +580,9 @@ fn sealed_change(
     key: &str,
     value: &str,
 ) -> Vec<u8> {
-    let invoker = owner
+    let person = owner
         .with_current(workspace, |view| {
-            Ok(testing::invoker_of(
+            Ok(testing::person_of(
                 view.peer(),
                 device.verifying_key().to_bytes(),
             ))
@@ -590,7 +590,7 @@ fn sealed_change(
         .unwrap();
     let before = document.get_heads();
     document.put(automerge::ROOT, key, value).unwrap();
-    document.commit_edit_as("fixture", "topic", invoker);
+    document.commit_edit("fixture", "topic", &person);
     document.save_after(&before)
 }
 
