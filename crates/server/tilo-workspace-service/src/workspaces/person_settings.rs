@@ -332,7 +332,7 @@ impl Workspaces {
         let root = self.workspace_root(&here);
         let by = reach.by();
         let signing = Signing {
-            vault: self.vault_at(&here),
+            vault: self.vault_for(&here, &reach.acting),
             root: &root,
             by: &by,
         };

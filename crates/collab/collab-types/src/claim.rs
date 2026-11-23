@@ -11,6 +11,7 @@
 //! ([`tilo_actions::Did`]), and the units are listed from the record.
 
 use serde::{Deserialize, Serialize};
+use tilo_action_policy::PersonId;
 pub use tilo_actions::FrameworkChange;
 use tilo_actions::context::ContinuedAction;
 use tilo_actions::{ActionContext, ActionKey, Did, HistoryOp, PathStep};
@@ -402,12 +403,36 @@ pub fn mutation_claims(
 /// them: a test in place of an app, writing a record directly.
 pub trait CommitNamed {
     /// Commit the pending operations as a field edit of `field` on a record
-    /// of kind `kind`.
+    /// of kind `kind`, by whoever the document's actor is: a key names the
+    /// person it writes as, and a change that names nobody is refused.
     fn commit_edit(&mut self, kind: &str, field: &str) -> Option<automerge::ChangeHash>;
+
+    /// [`Self::commit_edit`] as `invoker`'s change, for a write its actor
+    /// alone does not name: the person whose device set it.
+    fn commit_edit_as(
+        &mut self,
+        kind: &str,
+        field: &str,
+        invoker: Option<&tilo_actions::ActionInvoker>,
+    ) -> Option<automerge::ChangeHash>;
 }
 
 impl CommitNamed for automerge::AutoCommit {
     fn commit_edit(&mut self, kind: &str, field: &str) -> Option<automerge::ChangeHash> {
+        // The actor is the key the write is made as when it is one: every
+        // change says who made it.
+        let invoker = <[u8; 32]>::try_from(self.get_actor().to_bytes())
+            .ok()
+            .map(|key| tilo_actions::ActionInvoker::person(PersonId::from_root(key)));
+        self.commit_edit_as(kind, field, invoker.as_ref())
+    }
+
+    fn commit_edit_as(
+        &mut self,
+        kind: &str,
+        field: &str,
+        invoker: Option<&tilo_actions::ActionInvoker>,
+    ) -> Option<automerge::ChangeHash> {
         let context = ActionContext {
             what: Some(Did::Edit(tilo_actions::FieldEdit {
                 ty: kind.to_owned(),
@@ -419,6 +444,10 @@ impl CommitNamed for automerge::AutoCommit {
                 args: std::collections::BTreeMap::new(),
             })),
             ..ActionContext::for_resource(kind, kind, kind)
+        };
+        let context = match invoker {
+            Some(invoker) => context.with_invoker(invoker.clone()),
+            None => context,
         };
         let mut options = automerge::transaction::CommitOptions::default();
         if let Some(message) = context.change_message() {

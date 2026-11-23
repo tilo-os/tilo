@@ -35,8 +35,8 @@ pub struct Replica<R: Resource> {
     /// The author as software acting for someone.
     acting: Option<tilo_actions::Acting>,
     /// Who invokes from this replica when it acts as its own device
-    /// ([`Self::as_invoker`]).
-    invoker: Option<MemberId>,
+    /// ([`Self::as_invoker`], [`Self::as_invoker_acting`]).
+    invoker: Option<tilo_actions::Acting>,
     /// The app later actions are in (id, label), as a host names it.
     app: Option<(String, String)>,
     /// What a bot shows for later actions instead of its own name.
@@ -135,7 +135,17 @@ impl<R: Resource> Replica<R> {
     /// changes that merge.
     #[must_use]
     pub fn as_invoker(mut self, person: &str) -> Self {
-        self.invoker = Some(MemberId::person(person));
+        self.invoker = Some(tilo_actions::Acting::person(person));
+        self
+    }
+
+    /// Attribute later actions to the invoker `acting` — a person, or an agent or automation
+    /// acting for one — while the changes stay this replica's own, its device's: what a host
+    /// writes a record for the one that asked it, so every holder decides the change as that
+    /// invoker, exactly as it decides the same action invoked on the invoker's own device.
+    #[must_use]
+    pub fn as_invoker_acting(mut self, acting: tilo_actions::Acting) -> Self {
+        self.invoker = Some(acting);
         self
     }
 
@@ -256,15 +266,12 @@ impl<R: Resource> Replica<R> {
     /// the invoker, acting as attributed. `None` when neither is set.
     #[must_use]
     pub fn invoker(&self) -> Option<tilo_actions::ActionInvoker> {
-        let author = self.author.as_ref().or(self.invoker.as_ref())?;
-        let invoker = match &self.acting {
-            Some(acting) => tilo_actions::ActionInvoker::admitted(acting),
-            None => {
-                tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::member(author.clone()))
-            }
+        let acting = match (&self.acting, &self.invoker) {
+            (Some(acting), _) | (None, Some(acting)) => acting.clone(),
+            (None, None) => tilo_actions::Acting::member(self.author.clone()?),
         };
         Some(
-            invoker
+            tilo_actions::ActionInvoker::admitted(&acting)
                 .with_appearance(self.appearance.clone())
                 .named(self.name.clone()),
         )

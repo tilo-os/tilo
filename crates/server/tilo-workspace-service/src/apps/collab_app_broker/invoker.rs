@@ -17,6 +17,7 @@ use super::{BrokerActor, ExecutionScope};
 /// request binds it, so the worker's view of the invoker is exactly this.
 pub(super) fn host_set_invoker(
     context: Option<tilo_actions::ActionContext>,
+    request: Option<&tilo_actions::remote::InvokeRequest>,
     actor: &BrokerActor,
     caller: Option<&tilo_actions::remote::Caller>,
     execution: Option<&ExecutionScope>,
@@ -32,11 +33,14 @@ pub(super) fn host_set_invoker(
     // A person acting for themselves needs no context to say so; anyone else is named with
     // their kind and the person they act for, so what they write is theirs, not that person's.
     if context.is_none() && presence.is_none() && admitted.direct() {
-        return Ok(None);
+        // A caller whose change another device decides keeps the invocation it signed, even
+        // when it keeps nothing else.
+        return Ok(signed_by_request(None, request));
     }
-    let mut context = context
+    let context = context
         .unwrap_or_default()
         .with_host_actor(&admitted, presence);
+    let mut context = signed_by_request(Some(context), request).unwrap_or_default();
     // The name the admitting host knows an agent by, never one the request carries.
     if let Some(invoker) = context.invoker.as_mut() {
         invoker.name = admitting
@@ -44,6 +48,24 @@ pub(super) fn host_set_invoker(
             .map(str::to_owned);
     }
     Ok(Some(context))
+}
+
+/// `context` carrying the invocation `request` signed, when it carries one: every change the
+/// action writes from it keeps what its caller signed, so a holder checks that the caller the
+/// change names asked for it, and with which key.
+pub(super) fn signed_by_request(
+    context: Option<tilo_actions::ActionContext>,
+    request: Option<&tilo_actions::remote::InvokeRequest>,
+) -> Option<tilo_actions::ActionContext> {
+    let Some((invocation, signed)) = request.and_then(|request| {
+        tilo_actions::remote::SignedCall::of(request).map(|signed| (request.invocation, signed))
+    }) else {
+        return context;
+    };
+    let mut context = context.unwrap_or_default();
+    context.signed = Some(Box::new(signed));
+    context.source_invocation = Some(invocation);
+    Some(context)
 }
 
 /// `context` with the device the agent works from named on its invoker:
@@ -90,7 +112,7 @@ mod tests {
         phase a_person_never_gets_a_presence_from_the_envelope;
         {
             let actor = BrokerActor::person("guest");
-            let context = host_set_invoker(Some(forged()), &actor, None, None)
+            let context = host_set_invoker(Some(forged()), None, &actor, None, None)
                 .unwrap()
                 .unwrap();
             assert_eq!(
@@ -104,13 +126,13 @@ mod tests {
                 "the worker derives exactly the host-set invoker"
             );
             // No context stays no context: ordinary deliveries are unchanged.
-            assert_eq!(host_set_invoker(None, &actor, None, None).unwrap(), None);
+            assert_eq!(host_set_invoker(None, None, &actor, None, None).unwrap(), None);
         }
 
         phase an_agent_gets_no_presence_from_the_envelope;
         {
             let actor = BrokerActor::agent("alpha");
-            let context = host_set_invoker(Some(forged()), &actor, None, None)
+            let context = host_set_invoker(Some(forged()), None, &actor, None, None)
                 .unwrap()
                 .unwrap();
             assert_eq!(
@@ -120,11 +142,11 @@ mod tests {
             assert_eq!(invoker_presence(Some(&context)), None);
             // An agent acting for a person names them, with no caller to say so.
             let started = BrokerActor::agent("alpha").for_person("owner");
-            let context = host_set_invoker(Some(forged()), &started, None, None).unwrap();
+            let context = host_set_invoker(Some(forged()), None, &started, None, None).unwrap();
             let invoker = context.and_then(|context| context.invoker).unwrap();
             assert_eq!(invoker.acting.acted_for_person(), Some("owner"));
             let untasked = tilo_actions::ActionContext::default();
-            let context = host_set_invoker(Some(untasked), &actor, None, None)
+            let context = host_set_invoker(Some(untasked), None, &actor, None, None)
                 .unwrap()
                 .unwrap();
             assert_eq!(invoker_presence(Some(&context)), None);
@@ -136,6 +158,7 @@ mod tests {
             let actor = BrokerActor::for_caller(&caller);
             let context = host_set_invoker(
                 Some(tilo_actions::ActionContext::default()),
+                None,
                 &actor,
                 Some(&caller),
                 None,
@@ -153,7 +176,7 @@ mod tests {
             // Asked with no context at all, it is still the agent's, by the name its admission gave
             // it, for the person: what it writes is never taken for theirs.
             let named = caller.named("Helper");
-            let context = host_set_invoker(None, &actor, Some(&named), None)
+            let context = host_set_invoker(None, None, &actor, Some(&named), None)
                 .unwrap()
                 .expect("an agent's invocation always names it");
             assert_eq!(
@@ -169,6 +192,7 @@ mod tests {
             let step = tilo_actions::remote::Caller::local_person("owner").running_shortcut("morning");
             let context = host_set_invoker(
                 Some(tilo_actions::ActionContext::default()),
+                None,
                 &BrokerActor::for_caller(&step),
                 Some(&step),
                 None,
@@ -190,10 +214,10 @@ mod tests {
                 BrokerActor::person("other"),
                 BrokerActor::agent("owner"),
             ] {
-                assert!(host_set_invoker(Some(forged()), &actor, None, Some(&execution)).is_err());
+                assert!(host_set_invoker(Some(forged()), None, &actor, None, Some(&execution)).is_err());
             }
             let actor = BrokerActor::person("owner");
-            let context = host_set_invoker(Some(forged()), &actor, None, Some(&execution))
+            let context = host_set_invoker(Some(forged()), None, &actor, None, Some(&execution))
                 .unwrap()
                 .unwrap();
             assert_eq!(
@@ -203,7 +227,7 @@ mod tests {
                 ))
             );
             caller.retire_execution();
-            assert!(host_set_invoker(None, &actor, None, Some(&execution)).is_err());
+            assert!(host_set_invoker(None, None, &actor, None, Some(&execution)).is_err());
         }
 
         phase an_invoker_is_on_the_device_its_session_names_and_never_on_one_the_envelope_names;
@@ -227,7 +251,7 @@ mod tests {
                     .and_then(|invoker| invoker.device)
             };
             // The host's rewrite alone leaves the invoker on no device.
-            let hosted = host_set_invoker(said(), &actor, None, None).unwrap();
+            let hosted = host_set_invoker(said(), None, &actor, None, None).unwrap();
             assert_eq!(device(hosted.clone()), None);
             // The session's own record names the device, whatever the envelope said.
             assert_eq!(

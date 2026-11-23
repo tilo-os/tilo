@@ -166,7 +166,7 @@ impl Workspaces {
         let root = self.workspace_root(&here);
         let person = reach.person;
         let by = reach.by();
-        let keys = ProviderKeys::of(self.vault_at(&here), &by);
+        let keys = ProviderKeys::of(self.vault_for(&here, &reach.acting), &by);
         let reach = self.model_reach();
         if let Some(answered) = self
             .sign_in_invoke(action, person, &here, &reach, request)

@@ -110,7 +110,7 @@ async fn keep_recovery_key(
         .await
         .map_err(|error| refused(&error))?;
     workspaces
-        .write_vault(&opened, vec![VaultChange::Keep(entry)])
+        .write_vault(&opened, vec![VaultChange::Keep(entry)], None)
         .await
         .map_err(|error| refused(&format!("the recovery key was not kept: {error}")))?;
     answer(&machine)

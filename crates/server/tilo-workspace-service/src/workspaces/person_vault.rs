@@ -36,7 +36,7 @@ use std::path::Path;
 
 use accounts::vault_items::{self, ItemFacts, NewItem, Place, UsedFor, VaultChange, VaultItems};
 use serde_json::Value;
-use tilo_action_policy::{ActionKind, Answer, Grant, Level};
+use tilo_action_policy::{Acting, ActionKind, Answer, Grant, Level};
 use tilo_actions::remote::person_accounts::{self, AddMailAccount, AddMailWithItem, MailAccount};
 use tilo_actions::remote::person_models::{self, ProviderView, SetKey, SetKeyFromItem};
 use tilo_actions::remote::person_vault::{
@@ -81,8 +81,9 @@ impl Workspaces {
             sent_in: asked.sent_in,
             secret: typed.expose().to_owned(),
         };
+        let acting = Acting::person(hex::encode(person));
         let kept = self
-            .changing_vault(workspace, |items| add(items, adding))
+            .changing_vault(workspace, Some(&acting), |items| add(items, adding))
             .await?;
         Ok(Some(kept.reference))
     }
@@ -125,16 +126,20 @@ impl Workspaces {
                     "an item to keep names its kind, where it belongs and its secret",
                 )?;
                 said(
-                    self.changing_vault(&workspace, |items| add(items, adding))
-                        .await,
+                    self.changing_vault(&workspace, Some(&reach.acting), |items| {
+                        add(items, adding)
+                    })
+                    .await,
                 )
             }
             person_vault::REMOVE => {
                 let removing: RemoveItem =
                     argument(request, "an item to forget is named by its reference")?;
                 said(
-                    self.changing_vault(&workspace, |items| remove(items, &removing.item))
-                        .await,
+                    self.changing_vault(&workspace, Some(&reach.acting), |items| {
+                        remove(items, &removing.item)
+                    })
+                    .await,
                 )
             }
             person_vault::ENTRIES => said(self.vault_entries(&workspace).await),
@@ -195,7 +200,7 @@ impl Workspaces {
         }
         entry.updated_unix = tilo_clock::unix_now();
         let opened = self.open_vault(workspace).await?;
-        self.write_vault(&opened, vec![VaultChange::Keep(entry)])
+        self.write_vault(&opened, vec![VaultChange::Keep(entry)], None)
             .await
             .map_err(|error| format!("The entry could not be kept: {error}"))?;
         self.vault_entries(workspace).await
@@ -213,6 +218,7 @@ impl Workspaces {
             self.write_vault(
                 &opened,
                 vec![VaultChange::Forget(accounts::SecretId(forgetting.id))],
+                None,
             )
             .await
             .map_err(|error| format!("The entry could not be forgotten: {error}"))?;
@@ -597,7 +603,7 @@ impl Workspaces {
     ) -> Result<vault_items::Released, String> {
         let id = vault_items::ItemId::parse(item.id())
             .ok_or_else(|| vault_items::ItemError::NotFound.to_string())?;
-        self.changing_vault(workspace, |items| {
+        self.changing_vault(workspace, None, |items| {
             items.use_for(&id, kind, places, by, purpose)
         })
         .await

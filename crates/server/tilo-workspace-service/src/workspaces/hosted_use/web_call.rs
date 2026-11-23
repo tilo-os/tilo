@@ -265,7 +265,7 @@ pub(super) async fn send(
     let mut items = opened.items();
     let ready = ready(reach, &mut items, call, by, purpose)?;
     workspaces
-        .write_vault(&opened, items.take_changes())
+        .write_vault(&opened, items.take_changes(), None)
         .await?;
     deliver(reach, system_lookup(), ready).await
 }
