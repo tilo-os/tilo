@@ -81,6 +81,7 @@ pub struct TrendingPage {
 pub struct PlaylistPage {
     pub playlist: PlaylistItem,
     pub videos: Vec<VideoItem>,
+}
 
 /// One whole-file stream a video offers, as the quality menu names it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
