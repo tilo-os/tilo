@@ -1,8 +1,9 @@
-//! A session a display manager starts on a computer whose Tilo service runs as the person's own
-//! account (a distribution Tilo was added to): it never runs as the person's shell itself. It asks
-//! that service to start the shell (`shells#start`), which hands the shell the link it is
-//! admitted by, and stands in for it until it ends: the signals the display manager sends it go to
-//! the shell, and it exits as the shell did.
+//! A session started on a computer whose Tilo service runs as the person's own account never runs
+//! as the person's shell itself: one a display manager starts (a distribution Tilo was added to),
+//! and one a development script starts beside the service it started first. It asks that service
+//! to start the shell (`shells#start`), which hands the shell the link it is admitted by, and
+//! stands in for it until it ends: the signals sent to it go to the shell, and it exits as the
+//! shell did.
 
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
@@ -20,11 +21,17 @@ static SHELL: AtomicI32 = AtomicI32::new(0);
 const FORWARDED: [libc::c_int; 4] = [libc::SIGTERM, libc::SIGINT, libc::SIGHUP, libc::SIGUSR1];
 
 /// Whether this session is to ask the service for its shell: it was started with no link to it
-/// (`runtime_collab::wire::shell::SHELL_FD_ENV`), on a computer whose service is the person's own.
+/// (`runtime_collab::wire::shell::SHELL_FD_ENV`), on a computer whose service is the person's own,
+/// and either a display manager started it (`host_desktop`, which starts the service when none
+/// runs) or the service runs already. A session handed its window's connection to another desktop
+/// (`WAYLAND_SOCKET`) holds a descriptor the service cannot pass on, and runs as it was started.
 #[must_use]
-pub fn asks_the_service() -> bool {
+pub fn asks_the_service(host_desktop: bool) -> bool {
     std::env::var_os(runtime_collab::wire::shell::SHELL_FD_ENV).is_none()
         && !tilo_api::daemon::system_daemon()
+        && (host_desktop
+            || (std::env::var_os("WAYLAND_SOCKET").is_none()
+                && tilo_api::daemon::this_computer().is_ok_and(|place| place.alive())))
 }
 
 /// Have this computer's Tilo service start the person's shell with `args` (this session's own
@@ -43,8 +50,10 @@ pub fn through_the_service(args: &[String]) -> ExitCode {
 
 fn start_and_wait(args: &[String]) -> Result<ExitCode, String> {
     let place = tilo_api::daemon::this_computer()?;
-    place.wait_for_api(SERVICE_START)?;
-    let socket = place.sockets().join(tilo_paths::machine::DAEMON_NATIVE);
+    // A computer no person's certificate names yet founds its person here, as its first command
+    // does (`devices#found`).
+    place.wait_for_native(SERVICE_START)?;
+    let socket = place.native();
     let stream = UnixStream::connect(&socket).map_err(|error| {
         format!(
             "Tilo's service is not answering at {}: {error}",

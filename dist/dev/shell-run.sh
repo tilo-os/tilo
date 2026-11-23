@@ -106,11 +106,12 @@ if ((build)) && [[ $profile == nested ]]; then
     say "building the nested profile (dist/dev/nested-session-build.sh)"
     TILO_NESTED_APPS="${rust_apps[*]}" "$repo_root/dist/dev/nested-session-build.sh"
 elif ((build)); then
-    say "building tilo-session, tilo-quick-settings, tilolang, tilo-control, tilo-launcher, tilo-install, tilo-app-package, nested-session-bus and tilo-runtime-bundle"
+    say "building tilo-session, tilo-runtime, tilo-quick-settings, tilolang, tilo-control, tilo-launcher, tilo-install, tilo-app-package, nested-session-bus and tilo-runtime-bundle"
     # Quick settings is a surface app the session starts beside itself: built here, it is found
     # beside the session before the system's own, which is another tree's build and reads
     # another shape of the session's readings.
     (cd "$repo_root" && cargo build --locked -p tilo-session --bin tilo-session \
+        -p tilo-runtime --bin tilo-runtime \
         -p tilo-quick-settings --bin tilo-quick-settings \
         -p tilolang-cli --bin tilolang -p tilo-control --bin tilo-control \
         -p launcher --bin tilo-launcher -p install --bin tilo-install \
@@ -131,7 +132,7 @@ elif ((build)); then
     # (dist/dev/build-provenance.sh).
     "$repo_root/dist/dev/build-provenance.sh" write "$bin"
 fi
-for tool in tilo-session tilo-quick-settings tilolang tilo-control tilo-launcher tilo-install tilo-app-package nested-session-bus tilo-runtime-bundle fs tilo-model-gateway; do
+for tool in tilo-session tilo-runtime tilo-quick-settings tilolang tilo-control tilo-launcher tilo-install tilo-app-package nested-session-bus tilo-runtime-bundle fs tilo-model-gateway; do
     [[ -x $bin/$tool ]] || die "no $bin/$tool (run without --no-build)"
 done
 # The thin-app build every Tilo runtime here is made of: `dist/dev/nested-session-build.sh`
@@ -252,10 +253,22 @@ stop_gateway() {
     wait "$gateway_pid" 2>/dev/null || true
     gateway_pid=
 }
+# This computer's device daemon (`start_device_daemon`, started before the session).
+device_daemon_pid=
+stop_device_daemon() {
+    [[ -n $device_daemon_pid ]] || return 0
+    kill -TERM -- "-$device_daemon_pid" 2>/dev/null || true
+    local tries=100
+    while ((tries--)) && kill -0 "$device_daemon_pid" 2>/dev/null; do sleep 0.1; done
+    kill -KILL -- "-$device_daemon_pid" 2>/dev/null || true
+    wait "$device_daemon_pid" 2>/dev/null || true
+    device_daemon_pid=
+}
 cleanup() {
     # A second signal must not cut the cleanup short and leave the session up.
     trap '' INT TERM HUP
     stop_session
+    stop_device_daemon
     stop_gateway
     stop_media
     rm -rf "$scratch" 2>/dev/null || true
@@ -441,15 +454,16 @@ printf 'site = ""\n' > "$community_file"
 # person's own on their workspace's server, through this computer's `tilo login`
 # session. A session that plans no
 # turn runs no gateway, and starts as before.
+# The person's environment, as their login gives it to each of their services and their session.
+person_env=(HOME="$home" XDG_CONFIG_HOME="$home/.config" XDG_DATA_HOME="$home/.local/share"
+    XDG_STATE_HOME="$home/.local/state" XDG_CACHE_HOME="$home/.cache"
+    XDG_RUNTIME_DIR="$runtime" TILO_IDENTITY_ROOT="$scratch/identity"
+    TILO_SECRETS_DIR="$secrets")
 gateway_socket=$runtime/tilo/services/model-gateway.sock
 start_gateway() {
     mkdir -p "$runtime/tilo/services"
     chmod 700 "$runtime/tilo" "$runtime/tilo/services"
-    env -u WAYLAND_DISPLAY -u DISPLAY -u DBUS_SESSION_BUS_ADDRESS \
-        HOME="$home" XDG_CONFIG_HOME="$home/.config" XDG_DATA_HOME="$home/.local/share" \
-        XDG_STATE_HOME="$home/.local/state" XDG_CACHE_HOME="$home/.cache" \
-        XDG_RUNTIME_DIR="$runtime" TILO_IDENTITY_ROOT="$scratch/identity" \
-        TILO_SECRETS_DIR="$secrets" \
+    env -u WAYLAND_DISPLAY -u DISPLAY -u DBUS_SESSION_BUS_ADDRESS "${person_env[@]}" \
         setsid "$bin/tilo-model-gateway" serve --socket "$gateway_socket" \
         > "$scratch/model-gateway.log" 2>&1 &
     gateway_pid=$!
@@ -469,11 +483,7 @@ backend=(--backend headless --size "$size")
 [[ -n $scale ]] && backend+=(--scale "$scale")
 host_client=()
 start_session() {
-    env -u WAYLAND_DISPLAY -u DISPLAY -u DBUS_SESSION_BUS_ADDRESS \
-        HOME="$home" XDG_CONFIG_HOME="$home/.config" XDG_DATA_HOME="$home/.local/share" \
-        XDG_STATE_HOME="$home/.local/state" XDG_CACHE_HOME="$home/.cache" \
-        XDG_RUNTIME_DIR="$runtime" TILO_IDENTITY_ROOT="$scratch/identity" \
-        TILO_SECRETS_DIR="$secrets" \
+    env -u WAYLAND_DISPLAY -u DISPLAY -u DBUS_SESSION_BUS_ADDRESS "${person_env[@]}" \
         TILO_APPS_DATA_DIR="$user_store" TILO_APPS_SYSTEM_DIR="$store" \
         TILO_RUNTIME_BUNDLE_DIR="$runtimes" \
         TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE="$trust" \
@@ -484,7 +494,7 @@ start_session() {
         setsid "$session_bus" "$dbus_daemon" \
         "${host_client[@]}" "$bin/tilo-session" "${backend[@]}" --no-x11 \
         --system-bus none --test-control "$control" "$@" \
-        > "$log" 2>&1 &
+        >> "$log" 2>&1 &
     session_pid=$!
     group=$session_pid
     local tries=600
@@ -495,15 +505,19 @@ start_session() {
     done
 }
 
-# Nobody completes first-use setup here: a first pass mints the throwaway
-# identity a development session opens its shell with, as a dev image's does.
-say "minting a throwaway identity"
+# This computer's device daemon, started first as the person's own service starts it: it founds the
+# development person, keeps their workspaces, and starts the session below as their shell, handing
+# it the link it reaches them on. It and the shell it starts write to the session's log.
 mkdir -m 700 "$scratch/identity"
-start_session
-minted=$(TILO_TEST_CONTROL=$control "$bin/tilo-control" raw '{"op":"provision_test_identity"}') \
-    || die "no throwaway identity: $minted (see $log)"
-[[ $minted == *'"throwaway":true'* ]] || die "no throwaway identity: $minted"
-stop_session
+: > "$log"
+say "starting the device daemon (log: $log)"
+env "${person_env[@]}" TILO_APPS_DATA_DIR="$user_store" TILO_APPS_SYSTEM_DIR="$store" \
+    TILO_RUNTIME_BUNDLE_DIR="$runtimes" TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE="$trust" \
+    TILO_LAUNCHER_BIN="$bin/tilo-launcher" TILO_COMMUNITY_CONFIG="$community_file" \
+    bash -c '. "$1" && start_device_daemon "$2" "$3" && echo "$device_daemon_pid"' _ \
+    "$repo_root/dist/dev/device-daemon.sh" "$bin" "$log" > "$scratch/device-daemon.pid" \
+    || die "the device daemon did not start (see $log)"
+device_daemon_pid=$(< "$scratch/device-daemon.pid")
 
 if ((window)); then
     [[ -n ${WAYLAND_DISPLAY:-} ]] || die "--window needs a Wayland desktop (WAYLAND_DISPLAY is unset)"

@@ -9,7 +9,7 @@
 #
 # Nothing is installed system-wide and nothing needs root. Everything lives in
 # one state directory: a scratch HOME and XDG tree, the app store, the runtime
-# bundle, a development publisher key and a throwaway identity. The compositor
+# bundle, a development publisher key and a development identity. The compositor
 # gets a private XDG_RUNTIME_DIR and D-Bus session, so its sockets, services
 # and portals cannot collide with the host desktop or another Tilo session.
 #
@@ -27,7 +27,7 @@
 #                      $TILO_NESTED_SESSION_BUILD, where a check hands its
 #                      build over in a read-only tree)
 #   --prepare-only     build and install, then exit without starting the session
-#   --reset-identity   discard the throwaway identity and mint a new one
+#   --reset-identity   discard the development identity and found a new one
 #   --fresh-desktop    forget workspaces and open windows; keep identity and apps
 #   --headless         run without a window on the offscreen backend, for
 #                      scripted runs driven only through tilo-control
@@ -258,7 +258,7 @@ fi
 # tree's code as this one's (dist/dev/build-provenance.sh, and the session that read another
 # tree's build as this tree's fixes failing).
 "$repo_root/dist/dev/build-provenance.sh" verify "$build_out" "$thin"
-for name in tilo-session tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle \
+for name in tilo-session tilo-runtime tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle \
             tilo-model-gateway tilo-ush tilo-control fs; do
     [[ -f $bin/$name ]] || die "missing $bin/$name (run without --no-build)"
     chmod +x "$bin/$name"
@@ -699,59 +699,33 @@ if ((fresh_desktop)); then
         "$XDG_CONFIG_HOME"/tilo/state.owner.json "$XDG_CONFIG_HOME"/tilo/state.automerge*
 fi
 
-# A throwaway identity's certificates last 24 hours; mint a fresh one well
-# before that, rather than have the session refuse an expired chain.
-#
-# A state directory the caller filled with a real identity is never given a
-# throwaway one: the two trees a session reads it from (`TILO_IDENTITY_ROOT`,
-# now holding `device/cert.bin`) are the person's, and minting over them would
-# discard the identity the caller put there.
+# A state directory the caller filled with a real identity keeps it: the two trees a session reads
+# it from (`TILO_IDENTITY_ROOT`, holding `device/cert.bin`) are the person's. `--reset-identity`
+# discards the development person and their desktop; the device daemon founds a new one below.
 identity_dir=$XDG_CONFIG_HOME/tilo/identity
-marker=$identity_dir/throwaway-test-identity
-keep_identity=0
-if ((!reset_identity)) && [[ -f $TILO_IDENTITY_ROOT/device/cert.bin ]]; then
+if ((reset_identity)); then
+    # A new identity is a new person: the native workspace the old one governs belongs to
+    # someone else now.
+    say "discarding the development identity and its desktop"
+    rm -rf "$identity_dir" "$TILO_IDENTITY_ROOT" "$state/secrets" "$HOME/.local/state/tilo/runtime" \
+        "$XDG_CONFIG_HOME"/tilo/state.json "$XDG_CONFIG_HOME"/tilo/state.json.* \
+        "$XDG_CONFIG_HOME"/tilo/state.owner.json "$XDG_CONFIG_HOME"/tilo/state.automerge*
+    mkdir -p "$TILO_IDENTITY_ROOT"
+    mkdir -m 700 "$state/secrets"
+elif [[ -f $TILO_IDENTITY_ROOT/device/cert.bin ]]; then
     say "keeping the identity already in $TILO_IDENTITY_ROOT"
-    keep_identity=1
 fi
-if ((!keep_identity)); then
-    if ((reset_identity)) || { [[ -f $marker ]] && [[ -n $(find "$marker" -mmin +1200) ]]; }; then
-        # A new identity is a new person: the native workspace the old one
-        # governs belongs to someone else now.
-        say "discarding the throwaway identity and its desktop"
-        rm -rf "$identity_dir" "$TILO_IDENTITY_ROOT" "$state/secrets" \
-            "$XDG_CONFIG_HOME"/tilo/state.json "$XDG_CONFIG_HOME"/tilo/state.json.* \
-            "$XDG_CONFIG_HOME"/tilo/state.owner.json "$XDG_CONFIG_HOME"/tilo/state.automerge*
-        mkdir -p "$TILO_IDENTITY_ROOT"
-        mkdir -m 700 "$state/secrets"
-    fi
-fi
-if ((!keep_identity)) && [[ ! -f $marker ]]; then
-    # Nobody completes first-login setup here; a headless pass mints the
-    # development identity a dev image would, then exits. Its control socket is
-    # its own: the person's socket answers only the session this script goes on
-    # to start, so a client that asks the moment a socket is there reaches the
-    # desktop rather than a pass that is about to exit and holds no identity.
-    say "minting a throwaway identity"
-    identity_control=$runtime/identity-control.sock
-    env -u WAYLAND_DISPLAY -u DISPLAY TILO_TEST_CONTROL="$identity_control" setsid "$session_bus" "$dbus_daemon" \
-        "$bin/tilo-session" --backend headless > "$logs/identity.log" 2>&1 &
-    pid=$!
-    children+=("$pid")
-    wait_for_socket "$identity_control" "$pid" || die "the headless session did not start (see $logs/identity.log)"
-    TILO_TEST_CONTROL=$identity_control "$bin/tilo-control" raw '{"op":"provision_test_identity"}' \
-        | grep -q '"throwaway": *true' || die "identity provisioning failed (see $logs/identity.log)"
-    # Gone before the session starts: it holds the state file's writer lease
-    # while it lives.
-    stop_groups "$pid"
-    children=()
-    if ((exact_runtime)); then
-        empty_runtime
-        mkdir -p -m 700 "$runtime"
-    else
-        rm -rf "$runtime"
-        mkdir -m 700 "$runtime"
-    fi
-fi
+
+# This computer's device daemon, started first, as the person's own service starts it: it keeps
+# the person's workspaces, founds the development person when there is none yet, and starts the
+# desktop below as their shell, handing it the link the desktop reaches its workspaces on. The
+# daemon and the shell it starts write to the session's log, as a device's journal holds both.
+: > "$logs/session.log"
+# shellcheck source=dist/dev/device-daemon.sh
+. "$repo_root/dist/dev/device-daemon.sh"
+say "starting the device daemon (log: $logs/session.log)"
+start_device_daemon "$bin" "$logs/session.log" || die "the device daemon did not start"
+children+=("$device_daemon_pid")
 
 # --- The session's own desktop ------------------------------------------------
 mkdir -p "$runtime/tilo/services"
@@ -903,6 +877,9 @@ else
     display_env=(-u DISPLAY -u WAYLAND_DISPLAY)
     host_client=(python3 -I "$repo_root/dist/dev/host-wayland.py" "$host_display")
     say "starting the nested session at ${TILO_WINIT_SIZE} logical pixels, at the desktop's scale (log: $logs/session.log)"
+    # The helper's connection is a descriptor of this process tree, which the daemon cannot hand
+    # the shell it starts: a nested session runs here, with no link to the daemon's workspaces.
+    say "a nested session is not started by the device daemon: it reaches no workspace"
 fi
 # The person's own workspace, served as a Tilo device serves it (`fs.service` at
 # /var/workspace): the Files app's windowless endpoint on the record route, and the mounted
@@ -1029,7 +1006,7 @@ cat >&2 <<EOF
     drive it:  XDG_RUNTIME_DIR=$runtime TILO_TEST_CONTROL=$control $bin/tilo-control $( ((headless)) && echo 'snapshot /tmp/shot.png' || echo windows)
 EOF
 env "${display_env[@]}" TILO_TEST_CONTROL="$control" setsid "$session_bus" "$dbus_daemon" \
-    "${host_client[@]}" "$bin/tilo-session" "${backend[@]}" "${session_args[@]}" > "$logs/session.log" 2>&1 &
+    "${host_client[@]}" "$bin/tilo-session" "${backend[@]}" "${session_args[@]}" >> "$logs/session.log" 2>&1 &
 session_pid=$!
 children+=("$session_pid")
 

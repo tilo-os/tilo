@@ -542,6 +542,7 @@ impl crate::seats::Shells for PersonShells {
         command
             .args(args)
             .env_clear()
+            .envs(std::env::vars_os().filter(|(name, _)| shell_keeps_from_the_daemon(name)))
             .envs(env.into_iter().filter(|(name, _)| shell_reads(name)))
             .stdin(std::process::Stdio::null());
         daemon.start_shell(command)
@@ -587,6 +588,26 @@ fn shell_reads(name: &std::ffi::OsStr) -> bool {
         NAMED.contains(&name)
             || (PREFIXED.iter().any(|prefix| name.starts_with(prefix))
                 && name != runtime_collab::wire::shell::SHELL_FD_ENV)
+    })
+}
+
+/// Whether the shell the daemon starts keeps the variable `name` of the daemon's own environment,
+/// which whoever started the daemon set and no account that asks for a shell can: the graphics
+/// driver and the libraries the daemon itself was started to load (a machine with no GPU draws with
+/// Mesa's software drivers, and its shell must too).
+#[cfg(target_os = "linux")]
+fn shell_keeps_from_the_daemon(name: &std::ffi::OsStr) -> bool {
+    const NAMED: [&str; 6] = [
+        "VK_DRIVER_FILES",
+        "VK_ICD_FILENAMES",
+        "LIBGL_ALWAYS_SOFTWARE",
+        "GALLIUM_DRIVER",
+        "LD_LIBRARY_PATH",
+        "RUST_LOG",
+    ];
+    const PREFIXED: [&str; 2] = ["WGPU_", "MESA_"];
+    name.to_str().is_some_and(|name| {
+        NAMED.contains(&name) || PREFIXED.iter().any(|prefix| name.starts_with(prefix))
     })
 }
 

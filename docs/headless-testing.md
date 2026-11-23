@@ -43,6 +43,8 @@ A session started beside a live desktop must also leave the machine's own servic
 
 Its desktop services serve on the session bus it was started on, as a login's do, and its apps reach that bus too. `dist/dev/nested-session.sh` starts it on a private `dbus-daemon` (`dist/dev/session-bus.sh`), so the desktop's own session bus keeps its portal and notification names.
 
+The development sessions start the way a device's does. `dist/dev/nested-session.sh` and `dist/dev/shell-run.sh` start this computer's device daemon (`tilo-runtime`) first, in the session's environment, as the person's own service starts it (`dist/dev/device-daemon.sh`). A fresh state founds its person through it (`devices#found`). The session then finds the daemon running and asks it to start the shell (`shells#start`), so the shell gets the link it reaches the daemon's workspaces on. The daemon and the shell write to the session's log. A nested session's window connection cannot pass through the daemon, so a nested session runs as it was started, with no link.
+
 A session that says nothing owns the machine it was started on, which is what a login is; only a session that must keep away from the machine has to say so. A headless session a script starts without it is treated as owning the machine, and would reach the host's daemons — which is why every example here sets it beside a live desktop.
 
 ## Layer 1: a session with no display
