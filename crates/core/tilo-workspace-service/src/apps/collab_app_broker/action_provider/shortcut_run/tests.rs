@@ -984,3 +984,232 @@ async fn continuing_a_run_from_the_run_itself_is_refused() {
         "a continuation names the step it goes on from: {refused:?}"
     );
 }
+
+/// A shortcut whose one step runs `echo`, which its grant leaves to the person.
+fn guarded_shortcut() -> tilo_automation::Shortcut {
+    tilo_automation::Shortcut {
+        id: "guarded".into(),
+        name: "Guarded".into(),
+        steps: vec![run_echo()],
+        grant: vec![tilo_automation::action_rule(
+            SHORTCUTS_APP_ID,
+            tilo_automation::SHORTCUT_RESOURCE_KIND,
+            None,
+            "run",
+            tilo_action_policy::KindSet::ALL,
+            tilo_action_policy::Answer::Ask,
+        )],
+        ..waiting_shortcut()
+    }
+}
+
+/// The dispatch that carried the call, as the person's answer reaches it: what it was handed.
+#[derive(Default)]
+struct Carried {
+    readmitted: std::sync::Mutex<Vec<InvokeRequest>>,
+    declined: std::sync::Mutex<Vec<tilo_actions::InvocationId>>,
+}
+
+impl tilo_actions::remote::asked::AskedDispatch for Carried {
+    fn context(&self, _: tilo_actions::InvocationId) -> serde_json::Value {
+        serde_json::Value::Null
+    }
+
+    fn readmit(
+        &self,
+        _: &Caller,
+        request: InvokeRequest,
+        _: &serde_json::Value,
+    ) -> Result<(), ActionCallError> {
+        self.readmitted.lock().unwrap().push(request);
+        Ok(())
+    }
+
+    fn declined(
+        &self,
+        _: &Caller,
+        invocation: tilo_actions::InvocationId,
+    ) -> Result<(), ActionCallError> {
+        self.declined.lock().unwrap().push(invocation);
+        Ok(())
+    }
+}
+
+/// A run of `guarded` invoked through the broker, refused for want of the person's yes, and
+/// kept as its asked record the way the dispatch that carried it keeps it.
+struct Asked {
+    fixture: Fixture,
+    store: Arc<tilo_actions::remote::asked::AskedStore>,
+    carried: Arc<Carried>,
+    record: tilo_actions::remote::asked::RecordRef,
+    facts: tilo_actions::remote::asked::AskedFacts,
+}
+
+impl Asked {
+    #[allow(
+        clippy::future_not_send,
+        reason = "the fixture's broker state is thread confined to the test's current-thread runtime"
+    )]
+    async fn new() -> Self {
+        let mut fixture = Fixture::with_extra(guarded_shortcut());
+        fixture.request.target.address = ActionAddress::new("shortcuts.shortcut:guarded", "run");
+        let Err(ActionCallError::ConfirmationRequired(facts)) = fixture.invoke().await else {
+            panic!("a run whose step the grant leaves to the person asks before it starts");
+        };
+        let store = Arc::new(tilo_actions::remote::asked::AskedStore::default());
+        let carried = Arc::new(Carried::default());
+        let dispatch: Arc<dyn tilo_actions::remote::asked::AskedDispatch> = carried.clone();
+        let record = store
+            .for_dispatch("device", Arc::downgrade(&dispatch))
+            .write_asked(
+                fixture.caller.workspace().unwrap(),
+                &fixture.caller,
+                &fixture.request,
+                &facts,
+            )
+            .unwrap();
+        Self {
+            fixture,
+            store,
+            carried,
+            record,
+            facts: *facts,
+        }
+    }
+
+    async fn answer(
+        &self,
+        answering: &Caller,
+        resolution: tilo_actions::remote::asked::Offer,
+    ) -> Result<(), ActionCallError> {
+        self.store
+            .resolve(
+                &self.record,
+                answering,
+                &tilo_actions::remote::asked::Resolve {
+                    resolution,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+    }
+
+    /// Nothing of the run started: no job answers for its call, and no run of it finished.
+    fn ran_nothing(&self) {
+        assert!(
+            self.fixture
+                .state
+                .action_observe(&self.fixture.caller, &self.fixture.request.invocation)
+                .is_none(),
+            "nothing was admitted for the call"
+        );
+        assert!(!self.fixture.state.has_finished_shortcut_runs());
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_step_the_grant_leaves_to_the_person_asks_before_the_run_starts() {
+    let asked = Asked::new().await;
+    // What the person is shown: the shortcut, and the step that needs their yes with what
+    // it acts on.
+    assert_eq!(asked.facts.on.as_deref(), Some("Guarded"));
+    assert!(matches!(
+        &asked.facts.by,
+        tilo_actions::remote::asked::AskedBy::App { app, title, .. }
+            if app == SHORTCUTS_APP_ID && title == "Guarded"
+    ));
+    assert_eq!(asked.facts.facts.len(), 1, "{:?}", asked.facts);
+    assert!(
+        asked.facts.facts[0].value.contains("echo"),
+        "{:?}",
+        asked.facts.facts
+    );
+    asked.ran_nothing();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_persons_approve_runs_the_shortcut_with_the_step_that_asked() {
+    let asked = Asked::new().await;
+    asked
+        .answer(
+            &asked.fixture.caller,
+            tilo_actions::remote::asked::Offer::Approve,
+        )
+        .await
+        .expect("the person it asks answers it");
+    let readmitted = asked.carried.readmitted.lock().unwrap().pop().unwrap();
+    assert_eq!(
+        readmitted.approval().map(|approval| &approval.record),
+        Some(&asked.record)
+    );
+    // The dispatch sends the same call again carrying the approve: the run starts and its
+    // step runs `echo`.
+    let fixture = &asked.fixture;
+    fixture
+        .state
+        .action_invoke_with_origin(
+            &fixture.caller,
+            None,
+            None,
+            Some(&fixture.origin),
+            &readmitted,
+        )
+        .await
+        .unwrap()
+        .expect("the approved call runs");
+    fixture.finish().await;
+    let report = fixture
+        .state
+        .shortcut_run_report(
+            tilo_automation::AutomationInvocationId(readmitted.invocation.0),
+            "guarded",
+        )
+        .expect("the run is recorded");
+    assert_eq!(
+        report.outcome,
+        tilo_automation::InvocationOutcome::Completed,
+        "{report:?}"
+    );
+    assert_eq!(report.steps.len(), 1, "{report:?}");
+    assert!(report.steps[0].succeeded(), "{report:?}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_declined_run_runs_nothing() {
+    let asked = Asked::new().await;
+    asked
+        .answer(
+            &asked.fixture.caller,
+            tilo_actions::remote::asked::Offer::Decline,
+        )
+        .await
+        .expect("the person it asks declines it");
+    assert_eq!(
+        *asked.carried.declined.lock().unwrap(),
+        vec![asked.fixture.request.invocation]
+    );
+    assert!(asked.carried.readmitted.lock().unwrap().is_empty());
+    asked.ran_nothing();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_agent_cannot_answer_for_the_person_it_acts_for() {
+    let asked = Asked::new().await;
+    let person = asked
+        .fixture
+        .caller
+        .acting()
+        .person_id()
+        .unwrap()
+        .to_owned();
+    let agent = Caller::local_agent("scout")
+        .acting_for(person)
+        .in_workspace(asked.fixture.caller.workspace().unwrap());
+    asked
+        .answer(&agent, tilo_actions::remote::asked::Offer::Approve)
+        .await
+        .expect_err("an agent answers for nobody");
+    assert!(asked.carried.readmitted.lock().unwrap().is_empty());
+    asked.ran_nothing();
+}

@@ -12,6 +12,7 @@ use tilo_actions::api::{ActionAddress, ActionDescriptor, InputSpec};
 use tilo_actions::contract::{ActionContract, ConfirmationPolicy, ResultSpec, RiskLevel};
 use tilo_actions::outcome::{ActionOutput, InvocationId as ActionInvocationId, InvocationUpdate};
 use tilo_actions::params::{ActionParam, ParamType};
+use tilo_actions::remote::asked::{Approval, RecordRef};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, CatalogueResource,
     CatalogueRow, Completer, Confirmation, InvocationLog, InvocationReceipt, InvocationState,
@@ -22,11 +23,11 @@ use tilo_actions::remote::{
 use crate::{
     AGENT_APP_ID, AGENT_FREEFORM_ACTION, AGENT_SUMMARISE_ACTION, AGENT_TASK_ACTION,
     AGENT_TRANSFORM_KIND, ActionCatalog, AskRequest, AutomationInvocationId, Binding, CatchUp,
-    CheckErrorKind, Condition, ConfirmationRequest, InvocationHooks, InvocationMode,
-    InvocationOutcome, InvocationReport, InvocationRequest, InvocationTrigger, NoShortcuts,
-    Recovered, SHORTCUT_RESOURCE_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, Schedule, Selector,
-    Shortcut, Step, StepEntry, StepFailure, StepKind, StepOutcome, StepPath, StepPolicy,
-    StepStatus, StopWatch, TimeOfDay, TriggerSpec, Weekday, check, run, shortcut_resource_id,
+    CheckErrorKind, Condition, InvocationHooks, InvocationMode, InvocationOutcome,
+    InvocationReport, InvocationRequest, InvocationTrigger, NoShortcuts, Recovered,
+    SHORTCUT_RESOURCE_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, Schedule, Selector, Shortcut,
+    Step, StepEntry, StepFailure, StepKind, StepOutcome, StepPath, StepPolicy, StepStatus,
+    StopWatch, TimeOfDay, TriggerSpec, Weekday, check, run, shortcut_resource_id,
 };
 
 pub(crate) const NOTES: &str = "so.tilo.notes";
@@ -385,19 +386,12 @@ impl ActionProvider for FakeHost {
 
 #[derive(Debug, Default)]
 pub(crate) struct Hooks {
-    confirmation: Option<Confirmation>,
     answer: Option<Value>,
-    confirmations: Mutex<Vec<ConfirmationRequest>>,
     /// How many times an invocation fell back to waiting out a poll interval.
     settles: AtomicUsize,
 }
 
 impl InvocationHooks for Hooks {
-    fn confirm(&self, request: ConfirmationRequest) -> Pending<Option<Confirmation>> {
-        self.confirmations.lock().unwrap().push(request);
-        Pending::ready(self.confirmation.clone())
-    }
-
     fn ask(&self, _request: AskRequest) -> Pending<Option<Value>> {
         Pending::ready(self.answer.clone())
     }
@@ -493,6 +487,43 @@ pub(crate) fn run_with(
     run_chained(host, hooks, shortcut, invocation_id, mode, Vec::new())
 }
 
+/// The person's approve of the asked record a run's call was kept as.
+fn approved() -> Approval {
+    Approval {
+        record: RecordRef {
+            workspace: "acme".into(),
+            record: "invocations/1".into(),
+            device: None,
+        },
+        choice: None,
+        chosen: Vec::new(),
+        typed: Vec::new(),
+        files: Vec::new(),
+    }
+}
+
+/// An invocation of `shortcut` whose call the person approved.
+fn run_approved(host: &FakeHost, shortcut: &Shortcut) -> InvocationReport {
+    block_on(run(
+        host,
+        &Hooks::default(),
+        InvocationRequest {
+            shortcut,
+            invocation: AutomationInvocationId::new(),
+            caller: caller(),
+            mode: InvocationMode::Interactive,
+            trigger: InvocationTrigger::Manual,
+            inputs: serde_json::Map::new(),
+            caused_by: None,
+            parent: None,
+            chain: Vec::new(),
+            approval: Some(approved()),
+            resume: None,
+            from: None,
+        },
+    ))
+}
+
 /// [`run_with`] for an invocation of `shortcut` no person is watching.
 fn unattended(host: &FakeHost, shortcut: &Shortcut) -> InvocationReport {
     run_with(
@@ -527,6 +558,7 @@ fn run_chained(
             caused_by: None,
             parent: None,
             chain,
+            approval: None,
             resume: None,
             from: None,
         },
@@ -982,6 +1014,7 @@ tilo_test_env::scenario! {
                 caused_by: None,
                 parent: None,
                 chain: Vec::new(),
+                approval: None,
                 resume: None,
                 from: None,
             },
@@ -1092,6 +1125,7 @@ tilo_test_env::scenario! {
                     caused_by: None,
                     parent: None,
                     chain: Vec::new(),
+                    approval: None,
                     resume: None,
                     from: None,
                 },
@@ -1334,6 +1368,7 @@ tilo_test_env::scenario! {
                 caused_by: None,
                 parent: Some(parent.clone()),
                 chain: Vec::new(),
+                approval: None,
                 resume: None,
                 from: None,
             },
@@ -1377,6 +1412,7 @@ tilo_test_env::scenario! {
                 caused_by: None,
                 parent: None,
                 chain: Vec::new(),
+                approval: None,
                 resume: None,
                 from: None,
             },
@@ -1410,6 +1446,7 @@ tilo_test_env::scenario! {
                 caused_by: Some(cause.clone()),
                 parent: None,
                 chain: Vec::new(),
+                approval: None,
                 resume: None,
                 from: None,
             },
@@ -1453,6 +1490,7 @@ tilo_test_env::scenario! {
                 caused_by: None,
                 parent: None,
                 chain: Vec::new(),
+                approval: None,
                 resume: None,
                 from: None,
             },
@@ -1834,7 +1872,7 @@ fn read_failure(report: &InvocationReport) -> Option<&StepFailure> {
 tilo_test_env::scenario! {
     fn consent_is_asked_of_a_person_and_never_assumed_unattended;
 
-    phase confirmation_is_refused_unattended_and_asked_for_interactively;
+    phase confirmation_is_refused_unattended_and_carried_from_the_persons_approve;
     {
         let host = FakeHost::new();
         let purge = shortcut(
@@ -1859,36 +1897,19 @@ tilo_test_env::scenario! {
         );
         assert!(host.started().is_empty());
 
-        let declining = Hooks::default();
-        let report = run_with(
-            &host,
-            &declining,
-            &purge,
-            AutomationInvocationId::new(),
-            InvocationMode::Interactive,
-        );
-        assert!(
-            matches!(failure(&report), Some((_, StepFailure::Declined))),
-            "{report:?}"
-        );
-        assert_eq!(declining.confirmations.lock().unwrap().len(), 1);
+        // Nothing runs before the person was asked: the steps that need their yes are what
+        // the call's asked record shows them.
+        let asking = crate::asks_before_running(&purge, &host.catalog(), caller().workspace());
+        assert_eq!(asking.len(), 1, "{asking:?}");
+        assert_eq!(asking[0].app_id, NOTES);
+        assert_eq!(asking[0].descriptor.address.action, "delete");
         assert!(host.started().is_empty());
 
-        let confirming = Hooks {
-            confirmation: Some(Confirmation::Confirmed),
-            ..Hooks::default()
-        };
-        let report = run_with(
-            &host,
-            &confirming,
-            &purge,
-            AutomationInvocationId::new(),
-            InvocationMode::Interactive,
-        );
+        let report = run_approved(&host, &purge);
         assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
         let started = host.started();
         assert_eq!(started.len(), 1);
-        assert_eq!(started[0].confirmation, Some(Confirmation::Confirmed));
+        assert_eq!(started[0].confirmation, Some(Confirmation::Asked(approved())));
     }
 
     phase an_unattended_run_takes_only_the_exact_actions_consented_to;
@@ -1932,19 +1953,18 @@ tilo_test_env::scenario! {
         );
         assert!(host.started().is_empty());
 
-        let hooks = Hooks::default();
+        assert!(
+            crate::asks_before_running(&consented(NOTE), &host.catalog(), caller().workspace()).is_empty(),
+            "an action consented to in advance asks nobody"
+        );
         let report = run_with(
             &host,
-            &hooks,
+            &Hooks::default(),
             &consented(NOTE),
             AutomationInvocationId::new(),
             InvocationMode::Unattended,
         );
         assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
-        assert!(
-            hooks.confirmations.lock().unwrap().is_empty(),
-            "nobody is asked in an unattended invocation"
-        );
         let started = host.started();
         assert_eq!(started.len(), 1);
         assert_eq!(started[0].confirmation, Some(Confirmation::Confirmed));
@@ -1953,7 +1973,7 @@ tilo_test_env::scenario! {
     phase an_attended_action_is_never_consented_to_in_advance;
     // An action that needs its person attending (it opens a chooser) is never
     // consented to in advance: an unattended run stops at it even when a rule
-    // names it, and an interactive run asks.
+    // names it, and it is shown to the person before a run starts.
     {
         let mut host = FakeHost::new();
         host.rows.push(row(
@@ -1993,15 +2013,10 @@ tilo_test_env::scenario! {
             ),
             "{report:?}"
         );
-        let declining = Hooks::default();
-        run_with(
-            &host,
-            &declining,
-            &attach,
-            AutomationInvocationId::new(),
-            InvocationMode::Interactive,
+        assert_eq!(
+            crate::asks_before_running(&attach, &host.catalog(), caller().workspace()).len(),
+            1
         );
-        assert_eq!(declining.confirmations.lock().unwrap().len(), 1);
         assert!(host.started().is_empty());
     }
 
@@ -2213,6 +2228,7 @@ tilo_test_env::scenario! {
                 caused_by: None,
                 parent: None,
                 chain: Vec::new(),
+                approval: None,
                 resume: None,
                 from: None,
             },
@@ -2559,6 +2575,7 @@ fn archive_invocation<'a, K: InvocationHooks>(
             caused_by: None,
             parent: None,
             chain: Vec::new(),
+            approval: None,
             resume: None,
             from: None,
         },
@@ -2750,10 +2767,6 @@ impl StoppableHooks {
 }
 
 impl InvocationHooks for StoppableHooks {
-    fn confirm(&self, request: ConfirmationRequest) -> Pending<Option<Confirmation>> {
-        self.inner.confirm(request)
-    }
-
     fn ask(&self, request: AskRequest) -> Pending<Option<Value>> {
         self.inner.ask(request)
     }

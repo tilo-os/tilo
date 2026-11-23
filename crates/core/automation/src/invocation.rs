@@ -14,9 +14,13 @@
 //!
 //! The interpreter is `async` in the same runtime-free way [`Pending`] is:
 //! the future it returns can be awaited by any executor, or polled from a
-//! frame loop. Waiting for a background action and anything that needs a
-//! person — a confirmation, an [`Ask`](StepKind::Ask) — go through the
-//! caller's [`InvocationHooks`].
+//! frame loop. Waiting for a background action and an [`Ask`](StepKind::Ask) go
+//! through the caller's [`InvocationHooks`].
+//!
+//! A step that needs the person's yes is never asked about here: the call that started the
+//! invocation was asked about before anything ran ([`asks_before_running`]), as its own asked
+//! record, and the invocation that comes of their approve carries it
+//! ([`InvocationRequest::approval`]) to each step that needs it.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -42,7 +46,7 @@ use tilo_actions::remote::{
 use uuid::Uuid;
 
 use crate::StepPolicy;
-use crate::catalog::{ResourceTarget, find_row};
+use crate::catalog::{ActionCatalog, ResourceTarget, find_row};
 use crate::grant::{
     EDIT_PARAM, FIELD_EDIT, READ_STEP, StepGrant, decision_kinds, edit_reach, grant_answer,
     nodes_answer, read_nodes, step_node, step_node_at,
@@ -194,6 +198,10 @@ pub struct InvocationRequest<'a> {
     /// A step that would run one of them is not run, so two shortcuts that
     /// call each other spin once and stop.
     pub chain: Vec<String>,
+    /// The person's approve of the asked record the call that started this invocation was
+    /// kept as: each step that needs their yes carries it. `None` for an invocation nobody
+    /// approved, whose steps go on only where they need no yes or were consented to in advance.
+    pub approval: Option<tilo_actions::remote::asked::Approval>,
 }
 
 /// Which earlier invocation this one goes on from, and from where: what a person or an agent
@@ -234,18 +242,6 @@ fn resumed<'r>(
         .collect()
 }
 
-/// An action that needs the person's confirmation before it runs.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ConfirmationRequest {
-    pub path: StepPath,
-    pub step: String,
-    pub app_id: String,
-    pub descriptor: ActionDescriptor,
-    pub policy: ConfirmationPolicy,
-    /// The bound arguments, with secret parameters redacted.
-    pub arguments: Map<String, Value>,
-}
-
 /// A question an [`Ask`](StepKind::Ask) step puts to the person.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AskRequest {
@@ -256,10 +252,6 @@ pub struct AskRequest {
 
 /// How an invocation reaches its caller while it is running.
 pub trait InvocationHooks: Sync {
-    /// Ask the person to confirm an action; `None` declines it. Only called
-    /// in an [`Interactive`](InvocationMode::Interactive) invocation.
-    fn confirm(&self, request: ConfirmationRequest) -> Pending<Option<Confirmation>>;
-
     /// Ask the person for a value; `None` declines. Only called in an
     /// [`Interactive`](InvocationMode::Interactive) invocation.
     fn ask(&self, request: AskRequest) -> Pending<Option<Value>>;
@@ -710,6 +702,7 @@ pub async fn run<H: ActionProvider + Sync, K: InvocationHooks>(
         caused_by,
         parent,
         chain,
+        approval,
         ..
     } = request;
     let resumed = resumed(request.resume, request.from.as_ref());
@@ -755,6 +748,7 @@ pub async fn run<H: ActionProvider + Sync, K: InvocationHooks>(
         caused_by,
         parent,
         chain,
+        approval,
         timeout: shortcut
             .step_timeout_secs
             .map_or(DEFAULT_STEP_TIMEOUT, |secs| {
@@ -787,6 +781,215 @@ pub async fn run<H: ActionProvider + Sync, K: InvocationHooks>(
 /// shortcut names no [`Shortcut::step_timeout_secs`].
 pub const DEFAULT_STEP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// A step an invocation nobody approved could not take without the person's yes: what they are
+/// shown about it before the invocation starts.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AskingStep {
+    /// Where the step is; a loop's body is named once, for every pass.
+    pub path: StepPath,
+    pub app_id: String,
+    /// The action, as its app declares it.
+    pub descriptor: ActionDescriptor,
+    /// The resource it acts on, by its name; empty where the step names it only when it runs.
+    pub resource: String,
+    /// The arguments the shortcut gives it as written, secrets withheld; an argument the
+    /// invocation works out as it runs is left out.
+    pub arguments: Map<String, Value>,
+}
+
+/// The steps of `shortcut` that would need the person's yes in `workspace`, its actions as
+/// `catalog` offers them: each the shortcut's grant leaves to the person, and each its contract
+/// has ask unless a rule of the grant names that very action and it needs nobody attending. A
+/// step whose resource or arguments are known only as it runs is counted where any of the
+/// resources it may act on would ask, so nothing the invocation reaches asks without having
+/// been shown.
+#[must_use]
+pub fn asks_before_running(
+    shortcut: &Shortcut,
+    catalog: &ActionCatalog,
+    workspace: Option<&str>,
+) -> Vec<AskingStep> {
+    let mut asking = Vec::new();
+    asking_in(
+        &shortcut.steps,
+        &StepPath::root(),
+        shortcut,
+        catalog,
+        workspace,
+        &mut asking,
+    );
+    asking
+}
+
+fn asking_in(
+    steps: &[Step],
+    path: &StepPath,
+    shortcut: &Shortcut,
+    catalog: &ActionCatalog,
+    workspace: Option<&str>,
+    asking: &mut Vec<AskingStep>,
+) {
+    for (index, step) in steps.iter().enumerate() {
+        let path = path.child(index);
+        match &step.kind {
+            StepKind::Invoke {
+                action,
+                resource,
+                args,
+                ..
+            } => {
+                if let Some(step) =
+                    asking_step(&path, action, resource, args, shortcut, catalog, workspace)
+                {
+                    asking.push(step);
+                }
+            }
+            StepKind::If {
+                then, otherwise, ..
+            } => {
+                asking_in(
+                    then,
+                    &path.then_branch(),
+                    shortcut,
+                    catalog,
+                    workspace,
+                    asking,
+                );
+                asking_in(
+                    otherwise,
+                    &path.else_branch(),
+                    shortcut,
+                    catalog,
+                    workspace,
+                    asking,
+                );
+            }
+            StepKind::ForEach { body, .. } => {
+                asking_in(body, &path.each(None), shortcut, catalog, workspace, asking);
+            }
+            StepKind::SetVar { .. }
+            | StepKind::Ask { .. }
+            | StepKind::Ai { .. }
+            | StepKind::Task { .. }
+            | StepKind::Read { .. } => {}
+        }
+    }
+}
+
+fn asking_step(
+    path: &StepPath,
+    key: &ActionKey,
+    selector: &Selector,
+    args: &BTreeMap<String, Binding>,
+    shortcut: &Shortcut,
+    catalog: &ActionCatalog,
+    workspace: Option<&str>,
+) -> Option<AskingStep> {
+    let rows: Vec<&CatalogueRow> = match selector {
+        Selector::Fixed(id) => catalog
+            .find(key, ResourceTarget::Id(id))
+            .into_iter()
+            .collect(),
+        Selector::FirstOfKind(kind) => catalog
+            .find(key, ResourceTarget::Kind(kind))
+            .into_iter()
+            .collect(),
+        Selector::FromBinding(_) => catalog
+            .offering(&key.app, &key.action)
+            .filter(|row| crate::catalog::kind_matches(&key.kind, &row.resource.kind))
+            .collect(),
+    };
+    let written: Option<Map<String, Value>> = args
+        .iter()
+        .map(|(name, binding)| match binding {
+            Binding::Literal(value) => Some((name.clone(), value.clone())),
+            _ => None,
+        })
+        .collect();
+    let asks = |descriptor: &ActionDescriptor| {
+        let at = (key.action == FIELD_EDIT)
+            .then(|| args.get(EDIT_PARAM).and_then(edit_reach))
+            .flatten();
+        let nodes: Vec<TreePath> = decision_kinds(descriptor)
+            .into_iter()
+            .map(|kind| match &at {
+                Some(at) => step_node_at(workspace, &key.app, kind, &descriptor.address, at),
+                None => step_node(workspace, &key.app, kind, &descriptor.address),
+            })
+            .collect();
+        let granted = nodes_answer(&shortcut.grant, &nodes, descriptor.contract.need().kind);
+        match granted.answer {
+            Answer::Deny => return false,
+            // The grant leaves it to the person, whatever its contract says.
+            Answer::Ask => return true,
+            Answer::Allow => {}
+        }
+        let policy = match &written {
+            Some(written) => {
+                let argument = format!(
+                    "{}{}",
+                    tilo_actions::ARGUMENTS_JSON_PREFIX,
+                    Value::Object(written.clone())
+                );
+                needed_confirmation(descriptor, Some(&argument), &granted)
+            }
+            // What it is given is known only as it runs: it asks wherever it may.
+            None if descriptor.contract.confirmation_depends_on_arguments() => {
+                ConfirmationPolicy::Confirm
+            }
+            None => needed_confirmation(descriptor, None, &granted),
+        };
+        policy != ConfirmationPolicy::None
+            && (!granted.names_action || descriptor.contract.is_attended())
+    };
+    let row = rows
+        .into_iter()
+        .find(|row| row.action.as_ref().is_some_and(asks))?;
+    let descriptor = row.action.clone()?;
+    let mut arguments: Map<String, Value> = args
+        .iter()
+        .filter_map(|(name, binding)| match binding {
+            Binding::Literal(value) => Some((name.clone(), value.clone())),
+            _ => None,
+        })
+        .collect();
+    for param in &descriptor.params {
+        if param.ty == ParamType::Secret
+            && let Some(value) = arguments.get_mut(param.name.as_ref())
+        {
+            *value = Value::from(REDACTED);
+        }
+    }
+    Some(AskingStep {
+        path: path.clone(),
+        app_id: key.app.clone(),
+        resource: match selector {
+            Selector::Fixed(_) | Selector::FirstOfKind(_) => row.resource.label.clone(),
+            Selector::FromBinding(_) => String::new(),
+        },
+        descriptor,
+        arguments,
+    })
+}
+
+/// The confirmation the action `descriptor` needs before it runs with `argument`, as the
+/// shortcut's grant answered it (`granted`): its contract's, or a plain yes where the grant
+/// asks or its person has to attend it.
+pub(crate) fn needed_confirmation(
+    descriptor: &ActionDescriptor,
+    argument: Option<&str>,
+    granted: &StepGrant,
+) -> ConfirmationPolicy {
+    match descriptor.contract.confirmation_for_argument(argument) {
+        ConfirmationPolicy::None
+            if granted.answer == Answer::Ask || descriptor.contract.is_attended() =>
+        {
+            ConfirmationPolicy::Confirm
+        }
+        policy => policy,
+    }
+}
+
 type Stop = (StepPath, StepFailure);
 type Block<'s> = Pin<Box<dyn Future<Output = Result<(), Stop>> + Send + 's>>;
 
@@ -810,6 +1013,8 @@ struct Runner<'a, H, K> {
     parent: Option<tilo_actions::context::WorkGroup>,
     /// The shortcuts running above this one (see [`InvocationRequest::chain`]).
     chain: Vec<String>,
+    /// The person's approve of this invocation (see [`InvocationRequest::approval`]).
+    approval: Option<tilo_actions::remote::asked::Approval>,
     /// How long each step of the invocation may take.
     timeout: std::time::Duration,
     /// The steps that failed and the invocation carried on past, with why.
@@ -1922,9 +2127,7 @@ impl<'a, H: ActionProvider + Sync, K: InvocationHooks> Runner<'a, H, K> {
             } => Some(self.appearance(binding)?),
             _ => None,
         };
-        let confirmation = self
-            .confirmation(step, path, app_id, descriptor, &bound, &granted)
-            .await?;
+        let confirmation = self.confirmation(descriptor, &bound, &granted)?;
         let context = self.context(app_id, &row, descriptor, path);
         let mut arguments = bound.to_json();
         if let Some(from) = bound.from() {
@@ -2006,11 +2209,8 @@ impl<'a, H: ActionProvider + Sync, K: InvocationHooks> Runner<'a, H, K> {
         }
     }
 
-    async fn confirmation(
+    fn confirmation(
         &self,
-        step: &Step,
-        path: &StepPath,
-        app_id: &str,
         descriptor: &ActionDescriptor,
         bound: &ActionArgs,
         granted: &StepGrant,
@@ -2020,54 +2220,24 @@ impl<'a, H: ActionProvider + Sync, K: InvocationHooks> Runner<'a, H, K> {
             tilo_actions::ARGUMENTS_JSON_PREFIX,
             serde_json::Value::Object(bound.to_json())
         );
-        let policy = match descriptor
-            .contract
-            .confirmation_for_argument(Some(&argument))
-        {
-            ConfirmationPolicy::None
-                if granted.answer == Answer::Ask || descriptor.contract.is_attended() =>
-            {
-                ConfirmationPolicy::Confirm
-            }
-            policy => policy,
-        };
+        let policy = needed_confirmation(descriptor, Some(&argument), granted);
         if policy == ConfirmationPolicy::None {
             return Ok(None);
         }
-        if self.mode == InvocationMode::Unattended {
-            // Only a rule that names this exact action consents in advance
-            // for an invocation nobody is present at, and nothing does for one that
-            // needs its person attending.
-            if !granted.names_action || descriptor.contract.is_attended() {
-                return Err(StepFailure::ConfirmationRequired);
-            }
-            return Ok(Some(match policy {
-                ConfirmationPolicy::Phrase { phrase } => Confirmation::Phrase(phrase),
-                ConfirmationPolicy::Confirm | ConfirmationPolicy::None => Confirmation::Confirmed,
-            }));
+        // The person approved the call this invocation runs for, having been shown each step
+        // that needs their yes: the step carries their approve.
+        if let Some(approval) = &self.approval {
+            return Ok(Some(Confirmation::Asked(approval.clone())));
         }
-        let mut arguments = bound.to_json();
-        for param in &descriptor.params {
-            if param.ty == ParamType::Secret
-                && let Some(value) = arguments.get_mut(param.name.as_ref())
-            {
-                *value = Value::from(REDACTED);
-            }
+        // Only a rule that names this exact action consents in advance, and nothing does for
+        // one that needs its person attending.
+        if !granted.names_action || descriptor.contract.is_attended() {
+            return Err(StepFailure::ConfirmationRequired);
         }
-        let answer = self
-            .hooks
-            .confirm(ConfirmationRequest {
-                path: path.clone(),
-                step: step.id.clone(),
-                app_id: app_id.to_string(),
-                descriptor: descriptor.clone(),
-                policy,
-                arguments,
-            })
-            .await
-            .flatten()
-            .ok_or(StepFailure::Declined)?;
-        Ok(Some(answer))
+        Ok(Some(match policy {
+            ConfirmationPolicy::Phrase { phrase } => Confirmation::Phrase(phrase),
+            ConfirmationPolicy::Confirm | ConfirmationPolicy::None => Confirmation::Confirmed,
+        }))
     }
 
     fn context(

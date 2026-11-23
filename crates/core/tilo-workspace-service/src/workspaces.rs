@@ -141,7 +141,7 @@ pub use person_telling::{Spenders, ToTell};
 #[cfg(not(target_arch = "wasm32"))]
 pub use person_telling::addresses as push_addresses;
 #[cfg(not(target_arch = "wasm32"))]
-mod asking;
+pub(crate) mod asking;
 // What the person keeps to sign in with, in that same vault of theirs.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod person_vault;
