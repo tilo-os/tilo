@@ -145,6 +145,7 @@ fn field_type_of(meta: &Meta, ty: &Ty, types: &mut TypeSet) -> FieldType {
 fn schema_of(meta: &Meta, ty: &Ty) -> Json {
     match ty {
         Ty::Int => json!({"type": "integer"}),
+        Ty::Duration => json!({"type": "integer", "description": "Duration in whole seconds"}),
         Ty::Float => json!({"type": "number"}),
         Ty::Bool => json!({"type": "boolean"}),
         // A rule and a trigger as RFC 5545 writes them, `FREQ=WEEKLY` and `-PT15M`.
@@ -215,7 +216,7 @@ pub fn published_param(meta: &Meta, param: &ParamMeta) -> ActionParam {
         other => other.as_ref(),
     };
     let ty = match present {
-        Some(Ty::Int) => ParamType::Integer,
+        Some(Ty::Int | Ty::Duration) => ParamType::Integer,
         Some(Ty::Float) => ParamType::Number,
         Some(Ty::Bool) => ParamType::Boolean,
         Some(Ty::Time) => ParamType::DateTime,
@@ -226,12 +227,17 @@ pub fn published_param(meta: &Meta, param: &ParamMeta) -> ActionParam {
     };
     // A default is the action's: what an invocation that leaves the argument out gets, computed
     // when it is invoked, on what the invoker sees, and recorded as the argument.
+    let unit = if matches!(present, Some(Ty::Duration)) {
+        " (whole seconds)"
+    } else {
+        ""
+    };
     let description = match &param.default {
         Some(default) => format!(
-            "{}: {}; when left out, `{}` as it is when invoked",
+            "{}: {}{unit}; when left out, `{}` as it is when invoked",
             param.name, param.ty, default.text
         ),
-        None => format!("{}: {}", param.name, param.ty),
+        None => format!("{}: {}{unit}", param.name, param.ty),
     };
     let optional = param.default.is_some() || matches!(parsed, Some(Ty::Option(_)));
     let built = if optional {
@@ -279,6 +285,22 @@ pub fn is_primary(action: &ActionMeta) -> bool {
     action.role.as_deref() == Some("primary")
 }
 
+/// Whether `ty` is or contains a `Duration`: its return schema carries the unit (`whole seconds`)
+/// so a caller reading the surface knows the wire unit of the integer result.
+fn mentions_duration(ty: &Ty) -> bool {
+    match ty {
+        Ty::Duration => true,
+        Ty::Option(inner)
+        | Ty::List(inner)
+        | Ty::Set(inner)
+        | Ty::Collection(inner)
+        | Ty::Map(inner) => mentions_duration(inner),
+        Ty::Tuple(items) => items.iter().any(mentions_duration),
+        Ty::Result(ok, err) => mentions_duration(ok) || mentions_duration(err),
+        _ => false,
+    }
+}
+
 fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet) -> VerbSurface {
     VerbSurface {
         // The action as the document names it, which is what a change's claim names too
@@ -308,9 +330,19 @@ fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet) -> VerbSurface {
                 }
             })
             .collect(),
-        returns: action.result.as_ref().map(|result| ReturnsSurface {
-            schema: Json::Null,
-            ty: field_type_of_type(meta, result, types),
+        returns: action.result.as_ref().map(|result| {
+            let schema = tilo_failure::ignored!(
+                "a loaded package's result types all parse, as `meta::unreadable_types` checked",
+                tilolang_runtime::meta::parse_ty(result.trim(), &meta.app).ok()
+            )
+            .filter(mentions_duration)
+            .map(|parsed| schema_of(meta, &parsed))
+            .filter(|schema| !matches!(schema, Json::Object(map) if map.is_empty()))
+            .unwrap_or(Json::Null);
+            ReturnsSurface {
+                schema,
+                ty: field_type_of_type(meta, result, types),
+            }
         }),
         writes: vec![RESOURCE_UNIT.to_owned()],
         field: None,

@@ -371,9 +371,27 @@ fn value_of_ty(host: &HostInner, meta: &Meta, json: &Json, ty: &Ty) -> Result<Va
             .as_f64()
             .map(Value::Float)
             .ok_or_else(|| "number out of range".to_owned()),
+        (Ty::Duration, _) => duration_value(json),
         // A union of documents: the reference's kind says which of them it is.
         (Ty::Union(keys), _) => union_value(host, meta, json, keys),
         _ => from_json(json),
+    }
+}
+
+/// Whole seconds for a `Duration` parameter, bare or in the boxed scalar form (`{"some": N}`)
+/// that a view event or recorded value keeps until `marshal` unboxes it, matching `Int`.
+fn duration_value(json: &Json) -> Result<Value, String> {
+    let invalid = || "a duration is a whole number of seconds".to_owned();
+    match json {
+        Json::Number(number) => number.as_i64().map(Value::Int).ok_or_else(invalid),
+        Json::Object(encoded) if encoded.len() == 1 => match encoded.get("some") {
+            Some(Json::Number(number)) => number
+                .as_i64()
+                .map(|secs| Value::some(Value::Int(secs)))
+                .ok_or_else(invalid),
+            _ => Err(invalid()),
+        },
+        _ => Err(invalid()),
     }
 }
 
@@ -505,6 +523,11 @@ pub fn argument_json(
             .map(|(ty, item)| argument_json(owner, meta, item, ty))
             .collect::<Result<_, _>>()
             .map(Json::Array),
+        // A scalar a view carried from an event is boxed until it reaches the action it is passed
+        // to; the API takes the plain value `published_param` declares.
+        (ty, Value::Opt(Some(present))) if ty.is_scalar() => {
+            argument_json(owner, meta, present, ty)
+        }
         // A flag travels as the integer the guest boxed it as.
         (Ty::Bool, Value::Int(n)) => Ok(Json::Bool(*n != 0)),
         // A plain enum's parameter chooses among its cases by name
