@@ -621,6 +621,77 @@ fn a_notebook_is_exported_as_one_markdown_document() {
     );
 }
 
+/// A Notion API page listing — what a page's `children` endpoint answers — comes in as notes:
+/// one page per listing, titled by its `title` property or its first heading, its blocks said as
+/// Markdown with their marks, a list item's children under it.
+#[test]
+fn a_notion_page_listing_becomes_notes() {
+    const LISTING: &str = r#"{
+        "results": [
+            {"object": "block", "type": "heading_1",
+             "heading_1": {"rich_text": [{"plain_text": "Reading list"}]}},
+            {"object": "block", "type": "paragraph",
+             "paragraph": {"rich_text": [
+                {"plain_text": "Books "},
+                {"plain_text": "worth", "annotations": {"bold": true}},
+                {"plain_text": " it."}]}},
+            {"object": "block", "type": "bulleted_list_item",
+             "bulleted_list_item": {"rich_text": [{"plain_text": "Piranesi"}]},
+             "children": [
+                {"object": "block", "type": "paragraph",
+                 "paragraph": {"rich_text": [{"plain_text": "A house of tides."}]}}]},
+            {"object": "block", "type": "to_do",
+             "to_do": {"rich_text": [{"plain_text": "Finish the trilogy"}], "checked": true}},
+            {"object": "block", "type": "code",
+             "code": {"rich_text": [{"plain_text": "print(1)"}], "language": "python"}}
+        ]
+    }"#;
+    const TITLED: &str = r#"[{
+        "properties": {"Name": {"type": "title",
+            "title": [{"plain_text": "From a database"}]}},
+        "results": [
+            {"object": "block", "type": "paragraph",
+             "paragraph": {"rich_text": [{"plain_text": "A row with a page."}]}}
+        ]
+    }]"#;
+
+    let device = Device::default();
+    let (ada, _loaded) = notebook(&device);
+    let nb = ada.host.root_of(APP).unwrap();
+    for (name, listing) in [("Listing.json", LISTING), ("Titled.json", TITLED)] {
+        let file = Value::file(device.keeping(name, "application/json", listing.as_bytes()));
+        call(&ada, "import_archive", vec![Value::resource(&nb), file]);
+        ada.commit();
+    }
+
+    let all = written(&ada, &nb);
+    let titles: Vec<String> = all.iter().map(|note| title(&ada, note)).collect();
+    assert_eq!(
+        titles,
+        ["Reading list", "From a database"],
+        "a page is titled by its first heading, or by its title property"
+    );
+
+    let said = exported(&ada, &all[0]);
+    assert!(
+        said.contains("Books **worth** it."),
+        "a mark is kept: {said}"
+    );
+    assert!(said.contains("- Piranesi"), "a list item is one: {said}");
+    assert!(
+        said.find("A house of tides.") > said.find("- Piranesi"),
+        "its child stands under it: {said}"
+    );
+    assert!(
+        said.contains("- [x] Finish the trilogy"),
+        "a checked to-do is checked: {said}"
+    );
+    assert!(
+        said.contains("```python\nprint(1)\n```"),
+        "a code block keeps its fence: {said}"
+    );
+}
+
 tilo_test_env::scenario! {
     fn an_export_names_its_files;
 

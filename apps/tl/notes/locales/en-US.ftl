@@ -231,7 +231,7 @@ d-l23y3cjf-created = Created
 d-l23y3cjf-updated = Updated
 
 d-h3zczsen = Import archive
-    .doc = Imports a zip of pages as notes under the notebook, a page under the page that held it, in one change: undo takes the whole import back.
+    .doc = Imports a notebook another tool wrote: a zip of pages, or the JSON a Notion API page listing answers.
     .did = imported a notebook
 
 d-h3zczsen-file = File
