@@ -12,7 +12,7 @@
 use std::sync::{Arc, OnceLock};
 
 use futures_util::future::BoxFuture;
-use tilo_actions::remote::{Pending, device_tickets as wire};
+use tilo_actions::remote::{InvokeArgument, Pending, device_tickets as wire};
 use tilo_actions::{
     ActionContract, ActionDescriptor, ActionKind, ActionOutput, ExecutionLocus, OperationKind,
     ResultSpec,
@@ -234,18 +234,18 @@ impl HostStepServices for DeviceTickets {
         if request.address.action != wire::ISSUE {
             return Err("no such device action".to_owned());
         }
-        let plan = request
-            .argument
-            .map(serde_json::from_str::<serde_json::Value>)
-            .transpose()
-            .map_err(|_| "a ticket is asked for with its arguments as an object".to_owned())?
-            .and_then(|args| {
-                args.get("plan")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::trim)
-                    .map(str::to_owned)
-            })
-            .filter(|plan| !plan.is_empty());
+        let plan = match InvokeArgument::from_slot(request.argument) {
+            InvokeArgument::None => None,
+            InvokeArgument::Json(args) => args
+                .get("plan")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|plan| !plan.is_empty())
+                .map(str::to_owned),
+            InvokeArgument::Text(_) => {
+                return Err("a ticket is asked for with its arguments as an object".to_owned());
+            }
+        };
         let runtime = tokio::runtime::Handle::try_current()
             .map_err(|_| "this computer cannot serve a ticket right now".to_owned())?;
         let (done, asked) = tilo_actions::remote::pending();
@@ -290,11 +290,15 @@ mod tests {
             .unwrap();
         let _entered = runtime.enter();
         let actor = tilo_broker_core::actor::BrokerActor::person(hex::encode([7; 32]));
+        // The plan arrives as the broker hands a host step its arguments: in their slot form.
+        let mut plan = serde_json::Map::new();
+        plan.insert("plan".to_owned(), "6498fd08fe34f46d4165a5d9f3fe251c".into());
+        let argument = InvokeArgument::Json(plan).to_slot();
         let request = HostStepRequest {
             workspace: "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0",
             actor: &actor,
             address: &wire::target(wire::ISSUE).address,
-            argument: None,
+            argument: argument.as_deref(),
             provider: None,
             group: None,
             stop: std::sync::Arc::default(),
