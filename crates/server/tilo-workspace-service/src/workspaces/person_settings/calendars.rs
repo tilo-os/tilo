@@ -686,6 +686,7 @@ fn add(
     reach: &Asking,
     adding: Add,
     named: Option<ItemRef>,
+    mail_account: Option<&str>,
 ) -> Result<AccountView, String> {
     let username = adding.username.trim().to_owned();
     if username.is_empty() || adding.password.is_empty() {
@@ -734,6 +735,13 @@ fn add(
     });
     if read_only && let Some(config) = stored.config.as_object_mut() {
         config.insert("read_only".to_owned(), true.into());
+    }
+    // The mail account whose calendars these are: what reads the link back
+    // when the account's services, or the account itself, go.
+    if let Some(mail) = mail_account
+        && let Some(config) = stored.config.as_object_mut()
+    {
+        config.insert("mail_account".to_owned(), mail.into());
     }
     let sign_in = match named {
         Some(named) => SignIn::Named(named),
@@ -841,6 +849,7 @@ fn add_with_item(
             read_only: adding.read_only,
         },
         Some(adding.password),
+        None,
     )
 }
 
@@ -897,6 +906,67 @@ pub(super) async fn remove_account(
     Box::pin(super::remove_mail((vault, root), account)).await?;
     let _ = std::fs::remove_file(kept_at(root, account));
     Ok(())
+}
+
+/// A calendar account kept as one of a mail account's services: where its
+/// provider keeps calendars, and the sign-in its person typed for the mail
+/// account, which iCloud takes for both.
+pub(super) struct Service {
+    pub server_url: String,
+    pub username: String,
+    pub password: String,
+    pub name: String,
+    /// The mail account whose service this is.
+    pub mail_account: String,
+}
+
+/// Keep the calendar account of `service`, answering its id: what a mail
+/// account added for a provider that offers calendars keeps with its sign-in,
+/// so one connect feeds Mail and Calendar alike.
+pub(super) async fn add_service(
+    (vault, root): (VaultAt<'_>, &Path),
+    reach: Reach,
+    by: &str,
+    service: Service,
+) -> Result<String, String> {
+    let asking = Asking::of(vault, by, reach);
+    let adding = Add {
+        server_url: service.server_url,
+        username: service.username,
+        password: service.password,
+        name: Some(service.name),
+        read_only: false,
+    };
+    let mail_account = service.mail_account;
+    let root = root.to_path_buf();
+    let added = off_thread(move || add(&root, &asking, adding, None, Some(&mail_account))).await?;
+    Ok(added.id)
+}
+
+/// The calendar account kept as the mail account `mail`'s service: the one it
+/// names, else the one kept for it.
+pub(super) fn linked_to(
+    held: &accounts::person::AccountList,
+    named: Option<&str>,
+    mail: &str,
+) -> Option<String> {
+    let accounts = accounts_in(held);
+    if let Some(named) = named
+        && accounts.iter().any(|account| account.id == named)
+    {
+        return Some(named.to_owned());
+    }
+    accounts
+        .into_iter()
+        .find(|account| {
+            account
+                .stored
+                .config
+                .get("mail_account")
+                .and_then(Value::as_str)
+                == Some(mail)
+        })
+        .map(|account| account.id)
 }
 
 /// Bring the copies of `accounts` up to date when they are older than a
@@ -1999,7 +2069,7 @@ impl Workspaces {
             LIST => answer(&Ok::<_, String>(listed(&root, &accounts))),
             ADD => {
                 let adding: Add = argument(request, "a calendar account to add")?;
-                self.kept_and_answered(off_thread(move || add(&root, &reach, adding, None)))
+                self.kept_and_answered(off_thread(move || add(&root, &reach, adding, None, None)))
                     .await
             }
             REMOVE => {

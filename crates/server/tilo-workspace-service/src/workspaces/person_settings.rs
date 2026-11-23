@@ -279,6 +279,17 @@ impl Workspaces {
         *prover = Arc::new(Finding(proving, find));
     }
 
+    /// Keep iCloud accounts' calendars through `server_url` from now on: a
+    /// test's calendar server stands in for iCloud's own.
+    #[cfg(all(feature = "agents", any(test, feature = "test-support")))]
+    pub fn keep_icloud_calendars_at(&self, server_url: &str) {
+        *self
+            .inner
+            .icloud_calendars_at
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(server_url.to_owned());
+    }
+
     /// The person `caller` asks for, on the device `certificate` certifies,
     /// from a workspace `workspace_id` names: what a request that keeps a
     /// person's own secrets needs before it runs. Unknown and forbidden are
@@ -575,6 +586,7 @@ pub(super) async fn add_mail_with(
     (vault, root): (VaultAt<'_>, &Path),
     adding: AddMailAccount,
     kept: Option<tilo_actions::remote::person_vault::ItemRef>,
+    provider: person_accounts::Provider,
 ) -> Result<MailAccount, String> {
     let config = accounts::email::AccountConfig {
         display_name: adding.display_name.trim().to_owned(),
@@ -618,7 +630,7 @@ pub(super) async fn add_mail_with(
     if let Value::Object(settings) = &mut settings {
         settings.insert(
             "services".into(),
-            serde_json::to_value(adding.services.within(person_accounts::Provider::Other))
+            serde_json::to_value(adding.services.within(provider))
                 .map_err(|error| error.to_string())?,
         );
     }
@@ -672,16 +684,34 @@ async fn remove_mail(
     (vault, root): (VaultAt<'_>, &Path),
     account: &str,
 ) -> Result<MailAccounts, String> {
-    let sign_in = vault
-        .accounts()
-        .await?
-        .account(account)
-        .and_then(|kept| sign_in_of(&kept.config));
+    let held = vault.accounts().await?;
+    let kept = held.account(account);
+    let sign_in = kept.as_ref().and_then(|kept| sign_in_of(&kept.config));
+    // The calendars kept as its service go with it.
+    #[cfg(feature = "agents")]
+    let linked = kept.as_ref().and_then(|kept| {
+        calendars::linked_to(
+            &held,
+            kept.config.get("calendar_account").and_then(Value::as_str),
+            account,
+        )
+    });
     if !vault.remove_account(account).await? {
         return Err("That account is not kept here".into());
     }
     if let Some(sign_in) = &sign_in {
         vault.forget_sign_in(account, sign_in).await?;
+    }
+    #[cfg(feature = "agents")]
+    if let Some(calendar) = &linked
+        && let Err(why) = Box::pin(calendars::remove_account((vault, root), calendar)).await
+    {
+        tracing::warn!(
+            calendar = %calendar,
+            account,
+            %why,
+            "mail: a removed account's calendar account could not be removed"
+        );
     }
     Ok(mail_accounts(&vault.accounts().await?, root))
 }
@@ -2401,6 +2431,7 @@ mod mail_session_tests {
                     services: person_accounts::Services::default(),
                 },
                 None,
+                person_accounts::Provider::Other,
             ))
             .unwrap();
         assert!(kept.has_secret);
@@ -2473,6 +2504,7 @@ mod mail_session_tests {
                     services: person_accounts::Services::default(),
                 },
                 None,
+                person_accounts::Provider::Other,
             ))
             .unwrap();
         assert!(!kept.has_secret);

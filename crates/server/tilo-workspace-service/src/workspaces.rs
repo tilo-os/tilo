@@ -1016,6 +1016,10 @@ struct WorkspacesInner {
     /// `0` keeps the build's own.
     #[cfg(any(test, feature = "test-support"))]
     cursors_per_answer: std::sync::atomic::AtomicUsize,
+    /// Where iCloud accounts' calendars are kept, when a test stands a
+    /// calendar server of its own in ([`Workspaces::keep_icloud_calendars_at`]).
+    #[cfg(any(test, feature = "test-support"))]
+    icloud_calendars_at: std::sync::RwLock<Option<String>>,
     /// Whether this server is about to restart and hands its work to the
     /// other holders: it takes and renews no lease ([`Workspaces::drain`]).
     draining: std::sync::atomic::AtomicBool,
@@ -1386,6 +1390,8 @@ impl Workspaces {
                 handed_absent: hosts::HandedAbsent::default(),
                 #[cfg(any(test, feature = "test-support"))]
                 cursors_per_answer: std::sync::atomic::AtomicUsize::new(0),
+                #[cfg(any(test, feature = "test-support"))]
+                icloud_calendars_at: std::sync::RwLock::new(None),
                 draining: std::sync::atomic::AtomicBool::new(false),
                 mode: std::sync::RwLock::new(None),
                 store,

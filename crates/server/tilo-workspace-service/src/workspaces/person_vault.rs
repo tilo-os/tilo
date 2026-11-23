@@ -660,6 +660,7 @@ impl Workspaces {
                 services: person_accounts::Services::default(),
             },
             Some(kept),
+            person_accounts::Provider::Other,
         ))
         .await
     }
