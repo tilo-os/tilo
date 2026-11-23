@@ -21091,7 +21091,6 @@ dependencies = [
 name = "tilo-runtime"
 version = "0.1.0"
 dependencies = [
- "tilo-session-actions",
  "anyhow",
  "app-catalogue",
  "app-fleet",
@@ -21155,6 +21154,7 @@ dependencies = [
  "tilo-server",
  "tilo-server-client",
  "tilo-server-protocol",
+ "tilo-session-actions",
  "tilo-session-client",
  "tilo-socket",
  "tilo-startup-metrics",

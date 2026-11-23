@@ -308,7 +308,6 @@ members = [
     "crates/server/tilo-server",
     "crates/server/tilo-server-client",
     "crates/server/tilo-server-protocol",
-    "crates/server/tilo-server-session",
     "crates/server/tilo-workspace-service",
 
     # Device services
