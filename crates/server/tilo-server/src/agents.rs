@@ -34,7 +34,6 @@ use tilo_user_identity::{
     CERTIFICATION_SCHEMA_VERSION, CertificationRequest, DeviceCapabilities, DeviceCert,
 };
 
-use crate::WorkspaceId;
 use crate::certification::CertificationProtocol;
 use crate::daemon::Server;
 use crate::registry::AgentRegistry;
@@ -71,49 +70,6 @@ impl Server {
 }
 
 impl ServerAgentLink {
-    /// Resolve an existing roster entry to the exact authenticated signing session.
-    pub async fn roster_session_device(
-        &self,
-        sessions: &tilo_agent_session::AgentSessions,
-        workspace: WorkspaceId,
-        agent: &str,
-        acts_for: &[u8; 32],
-    ) -> Option<[u8; 32]> {
-        let workspaces = self.workspaces.as_ref()?;
-        let entry = workspaces
-            .hosted_roster_agent(workspace, agent, acts_for, None)
-            .await?;
-        let device = self
-            .approved_session_device(sessions, workspace, agent, acts_for)
-            .await?;
-        sessions
-            .matches_roster(&device, workspace, agent, acts_for, entry.created_at)
-            .then_some(device)
-    }
-
-    /// Resolve a governed delegation to the authenticated session serving its workspace.
-    pub async fn approved_session_device(
-        &self,
-        sessions: &tilo_agent_session::AgentSessions,
-        workspace: WorkspaceId,
-        agent: &str,
-        acts_for: &[u8; 32],
-    ) -> Option<[u8; 32]> {
-        let device = self
-            .workspaces
-            .as_ref()?
-            .approved_agent_device(workspace, agent, acts_for)
-            .await?;
-        let link = sessions.link(&device)?;
-        let status = link.status();
-        (status.authenticated
-            && status.phase == tilo_session_client::TransportPhase::Connected
-            && status.device == device
-            && status.workspaces.get(&workspace) == Some(&true)
-            && status.serving.contains(&workspace))
-        .then_some(device)
-    }
-
     fn enqueue_approval(
         &self,
         acts_for: [u8; 32],
@@ -156,18 +112,6 @@ impl ServerAgentLink {
                 workspaces.reconcile_agent(device, cert.as_ref()).await;
             });
         }
-    }
-}
-
-impl tilo_workspace_service::agents::SessionDevices for ServerAgentLink {
-    fn session_device<'a>(
-        &'a self,
-        sessions: &'a tilo_agent_session::AgentSessions,
-        workspace: WorkspaceId,
-        agent: &'a str,
-        person: &'a [u8; 32],
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<[u8; 32]>> + Send + 'a>> {
-        Box::pin(self.roster_session_device(sessions, workspace, agent, person))
     }
 }
 

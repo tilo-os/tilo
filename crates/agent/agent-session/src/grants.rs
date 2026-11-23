@@ -145,69 +145,6 @@ impl AgentSessions {
             .is_some_and(|session| session.roster.is_some())
     }
 
-    /// Whether this signing peer was opened for the exact roster assignment.
-    #[must_use]
-    pub fn matches_roster(
-        &self,
-        device: &[u8; 32],
-        workspace: WorkspaceId,
-        agent: &str,
-        acts_for: &[u8; 32],
-        created_at: RosterCreatedAt,
-    ) -> bool {
-        self.links
-            .lock_recover()
-            .get(device)
-            .and_then(|session| session.roster.as_ref())
-            .is_some_and(|(created, delegation)| {
-                *created == created_at
-                    && delegation.scope.workspaces.as_slice() == [workspace]
-                    && delegation.delegate.agent_id() == Some(agent)
-                    && &delegation.user_public_key == acts_for
-            })
-    }
-
-    /// The live, joined signing session and its exact approved delegation for
-    /// a caller bound by the hosted roster runner.
-    #[must_use]
-    pub fn live_roster(
-        &self,
-        workspace: WorkspaceId,
-        caller: &tilo_actions::remote::Caller,
-    ) -> Option<(tilo_session_client::Link, Delegation)> {
-        let device = caller.device_public_key()?;
-        let sessions = self.links.lock_recover();
-        let session = sessions.get(device)?;
-        let (created_at, delegation) = session.roster.as_ref()?;
-        if caller.roster_created_at() != Some(*created_at)
-            || caller.workspace().and_then(WorkspaceId::parse) != Some(workspace)
-            || delegation.scope.workspaces.as_slice() != [workspace]
-            || delegation.delegate.agent_id() != caller.approved_agent()
-            || caller.acting().app().is_some()
-            || !caller.acting().people().iter().any(|person| {
-                tilo_actions::PersonId::parse(person)
-                    .ok()
-                    .and_then(|person| person.root())
-                    == Some(delegation.user_public_key)
-            })
-            || Some(&delegation.user_public_key) != caller.user_public_key()
-            || &delegation.device_public_key != device
-            || tilo_clock::unix_now_ns() >= delegation.expires_at_ns
-        {
-            return None;
-        }
-        let link = session.link.clone();
-        let delegation = delegation.clone();
-        drop(sessions);
-        let status = link.status();
-        (status.authenticated
-            && status.phase == tilo_session_client::TransportPhase::Connected
-            && &status.device == device
-            && status.workspaces.get(&workspace) == Some(&true)
-            && status.serving.contains(&workspace))
-        .then_some((link, delegation))
-    }
-
     /// `link` now serves the changes of the agent `identity` certifies.
     pub(crate) fn joined(
         &self,
@@ -255,34 +192,6 @@ impl AgentSessions {
         .map_err(|error| error.to_string())?;
         request.signed = Some(Box::new(signed));
         Ok(())
-    }
-
-    /// Sign `shortcut` as saved in `workspace` by `agent`, with the key of `device`'s session
-    /// while it is open here: what the agent saves acts as the agent.
-    ///
-    /// # Errors
-    ///
-    /// No session of `device` is open here, or its key is no grant of `agent` there.
-    pub fn sign_shortcut_as(
-        &self,
-        device: &[u8; 32],
-        workspace: WorkspaceId,
-        agent: &str,
-        shortcut: &mut tilo_automation::Shortcut,
-    ) -> Result<(), String> {
-        let (cert, key) = self
-            .links
-            .lock_recover()
-            .get(device)
-            .map(|session| session.signer.clone())
-            .ok_or("the agent's signing session is not open here")?;
-        tilo_peer_state::workspace::sign_saved_shortcut_as_agent(
-            &workspace.to_string(),
-            shortcut,
-            agent,
-            &cert,
-            &key,
-        )
     }
 
     /// Agent `device`'s session ended.
