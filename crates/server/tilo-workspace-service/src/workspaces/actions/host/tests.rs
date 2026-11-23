@@ -274,6 +274,52 @@ async fn the_servers_person_enters_a_workspace_and_lets_an_app_author_it_as_acti
     let again: EnteredWorkspace =
         serde_json::from_value(invoke(&host, &laptop, enter()).await.unwrap()).unwrap();
     assert!(!again.changed, "already admitted");
+
+    // A Viewer, who may invite no one, enters from a device of theirs the same way: the
+    // invitation it answers is their own, at their role, and the device redeems it.
+    let root = SigningKey::from_bytes(&[9; 32]);
+    workspaces
+        .add_member(
+            &created.workspace,
+            &laptop,
+            crate::workspaces::AddMemberRequest {
+                request_id: [9; 32],
+                user_public_key: root.verifying_key().to_bytes(),
+                place: crate::workspaces::MemberPlace::Role(Role::Viewer),
+                name: Some("Cy".into()),
+            },
+        )
+        .await
+        .unwrap();
+    let mut phone = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: SigningKey::from_bytes(&[10; 32]).verifying_key().to_bytes(),
+        device_label: "phone".into(),
+        ..laptop.clone()
+    };
+    sign_device_cert(&mut phone, &root).unwrap();
+    let entered: EnteredWorkspace =
+        serde_json::from_value(invoke(&host, &phone, enter()).await.unwrap()).unwrap();
+    assert!(entered.changed, "the phone is enrolled under its person");
+    let own = entered.invitation.decode().unwrap();
+    let verified = decode_and_verify_invitation(
+        &own.signed_invitation,
+        Some(phone.user_public_key),
+        &RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )
+    .unwrap();
+    assert_eq!(verified.grant().role, Role::Viewer);
+    let redeemed = workspaces
+        .admit_proven(own.signed_invitation, phone, [11; 32], "Cy", None)
+        .await;
+    assert!(
+        matches!(
+            redeemed,
+            tilo_server_protocol::workspaces::JoinReply::Admitted { .. }
+        ),
+        "{redeemed:?}"
+    );
     server.shutdown().await;
 }
 
