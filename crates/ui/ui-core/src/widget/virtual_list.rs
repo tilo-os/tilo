@@ -726,6 +726,18 @@ impl VirtualRows {
         moved
     }
 
+    /// Whether the row of the item `item` names stands in the window now.
+    #[must_use]
+    pub fn row_is_visible(&self, item: &str) -> bool {
+        let Some(key) = self.key_of_item(item) else {
+            return false;
+        };
+        let Some(index) = self.model.index_of(&key) else {
+            return false;
+        };
+        self.visible_range().contains(&index)
+    }
+
     /// The row of the item `item` names: as its model presents it, or as the list's own naming
     /// does (a view's items, whose keys are their ids).
     pub(super) fn key_of_item(&self, item: &str) -> Option<ListKey> {

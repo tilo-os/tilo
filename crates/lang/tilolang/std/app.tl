@@ -47,6 +47,7 @@ template view list<T>(
     ungrouped: Option<Text> = .none,
     tail_title: Option<Text> = .none,
     in_column: Bool = true,
+    reveal: Option<Text> = .none,
     row: (T, Option<Actor>) -> View,
 ) {
     // The item the person opened where it stands: the row grows into it, and pressing it again,
@@ -62,6 +63,7 @@ template view list<T>(
         ungrouped_title: ungrouped,
         tail_title: tail_title,
         open: opened,
+        reveal: reveal,
     ) {
         on select(x: T): open(x, front: false)
         on activate(x: T): open(x)
