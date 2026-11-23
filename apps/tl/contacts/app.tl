@@ -580,10 +580,9 @@ fn for_address(book: Book, address: Text) -> Option<Contact> {
     book.contacts.find(c -> c.emails.any(e -> e.value.trim().lower() == asked))
 }
 
-/// The places the window offers: favorites, then each group the book keeps.
-fn placed(book: Book) -> List<Filter<Contact>> {
-    let groups = book.groups.sort_by(g -> g.name.lower()).map(g -> Contact.groups(g.name))
-    [[Contact.favorites], groups].flat_map(places -> places)
+/// The group whose place is `place`, where it is a group's.
+fn group_place(book: Book, place: Text) -> Option<Group> {
+    book.groups.find(g -> Contact.groups(g.name).query == place)
 }
 
 /// The contacts in the order the window lists them: by name, ignoring case.
@@ -635,15 +634,22 @@ view book_window(book: Book) {
     // A contact a reference, an agent or another app asks for opens where the list stands: the
     // person the window shows is the one it was asked for.
     on show(c: Contact): set(opened, c)
-    let side = placed(book)
-    let chosen = side.find(p -> p.query == place)
+    // The place chosen, named by the group it is where it is one and by the filter where it is
+    // favorites: a group's name is the group's, never the field's.
+    let favorites = Contact.favorites
+    let group = group_place(book, place)
+    let title = if let g = group {
+        g.name
+    } else {
+        if place == favorites.query { favorites.label } else { "All contacts" }
+    }
     let all = listed(book)
     let here = if place.is_empty() { all } else { all.matching(place) }
     let found = if searched.is_empty() { here } else { here.matching(searched) }
     ui.NavShell(
         content_kind: .document,
         sidebar_title: "Contacts",
-        overview_title: chosen?.label ?? "All contacts",
+        overview_title: title,
         overview_count: found.len(),
     ) {
         on search(q: Text): set(searched, q)
@@ -652,9 +658,12 @@ view book_window(book: Book) {
                 ui.NavItem("all", "All contacts", icon: .users) {
                     on select: set(place, "").then(set(opened, .none))
                 }
-                for p in side {
-                    ui.NavItem(p.query, p.label, icon: p.icon) {
-                        on select: set(place, p.query).then(set(opened, .none))
+                ui.NavItem(favorites.query, favorites.label, icon: .star) {
+                    on select: set(place, favorites.query).then(set(opened, .none))
+                }
+                for g in book.groups.sort_by(g -> g.name.lower()) {
+                    ui.NavItem(Contact.groups(g.name).query, g.name, icon: .tag) {
+                        on select: set(place, Contact.groups(g.name).query).then(set(opened, .none))
                     }
                 }
             }

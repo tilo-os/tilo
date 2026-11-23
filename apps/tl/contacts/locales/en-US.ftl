@@ -298,8 +298,8 @@ d-qwoobxzv = Merge into~present
 d-dd4gcdnc = Import vcard~present
 
 d-6o6vmpkz = Book window
-    .w-contacts = Contacts
     .w-all-contacts = All contacts
+    .w-contacts = Contacts
     .w-file = File
     .w-import-vcards = Import vCards…
     .w-export-all-contacts = Export all contacts…

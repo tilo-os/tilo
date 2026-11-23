@@ -612,7 +612,7 @@ tilo_test_env::scenario! {
 
     phase the_view_shows_one_person_of_the_directory;
     {
-        let (host, view, _confirm) = directory_host(DIRECTORY_VIEW);
+        let (host, view, _confirm) = directory_host(DIRECTORY_VIEW, "directory");
         set_directory(&host, "Ada");
         let open = host.open_resource(&directory(), Some(&view)).unwrap();
         assert_eq!(shown(&open), Value::text("Ada"), "{:?}", open.tree());
@@ -620,7 +620,8 @@ tilo_test_env::scenario! {
 
     phase the_buttons_invocation_is_the_directories_own_confirm_endpoint;
     {
-        let (host, view, confirm) = directory_host(DIRECTORY_VIEW);
+        let (host, view, confirm) = directory_host(DIRECTORY_VIEW, "directory");
+        let confirm = confirm.expect("the button's anchor");
         set_directory(&host, "Ada");
         let open = host.open_resource(&directory(), Some(&view)).unwrap();
         let sent = Rc::new(RefCell::new(Vec::new()));
@@ -708,9 +709,9 @@ fn set_directory(host: &Host, label: &str) {
         .unwrap();
 }
 
-/// A host that runs `DIRECTORY_VIEW` over the Contacts package, with the
-/// view's id and its `confirm` anchor.
-fn directory_host(view: &str) -> (Host, String, String) {
+/// A host that runs `view` over the Contacts package, with the id of its view named `name` and its
+/// `confirm` anchor where the view has one.
+fn directory_host(view: &str, name: &str) -> (Host, String, Option<String>) {
     let host = Host::new(
         Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
         || None,
@@ -729,8 +730,8 @@ fn directory_host(view: &str) -> (Host, String, String) {
         .meta
         .views
         .iter()
-        .find(|view| view.name == "directory")
-        .expect("the view's declaration")
+        .find(|view| view.name == name)
+        .unwrap_or_else(|| panic!("the view's declaration: {name}"))
         .id
         .clone();
     let confirm = package
@@ -739,9 +740,7 @@ fn directory_host(view: &str) -> (Host, String, String) {
         .iter()
         .flat_map(|view| &view.anchors)
         .find(|anchor| anchor.name == "confirm")
-        .expect("the button's anchor")
-        .id
-        .clone();
+        .map(|anchor| anchor.id.clone());
     (host, view, confirm)
 }
 
@@ -805,7 +804,7 @@ fn portraits(reading: &str) -> Vec<(String, i64)> {
 /// label and nothing of any picture, and the card still shows the portrait the directory names.
 #[test]
 fn a_directory_of_ten_thousand_people_sends_no_picture() {
-    let (host, view, _) = directory_host(MANY_PEOPLE_VIEW);
+    let (host, view, _) = directory_host(MANY_PEOPLE_VIEW, "people");
     let people: Vec<serde_json::Value> = (0..10_000)
         .map(|n| {
             json!({

@@ -246,7 +246,10 @@ fn rows(view: &mut ViewInstance) -> Vec<UiNode> {
 }
 
 fn titles(rows: &[UiNode]) -> Vec<String> {
-    rows.iter().filter_map(|row| word(row, "title")).collect()
+    rows.iter()
+        .flat_map(|row| row.of_kind("ui.ListRow"))
+        .filter_map(|row| word(row, "title"))
+        .collect()
 }
 
 #[test]
@@ -291,7 +294,11 @@ fn a_contact_is_renamed_and_starred() {
     // The row shows the star the mark names.
     let mut window = ada.view(APP);
     let listed = rows(&mut window);
-    let marks: Vec<Option<String>> = listed.iter().map(|row| word(row, "mark")).collect();
+    let marks: Vec<Option<String>> = listed
+        .iter()
+        .flat_map(|row| row.of_kind("ui.ListRow"))
+        .map(|row| word(row, "mark"))
+        .collect();
     assert!(
         marks.iter().any(|mark| mark.as_deref() == Some("star")),
         "{marks:?}"
@@ -519,7 +526,18 @@ fn a_photo_travels_as_the_address_the_avatar_shows() {
     ada.commit();
     let read = items(&ada, &root, "contacts");
     let photo = text(&ada, &read[0], "photo");
-    assert_eq!(photo, "data:image/jpeg;base64,AAAA");
+    assert!(
+        photo.starts_with("tilo-blob://") && !photo.contains("base64"),
+        "a portrait is the address of the content the device keeps, not its bytes: {photo}"
+    );
+    // The bytes were kept once, under that address.
+    assert!(
+        device
+            .content
+            .borrow()
+            .contains_key(photo.trim_start_matches("tilo-blob://")),
+        "the device keeps the portrait's bytes: {photo}"
+    );
     // The card's avatar is given the picture, which it draws instead of the initials.
     let mut page = ada.host.open_resource(&read[0], None).unwrap();
     page.poll_patches().unwrap();
@@ -539,7 +557,7 @@ fn a_photo_travels_as_the_address_the_avatar_shows() {
     };
     let written = device.text(&file);
     assert!(
-        written.contains("PHOTO;ENCODING=b;TYPE=JPEG:AAAA"),
+        written.contains(&format!("PHOTO;VALUE=uri:{photo}")),
         "{written}"
     );
 }
