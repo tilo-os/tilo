@@ -195,7 +195,11 @@ enum Cmd {
                       `tilo ls -w <workspace>` lists what it holds. Options are written name=value; a\n\
                       single value goes to the one the action needs. With -w, the path is\n\
                       app/resource#action in that hosted workspace, over Tilo's API (key:\n\
-                      TILO_API_KEY, or this computer's own when it logged in)."
+                      TILO_API_KEY, or this computer's own when it logged in).\n\n\
+                      On a computer that holds the person's identity, --in-person does it as the\n\
+                      person themselves rather than as the computer's agent: what only they\n\
+                      answer, such as a question their agent asks them\n\
+                      (chat/Messages#answer-question message=<id> answer=allow)."
     )]
     Do {
         /// The action's name, as `tilo action list` lists it, or words of its title.
@@ -1041,6 +1045,10 @@ fn app_open(args: &[OsString], spelling: &tilo_control::front::Spelling) -> Resu
     Ok(desktop::run_open(&app, &items, spelling))
 }
 
+/// `tilo do`'s option that does the action as the person, not as this computer's agent
+/// ([`person`]).
+const IN_PERSON: &str = "--in-person";
+
 /// `tilo do`: in the hosted workspace `-w` names, else on this desktop. A
 /// `-w` or `--json` after the action lands in its options, and is taken out.
 /// Both answer the one typed shape of Tilo's API, said by one renderer
@@ -1062,13 +1070,22 @@ fn run_do(
     }
     let json = reach.json | args.iter().any(|arg| arg == "--json");
     args.retain(|arg| arg != "--json");
+    let in_person = args.iter().any(|arg| arg == IN_PERSON);
+    args.retain(|arg| arg != IN_PERSON);
     let reach = api::Reach { json, ..reach };
     let Some(workspace) = workspace else {
         return desktop::run_action(desktop::ActionCmd::Run { action, args }, json, spelling);
     };
     let keyed = reach.key_file.is_some() || std::env::var_os(api::KEY_ENV).is_some();
-    if person::answers(&action, keyed) {
+    if person::answers(&action, keyed, in_person) {
         return person::run(&workspace, &action, &args, json);
+    }
+    if in_person {
+        eprintln!(
+            "tilo: {IN_PERSON} acts as the person whose identity this computer holds, with no key named; \
+             this computer holds none (tilo login --new-identity), or a key was named"
+        );
+        return ExitCode::FAILURE;
     }
     hosted::act(reach, &workspace, &action, &args)
 }

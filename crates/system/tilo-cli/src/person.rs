@@ -15,12 +15,24 @@
 //! `tilo do workspace/vault#keep-entry entry='{…}' -w WORKSPACE`, as every
 //! other `tilo do`: the action's arguments as `name=value`, its answer
 //! printed as the API prints one.
+//!
+//! Any other action is asked as the person the same way when the command says
+//! so (`tilo do --in-person chat/Messages#answer-question …`): what only the
+//! person answers themselves, such as a question their agent puts to them, is
+//! then answered from this computer. Without it a `tilo do` here acts as the
+//! computer's own agent, so a program on it never answers for the person
+//! unless it was told to.
 
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 use serde_json::{Map, Value, json};
-use tilo_actions::remote::{RemoteActionTarget, person_accounts, person_models, person_vault};
+use tilo_actions::remote::{
+    InvokeArgument, ReceiptStatus, RemoteActionTarget, person_accounts, person_models, person_vault,
+};
+use tilo_actions::tree::{Address, Tree, pick_action};
+use tilo_actions::{InvocationId, InvocationUpdate};
+use tilo_server_protocol::WorkspaceId;
 use tilo_session_client::device::Device;
 
 use crate::login;
@@ -51,10 +63,77 @@ fn target(path: &str) -> Option<RemoteActionTarget> {
 }
 
 /// Whether `tilo do path` is asked here as the person: `path` is one of
-/// these, no key was named for the command, and this computer holds their
-/// root.
-pub fn answers(path: &str, keyed: bool) -> bool {
-    !keyed && target(path).is_some() && crate::identity::holds_root()
+/// these (or the command asked for it `in_person`), no key was named for the
+/// command, and this computer holds their root.
+pub fn answers(path: &str, keyed: bool, in_person: bool) -> bool {
+    !keyed && (in_person || target(path).is_some()) && crate::identity::holds_root()
+}
+
+/// Pauses of the walk that resolves a path, on tokio's clock.
+struct Pause(std::time::Instant);
+
+impl tilo_actions::tree::Pause for Pause {
+    fn pause(
+        &self,
+        how_long: std::time::Duration,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+        Box::pin(tokio::time::sleep(how_long))
+    }
+
+    fn now(&self) -> std::time::Duration {
+        self.0.elapsed()
+    }
+}
+
+/// `path` (`chat/Messages#answer-question`) done with `args` in `workspace` as the person
+/// `device` is: the path resolved as an agent's `tilo_do` resolves it, in what the workspace
+/// offers the person, and the action followed until it ends.
+async fn in_person(
+    device: &Device,
+    workspace: WorkspaceId,
+    path: &str,
+    args: Map<String, Value>,
+) -> Result<Value> {
+    let parsed = Address::parse(path).map_err(|error| anyhow!("{error}"))?;
+    let Some(action) = parsed.action.as_deref() else {
+        bail!("{path} names no action: write it as <resource>#<action>");
+    };
+    let tree = Tree::new(
+        device.actions(workspace),
+        device.caller(),
+        workspace.to_string(),
+        Arc::new(Pause(std::time::Instant::now())),
+    );
+    let (resolved, _) = tree
+        .resolve(&parsed, None)
+        .await
+        .map_err(|why| anyhow!("{path}: {why}"))?;
+    let descriptor =
+        pick_action(action, &resolved.actions, &resolved.path).map_err(|why| anyhow!("{why}"))?;
+    let target = RemoteActionTarget {
+        provider: resolved.provider.clone(),
+        address: descriptor.address.clone(),
+    };
+    let called = tree
+        .invoke(
+            target,
+            InvokeArgument::Json(args),
+            InvocationId::new(),
+            Some(resolved.revision.clone()),
+            None,
+        )
+        .await
+        .map_err(|why| anyhow!("{path}: {why}"))?;
+    match (&called.receipt.status, called.update()) {
+        (ReceiptStatus::Completed { output }, _)
+        | (_, Some(InvocationUpdate::Succeeded { output, .. })) => {
+            Ok(output.value.clone().unwrap_or_default())
+        }
+        (ReceiptStatus::Failed { error }, _)
+        | (_, Some(InvocationUpdate::Failed { error, .. })) => bail!("{path}: {}", error.message),
+        (ReceiptStatus::Rejected { error }, _) => bail!("{path}: {error}"),
+        _ => bail!("{path} did not finish while it was waited for"),
+    }
 }
 
 /// Ask `path` with `args` in `workspace` (its name or id) as the person, on
@@ -65,11 +144,7 @@ pub fn answers(path: &str, keyed: bool) -> bool {
 /// This computer holds no person, the site or its host could not be reached,
 /// the workspace is none of theirs, or the host refused.
 pub fn act(workspace: &str, path: &str, args: Map<String, Value>) -> Result<Value> {
-    let Some(target) = target(path) else {
-        bail!(
-            "{path} is none of the person's own actions: {MAIL_ACCOUNTS}#…, {VAULT}#… or {MODELS}#…"
-        );
-    };
+    let host = target(path);
     let person = crate::identity::held()?
         .ok_or_else(|| anyhow!("this computer holds no identity: tilo login --new-identity"))?;
     // The person is reached where this computer's login reaches them: the server it entered
@@ -110,10 +185,13 @@ pub fn act(workspace: &str, path: &str, args: Map<String, Value>) -> Result<Valu
                 .enter_workspace(&id, &person.name)
                 .await
                 .map_err(|refusal| anyhow!("{refusal}"))?;
-            device
-                .ask_host(entered, target, args)
-                .await
-                .map_err(|refusal| anyhow!("{path}: {refusal}"))
+            match host {
+                Some(target) => device
+                    .ask_host(entered, target, args)
+                    .await
+                    .map_err(|refusal| anyhow!("{path}: {refusal}")),
+                None => in_person(&device, entered, path, args).await,
+            }
         }
         .await;
         device.close();
@@ -162,7 +240,8 @@ mod tests {
         );
         assert_eq!(target("workspace/vault"), None);
         assert_eq!(target("notes/Notes#new-note"), None);
-        assert!(!answers("notes/Notes#new-note", false));
-        assert!(!answers("workspace/vault#entries", true));
+        assert!(!answers("notes/Notes#new-note", false, false));
+        assert!(!answers("workspace/vault#entries", true, false));
+        assert!(!answers("chat/Messages#answer-question", true, true));
     }
 }
