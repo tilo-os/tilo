@@ -682,7 +682,7 @@ impl Session {
             tilo_rt::app().handle().clone(),
         );
         // A write the daemon takes to a layout or a view has it read again off the loop.
-        desktops.follow_writes(daemon_writes);
+        desktops.follow_writes(daemon_writes.clone());
         let engine = activity.open_engine(&options, &handle, document_reads.clone(), &writes);
         // This device's channels of its workspaces' sealed records: its keys,
         // and the devices each one admits, which its window streams carry
@@ -1288,6 +1288,7 @@ impl Session {
                 revocations: std::sync::Arc::clone(&revocations),
                 sync: sync.as_deref(),
                 daemon: daemon_link,
+                daemon_writes,
                 service: workspace_service.clone(),
                 engine: engine.as_ref().map(std::sync::Arc::clone),
                 sealed: crate::app_wire::Sealed {

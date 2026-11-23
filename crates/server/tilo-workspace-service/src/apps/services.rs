@@ -661,6 +661,17 @@ impl ResourceRequestContext {
 
     /// The context, with the invocations `serving` the workspace service delivered to its app and is
     /// waiting on, each with who invoked it.
+    /// A route's context as the broker certifies it, for a test that stands in for the broker.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn for_tests(
+        app_id: impl Into<String>,
+        workspace_id: impl Into<String>,
+        caller: tilo_actions::remote::Caller,
+    ) -> Self {
+        Self::authenticated(app_id, workspace_id, caller)
+    }
+
     pub(crate) fn serving(
         mut self,
         serving: Vec<(tilo_actions::InvocationId, tilo_actions::Actor)>,

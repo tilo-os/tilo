@@ -129,6 +129,8 @@ pub(crate) struct Collaboration<'a> {
     pub sync: Option<&'a crate::sync::Client>,
     /// The shell link the device's daemon handed this session, or why it has none.
     pub daemon: tilo_workspace_service::apps::services::DeviceDaemon,
+    /// Each write the daemon takes, as the session follows them.
+    pub daemon_writes: tilo_session_client::daemon_documents::DaemonWritesFeed,
     /// Where this device's own workspace service is installed: the workspaces it holds take an
     /// app's window write, the one store the session's own writes and reads go through.
     pub service: tilo_workspace_service::service::ServiceSlot,
@@ -234,6 +236,7 @@ pub(crate) fn start_app_wire(
         revocations,
         sync,
         daemon,
+        daemon_writes,
         engine,
         service,
         sealed,
@@ -303,6 +306,7 @@ pub(crate) fn start_app_wire(
             // admits: this session's own workspaces, else the ones its peer network holds.
             engine: engine.or_else(|| sync.and_then(crate::sync::Client::engine).cloned()),
             daemon,
+            daemon_writes,
             service: service.clone(),
             endpoint: sync.map(|sync| sync.endpoint_handle()),
             device_actions: sync.map(crate::sync::Client::actions_handle),

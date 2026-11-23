@@ -174,6 +174,127 @@ pub(crate) fn session_documents(
     (documents, writes, feed)
 }
 
+/// The apps' resources in the device's one store, which the daemon keeps, read over the shell's
+/// link: what an agent this session admits reads them with. An app writes its own on its
+/// connection at the daemon, and an agent writes none here.
+pub(crate) struct DaemonResources {
+    pub(crate) shell: tilo_session_client::daemon_documents::DaemonShell,
+    /// The daemon's writes, which a query held open is asked again on.
+    pub(crate) writes: tilo_session_client::daemon_documents::DaemonWritesFeed,
+}
+
+/// `command` of `app`'s resources in `workspace`, answered by the daemon as the device's person.
+async fn daemon_resource_command(
+    shell: &tilo_session_client::daemon_documents::DaemonShell,
+    workspace: String,
+    app: String,
+    command: &tilo_resource_store::wire::Command,
+) -> Result<tilo_resource_store::wire::Reply, String> {
+    use runtime_collab::wire::shell::{ShellCall, ShellReply};
+    let command = serde_json::to_string(command)
+        .map_err(|error| format!("a resource command does not encode: {error}"))?;
+    match shell
+        .ask(ShellCall::Resources {
+            workspace,
+            app,
+            command,
+        })
+        .await?
+    {
+        ShellReply::Resources(answer) => serde_json::from_str(&answer?)
+            .map_err(|error| format!("the daemon's answer does not read: {error}")),
+        other => Err(format!("the daemon answered something else: {other:?}")),
+    }
+}
+
+impl tilo_workspace_service::apps::services::ResourceServices for DaemonResources {
+    fn command(
+        &self,
+        context: &tilo_workspace_service::apps::services::ResourceRequestContext,
+        command: tilo_resource_store::wire::Command,
+    ) -> tilo_workspace_service::apps::services::ResourceAnswer {
+        if command.writes() {
+            return Box::pin(std::future::ready(Err(
+                "an app writes its resources on its own connection at the device's daemon"
+                    .to_owned(),
+            )));
+        }
+        let shell = self.shell.clone();
+        let (workspace, app) = (
+            context.workspace_id().to_owned(),
+            context.app_id().to_owned(),
+        );
+        Box::pin(async move { daemon_resource_command(&shell, workspace, app, &command).await })
+    }
+
+    fn open(
+        &self,
+        context: &tilo_workspace_service::apps::services::ResourceRequestContext,
+        query: tilo_resource_store::Query,
+    ) -> tilo_workspace_service::apps::services::ResourcePages {
+        let shell = self.shell.clone();
+        let mut written = self.writes.follow();
+        let (workspace, app) = (
+            context.workspace_id().to_owned(),
+            context.app_id().to_owned(),
+        );
+        Box::pin(async move {
+            let command = tilo_resource_store::wire::Command::Query(query);
+            let page = |reply| match reply {
+                tilo_resource_store::wire::Reply::Page(page) => Ok(page),
+                other => Err(format!("the daemon answered a query with {other:?}")),
+            };
+            let first = page(
+                daemon_resource_command(&shell, workspace.clone(), app.clone(), &command).await?,
+            )?;
+            let (pages, received) = tokio::sync::mpsc::unbounded_channel();
+            let mut shown = serde_json::to_vec(&first).unwrap_or_default();
+            pages
+                .send(first)
+                .map_err(|_| "the query was let go before its first page".to_owned())?;
+            // Each write to the workspace (or writes missed, told with no workspace) may change
+            // what the query shows: it is asked again then, and a different page is sent.
+            tokio::spawn(async move {
+                loop {
+                    let heard = tokio::select! {
+                        heard = written.recv() => heard,
+                        () = pages.closed() => return,
+                    };
+                    match heard {
+                        Ok(write)
+                            if !write.workspace.is_empty() && write.workspace != workspace =>
+                        {
+                            continue;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                        Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    }
+                    let asked =
+                        daemon_resource_command(&shell, workspace.clone(), app.clone(), &command)
+                            .await
+                            .and_then(page);
+                    match asked {
+                        Ok(next) => {
+                            let bytes = serde_json::to_vec(&next).unwrap_or_default();
+                            if bytes != shown {
+                                shown = bytes;
+                                if pages.send(next).is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "a held query was not asked again");
+                            return;
+                        }
+                    }
+                }
+            });
+            Ok(received)
+        })
+    }
+}
+
 /// The workspaces' records as the device's daemon keeps them, read over the shell's link: what an
 /// agent this session admits reads a record outside its app with. The session keeps no copy;
 /// the agent's read is decided here, at the record's node, before the daemon is asked.
@@ -332,6 +453,10 @@ pub(crate) const CALLED_SERVICES: &[(&str, &str)] = &[
 /// line; a call to a service this session leaves unserved and this list does not name fails the guard.
 #[cfg(test)]
 pub(crate) const UNSERVED_BUT_CALLED: &[&str] = &[];
+
+#[cfg(test)]
+#[path = "broker_services/daemon_resources_tests.rs"]
+mod daemon_resources_tests;
 
 #[cfg(test)]
 mod tests {

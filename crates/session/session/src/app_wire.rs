@@ -421,6 +421,9 @@ pub struct Hosted {
     /// session launches is joined at the daemon on a connection vouched for on it, and its
     /// documents are answered there.
     pub daemon: tilo_workspace_service::apps::services::DeviceDaemon,
+    /// Each write the daemon takes, as the session follows them: what a query an agent holds open
+    /// here is asked again on.
+    pub daemon_writes: tilo_session_client::daemon_documents::DaemonWritesFeed,
     /// The content the workspaces' records reference: where an app keeps
     /// what its record names, and the route an app asks the workspace's other
     /// devices for what it lacks.
@@ -1093,6 +1096,7 @@ fn broker_services(
         service,
         device_actions: hosted_device_actions,
         daemon,
+        daemon_writes,
         document_content,
         action_offload,
         journal_root,
@@ -1354,10 +1358,18 @@ fn broker_services(
                 as std::sync::Arc<dyn tilo_workspace_service::apps::services::HostedWorkspaces>
         })),
         // Apps write and read their resources in the device's one store, which the daemon keeps:
-        // the router sends those commands there.
-        resources: BrokerService::unserved(
-            "the device's daemon keeps the apps' resources, on the app's connection there",
-        ),
+        // the router sends an app's commands there, and an agent this session admits reads them
+        // over the shell's link.
+        resources: BrokerService::when(daemon.clone().ok().map(|link| {
+            std::sync::Arc::new(crate::broker_services::DaemonResources {
+                shell: tilo_session_client::daemon_documents::DaemonShell::new(
+                    Ok(link),
+                    tilo_rt::app().handle().clone(),
+                ),
+                writes: daemon_writes,
+            })
+                as std::sync::Arc<dyn tilo_workspace_service::apps::services::ResourceServices>
+        })),
         shell: BrokerService::unserved(
             "the person's shell is answered by this computer's Tilo service, never by a session",
         ),
@@ -1799,6 +1811,12 @@ mod tests {
             answering: None,
             service: tilo_workspace_service::service::ServiceSlot::default(),
             daemon: Err("a test's session has no daemon".to_owned()),
+            daemon_writes: tilo_session_client::daemon_documents::DaemonWritesFeed::start(
+                &tilo_session_client::daemon_documents::DaemonShell::new(
+                    Err("a test's session has no daemon".to_owned()),
+                    tilo_rt::app().handle().clone(),
+                ),
+            ),
         }
     }
 
