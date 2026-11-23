@@ -203,6 +203,10 @@ enum Cmd {
                       (chat/Messages#answer-question message=<id> answer=allow)."
     )]
     Do {
+        /// Do it as the person themselves, on a computer that holds their identity, rather
+        /// than as this computer's agent: what only they answer.
+        #[arg(long)]
+        in_person: bool,
         /// The action's name, as `tilo action list` lists it, or words of its title.
         action: String,
         /// Its options, as name=value.
@@ -1057,7 +1061,7 @@ const IN_PERSON: &str = "--in-person";
 fn run_do(
     reach: api::Reach<'_>,
     mut workspace: Option<String>,
-    action: String,
+    (action, in_person): (String, bool),
     mut args: Vec<String>,
     spelling: &tilo_control::front::Spelling,
 ) -> ExitCode {
@@ -1071,7 +1075,7 @@ fn run_do(
     }
     let json = reach.json | args.iter().any(|arg| arg == "--json");
     args.retain(|arg| arg != "--json");
-    let in_person = args.iter().any(|arg| arg == IN_PERSON);
+    let in_person = in_person || args.iter().any(|arg| arg == IN_PERSON);
     args.retain(|arg| arg != IN_PERSON);
     let reach = api::Reach { json, ..reach };
     let Some(workspace) = workspace else {
@@ -1157,7 +1161,17 @@ fn run_hosted(
     // ends, when this computer holds their root.
     let _approving = as_device.then(approving::start).flatten();
     Ok(match cmd {
-        Cmd::Do { action, args } => Ok(run_do(reach, workspace, action, args, spelling)),
+        Cmd::Do {
+            in_person,
+            action,
+            args,
+        } => Ok(run_do(
+            reach,
+            workspace,
+            (action, in_person),
+            args,
+            spelling,
+        )),
         Cmd::Ls { what, cursor } => workspace
             .ok_or_else(needs_workspace)
             .map(|workspace| hosted::ls(reach, &workspace, what.as_deref(), cursor.as_deref())),
@@ -2261,6 +2275,7 @@ mod tests {
             "`keys mint` makes a key for the workspace the device entered"
         );
         let act = Cmd::Do {
+            in_person: false,
             action: "mute".into(),
             args: Vec::new(),
         };
@@ -2851,7 +2866,19 @@ mod tests {
                 .expect("do parses");
             assert!(matches!(
                 run.cmd,
-                Cmd::Do { ref action, ref args } if action == "rename-note" && args == &["title=Groceries", "--force"]
+                Cmd::Do { ref action, ref args, .. } if action == "rename-note" && args == &["title=Groceries", "--force"]
+            ));
+            let in_person = Cli::try_parse_from([
+                "tilo",
+                "do",
+                "--in-person",
+                "chat/Messages#answer-question",
+                "answer=allow",
+            ])
+            .expect("do --in-person parses");
+            assert!(matches!(
+                in_person.cmd,
+                Cmd::Do { in_person: true, ref action, .. } if action == "chat/Messages#answer-question"
             ));
             let branch = Cli::try_parse_from(["tilo", "workspace", "branch", "Research", "Question 2"])
                 .expect("workspace branch parses");

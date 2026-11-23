@@ -30,7 +30,7 @@ use serde_json::{Map, Value, json};
 use tilo_actions::remote::{
     InvokeArgument, ReceiptStatus, RemoteActionTarget, person_accounts, person_models, person_vault,
 };
-use tilo_actions::tree::{Address, Tree, pick_action};
+use tilo_actions::tree::{Address, Tree, app_of, pick_action};
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_server_protocol::WorkspaceId;
 use tilo_session_client::device::Device;
@@ -104,10 +104,14 @@ async fn in_person(
         workspace.to_string(),
         Arc::new(Pause(std::time::Instant::now())),
     );
-    let (resolved, _) = tree
-        .resolve(&parsed, None)
-        .await
-        .map_err(|why| anyhow!("{path}: {why}"))?;
+    // The app is started first when none runs, as an agent's tilo_do starts it: what a
+    // workspace offers of an app that does not run is its name alone.
+    let started = tree.started_provider(&app_of(&parsed), None).await;
+    let (resolved, _) = match (tree.resolve(&parsed, None).await, started) {
+        (Ok(found), _) => found,
+        (Err(why), Ok(_)) => bail!("{path}: {why}"),
+        (Err(why), Err(not_started)) => bail!("{path}: {why} ({not_started})"),
+    };
     let descriptor =
         pick_action(action, &resolved.actions, &resolved.path).map_err(|why| anyhow!("{why}"))?;
     let target = RemoteActionTarget {
