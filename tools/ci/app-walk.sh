@@ -55,11 +55,16 @@ if [[ $(id -u) == 0 ]]; then
 fi
 
 out=$(realpath -m "$out")
-run=$(mktemp -d)
-# The session account reads the packages and pages the walk hands it; the job's
-# temporary directory is this caller's alone, so it is made passable too.
-chmod 0755 "$run"
-chmod o+x "$(dirname "$run")"
+# The walk's scratch, on a tree the session account can read all the way up:
+# the job's own temporary directory belongs to this caller alone (0700), and an
+# app's state is synced to every directory above it, so a session's state under
+# it fails to be written (the shell runtime's environment record, an app's
+# records). A person's state lives under their home, readable by them.
+base=$(mktemp -d -p /var/tmp tilo-app-walk.XXXXXXXX)
+chmod 0755 "$base"
+run=$base/run
+states=$base/states
+mkdir -m 0755 "$run" "$states"
 rm -rf -- "$out"
 mkdir -p -- "$out"
 # What a person reads a walk by: its page, its verdict, the snapshots and the logs.
@@ -74,18 +79,18 @@ keep() {
     # are only the launcher's word for the session, which ends with it. Each keeps its own name
     # (state-tl-session.log, state-tl-pipewire.log): the session's and its sound's are apart.
     local log
-    for log in "$run"/states/*/logs/*.log; do
+    for log in "$states"/*/logs/*.log; do
         [[ -f $log ]] || continue
         cp "$log" "$out/$(basename "$(dirname "$(dirname "$log")")")-$(basename "$log")"
     done
     # A crash report says why an app stopped: it is the proof a walk that saw one needs.
     local state report
-    for report in "$run"/states/*/cache/tilo/crashes/*; do
+    for report in "$states"/*/cache/tilo/crashes/*; do
         [[ -f $report ]] || continue
         state=$(basename "$(dirname "$(dirname "$(dirname "$(dirname "$report")")")")")
         cp "$report" "$out/crashes-$state-$(basename "$report")"
     done
-    rm -rf -- "$run"
+    rm -rf -- "$base"
 }
 trap keep EXIT
 
@@ -94,5 +99,5 @@ args=()
 [[ -n ${T_INPUT_DISCOVER:-} ]] && args+=(--discover)
 # Each walk is held to its baseline from main where it has one.
 args+=(--compare)
-python3 scripts/headless-examples/app-walk.py "$app" --out "$run/walk" --state "$run/states" \
+python3 scripts/headless-examples/app-walk.py "$app" --out "$run/walk" --state "$states" \
     ${args[@]+"${args[@]}"} "$@"
