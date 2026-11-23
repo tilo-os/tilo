@@ -422,6 +422,15 @@ class FindingAnAction(unittest.TestCase):
     def test_an_action_the_desktop_does_not_list_is_none(self):
         self.assertIsNone(walk.row_for(self.ROWS, "shortcuts", "delete"))
 
+    def test_a_kind_finds_a_row_whose_id_the_run_minted(self):
+        rows = [{"provider": "so.tilo.session",
+                 "resource": {"id": "tl:so.tilo.shell:root-7ea1", "kind": "tl.so.tilo.shell.Viewing"},
+                 "action": {"address": {"resource": "tl:so.tilo.shell:root-7ea1",
+                                        "action": "show_style"}}}]
+        found = walk.row_for(rows, "tl.so.tilo.shell.Viewing", "show_style",
+                             kind="tl.so.tilo.shell.Viewing")
+        self.assertEqual(found["resource"]["id"], "tl:so.tilo.shell:root-7ea1")
+
 
 class ReadingAStandInsAddresses(unittest.TestCase):
     def test_each_printed_address_is_named_by_its_line(self):

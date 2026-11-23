@@ -240,14 +240,25 @@ def app_action(session: Session, app: str, operation: str, resource: str | None 
     return None
 
 
-def row_for(rows: list[dict], resource: str, action: str) -> dict | None:
+def row_for(rows: list[dict], resource: str, action: str, kind: str | None = None) -> dict | None:
     """The catalogue row offering `resource`'s `action`, whichever provider lists
     it: a workspace's actions are published under the workspace's own provider
     id, which is not the same string on the next run, so a walk names the
     resource and the action and lets the desktop say who lists them. Should two
     providers offer it, the one whose request is answered first wins — the walk
-    called it, so what it does is one thing."""
-    return next((row for row in rows if address(row) == (resource, action)), None)
+    called it, so what it does is one thing.
+
+    `kind` names a resource of that kind instead: a run mints a shell's own
+    record ids (`tl:so.tilo.shell:root-cejnvssb`), so the walk gives the kind
+    and the row it stands on is found whichever id the run gave it."""
+    for row in rows:
+        at = address(row)
+        if at is None or at[1] != action:
+            continue
+        if at[0] == resource or (
+                kind is not None and (row.get("resource") or {}).get("kind") == kind):
+            return row
+    return None
 
 
 def value_of(answer: dict | str):
@@ -1116,8 +1127,12 @@ class Walk:
         as_name = value.get("as") if named else None
         resource, action = (pick(item, self.variant) for item in parts[:2])
         args = self.resolve(pick(parts[2], self.variant) if len(parts) > 2 else None)
-        row = until_value(f"the action {resource}#{action}",
-                          lambda: row_for(self.session.actions(""), resource, action), 30)
+        def find():
+            rows = self.session.actions("")
+            return row_for(rows, resource, action) or row_for(
+                rows, resource, action, kind=resource)
+
+        row = until_value(f"the action {resource}#{action}", find, 30)
         answer = self.session.invoke_row(row, args)
         if isinstance(answer, dict) and ("Failed" in answer or "Refused" in answer):
             raise Failed(f"{resource}#{action} answered {json.dumps(answer)[:500]}")

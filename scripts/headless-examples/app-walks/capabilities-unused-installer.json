@@ -11,24 +11,16 @@
   "steps": [
     {
       "id": "open-installer",
-      "said": "Open the installer",
+      "said": "Open the installer: it asks for an image to write",
       "ops": [
         {"theme": false},
         {"launch": true},
         {"wait_for": "window"},
-        {"targets": true},
+        {"must": ["Tilo Installer", "Browse…"]},
         {"actions": "imager"}
       ],
       "dark": true,
       "budget_ms": 15000
-    },
-    {
-      "id": "image-write-status",
-      "said": "Ask what the image writer is doing",
-      "ops": [
-        {"act": ["imager.job", "status"]}
-      ],
-      "budget_ms": 8000
     },
     {
       "id": "wizard-status",

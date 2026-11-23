@@ -45,11 +45,15 @@
     },
     {
       "id": "show-it",
-      "said": "Pick my style in the shell's switch",
+      "said": "Show the shell as my own style",
       "ops": [
-        {"press": {"rust": "Showing Strips", "tl": "Showing Strips"}},
-        {"wait_for": {"shown": "My shell"}},
-        {"press": "My shell"}
+        {
+          "act": [
+            "tl.so.tilo.shell.Viewing",
+            "show_style",
+            {"style": "mine.shell:strips"}
+          ]
+        }
       ],
       "dark": true,
       "budget_ms": 10000
