@@ -586,6 +586,7 @@ d-dshqxolf = Eingang
 
 d-c6y4cxdd = Zuweisen
     .doc = Gibt eine Aufgabe jemandem, oder niemandem.
+    .w-the-pieces-in-work-already-fill = Die Teile in Arbeit füllen schon, was diese Aufgabe gleichzeitig arbeiten lässt
     .w-it-is-theirs-already = Sie gehört bereits dieser Person
 
 d-c6y4cxdd-who = Wer
@@ -704,6 +705,9 @@ d-bx72tblu-pieces = Teile
 d-6k5mm32z = Sitzung begonnen
     .doc = Sagt, dass eine Sitzung an einer Aufgabe begann: gezählt, und ihr Beginn festgehalten für die Dauer der Arbeit.
     .did = Arbeit begonnen
+    .w-i-stopped-the-working-time-this = Ich habe angehalten: die Arbeitszeit, die diese Aufgabe bekam, ist aufgebraucht. Gib ihr mehr Zeit, damit ich weitermachen kann.
+    .w-i-stopped-this-task-s-budget = Ich habe angehalten: das Budget dieser Aufgabe ist aufgebraucht. Erhöhe es, damit ich weitermachen kann.
+    .w-i-stopped-my-work-on-this = Ich habe angehalten: meine Arbeit daran wurde zu oft hintereinander unterbrochen. Sag, dass ich weitermachen soll, und ich beginne wieder bei seinen Notizen.
 
 d-lvgvolrt = Sitzung beendet
     .doc = Sagt, dass eine Sitzung an einer Aufgabe endete: was sie ausgab und wie lange sie arbeitete, wird der Aufgabe zugerechnet.
@@ -790,6 +794,8 @@ d-2b46hb6u = importiert Dateien
 d-tk5t43h6 = importiert einen Vorgang
 
 d-fnc6zwh7 = wartet
+
+d-pgzbwzsm = beginnt eine Sitzung
 
 d-tpvjqy5m = Erledigte löschen~present
 

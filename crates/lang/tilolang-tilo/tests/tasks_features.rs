@@ -8,6 +8,7 @@ use tilolang_runtime::blob::FileValue;
 use tilolang_runtime::value::{EnumValue, RecordInit};
 use tilolang_runtime::{Actor, InvokeOutcome, Value};
 use tilolang_tilo::host::RootView;
+use tilolang_tilo::runtime::ids::MemberId;
 
 use crate::fixtures::Replica;
 use crate::tasks::{APP, call, create, items, read, target, workspace};
@@ -253,7 +254,7 @@ fn giving_a_task_to_an_agent_keeps_who_gave_it_and_when() {
     let (ada, root) = workspace();
     ada.host.runtime().set_members(
         vec![
-            Member::person("ada", tilo_action_policy::Role::Owner),
+            Member::person("ada", tilo_actions::policy::Role::Owner),
             Member::agent("helper"),
         ],
         None,
@@ -377,6 +378,198 @@ fn a_task_waits_and_goes_on_with_its_work_kept() {
     ada.commit();
     assert_eq!(read(&ada, &one, "waiting_for"), Value::text(""));
     assert_eq!(read(&ada, &one, "waiting_until"), none());
+}
+
+/// Whether invoking `action` with `args` is refused: the action says why, or the platform does.
+fn refused(ada: &Replica, action: &str, args: Vec<Value>) -> bool {
+    let id = ada
+        .host
+        .package(APP)
+        .unwrap()
+        .meta
+        .actions
+        .iter()
+        .find(|a| a.name == action)
+        .unwrap_or_else(|| panic!("no action {action}"))
+        .id
+        .clone();
+    match ada.host.runtime().invoke_action(
+        &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+        (id.as_str(), args),
+    ) {
+        Ok(outcome) => !matches!(outcome, InvokeOutcome::Done(_)),
+        Err(_) => true,
+    }
+}
+
+/// A session begins only where the task may still be worked: its money and its working time are
+/// left, and its sessions were not lost too often in a row.
+#[test]
+fn a_session_begins_only_where_the_task_may_still_be_worked() {
+    for (money, time) in [(true, false), (false, true)] {
+        let (ada, root) = workspace();
+        let one = task(&ada, &root, "Worked");
+        call(
+            &ada,
+            "set_budget",
+            vec![
+                one.clone(),
+                if money { some(int(10)) } else { none() },
+                if time { some(int(10)) } else { none() },
+                case(&ada, "BudgetBy", "person"),
+            ],
+        );
+        call(
+            &ada,
+            "session_ended",
+            vec![
+                one.clone(),
+                if money { int(10) } else { int(0) },
+                if time { int(10) } else { int(0) },
+            ],
+        );
+        assert!(
+            refused(&ada, "session_began", vec![one.clone()]),
+            "a spent budget begins no session"
+        );
+    }
+
+    // A session lost twice in a row: the next one does not begin until its person says go on.
+    let (ada, root) = workspace();
+    let one = task(&ada, &root, "Lost");
+    for _ in 0..2 {
+        call(&ada, "session_began", vec![one.clone()]);
+        call(
+            &ada,
+            "stop",
+            vec![
+                one.clone(),
+                case(&ada, "StoppedWhy", "lost_worker"),
+                Value::text(""),
+            ],
+        );
+    }
+    assert!(
+        refused(&ada, "session_began", vec![one.clone()]),
+        "two sessions lost in a row begin no third"
+    );
+    call(
+        &ada,
+        "resume",
+        vec![one.clone(), Value::text("its person said go on")],
+    );
+    call(&ada, "session_began", vec![one.clone()]);
+    assert!(
+        !refused(&ada, "session_began", vec![one.clone()]),
+        "told to go on, its sessions begin again"
+    );
+}
+
+/// Work on a task's pieces ends its wait once every piece is through: closed, waiting for a
+/// person to look, or stopped.
+#[test]
+fn work_on_the_pieces_resumes_the_task_once_they_are_all_through() {
+    let (ada, root) = workspace();
+    let parent = task(&ada, &root, "Parent");
+    let one = call(
+        &ada,
+        "add_subtask",
+        vec![parent.clone(), Value::text("One")],
+    );
+    let two = call(
+        &ada,
+        "add_subtask",
+        vec![parent.clone(), Value::text("Two")],
+    );
+    call(
+        &ada,
+        "wait",
+        vec![
+            parent.clone(),
+            Value::text("the pieces"),
+            none(),
+            case(&ada, "WaitKind", "pieces"),
+            Value::text(""),
+        ],
+    );
+    ada.commit();
+    assert_eq!(
+        read(&ada, &parent, "waiting_for"),
+        Value::text("the pieces"),
+        "the task waits for its pieces"
+    );
+    call(&ada, "check", vec![one]);
+    ada.commit();
+    assert_eq!(
+        read(&ada, &parent, "waiting_for"),
+        Value::text("the pieces"),
+        "one piece through is not all of them"
+    );
+    call(&ada, "check", vec![two]);
+    ada.commit();
+    assert_eq!(
+        read(&ada, &parent, "waiting_for"),
+        Value::text(""),
+        "the last piece through ends the wait"
+    );
+    let work = format!("{:?}", read(&ada, &parent, "work"));
+    assert!(
+        work.contains("the pieces are through"),
+        "it says what made it go on: {work}"
+    );
+}
+
+/// A task that lets one piece be in work at once takes no second piece given to an agent while
+/// the first is worked.
+#[test]
+fn a_piece_beyond_what_its_task_allows_is_not_given_to_an_agent() {
+    use tilolang_runtime::members::Member;
+    let (ada, root) = workspace();
+    ada.host.runtime().set_members(
+        vec![
+            Member::person("ada", tilo_actions::policy::Role::Owner),
+            tilolang_runtime::members::Member::agent("helper"),
+        ],
+        None,
+    );
+    let parent = task(&ada, &root, "Parent");
+    let one = call(
+        &ada,
+        "add_subtask",
+        vec![parent.clone(), Value::text("One")],
+    );
+    let two = call(
+        &ada,
+        "add_subtask",
+        vec![parent.clone(), Value::text("Two")],
+    );
+    call(
+        &ada,
+        "set_pieces_at_once",
+        vec![parent.clone(), some(int(1))],
+    );
+    call(&ada, "session_began", vec![one.clone()]);
+    ada.commit();
+    let helper = MemberId::agent("helper");
+    let give = |task: &Value| {
+        vec![
+            task.clone(),
+            Value::Opt(Some(Box::new(Value::Actor(Actor::from(helper.clone()))))),
+        ]
+    };
+    assert!(
+        refused(&ada, "assign", give(&two)),
+        "the second piece waits while the first is in work"
+    );
+    call(&ada, "check", vec![one]);
+    ada.commit();
+    call(&ada, "assign", give(&two));
+    ada.commit();
+    assert_eq!(
+        read(&ada, &two, "assignee"),
+        some(Value::Actor(Actor::from(helper))),
+        "with the first piece through, the second is given"
+    );
 }
 
 #[test]

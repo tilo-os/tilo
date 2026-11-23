@@ -614,6 +614,7 @@ d-dshqxolf = Inbox
 
 d-c6y4cxdd = Assign
     .doc = Gives a task to someone, or to nobody.
+    .w-the-pieces-in-work-already-fill = The pieces in work already fill what this task lets work at once
     .w-it-is-theirs-already = It is theirs already
 
 d-c6y4cxdd-who = Who
@@ -732,6 +733,9 @@ d-bx72tblu-pieces = Pieces
 d-6k5mm32z = Session began
     .doc = Says a session on a task began: counted, and its start kept for how long it works.
     .did = began work
+    .w-i-stopped-the-working-time-this = I stopped: the working time this task was given is used up. Give it more time to let me go on.
+    .w-i-stopped-this-task-s-budget = I stopped: this task's budget is spent. Raise it to let me go on.
+    .w-i-stopped-my-work-on-this = I stopped: my work on this was interrupted too often in a row. Tell me to go on and I start again from its notes.
 
 d-lvgvolrt = Session ended
     .doc = Says a session on a task ended: what it spent and how long it worked are added to the task.
@@ -818,6 +822,8 @@ d-2b46hb6u = Import files~present
 d-tk5t43h6 = Import issue~present
 
 d-fnc6zwh7 = Wait~present
+
+d-pgzbwzsm = Session began~present
 
 d-tpvjqy5m = Clear done~present
 
