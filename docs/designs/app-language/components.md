@@ -7,7 +7,7 @@ isn't compiler magic: it's `std`, a library written in tilolang on the same comp
 ## 1. A component is a described widget
 
 Each ui-core widget has a description generated from its Rust definition
-(`#[derive(Component)]`, catalogue in `crates/dev/ui-graph/components.json`), so it can't drift:
+(`#[derive(Component)]`, catalogue in `crates/ui/ui-graph/components.json`), so it can't drift:
 
 | Part | Is | Example (`ListRow`) |
 |---|---|---|
@@ -465,7 +465,7 @@ The last rung is Rust: a ui-core widget shipped with the package, or the platfor
 surfaces.
 
 - **A widget written in Rust** is a component like any other once it is described (`#[derive(Component)]`,
-  catalogue in `crates/dev/ui-graph/components.json`): it appears in `ui` for every tilolang
+  catalogue in `crates/ui/ui-graph/components.json`): it appears in `ui` for every tilolang
   package as soon as it lands, with its props, slots, events and defaults, and needs no adapter.
   That is also how `std` and the shell are built.
 - **A render graph** — declared shader and compositing nodes over textures, run by the platform

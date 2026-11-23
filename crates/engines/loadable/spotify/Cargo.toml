@@ -41,7 +41,7 @@ thin = [
 ]
 
 [dependencies]
-runtime-dylib = { path = "../../../runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../../sdk/runtime-dylib", optional = true }
 tilo-spotify = { path = "../../../integrations/tilo-spotify", optional = true }
 # librespot shares crates the runtime does not carry (rand 0.9, sha1 0.10)
 # with rustypipe, and Music loads both engines: a crate in both libraries

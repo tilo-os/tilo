@@ -21,7 +21,7 @@ web-features = []
 
 [dependencies]
 fnv.workspace = true
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 tilo-timezone-engine = { path = "../../crates/engines/loadable/timezone", optional = true }
 # The CalDAV client and the account credentials its sign-in reaches.
 tilo-accounts-engine = { path = "../../crates/engines/loadable/accounts", optional = true }
@@ -45,7 +45,7 @@ accounts = { path = "../../crates/integrations/accounts", features = ["person"] 
 # Tilo action model for serializable, replayable document mutations.
 tilo-actions = { path = "../../crates/collab/actions" }
 # Notes are rich text, edited in the SDK rich-text editor.
-tilo-document = { path = "../../crates/doc/tilo-document" }
+tilo-document = { path = "../../crates/sdk/tilo-document" }
 tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 jiff.workspace = true
 automerge.workspace = true

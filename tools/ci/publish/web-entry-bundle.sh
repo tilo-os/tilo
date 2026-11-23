@@ -22,7 +22,7 @@ rm -rf "$out"
 mkdir -p "$(dirname -- "$out")"
 case $part in
   wasm)
-    python3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache "$TILO_FONT_ASSET_CACHE" >/dev/null
+    python3 tools/font-catalog.py root crates/ui/ui-core/assets/fonts --scope fixtures --cache "$TILO_FONT_ASSET_CACHE" >/dev/null
     crates/browser/tilo-browser-runtime/scripts/build.sh "$out" --profile "${3:-release}" --wasm-only >/dev/null
     ;;
   bundle)

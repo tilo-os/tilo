@@ -95,7 +95,7 @@ tilo-workspace-join = { path = "../workspace-join", features = ["test-support"] 
 tilo-automerge.workspace = true
 # The record API apps open their own records with: a person's record reaches
 # their other device through the store the same way an app writes it.
-ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+ui = { package = "tilo-ui", path = "../../ui/ui-core" }
 # Where that record API keeps a device's records in the test: in memory.
 durable-store = { path = "../../system/durable-store" }
 tempfile.workspace = true

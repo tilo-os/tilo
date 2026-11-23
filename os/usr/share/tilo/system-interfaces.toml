@@ -20,7 +20,7 @@
 # compositor's runtime state (crates/packaging/launcher/src/system_authority.rs).
 system = 1
 
-# App ↔ shell: the shell-ui connection (crates/sdk/ui-core/interface.toml).
+# App ↔ shell: the shell-ui connection (crates/ui/ui-core/interface.toml).
 shell-ui = 37
 
 # App ↔ runtime: every service under [runtime] below

@@ -48,7 +48,7 @@ tilo-keyboard-map = { version = "0.1.0", path = "../../crates/platform/tilo-keyb
 # The outlines the keyboard preview draws.
 tilo-pc-keyboard-geometry = { path = "../../crates/platform/pc-keyboard-geometry" }
 # The Date & Time pane's globe.
-tilo-zone-globe = { path = "../../crates/platform/zone-globe" }
+tilo-zone-globe = { path = "../../crates/sdk/zone-globe" }
 tilo-locale = { path = "../../crates/platform/tilo-locale" }
 # The shipped wallpapers' catalog and thumbnails, for the Appearance picker.
 tilo-wallpapers = { version = "0.1.0", path = "../../crates/platform/tilo-wallpapers" }
@@ -143,7 +143,7 @@ tilo-files = { path = "../../crates/platform/tilo-files", features = ["watch"] }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 quick-xml.workspace = true
 uuid.workspace = true
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 # The installer service's client, for the language packs Region & formats offers.
 package-service = { path = "../../crates/packaging/package-service", default-features = false }
 tilo-capture = { path = "../../crates/engines/tilo-capture", features = ["scanner"], optional = true }

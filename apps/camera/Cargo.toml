@@ -33,7 +33,7 @@ native-capture = ["tilo-capture/camera"]
 [dependencies]
 tilo-files = { path = "../../crates/platform/tilo-files" }
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 # Scanned links and the privacy-settings hand-off open through
 # `ui::portal::open_uri` (the OpenURI portal on Linux).
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }

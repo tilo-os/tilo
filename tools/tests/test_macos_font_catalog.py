@@ -34,7 +34,7 @@ class FontCatalogTests(unittest.TestCase):
         self.assertTrue((self.app / fonts.LOOKUP_LINK).is_symlink())
         self.assertEqual((self.app / fonts.LOOKUP_LINK).readlink(), Path('../Resources/fonts'))
         self.assertEqual((catalog / 'manifest.toml').read_bytes(),
-                         (ROOT / 'crates/sdk/font-catalog/manifest.toml').read_bytes())
+                         (ROOT / 'crates/ui/font-catalog/manifest.toml').read_bytes())
         self.assertTrue((catalog / 'NotoSansCJK-VF.ttc').is_file())
         self.assertTrue((catalog / 'LICENSES/Noto-Color-Emoji-OFL.txt').is_file())
         self.assertFalse((catalog / 'AdwaitaSans-Regular.ttf').exists())
@@ -89,7 +89,7 @@ class FontCatalogTests(unittest.TestCase):
         self.stage()
         link = self.app / fonts.LOOKUP_LINK
         link.unlink()
-        link.symlink_to(ROOT / 'crates/sdk/ui-core/assets/fonts')
+        link.symlink_to(ROOT / 'crates/ui/ui-core/assets/fonts')
         with self.assertRaisesRegex(ValueError, 'lookup link'):
             fonts.inspect(self.app, self.plan)
         link.unlink()

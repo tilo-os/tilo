@@ -96,7 +96,7 @@ calendar-model = { path = "../../../apps/calendar-model", features = ["store"], 
 # The workspace's vault: Passwords' document, which this service reads and writes as a holder of
 # its keys.
 passwords-model = { path = "../../../apps/passwords-model" }
-ui = { package = "tilo-ui", path = "../../sdk/ui-core", optional = true }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", optional = true }
 tilo-automation = { path = "../../collab/automation" }
 # Resource identity, permissions and invocation leases: the model below the toolkit.
 collaboration = { version = "0.1.0", path = "../../collab/collaboration", optional = true }
@@ -181,9 +181,9 @@ tilo-net = { path = "../../platform/tilo-net", features = ["http", "proxy-host",
 # What the agents on this server learned about a person: the type the list
 # is kept as, and the verbs that change it.
 tilo-resource = { path = "../../sdk/tilo-resource" }
-tilo-workspace-agent = { path = "../../platform/tilo-workspace-agent" }
+tilo-workspace-agent = { path = "../../sdk/tilo-workspace-agent" }
 # A person's region and formats, kept as the `locale` settings section reads them.
-tilo-formats = { path = "../../sdk/tilo-formats" }
+tilo-formats = { path = "../../ui/tilo-formats" }
 # The agents a device runs ([features] agents): what people ask them (Chat's
 # conversations and the tracker's issues), the tools they act through (the MCP
 # server's agent surface), the turns their model takes, what a turn recalls of
@@ -235,7 +235,7 @@ tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 # certificate, which no authority signed.
 tilo-account-probe = { path = "../../integrations/account-probe", features = ["test-support"] }
 chat = { path = "../../../apps/chat", default-features = false, features = ["samples"] }
-ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+ui = { package = "tilo-ui", path = "../../ui/ui-core" }
 
 # The apps the device serves, tested against.
 tilo-workspace-keys = { path = "../../collab/workspace-keys", features = ["test-support"] }

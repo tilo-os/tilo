@@ -260,7 +260,7 @@ Every widget in the tree exposes a name through either:
 - `Widget::test_id()` (opt-in): a stable name, e.g. `command_palette_input`, `strip_switcher`;
 - a path fallback: `Parent/Child[index]`, e.g. `OverlayHost/TopBarChrome/Button[0]`.
 
-`list_targets` returns every widget with a non-zero rect. The bare path is registered when there is exactly one sibling of that name; the indexed form always works. To make a widget addressable, override `Widget::test_id()` in `ui` to return `Some("my_stable_name")` — see `command_palette_input` in `crates/sdk/ui-core/src/action_palette.rs`.
+`list_targets` returns every widget with a non-zero rect. The bare path is registered when there is exactly one sibling of that name; the indexed form always works. To make a widget addressable, override `Widget::test_id()` in `ui` to return `Some("my_stable_name")` — see `command_palette_input` in `crates/ui/ui-core/src/action_palette.rs`.
 
 #### Naming a control by what it does
 
@@ -385,7 +385,7 @@ They run a single `sync → build_layout → compute_layout → apply_layout →
   "dump":"/tmp/after.json"}'
 ```
 
-Steps: `click_named`, `click_at` (`[x, y]`), `tap_named`, `tap_at`, `swipe_at`, `key`, `type`, `modifiers`, `perform` (an accessibility verb on a named target: `activate`, `set_value`, `expand`, …), `invoke`, `wait_for_named`, `expect`. Options: `viewport` (`[w, h]`), `dump`, `targets`, `results`, `capture`, `window_bar`, `scenario`, `resources`. The whole grammar is `crates/dev/headless-schema/src/lib.rs`. Exit codes: `0` all steps ran, `1` a step failed (the reason is on stderr — a missing target is an error, not a silent no-op), `3` persistence was unavailable.
+Steps: `click_named`, `click_at` (`[x, y]`), `tap_named`, `tap_at`, `swipe_at`, `key`, `type`, `modifiers`, `perform` (an accessibility verb on a named target: `activate`, `set_value`, `expand`, …), `invoke`, `wait_for_named`, `expect`. Options: `viewport` (`[w, h]`), `dump`, `targets`, `results`, `capture`, `window_bar`, `scenario`, `resources`. The whole grammar is `crates/ui/headless-schema/src/lib.rs`. Exit codes: `0` all steps ran, `1` a step failed (the reason is on stderr — a missing target is an error, not a silent no-op), `3` persistence was unavailable.
 
 `invoke` performs one action the app publishes, by address, through the same resolution, availability, confirmation and strict argument binding the live host applies:
 
@@ -394,7 +394,7 @@ Steps: `click_named`, `click_at` (`[x, y]`), `tap_named`, `tap_at`, `swipe_at`, 
 {"invoke": {"resource": "installer", "action": "next", "expect_error": "action_unavailable"}}
 ```
 
-`confirm: true` satisfies a `Confirm` contract and `confirmation_phrase` a `Phrase` one; `expect_error` makes the step pass only when the API refuses with that code, so a scenario can prove a refusal as well as a success. `results` retains what each `invoke` returned, in order, within the limits documented in `crates/sdk/ui-core/src/headless/driver.rs`. `bind` keeps an answer for later steps as `{{name.path}}`.
+`confirm: true` satisfies a `Confirm` contract and `confirmation_phrase` a `Phrase` one; `expect_error` makes the step pass only when the API refuses with that code, so a scenario can prove a refusal as well as a success. `results` retains what each `invoke` returned, in order, within the limits documented in `crates/ui/ui-core/src/headless/driver.rs`. `bind` keeps an answer for later steps as `{{name.path}}`.
 
 The same driver runs in Rust, which is how app tests are written: `HeadlessApp` (`ui::headless`) mounts a component in one `FrameHarness`, and `drive(&[Step])` runs the same steps `--headless-drive` runs — one language for the harness, the CLI and a shipped scenario. `TestEnv` (`tilo_test_env`) is the machine around it: a home in a temporary directory, a clock fixed at `CAPTURE_LOCAL_TIME`, a network closed to external hosts until `allow_external`, and `with_files` for fixtures.
 
@@ -575,6 +575,6 @@ Every build, release included, also runs the main-loop watchdog (`crates/session
 | Headless backend | `crates/session/compositor/src/backend/headless.rs` |
 | Frame-loop metrics | `crates/session/frame-metrics/src/lib.rs` |
 | Memory report | `crates/session/compositor/src/memory_report.rs` |
-| App headless drive | `crates/sdk/ui-core/src/headless/` |
-| Offscreen renderer | `crates/sdk/ui-core/src/offscreen.rs` |
+| App headless drive | `crates/ui/ui-core/src/headless/` |
+| Offscreen renderer | `crates/ui/ui-core/src/offscreen.rs` |
 | Example harnesses | `scripts/headless-examples/` |

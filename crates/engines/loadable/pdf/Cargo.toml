@@ -37,7 +37,7 @@ thin = [
 ]
 
 [dependencies]
-runtime-dylib = { path = "../../../runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../../sdk/runtime-dylib", optional = true }
 tilo-pdf = { path = "../../tilo-pdf", optional = true }
 # Optional like everything else: an empty build must not link the hack's whole
 # dependency set into a shared object.

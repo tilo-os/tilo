@@ -40,7 +40,7 @@ class AppContentStoreTests(unittest.TestCase):
                 "crates/system/content-device/src/lib.rs": call,
                 "crates/sdk/tilo-app/src/framework/app.rs": call,
                 "crates/system/fs/src/main.rs": call,
-                "crates/sdk/ui-core/src/lib.rs": "\n" + call,
+                "crates/ui/ui-core/src/lib.rs": "\n" + call,
             }
         )
         found = sorted((Path(v.path).as_posix(), v.line) for v in contract.audit(root))
@@ -49,7 +49,7 @@ class AppContentStoreTests(unittest.TestCase):
             [
                 ("apps/paint/src/lib.rs", 1),
                 ("apps/paint/src/local.rs", 1),
-                ("crates/sdk/ui-core/src/lib.rs", 2),
+                ("crates/ui/ui-core/src/lib.rs", 2),
             ],
         )
 

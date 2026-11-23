@@ -45,14 +45,14 @@ thin = [
 ]
 
 [dependencies]
-runtime-dylib = { path = "../../../runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../../sdk/runtime-dylib", optional = true }
 # The toolkit the runtime carries, only to turn on its `lazy-painter`.
-tilo-ui = { path = "../../../sdk/ui-core", optional = true, default-features = false }
+tilo-ui = { path = "../../../ui/ui-core", optional = true, default-features = false }
 # The painter interface the entry answers in, and the bytes the check's module
 # exchanges.
-tilo-theme-sdk = { version = "0.1.0", path = "../../../sdk/theme-sdk", optional = true }
+tilo-theme-sdk = { version = "0.1.0", path = "../../../ui/theme-sdk", optional = true }
 # The interpreter.
-tilo-theme-painter-wasm = { version = "0.1.0", path = "../../../sdk/theme-painter-wasm", optional = true }
+tilo-theme-painter-wasm = { version = "0.1.0", path = "../../../ui/theme-painter-wasm", optional = true }
 # The interpreter itself, which the Typst engine loads too.
 tilo-wasm-engine = { path = "../wasm", optional = true }
 # The check's painter module, written as WAT in its binary.

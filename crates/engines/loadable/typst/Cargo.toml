@@ -47,7 +47,7 @@ thin = [
 ]
 
 [dependencies]
-runtime-dylib = { path = "../../../runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../../sdk/runtime-dylib", optional = true }
 typst = { version = "0.15", optional = true }
 typst-render = { version = "0.15", optional = true }
 typst-pdf = { version = "0.15", optional = true }

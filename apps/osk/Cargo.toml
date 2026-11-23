@@ -33,7 +33,7 @@ runtime-engine = ["thin", "tilo-emoji-engine/thin"]
 [dependencies]
 tilo-input-context = { path = "../../crates/platform/tilo-input-context", features = ["client"] }
 tilo-keyboard-map = { path = "../../crates/platform/tilo-keyboard-map" }
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 tilo-emoji-engine = { path = "../../crates/engines/loadable/emoji", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
@@ -41,7 +41,7 @@ tilo-actions = { path = "../../crates/collab/actions" }
 # the FUTO libraries are not linked.
 swipe = { path = "../../crates/engines/swipe" }
 # Emoji catalogue, search, skin tones, recents and word suggestions.
-emoji = { path = "../../crates/text/emoji" }
+emoji = { path = "../../crates/ui/emoji" }
 # Same render/event crate set the other `ui` apps pull in so the `Widget`
 # impl can build a taffy node, draw into a vello `Scene`, react to winit
 # events, and (for tests/headless) carry an automerge handle.

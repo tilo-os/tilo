@@ -2,7 +2,7 @@
 """Keep OS internals and dead weight out of the shared app runtime.
 
 Every thin app maps one Rust dylib, ``libruntime_dylib.so``
-(crates/runtime/runtime-dylib), so each crate in it costs every app process
+(crates/sdk/runtime-dylib), so each crate in it costs every app process
 its load-time relocations and the memory they dirty, and every device
 downloads it. Two rules hold for its dependency graph:
 
@@ -54,7 +54,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 RUNTIME = "runtime-dylib"
 # The runtime's manifest: the file each finding about its graph names.
-MANIFEST = "crates/runtime/runtime-dylib/Cargo.toml"
+MANIFEST = "crates/sdk/runtime-dylib/Cargo.toml"
 TARGETS = ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu")
 # Crates the toolkit itself needs: if the resolved runtime lacks them, the
 # check is not looking at the runtime and must fail rather than pass.
@@ -165,7 +165,7 @@ ENGINES = {
                          "libtilo_settings_engine.so",
     # The catalogue itself is no longer here: every text field resolves
     # `:name:` and the picker opens for every app, so `emoji` is the
-    # toolkit's (crates/sdk/ui-core) and belongs in the runtime every app
+    # toolkit's (crates/ui/ui-core) and belongs in the runtime every app
     # maps (docs/measurements/runtime-size.md). The engine library Chat,
     # Notes and the on-screen keyboard still name is emptied out as they
     # migrate.

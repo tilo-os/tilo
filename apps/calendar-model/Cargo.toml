@@ -26,8 +26,8 @@ jiff.workspace = true
 pim-lines = { path = "../../crates/engines/pim-lines" }
 serde.workspace = true
 serde_json.workspace = true
-tilo-document = { path = "../../crates/doc/tilo-document" }
-tilo-formats = { path = "../../crates/sdk/tilo-formats" }
+tilo-document = { path = "../../crates/sdk/tilo-document" }
+tilo-formats = { path = "../../crates/ui/tilo-formats" }
 # The person's local time, read the one way a device and a page both answer.
 tilo-clock = { path = "../../crates/platform/tilo-clock", features = ["local"] }
 # RRULE/EXDATE expansion and the one fold/gap wall-time policy, shared with

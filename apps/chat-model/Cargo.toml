@@ -25,9 +25,9 @@ tilo-resource = { path = "../../crates/sdk/tilo-resource" }
 tilo-actions = { path = "../../crates/collab/actions" }
 tilo-reference = { path = "../../crates/collab/reference" }
 # A message body and a draft are rich text, the document model's own type.
-tilo-document = { path = "../../crates/doc/tilo-document" }
+tilo-document = { path = "../../crates/sdk/tilo-document" }
 # Reviewed feedback submissions, kept with the chat's resource.
-tilo-feedback = { path = "../../crates/collab/feedback" }
+tilo-feedback = { path = "../../crates/sdk/feedback" }
 # Reports of people and messages, decided by the workspace's moderators.
 moderation-model = { path = "../moderation-model" }
 

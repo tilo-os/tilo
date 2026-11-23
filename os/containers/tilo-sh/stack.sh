@@ -1678,7 +1678,7 @@ lay_out_lounge() {
       fonts=$t_fetched/target/publish/lounge/fonts
     else
       local made sources
-      sources=$(cd "$repo" && find crates/sdk/ui-core/assets/fonts tools/font-catalog.py \
+      sources=$(cd "$repo" && find crates/ui/ui-core/assets/fonts tools/font-catalog.py \
         tools/ci/publish/lounge-fonts.sh -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16)
       made=$(cat "$native/fonts.made-from" 2>/dev/null || true)
       if [[ ! -f $native/fonts/manifest.toml || $made != "$sources" ]]; then

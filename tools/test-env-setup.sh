@@ -226,7 +226,7 @@ runtime() {
 fonts() {
     test_cache
     provide TILO_FONT_ASSET_CACHE "$font_cache"
-    python3 "$repo/tools/font-catalog.py" root "$repo/crates/sdk/ui-core/assets/fonts" \
+    python3 "$repo/tools/font-catalog.py" root "$repo/crates/ui/ui-core/assets/fonts" \
         --scope fixtures --cache "$font_cache" >/dev/null
 }
 

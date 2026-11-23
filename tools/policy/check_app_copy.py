@@ -349,7 +349,7 @@ def copy_readers(root: Path, modules: dict[str, Path], crates: list[Path]) -> li
     return readers
 
 
-TOOLKIT = "crates/sdk/ui-core"
+TOOLKIT = "crates/ui/ui-core"
 # Crates whose copy keys also travel through conditionals and tables, by the
 # namespaces their code picks keys in (`None`: every namespace of their own
 # catalogue). Settings picks across its whole catalogue; the desktop surface

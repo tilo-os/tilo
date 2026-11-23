@@ -2,7 +2,7 @@
 """Every widget renders itself as HTML too, next to its paint.
 
 A window shown as a page renders each widget through its own
-`Widget::html` (crates/sdk/ui-core/src/composition.rs): the element it is
+`Widget::html` (crates/ui/ui-core/src/composition.rs): the element it is
 (`<button>`, `<input>`, `<li>`, a heading), what it shows of its own, and
 where its children go, so the page has real text, fields, lists and
 scrollers rather than a picture of the frame. A widget that is genuinely
@@ -32,7 +32,7 @@ HTML = re.compile(r"\bfn\s+html\s*\(")
 ADVICE = ("give the widget its own `fn html(&self, cx: &mut HtmlCx)`: the element "
           "it is, what it shows and its children (cx.children()), or "
           "cx.picture() for a widget that is genuinely drawn "
-          "(crates/sdk/ui-core/src/composition.rs)")
+          "(crates/ui/ui-core/src/composition.rs)")
 
 
 def sources(root: Path) -> list[Path]:

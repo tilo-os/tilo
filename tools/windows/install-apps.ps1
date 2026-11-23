@@ -76,7 +76,7 @@ New-Item -ItemType Directory -Path $installDirectory -Force | Out-Null
 New-Item -ItemType Directory -Path $menuDirectory -Force | Out-Null
 $fontDirectory = Join-Path $installDirectory 'fonts'
 New-Item -ItemType Directory -Path $fontDirectory -Force | Out-Null
-$fontMetadata = Join-Path $repository 'crates/sdk/ui-core/assets/fonts'
+$fontMetadata = Join-Path $repository 'crates/ui/ui-core/assets/fonts'
 $python = if ($env:PYTHON) { $env:PYTHON } elseif (Get-Command python3 -ErrorAction SilentlyContinue) { 'python3' } else { 'python' }
 $fontSource = & $python (Join-Path $repository 'tools/font-catalog.py') root $fontMetadata --scope fixtures
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $fontSource -PathType Container)) {

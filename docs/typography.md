@@ -18,8 +18,8 @@ and, where a widget cannot know it, a [text kind](#text-kinds) — never a
 family, a size or an OpenType feature.
 
 Every native process sets text in the product font catalog
-(`crates/sdk/ui-core/assets/fonts`, described by
-`crates/sdk/font-catalog/manifest.toml`), with the system's fonts behind it
+(`crates/ui/ui-core/assets/fonts`, described by
+`crates/ui/font-catalog/manifest.toml`), with the system's fonts behind it
 for anything the catalog does not cover. The catalog is taken from the
 first of: a `fonts/` directory next to the executable, the catalog the Tilo
 image installs at `/usr/share/fonts/tilo`, and the source tree's
@@ -657,7 +657,7 @@ text in Arabic, Hebrew, Devanagari, Bengali, Thai, CJK, mixed BiDi and
 multi-codepoint emoji as an app written in tilolang sets them.
 
 A `Typography & Scripts` card, built in
-`crates/sdk/ui-core/tests/typography_visual_regression.rs`, is the committed
+`crates/ui/ui-core/tests/typography_visual_regression.rs`, is the committed
 visual regression corpus for semantic hierarchy, Latin ligatures and
 diacritics, the OpenType features, wrapping and punctuation, and those
 scripts. The integration suite compares light and dark reference PNGs at 1×, fractional 1.25× display

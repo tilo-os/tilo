@@ -76,7 +76,7 @@ package-store = { path = "../../packaging/package-store" }
 # The tilolang hosts this device runs: their link, sealed module, log targets
 # and what an earlier version of an app kept.
 runtime-portal = { path = "../runtime-portal" }
-tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
+tilo-render-protocol = { path = "../../ui/tilo-render-protocol" }
 tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }
 tilo-app-state = { path = "../../system/app-state" }
 # The installed applications this runtime launches, read through their signed
@@ -147,7 +147,7 @@ uuid.workspace = true
 # Mounts the workspace files where this user can mount FUSE.
 tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
 # The toolkit the Unix launch edge and its surface files are read with.
-ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+ui = { package = "tilo-ui", path = "../../ui/ui-core" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

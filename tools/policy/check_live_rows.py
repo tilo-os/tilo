@@ -63,12 +63,12 @@ FRAMEWORK = (
     "crates/collab/automation",
     "crates/collab/collaboration",
     "crates/lang/tilolang",
-    "crates/platform/tilo-app-window",
+    "crates/sdk/tilo-app-window",
     "crates/lang/tilolang-tilo",
     "crates/runtime/tilo-runtime/src/device/control",
     "crates/sdk/tilo-app",
     "crates/sdk/tilo-resource",
-    "crates/sdk/ui-core",
+    "crates/ui/ui-core",
 )
 SCOPES = ("apps", "crates", "tools")
 

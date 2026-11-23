@@ -214,7 +214,7 @@ impl Standalone {
         format!(
             "ui = {{ package = \"tilo-app\", {} }}\nruntime-dylib = {{ {}, optional = true }}\n",
             self.source.locate("crates/sdk/tilo-app"),
-            self.source.locate("crates/runtime/runtime-dylib"),
+            self.source.locate("crates/sdk/runtime-dylib"),
         )
     }
 

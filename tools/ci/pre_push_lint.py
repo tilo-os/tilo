@@ -616,15 +616,15 @@ def surface_checks(root: Path, push: Push) -> list[str]:
     return []
 
 
-# What the component catalogue (`crates/dev/ui-graph/components.json`) is
+# What the component catalogue (`crates/ui/ui-graph/components.json`) is
 # generated from: the toolkit's widgets and the window that builds them by name.
 # The catalogue is committed, so a push that changes one of these without
 # regenerating it lands it stale.
 CATALOGUE_INPUTS = (
-    "crates/sdk/ui-core/src/",
-    "crates/sdk/tilo-rich-edit/src/",
-    "crates/platform/tilo-app-window/",
-    "crates/dev/ui-graph/",
+    "crates/ui/ui-core/src/",
+    "crates/ui/tilo-rich-edit/src/",
+    "crates/sdk/tilo-app-window/",
+    "crates/ui/ui-graph/",
 )
 
 

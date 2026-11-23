@@ -883,9 +883,9 @@ COPY --from=apps-payload /usr/share/tilo-apps/ /usr/share/tilo-apps/
 FROM ${BASE_REF} AS os-fonts
 RUN --mount=type=cache,id=tilo-font-artifacts,target=/var/cache/tilo-font-artifacts \
     --mount=type=bind,source=tools/font-catalog.py,target=/tilo-src/tools/font-catalog.py,ro \
-    --mount=type=bind,source=crates/sdk/ui-core/assets/fonts,target=/tilo-src/crates/sdk/ui-core/assets/fonts,ro \
+    --mount=type=bind,source=crates/ui/ui-core/assets/fonts,target=/tilo-src/crates/ui/ui-core/assets/fonts,ro \
     python3 /tilo-src/tools/font-catalog.py prepare \
-        /tilo-src/crates/sdk/ui-core/assets/fonts /out/fonts --scope os \
+        /tilo-src/crates/ui/ui-core/assets/fonts /out/fonts --scope os \
         --cache /var/cache/tilo-font-artifacts
 
 # ---- The Plymouth theme, rendered -------------------------------------------
@@ -942,7 +942,7 @@ RUN --network=none \
     --mount=type=bind,from=apps-payload,source=/out/language-packs,target=/tilo-language-packs,ro \
     --mount=type=bind,from=os-fonts,source=/out/fonts,target=/tilo-os-fonts,ro \
     --mount=type=bind,source=tools/font-catalog.py,target=/tilo-src/tools/font-catalog.py,ro \
-    --mount=type=bind,source=crates/sdk/ui-core/assets/fonts,target=/tilo-src/crates/sdk/ui-core/assets/fonts,ro \
+    --mount=type=bind,source=crates/ui/ui-core/assets/fonts,target=/tilo-src/crates/ui/ui-core/assets/fonts,ro \
     --mount=type=bind,source=os/scripts/hardlink-identical.py,target=/tilo-src/hardlink-identical.py,ro \
     --mount=type=bind,source=os/scripts/signed-records.py,target=/tilo-src/signed-records.py,ro \
     mkdir -p /image/usr/lib /image/usr/share/tilo/font-catalogs /image/usr/share/fonts \

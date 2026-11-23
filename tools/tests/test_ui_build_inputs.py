@@ -9,8 +9,8 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SOURCE = ROOT / "crates/sdk/ui-core"
-SCAN = ROOT / "crates/sdk/tilo-component-scan"
+SOURCE = ROOT / "crates/ui/ui-core"
+SCAN = ROOT / "crates/ui/tilo-component-scan"
 FIXTURES = {
     "tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf.hex":
         "TiloSansFeaturesFixture-Regular.ttf",
@@ -23,7 +23,7 @@ class UiBuildInputs(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.package = Path(self.temporary.name) / "crates/sdk/ui-core"
+        self.package = Path(self.temporary.name) / "crates/ui/ui-core"
         (self.package / "src").mkdir(parents=True)
         (self.package / "Cargo.toml").write_text(
             '[package]\nname = "ui-build-inputs"\nversion = "0.0.0"\n'

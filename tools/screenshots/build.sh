@@ -57,6 +57,6 @@ while IFS=$'\t' read -r name dir id; do
         --identity "$out/tilolang-publisher.json"
     cp -a "$out/tilolang/${id##*.}/payload" "$out/bin/modules/$name"
 done < <(jq -r '.catalog[] | select(.kind == "tilolang") | [.name, .dir, .id] | @tsv' <<<"$plan")
-python3 tools/font-catalog.py prepare crates/sdk/ui-core/assets/fonts "$out/bin/fonts" --scope product \
+python3 tools/font-catalog.py prepare crates/ui/ui-core/assets/fonts "$out/bin/fonts" --scope product \
     --cache "$target/font-artifacts"
 printf 'staged the screenshot apps in %s\n' "$out"

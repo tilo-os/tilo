@@ -29,12 +29,12 @@ tilo-resource-store = { version = "0.1.0", path = "../../collab/resource-store" 
 # The API the session hands instances over.
 runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal" }
 # The patch connection to each instance's window, and the sealed memfd its module comes in.
-tilo-render-protocol = { version = "0.1.0", path = "../../platform/tilo-render-protocol" }
+tilo-render-protocol = { version = "0.1.0", path = "../../ui/tilo-render-protocol" }
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
 # Dates and clocks as the person set them, which the session hands over the API: the toolkit
 # writes them the same way, so a sentence here and a view there read alike.
-tilo-formats = { version = "0.1.0", path = "../../sdk/tilo-formats" }
+tilo-formats = { version = "0.1.0", path = "../../ui/tilo-formats" }
 tilo-wake.workspace = true
 # The platform's phrases the standard library's frames say, without the toolkit.
 tilo-history = { version = "0.1.0", path = "../../sdk/tilo-history" }
@@ -74,7 +74,7 @@ tilo-clipboard = { version = "0.1.0", path = "../../platform/tilo-clipboard" }
 # The device's preview cache: what `File.thumbnail` answers.
 tilo-thumbnail = { version = "0.1.0", path = "../../engines/thumbnail" }
 # Presence as every window decodes it: who is where in a document, and who is writing there.
-ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
 
 [dev-dependencies]
 # The fake broker these tests and examples run instances against, as the apps'

@@ -263,7 +263,7 @@ class AtspiClient:
 
 # Below its breakpoint an app built on the shared shell shows one screen at a
 # time: it opens on the selected pane, with a Back arrow to its navigation list
-# (crates/sdk/ui-core/src/widget/app_shell.rs). A tiled desktop window is often
+# (crates/ui/ui-core/src/widget/app_shell.rs). A tiled desktop window is often
 # that narrow. Someone who cannot see an entry there goes back to the list once.
 NARROW_BACK = "Back"
 

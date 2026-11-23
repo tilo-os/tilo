@@ -22,7 +22,7 @@ thin = ["dep:runtime-dylib"]
 test-support = ["ui/test-support"]
 
 [dependencies]
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The resource the app draws: its type, verb and typed action arguments.
 logs-model = { path = "../logs-model" }

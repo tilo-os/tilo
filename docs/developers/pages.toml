@@ -80,7 +80,7 @@ description = "The offline tilo-app guide publish workflow."
 
 [[page]]
 slug = "interface-guidelines"
-source = "crates/sdk/ui-core/HIG.md"
+source = "crates/ui/ui-core/HIG.md"
 section = "Guides"
 nav = "Interface guidelines"
 description = "Layout, navigation, text, chrome, system integration and the shared controls every Tilo app builds on."

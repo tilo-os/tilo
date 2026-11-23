@@ -304,7 +304,7 @@ fi
 fonts=$state/fonts
 rm -rf "$fonts"
 python3 "$repo_root/tools/font-catalog.py" prepare \
-    "$repo_root/crates/sdk/ui-core/assets/fonts" "$fonts" --scope product
+    "$repo_root/crates/ui/ui-core/assets/fonts" "$fonts" --scope product
 ln -sfn "$fonts" "$bin/fonts"
 
 # --- 2. Plans -------------------------------------------------------------------

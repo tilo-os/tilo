@@ -73,7 +73,7 @@ SCANNED = (
 DECODE_ONLY = (
     Path("crates/lang/tilolang-process"),
     Path("crates/lang/tilolang-tilo"),
-    Path("crates/platform/tilo-app-window"),
+    Path("crates/sdk/tilo-app-window"),
     Path("crates/server/tilo-workspace-service"),
     Path("crates/runtime/runtime-portal"),
     Path("apps/tilolang"),

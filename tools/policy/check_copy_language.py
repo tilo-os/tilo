@@ -691,6 +691,22 @@ SURFACE_ROOTS += (
 LIBRARY_SKIP = ("crates/sdk/", "crates/session/")
 # Crates of the same kind that live in other groups.
 LIBRARY_SKIP += (
+    "crates/ui/font-catalog/",
+    "crates/ui/theme-painter-wasm/",
+    "crates/ui/theme-sdk/",
+    "crates/ui/themes/",
+    "crates/ui/tilo-component-scan/",
+    "crates/ui/tilo-cpu-raster/",
+    "crates/ui/tilo-formats/",
+    "crates/ui/tilo-rich-edit/",
+    "crates/ui/ui-core/",
+    "crates/ui/ui-kms/",
+    "crates/ui/ui-macros/",
+    "crates/ui/ui-paint/",
+    "crates/ui/winit-x11/",
+)
+# Crates of the same kind that live in other groups.
+LIBRARY_SKIP += (
     "crates/engines/search/",
     "crates/engines/tilo-page-raster/",
     "crates/engines/tilo-recurrence/",
@@ -2240,7 +2256,7 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
     # words are outside the sweep, and a call by that name resolves there.
     toolkit_names: set[str] = set()
     for path in sources:
-        if path.relative_to(root).as_posix().startswith("crates/sdk/"):
+        if path.relative_to(root).as_posix().startswith(("crates/sdk/", "crates/ui/")):
             toolkit_names.update(FUNCTION.findall(path.read_text(errors="replace")))
     for name in toolkit_names:
         libraries.pop(name, None)

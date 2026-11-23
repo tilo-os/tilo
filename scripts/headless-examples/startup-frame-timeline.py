@@ -193,7 +193,7 @@ def prepare_fonts(payload: pathlib.Path, profile: pathlib.Path) -> pathlib.Path:
     cache = os.environ.get("TILO_FONT_ASSET_CACHE") or str(profile / "cache/font-artifacts")
     subprocess.run(
         [sys.executable, "-I", str(REPO / "tools/font-catalog.py"), "prepare",
-         str(REPO / "crates/sdk/ui-core/assets/fonts"), str(root),
+         str(REPO / "crates/ui/ui-core/assets/fonts"), str(root),
          "--scope", "fixtures", "--cache", cache],
         check=True, stdout=subprocess.DEVNULL,
     )

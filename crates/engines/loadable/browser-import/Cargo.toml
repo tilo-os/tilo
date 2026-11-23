@@ -41,7 +41,7 @@ thin = [
 ]
 
 [dependencies]
-runtime-dylib = { path = "../../../runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../../sdk/runtime-dylib", optional = true }
 # The features Browser builds it with (`native`, the capture from granted
 # profiles): one browser-continuity in the thin graph, or the app's symbols
 # would name a crate hash this library does not export.

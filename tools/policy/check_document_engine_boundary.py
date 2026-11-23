@@ -37,16 +37,16 @@ ROOT = Path(__file__).resolve().parents[2]
 # Crates that own a CRDT engine or the document layer itself.
 ENGINE_OWNERS = (
     "crates/doc/tilo-automerge/src/lib.rs",
-    "crates/doc/tilo-doc/",
+    "crates/sdk/tilo-doc/",
     "crates/engines/tilo-doc-codecs/",
     # The rich-text resource: tilo-doc's rich text as a tilo-resource resource,
     # which places changes by tilo-doc's storage keys.
-    "crates/doc/tilo-document/",
+    "crates/sdk/tilo-document/",
     # The resource layer stores every resource type on the engine; its
     # generic machinery (history, recordings) copies any document's text
     # and marks.
     "crates/sdk/tilo-resource/",
-    "crates/sdk/ui-core/",
+    "crates/ui/ui-core/",
     # Toolkit lab/shots scenarios: lived under ui-core (an owner) until moved
     # into this non-default member; they still exercise the same surfaces.
     "tools/ui-examples/",

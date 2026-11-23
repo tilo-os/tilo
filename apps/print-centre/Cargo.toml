@@ -27,7 +27,7 @@ runtime-engine = ["thin", "tilo-pdf-engine/thin"]
 print-centre-model = { path = "../print-centre-model" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
 hex.workspace = true
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 tilo-pdf-engine = { path = "../../crates/engines/loadable/pdf", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 os-actions = { path = "../../crates/system/os-actions" }

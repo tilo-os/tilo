@@ -72,7 +72,7 @@ PACKAGE_FILES = (
     'tools/apps/pack-runtime-package.sh', 'tools/apps/stage_sdk_services.py',
     'os/scripts/stamp-runtime.sh',
 )
-PACKAGES = {'worker': 'apps/imager', 'runtime': 'crates/runtime/runtime-dylib', 'host': 'apps/imager', 'imager_tests': 'apps/imager',
+PACKAGES = {'worker': 'apps/imager', 'runtime': 'crates/sdk/runtime-dylib', 'host': 'apps/imager', 'imager_tests': 'apps/imager',
             'backend_tests': 'crates/os/imager-backend',
             'shell': 'crates/session/session', 'fs': 'crates/system/fs',
             'credential_helper': 'crates/integrations/account-credentials',

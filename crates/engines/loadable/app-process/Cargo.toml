@@ -38,7 +38,7 @@ thin = [
 ]
 
 [dependencies]
-runtime-dylib = { path = "../../../runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../../sdk/runtime-dylib", optional = true }
 # The features Store builds them with (the app host's client only, without
 # its daemon): one package-service in the thin graph, or the app's symbols would
 # name a crate hash this library does not export.

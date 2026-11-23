@@ -133,7 +133,7 @@ because it boots the staged deployment that holds them.
 
 | Interface | Version | Schema | Checked |
 |---|---|---|---|
-| App ↔ shell (shell-ui) | `ui::floating_surface::FLOATING_SURFACE_PROTOCOL_VERSION` | `crates/sdk/ui-core/interface.toml` | the app's first frame on the shell-ui connection the launcher gives every window |
+| App ↔ shell (shell-ui) | `ui::floating_surface::FLOATING_SURFACE_PROTOCOL_VERSION` | `crates/ui/ui-core/interface.toml` | the app's first frame on the shell-ui connection the launcher gives every window |
 | App ↔ runtime (the session services the launcher connects) | `runtime_portal::RUNTIME_INTERFACE_VERSION` | `crates/runtime/runtime-portal/interface.toml` | the launcher, before it connects any service |
 | Device ↔ device (handshake, relay frames, peer-sync messages) | `neighbour_wire::PEER_PROTOCOL_VERSION`, working with the versions `neighbour_wire::works_with_peer_version` names (below) | `crates/collab/neighbour-wire/interface.toml` | the first field of the certified handshake's `Hello` and `HelloAck` (server sessions, compute, environments, the HTTPS carrier), and of the `IdentityHello` a device announces on a workspace, whose index never moves |
 | Session ↔ app keeper (the control socket of a kept app) | `tilo_app_keeper::wire::INTERFACE_VERSION` | `crates/session/app-keeper/interface.toml` | the session's `Hello`, the first message on every connection: a keeper at another version (one started by an older session build, still running its app) answers `VersionMismatch`, then `"holding"`, keeps displaying, and holds its app while that connection stays open (the unversioned part, never changed) |

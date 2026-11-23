@@ -100,7 +100,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
 COPY os/ /build/os/
 COPY apps/browser/ /build/apps/browser/
 COPY crates/packaging/tilo-app-package/max-app-bytes /build/crates/packaging/tilo-app-package/max-app-bytes
-COPY crates/sdk/ui-core/assets/fonts/ /build/crates/sdk/ui-core/assets/fonts/
+COPY crates/ui/ui-core/assets/fonts/ /build/crates/ui/ui-core/assets/fonts/
 COPY crates/engines/tilo-webview/src/chromium/runtime.rs /build/crates/engines/tilo-webview/src/chromium/runtime.rs
 COPY tools/ /build/tools/
 COPY --from=compiled / /out/

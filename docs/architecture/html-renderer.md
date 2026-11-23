@@ -11,7 +11,7 @@ technology reads, and CSS layout that follows the browser window as it resizes.
 
 ## The contract
 
-`Widget::html(&self, cx: &mut HtmlCx)` (`crates/sdk/ui-core/src/composition.rs`)
+`Widget::html(&self, cx: &mut HtmlCx)` (`crates/ui/ui-core/src/composition.rs`)
 is part of the widget contract, beside `draw`:
 
 - A **container** composes its children: `cx.children()` puts the widgets
@@ -44,7 +44,7 @@ nothing: `tools/policy/check_widget_html.py` refuses an `impl Widget` without
 
 ## Controls
 
-`Control` (`crates/sdk/ui-core/src/composition.rs`) is one kind per family of
+`Control` (`crates/ui/ui-core/src/composition.rs`) is one kind per family of
 control, carrying what the element holds:
 
 | Kind | The page's element | What comes back |
@@ -117,12 +117,12 @@ The script proves the browser's device on a WebTransport session and asks for
 the page. The workspace service opens the app's view for that member in an app
 worker (`crates/agent/agent-session/src/workspace_actions/pages.rs`), which
 lays it out headlessly. `FrameHarness::composition()`
-(`crates/sdk/ui-core/src/headless/composition.rs`) walks the laid-out tree from
+(`crates/ui/ui-core/src/headless/composition.rs`) walks the laid-out tree from
 its root and asks each widget node for its `html`; layout-only nodes become
 plain containers with their style. The result (`ui::composition::Composition`)
 is platform-neutral.
 
-`ui::composition::page::Page` (`crates/sdk/ui-core/src/composition/page.rs`)
+`ui::composition::page::Page` (`crates/ui/ui-core/src/composition/page.rs`)
 turns it into the page's markup, which carries no geometry of the frame it was
 composed in: a container is a CSS flex or grid box with its node's style, so the
 page lays out at any width and the server never needs the window's size. Every
@@ -141,6 +141,6 @@ every few seconds what others changed, so their edits reach it.
 ## Tests
 
 The composition is tested where the widgets and apps are:
-`crates/sdk/ui-core/src/composition/page.rs`'s own tests, and the server page's flow in
+`crates/ui/ui-core/src/composition/page.rs`'s own tests, and the server page's flow in
 `crates/server/tilo-server/src/web/page/tests.rs` and
 `crates/server/tilo-server/src/web/page/page.test.mjs`.

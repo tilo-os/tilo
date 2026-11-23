@@ -9,7 +9,7 @@
 //! On targets with a native clock the re-exports are `std::time`'s own types,
 //! so values cross freely into crates that name `std::time` directly.
 //!
-//! `crates/sdk/ui-core/clippy.toml` rejects `Instant::now` and
+//! `crates/ui/ui-core/clippy.toml` rejects `Instant::now` and
 //! `SystemTime::now` everywhere else in the crate.
 
 pub use tilo_clock::time::{Duration, Instant, SystemTime, SystemTimeError, UNIX_EPOCH};

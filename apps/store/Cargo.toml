@@ -30,7 +30,7 @@ runtime-engine = ["thin", "tilo-app-process-engine/thin"]
 lru.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 tilo-app-process-engine = { path = "../../crates/engines/loadable/app-process", optional = true }
 # The registry list, its client and its trust classification. Shared
 # with the desktop's search box, which offers the same registries' apps

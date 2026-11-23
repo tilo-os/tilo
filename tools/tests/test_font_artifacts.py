@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("font_catalog", ROOT / "tools/font-catalog.py")
 fc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fc)
-SOURCE = ROOT / "crates/sdk/ui-core/assets/fonts"
+SOURCE = ROOT / "crates/ui/ui-core/assets/fonts"
 REVIEWED = fc.prepared_root(SOURCE, "fixtures")
 
 

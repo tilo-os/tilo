@@ -128,7 +128,7 @@ done
 # hashes differ and the loader later reports undefined symbols. Keep the
 # runtime UI feature set at the collection-wide superset and require a loader
 # smoke test before a bundle can be signed.
-runtime_manifest="$REPO/crates/runtime/runtime-dylib/Cargo.toml"
+runtime_manifest="$REPO/crates/sdk/runtime-dylib/Cargo.toml"
 thin_builder="$REPO/os/scripts/build-thin-apps.sh"
 if grep -Fq 'features = ["portal", "webview-adblock", "dmabuf-import", "gpu-video", "mpris"]' \
       "$runtime_manifest" \

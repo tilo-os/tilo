@@ -68,7 +68,7 @@ faces() {
   local catalogue="$repo/target/prepared-fonts" face
   if [ ! -f "$catalogue/TiloSans[wdth,wght].ttf" ]; then
     PATH="/opt/homebrew/bin:$PATH" python3 "$repo/tools/font-catalog.py" prepare \
-      "$repo/crates/sdk/ui-core/assets/fonts" "$catalogue" --scope product >&2 || die "Tilo Sans could not be prepared"
+      "$repo/crates/ui/ui-core/assets/fonts" "$catalogue" --scope product >&2 || die "Tilo Sans could not be prepared"
   fi
   mkdir -p "$fonts"
   for face in "TiloSans[wdth,wght].ttf" "TiloSans-Italic[wdth,wght].ttf"; do cp "$catalogue/$face" "$fonts/"; done

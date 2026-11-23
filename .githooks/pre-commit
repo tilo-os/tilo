@@ -331,7 +331,7 @@ if grep -qE '^apps/[^/]+/(surface|tilo-app)\.toml$' <<< "$lock_staged_names"; th
   fi
 fi
 
-# The component catalogue (`crates/dev/ui-graph/components.json`) is the toolkit's described
+# The component catalogue (`crates/ui/ui-graph/components.json`) is the toolkit's described
 # widgets as data: each widget's doc text and props, generated from the widget itself. The
 # crates below the toolkit read it at build time (tilo-view builds a builder per component from
 # it, tilolang its `ui` package), so it is committed, and a widget whose description changed
@@ -339,12 +339,12 @@ fi
 # generator and stage what it wrote. The toolkit's test holds the same invariant, so a tree
 # that cannot build now leaves the file as it is rather than holding up the commit.
 # The crates of widgets a window builds by name (tilo-app-window's `components`).
-widget_dirs=(crates/sdk/ui-core/src crates/sdk/tilo-rich-edit/src)
+widget_dirs=(crates/ui/ui-core/src crates/ui/tilo-rich-edit/src)
 widget_pattern="^($(IFS='|'; echo "${widget_dirs[*]}"))/.*\.rs$"
 widget_sources=$(grep -vE '(_tests\.rs|/tests\.rs|/tests/)' <<< "$lock_staged_names" \
   | grep -E "$widget_pattern" || true)
 if [ -n "$widget_sources" ]; then
-  catalogue=crates/dev/ui-graph/components.json
+  catalogue=crates/ui/ui-graph/components.json
   # The generator reads the tree, so a widget source with unstaged edits would be generated
   # into this commit: it is left alone, as rustfmt leaves such a file alone. Unstaged means
   # against the whole index: in a merge GIT_INDEX_FILE is the copy with the merged-in side's

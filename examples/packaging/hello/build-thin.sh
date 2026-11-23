@@ -8,7 +8,7 @@
 #
 # How it works (all committed — nothing is patched at build time):
 #
-#   * `crates/runtime/runtime-dylib` is a `crate-type = ["dylib"]` wrapper
+#   * `crates/sdk/runtime-dylib` is a `crate-type = ["dylib"]` wrapper
 #     over the `runtime` umbrella + `cli` helpers. It is a workspace member
 #     but is kept OUT of `default-members`, so a normal `cargo build` never
 #     compiles it. It is built only under `--profile thin-app`.

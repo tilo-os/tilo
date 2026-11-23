@@ -11,5 +11,5 @@ target=${CARGO_TARGET_DIR:-$repo_root/target}
 rm -rf "$out"
 mkdir -p "$(dirname -- "$out")"
 export TILO_FONT_ASSET_CACHE=$target/font-artifacts
-TILO_FONT_ASSETS_OFFLINE=0 python3 tools/font-catalog.py prepare crates/sdk/ui-core/assets/fonts \
+TILO_FONT_ASSETS_OFFLINE=0 python3 tools/font-catalog.py prepare crates/ui/ui-core/assets/fonts \
   "$out" --scope product

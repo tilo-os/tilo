@@ -16,7 +16,7 @@ use ui::i18n::{ArgValue, EmbeddedCatalog, I18nManager};
 /// The toolkit's widget labels, in the languages every binary carries them.
 const TOOLKIT_EN: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../sdk/ui-core/locales/en-US.ftl"
+    "/../../ui/ui-core/locales/en-US.ftl"
 ));
 
 /// The Settings index: every window offers the same settings, in the same words.

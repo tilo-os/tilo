@@ -31,7 +31,7 @@ runtime-engine = ["thin", "tilo-typst-engine/thin"]
 
 [dependencies]
 tilo-files = { path = "../../crates/platform/tilo-files" }
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 tilo-typst-engine = { path = "../../crates/engines/loadable/typst", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 automerge.workspace = true

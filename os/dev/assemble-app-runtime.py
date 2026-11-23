@@ -314,7 +314,7 @@ def prepare_runtime_fonts(repo, directory):
     """Ship the reviewed standalone catalog inside the signed SDK payload."""
     fonts = directory / 'fonts'
     run(['python3', str(repo / 'tools/font-catalog.py'), 'prepare',
-         str(repo / 'crates/sdk/ui-core/assets/fonts'), str(fonts),
+         str(repo / 'crates/ui/ui-core/assets/fonts'), str(fonts),
          '--scope', 'product'])
     return fonts
 
@@ -330,7 +330,7 @@ def fetch_runtime_fonts(repo, target):
     if not os.environ.get('TILO_FONT_ASSET_CACHE') and not os.environ.get('TILO_TEST_CACHE_DIR'):
         os.environ['TILO_FONT_ASSET_CACHE'] = str(target / 'font-artifacts')
     run(['python3', str(repo / 'tools/font-catalog.py'), 'root',
-         str(repo / 'crates/sdk/ui-core/assets/fonts'), '--scope', 'product'], capture=True)
+         str(repo / 'crates/ui/ui-core/assets/fonts'), '--scope', 'product'], capture=True)
 
 
 def publish_runtime_fonts(repo, fonts, catalogs):

@@ -38,7 +38,7 @@ thin = [
 ]
 
 [dependencies]
-runtime-dylib = { path = "../../../runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../../sdk/runtime-dylib", optional = true }
 tilo-contact-directory = { path = "../../../integrations/tilo-contact-directory", optional = true }
 # The runtime's; only for the self-check to name a person's id.
 tilo-resource = { path = "../../../sdk/tilo-resource", optional = true }

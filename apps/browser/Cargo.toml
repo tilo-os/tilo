@@ -66,7 +66,7 @@ tilo-clock = { path = "../../crates/platform/tilo-clock" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["webview-adblock"] }
 # The resource the app draws: its types, verbs and typed action arguments.
 browser-model = { path = "../browser-model" }
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 tilo-browser-import-engine = { path = "../../crates/engines/loadable/browser-import", optional = true }
 tilo-accounts-engine = { path = "../../crates/engines/loadable/accounts", optional = true }
 

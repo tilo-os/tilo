@@ -50,7 +50,7 @@ class NoTransientCardsTests(unittest.TestCase):
                 "fn sync() { ui::window_toolbar::notify(Some(notice)); }\n"
                 "const NAME: &str = \"ToastCard\";\n"
             ),
-            "crates/sdk/ui-core/src/widget/toast.rs": "pub struct ToastCard;\n",
+            "crates/ui/ui-core/src/widget/toast.rs": "pub struct ToastCard;\n",
             "crates/session/desktop-surface/src/notifications.rs": "let c = ToastCard::new(t, k);\n",
             "crates/session/desktop-surface/src/lock.rs": "toast::paint_card(s, &c);\n",
             "apps/settings/target/debug/build/out.rs": "ToastCard::new(t, k);\n",

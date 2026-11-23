@@ -37,7 +37,7 @@ let
   # fixed-output fetches, laid out as that cache: <sha256>/<file>, regular files. The script
   # also writes its prepared catalogs into the cache, so the build copies it somewhere writable.
   fontArtifacts = builtins.fromJSON
-    (builtins.readFile ../../crates/sdk/ui-core/assets/fonts/artifacts.json);
+    (builtins.readFile ../../crates/ui/ui-core/assets/fonts/artifacts.json);
   fontAssetCache = runCommand "tilo-font-artifacts" { } (lib.concatMapStrings (font: ''
     install -Dm644 ${fetchurl { inherit (font) url sha256; }} "$out/${font.sha256}/${font.file}"
   '') fontArtifacts.assets);

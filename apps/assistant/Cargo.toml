@@ -25,7 +25,7 @@ samples = []
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 serde_json.workspace = true
 # Whether this build is a page, which runs no agent: an assistant made there works on the
 # workspace's host.

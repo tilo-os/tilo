@@ -9474,14 +9474,14 @@ fn title_from_name(name: &str) -> String {
 
 fn find_repo_root(start: &Path) -> Option<PathBuf> {
     start.ancestors().find_map(|path| {
-        (path.join("crates/sdk/ui-core/Cargo.toml").is_file() && path.join("apps").is_dir())
+        (path.join("crates/ui/ui-core/Cargo.toml").is_file() && path.join("apps").is_dir())
             .then(|| path.to_path_buf())
     })
 }
 
 fn ui_dir_from_ancestor(start: &Path) -> Option<PathBuf> {
     start.ancestors().find_map(|root| {
-        let ui = root.join("crates/sdk/ui-core");
+        let ui = root.join("crates/ui/ui-core");
         ui.join("Cargo.toml").is_file().then_some(ui)
     })
 }
@@ -9497,7 +9497,7 @@ fn discover_ui_dir(current_dir: &Path, repo: Option<&Path>) -> Option<PathBuf> {
         return Some(candidate);
     }
     if let Some(root) = repo {
-        return Some(root.join("crates/sdk/ui-core"));
+        return Some(root.join("crates/ui/ui-core"));
     }
     if let Ok(executable) = std::env::current_exe()
         && let Some(ui) = ui_dir_from_ancestor(&executable)
@@ -9526,10 +9526,10 @@ fn resolve_ui_dir(
     );
     let Some(candidate) = candidate else {
         bail!(
-            "could not locate the Tilo UI toolkit; run inside a Tilo checkout, set TILO_UI_PATH, or pass `--ui-path /path/to/tilo/crates/sdk/ui-core`"
+            "could not locate the Tilo UI toolkit; run inside a Tilo checkout, set TILO_UI_PATH, or pass `--ui-path /path/to/tilo/crates/ui/ui-core`"
         );
     };
-    let toolkit = candidate.join("crates/sdk/ui-core");
+    let toolkit = candidate.join("crates/ui/ui-core");
     let candidate = if !is_sdk_crate_path(&candidate) && toolkit.join("Cargo.toml").is_file() {
         toolkit
     } else {
@@ -9635,7 +9635,7 @@ fn cargo_toml(spec: &AppSpec) -> Result<String> {
         AppSdk::Workspace { ui_path } => {
             let sdk_path = sdk_path_for_ui(ui_path);
             let runtime_path = sdk_path.parent().and_then(Path::parent).map_or_else(
-                || PathBuf::from("../../crates/runtime/runtime-dylib"),
+                || PathBuf::from("../../crates/sdk/runtime-dylib"),
                 |crates| crates.join("runtime/runtime-dylib"),
             );
             // CI rejects a workspace member that cargo-hakari has not been told about. The hack's
@@ -9676,7 +9676,7 @@ fn cargo_toml(spec: &AppSpec) -> Result<String> {
 }
 
 fn is_sdk_crate_path(ui_path: &Path) -> bool {
-    ui_path.ends_with("crates/sdk/ui-core") || ui_path.ends_with("crates/sdk/tilo-app")
+    ui_path.ends_with("crates/ui/ui-core") || ui_path.ends_with("crates/sdk/tilo-app")
 }
 
 fn checkout_root_for_ui(ui_path: &Path) -> &Path {
@@ -9691,14 +9691,7 @@ fn checkout_root_for_ui(ui_path: &Path) -> &Path {
 }
 
 fn sdk_path_for_ui(ui_path: &Path) -> PathBuf {
-    if is_sdk_crate_path(ui_path) {
-        ui_path
-            .parent()
-            .unwrap_or_else(|| Path::new(".."))
-            .join("tilo-app")
-    } else {
-        checkout_root_for_ui(ui_path).join("crates/sdk/tilo-app")
-    }
+    checkout_root_for_ui(ui_path).join("crates/sdk/tilo-app")
 }
 
 fn app_lib(spec: &AppSpec) -> String {

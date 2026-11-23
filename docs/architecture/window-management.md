@@ -217,7 +217,7 @@ area at least 24 px wide under touch.
 
 The strip is infinitely wide, so resizing is never zero-sum unless the person
 asks for it. One rule decides every case, and the code holds it in one place,
-`crates/sdk/ui-core/src/widget/edge_resize.rs`: `border_owner` says whose edge a
+`crates/ui/ui-core/src/widget/edge_resize.rs`: `border_owner` says whose edge a
 point is, `EdgeDrag::resize` says what a drag sets. The row
 (`group_row_edges.rs`) only feeds them geometry: the hover highlight, the press
 and every frame of the drag ask the same two functions.

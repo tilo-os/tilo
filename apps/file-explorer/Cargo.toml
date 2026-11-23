@@ -89,7 +89,7 @@ hex.workspace = true
 uuid.workspace = true
 
 tilo-clock = { path = "../../crates/platform/tilo-clock", optional = true }
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 tilo-pdf-engine = { path = "../../crates/engines/loadable/pdf", optional = true }
 tilo-archive-engine = { path = "../../crates/engines/loadable/archive", optional = true }
 tilo-automation = { path = "../../crates/collab/automation", optional = true }

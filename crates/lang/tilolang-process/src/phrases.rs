@@ -9,11 +9,11 @@ use tilo_history::{Catalogue, FluentArgs, Messages as _};
 
 const SOURCE: (&str, &str) = (
     "en-US",
-    include_str!("../../../platform/tilo-app-window/locales/en-US.ftl"),
+    include_str!("../../../sdk/tilo-app-window/locales/en-US.ftl"),
 );
 const TRANSLATIONS: &[(&str, &str)] = &[(
     "de-DE",
-    include_str!("../../../platform/tilo-app-window/locales/de-DE.ftl"),
+    include_str!("../../../sdk/tilo-app-window/locales/de-DE.ftl"),
 )];
 
 /// The words the toolkit writes dates, clocks and numbers with (`ui::format`), which a host
@@ -21,11 +21,11 @@ const TRANSLATIONS: &[(&str, &str)] = &[(
 /// in a window and in what its host wrote beside it.
 const TOOLKIT: (&str, &str) = (
     "en-US",
-    include_str!("../../../sdk/ui-core/locales/en-US.ftl"),
+    include_str!("../../../ui/ui-core/locales/en-US.ftl"),
 );
 const TOOLKIT_TRANSLATIONS: &[(&str, &str)] = &[(
     "de-DE",
-    include_str!("../../../sdk/ui-core/locales/de-DE.ftl"),
+    include_str!("../../../ui/ui-core/locales/de-DE.ftl"),
 )];
 
 /// `translations`' phrases of `wanted`, in its own language when there are any, else `source`.

@@ -122,7 +122,7 @@ EXTERNAL_ASSET_MANIFEST = "os/external-assets/github-assets.tsv"
 # Rust and security suites, which main runs after the merge.
 PIN_FILES = ("os/kernel-snapshot.env",)
 # Audited developer/CI prose, not compiled documentation or runtime contracts.
-# Keep this explicit: crates/sdk/ui-core/CHARTS.md is included by Rust, docs/app-development.md
+# Keep this explicit: crates/ui/ui-core/CHARTS.md is included by Rust, docs/app-development.md
 # is inspected by tilo-app, and docs/packaging.md is a packaging contract input.
 # Security, layout and workflow policy checks remain mandatory outside Rust.
 NON_COMPILING_DOCS = {

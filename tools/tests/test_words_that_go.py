@@ -67,6 +67,13 @@ class StagedWordsThatGoTests(unittest.TestCase):
         git(self.root, "add", "-A")
         self.assertEqual(self.problems(held=[STAND_IN]), [])
 
+    def test_a_commit_that_moves_a_file_is_judged_against_its_old_path(self):
+        """A moved file adds nothing, even a name the baseline has yet to record."""
+        self.commit({"crates/doc/model.rs": f"fn main() {{}}\nstruct {STAND_IN};\n"})
+        (self.root / "crates/sdk").mkdir()
+        git(self.root, "mv", "crates/doc/model.rs", "crates/sdk/model.rs")
+        self.assertEqual(self.problems(), [])
+
     def test_a_commit_costs_no_walk_over_the_tree(self):
         """A commit of many files still reads one listing and one blob batch, never HEAD."""
         files = {f"src/part{index:02}.rs": f"pub fn part{index}() -> u32 {{ {index} }}\n"

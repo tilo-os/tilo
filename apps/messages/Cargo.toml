@@ -25,7 +25,7 @@ tilo-messaging = { path = "../../crates/integrations/tilo-messaging", features =
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 tilo-contact-directory-engine = { path = "../../crates/engines/loadable/contact-directory", optional = true }
 
 [dev-dependencies]

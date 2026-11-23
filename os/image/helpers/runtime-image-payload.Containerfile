@@ -18,7 +18,7 @@ RUN --network=none \
     --mount=type=bind,from=apps-payload,source=/out/language-packs,target=/tilo-language-packs,ro \
     --mount=type=bind,from=os-fonts,source=/out/fonts,target=/tilo-os-fonts,ro \
     --mount=type=bind,source=tools/font-catalog.py,target=/tilo-src/tools/font-catalog.py,ro \
-    --mount=type=bind,source=crates/sdk/ui-core/assets/fonts,target=/tilo-src/crates/sdk/ui-core/assets/fonts,ro \
+    --mount=type=bind,source=crates/ui/ui-core/assets/fonts,target=/tilo-src/crates/ui/ui-core/assets/fonts,ro \
     --mount=type=bind,source=os/scripts/hardlink-identical.py,target=/tilo-src/hardlink-identical.py,ro \
     --mount=type=bind,source=os/scripts/signed-records.py,target=/tilo-src/signed-records.py,ro \
     mkdir -p /image/usr/lib /image/usr/share/tilo/font-catalogs /image/usr/share/fonts \

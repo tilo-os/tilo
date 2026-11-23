@@ -24,7 +24,7 @@ tilo-actions = { path = "../../collab/actions" }
 tilo-api = { path = "../../server/tilo-api" }
 tilo-desktop = { path = "../desktop" }
 tilo-app-state = { path = "../../system/app-state" }
-ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
 vello.workspace = true
 winit.workspace = true
 bounded-command = { path = "../../platform/bounded-command" }
@@ -75,7 +75,7 @@ tilo-api = { path = "../../server/tilo-api", features = ["test-support"] }
 tilo-clock = { path = "../../platform/tilo-clock", features = ["test-support"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 tilo-test-env = { path = "../../../tools/test-env" }
-ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["test-support"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 imager-backend = { path = "../../os/imager-backend", features = ["test-support"] }
@@ -85,4 +85,4 @@ workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }
-ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+ui = { package = "tilo-ui", path = "../../ui/ui-core" }

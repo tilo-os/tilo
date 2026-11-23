@@ -7,7 +7,7 @@ runner reads them from the process, so the same toolkit works where there
 is no process environment to read.
 
 This check fails on a process-environment read (`env::var`, `env::var_os`,
-`env::vars`, `env::args`) in `crates/sdk/ui-core/src`,
+`env::vars`, `env::args`) in `crates/ui/ui-core/src`,
 `crates/sdk/tilo-process-services/src`, the collab client below the toolkit
 (`crates/collab/collaboration/src`) and the process inputs themselves
 (`crates/platform/tilo-process/src/environment`) outside:
@@ -37,7 +37,7 @@ ROOT = Path(__file__).resolve().parents[2]
 # The toolkit's sources, and the code below it that reads host inputs as the
 # toolkit does: each root with the files of it that are checked (all, or one
 # module and its children).
-SRC = Path("crates/sdk/ui-core/src")
+SRC = Path("crates/ui/ui-core/src")
 BELOW_TOOLKIT = (
     (Path("crates/sdk/tilo-process-services/src"), None),
     (Path("crates/collab/collaboration/src"), None),

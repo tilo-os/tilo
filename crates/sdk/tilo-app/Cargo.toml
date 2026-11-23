@@ -65,9 +65,9 @@ registry-types = { version = "0.1.0", path = "../../packaging/registry-types" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # Scratch directories for test and capture profiles.
 tilo-paths.workspace = true
-ui-core = { version = "0.1.0", package = "tilo-ui", path = "../ui-core", default-features = false }
+ui-core = { version = "0.1.0", package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
 # The document editor and its text stack: what an app edits rich text and notes with.
-tilo-rich-edit = { version = "0.1.0", path = "../tilo-rich-edit" }
+tilo-rich-edit = { version = "0.1.0", path = "../../ui/tilo-rich-edit" }
 # What a headless test keeps on its profile as an earlier build stored it.
 durable-store = { version = "0.1.0", path = "../../system/durable-store" }
 # Whose each app's records are, as the fleet's manifests declare (`[resources] own`).
@@ -85,11 +85,11 @@ collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 tilo-reference = { version = "0.1.0", path = "../../collab/reference" }
 tilo-history = { version = "0.1.0", path = "../tilo-history" }
 # Portable feedback review, capture and durable delivery contracts.
-tilo-feedback = { version = "0.1.0", path = "../../collab/feedback" }
+tilo-feedback = { version = "0.1.0", path = "../feedback" }
 # The workspace's own emoji and its agents, which every window opens and
 # offers its views.
-tilo-workspace-agent = { version = "0.1.0", path = "../../platform/tilo-workspace-agent" }
-tilo-workspace-emoji = { version = "0.1.0", path = "../../platform/tilo-workspace-emoji" }
+tilo-workspace-agent = { version = "0.1.0", path = "../tilo-workspace-agent" }
+tilo-workspace-emoji = { version = "0.1.0", path = "../tilo-workspace-emoji" }
 # The default search provider over a resource's entries.
 tilo-search = { version = "0.1.0", path = "../../engines/search" }
 # Merging a member's change in tests, the way sync does.

@@ -1,0 +1,42 @@
+[package]
+name = "tilo-app-window"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "A tilolang app's window in the toolkit: the generic adapter, the shell composition and the toolkit's widgets, built from the component patches an app instance sends and reporting what the person did."
+
+[dependencies]
+tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
+tilo-rich-edit = { version = "0.1.0", path = "../../ui/tilo-rich-edit" }
+# Dates and clocks as the person set them: how a day or a time reads in a sentence, said the
+# same way a window's toolkit says it and an app process without the toolkit does.
+tilo-formats = { version = "0.1.0", path = "../../ui/tilo-formats" }
+tilo-render-protocol = { version = "0.1.0", path = "../../ui/tilo-render-protocol" }
+# The actions the window's app publishes for its command palette.
+tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+# The named scopes a frame's work is counted in (`ui.bind`): what a test reads to see that a
+# still frame binds no control again.
+tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
+jiff.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tilo-ui-graph = { version = "0.1.0", path = "../../ui/ui-graph" }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["test-support"] }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[[example]]
+name = "component-catalogue"
+path = "examples/component_catalogue.rs"

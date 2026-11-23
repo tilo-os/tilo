@@ -13,7 +13,7 @@
 FROM ${BASE_REF} AS os-fonts
 RUN --mount=type=cache,id=tilo-font-artifacts,target=/var/cache/tilo-font-artifacts \
     --mount=type=bind,source=tools/font-catalog.py,target=/tilo-src/tools/font-catalog.py,ro \
-    --mount=type=bind,source=crates/sdk/ui-core/assets/fonts,target=/tilo-src/crates/sdk/ui-core/assets/fonts,ro \
+    --mount=type=bind,source=crates/ui/ui-core/assets/fonts,target=/tilo-src/crates/ui/ui-core/assets/fonts,ro \
     python3 /tilo-src/tools/font-catalog.py prepare \
-        /tilo-src/crates/sdk/ui-core/assets/fonts /out/fonts --scope os \
+        /tilo-src/crates/ui/ui-core/assets/fonts /out/fonts --scope os \
         --cache /var/cache/tilo-font-artifacts

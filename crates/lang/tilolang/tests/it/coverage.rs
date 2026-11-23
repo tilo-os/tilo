@@ -1,7 +1,7 @@
 //! Every component of the toolkit an app can place is reachable from tilolang as `ui.<Name>`,
 //! with the props, slots and events the toolkit describes; and a public app-facing widget the
 //! toolkit does not describe yet says why, in a list that only shrinks
-//! (`crates/sdk/ui-core/src/component/not_yet_described.txt`).
+//! (`crates/ui/ui-core/src/component/not_yet_described.txt`).
 //!
 //! The widget list is read from the sources of the toolkit and of the widget crates above it
 //! (`tilo-component-scan`, the same reading that generates each component registry), never
@@ -20,12 +20,12 @@ use std::path::{Path, PathBuf};
 use tilo_component_scan as component_scan;
 
 fn toolkit_src() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/ui-core/src")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/ui-core/src")
 }
 
 /// The sources of the widget crates whose components a window builds besides the toolkit's.
 fn widget_crate_srcs() -> [PathBuf; 1] {
-    [Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/tilo-rich-edit/src")]
+    [Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/tilo-rich-edit/src")]
 }
 
 /// The components tilolang reaches as `ui.<Name>`: the toolkit's catalogue, which is what the
@@ -94,7 +94,7 @@ tilo_test_env::scenario! {
         assert!(
             unaccounted.is_empty(),
             "{} public app-facing widget(s) are neither reachable from tilolang as `ui.<Name>` nor \
-         listed with a reason in crates/sdk/ui-core/src/component/not_yet_described.txt: {}. \
+         listed with a reason in crates/ui/ui-core/src/component/not_yet_described.txt: {}. \
          Describe each widget (`#[derive(Component)]` props and `impl Described`, see \
          `tilo_ui::component`) so every app can place it from a view, or say where it is \
          declared why a view never places it (`#[not_a_component(kind, \"why\")]`).",
@@ -133,7 +133,7 @@ tilo_test_env::scenario! {
         }
         assert!(
             stale.is_empty(),
-            "remove these from crates/sdk/ui-core/src/component/not_yet_described.txt, which only \
+            "remove these from crates/ui/ui-core/src/component/not_yet_described.txt, which only \
          shrinks:\n{}",
             stale.join("\n")
         );

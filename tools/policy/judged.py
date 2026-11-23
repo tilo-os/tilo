@@ -88,6 +88,7 @@ class Judged:
     root: Path
     staged: bool = False
     _changed: set[Path] | None = field(default=None, repr=False)
+    _renamed: dict[Path, Path] = field(default_factory=dict, repr=False)
     _blobs: dict[Path, bytes] = field(default_factory=dict, repr=False)
     _only: set[Path] | None = field(default=None, repr=False)
 
@@ -129,7 +130,7 @@ class Judged:
     ) -> list[Path]:
         """The files under ``scopes`` to judge, relative to the root, sorted.
 
-        A scope is a directory (``crates/sdk/ui-core``) or the whole root
+        A scope is a directory (``crates/ui/ui-core``) or the whole root
         (``.``). In ``--staged`` mode only the files the commit stages are
         listed; each scope a check passes narrows that further.
         """
@@ -164,9 +165,28 @@ class Judged:
     def changed(self) -> set[Path]:
         """The paths the index holds a change for: added, copied, modified, renamed."""
         if self._changed is None:
-            names = git(self.root, "diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR")
-            self._changed = {Path(os.fsdecode(name)) for name in names.split(b"\0") if name}
+            listing = git(
+                self.root, "diff", "--cached", "--name-status", "-M", "-z", "--diff-filter=ACMR"
+            ).split(b"\0")
+            self._changed = set()
+            index = 0
+            while index < len(listing) and listing[index]:
+                status = listing[index]
+                if status[:1] in (b"R", b"C"):
+                    old, new = listing[index + 1], listing[index + 2]
+                    if status[:1] == b"R":
+                        self._renamed[Path(os.fsdecode(new))] = Path(os.fsdecode(old))
+                    index += 3
+                else:
+                    new = listing[index + 1]
+                    index += 2
+                self._changed.add(Path(os.fsdecode(new)))
         return self._changed
+
+    def renamed_from(self, relative: Path) -> Path:
+        """The path HEAD gives a file the commit stages under a new name, else ``relative``."""
+        self.changed()
+        return self._renamed.get(relative, relative)
 
     def is_staged(self, relative: Path) -> bool:
         return self.staged and relative in self.changed()

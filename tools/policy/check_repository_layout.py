@@ -54,7 +54,7 @@ RETIRED_SOURCE_ROOTS = {
     "tools/run-repository-policy.sh": "tools/policy/run.sh",
     "tools/rustc-thin-app-wrapper.sh": "tools/ci/rustc-thin-app-wrapper.sh",
     "tools/windows-": "tools/windows/",
-    "ui/": "crates/sdk/ui-core/",
+    "ui/": "crates/ui/ui-core/",
 }
 
 # The verifier bundle packs this controller with the tools it verifies, so it lives at

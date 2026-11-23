@@ -32,7 +32,7 @@ jiff.workspace = true
 clap.workspace = true
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
-tilo-formats = { path = "../../crates/sdk/tilo-formats" }
+tilo-formats = { path = "../../crates/ui/tilo-formats" }
 tilo-paths.workspace = true
 hex.workspace = true
 serde.workspace = true

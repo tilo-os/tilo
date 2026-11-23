@@ -6,7 +6,7 @@ use std::process::Command;
 use anyhow::{Context as _, Result, bail};
 
 pub(crate) fn prepared_fonts(sdk: &Path, scope: &str) -> Result<PathBuf> {
-    let source = sdk.join("crates/sdk/ui-core/assets/fonts");
+    let source = sdk.join("crates/ui/ui-core/assets/fonts");
     if !source.join("artifacts.json").is_file() {
         return Ok(source);
     }

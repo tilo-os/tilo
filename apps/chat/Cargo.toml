@@ -53,13 +53,13 @@ fnv.workspace = true
 # Chat's own reading of the catalogue, to name an emoji and its group in the
 # accessibility tree. The picker and reaction strip take the catalogue from
 # the toolkit, which provides it.
-emoji = { path = "../../crates/text/emoji" }
+emoji = { path = "../../crates/ui/emoji" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 tilo-emoji-engine = { path = "../../crates/engines/loadable/emoji", optional = true }
 # A channel's page as a described-components view, drawn by the shell like any app's
 # (one-app-model.md §2).
-tilo-view = { path = "../../crates/platform/tilo-view" }
+tilo-view = { path = "../../crates/sdk/tilo-view" }
 tilo-view-macros = { path = "../../crates/sdk/view-macros" }
 # A message's moment in the form a component's `time` prop takes it (RFC 3339).
 jiff.workspace = true
@@ -77,7 +77,7 @@ tilo-actions = { path = "../../crates/collab/actions" }
 # summons is recorded in (`Message::work`, `ChatAction::SetAgentWork`).
 tilo-reference = { path = "../../crates/collab/reference" }
 # Message bodies and drafts are rich text, written in the SDK editor.
-tilo-document = { path = "../../crates/doc/tilo-document" }
+tilo-document = { path = "../../crates/sdk/tilo-document" }
 tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 # Content addressing everywhere; the on-disk store, and the device store where
 # the launcher hands one over.
@@ -103,7 +103,7 @@ image = { workspace = true, features = ["png"] }
 # collection build, and the app then links the whole runtime statically.
 chat-samples = { package = "chat", path = ".", features = ["samples"] }
 # Descriptor fixtures exercise the real gateway backend injected into the SDK.
-tilo-model-client = { path = "../../crates/agent/model-client", default-features = false, features = ["runtime-client"] }
+tilo-model-client = { path = "../../crates/sdk/model-client", default-features = false, features = ["runtime-client"] }
 # Reads the signed manifest's offers to check them against what the app publishes.
 tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

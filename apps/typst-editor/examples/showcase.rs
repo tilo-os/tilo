@@ -1,7 +1,7 @@
 //! Capture the real hosted editor with the complete UI scaled together.
 //!
 //! cargo run --locked -p typst-editor --example showcase -- output.png 1.5 dark
-//! Put a symlink to crates/sdk/ui-core/assets/fonts beside this binary first.
+//! Put a symlink to crates/ui/ui-core/assets/fonts beside this binary first.
 
 use typst_editor::TypstEditorShell;
 use ui::framework::testing::TestApp;

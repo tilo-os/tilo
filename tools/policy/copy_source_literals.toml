@@ -74,7 +74,7 @@ text = "Flush the blur pass before presenting"
 reason = "A capture label a frame-timing harness paints."
 
 [[allow]]
-file = "crates/sdk/ui-core/src/widget/replaced_tripwire.rs"
+file = "crates/ui/ui-core/src/widget/replaced_tripwire.rs"
 text = "Tripwire"
 reason = "A sample label in the widget that trips on a replaced widget."
 

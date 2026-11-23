@@ -25,17 +25,17 @@ def forest(*lines: str) -> str:
 # it: a package's dependencies appear once, under its first appearance.
 CLEAN = forest(
     "0notes v0.1.0 (/repo/apps/settings)",
-    "1runtime-dylib v0.1.0 (/repo/crates/runtime/runtime-dylib)",
+    "1runtime-dylib v0.1.0 (/repo/crates/sdk/runtime-dylib)",
     "2tilo-app v0.1.0 (/repo/crates/sdk/tilo-app)",
-    "3tilo-ui v0.1.0 (/repo/crates/sdk/ui-core)",
+    "3tilo-ui v0.1.0 (/repo/crates/ui/ui-core)",
     "4serde v1.0.228",
     "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)",
     "0store v0.1.2 (/repo/apps/store)",
     "1package-service v0.1.0 (/repo/crates/packaging/package-service)",
     "2serde v1.0.228 (*)",
-    "1runtime-dylib v0.1.0 (/repo/crates/runtime/runtime-dylib) (*)",
+    "1runtime-dylib v0.1.0 (/repo/crates/sdk/runtime-dylib) (*)",
     "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)",
-    "0runtime-dylib v0.1.0 (/repo/crates/runtime/runtime-dylib) (*)",
+    "0runtime-dylib v0.1.0 (/repo/crates/sdk/runtime-dylib) (*)",
 )
 
 
@@ -195,14 +195,14 @@ class RuntimeSurfaceTests(unittest.TestCase):
         # links nothing; with it off, syntect is back in every app process.
         def tree(features: str) -> str:
             return CLEAN.replace(
-                "3tilo-ui v0.1.0 (/repo/crates/sdk/ui-core)\n",
-                f"3tilo-ui v0.1.0 (/repo/crates/sdk/ui-core)|{features}\n"
-                "4tilo-highlight-grammars v0.1.0 (/repo/crates/text/highlight-grammars)|\n"
+                "3tilo-ui v0.1.0 (/repo/crates/ui/ui-core)\n",
+                f"3tilo-ui v0.1.0 (/repo/crates/ui/ui-core)|{features}\n"
+                "4tilo-highlight-grammars v0.1.0 (/repo/crates/ui/highlight-grammars)|\n"
                 "5syntect v5.2.0|\n",
             ).replace(
                 "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n0store",
                 "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n"
-                "1tilo-ui v0.1.0 (/repo/crates/sdk/ui-core) (*)\n0store",
+                "1tilo-ui v0.1.0 (/repo/crates/ui/ui-core) (*)\n0store",
             )
 
         self.assertEqual(

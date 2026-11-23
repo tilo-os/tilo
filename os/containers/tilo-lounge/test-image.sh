@@ -121,7 +121,7 @@ done
 [[ -f $root/usr/local/share/tilo/bots/discord-bridge.json ]] || fail "the bridge's bot program is missing"
 # The catalog must be this build's: a container has no system fonts, so the
 # bridge's app components would lay text out in whatever is left.
-cmp -s "$root/usr/share/fonts/tilo/manifest.toml" "$repo_root/crates/sdk/ui-core/assets/fonts/manifest.toml" \
+cmp -s "$root/usr/share/fonts/tilo/manifest.toml" "$repo_root/crates/ui/ui-core/assets/fonts/manifest.toml" \
   || fail "the installed font catalog is not the one this build pins"
 
 echo "ok: the Lounge image runs as 10001, serves 8790/tcp, 9780/tcp and 9781/udp, and carries the programs, the bot program and the catalog of $revision"

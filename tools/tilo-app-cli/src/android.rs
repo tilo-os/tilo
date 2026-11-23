@@ -3,7 +3,7 @@
 //! run without Gradle.
 //!
 //! The Java layer, and the font catalog the renderer loads, come from the SDK
-//! checkout the app builds against (`crates/sdk/ui-core/android`); the
+//! checkout the app builds against (`crates/ui/ui-core/android`); the
 //! manifest is generated here from `tilo-app.toml`. The Rust library is the
 //! app's library built as a `cdylib`, whose `ui::dev_reload_entry!` defines
 //! `android_main`.
@@ -1440,7 +1440,7 @@ fn checkout(app_dir: &Path) -> Result<Checkout> {
             app_dir.display()
         )
     })?;
-    let ui_core = root.join("crates/sdk/ui-core");
+    let ui_core = root.join("crates/ui/ui-core");
     let android = ui_core.join("android");
     if !android.join("java").is_dir() {
         bail!(

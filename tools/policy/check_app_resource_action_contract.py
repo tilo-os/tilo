@@ -228,7 +228,7 @@ NOT_ACTION_BUTTONS = {
     "secondary_action": "a dialog's footer button, published as the dialog's own control",
     "tertiary_action": "a dialog's footer button, published as the dialog's own control",
 }
-CONTROL_CALLBACK_SOURCES = ("crates/sdk/ui-core/src", "crates/sdk/tilo-app/src/framework")
+CONTROL_CALLBACK_SOURCES = ("crates/ui/ui-core/src", "crates/sdk/tilo-app/src/framework")
 CLOSURE_CALLBACK_DEFINITION = re.compile(
     r"\bpub\s+fn\s+(on_[a-z_]+|[a-z_]*action[a-z_]*)\s*(<[^{;]*?>)?\s*\(([^{;]*?)\)\s*(?:->[^{;]*?)?(where[^{;]*)?\{",
     re.DOTALL,
@@ -1796,7 +1796,7 @@ def audit(
     # this invariant spanning its focused implementation modules so moving
     # action/resource code out of app.rs cannot disable the audit.
     if root.resolve() == ROOT.resolve():
-        package_service_path = root / "crates" / "sdk" / "ui-core" / "src" / "app.rs"
+        package_service_path = root / "crates" / "ui" / "ui-core" / "src" / "app.rs"
         app_action_path = package_service_path.parent / "app" / "actions.rs"
         package_service = code_only(package_service_path.read_text(encoding="utf-8"))
         if app_action_path.is_file():

@@ -2,7 +2,7 @@
 
 `serif-reader.png` and `math-reader.png` are the Linux references.
 Windows uses the `-windows.png` references with the controlled font
-catalog (`crates/sdk/ui-core/assets/fonts`). Both tests retain the same pixel comparison and
+catalog (`crates/ui/ui-core/assets/fonts`). Both tests retain the same pixel comparison and
 fail when an offscreen renderer is unavailable.
 
 The Windows images were reviewed for text, line breaks, serif styling, formula
@@ -12,7 +12,7 @@ new reference image.
 
 `artifacts.json` pins all four images by public immutable URL, SHA-256 and byte
 length. The images retain the repository's license; font licenses and provenance
-remain in `crates/sdk/ui-core/assets/fonts`. The original Linux references were
+remain in `crates/ui/ui-core/assets/fonts`. The original Linux references were
 introduced at `821fb29daeaec3698c60408b29722b37333c9a0d`; the unchanged Windows
 references were retained at `c865dc7526ee7ca4a3d4882f21b2561c56774476`.
 

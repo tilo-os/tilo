@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Every animation is composed from the motion library.
 
-Tilo's standard motions live in ``crates/sdk/ui-core/src/motion/`` (``ui::motion``):
+Tilo's standard motions live in ``crates/ui/ui-core/src/motion/`` (``ui::motion``):
 appear, drill, disclose, panel slide, cross-fade, list change, snap, zoom,
 window motion, feedback, attention. A call site names the motion; how it moves
 is decided there, once. This check fails on the ways an animation gets hand
@@ -63,6 +63,22 @@ ROOT = Path(__file__).resolve().parents[2]
 SCANNED = (Path("crates/sdk"), Path("crates/session"), Path("apps"))
 # Crates of the same kind that live in other groups.
 SCANNED += (
+    Path("crates/ui/font-catalog"),
+    Path("crates/ui/theme-painter-wasm"),
+    Path("crates/ui/theme-sdk"),
+    Path("crates/ui/themes"),
+    Path("crates/ui/tilo-component-scan"),
+    Path("crates/ui/tilo-cpu-raster"),
+    Path("crates/ui/tilo-formats"),
+    Path("crates/ui/tilo-rich-edit"),
+    Path("crates/ui/ui-core"),
+    Path("crates/ui/ui-kms"),
+    Path("crates/ui/ui-macros"),
+    Path("crates/ui/ui-paint"),
+    Path("crates/ui/winit-x11"),
+)
+# Crates of the same kind that live in other groups.
+SCANNED += (
     Path("crates/engines/search"),
     Path("crates/engines/tilo-page-raster"),
     Path("crates/engines/tilo-recurrence"),
@@ -83,9 +99,9 @@ SCANNED += (
 
 # Where motion math belongs.
 LIBRARY = (
-    "crates/sdk/ui-core/src/motion/",
-    "crates/sdk/ui-core/src/animation/",
-    "crates/sdk/ui-core/src/tokens/motion.rs",
+    "crates/ui/ui-core/src/motion/",
+    "crates/ui/ui-core/src/animation/",
+    "crates/ui/ui-core/src/tokens/motion.rs",
 )
 
 # Curves that belong to the content, not to UI motion. Keep this short; every
@@ -99,7 +115,7 @@ EXEMPT = {
     "crates/engines/vision/": "paint, brush and media physics simulate the medium, not UI motion",
     "crates/engines/wet-media/": "paint, brush and media physics simulate the medium, not UI motion",
     "apps/canvas/src/brushes.rs": "brush dynamics are part of the stroke the person paints",
-    "crates/sdk/ui-core/src/theme.rs": "blends two themes' tokens, spring presets included",
+    "crates/ui/ui-core/src/theme.rs": "blends two themes' tokens, spring presets included",
     "crates/session/compositor/src/a11y.rs": "the visual alert is the compositor's own overlay, faded in its render pass from the frame clock no UI runs on",
     "crates/session/desktop/src/widgets/sizing.rs": "the stage blend eases a card's width, not a clock: it cross-fades two stages across a band so a resize through a breakpoint never jumps",
     "vendor/": "vendored upstream code",
@@ -228,7 +244,7 @@ def main(argv: list[str]) -> int:
             print(finding)
         return 0
     print(
-        "Animations are composed from ui::motion (crates/sdk/ui-core/src/motion/):",
+        "Animations are composed from ui::motion (crates/ui/ui-core/src/motion/):",
         file=sys.stderr,
     )
     for finding in findings:

@@ -28,13 +28,13 @@ path = "tests/it.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilolang-tilo = { path = "../../crates/lang/tilolang-tilo" }
 tilo-failure = { path = "../../crates/platform/tilo-failure" }
 # The app window's half of the window, and the patch protocol between it and the instance.
-tilo-app-window = { path = "../../crates/platform/tilo-app-window" }
-tilo-render-protocol = { path = "../../crates/platform/tilo-render-protocol" }
+tilo-app-window = { path = "../../crates/sdk/tilo-app-window" }
+tilo-render-protocol = { path = "../../crates/ui/tilo-render-protocol" }
 serde_json.workspace = true
 jiff.workspace = true
 thiserror.workspace = true

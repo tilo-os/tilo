@@ -25,7 +25,7 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 tilo-files = { path = "../../crates/platform/tilo-files" }
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The session the app draws: its types, verbs and typed action arguments,
 # shared with an agent that works the same comparison.

@@ -38,7 +38,7 @@ thin = [
 ]
 
 [dependencies]
-runtime-dylib = { path = "../../../runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../../sdk/runtime-dylib", optional = true }
 # The features Music and Tube build it with: one rustypipe in the thin graph,
 # or the apps' symbols would name a crate hash this library does not export.
 rustypipe = { workspace = true, optional = true, features = ["rustls-no-provider"] }

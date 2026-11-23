@@ -19,7 +19,7 @@ import uuid
 ROOT = Path(__file__).resolve().parents[3]
 ROLES = {
     'worker': ('apps/imager', 'tilo-home-export', 'bin', False),
-    'runtime': ('crates/runtime/runtime-dylib', 'runtime_dylib', 'dylib', False),
+    'runtime': ('crates/sdk/runtime-dylib', 'runtime_dylib', 'dylib', False),
     'host': ('apps/imager', 'imager', 'bin', False),
     'imager_tests': ('apps/imager', 'imager', 'lib', True),
     'backend_tests': ('crates/os/imager-backend', 'imager_backend', 'lib', True),

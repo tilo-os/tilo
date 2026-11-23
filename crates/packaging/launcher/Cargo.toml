@@ -93,7 +93,7 @@ package-store = { path = "../package-store", features = ["lease"] }
 # type would be a second vocabulary to drift out of sync.
 collab-types = { path = "../../collab/collab-types" }
 wire-frame = { path = "../../platform/wire-frame" }
-tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
+tilo-render-protocol = { path = "../../ui/tilo-render-protocol" }
 # The system information service's handoff, written before the app holds
 # the connection (`system_stats`).
 tilo-system-stats = { path = "../../system/system-stats" }

@@ -61,7 +61,7 @@ inputs_digest() {
     os/scripts/install-components.py os/scripts/pack-apps.sh \
     os/scripts/signed-records.py os/scripts/collect-runtime-dependencies.py \
     os/scripts/verify-runtime-bundle-closure.sh os/etc/containers/policy.json \
-    apps/browser crates/engines/tilo-webview/src/chromium crates/sdk/ui-core/assets/fonts \
+    apps/browser crates/engines/tilo-webview/src/chromium crates/ui/ui-core/assets/fonts \
     tools/font-catalog.py tools/apps tools/perf/tapp-size-budget \
     tools/ci/publish/hosted-guest.sh -type f -print0 \
     | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1
@@ -191,7 +191,7 @@ case ${1:-} in
     # The fonts the session draws with, from the pinned catalog by digest: the
     # system's copy, which fontconfig finds for the session and every app it
     # starts.
-    python3 tools/font-catalog.py prepare crates/sdk/ui-core/assets/fonts \
+    python3 tools/font-catalog.py prepare crates/ui/ui-core/assets/fonts \
       "$out/usr/share/fonts/tilo" --scope product --offline \
       --cache "${TILO_FONT_ASSET_CACHE:-$scratch/tilo-font-seed}" >/dev/null
     test -x "$out/usr/bin/tilo-session"

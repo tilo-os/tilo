@@ -55,12 +55,12 @@ exclude = [
 # Default builds cover core crates. CI checks affected packages and runs
 # the full workspace nightly.
 default-members = [
-    "crates/doc/tilo-doc",
+    "crates/sdk/tilo-doc",
     "crates/engines/tilo-doc-codecs",
     "crates/system/fs",
     "crates/session/session",
     "crates/session/control-cli",
-    "crates/sdk/ui-core",
+    "crates/ui/ui-core",
     "crates/packaging/tilo-app-package",
 ]
 members = [
@@ -79,7 +79,7 @@ members = [
     "apps/canvas",
     "crates/collab/broker-core",
     "crates/collab/workspace-keys",
-    "crates/collab/feedback-transport",
+    "crates/sdk/feedback-transport",
     "crates/session/identity-authority",
     "crates/session/desktop",
     "crates/session/lock-screen",
@@ -91,7 +91,7 @@ members = [
     "crates/engines/chromium-blocker",
     "crates/engines/content-blocker",
     # Core product surfaces
-    "crates/sdk/ui-core",
+    "crates/ui/ui-core",
 
     # Applications
     "apps/activity",
@@ -224,38 +224,38 @@ members = [
     "crates/integrations/agent-turn",
     "crates/integrations/connector",
     "crates/engines/local-model-service",
-    "crates/agent/model-client",
+    "crates/sdk/model-client",
     "crates/integrations/model-gateway",
     "crates/integrations/provider-config",
 
     # SDK
     "crates/integrations/provider-settings-ui",
-    "crates/sdk/font-catalog",
+    "crates/ui/font-catalog",
     "crates/sdk/runner-native",
     "crates/sdk/tilo-app",
     "crates/sdk/tilo-caps",
     "crates/sdk/tilo-history",
-    "crates/sdk/tilo-cpu-raster",
-    "crates/sdk/ui-kms",
+    "crates/ui/tilo-cpu-raster",
+    "crates/ui/ui-kms",
     "crates/engines/tilo-webview",
     "crates/sdk/tilo-process-services",
-    "crates/sdk/tilo-formats",
+    "crates/ui/tilo-formats",
     "crates/sdk/tilo-resource",
-    "crates/sdk/tilo-component-scan",
-    "crates/sdk/tilo-rich-edit",
+    "crates/ui/tilo-component-scan",
+    "crates/ui/tilo-rich-edit",
     "crates/sdk/tilo-resource-macros",
     "crates/sdk/tilo-model-guest",
     "crates/sdk/tilo-models-wasm",
     "crates/engines/tilo-recurrence",
-    "crates/sdk/ui-macros",
+    "crates/ui/ui-macros",
     "crates/sdk/view-macros",
     "crates/sdk/tilo-rich-text",
     "crates/engines/tilo-page-raster",
-    "crates/sdk/ui-paint",
-    "crates/sdk/theme-sdk",
-    "crates/sdk/theme-painter-wasm",
-    "crates/sdk/themes/bauhaus",
-    "crates/sdk/winit-x11",
+    "crates/ui/ui-paint",
+    "crates/ui/theme-sdk",
+    "crates/ui/theme-painter-wasm",
+    "crates/ui/themes/bauhaus",
+    "crates/ui/winit-x11",
     "crates/engines/search",
 
     # Collab
@@ -268,8 +268,8 @@ members = [
     "crates/collab/collaboration",
     "crates/collab/neighbour-wire",
     "crates/collab/reference",
-    "crates/collab/feedback-review",
-    "crates/collab/feedback",
+    "crates/sdk/feedback-review",
+    "crates/sdk/feedback",
     "crates/collab/moderation",
     "crates/engines/tilo-callstream",
     "crates/collab/tilo-live",
@@ -286,7 +286,7 @@ members = [
     "tools/fake-model-providers",
     "tools/projector-stand-in",
     "tools/nested-session-bus",
-    "crates/dev/headless-schema",
+    "crates/ui/headless-schema",
     "tools/test-env",
     "tools/test-app-registry",
     "tools/test-http",
@@ -297,15 +297,15 @@ members = [
     "tools/tilo-vm",
     "crates/os/tilo-device-protocol",
     "tools/ui-builder",
-    "crates/dev/ui-graph",
+    "crates/ui/ui-graph",
     "tools/ui-examples",
     "tools/click-test-client",
 
     # Doc
     "crates/engines/bounded-zip",
-    "crates/doc/tilo-doc",
+    "crates/sdk/tilo-doc",
     "crates/engines/tilo-doc-codecs",
-    "crates/doc/tilo-document",
+    "crates/sdk/tilo-document",
     "tools/tilo-docs",
     "crates/engines/tilo-doc-pdf",
     "crates/doc/tilo-automerge",
@@ -402,8 +402,8 @@ members = [
     "crates/platform/tilo-mime",
     "crates/platform/tilo-wake",
     "crates/integrations/tilo-contact-directory",
-    "crates/platform/tilo-workspace-agent",
-    "crates/platform/tilo-workspace-emoji",
+    "crates/sdk/tilo-workspace-agent",
+    "crates/sdk/tilo-workspace-emoji",
     "crates/platform/tilo-dialogs",
     "crates/platform/tilo-files",
     "crates/engines/tilo-archive",
@@ -429,9 +429,9 @@ members = [
     "crates/platform/tilo-process",
     "crates/platform/tilo-presentation",
     "crates/platform/tilo-system-info",
-    "crates/platform/tilo-render-protocol",
-    "crates/platform/tilo-app-window",
-    "crates/platform/tilo-view",
+    "crates/ui/tilo-render-protocol",
+    "crates/sdk/tilo-app-window",
+    "crates/sdk/tilo-view",
     "crates/platform/tilo-rt",
     "crates/platform/tilo-secrets",
     "crates/engines/tilo-subject",
@@ -439,16 +439,16 @@ members = [
     "crates/platform/tilo-shm",
     "crates/engines/tilo-typst-fonts",
     "crates/platform/tilo-wallpapers",
-    "crates/platform/zone-globe",
+    "crates/sdk/zone-globe",
 
     # Runtime
-    "crates/runtime/cli",
+    "crates/sdk/cli",
     "crates/vm/linux-vm-agent",
     "crates/vm/linux-vm-protocol",
     "crates/vm/linux-vm",
     "crates/runtime/runtime-collab",
     # Opt-in dynamic SDK; excluded from default-members.
-    "crates/runtime/runtime-dylib",
+    "crates/sdk/runtime-dylib",
     # Engines a few apps load, shipped beside it in the runtime bundle.
     "crates/runtime/engine-loader",
     "crates/engines/loadable/accounts",
@@ -624,11 +624,11 @@ members = [
     "crates/platform/wire-frame",
 
     # Text
-    "crates/text/emoji",
-    "crates/text/highlight",
-    "crates/text/highlight-grammars",
+    "crates/ui/emoji",
+    "crates/ui/highlight",
+    "crates/ui/highlight-grammars",
     "crates/engines/pim-lines",
-    "crates/text/spellcheck",
+    "crates/ui/spellcheck",
     "crates/text/tilo-words",
 
     # Windows
@@ -739,7 +739,7 @@ tilo-app-id = { path = "crates/platform/tilo-app-id", version = "0.1.0" }
 # ---------------------------------------------------------------------------
 # UI toolkit stack
 #
-# Prefer the re-exports in `crates/sdk/ui-core/src/lib.rs`. Direct dependencies must use
+# Prefer the re-exports in `crates/ui/ui-core/src/lib.rs`. Direct dependencies must use
 # compatible versions to share types such as `vello::Scene`.
 # ---------------------------------------------------------------------------
 # Tilo's vello fork (vendor/PATCHES.md), published under its own names; the

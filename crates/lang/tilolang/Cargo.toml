@@ -21,7 +21,7 @@ serde_json = { workspace = true }
 # the index's length of a text column and search's identifier patterns.
 unicode-segmentation = "1.12"
 # The toolkit's component descriptions, read as the package `ui`.
-tilo-ui-graph = { version = "0.1.0", path = "../../dev/ui-graph" }
+tilo-ui-graph = { version = "0.1.0", path = "../../ui/ui-graph" }
 wasm-encoder = "0.252"
 # Who an actor value names: the identity type every crate shares.
 tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
@@ -41,7 +41,7 @@ workspace-hack = { version = "0.1" }
 # A target's cases are the phases of one test (`scenario!`).
 tilo-test-env = { path = "../../../tools/test-env" }
 # Reads the toolkit's sources for the widgets it describes, as its registry's build does.
-tilo-component-scan = { version = "0.1.0", path = "../../sdk/tilo-component-scan" }
+tilo-component-scan = { version = "0.1.0", path = "../../ui/tilo-component-scan" }
 wasmparser = { version = "0.252", default-features = false, features = ["std", "validate", "features", "simd"] }
 
 [lints]

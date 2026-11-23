@@ -47,7 +47,7 @@ thin = [
 ]
 
 [dependencies]
-runtime-dylib = { path = "../../../runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../../sdk/runtime-dylib", optional = true }
 # The features Settings builds them with (apps/settings/Cargo.toml): one copy
 # of each in the thin graph, or the app's symbols would name a crate hash this
 # library does not export.
@@ -56,7 +56,7 @@ tilo-ntfs-mount = { path = "../../../os/ntfs-mount", default-features = false, o
 tilo-wallpapers = { path = "../../../platform/tilo-wallpapers", optional = true }
 tilo-accessibility-settings = { path = "../../../platform/tilo-accessibility-settings", features = ["model"], optional = true }
 tilo-pc-keyboard-geometry = { path = "../../../platform/pc-keyboard-geometry", optional = true }
-tilo-zone-globe = { path = "../../../platform/zone-globe", optional = true }
+tilo-zone-globe = { path = "../../../sdk/zone-globe", optional = true }
 settings-sections = { path = "../../../system/settings-sections", optional = true }
 # Settings' library: the window, its effects and every pane. The app's
 # binary is one call into this library (apps/settings/src/main.rs), so the

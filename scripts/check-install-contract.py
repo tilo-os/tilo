@@ -189,7 +189,7 @@ for entry in declared_entries:
 # Wayland selection over data-control and falls back to X11, so it must stay on
 # the targets that have those protocols and never enter the page's build.
 for manifest in (
-    "crates/sdk/ui-core/Cargo.toml",
+    "crates/ui/ui-core/Cargo.toml",
     "crates/sdk/tilo-process-services/Cargo.toml",
     "crates/platform/tilo-clipboard/Cargo.toml",
 ):

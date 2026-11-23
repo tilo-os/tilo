@@ -234,12 +234,12 @@ class AppReleaseTests(unittest.TestCase):
                 metadata = {'packages': [
                     package('format', 'crates/format'),
                     package('tilo-app-package-cli', 'tools/tilo-app-package-cli', ['crates/format']),
-                    package('runtime-dylib', 'crates/runtime/runtime-dylib'),
+                    package('runtime-dylib', 'crates/sdk/runtime-dylib'),
                     package('notes-bin', 'apps/files'), package('settings-bin', 'apps/settings'),
                 ]}
                 catalog = {'notes': {'package': 'notes-bin'}, 'settings': {'package': 'settings-bin'}}
                 for path, kind in [('crates/format/src/lib.rs', 'packaging'),
-                                   ('crates/runtime/runtime-dylib/src/lib.rs', 'binary')]:
+                                   ('crates/sdk/runtime-dylib/src/lib.rs', 'binary')]:
                     self.assertEqual(sorted(catalog), app_release.apps_from_changes([path], catalog, metadata, root))
                     self.assertEqual([path], app_release.input_classification([path], metadata, root)[kind])
                 self.assertEqual(sorted(catalog), app_release.apps_from_changes(
@@ -274,13 +274,13 @@ class AppReleaseTests(unittest.TestCase):
                     "packages": [
                         {
                             "name": "ui",
-                            "manifest_path": str(root / "crates/sdk/ui-core/Cargo.toml"),
+                            "manifest_path": str(root / "crates/ui/ui-core/Cargo.toml"),
                             "dependencies": [],
                         },
                         {
                             "name": "notes-bin",
                             "manifest_path": str(root / "apps/files/Cargo.toml"),
-                            "dependencies": [{"path": str(root / "crates/sdk/ui-core")}],
+                            "dependencies": [{"path": str(root / "crates/ui/ui-core")}],
                         },
                         {
                             "name": "settings-bin",
@@ -295,7 +295,7 @@ class AppReleaseTests(unittest.TestCase):
                 }
                 self.assertEqual(
                     app_release.apps_from_changes(
-                        ["crates/sdk/ui-core/src/lib.rs"], catalog, metadata, root
+                        ["crates/ui/ui-core/src/lib.rs"], catalog, metadata, root
                     ),
                     ["notes"],
                 )
@@ -304,7 +304,7 @@ class AppReleaseTests(unittest.TestCase):
             metadata = app_release.ci_select.cargo_metadata(ROOT)
             self.assertEqual(
                 app_release.apps_from_changes(
-                    ["crates/sdk/ui-core/src/lib.rs"], catalog, metadata, ROOT
+                    ["crates/ui/ui-core/src/lib.rs"], catalog, metadata, ROOT
                 ),
                 sorted(catalog),
             )

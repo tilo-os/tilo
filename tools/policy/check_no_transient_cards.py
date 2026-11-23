@@ -29,9 +29,9 @@ TREES = ("apps", "crates", "tools", "examples")
 
 # Where the card may be painted: its own module and tests, and the desktop clock.
 ALLOWED = (
-    "crates/sdk/ui-core/src/widget/toast.rs",
-    "crates/sdk/ui-core/src/widget/toast_tests.rs",
-    "crates/sdk/ui-core/tests/toast_test.rs",
+    "crates/ui/ui-core/src/widget/toast.rs",
+    "crates/ui/ui-core/src/widget/toast_tests.rs",
+    "crates/ui/ui-core/tests/toast_test.rs",
     "crates/session/desktop-surface/",
 )
 

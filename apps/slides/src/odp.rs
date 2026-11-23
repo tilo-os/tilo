@@ -4,7 +4,7 @@
 //! An ODP file is an `OpenDocument` package: a ZIP archive whose first entry is
 //! an uncompressed `mimetype`, alongside `content.xml` (the slides), plus the
 //! usual `styles.xml`, `meta.xml` and `META-INF/manifest.xml`. This module
-//! mirrors how `crates/doc/tilo-doc` handles `.odt` (ZIP + `content.xml`), but maps
+//! mirrors how `crates/sdk/tilo-doc` handles `.odt` (ZIP + `content.xml`), but maps
 //! the presentation vocabulary — `draw:page` slides holding `draw:frame`
 //! text-boxes and `draw:rect` / `draw:ellipse` / `draw:line` shapes — onto the
 //! [`Deck`]/[`Slide`]/[`Element`](crate::model) model and back.

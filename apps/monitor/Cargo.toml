@@ -27,7 +27,7 @@ test-support = ["ui/test-support"]
 [dependencies]
 # The resource the app draws: the shared table layout and its sort keys.
 monitor-model = { path = "../monitor-model" }
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 automerge.workspace = true
 serde.workspace = true

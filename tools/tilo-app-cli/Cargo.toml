@@ -55,8 +55,8 @@ quote = "1.0"
 syn = { version = "2.0", features = ["full", "visit-mut"] }
 tempfile.workspace = true
 toml.workspace = true
-tilo-ui-graph = { path = "../../crates/dev/ui-graph" }
-tilo-headless-schema = { path = "../../crates/dev/headless-schema" }
+tilo-ui-graph = { path = "../../crates/ui/ui-graph" }
+tilo-headless-schema = { path = "../../crates/ui/headless-schema" }
 # `tilo-app push`: the workspace's governance actions reached through its
 # action API, as a key of the developer's, as `tilo` reaches it.
 tilo-api = { path = "../../crates/server/tilo-api" }

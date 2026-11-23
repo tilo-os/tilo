@@ -21,7 +21,7 @@ thin = ["dep:runtime-dylib"]
 samples = []
 
 [dependencies]
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 serde_json.workspace = true
 tilo-files = { path = "../../crates/platform/tilo-files" }
 # When a migrated issue and its comments were written where they came from (RFC 3339).

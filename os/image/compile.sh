@@ -629,7 +629,7 @@ fi
 install -D -m 0644 apps/tilolang/tilo-runtime.toml "$out/apps/tilolang/tilo-runtime.toml"
 python3 -I tools/apps/language_packs.py build . "$out/language-packs"
 if [[ $TILO_PREBUILT_APPS != 1 ]]; then
-  python3 -I tools/font-catalog.py prepare crates/sdk/ui-core/assets/fonts "$out/fonts" --scope product
+  python3 -I tools/font-catalog.py prepare crates/ui/ui-core/assets/fonts "$out/fonts" --scope product
 fi
 
 build_phase elf-hardening

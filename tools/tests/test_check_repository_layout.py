@@ -158,7 +158,7 @@ class RepositoryLayoutTests(unittest.TestCase):
                     "tracked file uses retired source root `tools/install-windows-`; move it under `tools/windows/install-`: tools/install-windows-apps.ps1",
                     "tracked file uses retired source root `tools/test-windows-`; move it under `tools/windows/test-`: tools/test-windows-gstreamer.ps1",
                     "tracked file uses retired source root `tools/windows-`; move it under `tools/windows/`: tools/windows-install-path.ps1",
-                    "tracked file uses retired source root `ui/`; move it under `crates/sdk/ui-core/`: ui/src/lib.rs",
+                    "tracked file uses retired source root `ui/`; move it under `crates/ui/ui-core/`: ui/src/lib.rs",
                 ],
             )
         with self.subTest(phase='identical tracked fixtures must share one canonical file'):

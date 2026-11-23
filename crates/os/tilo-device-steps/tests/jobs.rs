@@ -62,8 +62,8 @@ fn setup() -> (tempfile::TempDir, String) {
         std::fs::copy(repo().join(file), to).unwrap();
     }
     copy_tree(
-        &repo().join("crates/sdk/ui-core/assets/fonts"),
-        &src.join("crates/sdk/ui-core/assets/fonts"),
+        &repo().join("crates/ui/ui-core/assets/fonts"),
+        &src.join("crates/ui/ui-core/assets/fonts"),
     );
     // No sccache from the developer's PATH: the stand-in cargo ignores it.
     let path = format!("{}:/usr/bin:/bin", bin.display());

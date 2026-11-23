@@ -38,7 +38,7 @@ thin = [
 ]
 
 [dependencies]
-runtime-dylib = { path = "../../../runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../../sdk/runtime-dylib", optional = true }
 tilo-wet-media = { path = "../../wet-media", optional = true }
 tilo-subject = { path = "../../tilo-subject", optional = true }
 # Optional like everything else: an empty build must not link the hack's whole

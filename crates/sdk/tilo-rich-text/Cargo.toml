@@ -17,8 +17,8 @@ framework = true
 ui = { package = "tilo-app", path = "../tilo-app", default-features = false }
 # The document model and its action vocabulary: every edit is a
 # `RichTextAction`, the one path editors, agents and scripts share.
-tilo-doc = { path = "../../doc/tilo-doc" }
-tilo-document = { path = "../../doc/tilo-document" }
+tilo-doc = { path = "../tilo-doc" }
+tilo-document = { path = "../tilo-document" }
 tracing.workspace = true
 # The owning resource's action a field edit travels in is serialized for replay.
 serde.workspace = true

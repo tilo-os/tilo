@@ -15,7 +15,7 @@ fn a_scaffolded_manifest_carries_the_offers_its_code_publishes() {
             title: "Notes".into(),
             app_id: "so.tilo.notes".into(),
             sdk: AppSdk::Workspace {
-                ui_path: PathBuf::from("../../crates/sdk/ui-core"),
+                ui_path: PathBuf::from("../../crates/ui/ui-core"),
             },
             template,
         };

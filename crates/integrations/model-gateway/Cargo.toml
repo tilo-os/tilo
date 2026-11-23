@@ -54,7 +54,7 @@ host-backend = ["server", "tilo-net/proxy-host"]
 local-models = ["server", "dep:tilo-segment", "dep:local-model-service", "dep:image"]
 
 [dependencies]
-tilo-model-client = { version = "0.1.0", path = "../../agent/model-client", default-features = false }
+tilo-model-client = { version = "0.1.0", path = "../../sdk/model-client", default-features = false }
 libc.workspace = true
 tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }

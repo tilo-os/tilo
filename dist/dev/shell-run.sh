@@ -282,7 +282,7 @@ printf '%s\n' "$pubkey" > "$trust"
 say "baking the Tilo runtime bundle"
 fonts=$scratch/fonts
 python3 "$repo_root/tools/font-catalog.py" prepare \
-    "$repo_root/crates/sdk/ui-core/assets/fonts" "$fonts" --scope product
+    "$repo_root/crates/ui/ui-core/assets/fonts" "$fonts" --scope product
 keyboard_library=$(ldconfig -p | awk '/libxkbcommon\.so\.0 .*(x86-64|AArch64)/ && !found {print $NF; found=1}')
 [[ -f $keyboard_library ]] || die "libxkbcommon.so.0 is not installed"
 runtime_libs=("$thin/libruntime_dylib.so" "$thin/$needed_std" "$keyboard_library")

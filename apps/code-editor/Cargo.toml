@@ -26,7 +26,7 @@ thin = ["dep:runtime-dylib"]
 benchmarks = ["ui/test-support"]
 
 [dependencies]
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 # `ui::portal`'s file chooser is how Open Folder / Open File / Save As reach
 # paths outside the one directory this app is confined to. An app never draws
 # its own picker (HIG §5), and on Linux the XDG portal behind it is where the

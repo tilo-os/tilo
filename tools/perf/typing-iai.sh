@@ -33,7 +33,7 @@ production_sources=(
 if [ -f apps/code-editor/src/editor_sync.rs ]; then
     production_sources+=(apps/code-editor/src/editor_sync.rs)
 fi
-production_sources+=(crates/sdk/ui-core/src/text_render/cache.rs)
+production_sources+=(crates/ui/ui-core/src/text_render/cache.rs)
 sha256sum "${production_sources[@]}" > "$out/production-source.sha256"
 mode="${1:-}"
 if [ "$mode" = --build-only ]; then
@@ -80,7 +80,7 @@ if [[ "$mode" = --build-only || "$mode" = --run-executable ]]; then
     cp "$built" "$packaged"
     # A remote build's absolute font-cache path is not a runtime artifact.
     # Bundle the verified catalog beside the executable, as installed apps do.
-    fonts="$(python3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures)"
+    fonts="$(python3 tools/font-catalog.py root crates/ui/ui-core/assets/fonts --scope fixtures)"
     rm -rf "$(dirname "$packaged")/fonts"
     python3 tools/font-catalog.py stage "$fonts" "$(dirname "$packaged")/fonts" --scope fixtures
     printf '%s\n' "$packaged" > "$out/benchmark-executable"

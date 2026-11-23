@@ -20,7 +20,7 @@ tilo-timezone-engine = { path = "../loadable/timezone", optional = true }
 # A repeat is a value in a resource: its variants are the stored names.
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
 # The fixed date and time text a rule is written in.
-tilo-formats = { version = "0.1.0", path = "../../sdk/tilo-formats" }
+tilo-formats = { version = "0.1.0", path = "../../ui/tilo-formats" }
 
 [features]
 # Read zones from the time-zone database's engine library in the runtime

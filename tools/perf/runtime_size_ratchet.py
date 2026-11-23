@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Size and load-cost budget for the shared app runtime, `libruntime_dylib.so`.
 
-Every thin app maps this one Rust dylib (crates/runtime/runtime-dylib), so its
+Every thin app maps this one Rust dylib (crates/sdk/runtime-dylib), so its
 size is what a device downloads when an app's runtime is missing, and its
 dynamic relocations are work the loader repeats, and memory it dirties, in
 every app process before `main`. The KPI holds four numbers per

@@ -25,7 +25,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The resources the app draws: their types, verbs and typed action arguments.
 clocks-model = { path = "../clocks-model" }
 taffy.workspace = true
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 tilo-timezone-engine = { path = "../../crates/engines/loadable/timezone", optional = true }
 
 [features]

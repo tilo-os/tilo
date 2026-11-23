@@ -57,15 +57,15 @@ tilo-api = { path = "../../server/tilo-api" }
 tilo-device-identity = { path = "../../collab/tilo-device-identity" }
 tilo-paths.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
-ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
 # The app window's half of a window and the patch protocol to it: what `layout-check` lays out.
-tilo-app-window = { path = "../../platform/tilo-app-window" }
-tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
+tilo-app-window = { path = "../../sdk/tilo-app-window" }
+tilo-render-protocol = { path = "../../ui/tilo-render-protocol" }
 # `tilolang profile --times`: the named scopes the framework marks, timed per interaction.
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
 
 [dev-dependencies]
-tilo-rich-edit = { path = "../../sdk/tilo-rich-edit" }
+tilo-rich-edit = { path = "../../ui/tilo-rich-edit" }
 tilo-test-env = { path = "../../../tools/test-env" }
 # What an agent's action is, as the frame draws it on the control that runs it.
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
@@ -77,4 +77,4 @@ workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }
-ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+ui = { package = "tilo-ui", path = "../../ui/ui-core" }

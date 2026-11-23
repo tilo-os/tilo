@@ -47,7 +47,7 @@ Tilo is built around shared workspaces. All of your devices work as one computer
 | [**CLI**](https://docs.tilo.so/quickstart) | `tilo` command for workspaces, keys & actions | `curl -fsSL https://tilo.sh \| sh` |
 | [**Desktop & OS**](https://tilo.so/os) | Tilo Imager (AppImage, DMG, EXE), OS images & `tilo-session` Linux packages | [tilo.so/os](https://tilo.so/os) · [install guide](docs/getting-started.md) |
 | [**Self-hosted server / NAS**](https://docs.tilo.so/install/server) | Tilo Server headless OS image | Follow the [server guide](https://docs.tilo.so/install/server) |
-| [**tilolang & Tilo UI**](https://tilolang.dev) | Cross-platform app language & native Rust UI library (`crates/sdk/ui-core`) | [tilolang.dev](https://tilolang.dev) · [architecture](docs/architecture/README.md) |
+| [**tilolang & Tilo UI**](https://tilolang.dev) | Cross-platform app language & native Rust UI library (`crates/ui/ui-core`) | [tilolang.dev](https://tilolang.dev) · [architecture](docs/architecture/README.md) |
 
 ## Contribute
 

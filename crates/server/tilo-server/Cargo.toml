@@ -208,10 +208,10 @@ app-cli = { path = "../../os/app-cli", optional = true }
 # The admin workspace's record of the person's servers, and its actions.
 tilo-resource = { path = "../../sdk/tilo-resource" }
 # The workspace's emoji, which a bot's program may be told of.
-tilo-workspace-emoji = { path = "../../platform/tilo-workspace-emoji", optional = true }
+tilo-workspace-emoji = { path = "../../sdk/tilo-workspace-emoji", optional = true }
 # Who the agents a workspace's host runs are (the workspace's record of its agents), and the
 # tools an agent on a machine of the workspace acts through (the MCP server's agent surface).
-tilo-workspace-agent = { path = "../../platform/tilo-workspace-agent", optional = true }
+tilo-workspace-agent = { path = "../../sdk/tilo-workspace-agent", optional = true }
 tilo-mcp = { path = "../../runtime/tilo-mcp", optional = true }
 # The workspace's default resource identity, permissions and the collaboration wire's types.
 collaboration = { version = "0.1.0", path = "../../collab/collaboration", optional = true }
@@ -308,7 +308,7 @@ tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 chat = { path = "../../../apps/chat", default-features = false, features = ["samples"] }
 # Text a test lays out uses the pinned catalog, never the fonts the machine
 # running it has installed.
-ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["test-support"] }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tempfile.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }

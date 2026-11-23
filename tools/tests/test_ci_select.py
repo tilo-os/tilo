@@ -1051,7 +1051,7 @@ class SelectorTests(unittest.TestCase):
         with self.subTest(phase='unknown docs and embedded code retain contract checks'):
             self.setUp()
             for path in ["docs/contracts.md", "docs/packaging.md", "docs/app-development.md",
-                         "crates/sdk/ui-core/CHARTS.md", "docs/unknown.md", "docs/designs/fixture.rs",
+                         "crates/ui/ui-core/CHARTS.md", "docs/unknown.md", "docs/designs/fixture.rs",
                          "docs/designs/../contract.md", "unknown-input"]:
                 with self.subTest(path=path):
                     plan = ci_select.make_plan(self.metadata, self.root, [path], 2)

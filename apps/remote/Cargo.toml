@@ -26,7 +26,7 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The resource the app draws: the saved connections, their checks and their verbs.
 remote-model = { path = "../remote-model" }

@@ -27,7 +27,7 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 hex.workspace = true
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The resource the app draws: its types, verb and typed action arguments.
 git-client-model = { path = "../git-client-model" }

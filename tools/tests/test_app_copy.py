@@ -86,7 +86,7 @@ class AppCopyTests(unittest.TestCase):
     def test_an_absent_used_key_fails_in_every_shipped_locale(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            self.crate(root, "crates/sdk/ui-core", {"en-US": "ok = OK\n"}, "")
+            self.crate(root, "crates/ui/ui-core", {"en-US": "ok = OK\n"}, "")
             present = "settings-present = Present\n"
             self.crate(root, "apps/settings", {"en-US": present, "de-DE": present},
                        'fn pane() { t("settings-absent"); }\n')
@@ -101,7 +101,7 @@ class AppCopyTests(unittest.TestCase):
     def test_toolkit_messages_resolve_in_every_crate(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            self.crate(root, "crates/sdk/ui-core", {"en-US": "history-title = History\n"}, "")
+            self.crate(root, "crates/ui/ui-core", {"en-US": "history-title = History\n"}, "")
             self.crate(root, "apps/settings", {"en-US": "notes-x = X\n", "de": "notes-x = X\n"},
                        'fn title() { t("history-title"); }\n')
             self.assertEqual(copy.missing_copy(root), [])
@@ -119,7 +119,7 @@ class AppCopyTests(unittest.TestCase):
     def test_settings_resolves_the_shared_provider_catalogue(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            self.crate(root, "crates/sdk/ui-core", {"en-US": "ok = OK\n"}, "")
+            self.crate(root, "crates/ui/ui-core", {"en-US": "ok = OK\n"}, "")
             shared = "agent-cancel = Cancel\n"
             self.crate(root, "crates/integrations/provider-settings-ui",
                        {"en-US": shared, "de-DE": shared}, "")
@@ -134,7 +134,7 @@ class AppCopyTests(unittest.TestCase):
     def test_keys_resolved_by_another_crates_root_are_looked_up_in_its_catalogue(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            self.crate(root, "crates/sdk/ui-core", {"en-US": "ok = OK\n"}, "")
+            self.crate(root, "crates/ui/ui-core", {"en-US": "ok = OK\n"}, "")
             setup = "setup-title = Welcome\n"
             self.crate(root, "crates/session/setup", {"en-US": setup, "de-DE": setup}, "")
             (root / "crates/session/setup/Cargo.toml").write_text('[package]\nname = "tilo-setup"\n')
@@ -152,7 +152,7 @@ class AppCopyTests(unittest.TestCase):
     def test_a_resolver_imported_from_another_crate_opens_its_catalogue(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            self.crate(root, "crates/sdk/ui-core", {"en-US": "ok = OK\n"}, "")
+            self.crate(root, "crates/ui/ui-core", {"en-US": "ok = OK\n"}, "")
             catalogue = "settings-title = Settings\n"
             self.crate(root, "crates/session/desktop-surface",
                        {"en-US": catalogue, "de-DE": catalogue}, "")
@@ -173,7 +173,7 @@ class AppCopyTests(unittest.TestCase):
     def test_a_crate_reading_anothers_catalogue_is_checked_in_it(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            self.crate(root, "crates/sdk/ui-core", {"en-US": "ok = OK\n"}, "")
+            self.crate(root, "crates/ui/ui-core", {"en-US": "ok = OK\n"}, "")
             catalogue = "shell-open = Open\n"
             self.crate(root, "crates/session/desktop-surface",
                        {"en-US": catalogue, "de-DE": catalogue}, "")
@@ -193,7 +193,7 @@ class AppCopyTests(unittest.TestCase):
     def test_the_desktop_surface_checks_the_activity_keys_a_match_picks(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            self.crate(root, "crates/sdk/ui-core", {"en-US": "ok = OK\n"}, "")
+            self.crate(root, "crates/ui/ui-core", {"en-US": "ok = OK\n"}, "")
             open_ = "activity-morning-open = Open\n"
             self.crate(root, "crates/session/desktop-surface",
                        {"en-US": open_, "de-DE": open_},

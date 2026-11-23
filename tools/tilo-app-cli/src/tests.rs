@@ -81,7 +81,7 @@ fn copy_tree(from: &Path, to: &Path) {
 fn fixture_sdk(workspace_member: bool) -> AppSdk {
     if workspace_member {
         AppSdk::Workspace {
-            ui_path: PathBuf::from("../../crates/sdk/ui-core"),
+            ui_path: PathBuf::from("../../crates/ui/ui-core"),
         }
     } else {
         AppSdk::Standalone(standalone::Standalone {
@@ -2295,7 +2295,7 @@ fn new_apps_are_created_whole_with_their_workspace_registration() {
 
     {
         let temp = tempfile::tempdir().expect("temp dir");
-        let ui = temp.path().join("crates/sdk/ui-core");
+        let ui = temp.path().join("crates/ui/ui-core");
         std::fs::create_dir_all(&ui).unwrap();
         std::fs::write(ui.join("Cargo.toml"), "[workspace]\n").unwrap();
 
@@ -2309,9 +2309,9 @@ fn new_apps_are_created_whole_with_their_workspace_registration() {
         let temp = tempfile::tempdir().expect("temp dir");
         let root = temp.path();
         std::fs::create_dir(root.join("apps")).unwrap();
-        std::fs::create_dir_all(root.join("crates/sdk/ui-core")).unwrap();
+        std::fs::create_dir_all(root.join("crates/ui/ui-core")).unwrap();
         std::fs::write(
-            root.join("crates/sdk/ui-core/Cargo.toml"),
+            root.join("crates/ui/ui-core/Cargo.toml"),
             "[package]\nname = \"ui\"\n",
         )
         .unwrap();
@@ -2339,9 +2339,9 @@ fn new_apps_are_created_whole_with_their_workspace_registration() {
             std::fs::Permissions::from_mode(0o750),
         )
         .unwrap();
-        std::fs::create_dir_all(root.join("crates/sdk/ui-core")).unwrap();
+        std::fs::create_dir_all(root.join("crates/ui/ui-core")).unwrap();
         std::fs::write(
-            root.join("crates/sdk/ui-core/Cargo.toml"),
+            root.join("crates/ui/ui-core/Cargo.toml"),
             "[package]\nname = \"ui\"\n",
         )
         .unwrap();
@@ -2833,9 +2833,9 @@ fn creation_inputs_are_validated_and_printed_safely() {
         assert_eq!(
             relative_path(
                 Path::new("/repo/apps/demo"),
-                Path::new("/repo/crates/sdk/ui-core")
+                Path::new("/repo/crates/ui/ui-core")
             ),
-            PathBuf::from("../../crates/sdk/ui-core")
+            PathBuf::from("../../crates/ui/ui-core")
         );
     }
 
@@ -2991,7 +2991,7 @@ tilo_test_env::scenario! {
                     title: "Notes".into(),
                     app_id: "so.tilo.notes".into(),
                     sdk: AppSdk::Workspace {
-                        ui_path: PathBuf::from("../../crates/sdk/ui-core"),
+                        ui_path: PathBuf::from("../../crates/ui/ui-core"),
                     },
                     template,
                 };
@@ -3040,7 +3040,7 @@ tilo_test_env::scenario! {
                 title: "Errands".into(),
                 app_id: "so.tilo.errands".into(),
                 sdk: AppSdk::Workspace {
-                    ui_path: PathBuf::from("../../crates/sdk/ui-core"),
+                    ui_path: PathBuf::from("../../crates/ui/ui-core"),
                 },
                 template: Template::Starter,
             };
@@ -3078,7 +3078,7 @@ tilo_test_env::scenario! {
                 title: "Project Maker".into(),
                 app_id: "so.tilo.project.maker".into(),
                 sdk: AppSdk::Workspace {
-                    ui_path: PathBuf::from("../../crates/sdk/ui-core"),
+                    ui_path: PathBuf::from("../../crates/ui/ui-core"),
                 },
                 template: Template::Graph,
             };
@@ -3124,7 +3124,7 @@ tilo_test_env::scenario! {
                     title: "Generated App".into(),
                     app_id: "so.tilo.generated.app".into(),
                     sdk: AppSdk::Workspace {
-                        ui_path: PathBuf::from("../../crates/sdk/ui-core"),
+                        ui_path: PathBuf::from("../../crates/ui/ui-core"),
                     },
                     template,
                 };
@@ -3236,7 +3236,7 @@ tilo_test_env::scenario! {
                     title: "Demo".into(),
                     app_id: "so.tilo.demo".into(),
                     sdk: AppSdk::Workspace {
-                        ui_path: PathBuf::from("../../crates/sdk/ui-core"),
+                        ui_path: PathBuf::from("../../crates/ui/ui-core"),
                     },
                     template,
                 };
@@ -3949,7 +3949,7 @@ fn the_dev_loop_watches_rebuilds_and_restarts_only_on_real_edits() {
         assert_eq!(
             roots[2],
             Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../crates/sdk/ui-core")
+                .join("../../crates/ui/ui-core")
                 .canonicalize()
                 .unwrap()
         );
@@ -4670,13 +4670,13 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
     {
         let home = Path::new("/home/ada/.cargo");
         assert!(standalone::in_cargo_cache(
-            &home.join("git/checkouts/tilo-1a2b/0123456/crates/sdk/ui-core")
+            &home.join("git/checkouts/tilo-1a2b/0123456/crates/ui/ui-core")
         ));
         assert!(standalone::in_cargo_cache(
             &home.join("registry/src/index.crates.io-1a2b/tilo-app-cli-0.1.0")
         ));
         assert!(!standalone::in_cargo_cache(Path::new(
-            "/home/ada/src/tilo/crates/sdk/ui-core"
+            "/home/ada/src/tilo/crates/ui/ui-core"
         )));
     }
 }
@@ -5043,8 +5043,8 @@ fn seal_script(path: &Path) {
 
 #[test]
 fn ui_path_accepts_either_sdk_crate() {
-    for crate_dir in ["ui-core", "tilo-app"] {
-        let ui = Path::new("../tilo/crates/sdk").join(crate_dir);
+    for crate_dir in ["ui/ui-core", "sdk/tilo-app"] {
+        let ui = Path::new("../tilo/crates").join(crate_dir);
         assert_eq!(checkout_root_for_ui(&ui), Path::new("../tilo"));
         assert_eq!(
             sdk_path_for_ui(&ui),
@@ -5291,7 +5291,7 @@ tilo_test_env::scenario! {
             std::fs::write(manifest, "[package]\n").expect("manifest");
         }
         let metadata = serde_json::json!({"packages": [
-            {"name": "tilo-ui", "manifest_path": "/elsewhere/crates/sdk/ui-core/Cargo.toml"},
+            {"name": "tilo-ui", "manifest_path": "/elsewhere/crates/ui/ui-core/Cargo.toml"},
             {"name": "tilo-app", "manifest_path": tilo_app},
         ]});
         assert_eq!(

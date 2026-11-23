@@ -25,7 +25,7 @@ dev-overrides = ["package-store/dev-overrides"]
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 tilo-files = { path = "../../platform/tilo-files" }
-tilo-formats = { path = "../../sdk/tilo-formats" }
+tilo-formats = { path = "../../ui/tilo-formats" }
 # The person's interface language, for the catalogue's localized names: the
 # same one answer every surface resolves its language from.
 settings-store = { path = "../../system/settings-store" }

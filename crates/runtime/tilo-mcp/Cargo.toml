@@ -27,7 +27,7 @@ libc.workspace = true
 # A task's programs run in a tilolang host started for them: its api, and the sealed blob its apps
 # arrive in.
 runtime-portal = { path = "../../runtime/runtime-portal" }
-tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
+tilo-render-protocol = { path = "../../ui/tilo-render-protocol" }
 serde.workspace = true
 serde_json.workspace = true
 tilo-action-policy = { path = "../../collab/action-policy" }

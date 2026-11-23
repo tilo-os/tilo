@@ -45,7 +45,7 @@ live = ["dep:rustypipe", "dep:tilo-innertube", "dep:tokio", "dep:reqwest", "tilo
 tilo-spotify = { path = "../../crates/integrations/tilo-spotify", optional = true }
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 tilo-spotify-engine = { path = "../../crates/engines/loadable/spotify", optional = true }
 tilo-youtube-engine = { path = "../../crates/engines/loadable/youtube", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).

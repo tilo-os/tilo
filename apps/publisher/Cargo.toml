@@ -20,7 +20,7 @@ thin = ["dep:runtime-dylib"]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The resource the app draws: its type, its check and its registry default.
 publisher-model = { path = "../publisher-model" }
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 app-registry = { path = "../../crates/packaging/app-registry" }
 registry-types = { path = "../../crates/packaging/registry-types" }
 

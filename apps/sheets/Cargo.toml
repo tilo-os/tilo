@@ -32,7 +32,7 @@ runtime-engine = ["thin", "tilo-spreadsheet-engine/thin"]
 [dependencies]
 tilo-files = { path = "../../crates/platform/tilo-files" }
 tilo-locale = { path = "../../crates/platform/tilo-locale" }
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 # The Tilo action model: doc-mutating operations are replayable, undoable actions.
 tilo-actions = { path = "../../crates/collab/actions" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
@@ -46,7 +46,7 @@ anyhow.workspace = true
 tracing.workspace = true
 # Spreadsheet interchange (.xlsx/.ods) through tilo-doc's bounded, XXE-hardened
 # codecs, and its A1 reference helpers.
-tilo-doc = { path = "../../crates/doc/tilo-doc" }
+tilo-doc = { path = "../../crates/sdk/tilo-doc" }
 tilo-doc-codecs = { path = "../../crates/engines/tilo-doc-codecs", default-features = false, features = ["xlsx", "ods"] }
 # The comment-thread model the document apps share.
 tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }

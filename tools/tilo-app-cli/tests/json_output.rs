@@ -474,7 +474,7 @@ fn missing_fonts_are_reported_before_any_cargo_quality_command() {
         .args(["new", "demo", "--id", "org.example.demo", "--directory"])
         .arg(&app)
         .arg("--ui-path")
-        .arg(checkout.join("crates/sdk/ui-core"))
+        .arg(checkout.join("crates/ui/ui-core"))
         .current_dir(dir.path())
         .env_remove("TILO_UI_PATH")
         .output_locked()

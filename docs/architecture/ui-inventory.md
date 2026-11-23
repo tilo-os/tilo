@@ -150,6 +150,6 @@ component serves both.
 ## How this list shrinks
 
 A surface is converted when it composes the shared component named in its row;
-a component lands in `crates/sdk/ui-core` with its own catalogue entry
-(`crates/dev/ui-graph/components.json`) and tests, and the local copies above
+a component lands in `crates/ui/ui-core` with its own catalogue entry
+(`crates/ui/ui-graph/components.json`) and tests, and the local copies above
 are deleted in the same change.

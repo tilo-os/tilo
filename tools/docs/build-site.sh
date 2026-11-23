@@ -21,7 +21,7 @@ for dir in "$@"; do
   generated+=(--generated "$dir")
 done
 export TILO_FONT_ASSET_CACHE=${TILO_FONT_ASSET_CACHE:-${CARGO_TARGET_DIR:-$repo/target}/font-artifacts}
-fonts=$(python3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache "$TILO_FONT_ASSET_CACHE")
+fonts=$(python3 tools/font-catalog.py root crates/ui/ui-core/assets/fonts --scope fixtures --cache "$TILO_FONT_ASSET_CACHE")
 
 book=$(mktemp -d "${TMPDIR:-/tmp}/docs-book.XXXXXX")
 trap 'rm -rf -- "$book"' EXIT

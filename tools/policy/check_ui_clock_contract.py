@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Keep the UI toolkit's clock behind ``ui::time``.
 
-The toolkit (``crates/sdk/ui-core``), the editor built on it
-(``crates/sdk/tilo-rich-edit``), its host services
+The toolkit (``crates/ui/ui-core``), the editor built on it
+(``crates/ui/tilo-rich-edit``), its host services
 (``crates/sdk/tilo-process-services``) and the collab client under it
 (``crates/collab/collaboration``) name their clock types through
 ``crate::time`` —
@@ -57,8 +57,8 @@ from rust_source import (  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 CRATES = (
-    Path("crates/sdk/ui-core"),
-    Path("crates/sdk/tilo-rich-edit"),
+    Path("crates/ui/ui-core"),
+    Path("crates/ui/tilo-rich-edit"),
     Path("crates/sdk/tilo-process-services"),
     Path("crates/collab/collaboration"),
 )
@@ -107,7 +107,7 @@ OWN_PROCESS_TEST = "tilo_test_env::in_own_process("
 CAPTURE_ASKS = "wall_frozen()"
 # The capture launcher itself: it pins the clock for the process its frames
 # are drawn in, and no test reaches it.
-CAPTURE_LAUNCHER = Path("crates/sdk/ui-core/src/clock.rs")
+CAPTURE_LAUNCHER = Path("crates/ui/ui-core/src/clock.rs")
 
 
 @dataclass(frozen=True)

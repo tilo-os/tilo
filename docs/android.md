@@ -167,7 +167,7 @@ keyboards, density, locale, theme) rather than being recreated, and ends the
 process when it is destroyed: winit's event loop and the toolkit's process
 state run once per process.
 
-**The Java layer.** `crates/sdk/ui-core/android/java/so/tilo/android` holds
+**The Java layer.** `crates/ui/ui-core/android/java/so/tilo/android` holds
 the only Java: `TiloActivity` and one helper class per thing a native
 activity cannot do from Rust: `TiloTextInput` (the soft keyboard's
 `InputConnection`), `TiloDocuments` and `TiloActivityResults` (Storage Access

@@ -33,7 +33,7 @@ tilo-clock = { path = "../../crates/platform/tilo-clock", features = ["test-supp
 tilo-desktop-surface = { path = "../../crates/session/desktop-surface" }
 tilo-session-core = { path = "../../crates/session/core" }
 tilo-desktop-model = { path = "../../crates/session/desktop-model" }
-tilo-ui = { path = "../../crates/sdk/ui-core", default-features = false }
+tilo-ui = { path = "../../crates/ui/ui-core", default-features = false }
 vello.workspace = true
 winit.workspace = true
 

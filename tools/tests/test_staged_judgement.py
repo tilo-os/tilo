@@ -141,20 +141,20 @@ CASES = (
         check="check_ui_clock_contract",
         files={
             "clippy.toml": "allow-unwrap-in-tests = true\n",
-            "crates/sdk/ui-core/clippy.toml": "allow-unwrap-in-tests = true\n",
-            "crates/sdk/ui-core/src/lib.rs": "pub fn run() {}\n",
+            "crates/ui/ui-core/clippy.toml": "allow-unwrap-in-tests = true\n",
+            "crates/ui/ui-core/src/lib.rs": "pub fn run() {}\n",
         },
         violation={
-            "crates/sdk/ui-core/src/wall.rs": (
+            "crates/ui/ui-core/src/wall.rs": (
                 "pub fn deadline() -> std::time::Instant { std::time::Instant::now() }\n"
             ),
         },
     ),
     Case(
         check="check_formats",
-        files={"crates/sdk/ui-core/src/lib.rs": "pub fn run() {}\n"},
+        files={"crates/ui/ui-core/src/lib.rs": "pub fn run() {}\n"},
         violation={
-            "crates/sdk/ui-core/src/row.rs": (
+            "crates/ui/ui-core/src/row.rs": (
                 'pub fn stamp(when: Time) -> String { when.format("%b %d").to_string() }\n'
             ),
         },
@@ -171,11 +171,11 @@ CASES = (
     Case(
         check="check_app_window_inputs_contract",
         files={
-            "crates/sdk/ui-core/src/lib.rs": "pub fn run() {}\n",
-            **{f"crates/sdk/ui-core/src/{name}": "" for name in NATIVE_RUNNER_FILES},
+            "crates/ui/ui-core/src/lib.rs": "pub fn run() {}\n",
+            **{f"crates/ui/ui-core/src/{name}": "" for name in NATIVE_RUNNER_FILES},
         },
         violation={
-            "crates/sdk/ui-core/src/portable.rs": (
+            "crates/ui/ui-core/src/portable.rs": (
                 'pub fn home() -> Option<String> { env::var("HOME").ok() }\n'
             ),
         },

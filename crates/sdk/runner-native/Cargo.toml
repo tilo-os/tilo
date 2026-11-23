@@ -20,7 +20,7 @@ presentation-feedback = ["ui-core/presentation-feedback"]
 dx12-shader-cache = ["ui-core/dx12-shader-cache"]
 
 [dependencies]
-ui-core = { version = "0.1.0", package = "tilo-ui", path = "../ui-core", default-features = false, features = ["native"] }
+ui-core = { version = "0.1.0", package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["native"] }
 
 # Location and screen capture through the XDG Desktop Portal exist only on
 # Linux; this is the one place the SDK turns them on, so no app selects a
@@ -30,7 +30,7 @@ ui-core = { version = "0.1.0", package = "tilo-ui", path = "../ui-core", default
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 [target.'cfg(target_os = "linux")'.dependencies]
-ui-core = { version = "0.1.0", package = "tilo-ui", path = "../ui-core", default-features = false, features = ["native", "portal"] }
+ui-core = { version = "0.1.0", package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["native", "portal"] }
 
 [lints]
 workspace = true

@@ -96,8 +96,7 @@ fn scaffold(checkout: &Path, parent: &Path, app: &Path) {
         new.arg("--sdk-git")
             .arg(format!("file://{}", checkout.display()));
     } else {
-        new.arg("--ui-path")
-            .arg(checkout.join("crates/sdk/ui-core"));
+        new.arg("--ui-path").arg(checkout.join("crates/ui/ui-core"));
     }
     run(&mut new, "tilo-app new");
 

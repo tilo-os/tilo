@@ -66,8 +66,8 @@ class DocumentEngineBoundaryTests(unittest.TestCase):
     def test_engine_owners_tests_and_comments_are_exempt(self):
         root = self.fixture(
             {
-                "crates/doc/tilo-doc/src/model.rs": "use automerge::marks::ExpandMark;\n",
-                "crates/sdk/ui-core/src/text.rs": "use automerge::marks::Mark;\n",
+                "crates/sdk/tilo-doc/src/model.rs": "use automerge::marks::ExpandMark;\n",
+                "crates/ui/ui-core/src/text.rs": "use automerge::marks::Mark;\n",
                 "apps/editor/tests/corrupt.rs": "const K: &str = tilo_doc::schema::BLOCK_ORDER;\n",
                 "apps/editor/src/lib.rs": (
                     "// tilo-doc uses automerge::marks internally\n"

@@ -801,17 +801,17 @@ class CatalogueGateTests(unittest.TestCase):
         return module.catalogue_checks(module.Push(set(files), [], [], []))
 
     def test_a_widget_change_names_the_catalogue_check(self):
-        self.assertEqual(self.names("crates/sdk/ui-core/src/widget/button.rs"), ["ui-graph"])
+        self.assertEqual(self.names("crates/ui/ui-core/src/widget/button.rs"), ["ui-graph"])
 
     def test_a_rich_edit_change_names_it_too(self):
-        self.assertEqual(self.names("crates/sdk/tilo-rich-edit/src/editor.rs"), ["ui-graph"])
+        self.assertEqual(self.names("crates/ui/tilo-rich-edit/src/editor.rs"), ["ui-graph"])
 
     def test_the_windows_registry_names_it_too(self):
         self.assertEqual(
-            self.names("crates/platform/tilo-app-window/src/components.rs"), ["ui-graph"])
+            self.names("crates/sdk/tilo-app-window/src/components.rs"), ["ui-graph"])
 
     def test_an_edit_of_the_catalogue_names_it(self):
-        self.assertEqual(self.names("crates/dev/ui-graph/components.json"), ["ui-graph"])
+        self.assertEqual(self.names("crates/ui/ui-graph/components.json"), ["ui-graph"])
 
     def test_a_change_elsewhere_names_nothing(self):
         self.assertEqual(self.names("crates/server/tilo-server/src/web/tickets.rs"), [])

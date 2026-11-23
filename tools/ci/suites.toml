@@ -699,19 +699,19 @@ inputs = [
   "vendor/winit/src/platform_impl/quit_request.rs",
   "crates/engines/paint-stream/tests/fixtures/",
   # The theme bundle's test loads a theme written only against the theme SDK.
-  "crates/sdk/themes/bauhaus/theme.json",
+  "crates/ui/themes/bauhaus/theme.json",
   "tools/test-assets.py",
   # The catalogue test reads the gallery app's sources: every component the
   # toolkit describes is shown there, or says at its declaration why it cannot.
   "apps/tl/gallery/",
 ]
 readers = [
-  "crates/sdk/ui-core/build.rs",
-  "crates/sdk/ui-core/src/app/close_admission.rs",
-  "crates/sdk/ui-core/src/webview/paint.rs",
-  "crates/sdk/ui-core/src/widget/webview.rs",
-  "crates/sdk/ui-core/src/theme_bundle/tests.rs",
-  "crates/sdk/ui-core/src/component/coverage_tests.rs",
+  "crates/ui/ui-core/build.rs",
+  "crates/ui/ui-core/src/app/close_admission.rs",
+  "crates/ui/ui-core/src/webview/paint.rs",
+  "crates/ui/ui-core/src/widget/webview.rs",
+  "crates/ui/ui-core/src/theme_bundle/tests.rs",
+  "crates/ui/ui-core/src/component/coverage_tests.rs",
 ]
 
 
@@ -745,7 +745,7 @@ readers = [
 package = "tilolang"
 # The multi-package tests resolve and compile the built-in packages, and the coverage check
 # reads the sources of the toolkit and the editor for the components they describe.
-inputs = ["apps/tl/", "crates/sdk/tilo-rich-edit/", "crates/sdk/ui-core/"]
+inputs = ["apps/tl/", "crates/ui/tilo-rich-edit/", "crates/ui/ui-core/"]
 readers = [
   "crates/lang/tilolang/tests/it/coverage.rs",
   "crates/lang/tilolang/tests/it/multifile.rs",
@@ -891,9 +891,9 @@ inputs = [
   "apps/tl/gallery/",
   "apps/chat/",
   "apps/tasks/",
-  "crates/platform/tilo-app-window/locales/",
+  "crates/sdk/tilo-app-window/locales/",
   "crates/lang/tilolang-tilo/tests/legacy/rust_notes.hex",
-  "crates/sdk/ui-core/locales/",
+  "crates/ui/ui-core/locales/",
 ]
 readers = [
   "crates/lang/tilolang-process/examples/process_cost.rs",
@@ -1211,7 +1211,7 @@ inputs = [
   "os/dev/install-board-layer.sh", "os/usr/lib/systemd/system/tilo-board-headless-session@.service",
   "os/usr/libexec/tilo-seat-session", "os/usr/libexec/tilo-session",
   "os/usr/share/tilo/system-interfaces.toml", "tools/font-catalog.py",
-  "crates/sdk/ui-core/assets/fonts/**",
+  "crates/ui/ui-core/assets/fonts/**",
   # The session file must start the login wrapper.
   "os/usr/share/wayland-sessions/tilo-session.desktop",
 ]
@@ -1232,7 +1232,7 @@ package = "tilo-app-cli"
 # standalone scaffolds embed the workspace's lock, patches, profiles and toolchain.
 # `--from-example` embeds the example apps, and a test checks them and their index.
 inputs = [
-  "crates/sdk/tilo-app/Cargo.toml", "crates/sdk/ui-core/Cargo.toml", "tools/ui-builder/Cargo.toml",
+  "crates/sdk/tilo-app/Cargo.toml", "crates/ui/ui-core/Cargo.toml", "tools/ui-builder/Cargo.toml",
   ".cargo/config.toml",
   "examples/apps/", "examples/README.md",
   # Task guides are embedded by the CLI from the published documentation.
@@ -1245,6 +1245,23 @@ inputs = [
   "os/dev/assemble-app-runtime.py", "tools/ci/rustc-thin-app-wrapper.sh",
   # The outside-repository test builds a generated app against the checkout.
   "Cargo.toml", "crates/sdk/", "crates/platform/", "vendor/",
+  "crates/ui/font-catalog/",
+  "crates/ui/theme-painter-wasm/",
+  "crates/ui/theme-sdk/",
+  "crates/ui/themes/",
+  "crates/ui/tilo-component-scan/",
+  "crates/ui/tilo-cpu-raster/",
+  "crates/ui/tilo-formats/",
+  "crates/ui/ui-kms/",
+  "crates/ui/ui-macros/",
+  "crates/ui/ui-paint/",
+  "crates/ui/winit-x11/",
+  "crates/sdk/tilo-app-window/",
+  "crates/ui/tilo-render-protocol/",
+  "crates/sdk/tilo-view/",
+  "crates/sdk/tilo-workspace-agent/",
+  "crates/sdk/tilo-workspace-emoji/",
+  "crates/sdk/zone-globe/",
   "crates/engines/search/",
   "crates/engines/tilo-page-raster/",
   "crates/engines/tilo-recurrence/",
@@ -1458,8 +1475,8 @@ readers = ["crates/engines/local-model-service/src/main.rs"]
 package = "tilo-font-catalog"
 # Compiles in the catalog's manifest and verifies the checkout's copy; the PDF
 # helper reads the fonts through it.
-inputs = ["crates/sdk/ui-core/assets/fonts/", "tools/font-catalog.py"]
-readers = ["crates/sdk/font-catalog/build.rs"]
+inputs = ["crates/ui/ui-core/assets/fonts/", "tools/font-catalog.py"]
+readers = ["crates/ui/font-catalog/build.rs"]
 
 [[cargo]]
 package = "word-processor"
@@ -1482,7 +1499,7 @@ inputs = [
   "apps/pdf-viewer/surface.toml",
   "apps/tasks/surface.toml",
   "crates/server/tilo-workspace-service/src/workspaces/person_settings/calendars/fake_caldav.rs",
-  "crates/sdk/ui-core/assets/fonts/",
+  "crates/ui/ui-core/assets/fonts/",
   "crates/integrations/tilo-web-search/tests/fixtures/brave.html",
   "crates/integrations/tilo-web-search/tests/fixtures/bing.html",
   "crates/session/client/tests/support/",
@@ -1508,7 +1525,7 @@ readers = [
 package = "themes"
 # The studio's finished-theme test reads the toolkit's committed fixture, which
 # this package's own tests do not carry.
-inputs = ["crates/sdk/ui-core/tests/fixtures/finishes/"]
+inputs = ["crates/ui/ui-core/tests/fixtures/finishes/"]
 readers = ["apps/themes/src/studio.rs"]
 
 [[cargo]]
@@ -1580,14 +1597,14 @@ inputs = [
   "crates/packaging/launcher/src/main.rs",
   "crates/packaging/launcher/src/system_stats.rs",
   "crates/system/system-stats/src/protocol.rs",
-  "crates/platform/tilo-render-protocol/src/broker.rs",
+  "crates/ui/tilo-render-protocol/src/broker.rs",
   "apps/*/tilo-app.toml",
   # Every app's manifest, which the mount's service tests read the declared
   # services of.
   "apps/*/Cargo.toml",
   # The catalogues the locale-leak test reads words of: the toolkit's, which
   # every window carries, and the Settings index's, which every window offers.
-  "crates/sdk/ui-core/locales/en-US.ftl",
+  "crates/ui/ui-core/locales/en-US.ftl",
   "crates/system/settings-store/locales/en-US.ftl",
   "crates/system/settings-store/locales/de-DE.ftl",
   # The page the page-track tests' engine shows: a snapshot the paint stream's own tests keep.
@@ -2138,7 +2155,7 @@ check = "web-node-tests"
 package = "runtime-bundle"
 inputs = [
   "tools/font-catalog.py",
-  "crates/sdk/ui-core/assets/fonts/",
+  "crates/ui/ui-core/assets/fonts/",
   "tools/apps/browser_runtime_release.py",
   "tools/apps/signal_runtime_fixture.py",
   "tools/apps/signal_zero_runtime.py",

@@ -14,7 +14,7 @@ tilo-lock = { path = "../../platform/tilo-lock" }
 tilo-content = { path = "../../system/content" }
 tilo-content-device = { path = "../../system/content-device" }
 tilo-image-codec = { path = "../../engines/tilo-image-codec" }
-tilo-model-client = { path = "../../agent/model-client", default-features = false }
+tilo-model-client = { path = "../../sdk/model-client", default-features = false }
 tilo-ocr = { path = "../../engines/ocr" }
 # The system index a picture's words are written back into.
 tilo-desktop-search = { path = "../../session/desktop-search", features = ["indexes"] }

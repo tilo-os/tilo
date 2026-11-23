@@ -1,7 +1,0 @@
-# The toolkit's public app-facing widgets that tilolang does not reach as `ui.<Name>` yet, each
-# with the reason it is not bound. The list only shrinks: a widget bound since must leave it, and
-# no widget may join it (crates/lang/tilolang/tests/it/coverage.rs holds every public widget to
-# being bound or being here; crates/sdk/ui-core/src/component/coverage_tests.rs holds it to being
-# described by the toolkit or being here).
-#
-# A line is `Name — why it is not bound yet`.
