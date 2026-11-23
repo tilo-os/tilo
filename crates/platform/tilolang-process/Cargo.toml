@@ -28,6 +28,9 @@ collaboration = { version = "0.1.0", path = "../../collab/collaboration", featur
 tilo-resource-store = { version = "0.1.0", path = "../../collab/resource-store" }
 # The API the session hands instances over.
 runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal" }
+# A viewer's page: the asks and answers it is driven by, and the window it is laid out in here.
+tilo-server-protocol = { version = "0.1.0", path = "../../server/tilo-server-protocol" }
+tilo-app-window = { version = "0.1.0", path = "../tilo-app-window" }
 # The patch connection to each instance's window, and the sealed memfd its module comes in.
 tilo-render-protocol = { version = "0.1.0", path = "../tilo-render-protocol" }
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }

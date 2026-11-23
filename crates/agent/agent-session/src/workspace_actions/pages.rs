@@ -7,13 +7,15 @@
 //! is.
 
 use std::fmt::Write as _;
+use std::sync::Arc;
 
 use super::{
     ActionCallError, Caller, DocumentRoute, HashMap, Job, Needs, Worker, WorkspaceActions,
     WorkspaceId, bounded, catch_up, pending,
 };
 use tilo_actions::remote::{
-    CatalogueQuery, Completer, FOUND_FILE, InvokeRequest, Pending, RemoteActionTarget, Within,
+    CatalogueQuery, Completer, FOUND_FILE, InvokeRequest, Pending, RemoteActionTarget, SignedCall,
+    Within,
 };
 use tilo_actions::{ActionAddress, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_server_protocol::page::{
@@ -39,12 +41,16 @@ pub(super) enum PageJob {
         workspace_id: WorkspaceId,
         caller: Box<Caller>,
         address: PageAddress,
+        signed: Option<Box<SignedCall>>,
+        invoker: Option<String>,
         done: Completer<Result<OpenedPage, PageRefusal>>,
     },
     Act {
         workspace_id: WorkspaceId,
         page: u64,
         act: Option<(u32, Option<String>, PageAction)>,
+        signed: Option<Box<SignedCall>>,
+        invoker: Option<String>,
         done: Completer<Result<Vec<PagePatch>, PageRefusal>>,
     },
     Close {
@@ -82,6 +88,10 @@ pub(super) enum HeldPage {
         /// Boxed: who opened it is most of the page's size, and the front page holds none.
         who: Box<bounded::Bounded>,
         route: DocumentRoute,
+    },
+    /// A page a package's own process laid out, asked there.
+    Package {
+        page: Arc<dyn crate::package_runs::PackagePage>,
     },
     /// The workspace's front page: the apps a member opens here. Nothing is
     /// acted on it and it never changes.
@@ -272,7 +282,7 @@ impl Pages {
             PageJob::Act { page, .. } | PageJob::Close { page, .. } => match self.held.get(page) {
                 Some(HeldPage::App { who, .. }) => Some(&who.caller),
                 Some(HeldPage::Search { caller, .. }) => Some(caller),
-                Some(HeldPage::Home { .. }) | None => None,
+                Some(HeldPage::Package { .. } | HeldPage::Home { .. }) | None => None,
             },
         }
     }
@@ -300,19 +310,25 @@ fn refused(error: ActionCallError) -> PageRefusal {
 
 impl WorkspaceActions {
     /// Show `caller` the page `address` names in `workspace_id`: the app's view
-    /// of the workspace's document, as the workspace lets them see it.
+    /// of the workspace's document, as the workspace lets them see it. A page of a package the
+    /// device runs is laid out in the app's own process ([`PackageRuns`](crate::package_runs::PackageRuns)); any other is the
+    /// catalogue's, laid out in a worker here.
     #[must_use]
     pub fn open_page(
         &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
         address: PageAddress,
+        signed: Option<Box<SignedCall>>,
+        invoker: Option<String>,
     ) -> Pending<Result<OpenedPage, PageRefusal>> {
         let (done, answer) = pending();
         let job = PageJob::Open {
             workspace_id,
             caller: Box::new(caller.clone()),
             address,
+            signed,
+            invoker,
             done,
         };
         if let Err(Job::Page(job)) = self.submit(Job::Page(Box::new(job)))
@@ -332,12 +348,16 @@ impl WorkspaceActions {
         workspace_id: WorkspaceId,
         page: u64,
         act: Option<(u32, Option<String>, PageAction)>,
+        signed: Option<Box<SignedCall>>,
+        invoker: Option<String>,
     ) -> Pending<Result<Vec<PagePatch>, PageRefusal>> {
         let (done, answer) = pending();
         let job = PageJob::Act {
             workspace_id,
             page,
             act,
+            signed,
+            invoker,
             done,
         };
         if let Err(Job::Page(job)) = self.submit(Job::Page(Box::new(job)))
@@ -361,14 +381,30 @@ impl Worker {
                 workspace_id,
                 caller,
                 address,
+                signed,
+                invoker,
                 done,
-            } => done.complete(self.open_page(workspace_id, &caller, &address)),
+            } => done.complete(self.open_page(
+                workspace_id,
+                &caller,
+                &address,
+                signed.as_deref(),
+                invoker.as_deref(),
+            )),
             PageJob::Act {
                 workspace_id,
                 page,
                 act,
+                signed,
+                invoker,
                 done,
-            } => match self.act_on_page(page, act.clone()) {
+            } => match self.act_on_page(
+                workspace_id,
+                page,
+                act.clone(),
+                signed.as_deref(),
+                invoker.as_deref(),
+            ) {
                 Some(answer) => done.complete(answer),
                 // Its record or its chains are still on their way: it waits off the thread,
                 // and goes on once they arrive.
@@ -378,6 +414,8 @@ impl Worker {
                         workspace_id,
                         page,
                         act,
+                        signed,
+                        invoker,
                         done,
                     })),
                 ),
@@ -408,9 +446,10 @@ impl Worker {
             }
             PageJob::Act { page, .. } => match self.pages.held.get(page) {
                 Some(HeldPage::App { route, .. }) => document(&route.app_id, &route.document),
-                Some(HeldPage::Home { .. } | HeldPage::Search { .. }) | None => {
-                    super::keys::Keys::Joined
-                }
+                Some(
+                    HeldPage::Package { .. } | HeldPage::Home { .. } | HeldPage::Search { .. },
+                )
+                | None => super::keys::Keys::Joined,
             },
             PageJob::Close { .. } => super::keys::Keys::Joined,
         }
@@ -433,6 +472,8 @@ impl Worker {
         workspace_id: WorkspaceId,
         caller: &Caller,
         address: &PageAddress,
+        signed: Option<&SignedCall>,
+        invoker: Option<&str>,
     ) -> Result<OpenedPage, PageRefusal> {
         if !self.admits_member(workspace_id, caller) {
             return Err(PageRefusal::NotMember);
@@ -446,6 +487,24 @@ impl Worker {
                 caller,
                 address.show.as_deref().unwrap_or_default(),
             );
+        }
+        // An app the device runs from its package is laid out in the app's own process; any
+        // other is the catalogue's, laid out in a worker here.
+        if let Some(pages) = self.shared.package_pages.get()
+            && pages
+                .apps(workspace_id)
+                .iter()
+                .any(|(id, _)| id == &address.app)
+        {
+            let opened = pages.open(
+                workspace_id,
+                &address.app,
+                caller,
+                address.show.clone(),
+                signed.map(|call| Box::new(call.clone())),
+                invoker.map(str::to_owned),
+            )?;
+            return Ok(self.keep_package_page(workspace_id, opened));
         }
         let app = self.page_app(&address.app).ok_or(PageRefusal::NoSuchApp)?;
         // A page shows an app's own document of the workspace; an app that
@@ -514,6 +573,27 @@ impl Worker {
         })
     }
 
+    /// Keep `opened`, a page the package's process laid out, beside the catalogue's pages until
+    /// its person closes it.
+    fn keep_package_page(
+        &mut self,
+        workspace_id: WorkspaceId,
+        opened: crate::package_runs::Opened,
+    ) -> OpenedPage {
+        self.pages.next = self.pages.next.wrapping_add(1);
+        let page = self.pages.next;
+        let _ = workspace_id;
+        self.pages
+            .held
+            .insert(page, HeldPage::Package { page: opened.page });
+        OpenedPage {
+            page,
+            title: opened.title,
+            css: opened.css,
+            body: opened.body,
+        }
+    }
+
     /// The workspace's front page: who is in it and who of them is here, and
     /// the apps a member opens, each a link to its own page.
     #[allow(
@@ -544,6 +624,13 @@ impl Worker {
             .filter(|app| app.keeps_workspace_resource())
             .collect();
         apps.sort_by_key(|app| app.title().to_owned());
+        // The apps the device runs from packages, each a page of its own process, beside the
+        // catalogue's.
+        let package_apps = self
+            .shared
+            .package_pages
+            .get()
+            .map_or_else(Vec::new, |pages| pages.apps(workspace_id));
         let mut body = String::from(
             "<div class=\"tilo-view tilo-home\" data-p=\"0\">\
              <h1 class=\"tilo-home-title\">Tilo</h1>",
@@ -603,11 +690,15 @@ impl Worker {
             );
         }
         body.push_str("</ul></section><ul class=\"tilo-home-apps\">");
+        // Each tile is its app's id, its name, and its picture or its first letter.
+        let mut tiles: Vec<(String, String, String)> = package_apps
+            .iter()
+            .map(|(id, title)| (id.clone(), title.clone(), initial_tile(title)))
+            .collect();
         for app in apps {
-            let name = app
-                .app_id()
-                .rsplit_once('.')
-                .map_or_else(|| app.app_id(), |(_, last)| last);
+            if tiles.iter().any(|(id, ..)| id == app.app_id()) {
+                continue;
+            }
             // Every tile holds its icon's place, so a grid of apps reads as
             // rows: an app with no artwork of its own stands as its first
             // letter on the same tile.
@@ -616,11 +707,20 @@ impl Worker {
                     .map_or_else(|| initial_tile(app.title()), ui::icons::icon_svg),
                 ui::IconDescriptor::Glyph(_) => initial_tile(app.title()),
             };
+            // A catalogue app is named in a page's address by the last part of its id.
+            let name = app
+                .app_id()
+                .rsplit_once('.')
+                .map_or_else(|| app.app_id(), |(_, last)| last);
+            tiles.push((name.to_owned(), app.title().to_owned(), icon));
+        }
+        tiles.sort_by(|a, b| a.1.cmp(&b.1));
+        for (name, title, icon) in tiles {
             let _ = write!(
                 body,
                 "<li><a class=\"tilo-home-app\" href=\"/w/{workspace_id}/{name}\">{icon}\
                  <span>{}</span></a></li>",
-                escape(app.title())
+                escape(&title)
             );
         }
         body.push_str("</ul></div>");
@@ -715,7 +815,22 @@ impl Worker {
                 )
             })
             .collect();
+        // The apps the device runs from packages stand with them, named by their ids.
+        for (id, title) in self
+            .shared
+            .package_pages
+            .get()
+            .map_or_else(Vec::new, |pages| pages.apps(workspace_id))
+        {
+            if query.is_empty()
+                || title.to_lowercase().contains(&query)
+                || id.to_lowercase().contains(&query)
+            {
+                apps.push((title, id));
+            }
+        }
         apps.sort_by(|(a, _), (b, _)| a.cmp(b));
+        apps.dedup_by(|(_, a), (_, b)| a == b);
         for (title, name) in apps {
             let id = SEARCH_FIRST_ROW.saturating_add(u32::try_from(rows.len()).unwrap_or_default());
             rows.push(SearchRow {
@@ -1380,11 +1495,23 @@ impl Worker {
     /// off the thread ([`Worker::await_part`]) and applied once they arrive.
     fn act_on_page(
         &mut self,
+        workspace_id: WorkspaceId,
         page: u64,
         act: Option<(u32, Option<String>, PageAction)>,
+        signed: Option<&SignedCall>,
+        invoker: Option<&str>,
     ) -> Option<Result<Vec<PagePatch>, PageRefusal>> {
+        let _ = workspace_id;
         // What the page holds, taken by value so the workspace is read next.
         let (home, app, search) = match self.pages.held.get(&page) {
+            // A package's page is asked in its process, which answers what changed.
+            Some(HeldPage::Package { page: open, .. }) => {
+                return Some(open.act(
+                    act,
+                    signed.map(|call| Box::new(call.clone())),
+                    invoker.map(str::to_owned),
+                ));
+            }
             Some(HeldPage::App {
                 workspace_id,
                 who,

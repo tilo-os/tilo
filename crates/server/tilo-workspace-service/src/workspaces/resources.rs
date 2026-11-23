@@ -1255,7 +1255,11 @@ fn stamp_resource_invoker(
         | Command::Remove { stamp, .. }
         | Command::Undo { stamp, .. }
         | Command::Edit { stamp, .. } => {
-            stamp.invoker = tilo_resource_store::Stamp::by(&invoker(&stamp.invocation));
+            // A write whose caller signed it names that caller, and every holder checks it: the
+            // host neither overwrites nor vouches for it.
+            if stamp.signed.is_none() {
+                stamp.invoker = tilo_resource_store::Stamp::by(&invoker(&stamp.invocation));
+            }
         }
         Command::Batch(commands) => commands
             .iter_mut()

@@ -411,7 +411,7 @@ function start() {
     if (asked?.value?.act) lost(asked.value.act);
     if (redrawing) return;
     redrawing = true;
-    ask({open: addressOf()});
+    ask({open: {address: addressOf()}});
   };
   const caughtUp = () => {
     if (unanswered > 0) return;
@@ -726,7 +726,7 @@ function start() {
 
   addEventListener('popstate', () => {
     restoring = true;
-    ask({open: addressOf()});
+    ask({open: {address: addressOf()}});
   });
 
   // ---- A browser of the person's waiting to be signed in ----
@@ -836,7 +836,7 @@ function start() {
       const opened = await session(config, device).catch(() => null);
       if (!opened) continue;
       link = opened;
-      ask({open: addressOf()});
+      ask({open: {address: addressOf()}});
       let answer;
       while ((answer = await link.next().catch(() => null))) {
         if (answer.refused === 'not_member' && !page.querySelector('[data-p]')) break;

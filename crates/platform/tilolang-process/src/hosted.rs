@@ -1149,6 +1149,29 @@ impl Hosted {
         &self.store
     }
 
+    /// Serve `call` while the writes of a page's act are made, or none (the instance's own): each
+    /// change is its caller's, under its invocation, and keeps the signed call for the holders
+    /// that check it.
+    pub fn serving_call(
+        &self,
+        call: Option<&tilo_actions::remote::SignedCall>,
+        invoker: Option<&str>,
+    ) {
+        match call {
+            Some(call) => {
+                let invocation = call.signed.statement().invocation.0.to_string();
+                self.store.serve(Some(invocation));
+                self.store.serve_invoker(invoker.map(str::to_owned));
+                self.store.serve_signed(Some(Box::new(call.clone())));
+            }
+            None => {
+                self.store.serve(None);
+                self.store.serve_invoker(None);
+                self.store.serve_signed(None);
+            }
+        }
+    }
+
     /// The package the instance runs.
     #[must_use]
     pub fn bundle(&self) -> &Bundle {

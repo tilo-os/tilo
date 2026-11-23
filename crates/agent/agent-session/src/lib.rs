@@ -37,6 +37,7 @@ pub mod bot;
 pub mod facts;
 pub mod grants;
 pub mod model;
+pub mod package_runs;
 pub mod record_actions;
 pub mod render;
 pub mod search;

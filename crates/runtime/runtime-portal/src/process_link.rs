@@ -194,6 +194,10 @@ pub enum Shows {
     /// nothing is drawn. A call that shows nothing has no view connection, offers no verb to bring
     /// a view forward, and stays until the session ends it.
     Nothing,
+    /// A page: the process lays the view out itself and writes it as a page for whoever looks at
+    /// it through the device that started it, which asks on the connection its `window` carries
+    /// ([`tilo_server_protocol::page_window`]).
+    Page,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

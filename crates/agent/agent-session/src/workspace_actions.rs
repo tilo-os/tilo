@@ -206,6 +206,9 @@ struct Shared {
     search: SearchActivity,
     /// The agents' sessions here, which sign a change an action made for each.
     agent_sessions: OnceLock<crate::grants::AgentSessions>,
+    /// The device's package runs, when it runs the workspace's tilolang apps itself: a page of
+    /// one is laid out in the app's own process, not in a worker here.
+    package_pages: OnceLock<Arc<crate::package_runs::PackageRuns>>,
 }
 
 impl Shared {
@@ -251,6 +254,7 @@ impl WorkspaceActions {
                 renaming: Mutex::default(),
                 agent_sessions: OnceLock::new(),
                 search: SearchActivity::default(),
+                package_pages: OnceLock::new(),
             }),
             catalogue,
         }
@@ -278,6 +282,12 @@ impl WorkspaceActions {
         drop(link);
         *self.shared.jobs.lock_recover() = Some(jobs);
         Ok(())
+    }
+
+    /// Show the workspace's tilolang apps' pages from the device's own package runs, which lay
+    /// each page out in the app's process: pages of apps a package runs, beside the catalogue's.
+    pub fn using_package_pages(&self, pages: Arc<crate::package_runs::PackageRuns>) {
+        let _ = self.shared.package_pages.set(pages);
     }
 
     /// The workspace `workspace_id` was deleted: the service lets go of all

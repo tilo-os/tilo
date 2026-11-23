@@ -93,6 +93,8 @@ tilo-server-client = { path = "../../server/tilo-server-client" }
 # A device on the live session is named by its endpoint id.
 iroh-base.workspace = true
 tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
+# The identity service and content store a page's process is handed.
+launcher = { path = "../../packaging/launcher" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 collab-types = { path = "../../collab/collab-types" }
 # An agent's presence is the workspace's own ([`neighbour_wire`]): the same

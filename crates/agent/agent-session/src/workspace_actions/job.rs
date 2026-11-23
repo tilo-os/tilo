@@ -324,6 +324,8 @@ mod tests {
                 workspace_id,
                 page: 1,
                 act: None,
+                signed: None,
+                invoker: None,
                 done,
             }
         } else {

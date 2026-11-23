@@ -116,6 +116,8 @@ impl AppPages for Echo {
         _: WorkspaceId,
         caller: &Caller,
         address: PageAddress,
+        _: Option<Box<tilo_actions::remote::SignedCall>>,
+        _: Option<String>,
     ) -> Pending<Result<OpenedPage, PageRefusal>> {
         assert_eq!(
             caller.workspace(),
@@ -138,6 +140,8 @@ impl AppPages for Echo {
         _: WorkspaceId,
         _: u64,
         act: Option<(u32, Option<String>, PageAction)>,
+        _: Option<Box<tilo_actions::remote::SignedCall>>,
+        _: Option<String>,
     ) -> Pending<Result<Vec<PagePatch>, PageRefusal>> {
         Pending::ready(Ok(act
             .map(|(id, _, action)| PagePatch {
@@ -176,7 +180,14 @@ async fn a_page_opens_acts_and_lets_go_when_its_browser_leaves() {
     };
     let serving = serve_pages(&pages, &person, true, |_, _| async { Ok(true) }, recv, send);
     let browsing = async {
-        ask(&mut browser, &PageAsk::Open(address)).await;
+        ask(
+            &mut browser,
+            &PageAsk::Open {
+                address,
+                signed: None,
+            },
+        )
+        .await;
         // Its keys were on their way: it is told so, then shown.
         assert_eq!(answer(&mut browser).await, PageAnswer::Loading);
         let PageAnswer::Shown { title, body, .. } = answer(&mut browser).await else {
@@ -192,6 +203,7 @@ async fn a_page_opens_acts_and_lets_go_when_its_browser_leaves() {
                 id: 3,
                 target: None,
                 action: PageAction::Value("Milk".into()),
+                signed: None,
             },
         )
         .await;
@@ -230,6 +242,8 @@ impl AppPages for Asking {
         _: WorkspaceId,
         _: &Caller,
         _: PageAddress,
+        _: Option<Box<tilo_actions::remote::SignedCall>>,
+        _: Option<String>,
     ) -> Pending<Result<OpenedPage, PageRefusal>> {
         Pending::ready(Ok(OpenedPage {
             page: 1,
@@ -244,6 +258,8 @@ impl AppPages for Asking {
         _: WorkspaceId,
         _: u64,
         _: Option<(u32, Option<String>, PageAction)>,
+        _: Option<Box<tilo_actions::remote::SignedCall>>,
+        _: Option<String>,
     ) -> Pending<Result<Vec<PagePatch>, PageRefusal>> {
         Pending::ready(Ok(Vec::new()))
     }
@@ -279,11 +295,14 @@ async fn a_questions_answer_on_the_sheet_runs_it_and_patches_the_sheet() {
     let browsing = async {
         ask(
             &mut browser,
-            &PageAsk::Open(PageAddress {
-                workspace: WORKSPACE.into(),
-                app: "notes".into(),
-                show: None,
-            }),
+            &PageAsk::Open {
+                address: PageAddress {
+                    workspace: WORKSPACE.into(),
+                    app: "notes".into(),
+                    show: None,
+                },
+                signed: None,
+            },
         )
         .await;
         assert!(matches!(answer(&mut browser).await, PageAnswer::Loading));
@@ -297,6 +316,7 @@ async fn a_questions_answer_on_the_sheet_runs_it_and_patches_the_sheet() {
                 id: tilo_server_protocol::page::QUESTION_PATCH_ID,
                 target: Some(target.clone()),
                 action: PageAction::Activate,
+                signed: None,
             },
         )
         .await;
@@ -331,7 +351,14 @@ async fn a_workspace_only_stored_here_is_refused_and_opens_nothing() {
         send,
     );
     let browsing = async {
-        ask(&mut browser, &PageAsk::Open(address)).await;
+        ask(
+            &mut browser,
+            &PageAsk::Open {
+                address,
+                signed: None,
+            },
+        )
+        .await;
         assert_eq!(
             answer(&mut browser).await,
             PageAnswer::Refused(PageRefusal::StoredCopy)

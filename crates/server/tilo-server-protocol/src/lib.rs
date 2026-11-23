@@ -54,6 +54,7 @@ pub mod mesh;
 pub mod metrics;
 pub mod operator;
 pub mod page;
+pub mod page_window;
 pub mod policy;
 pub mod process_lease;
 pub mod public_avatars;

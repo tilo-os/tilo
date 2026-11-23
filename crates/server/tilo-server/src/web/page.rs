@@ -135,11 +135,12 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
                     break;
                 };
                 match ask {
-                    PageAsk::Open(address) => {
+                    PageAsk::Open { address, signed } => {
                         if let Some((workspace_id, page)) = open.take() {
                             pages.close(workspace_id, page);
                         }
-                        let opened = open_page(pages, person, &ready, address, &mut send).await;
+                        let opened =
+                            open_page(pages, person, &ready, address, signed, &mut send).await;
                         if let Ok((workspace_id, page, _)) = &opened {
                             open = Some((*workspace_id, *page));
                             pages.opened(*workspace_id, *page, person);
@@ -161,7 +162,12 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
                             }
                         }
                     }
-                    PageAsk::Act { id, target, action } => match open {
+                    PageAsk::Act {
+                        id,
+                        target,
+                        action,
+                        signed,
+                    } => match open {
                         Some((workspace_id, page)) if id == QUESTION_PATCH_ID && answers => {
                             // The person answered the question the page draws
                             // over the app: their answer runs the held call,
@@ -189,7 +195,15 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
                             ),
                         ),
                         Some((workspace_id, page)) => patched(
-                            pages.act(workspace_id, page, Some((id, target, action))).await,
+                            pages
+                                .act(
+                                    workspace_id,
+                                    page,
+                                    Some((id, target, action)),
+                                    signed,
+                                    None,
+                                )
+                                .await,
                         ),
                         None => PageAnswer::Refused(PageRefusal::Unavailable(
                             "no page is open".to_owned(),
@@ -210,7 +224,7 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
                             html: drawn,
                         }])
                     }
-                    _ => match pages.act(workspace_id, page, None).await {
+                    _ => match pages.act(workspace_id, page, None, None, None).await {
                         Some(Ok(patches)) if patches.is_empty() => continue,
                         Some(Ok(patches)) => PageAnswer::Changed(patches),
                         // A pass the page did not ask for answers nothing: the
@@ -243,6 +257,7 @@ async fn open_page<W, F, Fut>(
     person: &Caller,
     ready: &F,
     address: PageAddress,
+    signed: Option<Box<tilo_actions::remote::SignedCall>>,
     send: &mut W,
 ) -> Result<(WorkspaceId, u64, PageAnswer), PageRefusal>
 where
@@ -257,7 +272,7 @@ where
     }
     let caller = person.clone().in_workspace(workspace_id.to_string());
     let opened = pages
-        .open(workspace_id, &caller, address)
+        .open(workspace_id, &caller, address, signed, None)
         .await
         .unwrap_or_else(|| Err(PageRefusal::Unavailable("the page was dropped".to_owned())))?;
     let page = opened.page;

@@ -632,10 +632,13 @@ impl crate::app_serving::AppPages for ActionPages {
         workspace_id: WorkspaceId,
         caller: &Caller,
         address: tilo_server_protocol::page::PageAddress,
+        signed: Option<Box<tilo_actions::remote::SignedCall>>,
+        invoker: Option<String>,
     ) -> Pending<
         Result<tilo_server_protocol::page::OpenedPage, tilo_server_protocol::page::PageRefusal>,
     > {
-        self.actions.open_page(workspace_id, caller, address)
+        self.actions
+            .open_page(workspace_id, caller, address, signed, invoker)
     }
 
     fn act(
@@ -643,10 +646,13 @@ impl crate::app_serving::AppPages for ActionPages {
         workspace_id: WorkspaceId,
         page: u64,
         act: Option<(u32, Option<String>, tilo_server_protocol::page::PageAction)>,
+        signed: Option<Box<tilo_actions::remote::SignedCall>>,
+        invoker: Option<String>,
     ) -> Pending<
         Result<Vec<tilo_server_protocol::page::PagePatch>, tilo_server_protocol::page::PageRefusal>,
     > {
-        self.actions.act_on_page(workspace_id, page, act)
+        self.actions
+            .act_on_page(workspace_id, page, act, signed, invoker)
     }
 
     fn close(&self, workspace_id: WorkspaceId, page: u64) {

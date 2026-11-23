@@ -176,6 +176,8 @@ pub trait AppPages: Send + Sync {
         workspace_id: WorkspaceId,
         caller: &Caller,
         address: PageAddress,
+        signed: Option<Box<tilo_actions::remote::SignedCall>>,
+        invoker: Option<String>,
     ) -> Pending<Result<OpenedPage, PageRefusal>>;
 
     /// Act on `page` as its person did (the element's number, its semantic
@@ -186,6 +188,8 @@ pub trait AppPages: Send + Sync {
         workspace_id: WorkspaceId,
         page: u64,
         act: Option<(u32, Option<String>, PageAction)>,
+        signed: Option<Box<tilo_actions::remote::SignedCall>>,
+        invoker: Option<String>,
     ) -> Pending<Result<Vec<PagePatch>, PageRefusal>>;
 
     /// Let go of `page`: its person closed it.

@@ -24,6 +24,7 @@
 pub mod connection;
 pub mod files;
 pub mod hosted;
+pub mod page;
 pub mod personal;
 pub mod phrases;
 pub mod presence;
@@ -155,6 +156,10 @@ fn chooser_of(fd: Option<OwnedFd>) -> Option<Arc<dyn tilo_dialogs::FilePicker>> 
 struct Running {
     hosted: Hosted,
     window: Option<OwnedFd>,
+    /// The window it draws into here, written as a page, when it is a viewer's page.
+    page: Option<page::PageWindow>,
+    /// Its page's connection broke: it ends as one whose window closed.
+    broken: bool,
 }
 
 /// An instance being opened: its module read and its connection joining its workspace's route,
@@ -167,6 +172,8 @@ struct Opening {
     /// The window's connection, until the instance runs: `None` for an instance that shows
     /// nothing ([`Shows::Nothing`]).
     window: Option<Channel>,
+    /// The page's connection, until its app's code runs, when it is a viewer's page.
+    page: Option<std::os::unix::net::UnixStream>,
     identity: Option<OwnedFd>,
     /// The connection to the app's origin connector, for an app whose types hold an outside
     /// service's resources.
@@ -224,9 +231,17 @@ enum Stage {
 enum Step {
     Waiting,
     /// It runs, its window's connection watched by the second (none for an instance that shows
-    /// nothing).
-    Open(Box<Hosted>, Option<OwnedFd>),
+    /// nothing), with the page window it draws into for one that shows a page.
+    Open(Box<Hosted>, Option<OwnedFd>, Option<Box<page::PageWindow>>),
 }
+
+/// Where a run's patches go, the connection that watches it, and the page window it draws into
+/// for one that shows a page.
+type Transported = (
+    Box<dyn tilo_render_protocol::patch::Transport>,
+    Option<OwnedFd>,
+    Option<Box<page::PageWindow>>,
+);
 
 /// The host: what wakes it, and its instances.
 pub struct TilolangProcess {
@@ -507,7 +522,22 @@ impl TilolangProcess {
             instance = hosted.spec().instance,
             "instance started"
         );
-        self.running.push(Running { hosted, window });
+        self.running.push(Running {
+            hosted,
+            window,
+            page: None,
+            broken: false,
+        });
+    }
+
+    /// Run `hosted` as a page: its window is `page`, laid out here, until the page's connection
+    /// closes or the host ends.
+    pub fn show(&mut self, hosted: Hosted, page: page::PageWindow) {
+        let watched = page.connection().try_clone_to_owned();
+        self.add(hosted, watched.ok());
+        if let Some(running) = self.running.last_mut() {
+            running.page = Some(page);
+        }
     }
 
     /// The later builds of `app` its instances follow are `builds`: those `tilolang dev` publishes
@@ -542,13 +572,16 @@ impl TilolangProcess {
     /// connection joins and its document is read off the host's loop, and it runs once all three
     /// are done ([`Self::turn`]).
     pub fn admit(&mut self, request: InstanceRequest, fds: InstanceFds) -> Result<(), AdmitError> {
-        let window = match (request.shows, fds.window) {
-            (Shows::View, Some(window)) => {
-                Some(Channel::from_socket(window).map_err(AdmitError::Window)?)
-            }
+        let (window, page) = match (request.shows, fds.window) {
+            (Shows::View, Some(window)) => (
+                Some(Channel::from_socket(window).map_err(AdmitError::Window)?),
+                None,
+            ),
+            // A page is laid out here, and asked for on its own connection.
+            (Shows::Page, Some(page)) => (None, Some(std::os::unix::net::UnixStream::from(page))),
             // The session draws nothing for it: it has no window to hand, and none to expect.
-            (Shows::Nothing, _) => None,
-            (Shows::View, None) => {
+            (Shows::Nothing, _) => (None, None),
+            (Shows::View | Shows::Page, None) => {
                 return Err(AdmitError::Window(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "a window's instance arrived with no window connection",
@@ -581,6 +614,7 @@ impl TilolangProcess {
                 decoded,
             },
             window,
+            page,
             identity: Some(fds.identity),
             origin: fds.origin,
             content: store_of(fds.content),
@@ -615,6 +649,7 @@ impl TilolangProcess {
                 manager,
             },
             window: Some(window),
+            page: None,
             identity: None,
             origin: None,
             content: None,
@@ -788,24 +823,7 @@ impl TilolangProcess {
         let store = tilolang_tilo::resources::ResourceStore::new(Rc::new(
             connection.port(self.arrived.clone()),
         ));
-        // A window's instance draws and hears its window; one that shows nothing sends its
-        // patches nowhere and hears nothing.
-        let (transport, watched): (Box<dyn tilo_render_protocol::patch::Transport>, _) =
-            match spec.shows {
-                Shows::View => {
-                    let window = opening
-                        .window
-                        .take()
-                        .ok_or_else(|| AdmitError::Join("its window is gone".to_owned()))?;
-                    let watched = window
-                        .as_fd()
-                        .try_clone_to_owned()
-                        .map_err(AdmitError::Window)?;
-                    let transport = ChannelTransport::new(window).map_err(AdmitError::Window)?;
-                    (Box::new(transport), Some(watched))
-                }
-                Shows::Nothing => (Box::new(hosted::NoView), None),
-            };
+        let (transport, watched, page_window) = Self::transport(spec.shows, opening)?;
         let shows = spec.shows;
         // What the instance's actions keep as content lives in the device's content store, as a
         // native window's does: it outlives the instance.
@@ -861,7 +879,37 @@ impl TilolangProcess {
             stages_us = stages.join(","),
             "tilolang instance opened"
         );
-        Ok(Step::Open(Box::new(hosted), watched))
+        Ok(Step::Open(Box::new(hosted), watched, page_window))
+    }
+
+    /// Where a run showing `shows` sends its patches. A window's run draws and hears its window,
+    /// watched by its connection; a page's is drawn here, beside the app's code, and watched by
+    /// the page's connection; one that shows nothing sends its patches nowhere and hears nothing.
+    fn transport(shows: Shows, opening: &mut Opening) -> Result<Transported, AdmitError> {
+        Ok(match shows {
+            Shows::View => {
+                let window = opening
+                    .window
+                    .take()
+                    .ok_or_else(|| AdmitError::Join("its window is gone".to_owned()))?;
+                let watched = window
+                    .as_fd()
+                    .try_clone_to_owned()
+                    .map_err(AdmitError::Window)?;
+                let transport = ChannelTransport::new(window).map_err(AdmitError::Window)?;
+                (Box::new(transport), Some(watched), None)
+            }
+            Shows::Page => {
+                let connection = opening
+                    .page
+                    .take()
+                    .ok_or_else(|| AdmitError::Join("its page is gone".to_owned()))?;
+                let (app_end, window_end) = tilo_render_protocol::patch::local::pair();
+                let page = page::PageWindow::new(connection, window_end);
+                (Box::new(app_end), None, Some(Box::new(page)))
+            }
+            Shows::Nothing => (Box::new(hosted::NoView), None, None),
+        })
     }
 
     fn attach_origin(&self, opening: &mut Opening, hosted: &mut Hosted) -> Result<(), AdmitError> {
@@ -899,7 +947,9 @@ impl TilolangProcess {
             if open
                 .window
                 .as_ref()
-                .is_some_and(|window| hung_up(window.as_fd()))
+                .map(AsFd::as_fd)
+                .or_else(|| open.page.as_ref().map(AsFd::as_fd))
+                .is_some_and(hung_up)
             {
                 tracing::info!(
                     app = open.app,
@@ -911,8 +961,8 @@ impl TilolangProcess {
             }
             match self.step(open) {
                 Ok(Step::Waiting) => true,
-                Ok(Step::Open(hosted, watched)) => {
-                    started.push((*hosted, watched));
+                Ok(Step::Open(hosted, watched, page)) => {
+                    started.push((*hosted, watched, page));
                     false
                 }
                 Err(error) => {
@@ -925,9 +975,12 @@ impl TilolangProcess {
         });
         self.opening = opening;
         self.ended.extend(ended);
-        for (hosted, watched) in started {
+        for (hosted, watched, page) in started {
             changed = true;
-            self.add(hosted, watched);
+            match page {
+                Some(page) => self.show(hosted, *page),
+                None => self.add(hosted, watched),
+            }
         }
         changed
     }
@@ -943,9 +996,12 @@ impl TilolangProcess {
     /// The window connections of the instances being opened, to wait on for closing only: what
     /// one sends stays in it until its instance runs, and one closing ends its opening.
     pub fn opening_windows(&self) -> impl Iterator<Item = std::os::fd::BorrowedFd<'_>> {
-        self.opening
-            .iter()
-            .filter_map(|open| open.window.as_ref().map(AsFd::as_fd))
+        self.opening.iter().filter_map(|open| {
+            open.window
+                .as_ref()
+                .map(AsFd::as_fd)
+                .or_else(|| open.page.as_ref().map(AsFd::as_fd))
+        })
     }
 
     /// One frame of every instance; an instance whose window closed ends, its document written
@@ -955,15 +1011,28 @@ impl TilolangProcess {
         let mut changed = self.advance();
         let _scope = self.scope.enter();
         for running in &mut self.running {
-            changed |= running.hosted.turn();
+            changed |= match &mut running.page {
+                Some(page) => match page.turn(&mut running.hosted) {
+                    Ok(changed) => changed,
+                    // A page whose connection broke is gone: it ends as a closed window's does.
+                    Err(error) => {
+                        tracing::info!(%error, "a page's connection broke");
+                        running.page = None;
+                        running.broken = true;
+                        true
+                    }
+                },
+                None => running.hosted.turn(),
+            };
         }
         let before = self.running.len();
         let ended = &mut self.ended;
         self.running.retain_mut(|running| {
-            let open = running
-                .window
-                .as_ref()
-                .is_none_or(|fd| !hung_up(fd.as_fd()));
+            let open = !running.broken
+                && running
+                    .window
+                    .as_ref()
+                    .is_none_or(|fd| !hung_up(fd.as_fd()));
             if !open {
                 running.hosted.flush();
                 tracing::info!(

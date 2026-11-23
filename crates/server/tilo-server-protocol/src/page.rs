@@ -10,6 +10,7 @@
 //! each behind a little-endian `u32` length, as the handshake's frames are.
 
 use serde::{Deserialize, Serialize};
+use tilo_actions::remote::SignedCall;
 
 /// Where a page of a workspace's app is: `/w/<workspace>/<app>`, and
 /// `/w/<workspace>/<app>/<target>` for one thing it shows (a note).
@@ -100,9 +101,10 @@ pub fn parse_question_target(target: &str) -> Option<([u8; 32], &str)> {
     Some((<[u8; 32]>::try_from(bytes).ok()?, answer))
 }
 
-/// What a page's address names: the workspace (its id), the app (the last
-/// part of its id, `notes` for `so.tilo.notes`) and what it shows first. An
-/// address naming no app is the workspace's front page, which lists them.
+/// What a page's address names: the workspace (its id), the app (its id,
+/// `so.tilo.notes`, or the last part of one a host builds in, `settings`) and
+/// what it shows first. An address naming no app is the workspace's front
+/// page, which lists them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PageAddress {
     pub workspace: String,
@@ -127,7 +129,9 @@ impl PageAddress {
             part.bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
         };
-        (plain(workspace) && plain(app)).then(|| Self {
+        // An app the workspace installed is named by its id: parts joined by dots, none empty.
+        let id = app.is_empty() || app.split('.').all(|part| !part.is_empty() && plain(part));
+        (plain(workspace) && id).then(|| Self {
             workspace: workspace.to_owned(),
             app: app.to_owned(),
             show,
@@ -179,13 +183,23 @@ fn decode_part(part: &str) -> Option<String> {
 #[serde(rename_all = "snake_case")]
 pub enum PageAsk {
     /// Show the page an address names, whole.
-    Open(PageAddress),
+    Open {
+        address: PageAddress,
+        /// The call its person signed for it: who asks to see this page, as the host checks.
+        /// `None` for a page opened without one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signed: Option<Box<SignedCall>>,
+    },
     /// What its person did: `action` on the element numbered `id`
     /// (`data-p`), at the semantic target it carries (`data-t`).
     Act {
         id: u32,
         target: Option<String>,
         action: PageAction,
+        /// The call its person signed for it: whose the change the act makes is, which the host
+        /// checks and every holder of the change checks again.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signed: Option<Box<SignedCall>>,
     },
 }
 
@@ -308,6 +322,17 @@ mod tests {
                 show: None,
             })
         );
+        // An app the workspace installed is named by its id.
+        assert_eq!(
+            PageAddress::parse("/w/ws/so.tilo.notes"),
+            Some(PageAddress {
+                workspace: "ws".into(),
+                app: "so.tilo.notes".into(),
+                show: None,
+            })
+        );
+        assert_eq!(PageAddress::parse("/w/ws/so..notes"), None);
+        assert_eq!(PageAddress::parse("/w/ws/.notes"), None);
         assert_eq!(PageAddress::parse("/w/"), None);
         assert_eq!(PageAddress::parse("/w/../notes"), None);
         assert_eq!(PageAddress::parse("/w/a b/notes"), None);
@@ -356,6 +381,7 @@ mod tests {
                 id: 7,
                 target: Some("notes.block-text:b1".into()),
                 action: PageAction::Value("Milk".into()),
+                signed: None,
             }
         );
         let ask: PageAsk =
