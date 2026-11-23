@@ -835,6 +835,17 @@ pub fn viewport<T: Into<f64>>((w, h): (T, T)) -> (u32, u32) {
     (w as u32, h as u32)
 }
 
+/// Whether `root` or a widget under it is named `name`: such a name is the widget's own, refused
+/// when it is ambiguous or unregistered, and never pressed as a painted target instead.
+fn answers_to(root: &dyn Widget, name: &str) -> bool {
+    root.name() == name
+        || root.test_id() == Some(name)
+        || root
+            .children()
+            .into_iter()
+            .any(|child| answers_to(child, name))
+}
+
 impl FrameHarness {
     /// Mount a prepared component without a native window, GPU or service discovery. # Errors
     /// Refuses exhausted mount generations or remounts, keeping the original recovery.
@@ -5426,6 +5437,10 @@ impl FrameHarness {
             // A name a widget paints into its own rect (a strip's label, a window's tab) is no
             // widget of its own: pressing it is the press the person makes at the rect it paints.
             if semantic_target.is_none()
+                && !self
+                    .presentation_roots()
+                    .into_iter()
+                    .any(|root| answers_to(root, name))
                 && let Some(rect) = self.targets().get(name).copied()
                 && rect.area() > 0.0
             {
