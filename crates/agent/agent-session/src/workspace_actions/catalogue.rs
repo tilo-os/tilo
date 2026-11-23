@@ -42,15 +42,15 @@ impl Worker {
         // asked for, so its new records are offered; one this member's replica
         // holds nothing of yet — a public workspace sends its records when a
         // device opens them — is named by the session it joined.
-        let asked = query.provider.as_deref().and_then(provider_workspace);
+        let asked_own = query
+            .provider
+            .as_deref()
+            .and_then(provider_workspace)
+            .is_some_and(|named| WorkspaceId::parse(named) == Some(workspace_id));
         let Some(cluster_id) = state
             .workspace
             .clone()
-            .or_else(|| {
-                asked
-                    .filter(|named| WorkspaceId::parse(named) == Some(workspace_id))
-                    .map(|_| workspace_id.to_string())
-            })
+            .or_else(|| asked_own.then(|| workspace_id.to_string()))
             .or_else(|| {
                 self.workspaces
                     .get(&workspace_id)
@@ -64,11 +64,10 @@ impl Worker {
             ));
         };
         let routes = self.documents(Some(workspace_id), &state, &cluster_id);
-        let own_provider = workspace_provider(&cluster_id);
         let (wanted, state) = self.wanted_routes(
             workspace_id,
             caller,
-            (&cluster_id, &routes, &own_provider),
+            (&cluster_id, &routes, asked_own),
             state,
             query,
         )?;
@@ -77,7 +76,7 @@ impl Worker {
         let revision = state.revision_of(query.provider.as_deref());
         let bounded = self.bounded(caller);
         let page_began = std::time::Instant::now();
-        let own_rows = self.own_rows(workspace_id, caller, (&cluster_id, &own_provider), query);
+        let own_rows = self.own_rows(workspace_id, caller, (&cluster_id, asked_own), query);
         let mut page = if query.view_resource.is_some() {
             let mut rows = self.listed_rows(workspace_id, bounded.as_ref(), &wanted, &state);
             rows.extend(own_rows);
@@ -103,6 +102,7 @@ impl Worker {
             )
         };
         if query.provider.is_none() {
+            let own_provider = workspace_provider(&cluster_id);
             page.providers = routes
                 .iter()
                 .map(|route| CatalogueProvider {
@@ -186,12 +186,12 @@ impl Worker {
         &mut self,
         workspace_id: WorkspaceId,
         caller: &Caller,
-        (cluster_id, routes, own_provider): (&str, &[DocumentRoute], &str),
+        (cluster_id, routes, asked_own): (&str, &[DocumentRoute], bool),
         state: WorkspaceState,
         query: &CatalogueQuery,
     ) -> Result<(Vec<DocumentRoute>, WorkspaceState), ActionCallError> {
         let wanted = match query.provider.as_deref() {
-            Some(provider) if provider == own_provider => Vec::new(),
+            Some(_) if asked_own => Vec::new(),
             Some(provider) => {
                 let route =
                     resource_of(provider, cluster_id).ok_or(ActionCallError::UnknownAction)?;
@@ -217,14 +217,10 @@ impl Worker {
         &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
-        (cluster_id, own_provider): (&str, &str),
+        (cluster_id, asked_own): (&str, bool),
         query: &CatalogueQuery,
     ) -> Vec<CatalogueRow> {
-        if query
-            .provider
-            .as_deref()
-            .is_some_and(|provider| provider != own_provider)
-        {
+        if query.provider.is_some() && !asked_own {
             return Vec::new();
         }
         let mut rows = if self.may_across(workspace_id, caller, ActionKind::Undoable) {
