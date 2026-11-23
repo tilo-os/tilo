@@ -29,6 +29,7 @@ pub use tilo_system_resources::effects;
 tilo_resource::declared_names!();
 
 pub mod model;
+pub mod printers;
 pub mod update;
 
 use std::path::{Path, PathBuf};
@@ -41,13 +42,15 @@ use tilo_actions::{ApiError, ResourceSpec};
 use tilo_resource::Effect as _;
 use tilo_service::{Jobs, Service, Started, Wake, Worker, decode, offer, reading, unavailable};
 
-use device::{Change, PowerProfiles, System, follow_once};
+use device::{Change, PowerProfiles, PrintChange, System, follow_once};
 use effects::{KeyboardLightAction, PowerAction, TimeAction, UpdateAction};
 use model::{KeyboardLight, Power, PowerMode, Time};
 use update::Update;
 
 /// The resources' ids.
-pub use tilo_system_resources::{KEYBOARD_BACKLIGHT, POWER, SYSTEM_UPDATE, TIME_ZONE};
+pub use tilo_system_resources::{
+    KEYBOARD_BACKLIGHT, POWER, PRINTERS, SYSTEM_UPDATE, TIME_ZONE,
+};
 
 /// How often a device whose zone follows it looks where it is again: often
 /// enough that a flight's arrival shows the local time within the hour.
@@ -60,6 +63,7 @@ enum Part {
     Update,
     Time,
     KeyboardLight,
+    Printers,
 }
 
 /// What the machine reads now.
@@ -69,6 +73,7 @@ pub struct Readings {
     pub update: Update,
     pub time: Time,
     pub keyboard_light: KeyboardLight,
+    pub printers: tilo_system_resources::printers::Printers,
 }
 
 fn read(system: &dyn System, live_profiles: bool) -> Readings {
@@ -85,6 +90,7 @@ fn read(system: &dyn System, live_profiles: bool) -> Readings {
         update: system.update(),
         time: system.time(),
         keyboard_light: system.keyboard_light(),
+        printers: system.printers(),
     }
 }
 
@@ -133,6 +139,8 @@ pub struct SystemService {
     update_watch: Option<StateWatch>,
     /// Live power profiles from the session's power service when one runs.
     live_profiles: Option<LiveProfiles>,
+    /// Keeps the printer bus subscription alive while the service runs.
+    print_watch: Option<Box<dyn Send>>,
 }
 
 impl SystemService {
@@ -189,16 +197,39 @@ impl SystemService {
         let live_active = live_profiles
             .as_ref()
             .map(|live| Arc::clone(&live.active_shared));
-        let service = Self {
+        let mut service = Self {
             readings,
-            worker: Worker::spawn("tilo-system", system, wake)?,
+            worker: Worker::spawn("tilo-system", Arc::clone(&system), wake.clone())?,
             stopped: Arc::new(AtomicBool::new(false)),
             follower: None,
             update_watch: None,
             live_profiles,
+            print_watch: None,
         };
-        refresh(&service.worker.jobs(), live_active);
+        refresh(&service.worker.jobs(), Arc::clone(&live_active));
+        service.follow_printers(system, wake, live_active);
         Ok(service)
+    }
+
+    /// Read the queues and jobs again whenever the printer bus says they moved: a job
+    /// started, a queue paused, a supply ran low. Nothing polls.
+    fn follow_printers(
+        &mut self,
+        system: Arc<dyn System>,
+        wake: Option<Wake>,
+        live_active: Option<Arc<AtomicBool>>,
+    ) {
+        let Some(wake) = wake else {
+            return;
+        };
+        let jobs = self.worker.jobs();
+        let reread = move || {
+            jobs.run(move |system| {
+                Landed::Read(Box::new(read(system, is_live(live_active.as_ref()))))
+            });
+            wake();
+        };
+        self.print_watch = system.follow_printers(Box::new(reread));
     }
 
     fn live_active_flag(&self) -> Option<Arc<AtomicBool>> {
@@ -292,6 +323,10 @@ impl SystemService {
                 &mut readings.keyboard_light.pending,
                 &mut readings.keyboard_light.problem,
             ),
+            Part::Printers => (
+                &mut readings.printers.pending,
+                &mut readings.printers.problem,
+            ),
         }
     }
 
@@ -309,6 +344,13 @@ impl SystemService {
         readings.time.problem = old.time.problem.take();
         readings.keyboard_light.pending = std::mem::take(&mut old.keyboard_light.pending);
         readings.keyboard_light.problem = old.keyboard_light.problem.take();
+        readings.printers.pending = std::mem::take(&mut old.printers.pending);
+        readings.printers.problem = old.printers.problem.take();
+        // What a find turned up stays until the next one: a plain read of the queues and
+        // jobs replaces neither.
+        if readings.printers.nearby.is_empty() {
+            readings.printers.nearby = std::mem::take(&mut old.printers.nearby);
+        }
         readings.update.updating = readings
             .update
             .pending
@@ -393,6 +435,51 @@ impl SystemService {
                 None => look(&self.worker.jobs(), look_active),
             }
         }
+        Started::Accepted
+    }
+
+    /// Make `change` on the printers, landing the machine's answer and a fresh reading.
+    fn start_print(&mut self, action: &str, change: PrintChange) -> Started {
+        self.readings.printers.pending.push(action.to_owned());
+        let action = action.to_owned();
+        let live_active = self.live_active_flag();
+        self.worker.run(move |system| {
+            let result = system.change_print(&change);
+            Landed::Changed {
+                part: Part::Printers,
+                action,
+                result,
+                readings: Box::new(read(system, is_live(live_active.as_ref()))),
+                live_power_mode: None,
+            }
+        });
+        Started::Accepted
+    }
+
+    /// Look for printers on the network, landing them beside a fresh reading of the queues
+    /// and jobs.
+    fn start_find(&mut self, action: &str) -> Started {
+        self.readings.printers.pending.push(action.to_owned());
+        let action = action.to_owned();
+        let live_active = self.live_active_flag();
+        self.worker.run(move |system| {
+            let found = system.find_printers();
+            let mut readings = read(system, is_live(live_active.as_ref()));
+            let result = match found {
+                Ok(nearby) => {
+                    readings.printers.nearby = nearby;
+                    Ok(())
+                }
+                Err(error) => Err(error),
+            };
+            Landed::Changed {
+                part: Part::Printers,
+                action,
+                result,
+                readings: Box::new(readings),
+                live_power_mode: None,
+            }
+        });
         Started::Accepted
     }
 }
@@ -535,6 +622,15 @@ pub fn power_surface() -> tilo_resource::surface::Surface {
     tilo_resource::surface::reading_surface::<Power, PowerAction>(POWER, "Power")
 }
 
+/// The `printers` resource's surface, as a shell reads it over `so.tilo.device`.
+#[must_use]
+pub fn printers_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<
+        tilo_system_resources::printers::Printers,
+        tilo_system_resources::printers::PrintAction,
+    >(PRINTERS, "Printers")
+}
+
 /// The `power` resource, as a declared type: the modes this device offers and
 /// who may use it.
 #[derive(tilo_resource::Row)]
@@ -662,6 +758,7 @@ impl Service for SystemService {
             update_resource(&self.readings.update),
             time_resource(&self.readings.time),
             keyboard_light_resource(&self.readings.keyboard_light),
+            printers::resource(&self.readings.printers),
         ]
     }
 
@@ -671,6 +768,7 @@ impl Service for SystemService {
             SYSTEM_UPDATE => Some(reading(&self.readings.update)),
             TIME_ZONE => Some(reading(&self.readings.time)),
             KEYBOARD_BACKLIGHT => Some(reading(&self.readings.keyboard_light)),
+            PRINTERS => Some(reading(&self.readings.printers)),
             _ => None,
         }
     }
@@ -763,6 +861,42 @@ impl Service for SystemService {
                     }
                 };
                 Ok(self.start(Part::KeyboardLight, id, Change::KeyboardLight(level)))
+            }
+            PRINTERS => {
+                if !self.readings.printers.serving {
+                    return Err(ApiError::Unavailable {
+                        code: "no_printing".into(),
+                        reason: "This computer has no printer service".into(),
+                    });
+                }
+                let action =
+                    decode::<tilo_system_resources::printers::PrintAction>(
+                        &published, resource, action, arguments,
+                    )?;
+                let id = action.id();
+                match action {
+                    tilo_system_resources::printers::PrintAction::Find => {
+                        Ok(self.start_find(id))
+                    }
+                    tilo_system_resources::printers::PrintAction::Add { uri, name } => {
+                        Ok(self.start_print(id, PrintChange::Add { uri, name }))
+                    }
+                    tilo_system_resources::printers::PrintAction::Remove { printer } => {
+                        Ok(self.start_print(id, PrintChange::Remove(printer)))
+                    }
+                    tilo_system_resources::printers::PrintAction::SetDefault { printer } => {
+                        Ok(self.start_print(id, PrintChange::SetDefault(printer)))
+                    }
+                    tilo_system_resources::printers::PrintAction::SetPaused { printer, paused } => {
+                        Ok(self.start_print(id, PrintChange::SetPaused(printer, paused)))
+                    }
+                    tilo_system_resources::printers::PrintAction::CancelJob { job } => {
+                        Ok(self.start_print(id, PrintChange::CancelJob(job)))
+                    }
+                    tilo_system_resources::printers::PrintAction::RetryJob { job } => {
+                        Ok(self.start_print(id, PrintChange::RetryJob(job)))
+                    }
+                }
             }
             _ => Err(ApiError::Unknown(tilo_actions::ActionAddress::new(
                 resource, action,

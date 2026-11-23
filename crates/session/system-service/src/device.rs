@@ -3,9 +3,27 @@
 //! Location portal, the keyboard's LED); a test lends one of its own.
 
 use settings_store::day_schedule::Location;
+use tilo_system_resources::printers::{
+    DiscoveredPrinter, JobState as PrintJobState, PrintJob as PrintJobReading, PrinterQueue,
+    PrinterSupply, Printers, QueueState as PrintQueueState,
+};
 
 use crate::model::{KeyboardLight, Power, PowerMode, Time};
 use crate::update::Update;
+
+/// A change to make on the printers: what a person, an agent or a script asked of the
+/// `printers` resource.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PrintChange {
+    /// Print to the printer found at `uri`, known here by `name`.
+    Add { uri: String, name: String },
+    Remove(String),
+    SetDefault(String),
+    /// Hold the queue's work, or let it print again.
+    SetPaused(String, bool),
+    CancelJob(String),
+    RetryJob(String),
+}
 
 /// A change to make on the machine.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -84,6 +102,34 @@ pub trait System: Send + Sync {
 
     /// The zone of the city nearest `location`.
     fn nearest_zone(&self, location: Location) -> Option<String>;
+
+    /// The queues this computer prints to, the jobs they carry, and the printers found
+    /// nearby. A machine with no printer service answers with `serving: false`.
+    fn printers(&self) -> Printers {
+        Printers::default()
+    }
+
+    /// The printers found on the network now.
+    ///
+    /// # Errors
+    /// Why they could not be looked for.
+    fn find_printers(&self) -> Result<Vec<DiscoveredPrinter>, String> {
+        Err("this machine cannot look for printers".to_owned())
+    }
+
+    /// Make `change` on the printers.
+    ///
+    /// # Errors
+    /// Why it did not happen.
+    fn change_print(&self, _change: &PrintChange) -> Result<(), String> {
+        Err("this machine cannot print".to_owned())
+    }
+
+    /// Call `changed` whenever the printers change: a queue's state, a job, the default.
+    /// The handle keeps the subscription alive while it is held.
+    fn follow_printers(&self, _changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn Send>> {
+        None
+    }
 }
 
 /// The machine as its daemons report it.
@@ -201,6 +247,113 @@ impl System for OsSystem {
             .find_map(|table| std::fs::read_to_string(table).ok())
             .and_then(|table| settings_store::clock::nearest_zone_in(location, &table))
     }
+
+    fn printers(&self) -> Printers {
+        let queues = os_actions::printing::queues();
+        let jobs = os_actions::printing::jobs();
+        let serving = queues.is_ok();
+        Printers {
+            serving,
+            queues: queues.map(queues_reading).unwrap_or_default(),
+            jobs: jobs.map(jobs_reading).unwrap_or_default(),
+            ..Printers::default()
+        }
+    }
+
+    fn find_printers(&self) -> Result<Vec<DiscoveredPrinter>, String> {
+        os_actions::printing::discover_driverless().map(|found| {
+            found
+                .into_iter()
+                .map(|printer| DiscoveredPrinter {
+                    uri: printer.uri,
+                    name: printer.name,
+                    location: printer.location,
+                })
+                .collect()
+        })
+    }
+
+    fn change_print(&self, change: &PrintChange) -> Result<(), String> {
+        match change {
+            PrintChange::Add { uri, name } => os_actions::printing::add_driverless(uri, name),
+            PrintChange::Remove(printer) => os_actions::printing::remove_queue(printer),
+            PrintChange::SetDefault(printer) => os_actions::printing::set_default(printer),
+            PrintChange::SetPaused(printer, paused) => {
+                os_actions::printing::set_enabled(printer, !paused)
+            }
+            PrintChange::CancelJob(job) => os_actions::printing::cancel_job(job),
+            PrintChange::RetryJob(job) => os_actions::printing::retry_job(job),
+        }
+    }
+
+    fn follow_printers(&self, changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn Send>> {
+        os_actions::printing::follow_changes(move || changed())
+            .ok()
+            .map(|follow| Box::new(follow) as Box<dyn Send>)
+    }
+}
+
+/// The queues CUPS lists, as the `printers` resource reads them.
+fn queues_reading(queues: Vec<os_actions::printing::PrinterQueue>) -> Vec<PrintQueue> {
+    use os_actions::printing::QueueState;
+    queues
+        .into_iter()
+        .map(|queue| PrintQueue {
+            name: queue.name,
+            state: match queue.state {
+                QueueState::Ready => PrintQueueState::Ready,
+                QueueState::Printing => PrintQueueState::Printing,
+                QueueState::Paused => PrintQueueState::Paused,
+                QueueState::Offline => PrintQueueState::Offline,
+            },
+            default: queue.default,
+            accepting: queue.accepting_jobs,
+            reason: queue.reason.or_else(|| {
+                let reasons = queue.telemetry.state_reasons;
+                (!reasons.is_empty()).then(|| reasons.join(", "))
+            }),
+            supplies: queue
+                .telemetry
+                .supplies
+                .unwrap_or_default()
+                .into_iter()
+                .map(|supply| PrinterSupply {
+                    name: supply.name,
+                    color: supply.color,
+                    level: supply.level_percent,
+                })
+                .collect(),
+            reachable: queue.telemetry.available,
+        })
+        .collect()
+}
+
+/// The jobs CUPS lists, as the `printers` resource reads them.
+fn jobs_reading(jobs: Vec<os_actions::printing::PrintJob>) -> Vec<PrintJobReading> {
+    use os_actions::printing::JobState;
+    jobs.into_iter()
+        .map(|job| {
+            let progress = job.progress_percent();
+            PrintJobReading {
+                id: job.id,
+                title: job.title.unwrap_or_default(),
+                owner: job.owner,
+                size_bytes: job.size_bytes,
+                submitted: job.submitted,
+                destination: job.destination,
+                state: match job.state {
+                    Some(JobState::Held) => PrintJobState::Held,
+                    Some(JobState::Stopped) => PrintJobState::Stopped,
+                    Some(JobState::Processing) => PrintJobState::Printing,
+                    Some(JobState::Canceled) => PrintJobState::Cancelled,
+                    Some(JobState::Aborted) => PrintJobState::Failed,
+                    Some(JobState::Completed) => PrintJobState::Printed,
+                    Some(JobState::Pending | JobState::Unknown) | None => PrintJobState::Waiting,
+                },
+                progress,
+            }
+        })
+        .collect()
 }
 
 /// Look where the device is once and set the zone there, if it is another;

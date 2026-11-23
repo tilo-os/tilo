@@ -1,14 +1,18 @@
 //! The session's system resources, as an app and the session share them.
 //!
 //! The resources' ids, their actions ([`effects`]) and the types their
-//! readings serialise ([`model`], [`update`]). What reads or changes the
-//! machine is the session's system service; this crate holds only the
-//! contract, so an app that shows or drives these resources depends on it
-//! and not on the session.
+//! readings serialise ([`model`], [`update`], and [`printers`], which keeps
+//! its own small vocabulary beside them). What reads or changes the machine
+//! is the session's system service; this crate holds only the contract, so
+//! an app that shows or drives these resources depends on it and not on the
+//! session.
 
 pub mod effects;
 pub mod model;
+pub mod printers;
 pub mod update;
+
+pub use printers::PRINTERS;
 
 /// The resources' ids.
 pub const POWER: &str = "power";

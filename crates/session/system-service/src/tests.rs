@@ -6,10 +6,14 @@ use settings_store::day_schedule::Location;
 use tilo_actions::ApiError;
 use tilo_service::{Service, Services, Started, Wake};
 
-use crate::device::{Change, PowerProfiles, System};
+use tilo_system_resources::printers::{
+    DiscoveredPrinter, JobState, PrintJob, PrinterQueue, Printers, QueueState,
+};
+
+use crate::device::{Change, PowerProfiles, PrintChange, System};
 use crate::model::{KeyboardLight, Power, PowerMode, Time};
 use crate::update::Update;
-use crate::{KEYBOARD_BACKLIGHT, POWER, SYSTEM_UPDATE, SystemService, TIME_ZONE};
+use crate::{KEYBOARD_BACKLIGHT, POWER, PRINTERS, SYSTEM_UPDATE, SystemService, TIME_ZONE};
 
 /// A machine in memory, in Amsterdam unless told it is elsewhere.
 struct Fake {
@@ -22,6 +26,10 @@ struct Fake {
     keyboard_light: Mutex<KeyboardLight>,
     location: Mutex<Result<Location, String>>,
     changes: Mutex<Vec<Change>>,
+    printers: Mutex<Printers>,
+    nearby: Mutex<Result<Vec<DiscoveredPrinter>, String>>,
+    print_changes: Mutex<Vec<PrintChange>>,
+    print_refusal: Mutex<Option<String>>,
 }
 
 impl Fake {
@@ -48,11 +56,41 @@ impl Fake {
             }),
             location: Mutex::new(Err("no fix".into())),
             changes: Mutex::new(Vec::new()),
+            printers: Mutex::new(Printers {
+                serving: true,
+                queues: vec![PrinterQueue {
+                    name: "Office".into(),
+                    state: QueueState::Ready,
+                    default: true,
+                    accepting: true,
+                    reason: None,
+                    supplies: Vec::new(),
+                    reachable: true,
+                }],
+                jobs: vec![PrintJob {
+                    id: "12".into(),
+                    title: "Report".into(),
+                    owner: "ada".into(),
+                    size_bytes: 2048,
+                    submitted: "2026-11-23 09:00".into(),
+                    destination: "Office".into(),
+                    state: JobState::Waiting,
+                    progress: None,
+                }],
+                ..Printers::default()
+            }),
+            nearby: Mutex::new(Ok(Vec::new())),
+            print_changes: Mutex::new(Vec::new()),
+            print_refusal: Mutex::new(None),
         })
     }
 
     fn changes(&self) -> Vec<Change> {
         self.changes.lock().unwrap().clone()
+    }
+
+    fn print_changes(&self) -> Vec<PrintChange> {
+        self.print_changes.lock().unwrap().clone()
     }
 
     fn power_reads(&self) -> usize {
@@ -124,6 +162,60 @@ impl System for Fake {
             location,
             "NL\t+5222+00454\tEurope/Amsterdam\nJP\t+353916+1394441\tAsia/Tokyo\n",
         )
+    }
+
+    fn printers(&self) -> Printers {
+        self.printers.lock().unwrap().clone()
+    }
+
+    fn find_printers(&self) -> Result<Vec<DiscoveredPrinter>, String> {
+        self.nearby.lock().unwrap().clone()
+    }
+
+    fn change_print(&self, change: &PrintChange) -> Result<(), String> {
+        self.print_changes.lock().unwrap().push(change.clone());
+        if let Some(reason) = self.print_refusal.lock().unwrap().clone() {
+            return Err(reason);
+        }
+        let mut printers = self.printers.lock().unwrap();
+        match change {
+            PrintChange::CancelJob(job) => {
+                if let Some(found) = printers.jobs.iter_mut().find(|j| j.id == *job) {
+                    found.state = JobState::Cancelled;
+                }
+            }
+            PrintChange::RetryJob(job) => {
+                if let Some(found) = printers.jobs.iter_mut().find(|j| j.id == *job) {
+                    found.state = JobState::Waiting;
+                }
+            }
+            PrintChange::SetPaused(printer, paused) => {
+                if let Some(found) = printers.queues.iter_mut().find(|q| q.name == *printer) {
+                    found.state = if *paused {
+                        QueueState::Paused
+                    } else {
+                        QueueState::Ready
+                    };
+                    found.accepting = !paused;
+                }
+            }
+            PrintChange::SetDefault(printer) => {
+                for queue in &mut printers.queues {
+                    queue.default = queue.name == *printer;
+                }
+            }
+            PrintChange::Remove(printer) => printers.queues.retain(|q| q.name != *printer),
+            PrintChange::Add { uri: _, name } => printers.queues.push(PrinterQueue {
+                name: name.clone(),
+                state: QueueState::Ready,
+                default: printers.queues.is_empty(),
+                accepting: true,
+                reason: None,
+                supplies: Vec::new(),
+                reachable: true,
+            }),
+        }
+        Ok(())
     }
 }
 
@@ -863,4 +955,128 @@ fn a_live_signal_during_power_mode_read_beats_the_stale_direct_read() {
         "a newer live signal that moved revision past rev_before must not be overwritten by the stale direct read"
     );
     assert_eq!(fake.power_reads(), 0);
+}
+
+#[test]
+fn the_printers_resource_reads_the_queues_and_jobs_and_takes_their_actions() {
+    let fake = Fake::new();
+    let mut service = service(&fake);
+    let printers = service.read(PRINTERS).unwrap();
+    assert_eq!(printers["serving"], json!(true));
+    assert_eq!(printers["queues"][0]["name"], json!("Office"));
+    assert_eq!(printers["queues"][0]["state"], json!("ready"));
+    assert_eq!(printers["jobs"][0]["id"], json!("12"));
+    assert_eq!(printers["jobs"][0]["state"], json!("waiting"));
+
+    let published = service
+        .resources()
+        .into_iter()
+        .find(|resource| resource.id.as_str() == PRINTERS)
+        .expect("the printers resource is published");
+    let actions: Vec<&str> = published
+        .actions
+        .iter()
+        .map(|action| action.id.as_str())
+        .collect();
+    for action in [
+        "find",
+        "add",
+        "remove",
+        "set-default",
+        "set-paused",
+        "cancel-job",
+        "retry-job",
+    ] {
+        assert!(actions.contains(&action), "{action} is published: {actions:?}");
+    }
+
+    assert_eq!(
+        service.invoke(PRINTERS, "cancel-job", &arguments(json!({"job": "12"}))),
+        Ok(Started::Accepted)
+    );
+    assert_eq!(
+        service.read(PRINTERS).unwrap()["pending"],
+        json!(["cancel-job"])
+    );
+    service.settle();
+    assert_eq!(fake.print_changes(), [PrintChange::CancelJob("12".into())]);
+    let printers = service.read(PRINTERS).unwrap();
+    assert_eq!(printers["pending"], json!([]));
+    assert_eq!(printers["jobs"][0]["state"], json!("cancelled"));
+
+    // A machine whose printer service refuses says why, and the reading keeps nothing pending.
+    *fake.print_refusal.lock().unwrap() = Some("The queue is gone".into());
+    service
+        .invoke(
+            PRINTERS,
+            "set-paused",
+            &arguments(json!({"printer": "Office", "paused": true})),
+        )
+        .unwrap();
+    service.settle();
+    let printers = service.read(PRINTERS).unwrap();
+    assert_eq!(printers["problem"], json!("The queue is gone"));
+    assert_eq!(printers["pending"], json!([]));
+}
+
+#[test]
+fn finding_printers_lands_what_the_network_answered() {
+    let fake = Fake::new();
+    let mut service = service(&fake);
+    *fake.nearby.lock().unwrap() = Ok(vec![DiscoveredPrinter {
+        uri: "ipp://printer.local/ipp/print".into(),
+        name: "Hallway".into(),
+        location: Some("Second floor".into()),
+    }]);
+    assert_eq!(
+        service.invoke(PRINTERS, "find", &Map::new()),
+        Ok(Started::Accepted)
+    );
+    service.settle();
+    let printers = service.read(PRINTERS).unwrap();
+    assert_eq!(printers["nearby"][0]["name"], json!("Hallway"));
+    assert_eq!(printers["pending"], json!([]));
+
+    // A plain read keeps what the find turned up until the next one.
+    service.refresh();
+    service.settle();
+    assert_eq!(
+        service.read(PRINTERS).unwrap()["nearby"][0]["name"],
+        json!("Hallway")
+    );
+
+    *fake.nearby.lock().unwrap() = Err("no network".into());
+    service.invoke(PRINTERS, "find", &Map::new()).unwrap();
+    service.settle();
+    let printers = service.read(PRINTERS).unwrap();
+    assert_eq!(printers["problem"], json!("no network"));
+}
+
+#[test]
+fn a_machine_with_no_printer_service_offers_no_print_actions() {
+    let fake = Fake::new();
+    fake.printers.lock().unwrap().serving = false;
+    let mut service = service(&fake);
+    let published = service
+        .resources()
+        .into_iter()
+        .find(|resource| resource.id.as_str() == PRINTERS)
+        .expect("the printers resource is published");
+    let find = published
+        .actions
+        .iter()
+        .find(|action| action.id.as_str() == "find")
+        .expect("the find action is published, marked unavailable");
+    assert_eq!(
+        find.contract.availability,
+        tilo_actions::Availability::Unavailable {
+            code: "no_printing".into(),
+            reason: "This computer has no printer service".into(),
+        },
+        "a machine without a printer service says so"
+    );
+    assert!(matches!(
+        service.invoke(PRINTERS, "find", &Map::new()),
+        Err(ApiError::Unavailable { .. })
+    ));
 }

@@ -87,6 +87,7 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("bluetooth", "Bluetooth", "bluetooth"),
     ("battery", "Battery", "power:battery"),
     ("power", "Power", "power"),
+    ("printers", "Printers", "printers"),
     ("displays", "Displays", "session:displays"),
     ("notifications", "Notifications", "session:notifications"),
     ("osd", "Osd", "session:osd"),
