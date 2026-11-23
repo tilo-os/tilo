@@ -124,7 +124,7 @@ machine woke and the window is live.
 ```python example=hosted-browser host=stack
 import os
 
-from tilo import Tilo
+from tilo import Invocation, Tilo
 
 tilo = Tilo()                                            # your backend's key
 made = tilo.workspaces.create("Visa application: Jane Doe")
@@ -134,8 +134,11 @@ workspace = Tilo(key=key.token).workspace(made.id)       # the agent's key, in i
 # The page to drive: any address the workspace's machine reaches.
 url = os.environ.get("TILO_BROWSER_URL", "https://visa.example/apply")
 
-# Browser opens in the workspace's own machine; the window is live when this answers.
-workspace.do("browser#open")
+# Browser opens in the workspace's own machine; a window that takes longer than one call's wait
+# comes back as its run, followed until the window is live.
+opened = workspace.do("browser#open")
+if isinstance(opened, Invocation):
+    opened.result()
 workspace.do("browser/page#navigate", url=url)
 workspace.do("browser/page#wait-page-settled", quiet_ms=300, timeout_ms=30_000)
 
@@ -147,7 +150,7 @@ print("the page is", page["title"], "and says:", page["outline"])
 ```
 
 ```typescript example=hosted-browser host=stack
-import { Tilo } from "tilo-sdk";
+import { Invocation, Tilo } from "tilo-sdk";
 
 const tilo = new Tilo();                                 // your backend's key
 const made = await tilo.workspaces.create("Visa application: Jane Doe");
@@ -157,8 +160,12 @@ const workspace = new Tilo({ key: minted.token }).workspace(made.id); // the age
 // The page to drive: any address the workspace's machine reaches.
 const url = process.env.TILO_BROWSER_URL ?? "https://visa.example/apply";
 
-// Browser opens in the workspace's own machine; the window is live when this answers.
-await workspace.do("browser#open");
+// Browser opens in the workspace's own machine; a window that takes longer than one call's wait
+// comes back as its run, followed until the window is live.
+const opened = await workspace.do("browser#open");
+if (opened instanceof Invocation) {
+  await opened.result();
+}
 await workspace.do("browser/page#navigate", { url });
 await workspace.do("browser/page#wait-page-settled", { quiet_ms: 300, timeout_ms: 30_000 });
 
