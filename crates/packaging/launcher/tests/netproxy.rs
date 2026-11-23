@@ -325,3 +325,68 @@ fn a_program_starts_only_after_its_proxy_listens() {
     );
     assert!(!dir.join("proxy.sock").exists());
 }
+
+#[test]
+fn set_policy_refuses_an_oversized_answer_and_reads_an_exact_bound_answer() {
+    use std::io::{BufRead as _, BufReader};
+    use std::os::unix::net::UnixListener;
+
+    const BOUND: usize = netproxy::MAX_CONTROL_LINE_BYTES;
+    let scratch = tempfile::tempdir().unwrap();
+    let control_dir = scratch.path().join("keeper");
+    private(&control_dir);
+    let control = control_dir.join("control");
+    let listener = UnixListener::bind(&control).unwrap();
+
+    // 1) Oversized valid JSON answer (bound + 1) with no newline, then close:
+    //    succeeds on main, refused with InvalidData after fix.
+    let ok_json = r#"{"allowed":1,"error":null}"#;
+    let mut over_wire = ok_json.as_bytes().to_vec();
+    over_wire.resize(BOUND + 1, b' ');
+
+    // 2) Exact-bound valid JSON Ok answer (bound bytes + '\n'): still succeeds.
+    let mut exact_ok_wire = ok_json.as_bytes().to_vec();
+    exact_ok_wire.resize(BOUND, b' ');
+    exact_ok_wire.push(b'\n');
+
+    // 3) Exact-bound valid JSON Refused answer (bound bytes + '\n'): error text decoded intact.
+    let prefix = "refused:";
+    let shell = format!(r#"{{"allowed":null,"error":"{prefix}"}}"#);
+    let pad = BOUND - shell.len();
+    let expected_error = format!("{prefix}{}", "e".repeat(pad));
+    let mut exact_err_wire =
+        format!(r#"{{"allowed":null,"error":"{expected_error}"}}"#).into_bytes();
+    assert_eq!(exact_err_wire.len(), BOUND);
+    exact_err_wire.push(b'\n');
+
+    let server = std::thread::spawn(move || {
+        for reply in [over_wire, exact_ok_wire, exact_err_wire] {
+            let (stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            let _ = BufReader::new(&stream).read_line(&mut line);
+            let _ = (&stream).write_all(&reply);
+            drop(stream);
+        }
+    });
+
+    let err = netproxy::set_policy(&control, &EgressPolicy::none())
+        .expect_err("an oversized control answer must be refused");
+    match err {
+        netproxy::NetworkProxyError::Control { source, .. } => {
+            assert_eq!(source.kind(), std::io::ErrorKind::InvalidData, "{source}");
+        }
+        other => panic!("expected Control(InvalidData), got {other:?}"),
+    }
+
+    netproxy::set_policy(&control, &EgressPolicy::none())
+        .expect("an exact-bound ok answer must succeed");
+
+    let err = netproxy::set_policy(&control, &EgressPolicy::none())
+        .expect_err("an exact-bound refusal must be decoded");
+    match err {
+        netproxy::NetworkProxyError::Refused(got) => assert_eq!(got, expected_error),
+        other => panic!("expected Refused, got {other:?}"),
+    }
+
+    server.join().unwrap();
+}
