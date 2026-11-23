@@ -487,10 +487,7 @@ fn descends(pid: u32, session: u32, under: &mut HashMap<u32, bool>) -> bool {
 /// launcher. The directory is made beside that build, so the programs are linked into it rather
 /// than copied where the file system allows.
 fn optimised_session() -> (tempfile::TempDir, PathBuf) {
-    let session = std::env::var_os("TILO_SIBLING_BIN_tilo_session").map_or_else(
-        || tilo_test_env::sibling_binary("tilo-session", "tilo-session"),
-        PathBuf::from,
-    );
+    let session = tilo_test_env::sibling_binary("tilo-session", "tilo-session");
     let launcher = tilo_test_env::sibling_binary("launcher", "tilo-launcher");
     let directory = session
         .parent()
