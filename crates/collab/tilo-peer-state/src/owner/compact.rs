@@ -79,7 +79,7 @@ impl NativeWorkspaceOwner {
         now: SystemTime,
     ) -> Result<usize, String> {
         let mut drafted: Option<Vec<SignedOp>> = None;
-        let compacted = write::signed_turn(signer, |signed| {
+        let compacted = write::signed_turn(signer, |signed| -> Result<Vec<NeighbourMsg>, String> {
             let _turn = self.0.mutation.lock();
             let candidate = self.view(workspace)?;
             let device = candidate.device().device_public_key;
