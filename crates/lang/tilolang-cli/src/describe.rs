@@ -206,6 +206,23 @@ fn offers(meta: &PackageMeta) -> Vec<FleetOffer> {
             icon: action.icon.clone().unwrap_or_default(),
         });
     }
+    // The system's `open-link`, which a shell hands the app a link through: the one action an
+    // app offers on its root that takes a line the caller supplies.
+    if let Some(offer) = crate::package::link_offer(meta) {
+        offers.push(FleetOffer {
+            resource: offer.resource,
+            resource_kind: offer.kind,
+            action: ui::tilo_actions::remote::APPLICATION_OPEN_LINK_ACTION.to_owned(),
+            label: "Open link".to_owned(),
+            description: String::new(),
+            kind: "read".to_owned(),
+            operation: "view".to_owned(),
+            confirm: false,
+            asks: ui::tilo_actions::remote::OPEN_LINK_PARAM.to_owned(),
+            keywords: Vec::new(),
+            icon: String::new(),
+        });
+    }
     offers
 }
 
@@ -223,14 +240,16 @@ mod tests {
     fn the_fleet_reads_a_packages_own_declaration() {
         let dir = package(
             "app t.notes \"Notes\" (\n    icon: .file_text,\n    category: .office,\n    \
-             tagline: \"Notes you write together\",\n    keywords: [\"note\", \"memo\"],\n)\n\n\
+             tagline: \"Notes you write together\",\n    keywords: [\"note\", \"memo\"],\n    \
+             schemes: \"t.notes\",\n)\n\n\
              type Note {\n    title: Text\n}\n\n\
              type Notebook {\n    notes: Collection<Note>\n}\n\n\
              root notebook: Notebook\n\n\
              default view notebook for Notebook\n\n\
              view notebook(nb: Notebook) {\n    text(\"Notes\")\n}\n\n\
              primary action new_note(nb: Notebook, title: Text = \"\") -> Note (icon: .plus) {\n    \
-             nb.notes.insert(Note(title: title))\n}\n",
+             nb.notes.insert(Note(title: title))\n}\n\n\
+             action open_link(nb: Notebook, link: Text) -> host.Resource {\n    nb\n}\n",
         );
         let entry = fleet(dir.path(), &[])
             .expect("the package reads")
@@ -254,6 +273,27 @@ mod tests {
         assert_eq!(
             (offer.kind.as_str(), offer.operation.as_str()),
             ("undoable", "document")
+        );
+        // An app that opens links offers the system's `open-link` on its root, where the manifest
+        // declares it: what a shell hands a link to while no window of the app is open.
+        let link = entry
+            .offers
+            .iter()
+            .find(|offer| offer.action == "open-link")
+            .expect("it offers the link it opens");
+        assert_eq!(link.resource_kind, "tl.t.notes.Notebook");
+        assert!(
+            link.resource.starts_with("tl:t.notes:root-"),
+            "the offer stands on the root: {}",
+            link.resource
+        );
+        assert_eq!(
+            (
+                link.kind.as_str(),
+                link.operation.as_str(),
+                link.asks.as_str()
+            ),
+            ("read", "view", "link")
         );
     }
 

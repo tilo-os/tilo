@@ -560,6 +560,7 @@ impl ShellPart {
                 sink: None,
                 // The shell's whole screen, not whatever root the package lists first.
                 root: screen_layer(),
+                link_home: None,
             },
             Rc::new(OnSession {
                 loads: ShellPlatform {

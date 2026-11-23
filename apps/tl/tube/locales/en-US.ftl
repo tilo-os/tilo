@@ -315,6 +315,11 @@ d-wx26izlg = Refresh
 d-khblapap = Refresh trending
     .doc = Asks the service for the videos it lists as trending.
 
+d-mwai3gvn = Open link
+    .doc = Opens a link of the scheme this client claims: the video (`tube:watch?v=<key>`), channel (`tube:channel?key=<key>`) or playlist (`tube:playlist?key=<key>`) it names, or the search it asks for (`tube:search?q=<query>`).
+
+d-mwai3gvn-link = Link
+
 d-t3cwabaw = Carry native tube
     .doc = What the native Tube kept before this app took its id over, carried into this one once: the channels subscribed to, the videos liked, the watch queue, and the watch history with when each video was watched.
 

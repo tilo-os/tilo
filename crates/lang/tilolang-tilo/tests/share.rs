@@ -123,6 +123,61 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase a_session_lends_its_services_the_page_their_links_open_under;
+    {
+        // The session's own services (its document, the apps it seeds) are hosted by the
+        // session, which lends them the page the workspace's resources open on the web: the
+        // same lending a tilolang window's host is handed.
+        let mut services = tilo_service::Services::default();
+        let mut service = service();
+        let note = new_note(&mut service);
+        service.set_link_home(None);
+        services.add(Box::new(service));
+        let home = LinkHome {
+            origin: ORIGIN.to_owned(),
+            workspace: WORKSPACE.to_owned(),
+            host_device: String::new(),
+            web_entry: SITE.to_owned(),
+        };
+        let home = home.json().expect("the home writes as JSON");
+        services.lend_link_home(Some(&home));
+        let started = services
+            .invoke(&note, "share-link", &Map::new())
+            .expect("the session's service offers a link")
+            .expect("it mints the link it was lent");
+        let Started::Done(output) = started else {
+            panic!("the link is answered at once");
+        };
+        let url = output
+            .value
+            .as_ref()
+            .and_then(|value| value.get("url"))
+            .and_then(serde_json::Value::as_str)
+            .expect("an answer carries its link")
+            .to_owned();
+        let read = link(&url);
+        assert_eq!(
+            read.target.app.as_ref().map(tilo_reference::link::AppId::as_str),
+            Some(NOTES_APP)
+        );
+        assert_eq!(
+            read.target.resource.as_ref().expect("the link names the note").id,
+            note
+        );
+
+        // The person moves to a workspace whose host serves no page: the session lends nothing,
+        // and the link is refused with the system's words.
+        services.lend_link_home(None);
+        let refused = services
+            .invoke(&note, "share-link", &Map::new())
+            .expect("the session's service offers a link")
+            .expect_err("a host with no page makes no link");
+        assert!(
+            refused.to_string().contains("serves no web page"),
+            "the system's own words: {refused}"
+        );
+    }
+
     phase a_host_that_serves_no_page_refuses_the_link_with_the_systems_words;
     {
         let mut service = service();

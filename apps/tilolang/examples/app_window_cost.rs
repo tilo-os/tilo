@@ -129,6 +129,7 @@ fn open(app: &str, platform: &Rc<Packages>, scenario: Option<&str>) -> Open {
             store: tilolang_tilo::resources::ResourceStore::in_memory(),
             sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
             root: tilolang_tilo::host::RootView::default(),
+            link_home: None,
         },
         Rc::clone(platform) as Rc<dyn Platform>,
         Rc::new(Alone),

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.tube@5738a7401a7c766a";
+export const SURFACE = "so.tilo.tube@a86ce7b3c95bf2b1";
 
 /** The arguments of `subscribe`. */
 export interface SubscribeArgs {
@@ -313,6 +313,10 @@ export interface YouTube extends tilo.Resource {
   refresh_feed(): Promise<void>;
   /** Asks the service for the videos it lists as trending. */
   load_trending(): Promise<void>;
+  /** Opens a link of the scheme this client claims: the video (`tube:watch?v=<key>`), channel (`tube:channel?key=<key>`) or playlist (`tube:playlist?key=<key>`) it names, or the search it asks for (`tube:search?q=<query>`). A shell hands a link here whether or not a window of the client is open, and what this returns opens in the window. The host publishes it as the system's `open-link` on the client's root, which is what a shell hands a link to. */
+  open_link(args: {
+    link: string;
+  }): Promise<unknown>;
   /** Plays the video a history entry names, from where the person left off. */
   play_again(args: {
     h: WatchEntry;
@@ -321,7 +325,7 @@ export interface YouTube extends tilo.Resource {
 
 /** The actions `YouTube` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const YOUTUBE_ACTIONS = ["play_queue", "delete_history", "delete_historyMany", "set_autoplay", "set_autoplayMany", "set_speed", "set_speedMany", "set_quality", "set_qualityMany", "set_captions", "set_captionsMany", "search", "end_search", "end_searchMany", "refresh_feed", "load_trending", "play_again"] as const;
+export const YOUTUBE_ACTIONS = ["play_queue", "delete_history", "delete_historyMany", "set_autoplay", "set_autoplayMany", "set_speed", "set_speedMany", "set_quality", "set_qualityMany", "set_captions", "set_captionsMany", "search", "end_search", "end_searchMany", "refresh_feed", "load_trending", "open_link", "play_again"] as const;
 
 /** The `tl.so.tilo.tube.YouTube` kind at `path`. */
 export function youTube(ws: tilo.Workspace, path: string): YouTube {

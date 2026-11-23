@@ -355,6 +355,7 @@ where
                 store: ResourceStore::in_memory(),
                 root: RootView::default(),
                 sink: Some(Box::new(crate::runtime::MemorySink::new())),
+                link_home: None,
             },
             Rc::clone(&platform),
             Rc::new(crate::names::Installed),

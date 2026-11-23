@@ -228,6 +228,7 @@ impl PageWindow {
                 // What the app hands outside (a post, a mail) stays in the page: it has no
                 // development log to write, and no connector to reach.
                 sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
+                link_home: None,
             },
             platform,
             Rc::new(tilolang_tilo::names::Installed),

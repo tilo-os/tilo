@@ -63,6 +63,8 @@ struct Window {
     root: Option<patch::Node>,
     /// The tree of the level beside the root: the item the window shows.
     detail: Option<patch::Node>,
+    /// The item the level beside the root shows.
+    detail_target: Option<patch::ResourceRef>,
     /// The item the window shows beside its list: what a press showed in place, as the
     /// window heard it from the instance.
     in_place: Option<patch::ResourceRef>,
@@ -89,6 +91,7 @@ impl Window {
             transport,
             root: None,
             detail: None,
+            detail_target: None,
             in_place: None,
             activated: false,
             bound: BTreeMap::new(),
@@ -121,9 +124,11 @@ impl Window {
                     }
                     ToUi::Open {
                         level: Level::Detail,
+                        target,
                         tree,
                         ..
                     } => {
+                        self.detail_target = Some(target);
                         self.detail = Some(tree);
                     }
                     ToUi::Patch {
@@ -2426,6 +2431,69 @@ fn a_window_opened_with_a_markdown_file_imports_it_into_notes() {
         "the file became the note its heading names, keeping the file it came from"
     );
     drop(sent);
+}
+
+/// The package `app` of `source` and `ids`, compiled with nothing beside it: the app a link of
+/// its scheme opens.
+fn bundle_of(source: &str, ids: &str) -> Bundle {
+    let lock = tilolang::IdsLock::parse(ids).unwrap_or_else(|_| panic!("its ids read"));
+    let compiled = tilolang::compile_package(source, &lock, &[])
+        .unwrap_or_else(|_| panic!("the package compiles"));
+    Bundle::new(&compiled, [])
+}
+
+/// A window opened with a `tube:` link runs the app's `open-link`: the video the link names
+/// shows in the window, as a press of its row shows one.
+#[test]
+fn a_window_opened_with_a_tube_link_shows_the_video_it_names() {
+    let tube = bundle_of(
+        include_str!("../../../../apps/tl/tube/app.tl"),
+        include_str!("../../../../apps/tl/tube/app.ids"),
+    );
+    let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", "so.tilo.tube", tube);
+    host.instances_mut()
+        .next()
+        .expect("the instance runs")
+        .stage("a subscriptions feed");
+    settle(&mut host, &mut window);
+    // The root offers the system's `open-link`, which is what a shell delivers a link through
+    // when it hands one to the app rather than to a window.
+    let open_link = host
+        .instances()
+        .next()
+        .expect("the instance runs")
+        .published()
+        .iter()
+        .find(|action| action.address.action == "open-link")
+        .expect("the root offers the link it opens");
+    assert_eq!(
+        open_link.address.resource, "tl:so.tilo.tube:root-thwdswkk",
+        "the action a shell delivers a link through is on the root"
+    );
+    host.instances_mut()
+        .next()
+        .expect("the instance runs")
+        .open_link("tube:watch?v=v-phone".into());
+    settle(&mut host, &mut window);
+    let shown = window
+        .detail_target
+        .clone()
+        .expect("the window shows the video the link names");
+    let at = tilolang_tilo::instance::wire::runtime_resource(&shown).expect("a resource");
+    let instance = host
+        .instances()
+        .next()
+        .expect("the instance runs")
+        .instance();
+    let live = instance.host().expect("the instance's host");
+    match live
+        .runtime()
+        .read(&at, "title")
+        .expect("the video's title")
+    {
+        Value::Text(title) => assert_eq!(title, "The phone that finally lasts a week"),
+        other => panic!("a video's title reads as {other:?}"),
+    }
 }
 
 /// The note `target` names stands under, as the instance's runtime reads it.

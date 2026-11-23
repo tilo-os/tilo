@@ -88,6 +88,9 @@ impl Session {
         // workspace fetches a part from where the record is. An agent's change too large to record
         // whole is recorded rather than refused, and reads back here and on the person's devices.
         self.lend_record_content(&mut services);
+        // Where the workspace's resources open on the web, as the session lends it to a tilolang
+        // window's host: the session's own services mint their `share-link` under the same page.
+        self.lend_link_home(&mut services);
         // What the packages the session runs itself (the shell) wrote into the records their parts
         // share, published with every app's before the API answers this pass.
         if let Err(error) = services.follow_shared() {
@@ -100,6 +103,20 @@ impl Session {
         // What the answers wrote (an agent's record of its work) reaches the workspace in this
         // pass, not in the next one's.
         self.shared.records.write();
+    }
+
+    /// Lend the session's own services the page the active workspace's resources open on the
+    /// web, as the session lends it to a tilolang window's host: where a resource they publish
+    /// is a browser page's, its `share-link` mints under it.
+    fn lend_link_home(&self, services: &mut tilo_service::Services) {
+        let workspace = self
+            .shared
+            .handle
+            .read(|tree| tree.active_workspace().map(|space| space.id().to_string()));
+        let home = workspace
+            .as_deref()
+            .and_then(|workspace| self.shared.link_home_json(workspace));
+        services.lend_link_home(home.as_deref());
     }
 
     /// Keep each record the services keep themselves in the content store of the workspace it

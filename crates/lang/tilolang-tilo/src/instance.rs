@@ -208,6 +208,10 @@ pub struct Config {
     /// [`RootView::default`] takes the package's first root and its default view, as the
     /// launcher opens an app.
     pub root: RootView,
+    /// Where the workspace's resources open on the web, where its embedder knows it: what the
+    /// window's `share-link` mints under ([`crate::share`], [`Instance::share_link`]). `None` on
+    /// a page no workspace stands behind, and then the link is refused with the system's words.
+    pub link_home: Option<crate::share::LinkHome>,
 }
 
 /// The names of the workspace, as the runtime asks for them.
@@ -336,6 +340,9 @@ pub struct Instance {
     me: PersonId,
     mode: Mode,
     device: Option<String>,
+    /// Where this window's resources open on the web, when its embedder knows it: what
+    /// [`Self::share_link`] mints under.
+    link_home: Option<crate::share::LinkHome>,
     store: ResourceStore,
     /// Where the host reads the person's access in the workspace, once its embedder has one.
     access: Rc<RefCell<Option<Rc<crate::authority::AccessSource>>>>,
@@ -477,6 +484,7 @@ impl Instance {
             me: config.me,
             mode: config.mode,
             device: config.device,
+            link_home: config.link_home,
             store: config.store,
             access: Rc::default(),
             platform,
@@ -634,6 +642,60 @@ impl Instance {
     #[must_use]
     pub fn open_requests(&self) -> Rc<RefCell<Vec<crate::effects::OpenEffect>>> {
         Rc::clone(&self.open_requests)
+    }
+
+    /// The link to the resource `resource` of this window's app, minted under the home this
+    /// window's embedder handed it ([`Config::link_home`]): what a page's own copy link asks,
+    /// answered by the same [`crate::share::answer`] that mints a native window's palette link.
+    ///
+    /// # Errors
+    /// Why no link can be made: no workspace page stands behind this window, or the resource is
+    /// not one of this app's.
+    pub fn share_link(&self, resource: &str) -> Result<tilo_actions::ActionOutput, String> {
+        use crate::meta::MetaExt as _;
+        use tilolang_runtime::store::Store as _;
+        let host = self.host().ok_or("the app has not started")?;
+        let app = crate::publish::app_of(resource)
+            .ok_or_else(|| format!("`{resource}` is no resource of an app"))?;
+        let package = host
+            .package(app)
+            .ok_or_else(|| format!("`{app}` is not loaded here"))?;
+        let path = resource
+            .strip_prefix("tl:")
+            .and_then(|rest| rest.split_once(':'))
+            .map(|(_, path)| path)
+            .ok_or_else(|| format!("`{resource}` is no resource of an app"))?;
+        let probe = ResourceRef::parse_id(path, String::new())
+            .ok_or_else(|| format!("`{resource}` names no resource"))?;
+        let ty = host
+            .store()
+            .type_of(&probe)
+            .map_err(|error| error.to_string())?;
+        let type_name = package
+            .meta
+            .type_named(&ty)
+            .map_or_else(|| ty.clone(), |declared| declared.name.clone());
+        let primary = package.meta.default_view(&ty).map(str::to_owned);
+        let views = package
+            .meta
+            .views_showing(&type_name)
+            .into_iter()
+            .map(|view| tilo_resource::share::SharedView {
+                id: view.id.clone(),
+                primary: primary.as_deref() == Some(view.id.as_str()),
+                range: false,
+                desktop: false,
+            })
+            .collect();
+        let request = tilo_resource::share::ShareRequest {
+            resource: resource.to_owned(),
+            kind: package.meta.kind_of(&type_name),
+            views,
+            invite: false,
+            args: serde_json::Map::new(),
+        };
+        let payload = serde_json::to_vec(&request).map_err(|error| error.to_string())?;
+        crate::share::answer(&payload, &self.app, self.link_home.as_ref())
     }
 
     /// Show what the person's own step made, as a press of the action that made it does: it

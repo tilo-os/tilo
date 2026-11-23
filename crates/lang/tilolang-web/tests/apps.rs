@@ -131,6 +131,55 @@ fn a_task_ticked_on_the_page_is_done_in_the_next_patch() {
 }
 
 #[test]
+fn a_pages_copy_link_names_the_resource_again_under_the_workspaces_page() {
+    const SITE: &str = "https://tilo.so/";
+    const ORIGIN: &str = "https://ada.tilo.cloud";
+    const WORKSPACE: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90";
+    const ROOT: &str = "tl:so.tilo.notes:root-v7cub7aw";
+    let files = files_json(&app_files());
+    let options = serde_json::json!({
+        "linkHome": {
+            "origin": ORIGIN,
+            "workspace": WORKSPACE,
+            "web_entry": SITE,
+        }
+    })
+    .to_string();
+    let answer = open(&files, "apps/tl/notes", &options);
+    assert_eq!(answer["ok"], true, "{}", answer["message"]);
+    let page = handle(&answer);
+    let answer: Json =
+        serde_json::from_str(&tilolang_web::app_share(page, ROOT)).expect("JSON answer");
+    assert_eq!(answer["ok"], true, "{answer}");
+    let url = answer["url"].as_str().expect("a link");
+    // The link names the workspace's page, the notebook's app, its record and the resource
+    // again, as a browser opens one.
+    assert!(
+        url.starts_with("https://tilo.so/app/#/@ada.tilo.cloud/w/"),
+        "the workspace's page, one app full tab, the host it opens on: {url}"
+    );
+    assert!(url.contains(WORKSPACE), "the workspace it names: {url}");
+    assert!(
+        url.contains("/so.tilo.notes/-/tl.so.tilo.notes.Notebook/tl:so.tilo.notes:root-v7cub7aw"),
+        "the notebook it names: {url}"
+    );
+    // A page no workspace stands behind has no page to mint a link under: the same system words
+    // a native window hears.
+    let answer = open(&files, "apps/tl/notes", "");
+    assert_eq!(answer["ok"], true, "{}", answer["message"]);
+    let plain = handle(&answer);
+    let answer: Json =
+        serde_json::from_str(&tilolang_web::app_share(plain, ROOT)).expect("JSON answer");
+    assert_eq!(answer["ok"], false, "{answer}");
+    assert!(
+        answer["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("serves no web page")),
+        "the system's own words: {answer}"
+    );
+}
+
+#[test]
 fn the_shells_canvas_stands_its_places_where_the_layout_puts_them() {
     let files = files_json(&app_files());
     let answer = open(
@@ -227,6 +276,7 @@ fn a_hosted_canvas_follows_the_layout_its_host_reads() {
             me: ("ada", "Ada"),
             viewport: (1280, 800),
             dark: false,
+            link_home: None,
         },
     )
     .expect("the canvas opens");

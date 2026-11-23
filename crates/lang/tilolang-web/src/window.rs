@@ -36,6 +36,9 @@ pub struct Staging<'a> {
     /// The size the window is laid out at, in logical pixels.
     pub viewport: (u32, u32),
     pub dark: bool,
+    /// Where the workspace's resources open on the web, when the page stands behind one: what a
+    /// resource's `share-link` mints under ([`tilolang_tilo::share`]).
+    pub link_home: Option<tilolang_tilo::share::LinkHome>,
 }
 
 /// What a page shows other than as the browser's own elements ([`AppPage::gaps`]).
@@ -66,6 +69,9 @@ pub struct Hosting<'a> {
     pub me: (&'a str, &'a str),
     pub viewport: (u32, u32),
     pub dark: bool,
+    /// Where the workspace's resources open on the web, when the page is a workspace's: what a
+    /// resource's `share-link` mints under ([`tilolang_tilo::share`]).
+    pub link_home: Option<tilolang_tilo::share::LinkHome>,
 }
 
 /// How a page's instance starts: from a scenario, or over a host's origin.
@@ -76,6 +82,7 @@ struct Start<'a> {
     me: (&'a str, &'a str),
     viewport: (u32, u32),
     dark: bool,
+    link_home: Option<tilolang_tilo::share::LinkHome>,
 }
 
 impl AppPage {
@@ -98,6 +105,7 @@ impl AppPage {
                 me: (ME, MY_NAME),
                 viewport: staging.viewport,
                 dark: staging.dark,
+                link_home: staging.link_home.clone(),
             },
         )
     }
@@ -126,6 +134,7 @@ impl AppPage {
                 me: hosting.me,
                 viewport: hosting.viewport,
                 dark: hosting.dark,
+                link_home: hosting.link_home,
             },
         )
     }
@@ -152,6 +161,7 @@ impl AppPage {
                 store: ResourceStore::new(Rc::new(LocalPort::in_memory())),
                 root: start.root,
                 sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
+                link_home: start.link_home,
             },
             Rc::clone(packages) as Rc<dyn Platform>,
             names,
@@ -322,6 +332,18 @@ impl AppPage {
             .perform_semantic_named(&widget, target, action)?;
         self.exchange();
         Ok(self.patch())
+    }
+
+    /// The link to the resource `resource` of this page's app, minted under the workspace's page
+    /// the page was opened with ([`Instance::share_link`]).
+    ///
+    /// # Errors
+    /// Why no link can be made: no workspace page stands behind this window, or the resource is
+    /// not the app's.
+    pub fn share_link(&self, resource: &str) -> Result<serde_json::Value, String> {
+        self.instance
+            .share_link(resource)
+            .map(|output| output.value.unwrap_or(serde_json::Value::Null))
     }
 
     /// The window laid out at a new size: a narrow one shows one column of a split at a time.

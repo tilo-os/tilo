@@ -378,6 +378,9 @@ impl PartView {
                 store: store.clone(),
                 sink: None,
                 root: tilolang_tilo::host::RootView::default(),
+                // The session's shell draws no links of its own: a resource's is minted where
+                // its workspace's page is known.
+                link_home: None,
             },
             Rc::new(OnSession {
                 loads: PartPlatform {

@@ -34728,6 +34728,18 @@
         "required": [],
         "description": "Asks the service for the videos it lists as trending."
       },
+      "tl.so.tilo.tube.YouTube.open_link.Arguments": {
+        "type": "object",
+        "properties": {
+          "link": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "link"
+        ],
+        "description": "Opens a link of the scheme this client claims: the video (`tube:watch?v=<key>`), channel\n(`tube:channel?key=<key>`) or playlist (`tube:playlist?key=<key>`) it names, or the search it\nasks for (`tube:search?q=<query>`). A shell hands a link here whether or not a window of the\nclient is open, and what this returns opens in the window. The host publishes it as the\nsystem's `open-link` on the client's root, which is what a shell hands a link to."
+      },
       "tl.so.tilo.tube.YouTube.play_again.Arguments": {
         "type": "object",
         "properties": {
@@ -43203,6 +43215,12 @@
       "resource": "tl.so.tilo.tube.YouTube",
       "action": "load_trending",
       "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.load_trending.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
+      "action": "open_link",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.open_link.Arguments"
     },
     {
       "app": "so.tilo.tube",

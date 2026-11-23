@@ -203,9 +203,10 @@ struct Opening {
     language: Option<String>,
     /// The item its window was asked to open on ([`InstanceRequest::reveal`]).
     reveal: Option<String>,
-    /// The file the app was opened with ([`InstanceRequest::open`]), which the instance runs its
-    /// package's action for once its surface is published.
-    open: Option<runtime_portal::process_link::OpenedFile>,
+    /// What the app was opened with ([`InstanceRequest::open`]): a file, which the instance runs
+    /// its package's action for, or a link, which it hands its `open-link`, once its surface is
+    /// published.
+    open: Option<runtime_portal::process_link::OpenRequest>,
     /// What its connection delivered while the route joined that the instance takes once it
     /// runs: the workspace's member list, which the broker hands a connection once.
     early: Vec<collaboration::CollabEvent>,
@@ -875,10 +876,16 @@ impl TilolangProcess {
             if let Some(anchor) = opening.reveal.take() {
                 hosted.reveal(anchor);
             }
-            // The file the app was opened with, which its package's action takes once the window's
-            // surface is published.
-            if let Some(file) = opening.open.take() {
-                hosted.open_file(file);
+            // What the app was opened with, which its package's actions take once the window's
+            // surface is published: a file's action, or `open-link` with the link.
+            match opening.open.take() {
+                Some(runtime_portal::process_link::OpenRequest::File(file)) => {
+                    hosted.open_file(file);
+                }
+                Some(runtime_portal::process_link::OpenRequest::Uri(link)) => {
+                    hosted.open_link(link);
+                }
+                None => {}
             }
         }
         self.attach_origin(opening, &mut hosted)?;

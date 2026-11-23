@@ -109,6 +109,7 @@ fn window() -> Instance {
             store: tilolang_tilo::resources::ResourceStore::in_memory(),
             root: RootView::default(),
             sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
+            link_home: None,
         },
         Rc::new(Opening),
         Rc::new(Alone),

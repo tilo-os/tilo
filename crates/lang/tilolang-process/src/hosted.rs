@@ -910,9 +910,9 @@ pub struct Hosted {
     /// The records other devices wrote, as the connection told since the last frame: read again
     /// once, after every event of the frame is in, so a burst of writes is one reading.
     moved_records: std::collections::BTreeSet<String>,
-    /// The file the app was opened with, until the turn that published its surface runs the action
-    /// its package declares for the file's kind ([`Self::opened`]).
-    opening: Option<runtime_portal::process_link::OpenedFile>,
+    /// What the app was opened with, until the turn that published its surface runs the action its
+    /// package declares for the file's kind, or its `open-link` for a link ([`Self::opened`]).
+    opening: Option<runtime_portal::process_link::OpenRequest>,
     /// The content store the app's files are kept in, which the session opened for it: the bytes
     /// of the file its launch named are read from here, as its own `file.text()` reads them.
     files: Option<tilo_content::ContentStore>,
@@ -993,6 +993,7 @@ impl Hosted {
                 store: store.clone(),
                 root: tilolang_tilo::host::RootView::default(),
                 sink: None,
+                link_home: None,
             },
             Rc::new(platform),
             // People by what the workspace's member list calls them, once it arrived.
@@ -1061,7 +1062,14 @@ impl Hosted {
     /// declares for the file's kind runs with it, as a chooser hands a file to an action, and what
     /// it made opens in the window.
     pub fn open_file(&mut self, file: runtime_portal::process_link::OpenedFile) {
-        self.opening = Some(file);
+        self.opening = Some(runtime_portal::process_link::OpenRequest::File(file));
+    }
+
+    /// Show what `link` names in the app on the turn that publishes its surface: its `open-link`
+    /// runs with the link, as a shell hands a link to the app that claims its scheme, and what it
+    /// made opens in the window.
+    pub fn open_link(&mut self, link: String) {
+        self.opening = Some(runtime_portal::process_link::OpenRequest::Uri(link));
     }
 
     /// Show `anchor` in the window, as a search hit or an agent's `open` of it does.
@@ -1271,14 +1279,28 @@ impl Hosted {
         changed
     }
 
-    /// Run the action the package declares for the file the app was opened with, once the
-    /// instance has published its surface: what a person gets by opening a file in the app, as a
-    /// chooser hands one to an action. What the action made opens in the window, as a press of a
-    /// primary action's does. Whether a file was opened.
+    /// Run the action the app was opened with, once the instance has published its surface: the
+    /// action the package declares for a file's kind, as a chooser hands one to an action, or its
+    /// `open-link` with a link, as a shell hands one to the app that claims its scheme. What the
+    /// action made opens in the window, as a press of a primary action's does. Whether anything
+    /// was opened.
     fn opened(&mut self) -> bool {
-        let Some(file) = self.opening.take() else {
+        let Some(open) = self.opening.take() else {
             return false;
         };
+        match open {
+            runtime_portal::process_link::OpenRequest::File(file) => self.opened_file(file),
+            runtime_portal::process_link::OpenRequest::Uri(link) => {
+                if let Err(why) = self.run_open_link(&link) {
+                    self.instance.failed(why);
+                }
+            }
+        }
+        true
+    }
+
+    /// Run the action `file`'s kind declares for it, and open what it made.
+    fn opened_file(&mut self, file: runtime_portal::process_link::OpenedFile) {
         let opening = match &file.name {
             Some(name) => format!("`{name}`"),
             None => "the file".to_owned(),
@@ -1298,10 +1320,54 @@ impl Hosted {
             // rather than opening a window that took nothing.
             self.instance
                 .failed(format!("`{}` does not open {opening}", self.spec.app));
-            return true;
+            return;
         };
         self.open_declared(&action, file, &opening);
-        true
+    }
+
+    /// Run the package's `open_link` with `link`, and open what it made: a `tube:` link shows
+    /// the video, channel or playlist it names, as a press of a row shows one. An app that
+    /// declares none says so rather than opening a window that took nothing.
+    fn run_open_link(&mut self, link: &str) -> Result<(), String> {
+        let Some(target) = tilolang_tilo::meta::open_link_root(&self.bundle.meta) else {
+            return Err(format!("`{}` does not open links", self.spec.app));
+        };
+        let action = self
+            .bundle
+            .meta
+            .actions
+            .iter()
+            .find(|action| !action.scenario && action.name == tilolang_tilo::meta::OPEN_LINK_ACTION)
+            .cloned()
+            .ok_or_else(|| format!("`{}` does not open links", self.spec.app))?;
+        let host = self
+            .instance
+            .host()
+            .ok_or_else(|| "the app has not started".to_owned())?;
+        let root = host
+            .root_resource(&self.spec.app, &target.id)
+            .map_err(|error| error.to_string())?;
+        let actor = tilolang_tilo::runtime::Actor::Member(MemberId::person(&self.spec.person));
+        match host.runtime().invoke_action(
+            &actor,
+            (
+                action.id.as_str(),
+                vec![Value::resource(&root), Value::text(link)],
+            ),
+        ) {
+            Ok(InvokeOutcome::Done(Value::Ref(made))) => {
+                let made = Rc::unwrap_or_clone(made.target);
+                self.instance
+                    .opens_what_it_made(tilolang_tilo::publish::resource_id(
+                        &self.spec.app,
+                        &made.id_string(),
+                    ));
+                Ok(())
+            }
+            Ok(InvokeOutcome::Done(_)) => Ok(()),
+            Ok(other) => Err(format!("`{link}` was not opened: {other:?}")),
+            Err(error) => Err(error.to_string()),
+        }
     }
 
     /// Run `action` with `file` on the root it opens into, as a view's `file.choose` runs the
@@ -2291,6 +2357,9 @@ impl Hosted {
         if tilo_resource::share::handles(&encoded.type_id) {
             return self.shared(encoded.payload.as_slice());
         }
+        if encoded.type_id == tilo_actions::remote::APPLICATION_OPEN_LINK_TYPE {
+            return self.open_link_from_action(&encoded.payload);
+        }
         Err(Refused::new(
             "action_unknown",
             format!("the tilolang host does not run `{}`", encoded.type_id),
@@ -2303,6 +2372,29 @@ impl Hosted {
     fn shared(&self, payload: &[u8]) -> Result<tilo_actions::ActionOutput, Refused> {
         tilolang_tilo::share::answer(payload, &self.bundle.meta.app, self.spec.link_home.as_ref())
             .map_err(|why| Refused::new("action_failed", why))
+    }
+
+    /// Show what the link the system's `open-link` carries names, by running the app's own
+    /// `open_link` with it: the same path a window opened with the link takes, so a link a shell
+    /// delivers reaches the app whether or not a window of it was open.
+    fn open_link_from_action(
+        &mut self,
+        payload: &[u8],
+    ) -> Result<tilo_actions::ActionOutput, Refused> {
+        let arguments: serde_json::Value = tilo_actions::decode_json(payload)
+            .map_err(|error| Refused::new("action_invalid_arguments", error.to_string()))?;
+        let link = arguments
+            .get(tilo_actions::remote::OPEN_LINK_PARAM)
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                Refused::new(
+                    "action_invalid_arguments",
+                    "open-link needs the link to open".to_owned(),
+                )
+            })?;
+        self.run_open_link(link)
+            .map_err(|why| Refused::new("action_failed", why))?;
+        Ok(tilo_actions::ActionOutput::default())
     }
 
     fn open_from_action(
@@ -2469,6 +2561,9 @@ impl Hosted {
             // ([`tilolang_tilo::share`]) rather than the app.
             tilo_resource::share::SHARE_TYPE.to_owned(),
             tilo_resource::share::SHARE_INVITE_TYPE.to_owned(),
+            // The link into an app that opens links, which this host answers by running the
+            // app's own `open_link` ([`Self::open_link_from_action`]).
+            tilo_actions::remote::APPLICATION_OPEN_LINK_TYPE.to_owned(),
         ]);
         let registry = tilo_actions::ActionRegistry::with(tilolang_tilo::action::register_actions);
         let violations = tilo_actions::validate_surface(&resources, &registry, &handlers);

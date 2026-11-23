@@ -13,8 +13,8 @@ use std::sync::Arc;
 use serde_json::Value as Json;
 use tilo_actions::resource::INVALID_ARGUMENTS_TYPE;
 use tilo_actions::{
-    ActionArgs, ActionParam, ActionSpec, ActionType, EncodedAction, ExecutionLocus, Noun,
-    ParamType, ResourceSpec, ResourceType, ResourceViewSpec, Target,
+    ActionArgs, ActionKind, ActionParam, ActionSpec, ActionType, EncodedAction, ExecutionLocus,
+    Noun, OperationKind, ParamType, ResourceSpec, ResourceType, ResourceViewSpec, Target,
 };
 
 use crate::action::{DIRECT_EDITS, DirectEdit, DynAction};
@@ -517,6 +517,10 @@ impl ActionTypes {
         // app's own actions, and the host mints it ([`crate::share`]).
         if root {
             tilo_resource::share::offer_resource_link(&mut resource);
+            // The link into it: the root of an app that opens links publishes the system's
+            // `open-link`, bound to itself, so a shell hands the app a link of a scheme it claims
+            // however the app reached it ([`crate::share`]'s neighbour).
+            offer_open_link(&self.meta, &mut resource);
         } else {
             tilo_resource::share::offer_link(&mut resource);
         }
@@ -526,6 +530,54 @@ impl ActionTypes {
         }
         resource
     }
+}
+
+/// Offer the system's `open-link` on a root whose package declares `open_link`, unless it offers
+/// it already: the shared view action a shell delivers a link through, which the host answers by
+/// running the app's own `open_link` with it, so a link reaches the app whether or not it is
+/// open and whatever route it took. The declaration stays published under its own name beside
+/// it, since a change it makes is claimed by that action ([`crate::surface`]), and an agent's
+/// types describe it.
+fn offer_open_link(meta: &Meta, resource: &mut tilo_actions::ResourceSpec) {
+    use tilo_actions::remote::{
+        APPLICATION_OPEN_LINK_ACTION, APPLICATION_OPEN_LINK_TYPE, OPEN_LINK_PARAM,
+    };
+    let Some(root) = crate::meta::open_link_root(meta) else {
+        return;
+    };
+    if resource.kind != meta.kind_of(&root.name)
+        || resource
+            .actions
+            .iter()
+            .any(|spec| spec.id == APPLICATION_OPEN_LINK_ACTION)
+    {
+        return;
+    }
+    let target = Target::new(resource.id.as_str().to_owned());
+    let spec = ActionSpec::typed_operation_on(
+        APPLICATION_OPEN_LINK_ACTION,
+        "Open link",
+        "Open link",
+        OperationKind::View,
+        APPLICATION_OPEN_LINK_TYPE,
+        vec![ActionParam::required(
+            OPEN_LINK_PARAM,
+            ParamType::Text,
+            "The link to open, of a scheme the app claims (tube:watch?v=abc)",
+        )],
+        Arc::new(|_target, args| {
+            let arguments = serde_json::json!({ OPEN_LINK_PARAM: args.text(OPEN_LINK_PARAM) });
+            EncodedAction::encode_operation(APPLICATION_OPEN_LINK_TYPE, &arguments).unwrap_or_else(
+                |_| EncodedAction {
+                    type_id: APPLICATION_OPEN_LINK_TYPE.into(),
+                    payload: Vec::new(),
+                },
+            )
+        }),
+    )
+    .of_kind(ActionKind::Read)
+    .with_description("Show what a link names, in the app that claims its scheme.");
+    resource.actions.push(spec.action_type().bind(target));
 }
 
 /// The views a resource of `type_name` is shown through: the views a declaration attaches to its

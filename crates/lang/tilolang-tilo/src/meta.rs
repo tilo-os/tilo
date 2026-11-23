@@ -5,7 +5,8 @@
 //! action.
 
 use tilolang_runtime::meta::{
-    ActionMeta, EffectClass, FieldKind, FieldMeta, Meta, Ty, element_record, field_kind, parse_ty,
+    ActionMeta, EffectClass, FieldKind, FieldMeta, Meta, Ty, TypeMeta, element_record, field_kind,
+    parse_ty,
 };
 
 use crate::schema::{FieldSchema, MergeKind, TypeSchema, lookup_in};
@@ -61,6 +62,29 @@ pub fn unreadable_types(meta: &Meta) -> Vec<String> {
         }
     }
     out
+}
+
+/// The action a package declares to open links, on its root: its host publishes it as the
+/// system's `open-link` (`tilo_actions::remote::APPLICATION_OPEN_LINK_ACTION`), which every shell
+/// delivers a link of a scheme the app claims through, whether the app is open or not.
+pub const OPEN_LINK_ACTION: &str = "open_link";
+
+/// The root type whose resources an app opens links on: it declares `open_link` on a root, with
+/// the link as its one text argument. `None` for an app that opens no links, and then no
+/// `open-link` is offered and its manifest carries none.
+#[must_use]
+pub fn open_link_root(meta: &Meta) -> Option<&TypeMeta> {
+    let action = meta
+        .actions
+        .iter()
+        .find(|action| !action.scenario && action.name == OPEN_LINK_ACTION)?;
+    let target = meta.target_of(&action.params)?;
+    let takes_link = action
+        .params
+        .iter()
+        .skip(1)
+        .any(|param| param.name == tilo_actions::remote::OPEN_LINK_PARAM && param.ty == "Text");
+    (takes_link && meta.roots.contains(&target.id)).then_some(target)
 }
 
 /// Derived facts of a package's metadata.

@@ -45,7 +45,7 @@ use std::sync::{Arc, Mutex};
 
 use launcher::run::tilolang_process::VerifiedInstance;
 use runtime_portal::process_link::{
-    AppBuild, FromProcess, InstanceFds, InstanceRequest, OpenedFile, Packet as _, ToProcess,
+    AppBuild, FromProcess, InstanceFds, InstanceRequest, OpenRequest, Packet as _, ToProcess,
 };
 
 use super::package_runs::{installed_apps, runs_in_process, verified_installed};
@@ -133,8 +133,9 @@ pub struct Instance {
     pub document: Option<String>,
     /// The item the window opens on, by its anchor.
     pub reveal: Option<String>,
-    /// The file the window opens, as content the instance reads from the content store.
-    pub open: Option<OpenedFile>,
+    /// What the window opens: a file, as content the instance reads from the content store, or a
+    /// link it hands its package's `open-link`.
+    pub open: Option<OpenRequest>,
     /// What the person may do in the app, projected from the workspace's policy.
     pub access: Option<tilo_action_policy::MemberAccess>,
     /// The person's formats and language, as the session resolved them: what the instance writes

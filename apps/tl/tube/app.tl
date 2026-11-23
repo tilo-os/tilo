@@ -524,6 +524,43 @@ action load_trending(yt: YouTube) (icon: .flame, label: "Refresh trending") {
     outside("youtube.trending", "")
 }
 
+/// What a `tube:` link names after `prefix` (`tube:watch?v=`), or empty when it names something
+/// else.
+fn link_after(link: Text, prefix: Text) -> Text {
+    if link.starts_with(prefix) { link.slice(prefix.len(), link.len()) } else { "" }
+}
+
+/// Opens a link of the scheme this client claims: the video (`tube:watch?v=<key>`), channel
+/// (`tube:channel?key=<key>`) or playlist (`tube:playlist?key=<key>`) it names, or the search it
+/// asks for (`tube:search?q=<query>`). A shell hands a link here whether or not a window of the
+/// client is open, and what this returns opens in the window. The host publishes it as the
+/// system's `open-link` on the client's root, which is what a shell hands a link to.
+action open_link(yt: YouTube, link: Text) -> host.Resource {
+    let video = link_after(link, "tube:watch?v=")
+    if video != "" {
+        if let v = yt.videos.find(x -> x.key == video) {
+            return v
+        }
+    }
+    let channel = link_after(link, "tube:channel?key=")
+    if channel != "" {
+        if let c = yt.channels.find(x -> x.key == channel) {
+            return c
+        }
+    }
+    let playlist = link_after(link, "tube:playlist?key=")
+    if playlist != "" {
+        if let p = yt.playlists.find(x -> x.key == playlist) {
+            return p
+        }
+    }
+    let query = link_after(link, "tube:search?q=")
+    if query != "" { search(yt, query) }
+    // A link that names nothing the client holds shows the client itself rather than a window
+    // that took nothing.
+    yt
+}
+
 /// What the native Tube kept before this app took its id over, carried into this one once: the
 /// channels subscribed to, the videos liked, the watch queue, and the watch history with when
 /// each video was watched. The native app kept a video by its key alone, so each one carried is

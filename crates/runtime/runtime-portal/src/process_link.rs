@@ -176,6 +176,18 @@ pub struct OpenedFile {
     pub name: Option<String>,
 }
 
+/// What an instance was opened with: a file of the workspace, or a link of a scheme its app
+/// claims (`tube:watch?v=…`). A file's bytes are the content store's, and the instance runs its
+/// package's action for that kind of file; a link is text, and the instance runs its package's
+/// `open-link` with it, so it shows what the link names.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OpenRequest {
+    /// A file, as `file.choose` hands one to an action.
+    File(OpenedFile),
+    /// A link, as a shell hands one to the app that claims its scheme.
+    Uri(String),
+}
+
 /// A later build of one app the process runs ([`ToProcess::Build`]): its instances take it over.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppBuild {
@@ -221,11 +233,11 @@ pub struct InstanceRequest {
     /// a window asked for another is refused rather than shown that one.
     pub document: Option<String>,
     pub reveal: Option<String>,
-    /// The file the app was opened with, when its launch named one: the instance runs the action
-    /// its package declares for the file's kind with it, as a chooser hands a file to an action.
-    /// The instance reads the bytes from the content store by their hash; `None` for a window
-    /// opened without one.
-    pub open: Option<OpenedFile>,
+    /// What the app was opened with, when its launch named one: a file's bytes are read from the
+    /// content store by their hash and given to the action its package declares for the file's
+    /// kind, and a link is given to the app's `open-link`; `None` for a window opened without
+    /// one.
+    pub open: Option<OpenRequest>,
     /// The tilolang apps installed here, by id, each with the id its documents are kept under: a
     /// package the app uses that is one of them is another app, whose documents the instance reads
     /// from that app's own document and whose changes it asks of that app's link. A package it uses
@@ -642,10 +654,10 @@ mod tests {
             language: "de-DE".into(),
             document: Some("uuid:7a110d00-0000-4000-8000-000000000009".into()),
             reveal: Some("tl.so.tilo.notes.Note:7".into()),
-            open: Some(OpenedFile {
+            open: Some(OpenRequest::File(OpenedFile {
                 hash: "ab".repeat(32),
                 name: Some("plan.md".into()),
-            }),
+            })),
             installed: [("so.tilo.lang.tasks".into(), "so.tilo.lang.todo".into())].into(),
             link_home: None,
             access: Some(MemberAccess::person(
@@ -695,7 +707,7 @@ mod tests {
             // crosses as it was sent, the fields after it read as theirs.
             let plain = InstanceRequest { open: None, ..opened.clone() };
             let unnamed = InstanceRequest {
-                open: Some(OpenedFile { hash: "cd".repeat(32), name: None }),
+                open: Some(OpenRequest::File(OpenedFile { hash: "cd".repeat(32), name: None })),
                 ..opened.clone()
             };
             // An instance that shows nothing crosses with no window connection.
@@ -836,6 +848,42 @@ mod tests {
             let mut cut = module.encode();
             cut.truncate(cut.len() - 1);
             assert!(Module::decode(&cut).is_err());
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_window_opens_a_link_over_the_process_link;
+
+        phase a_link_crosses_as_text_its_instance_shows;
+        {
+            // What an app was opened with crosses as the `open-link` text its instance shows,
+            // never as bytes a file's kind names: the request's shape carries either.
+            let (session, process) = pair().unwrap();
+            let request = InstanceRequest {
+                open: Some(OpenRequest::Uri("tube:watch?v=abc".into())),
+                ..instance_request()
+            };
+            ToProcess::Instance {
+                request: Box::new(request.clone()),
+                fds: InstanceFds {
+                    broker: connection(),
+                    identity: connection(),
+                    module: connection(),
+                    window: Some(connection()),
+                    origin: None,
+                    content: None,
+                    chooser: None,
+                    clipboard: None,
+                },
+            }
+            .send(&session)
+            .unwrap();
+            let Some(ToProcess::Instance { request: received, .. }) =
+                ToProcess::receive(&process).unwrap()
+            else {
+                panic!("an instance arrives as one");
+            };
+            assert_eq!(*received, request);
         }
     }
 }

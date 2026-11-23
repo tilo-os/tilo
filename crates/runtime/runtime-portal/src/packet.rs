@@ -12,6 +12,10 @@
 //!
 //! The packet boundary is the message boundary, so neither side buffers a stream
 //! or frames a length.
+//!
+//! Every packet starts with the link's [`VERSION`], so a side built before a message changed
+//! reads it as another version and says so, rather than reading the changed bytes as its own
+//! message. A packet without a version is one written before the link was versioned.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -32,6 +36,15 @@ pub enum Descriptor {}
 /// The largest packet: a workspace's policy as one app sees it, which the session
 /// bounds at 64 KiB, and the rest of its message.
 pub const MAX_PACKET: usize = 96 * 1024;
+
+/// The version of every packet on this link, written first: a message whose shape changed is a
+/// higher version, and a side of another build answers the mismatch by name instead of reading
+/// the bytes as its own message.
+pub const VERSION: u8 = 1;
+
+/// The byte a versioned packet starts with. No message variant has this index, so a packet that
+/// does not start with it was written before the link carried a version.
+const VERSIONED: u8 = 0xFF;
 
 thread_local! {
     /// The descriptors of the value being written, in the order its encoding met them.
@@ -113,18 +126,21 @@ fn send<T: Packet>(socket: &Descriptor, message: &T) -> io::Result<()> {
             encoded.map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         // An empty packet with no descriptors is how the socket reads its end.
         if (encoded.is_empty() && raw.is_empty())
-            || encoded.len() > MAX_PACKET
+            || encoded.len().saturating_add(2) > MAX_PACKET
             || raw.len() > crate::message::MAX_FDS
         {
             return Err(io::ErrorKind::InvalidInput.into());
         }
+        let mut packet = Vec::with_capacity(encoded.len().saturating_add(2));
+        packet.extend_from_slice(&[VERSIONED, VERSION]);
+        packet.extend_from_slice(&encoded);
         // SAFETY: every descriptor was read from a field of `message`, which stays
         // borrowed until the packet is sent.
         let fds: Vec<BorrowedFd<'_>> = raw
             .iter()
             .map(|fd| unsafe { BorrowedFd::borrow_raw(*fd) })
             .collect();
-        crate::message::send_bytes(socket.as_fd(), &encoded, &fds)
+        crate::message::send_bytes(socket.as_fd(), &packet, &fds)
     }
     #[cfg(not(unix))]
     {
@@ -156,9 +172,29 @@ fn receive<T: Packet>(socket: &Descriptor, wait: bool) -> io::Result<Option<T>> 
     }
 }
 
-/// The message `bytes` hold, with the descriptors `fds` in the fields that name them.
+/// The message `bytes` hold, with the descriptors `fds` in the fields that name them. A packet
+/// of another [`VERSION`], or one written before the link carried a version, is refused naming
+/// both, never read by this build's shapes.
 #[cfg(unix)]
 fn decode<T: Packet>(bytes: &[u8], fds: Vec<Descriptor>) -> io::Result<T> {
+    match bytes {
+        [] => Err(invalid("a packet with no version")),
+        [VERSIONED, version, message @ ..] if *version != VERSION => Err(invalid(format!(
+            "the other side speaks process link version {version}; this build speaks \
+             {VERSION}: update Tilo"
+        ))),
+        [VERSIONED, _, message @ ..] => decoded(message, fds),
+        [VERSIONED] => Err(invalid("a packet that names no version")),
+        _ => Err(invalid(
+            "a packet with no version: the other side runs a build from before the process link \
+             was versioned; update Tilo",
+        )),
+    }
+}
+
+/// The message `bytes` hold at this build's [`VERSION`].
+#[cfg(unix)]
+fn decoded<T: Packet>(bytes: &[u8], fds: Vec<Descriptor>) -> io::Result<T> {
     INCOMING.with(|incoming| *incoming.borrow_mut() = Some(fds.into()));
     let decoded = postcard::take_from_bytes::<T>(bytes);
     let left = INCOMING
@@ -369,6 +405,34 @@ mod tests {
             assert_eq!(Message::receive(&b).unwrap_err().kind(), io::ErrorKind::InvalidData);
             crate::message::send_bytes(a.as_fd(), b"\xff", &[]).unwrap();
             assert!(Message::receive(&b).is_err(), "no message");
+        }
+
+        phase a_packet_of_another_build_is_refused_by_name;
+        {
+            use std::os::fd::AsFd as _;
+            let (a, b) = pair().unwrap();
+            // A build from before the link carried a version: the message's own bytes, no
+            // version first.
+            let old = postcard::to_stdvec(&Message::Plain("hello".into())).unwrap();
+            crate::message::send_bytes(a.as_fd(), &old, &[]).unwrap();
+            let error = Message::receive(&b).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert!(error.to_string().contains("no version"), "{error}");
+            // A build after this one speaks a version this one does not: both are named, so
+            // whoever reads it knows which side updates.
+            let mut newer = vec![0xFF, VERSION.saturating_add(1)];
+            newer.extend(postcard::to_stdvec(&Message::Plain("hello".into())).unwrap());
+            crate::message::send_bytes(a.as_fd(), &newer, &[]).unwrap();
+            let error = Message::receive(&b).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert!(
+                error.to_string().contains(&format!("version {}", VERSION + 1)),
+                "it names the other side's version: {error}"
+            );
+            assert!(
+                error.to_string().contains(&format!("speaks {VERSION}")),
+                "it names this build's version: {error}"
+            );
         }
 
         phase a_message_its_check_refuses_is_refused;

@@ -430,6 +430,7 @@ fn window(now: &str, turn: Turn) -> (Instance, String) {
             })),
             root: RootView::default(),
             sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
+            link_home: None,
         },
         platform,
         Rc::new(Alone),

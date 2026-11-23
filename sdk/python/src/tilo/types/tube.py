@@ -95,7 +95,7 @@ EndSearchArgs = TypedDict("EndSearchArgs", {
 
 class Channel(Resource):
     """Channel — `tl.so.tilo.tube.Channel`."""
-    __surface__ = "so.tilo.tube@5738a7401a7c766a"
+    __surface__ = "so.tilo.tube@a86ce7b3c95bf2b1"
     @property
     def _26ctwf34(self) -> str:
         """key (`26ctwf34` on the wire)."""
@@ -160,7 +160,7 @@ class Channel(Resource):
 
 class Video(Resource):
     """Video — `tl.so.tilo.tube.Video`."""
-    __surface__ = "so.tilo.tube@5738a7401a7c766a"
+    __surface__ = "so.tilo.tube@a86ce7b3c95bf2b1"
     irzy3c7m: str  # key
     fpxk5w7b: str  # title
     mhkply6c: str  # channel_key
@@ -265,7 +265,7 @@ class Video(Resource):
 
 class Playlist(Resource):
     """Playlist — `tl.so.tilo.tube.Playlist`."""
-    __surface__ = "so.tilo.tube@5738a7401a7c766a"
+    __surface__ = "so.tilo.tube@a86ce7b3c95bf2b1"
     ow7glfos: str  # key
     ljyc7mx2: str  # title
     bzfmd6pg: str  # channel_key
@@ -304,20 +304,20 @@ class Playlist(Resource):
 
 class Subscription(Resource):
     """Subscription — `tl.so.tilo.tube.Subscription`."""
-    __surface__ = "so.tilo.tube@5738a7401a7c766a"
+    __surface__ = "so.tilo.tube@a86ce7b3c95bf2b1"
     slhmwv67: str  # key
     ynf67l6e: str  # name
 
 
 class QueuedVideo(Resource):
     """QueuedVideo — `tl.so.tilo.tube.QueuedVideo`."""
-    __surface__ = "so.tilo.tube@5738a7401a7c766a"
+    __surface__ = "so.tilo.tube@a86ce7b3c95bf2b1"
     o3xolmld: str  # key
 
 
 class PlaybackPrefs(Resource):
     """PlaybackPrefs — `tl.so.tilo.tube.PlaybackPrefs`."""
-    __surface__ = "so.tilo.tube@5738a7401a7c766a"
+    __surface__ = "so.tilo.tube@a86ce7b3c95bf2b1"
     @property
     def _5twttwwn(self) -> str:
         """member (`5twttwwn` on the wire)."""
@@ -341,7 +341,7 @@ class PlaybackPrefs(Resource):
 
 class WatchEntry(Resource):
     """WatchEntry — `tl.so.tilo.tube.WatchEntry`."""
-    __surface__ = "so.tilo.tube@5738a7401a7c766a"
+    __surface__ = "so.tilo.tube@a86ce7b3c95bf2b1"
     noppuxpb: str  # key
     stuii7l7: str  # title
     j37y2bbw: str  # channel_name
@@ -359,7 +359,7 @@ class WatchEntry(Resource):
 
 class YouTube(Resource):
     """YouTube — `tl.so.tilo.tube.YouTube`."""
-    __surface__ = "so.tilo.tube@5738a7401a7c766a"
+    __surface__ = "so.tilo.tube@a86ce7b3c95bf2b1"
     olrung72: str  # title
     ihhzrm3f: list[Entry[Channel]]  # channels
     qnfjkti5: list[Entry[Video]]  # videos
@@ -445,16 +445,20 @@ class YouTube(Resource):
         """Asks the service for the videos it lists as trending."""
         return self.action("load_trending")
 
+    def open_link(self, *, link: str) -> Any:
+        """Opens a link of the scheme this client claims: the video (`tube:watch?v=<key>`), channel (`tube:channel?key=<key>`) or playlist (`tube:playlist?key=<key>`) it names, or the search it asks for (`tube:search?q=<query>`). A shell hands a link here whether or not a window of the client is open, and what this returns opens in the window. The host publishes it as the system's `open-link` on the client's root, which is what a shell hands a link to."""
+        return self.action("open_link", link=link)
+
     def play_again(self, *, h: WatchEntry) -> None:
         """Plays the video a history entry names, from where the person left off."""
         return self.action("play_again", h=h)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"play_queue", "delete_history", "delete_history_many", "set_autoplay", "set_autoplay_many", "set_speed", "set_speed_many", "set_quality", "set_quality_many", "set_captions", "set_captions_many", "search", "end_search", "end_search_many", "refresh_feed", "load_trending", "play_again"})
+    __actions__ = frozenset({"play_queue", "delete_history", "delete_history_many", "set_autoplay", "set_autoplay_many", "set_speed", "set_speed_many", "set_quality", "set_quality_many", "set_captions", "set_captions_many", "search", "end_search", "end_search_many", "refresh_feed", "load_trending", "open_link", "play_again"})
 
 
 class Tube(Resource):
     """YouTube — `tl.so.tilo.tube`."""
-    __surface__ = "so.tilo.tube@5738a7401a7c766a"
+    __surface__ = "so.tilo.tube@a86ce7b3c95bf2b1"
 

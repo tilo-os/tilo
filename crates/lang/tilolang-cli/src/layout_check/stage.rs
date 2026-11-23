@@ -182,6 +182,7 @@ impl Staged {
                 store: tilolang_tilo::resources::ResourceStore::in_memory(),
                 root: tilolang_tilo::host::RootView { root, view: None },
                 sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
+                link_home: None,
             },
             Rc::clone(packages) as Rc<dyn Platform>,
             // The person the layout opens as is called as a person is, `Ada`, and everyone else as

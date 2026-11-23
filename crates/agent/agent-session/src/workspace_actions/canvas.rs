@@ -69,6 +69,7 @@ impl Canvas {
                 me,
                 viewport: VIEWPORT,
                 dark: true,
+                link_home: None,
             },
         )?;
         page.fill_wells(wells);

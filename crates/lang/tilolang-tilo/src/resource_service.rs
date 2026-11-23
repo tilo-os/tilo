@@ -29,6 +29,7 @@ use collaboration::history_source::verbs::{self, EDIT_TYPE, HistoryEdit, History
 use serde_json::{Map, Value as Json};
 use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
 use tilo_service::{Service, Started};
+use tilolang_runtime::InvokeOutcome;
 use tilolang_runtime::store::{ChangeNote, Mutation, Scalar, Store as _, Version};
 use tilolang_runtime::value::{ResourceRef, Value};
 
@@ -572,6 +573,38 @@ impl ResourceService {
                     .map_err(ApiError::Failed)?;
                 return Ok(Started::Done(output));
             }
+            if encoded.type_id == tilo_actions::remote::APPLICATION_OPEN_LINK_TYPE {
+                // The link into an app that opens links: this service runs the app's own
+                // `open_link` with it, as the host of an app's window does, and what it names is
+                // opened where the window shows it.
+                let arguments: Json = tilo_actions::decode_json(&encoded.payload)
+                    .map_err(|error| ApiError::InvalidArguments(error.to_string()))?;
+                let link = arguments
+                    .get(tilo_actions::remote::OPEN_LINK_PARAM)
+                    .and_then(Json::as_str)
+                    .ok_or_else(|| {
+                        ApiError::InvalidArguments("open-link needs the link to open".to_owned())
+                    })?
+                    .to_owned();
+                let app = crate::publish::app_of(resource)
+                    .ok_or_else(|| ApiError::Unknown(address.clone()))?
+                    .to_owned();
+                let made = self
+                    .run_open_link(&app, &link, by)
+                    .map_err(ApiError::Failed)?;
+                if let Some(published) = &made {
+                    let open = tilo_service::Open {
+                        resource: published.clone(),
+                        view: String::new(),
+                        beside,
+                    };
+                    self.opens.push((invoker.clone(), open));
+                }
+                return Ok(Started::Done(ActionOutput {
+                    value: None,
+                    resources: made.into_iter().collect(),
+                }));
+            }
             if encoded.type_id == EDIT_TYPE {
                 let edit: HistoryEdit = serde_json::from_slice(&encoded.payload)
                     .map_err(|error| ApiError::InvalidArguments(error.to_string()))?;
@@ -624,6 +657,48 @@ impl ResourceService {
             value: wrote.and_then(|wrote| ActionOutput::noting_wrote(None, &wrote)),
             resources: made,
         }))
+    }
+
+    /// Run the app's own `open_link` with `link`, on the root it acts on: what an opened link,
+    /// a shell's delivery and an agent all make it do. What it made, by its published id.
+    fn run_open_link(
+        &self,
+        app: &str,
+        link: &str,
+        by: &tilolang_runtime::ids::Actor,
+    ) -> Result<Option<String>, String> {
+        let package = self
+            .host
+            .package(app)
+            .ok_or_else(|| format!("`{app}` is not loaded here"))?;
+        let target = crate::meta::open_link_root(&package.meta)
+            .ok_or_else(|| format!("`{app}` does not open links"))?;
+        let action = package
+            .meta
+            .actions
+            .iter()
+            .find(|action| !action.scenario && action.name == crate::meta::OPEN_LINK_ACTION)
+            .ok_or_else(|| format!("`{app}` does not open links"))?
+            .clone();
+        let root = self
+            .host
+            .root_resource(app, &target.id)
+            .map_err(|error| error.to_string())?;
+        match self.host.runtime().invoke_action(
+            by,
+            (
+                action.id.as_str(),
+                vec![Value::resource(&root), Value::text(link)],
+            ),
+        ) {
+            Ok(InvokeOutcome::Done(Value::Ref(made))) => {
+                let made = std::rc::Rc::unwrap_or_clone(made.target);
+                Ok(Some(resource_id(app, &made.id_string())))
+            }
+            Ok(InvokeOutcome::Done(_)) => Ok(None),
+            Ok(other) => Err(format!("`{link}` was not opened: {other:?}")),
+            Err(error) => Err(error.to_string()),
+        }
     }
 
     /// Apply the history verb `edit`, invoked on the published root `resource` by `by`: an
@@ -1101,6 +1176,24 @@ impl Service for ResourceService {
 
     fn own_person(&mut self, person: &str, _earlier: &[String]) {
         person.clone_into(&mut self.person);
+    }
+
+    /// Where this service's resources open on the web, as the session read it from the workspace's
+    /// directory: what its `share-link` mints under ([`Self::set_link_home`]).
+    fn lend_link_home(&mut self, home: Option<&str>) {
+        let home = home.and_then(|home| match serde_json::from_str(home) {
+            Ok(home) => Some(home),
+            Err(error) => {
+                // The session made this JSON; one that does not read leaves this service's
+                // links refused, which the session's log says why.
+                tracing::warn!(
+                    %error,
+                    "a workspace's page does not read: its resources have no link"
+                );
+                None
+            }
+        });
+        self.set_link_home(home);
     }
 
     fn keeps_session_document(&self) -> bool {

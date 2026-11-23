@@ -641,4 +641,30 @@ fn a_hosted_window_opens_a_file_by_its_content_and_name() {
         window_opens(&path, None, true).is_err(),
         "a hosted window is handed no path"
     );
+    // A link is the text a hosted window's `open-link` shows, never a path its process reads.
+    let link = Launch::Package {
+        app: "so.tilo.tube".into(),
+        open: Some(tilo_app_launch::Open::Uri("tube:watch?v=abc".into())),
+    };
+    let opens = window_opens(&link, None, true).expect("a hosted window opens a link");
+    assert_eq!(opens.link.as_deref(), Some("tube:watch?v=abc"));
+    assert_eq!(opens.open, None, "a link is no file path");
+    // A window of an app that holds its data takes the link as the one argument it opens with.
+    assert_eq!(
+        window_opens(&link, None, false)
+            .expect("a window of an app that holds its data")
+            .open
+            .as_deref(),
+        Some("tube:watch?v=abc")
+    );
+    // The process a hosted window starts is asked for the window alone: the link rides its
+    // instance, and a tilolang process takes no link on its command line.
+    assert_eq!(
+        process_launch(&link, true),
+        Launch::Package {
+            app: "so.tilo.tube".into(),
+            open: None,
+        }
+    );
+    assert_eq!(process_launch(&link, false), link);
 }
