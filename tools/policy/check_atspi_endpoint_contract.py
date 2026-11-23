@@ -192,6 +192,9 @@ def audit(root: Path = ROOT) -> list[str]:
         written_as_a_package = root / "apps" / "tl" / app / "tilo-app.toml"
         if written_as_a_package.is_file():
             manifest = written_as_a_package
+        if not manifest.is_file():
+            errors.append(f"{manifest.relative_to(root)}: core app lacks external AT-SPI acceptance data")
+            continue
         with manifest.open("rb") as source:
             document = tomllib.load(source)
         scenario = document.get("accessibility", {}).get("atspi_acceptance")
