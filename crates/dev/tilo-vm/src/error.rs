@@ -280,6 +280,8 @@ pub enum CliError {
     },
     #[error("no installer medium at {path}")]
     ScenarioMedium { path: String },
+    #[error("no {what} at {path}")]
+    ScenarioInput { what: String, path: String },
     #[error("the install scenario failed in {phase}: {detail}")]
     Scenario {
         phase: String,
@@ -550,6 +552,9 @@ impl CliError {
             Self::ScenarioMedium { .. } => {
                 "build one: ./os/build.sh --local, then ./os/dev/build-custom-installer.sh (writes os/output/installer/qcow2/disk.qcow2)   |   or pass one: tilo-vm scenario install --medium <installer.qcow2>".into()
             }
+            Self::ScenarioInput { .. } => {
+                "build the desktop and laptop disks with ./os/build.sh --local   |   install the server image onto a disk and pass it with --server-disk   |   run --dry-run to see every step and what it needs".into()
+            }
             Self::Scenario { phase, artifacts, console, .. } => {
                 let inspect = if phase == "install" || phase == "boot-installer" {
                     format!("rerun with --keep and read the installer yourself while it runs: tilo-control --socket {console} state-dump --pretty")
@@ -608,9 +613,10 @@ impl CliError {
             | Self::UnknownAppSet { .. }
             | Self::PackagesFailed { .. } => "driving",
             Self::KernelBuild { .. } | Self::KernelNotRunning { .. } => "kernel",
-            Self::ScenarioMedium { .. } | Self::Scenario { .. } | Self::NeedsWorktree { .. } => {
-                "scenarios"
-            }
+            Self::ScenarioMedium { .. }
+            | Self::ScenarioInput { .. }
+            | Self::Scenario { .. }
+            | Self::NeedsWorktree { .. } => "scenarios",
             Self::Unreachable { .. }
             | Self::DaemonMissing { .. }
             | Self::ProtocolMismatch { .. }
@@ -994,6 +1000,10 @@ mod tests {
             CliError::ScenarioMedium {
                 path: "/w/os/output/installer/qcow2/disk.qcow2".into(),
             },
+            CliError::ScenarioInput {
+                what: "server image disk".into(),
+                path: "/w/server.qcow2".into(),
+            },
             CliError::Scenario {
                 phase: "install".into(),
                 detail: "begin@installer.review was refused".into(),
@@ -1017,6 +1027,7 @@ mod tests {
         for error in &all {
             match error {
                 CliError::ScenarioMedium { .. }
+                | CliError::ScenarioInput { .. }
                 | CliError::Scenario { .. }
                 | CliError::NeedsWorktree { .. }
                 | CliError::Qemu { .. }

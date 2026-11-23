@@ -296,7 +296,7 @@ fn failed(phase: &str, detail: impl Into<String>, plan: &Plan) -> CliError {
     }
 }
 
-fn write_json(dir: &Path, name: &str, value: &Value) -> Result<(), CliError> {
+pub(super) fn write_json(dir: &Path, name: &str, value: &Value) -> Result<(), CliError> {
     std::fs::write(dir.join(name), format!("{value:#}\n"))
         .map_err(CliError::io(format!("writing {name}")))
 }

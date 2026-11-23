@@ -1,9 +1,14 @@
-# Scenarios: boot components end to end
+# Scenarios: cold boots end to end
 
 Boot components (the installer, the UKI, the bootloader, the initramfs) only
 take effect on a cold boot, so `tilo-vm swap` cannot put them into a running
 VM. A scenario boots them in a throwaway VM instead. `tilo-vm swap installer`
 points here.
+
+A scenario also covers what one device's running session cannot show: a fleet
+of devices on one private network, and a home with a server and no tilo.sh.
+Those steps go through published actions and `tilo device`, and a capability
+that does not exist yet ends its step naming it.
 
 ## `tilo-vm scenario install`
 
@@ -132,6 +137,63 @@ initrd is unchanged: its early encrypted-disk unlock can still use US keys until
 the root filesystem is available. Use a layout-neutral passphrase or account for
 that first-unlock layout; changing the signed initrd is a separate image operation.
 
+## `tilo-vm scenario four-devices`
+
+One person's four devices used as one computer, on tilo-vm's private network:
+
+```sh
+./os/build.sh --local                                    # the x86-64 desktop and laptop disk
+TILO_VM_ARCH=aarch64 ./os/build.sh --local                # the aarch64 laptop disk (in a second checkout)
+tilo-vm scenario four-devices --arm-disk os/output/qcow2/disk.qcow2
+tilo-vm scenario four-devices --dry-run --json            # every step and what it needs
+```
+
+It boots an x86-64 desktop (`--2d`, as the measured-boot check does), an aarch64
+laptop (under the software emulator when the host is x86-64), and the server
+when `--server-disk` names an installed host image. The
+guests share a multicast segment on the host's loopback — no bridge, no root
+— and the dev image
+gives each NIC whose MAC starts `52:54:01:00` an address on it
+(`198.18.<x>.<y>`), so nothing needs DHCP. Each guest is also reachable over
+its own forwarded SSH port for the scenario's own driving.
+
+The steps prove, in order:
+
+| Step | What it proves | Needs |
+|---|---|---|
+| `identity` | each device's account holds the one identity the person signed in with | an identity made through published actions (first use is a UI ceremony today) |
+| `devices` | every device lists all of them as the person's own | the fleet enrolled by ticket under one identity |
+| `second-output` | the x86 desktop drives two virtual outputs | a second display adapter on the desktop VM |
+| `outputs` | all three outputs are in the person's shared display view | the `person_displays` view published as an action |
+| `arrangement` | the outputs sit in one arrangement the pointer crosses | an action that places a display |
+| `window` | a window moves from the desktop's second output to the laptop | an action that moves a window onto another output |
+| `server-turn` | the server takes an agent turn after the laptop is suspended | an agent turn on a server with no desktop awake |
+
+Every step goes through published actions and `tilo device`, over the guest's
+own login. A step whose capability is not built yet ends `missing`, naming it;
+the run reports every step and exits non-zero rather than waiting on a boot or
+an invocation that never answers. `--dry-run` prints the same plan without
+booting anything.
+
+## `tilo-vm scenario home-server`
+
+Laptop and home server with no tilo.sh and no internet:
+
+```sh
+tilo-vm scenario home-server --server-disk /path/to/server-disk.qcow2
+tilo-vm scenario home-server --dry-run
+```
+
+The desktop boots beside the server on the same private network, and the
+scenario drops the desktop's default route, so it has the host forward for the
+scenario's own login and no way to the internet. The steps prove that the
+server serves its own Tilo web UI by default and stops serving it when its
+device setting is off; that the desktop is offline; that it signs in to the
+server with no tilo.sh; and that it takes the server's update lease and
+restarts it through actions. As in `four-devices`, a capability nobody has
+built ends its step naming that capability; the server's disk is optional, and
+its steps say so when it is absent.
+
 ## The console channel
 
 The installer and the greeter run under `cage`, straight from greetd, before
@@ -204,3 +266,45 @@ installing with a weaker factor than asked.
 The release check, `os/dev/test-installer-cycle.sh`, drives the same installer
 actions over the same console, from a medium customised the way Tilo Imager
 writes it, and continues into first-login OOBE and the desktop.
+
+## Qualifying the owner's real devices
+
+The two flows' hardware parts also run on the real machines a person has. These
+are manual, with `tilo device` from a development machine that reaches them (the
+same story as a scenario, against real hardware); the Orange Pi's and the
+Snapdragon laptop's device trees cannot boot QEMU's `virt` machine, which is why
+no scenario stands in for them.
+
+Register each device once (`tilo-vm vm add <name> --ssh <user>@<address>`), then
+for each:
+
+**Orange Pi 3B** (`os/hardware/profiles/orangepi-3b-v2-1.json`)
+
+- `tilo device install` the board image, then cold-boot it: HDMI shows the
+  greeter, the serial console names the same boot, and `tilo device status`
+  answers after it starts.
+- Plug HDMI into the board's port: the output appears in Settings' displays and
+  joins the person's arrangement beside the desktop's two monitors.
+- `tilo device update --check`, `tilo device update -y --reboot`, then
+  `tilo device rollback -y`; the board boots both directions and its disk still
+  unlocks.
+
+**Lenovo 83ED, Snapdragon X Elite** (`os/hardware/profiles/lenovo-83ed.json`)
+
+- Same sequence: install, cold boot with the internal panel and HDMI out both
+  lighting up, `tilo device status` after sign-in.
+- `tilo device update -y --reboot` and `tilo device rollback -y`; the firmware
+  menu lists the deployments and the rollback boots.
+- Its outputs join the arrangement like the board's; the internal panel comes
+  up at the scale its EDID names.
+
+**Fedora desktop with two monitors**
+
+- Boot the desktop image; both monitors show the greeter and join the
+  arrangement; drag a window from one to the other and check the pointer crosses
+  only where they meet.
+- `tilo device add --capability admin` prints a ticket; `tilo login <ticket>` on
+  the board and the laptop joins them to the desktop's identity, and Settings'
+  devices lists all of them.
+- Suspend the laptop; ask the server (or tilo.sh) for an agent turn and see it
+  answer while the laptop is asleep.

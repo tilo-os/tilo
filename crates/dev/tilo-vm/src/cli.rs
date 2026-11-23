@@ -426,6 +426,47 @@ pub enum ScenarioCommand {
         after_help = "Examples:\n  tilo-vm scenario install\n  tilo-vm scenario install --medium os/output/installer/qcow2/disk.qcow2\n  tilo-vm scenario install --layout guided-alongside\n  tilo-vm scenario install --layout guided-alongside --target-disk C:\\VMs\\tilo-source.raw --graphics software\n  tilo-vm scenario install --layout prepared-alongside --graphics software\n  TILO_SECBOOT_KEYS=/path/to/release-vars tilo-vm scenario install --encrypt tpm-pin\n  tilo-vm scenario install --dry-run --json\n\nNo account and no dev VM: the scenario boots its own throwaway QEMU VM with\nos/dev/vm.sh, reaches the installer on its console channel (action frames\nover a virtio-serial port only this VM has), installs, powers\noff through the installer's Finish action, cold-boots the target, types the\nunlock secret at its boot prompt, and verifies the greeter runs the image the\ninstaller wrote. Build a medium first: ./os/build.sh --local, then\n./os/dev/build-custom-installer.sh. Details: tilo-vm guide scenarios."
     )]
     Install(InstallScenarioArgs),
+    /// One person's four devices used as one computer, on tilo-vm's private network: an x86 desktop, an aarch64 laptop and the server.
+    #[command(
+        after_help = "Examples:\n  tilo-vm scenario four-devices\n  tilo-vm scenario four-devices --arm-disk os/output-aarch64/qcow2/disk.qcow2\n  tilo-vm scenario four-devices --server-disk /var/lib/tilo-server/disk.qcow2\n  tilo-vm scenario four-devices --dry-run --json\n\nBoots an x86-64 desktop, an aarch64 laptop and the server on one private LAN,\nenrols them under one identity by ticket, checks the desktop's two virtual\noutputs, arranges all three in the person's shared display view, moves a\nwindow across and has the server take an agent turn while the laptop is\nsuspended. Every step\ngoes through published actions and `tilo device`; a step whose capability is\nnot built yet ends naming it instead of waiting. The dev image is the desktop\nand laptop disk (os/build.sh --local); the server needs an installed host\nimage disk. Details: tilo-vm guide scenarios."
+    )]
+    FourDevices(FlowScenarioArgs),
+    /// Laptop and home server with no tilo.sh and no internet: the server's own web UI, and the desktop managing it by actions.
+    #[command(
+        after_help = "Examples:\n  tilo-vm scenario home-server\n  tilo-vm scenario home-server --server-disk /var/lib/tilo-server/disk.qcow2\n  tilo-vm scenario home-server --dry-run --json\n\nBoots a desktop VM with no route to the internet beside the home server on\ntilo-vm's private LAN. The server's web UI must answer by default and stop\nwhen its device setting is off; the desktop signs in without tilo.sh and\nmanages the server through its update lease and a restart. A step whose\ncapability is not built yet ends naming it. Details: tilo-vm guide scenarios."
+    )]
+    HomeServer(FlowScenarioArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct FlowScenarioArgs {
+    /// The x86-64 desktop and laptop disk (default: os/output/qcow2/disk.qcow2, what os/build.sh --local writes).
+    #[arg(long)]
+    pub desktop_disk: Option<PathBuf>,
+    /// The aarch64 laptop disk for four-devices. Without one the steps that need it say so.
+    #[arg(long)]
+    pub arm_disk: Option<PathBuf>,
+    /// The installed server image disk (the host image installed onto a disk).
+    #[arg(long)]
+    pub server_disk: Option<PathBuf>,
+    /// The guest account on those disks (default: `TILO_USER`, else tester; the password comes from `TILO_PASS`, else tilo).
+    #[arg(long)]
+    pub user: Option<String>,
+    /// The multicast segment the fleet shares, GROUP:PORT (default: tilo-vm's own on this host).
+    #[arg(long)]
+    pub lan: Option<String>,
+    /// Artifact directory (default: `target/tilo-vm-scenarios/scenario-<flow>-<time>`).
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+    /// Longest the fleet may take to come up, and each step to answer, in seconds.
+    #[arg(long, default_value_t = 1800)]
+    pub timeout: u64,
+    /// Keep the VMs' runtime state and disks afterwards.
+    #[arg(long)]
+    pub keep: bool,
+    /// Print the plan (each step and what it needs) without booting anything.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Args)]
@@ -513,10 +554,11 @@ pub fn writes_receipt(command: Option<&Command>) -> bool {
                         | AccountCommand::Exec { .. }
                         | AccountCommand::Apps(AccountAppsCommand::List)
                 )
-                | Command::Scenario(ScenarioCommand::Install(InstallScenarioArgs {
-                    dry_run: true,
-                    ..
-                }))
+                | Command::Scenario(
+                    ScenarioCommand::Install(InstallScenarioArgs { dry_run: true, .. })
+                        | ScenarioCommand::FourDevices(FlowScenarioArgs { dry_run: true, .. })
+                        | ScenarioCommand::HomeServer(FlowScenarioArgs { dry_run: true, .. })
+                )
         )
     )
 }

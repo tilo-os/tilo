@@ -8,6 +8,7 @@ use zeroize::Zeroize as _;
 pub mod console;
 pub mod drive;
 pub mod fixture;
+pub mod flows;
 
 /// How the target disk is laid out before the install.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum, serde::Serialize)]

@@ -185,6 +185,11 @@ cmd_boot() {
   if [ -n "$TILO_VM_LAN_PORT$TILO_VM_LAN_PEER$TILO_VM_LAN_MAC" ]; then
     extra+=(--lan "$TILO_VM_LAN_PORT:$TILO_VM_LAN_PEER:$TILO_VM_LAN_MAC" --lan-model "$TILO_VM_LAN_MODEL")
   fi
+  # GROUP:PORT:MAC on a multicast segment every VM that names it shares, for
+  # more devices than the point-to-point LAN above holds (a scenario's fleet).
+  if [ -n "${TILO_VM_LAN_GROUP:-}" ]; then
+    extra+=(--lan-group "$TILO_VM_LAN_GROUP" --lan-model "$TILO_VM_LAN_MODEL")
+  fi
   # TILO_VM_HOSTFWD: more forwards, as QEMU's comma-separated hostfwd=... list.
   local forward
   if [ -n "${TILO_VM_HOSTFWD:-}" ]; then

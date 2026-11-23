@@ -56,6 +56,7 @@ mod builder;
 mod client;
 mod daemon;
 mod device;
+mod flows;
 #[cfg(test)]
 mod forwarded_port_tests;
 mod incoming;
@@ -1046,6 +1047,12 @@ impl App {
             Some(Command::Control { account, args }) => self.control(account, &args),
             Some(Command::Flight(command)) => self.flight(command),
             Some(Command::Scenario(ScenarioCommand::Install(args))) => self.scenario_install(&args),
+            Some(Command::Scenario(ScenarioCommand::FourDevices(args))) => {
+                self.scenario_four_devices(&args)
+            }
+            Some(Command::Scenario(ScenarioCommand::HomeServer(args))) => {
+                self.scenario_home_server(&args)
+            }
             Some(command @ (Command::LayerPack { .. } | Command::AppPack { .. })) => {
                 Self::pack_command(command)
             }

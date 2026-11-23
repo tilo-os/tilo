@@ -407,6 +407,10 @@ TILO_CONSOLE="$TILO_RUN/console.sock"
 TILO_VM_LAN_PORT="${TILO_VM_LAN_PORT:-}"
 TILO_VM_LAN_PEER="${TILO_VM_LAN_PEER:-}"
 TILO_VM_LAN_MAC="${TILO_VM_LAN_MAC:-}"
+# A multicast segment for more than two VMs on this host: GROUP:PORT:MAC, with
+# a 52:54:01:00 MAC the dev image addresses as 198.18.<5th>:<6th>. Every VM
+# that names the same GROUP:PORT shares it; the frames stay on the loopback.
+TILO_VM_LAN_GROUP="${TILO_VM_LAN_GROUP:-}"
 TILO_VM_LAN_MODEL="${TILO_VM_LAN_MODEL:-virtio-net-pci}"
 # The guest's input devices: keyboard (a tablet and a keyboard), or touch (a
 # virtio multitouch screen and no keyboard at all, as on a tablet with its

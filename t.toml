@@ -4979,6 +4979,50 @@ heavy = true
 default = false
 on = ["dispatch"]
 
+# One person's four devices used as one computer, on tilo-vm's private network: an x86-64
+# desktop with two virtual outputs, an aarch64 laptop under the software emulator and the
+# server when a disk for it is supplied. The scenario goes through published actions and
+# `tilo device`; a capability nobody has built yet ends its step naming that capability
+# (os/tests/flow_scenario.sh). The check passes while those steps are named and fails if a
+# step that should work fails, or the fleet never reaches its steps.
+[[check]]
+name = "flow-scenario-four-devices"
+# dnf installs from Fedora's mirrors, which are no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-x86_64.txt tools/ci/packages/qemu-aarch64.txt\nbash os/tests/flow_scenario.sh four-devices --arm-disk /target/publish/os-dev-disk/aarch64/disk/disk.qcow2\n"
+needs = ["os-dev-disk-x86_64", "os-dev-disk-aarch64", "tilo-vm-binary-x86_64"]
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/flow-scenarios/four-devices/**"]
+cache = false
+git = true
+timeout_secs = 7200
+heavy = true
+default = false
+on = ["dispatch"]
+
+# Laptop and home server with no tilo.sh: the desktop boots with no route to the internet and
+# its steps go through published actions and `tilo device`; the server's own web UI and the
+# desktop's management of it end naming the capability they need until it exists
+# (os/tests/flow_scenario.sh). Add --server-disk when a bootable server image disk is at hand.
+[[check]]
+name = "flow-scenario-home-server"
+# dnf installs from Fedora's mirrors, which are no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-x86_64.txt\nbash os/tests/flow_scenario.sh home-server\n"
+needs = ["os-dev-disk-x86_64", "tilo-vm-binary-x86_64"]
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/flow-scenarios/home-server/**"]
+cache = false
+git = true
+timeout_secs = 5400
+heavy = true
+default = false
+on = ["dispatch"]
+
 [[check]]
 name = "os-dev-disk-{arch}"
 # Pinned: the OS assembler image it runs in carries the install's tools, and the disk step

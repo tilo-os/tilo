@@ -371,6 +371,77 @@ impl Lan {
     }
 }
 
+/// A NIC on a multicast segment every VM that names the same `GROUP:PORT`
+/// shares: more than the point-to-point [`Lan`]'s two VMs, on the host's
+/// loopback alone. The dev image gives a NIC whose MAC starts
+/// `52:54:01:00` an address of its own on this segment, so a scenario can
+/// address every guest without DHCP.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LanGroup {
+    pub group: std::net::Ipv4Addr,
+    pub port: u16,
+    pub mac: String,
+    pub model: LanModel,
+}
+
+impl LanGroup {
+    /// `GROUP:PORT:MAC`, e.g. `239.255.84.76:47123:52:54:01:00:12:34`.
+    pub fn parse(spec: &str, model: LanModel) -> Result<Self, QemuError> {
+        let invalid = || {
+            QemuError::new(
+                format!("--lan-group '{spec}' is not GROUP:PORT:MAC"),
+                "give a multicast IPv4 group, a UDP port and a 52:54:01:00:xx:xx address, e.g. 239.255.84.76:47123:52:54:01:00:12:34",
+            )
+        };
+        let mut parts = spec.splitn(3, ':');
+        let group = parts
+            .next()
+            .and_then(|group| group.parse::<std::net::Ipv4Addr>().ok())
+            .filter(std::net::Ipv4Addr::is_multicast)
+            .ok_or_else(invalid)?;
+        let port = parts
+            .next()
+            .and_then(|port| port.parse::<u16>().ok())
+            .filter(|port| *port >= 1000)
+            .ok_or_else(invalid)?;
+        let mac = parts.next().unwrap_or_default();
+        let octets: Vec<&str> = mac.split(':').collect();
+        let valid_mac = octets.len() == 6
+            && mac.starts_with("52:54:01:00:")
+            && octets.iter().all(|octet| {
+                octet.len() == 2
+                    && octet
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            });
+        if !valid_mac {
+            return Err(invalid());
+        }
+        Ok(Self {
+            group,
+            port,
+            mac: mac.into(),
+            model,
+        })
+    }
+
+    fn args(&self) -> Vec<String> {
+        let model = match self.model {
+            LanModel::Virtio => "virtio-net-pci",
+            LanModel::E1000 => "e1000",
+        };
+        vec![
+            "-netdev".into(),
+            format!(
+                "socket,id=tilolan,mcast={}:{},localaddr=127.0.0.1",
+                self.group, self.port
+            ),
+            "-device".into(),
+            format!("{model},netdev=tilolan,mac={}", self.mac),
+        ]
+    }
+}
+
 /// Where a VM's runtime files live. It must be short: `AF_UNIX` socket paths
 /// are capped at 108 bytes.
 #[derive(Debug, Clone)]
@@ -535,6 +606,10 @@ pub struct MachineArgs {
     /// A second NIC on a UDP segment shared with one peer VM: PORT:PEER:MAC.
     #[arg(long)]
     pub lan: Option<String>,
+    /// A second NIC on a multicast segment shared by every VM that names the
+    /// same group: GROUP:PORT:MAC (see `tilo-vm guide scenarios`).
+    #[arg(long)]
+    pub lan_group: Option<String>,
     /// The --lan NIC: virtio-net-pci, or e1000 for Wake-on-LAN.
     #[arg(long, value_enum, default_value = "virtio-net-pci")]
     pub lan_model: LanModel,
@@ -596,6 +671,7 @@ pub struct Machine {
     pub forwards: Vec<String>,
     pub no_net: bool,
     pub lan: Option<Lan>,
+    pub lan_group: Option<LanGroup>,
     pub audio_wav: Option<PathBuf>,
     pub console: bool,
     pub virtio_ports: Vec<(String, PathBuf)>,
@@ -694,6 +770,11 @@ impl TryFrom<&MachineArgs> for Machine {
                 .lan
                 .as_deref()
                 .map(|spec| Lan::parse(spec, args.lan_model))
+                .transpose()?,
+            lan_group: args
+                .lan_group
+                .as_deref()
+                .map(|spec| LanGroup::parse(spec, args.lan_model))
                 .transpose()?,
             audio_wav: args.audio_wav.clone(),
             console: args.console,
@@ -816,6 +897,9 @@ impl Machine {
         let mut args = vec!["-nic".into(), nic];
         if let Some(lan) = &self.lan {
             args.extend(lan.args());
+        }
+        if let Some(group) = &self.lan_group {
+            args.extend(group.args());
         }
         args
     }
@@ -1919,6 +2003,31 @@ mod tests {
             assert!(Lan::parse("1:23902:52:54:00:23:83:0a", LanModel::Virtio).is_err());
             let none = line(&machine(&["--no-net"]), false, None);
             assert!(none.contains("-nic none"));
+        }
+
+        phase a_lan_group_is_one_multicast_segment_for_many_vms;
+        {
+            let m = machine(&[
+                "--lan-group",
+                "239.255.84.76:47123:52:54:01:00:12:34",
+                "--lan-model",
+                "virtio-net-pci",
+            ]);
+            let text = line(&m, false, None);
+            assert!(
+                text.contains(
+                    "-netdev socket,id=tilolan,mcast=239.255.84.76:47123,localaddr=127.0.0.1 -device virtio-net-pci,netdev=tilolan,mac=52:54:01:00:12:34"
+                ),
+                "{text}"
+            );
+            for bad in [
+                "10.0.0.1:47123:52:54:01:00:12:34",
+                "239.255.84.76:1:52:54:01:00:12:34",
+                "239.255.84.76:47123:52:54:00:12:34",
+                "239.255.84.76:47123:52:54:01:00:12:3G",
+            ] {
+                assert!(LanGroup::parse(bad, LanModel::Virtio).is_err(), "{bad}");
+            }
         }
 
         phase touch_input_drops_the_keyboard_and_opens_qmp;
