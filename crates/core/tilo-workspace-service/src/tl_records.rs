@@ -3,7 +3,7 @@
 //! as it is made.
 //!
 //! This is what a device's own roles use when they act on tilolang resources with no window of
-//! the app open: the agent engine answering an ask ([`crate::asks`]), a bridge posting into a
+//! the app open: the agent engine writing its reply, a bridge posting into a
 //! channel, a moderator reading reports. Nothing here is per app.
 //!
 //! - **Packages** ([`Packages`]): the packages a record is read through, compiled once and kept,

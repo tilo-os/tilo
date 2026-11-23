@@ -2,7 +2,7 @@
 //! Scout, Ada's conversation with Scout is Ada's and Scout's. Bo is not shown it in the sidebar,
 //! cannot open it, search finds nothing of it for him, `std.may_read` says he does not read it,
 //! his History lists none of its changes to him, and an agent mentioned in it that is not one of
-//! its people is asked with nothing of it. A channel is everyone's. Two devices opening the same
+//! its people reads nothing of it. A channel is everyone's. Two devices opening the same
 //! conversation apart make one, and a conversation an earlier Chat kept with one person alone
 //! comes in with both of its people, or with that person alone when no person opened it.
 
@@ -27,7 +27,6 @@ const BEFORE: (&str, &str) = (
     include_str!("chat_before_direct_people/app.ids"),
 );
 const APP: &str = "so.tilo.chat";
-const AGENT_APP: &str = "so.tilo.agent";
 const WORKSPACE: &str = "workspace";
 
 fn person(id: &str) -> Actor {
@@ -77,7 +76,7 @@ fn device(name: &str, doc: crate::fixtures::Workspace, packages: &[(&str, &str)]
 }
 
 fn chat(name: &str, doc: crate::fixtures::Workspace) -> Replica {
-    device(name, doc, &[crate::fixtures::AGENT, CHAT])
+    device(name, doc, &[CHAT])
 }
 
 /// The action `action` of Chat, invoked by the person of `r`.
@@ -317,23 +316,8 @@ fn bo_messaging_scout_opens_his_own_conversation_with_scout() {
     assert!(placed(&bo).contains(&target(&his).id_string()));
 }
 
-/// The asks of the agent `agent`, each with whether something was said in it.
-fn asked(r: &Replica, agent: &Actor) -> Vec<bool> {
-    let root = r.host.root_of(AGENT_APP).unwrap();
-    listed(r, &root, "asks")
-        .iter()
-        .filter(|ask| r.host.runtime().read(ask, "agent").unwrap() == Value::Actor(agent.clone()))
-        .map(|ask| {
-            matches!(
-                r.host.runtime().read(ask, "said").unwrap(),
-                Value::Opt(Some(_))
-            )
-        })
-        .collect()
-}
-
 #[test]
-fn an_agent_mentioned_in_a_conversation_it_is_not_in_is_asked_with_nothing_of_it() {
+fn an_agent_mentioned_in_a_conversation_it_is_not_in_reads_nothing_of_it() {
     let Workspace {
         ada, with_scout, ..
     } = workspace();
@@ -343,17 +327,21 @@ fn an_agent_mentioned_in_a_conversation_it_is_not_in_is_asked_with_nothing_of_it
     call(
         &ada,
         "send",
-        vec![with_scout, Value::Rich(body), Value::none()],
+        vec![with_scout.clone(), Value::Rich(body), Value::none()],
     );
     settle(&ada);
-    assert_eq!(
-        asked(&ada, &agent("helper")),
-        [false],
-        "Helper is asked, with nothing of what was said where it does not read"
+    // The mention starts Helper's turn, which reads the conversation as Helper: nothing of it.
+    let message = listed(&ada, &with_scout, "messages")
+        .pop()
+        .expect("Ada's message");
+    let runtime = ada.host.runtime();
+    assert!(
+        !runtime.may_read(&agent("helper"), &message),
+        "Helper, mentioned where it does not read, reads nothing of what was said"
     );
     assert!(
-        asked(&ada, &agent("scout")).iter().all(|said| *said),
-        "Scout, who is in it, is told what Ada wrote"
+        runtime.may_read(&agent("scout"), &message),
+        "Scout, who is in it, reads what Ada wrote"
     );
 }
 

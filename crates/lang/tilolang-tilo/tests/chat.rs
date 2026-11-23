@@ -12,8 +12,8 @@ use crate::fixtures::{Replica, target};
 
 const CHAT: &str = include_str!("../../../../apps/tl/chat/app.tl");
 const CHAT_IDS: &str = include_str!("../../../../apps/tl/chat/app.ids");
-/// What a workspace of Chat runs: the agents it asks, and Chat.
-const PACKAGES: [(&str, &str); 2] = [crate::fixtures::AGENT, (CHAT, CHAT_IDS)];
+/// What a workspace of Chat runs: Chat alone.
+const PACKAGES: [(&str, &str); 1] = [(CHAT, CHAT_IDS)];
 const APP: &str = "so.tilo.chat";
 
 fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
