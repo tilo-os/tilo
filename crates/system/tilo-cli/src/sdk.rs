@@ -470,8 +470,8 @@ impl Resolver<'_> {
             | FieldType::Time
             | FieldType::Identifier
             | FieldType::Actor => Ty::Text,
-            FieldType::Int => Ty::Int,
-            FieldType::Float | FieldType::Duration => Ty::Number,
+            FieldType::Int | FieldType::Duration => Ty::Int,
+            FieldType::Float => Ty::Number,
             FieldType::Bool => Ty::Bool,
             FieldType::Collection(item) => Ty::Collection(inner(item)),
             FieldType::List(item) | FieldType::Set(item) => Ty::List(inner(item)),
@@ -1885,5 +1885,96 @@ mod tests {
         assert_eq!(names[&long.id], "lang_notes");
         let names = module_names(std::slice::from_ref(&long));
         assert_eq!(names[&long.id], "notes");
+    }
+
+    /// `FieldType::Duration` travels as whole seconds (an integer), so Python renders `int`
+    /// (never `float`, which the binder refuses), TypeScript renders `number`, and `OpenAPI`
+    /// keeps the integer schema and unit description for both parameters and results.
+    #[test]
+    fn duration_parameter_and_result_generate_integer_types() {
+        let toml = r#"
+schema = 1
+
+[[resources]]
+kind = "tl.so.tilo.timer.Board"
+label = "Board"
+version = 1
+
+[[resources.verbs]]
+id = "extend"
+name = "extend"
+label = "Extend"
+kind = "undoable"
+returns = { type = "duration", schema = { type = "integer", description = "Duration in whole seconds" } }
+
+[[resources.verbs.params]]
+name = "span"
+required = true
+type = "duration"
+schema = { type = "integer", description = "Duration in whole seconds" }
+
+[[resources.verbs.params]]
+name = "extra"
+required = false
+type = { option = "duration" }
+schema = { type = "integer", description = "Duration in whole seconds" }
+"#;
+        let (_, surface) = SurfaceFile::kept(toml.as_bytes()).expect("timer surface parses");
+        let timer = App {
+            id: "so.tilo.timer".to_owned(),
+            title: "Timer".to_owned(),
+            surface,
+        };
+
+        let py_files = python_files(std::slice::from_ref(&timer)).expect("python generates");
+        let python = &py_files
+            .iter()
+            .find(|(name, _)| name == Path::new("timer.py"))
+            .expect("timer.py is written")
+            .1;
+        let expected_python_sig = concat!(
+            "    def extend(self,\n",
+            "        *,\n",
+            "        span: int,\n",
+            "        extra: int | None = None,\n",
+            "    ) -> int:\n",
+        );
+        assert!(python.contains(expected_python_sig), "{python}");
+        assert!(
+            !python.contains("float"),
+            "Duration must not render as float in Python:\n{python}"
+        );
+
+        let ts_files = typescript_files(std::slice::from_ref(&timer)).expect("ts generates");
+        let ts = &ts_files
+            .iter()
+            .find(|(name, _)| name == Path::new("timer.ts"))
+            .expect("timer.ts is written")
+            .1;
+        assert!(ts.contains("  extend("), "{ts}");
+        assert!(ts.contains("span: number"), "{ts}");
+        assert!(ts.contains("extra?: number"), "{ts}");
+        assert!(ts.contains("): Promise<number>;"), "{ts}");
+
+        let openapi = openapi_files(std::slice::from_ref(&timer)).expect("openapi generates");
+        let doc: serde_json::Value =
+            serde_json::from_str(&openapi[0].1).expect("openapi JSON parses");
+        let schemas = &doc["components"]["schemas"];
+        let args = &schemas["tl.so.tilo.timer.Board.extend.Arguments"]["properties"];
+        assert_eq!(args["span"]["type"], "integer");
+        assert!(
+            args["span"]["description"]
+                .as_str()
+                .is_some_and(|d| d.contains("whole seconds")),
+            "{args:#}"
+        );
+        let result = &schemas["tl.so.tilo.timer.Board.extend.Result"];
+        assert_eq!(result["type"], "integer");
+        assert!(
+            result["description"]
+                .as_str()
+                .is_some_and(|d| d.contains("whole seconds")),
+            "{result:#}"
+        );
     }
 }
