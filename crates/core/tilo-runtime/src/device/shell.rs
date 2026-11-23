@@ -577,6 +577,8 @@ impl Standing {
                 labels: Vec::new(),
                 own: reading.owner.as_deref() == Some(hex::encode(cert.user_public_key).as_str()),
                 kept_here: holder == cert.device_public_key,
+                host: standing::host_elsewhere(&peer, &cert.device_public_key)
+                    .and_then(|host| host.written()),
             });
             match serde_json::to_vec(&reading) {
                 Ok(bytes) => {

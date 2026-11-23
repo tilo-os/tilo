@@ -144,6 +144,59 @@ pub(crate) struct Personal {
     /// whether the person has workspaces of their own: it becomes their first only if they have
     /// none, and goes when they have some. Until then it is neither founded nor listed.
     seed: Option<WorkspaceId>,
+    /// The workspaces placed on a host whose roster, as the device's daemon reads it, named this
+    /// device: one whose roster names it no more is one the person left, or was taken out of.
+    in_hosted: BTreeSet<WorkspaceId>,
+}
+
+/// One of the person's workspaces on a host that the device's daemon holds and this session holds
+/// no copy of.
+pub(crate) struct OnHost {
+    /// Its name, as the daemon lists it.
+    pub(crate) name: String,
+    /// Where its host is reached, as the host signed it: where this session asks to be taken in.
+    pub(crate) host: tilo_peer_state::join::TransportHint,
+}
+
+/// The person's workspaces on a host other than `device` that the daemon `view` reaches lists
+/// and this session does not hold (`held`), each with the host's signed address.
+pub(crate) fn on_hosts(
+    view: &crate::workspace_view::WorkspaceView,
+    device: &[u8; 32],
+    held: &BTreeSet<WorkspaceId>,
+) -> BTreeMap<WorkspaceId, OnHost> {
+    view.listed()
+        .into_iter()
+        .filter_map(|listed| {
+            let workspace = WorkspaceId::parse(&listed.id)?;
+            if held.contains(&workspace) {
+                return None;
+            }
+            let host = tilo_workspace_service::workspaces::standing::HostElsewhere::read(
+                listed.host.as_deref()?,
+                device,
+            )?;
+            Some((
+                workspace,
+                OnHost {
+                    name: listed.name,
+                    host: host.hint,
+                },
+            ))
+        })
+        .collect()
+}
+
+/// Every workspace of the person's the device's daemon holds, as `view` reads its list; `None`
+/// while it lists none, when what the person has is not known yet: the daemon enters the
+/// workspaces their server lists as soon as it hears the list.
+fn listed_by_daemon(view: &crate::workspace_view::WorkspaceView) -> Option<BTreeSet<WorkspaceId>> {
+    let listed: BTreeSet<WorkspaceId> = view
+        .listed()
+        .iter()
+        .filter_map(|listed| WorkspaceId::parse(&listed.id))
+        .collect();
+    (!listed.is_empty()).then_some(listed)
 }
 
 /// How long after a host did not take this device in it is asked again.
@@ -198,6 +251,7 @@ impl Personal {
             told_awaiting: BTreeSet::new(),
             ask_again: BTreeMap::new(),
             seed: None,
+            in_hosted: BTreeSet::new(),
         }
     }
 
@@ -655,15 +709,15 @@ impl Personal {
         ))])
     }
 
-    /// Take in the person's workspaces their hosts list that this device holds no copy of
-    /// (`listed`, by workspace), as writes of `list`: each one the list does not name yet is
+    /// Take in the person's workspaces on hosts that the device's daemon lists and this device
+    /// holds no copy of (`listed`, by workspace, [`on_hosts`]), as writes of `list`: each one the list does not name yet is
     /// listed, hosted by the device that signed where it is reached, and with that address, so
     /// this device enters it there as it enters every listed workspace ([`Self::adopt_into`]) and
     /// the person's other devices read it too. A workspace the list names already keeps its name
     /// and host, and one taken off it stays off.
     pub(crate) fn take_hosted(
         list: &WorkspaceList,
-        listed: BTreeMap<WorkspaceId, crate::hosted_workspaces::Listed>,
+        listed: BTreeMap<WorkspaceId, OnHost>,
     ) -> Vec<ListWrite> {
         let mut writes = Vec::new();
         for (workspace, entry) in listed {
@@ -687,6 +741,32 @@ impl Personal {
             }
         }
         writes
+    }
+
+    /// The workspaces on a host whose roster, as the daemon `view` reaches reads it, named this
+    /// device and names it no more: the person left them, or was taken out of them. A roster that
+    /// never named this device says nothing of it: the device may not have been let in yet.
+    pub(crate) fn taken_out(
+        &mut self,
+        view: &crate::workspace_view::WorkspaceView,
+    ) -> Vec<WorkspaceId> {
+        let mut gone = Vec::new();
+        for listed in view.listed() {
+            let Some(workspace) = WorkspaceId::parse(&listed.id).filter(|_| listed.host.is_some())
+            else {
+                continue;
+            };
+            let Ok(roster) = view.roster_devices(&listed.id) else {
+                continue;
+            };
+            if roster.contains(&self.device) {
+                self.in_hosted.insert(workspace);
+            } else if !roster.is_empty() && self.in_hosted.remove(&workspace) {
+                tracing::info!(%workspace, "a workspace on a host no longer names this device");
+                gone.push(workspace);
+            }
+        }
+        gone
     }
 
     /// Say where this device reaches the host of each listed workspace it holds, as each
@@ -1239,12 +1319,9 @@ impl crate::Shared {
 
     /// What the person's own records say: their workspaces as all their devices hold them, and what
     /// this device did since the last pass.
-    pub(crate) fn follow_records(
-        &self,
-        hosted: Option<&crate::hosted_workspaces::HostedWorkspaces>,
-    ) {
+    pub(crate) fn follow_records(&self) {
         self.follow_data_usage();
-        self.follow_personal(hosted);
+        self.follow_personal();
     }
 
     /// Count what this device did since the last pass into the person's records, through the verb
@@ -1268,19 +1345,15 @@ impl crate::Shared {
     /// Keep the person's own workspaces as all their devices hold them: write to their list what
     /// this session made, renamed, moved or took off since the last pass, open here what the list
     /// names that this device does not hold, and take off the shell what it no longer names here.
-    pub(crate) fn follow_personal(
-        &self,
-        hosted: Option<&crate::hosted_workspaces::HostedWorkspaces>,
-    ) {
+    pub(crate) fn follow_personal(&self) {
         let Some(personal) = &self.personal else {
             return;
         };
-        // The person's list as the hosts of their workspaces keep it: the workspaces of theirs a
-        // host holds that no device of theirs listed here, as on a device restored from their
-        // identity alone, which knows of them nowhere else.
-        if let Some(hosted) = hosted {
-            hosted.follow_lists(&self.wake_handle);
-        }
+        // The person's workspaces as the device's daemon holds them: it follows their list on
+        // their server and enters each one, so a workspace of theirs a host holds that no device
+        // of theirs listed here (as on a device restored from their identity alone) is the
+        // daemon's word, with where its host is reached.
+        let view = self.view.as_deref();
         let moved = {
             let mut personal = personal.borrow_mut();
             // Until the list is read nothing says which workspaces are the person's: the shell
@@ -1293,8 +1366,14 @@ impl crate::Shared {
             // here.
             personal.refresh_hosts(self.engine.as_deref());
             let mut writes = Vec::new();
-            if let Some(hosted) = hosted {
-                writes.extend(Personal::take_hosted(&list, hosted.take_listed()));
+            if let Some(view) = view {
+                let held: BTreeSet<WorkspaceId> = self
+                    .engine
+                    .as_ref()
+                    .map(|engine| engine.workspaces().into_iter().collect())
+                    .unwrap_or_default();
+                let listed = on_hosts(view, &personal.device, &held);
+                writes.extend(Personal::take_hosted(&list, listed));
             }
             if let Some(engine) = &self.engine {
                 writes.extend(personal.say_hints(&list, &engine.host_hints()));
@@ -1356,14 +1435,15 @@ impl crate::Shared {
             for workspace in adoption.release {
                 self.release_workspace(workspace);
             }
-            // A workspace its host lists the person in no longer goes the same way: they left it,
-            // or were taken out of it, and what it holds stays theirs to whom it belongs.
-            if let Some(hosted) = hosted {
-                for workspace in hosted.take_dropped() {
+            // A workspace on a host whose roster names this device no more goes the same way: the
+            // person left it, or was taken out of it, and what it holds stays theirs to whom it
+            // belongs.
+            if let Some(view) = view {
+                for workspace in personal.taken_out(view) {
                     self.release_workspace(workspace);
                 }
             }
-            self.settle_seed(&mut personal, &list, hosted);
+            self.settle_seed(&mut personal, &list, view);
             personal.passed(&self.handle);
             if adoption.changed {
                 self.keep_layout_now();
@@ -1382,15 +1462,15 @@ impl crate::Shared {
     }
 
     /// Settle the workspace the shell started with on a device that kept none
-    /// ([`Personal::seed`]) against what the person has: what the hosts of the workspaces this
-    /// device holds list for them, unless it is redeeming an invitation, which lists them once it
-    /// is in. A join under way is the person having a workspace, so settling the seed before it
+    /// ([`Personal::seed`]) against what the person has: the workspaces the device's daemon holds
+    /// of theirs, once it published its list, unless it is redeeming an invitation, which lists
+    /// them once it is in. A join under way is the person having a workspace, so settling the seed before it
     /// lands would make the shell's own workspace theirs and list it to their other devices.
     fn settle_seed(
         &self,
         personal: &mut Personal,
         list: &WorkspaceList,
-        hosted: Option<&crate::hosted_workspaces::HostedWorkspaces>,
+        view: Option<&crate::workspace_view::WorkspaceView>,
     ) {
         if personal.seed().is_none() {
             return;
@@ -1404,10 +1484,7 @@ impl crate::Shared {
         let listed = if joining {
             None
         } else {
-            hosted.map_or_else(
-                || Some(BTreeSet::new()),
-                crate::hosted_workspaces::HostedWorkspaces::listed_everywhere,
-            )
+            view.map_or_else(|| Some(BTreeSet::new()), listed_by_daemon)
         };
         // A workspace whose governance names the person its owner is theirs, however it came to
         // this device: a computer restored from their words that joins their own workspace — their

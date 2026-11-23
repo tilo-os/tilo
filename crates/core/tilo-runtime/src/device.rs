@@ -39,6 +39,7 @@ pub(crate) mod first_workspace;
 mod flow_laptop_phone_server;
 pub(crate) mod home;
 mod host_runs;
+mod hosts;
 mod keep;
 mod layout;
 pub(crate) mod local;

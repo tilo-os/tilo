@@ -184,6 +184,31 @@ pub(crate) struct DaemonResources {
     pub(crate) writes: tilo_session_client::daemon_documents::DaemonWritesFeed,
 }
 
+/// The hosts of the workspaces placed on another device, as the device's daemon publishes the
+/// person's workspace list: a workspace it names a host for has its records' actions run there,
+/// and the broker sends the person's invocations of them to the daemon's one dispatch, which
+/// carries them to the host.
+pub(crate) struct DaemonHosts {
+    pub(crate) view: Arc<crate::workspace_view::WorkspaceView>,
+    pub(crate) dispatch: runtime_collab::ShellDispatch,
+}
+
+impl tilo_workspace_service::apps::services::HostedWorkspaces for DaemonHosts {
+    fn host_actions(
+        &self,
+        workspace: &str,
+    ) -> Option<Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>> {
+        self.view
+            .listed()
+            .iter()
+            .any(|listed| listed.id == workspace && listed.host.is_some())
+            .then(|| {
+                Arc::new(self.dispatch.clone())
+                    as Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>
+            })
+    }
+}
+
 /// `command` of `app`'s resources in `workspace`, answered by the daemon as the device's person.
 async fn daemon_resource_command(
     shell: &tilo_session_client::daemon_documents::DaemonShell,

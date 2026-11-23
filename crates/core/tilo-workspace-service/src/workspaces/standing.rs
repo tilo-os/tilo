@@ -172,3 +172,60 @@ pub fn keeping_device_elsewhere(
             Some((hint.host.writes_for(), payload.endpoint_addr))
         })
 }
+
+/// The device keeping the workspace `peer` holds that runs its work, when that is another device
+/// than `own`: a home server or a cloud host, which decides its records' actions with the
+/// workspace's policy and runs them in its own workers. A workspace only desktops keep runs its
+/// records' actions where its windows are.
+#[must_use]
+pub fn host_elsewhere(peer: &StatePeer, own: &[u8; 32]) -> Option<HostElsewhere> {
+    peer.governance()
+        .keeping_devices()
+        .into_iter()
+        .find_map(|hint| HostElsewhere::of(hint, own))
+}
+
+/// A workspace's host other than this device, as its signed address names it
+/// ([`host_elsewhere`]).
+#[derive(Clone, Debug)]
+pub struct HostElsewhere {
+    /// The address the host signed into the workspace's membership.
+    pub hint: tilo_peer_state::join::TransportHint,
+    /// The host's device key.
+    pub device: [u8; 32],
+    /// Where the host is reached.
+    pub address: iroh::EndpointAddr,
+}
+
+impl HostElsewhere {
+    /// The host `hint` names, when it is signed by the device it names, runs the workspace's
+    /// work, and is another device than `own`.
+    #[must_use]
+    pub fn of(hint: tilo_peer_state::join::TransportHint, own: &[u8; 32]) -> Option<Self> {
+        let (payload, _) =
+            tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1::authenticate_transport_hint(
+                &hint,
+            )
+            .ok()?;
+        let device = payload.device_certificate.device_public_key;
+        (payload.runs_work && device != *own).then_some(Self {
+            hint,
+            device,
+            address: payload.endpoint_addr,
+        })
+    }
+
+    /// [`Self::of`] the signed address `written` names (postcard, in hex), as the person's
+    /// workspace list carries it.
+    #[must_use]
+    pub fn read(written: &str, own: &[u8; 32]) -> Option<Self> {
+        let bytes = hex::decode(written).ok()?;
+        Self::of(postcard::from_bytes(&bytes).ok()?, own)
+    }
+
+    /// The signed address, as the person's workspace list carries it: postcard, in hex.
+    #[must_use]
+    pub fn written(&self) -> Option<String> {
+        postcard::to_allocvec(&self.hint).ok().map(hex::encode)
+    }
+}

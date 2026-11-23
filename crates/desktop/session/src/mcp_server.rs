@@ -40,8 +40,8 @@ use tilo_action_policy::Lifetime;
 
 use serde::{Deserialize, Serialize};
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Completer,
-    ContentPuts, InvocationReceipt, InvocationState, InvokeRequest, Pending,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Completer, ContentPuts,
+    InvocationReceipt, InvocationState, InvokeRequest, Pending,
 };
 use tilo_compositor::ReadableWatch;
 use tilo_lock::MutexRecover as _;
@@ -331,9 +331,9 @@ pub(crate) struct Loop {
     environments: environments::Sockets,
     /// The agent key the person started the session with, when they did.
     agent_key: Option<agent_key::AgentKey>,
-    /// The hosts of the workspaces this device takes part in but does not host, where a
-    /// Terminal window's shell in one of them is opened ([`crate::workspace_terminals`]).
-    hosting: Option<crate::hosted_workspaces::HostedWorkspaces>,
+    /// What a Terminal window's shell in a workspace placed on a host is opened through
+    /// ([`crate::workspace_terminals`]).
+    hosting: Option<crate::workspace_terminals::Terminals>,
 }
 
 /// What serving one connection takes, on a thread of its own.
@@ -349,7 +349,7 @@ struct Serving {
     /// The places connections are served in: as many as the server serves at once.
     room: Room,
     environments: environments::Opener,
-    hosting: Option<crate::hosted_workspaces::HostedWorkspaces>,
+    hosting: Option<crate::workspace_terminals::Terminals>,
 }
 
 impl Serving {
@@ -513,11 +513,11 @@ impl Shared {
 }
 
 impl Loop {
-    /// Open the shells of Terminal windows in the workspaces `hosting` reaches the hosts of
-    /// there, as the device's shell runtime asks.
+    /// Open the shells of Terminal windows in the workspaces placed on a host through `hosting`,
+    /// as the device's shell runtime asks.
     pub(crate) fn open_terminals_on(
         &mut self,
-        hosting: Option<crate::hosted_workspaces::HostedWorkspaces>,
+        hosting: Option<crate::workspace_terminals::Terminals>,
     ) {
         self.hosting = hosting;
     }
@@ -2216,7 +2216,6 @@ impl ActionProvider for Host {
             None => Pending::ready(Err(ActionCallError::UnknownInvocation)),
         }
     }
-
 
     fn content_puts(&self) -> Option<Arc<dyn ContentPuts>> {
         self.state

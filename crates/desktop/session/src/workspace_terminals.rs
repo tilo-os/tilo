@@ -3,14 +3,15 @@
 //!
 //! The device's shell runtime asks on the MCP socket ([`runtime_portal::workspace_terminal`]):
 //! the window's workspace, the Terminal session record it shows, its size, and the host's
-//! session to come back to. A workspace no host other than this device runs is answered
-//! [`Reply::Local`] at once. For a hosted one this session, which holds the device's key and its
-//! connection to the host, invokes the record's `open-terminal` there as the person, the same
-//! way the person's other actions in the workspace go to its host: the owner's runs at once, and
-//! a key or a member's grant is asked of the person on their devices first, which the open waits
-//! for. The host answers a one-use stream id and its session's id; this device dials the host's
-//! terminal streams from its own endpoint, as itself, and the runtime's connection is that stream
-//! from [`Reply::Opened`] on, carried byte for byte until either end closes.
+//! session to come back to. A workspace the person's list, as the device's daemon publishes it,
+//! names no host other than this device for is answered [`Reply::Local`] at once. For a hosted
+//! one the record's `open-terminal` is asked of the daemon's one dispatch as the person, which
+//! sends it to the host the same way the person's other actions in the workspace go there: the
+//! owner's runs at once, and a key or a member's grant is asked of the person on their devices
+//! first, which the open waits for. The host answers a one-use stream id for this device and its
+//! session's id; this device dials the host's terminal streams as itself, and the runtime's
+//! connection is that stream from [`Reply::Opened`] on, carried byte for byte until either end
+//! closes.
 
 use std::io::Write as _;
 use std::os::unix::net::UnixStream;
@@ -21,8 +22,52 @@ use tilo_actions::remote::{
     Caller, InvocationReceipt, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
 };
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
+use tilo_workspace_service::workspaces::standing::HostElsewhere;
 
-use crate::hosted_workspaces::{HostedWorkspaces, TerminalHost};
+/// What a Terminal window's shell in a workspace placed on a host is opened through: the person's
+/// workspace list as the device's daemon publishes it, which names each workspace's host; the
+/// daemon's one dispatch the open is asked of; and where this device's endpoint, which dials the
+/// host's terminal streams, lands once bound.
+#[derive(Clone)]
+pub(crate) struct Terminals {
+    pub(crate) view: std::sync::Arc<crate::workspace_view::WorkspaceView>,
+    pub(crate) dispatch: runtime_collab::ShellDispatch,
+    pub(crate) endpoint: Option<std::sync::Arc<std::sync::OnceLock<iroh::Endpoint>>>,
+    /// This device's key: a host is another device.
+    pub(crate) device: [u8; 32],
+    pub(crate) runtime: tokio::runtime::Handle,
+}
+
+impl Terminals {
+    /// `workspace`'s host, when the person's list names one other than this device.
+    fn host(&self, workspace: &str) -> Option<TerminalHost> {
+        let listed = self
+            .view
+            .listed()
+            .into_iter()
+            .find(|listed| listed.id == workspace)?;
+        let host = HostElsewhere::read(listed.host.as_deref()?, &self.device)?;
+        Some(TerminalHost {
+            actions: std::sync::Arc::new(self.dispatch.clone()),
+            address: host.address,
+            endpoint: self
+                .endpoint
+                .as_ref()
+                .and_then(|endpoint| endpoint.get().cloned()),
+            runtime: self.runtime.clone(),
+        })
+    }
+}
+
+/// A hosted workspace's host, as a Terminal window's shell is opened there: the dispatch its
+/// actions are asked of, where its terminal streams are dialled, and this device's endpoint they
+/// are dialled from (`None` until it bound).
+struct TerminalHost {
+    actions: std::sync::Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
+    address: iroh::EndpointAddr,
+    endpoint: Option<iroh::Endpoint>,
+    runtime: tokio::runtime::Handle,
+}
 
 /// The longest an open waits for the host: long enough for the person to see the question on
 /// another device and answer it.
@@ -33,17 +78,17 @@ const WAIT_MS: u32 = 10_000;
 
 /// Answer `request`, which the runtime asked on `stream`, on a thread of its own for as long as
 /// the shell's stream is carried.
-pub(crate) fn open(stream: UnixStream, request: Request, hosting: Option<HostedWorkspaces>) {
+pub(crate) fn open(stream: UnixStream, request: Request, terminals: Option<Terminals>) {
     let spawned = std::thread::Builder::new()
         .name("tilo-workspace-terminal".into())
-        .spawn(move || serve(stream, &request, hosting.as_ref()));
+        .spawn(move || serve(stream, &request, terminals.as_ref()));
     if let Err(error) = spawned {
         tracing::warn!(%error, "a workspace's terminal could not be opened");
     }
 }
 
-fn serve(mut stream: UnixStream, request: &Request, hosting: Option<&HostedWorkspaces>) {
-    let Some(host) = hosting.and_then(|hosting| hosting.terminal_host(&request.workspace)) else {
+fn serve(mut stream: UnixStream, request: &Request, terminals: Option<&Terminals>) {
+    let Some(host) = terminals.and_then(|terminals| terminals.host(&request.workspace)) else {
         // The asker may have gone; its terminal answer then has nowhere to land.
         tilo_failure::ignored!(
             "the asker of a workspace's terminal has gone before its answer",
@@ -114,7 +159,7 @@ fn serve(mut stream: UnixStream, request: &Request, hosting: Option<&HostedWorks
 /// Ask `host` to open `request`'s session shell on a terminal for this device, waiting while
 /// it waits for the person: the stream's one-use id and the host's session id.
 async fn open_on(host: &TerminalHost, request: &Request) -> Result<(String, String), String> {
-    let caller = Caller::local_person("tilo");
+    let caller = Caller::local_person("tilo").in_workspace(request.workspace.clone());
     let mut arguments = serde_json::Map::new();
     arguments.insert("cols".into(), request.cols.into());
     arguments.insert("rows".into(), request.rows.into());

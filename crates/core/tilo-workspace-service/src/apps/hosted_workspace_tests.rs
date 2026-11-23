@@ -283,3 +283,81 @@ async fn a_hosted_workspaces_record_action_runs_on_its_host() {
         })
         .await;
 }
+
+// The device's one dispatch sends a call of a typed action of a record of a workspace placed on a
+// host to that host, and follows it there: what the person's shell asks of the daemon reaches the
+// host the way the broker's own forwarding does.
+#[test]
+fn the_dispatch_sends_a_record_action_to_the_device_holding_its_workspace() {
+    use tilo_actions::remote::{
+        Caller, InvokeArgument, InvokeRequest, PendingPoll, ReceiptStatus, RemoteActionTarget,
+    };
+    let provider = Arc::new(RecordingHost::default());
+    let hosted = "0b7a5f4e-2c1d-4e8a-9f3b-6d5c4b3a2918";
+    let providers = crate::workspaces::providers::Providers::default();
+    let elsewhere = HostedElsewhere {
+        workspace: hosted.to_owned(),
+        provider: Arc::clone(&provider),
+    };
+    providers.place_on_hosts(Arc::new(move |workspace| {
+        crate::apps::services::HostedWorkspaces::host_actions(&elsewhere, workspace)
+    }));
+    let request = || InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: format!("{}:notes:a-note", tilo_actions::remote::RESOURCE_PROVIDER),
+            address: tilo_actions::ActionAddress::new("note", "rename"),
+        },
+        argument: InvokeArgument::Json(serde_json::Map::new()),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    let person = Caller::local_person("fixture-owner").in_workspace(hosted.to_owned());
+
+    let sent = request();
+    let mut receipt = providers
+        .invoke(&person, sent.clone())
+        .expect("the host takes a record's action of the workspace it holds");
+    match receipt.poll_ready() {
+        PendingPoll::Ready(Ok(receipt)) => {
+            assert!(
+                matches!(receipt.status, ReceiptStatus::Accepted),
+                "{receipt:?}"
+            );
+        }
+        other => panic!("the host's receipt answers at once here: {other:?}"),
+    }
+    {
+        let asked = provider.asked.lock().unwrap();
+        let [(caller, forwarded)] = asked.as_slice() else {
+            panic!("the host is asked once: {asked:?}");
+        };
+        assert_eq!(caller, &person, "the host decides it for the person");
+        assert_eq!(
+            forwarded.invocation, sent.invocation,
+            "the host is sent the call as it was made"
+        );
+        assert_eq!(forwarded.target.provider, sent.target.provider);
+        assert_eq!(forwarded.target.address, sent.target.address);
+    }
+    let state = providers
+        .observe(&person, &sent.invocation)
+        .expect("the dispatch knows who took the call")
+        .expect("the host tells where it stands");
+    assert!(state.is_terminal(), "it is followed on the host: {state:?}");
+
+    // A workspace no host takes the work of, and a call that names no record, are none of the
+    // host's.
+    let here = Caller::local_person("fixture-owner")
+        .in_workspace("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_owned());
+    assert!(providers.invoke(&here, request()).is_none());
+    let mut not_a_record = request();
+    not_a_record.target.provider = "so.tilo.elsewhere".to_owned();
+    assert!(providers.invoke(&person, not_a_record).is_none());
+    assert_eq!(provider.asked.lock().unwrap().len(), 1);
+}

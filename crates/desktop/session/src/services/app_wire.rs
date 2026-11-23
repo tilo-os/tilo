@@ -293,7 +293,7 @@ pub(crate) fn start_app_wire(
         );
         tilo_workspace_service::agents::initiative::Initiative::new(service.clone(), events)
     });
-    let (broker, hosting) = app_wire::serve(
+    let (broker, terminals) = app_wire::serve(
         path.clone(),
         std::sync::Arc::clone(&link),
         std::sync::Arc::clone(&options.launches),
@@ -393,7 +393,7 @@ pub(crate) fn start_app_wire(
         file_clipboard,
         _files_tree: files_tree,
         item_lending,
-        hosting,
+        terminals,
     }))
 }
 

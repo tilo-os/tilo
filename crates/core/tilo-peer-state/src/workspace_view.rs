@@ -56,6 +56,11 @@ pub struct Listed {
     pub own: bool,
     /// This device holds it.
     pub kept_here: bool,
+    /// The device that runs its work when that is another than this one (a home server, a cloud
+    /// host), by the address it signed into the workspace's membership (postcard, in hex): where
+    /// its records' actions run, and where a device of the person's that holds none of it enters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
 }
 
 /// Why a workspace is not the person's to delete here, when it is not.

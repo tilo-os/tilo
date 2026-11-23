@@ -44,8 +44,6 @@ pub(crate) use assembly::Shared;
 mod activity_provider;
 mod continuations;
 mod daemon_fixture;
-#[cfg(all(feature = "test-support", target_os = "linux"))]
-pub mod shell_session;
 pub mod host_actions;
 pub mod records;
 pub mod search;
@@ -53,6 +51,8 @@ pub mod search;
 mod search_agent;
 mod search_ask;
 mod session_actions;
+#[cfg(all(feature = "test-support", target_os = "linux"))]
+pub mod shell_session;
 // The person's settings, which Settings' window drives through the broker as another provider's
 // actions: the session keeps them in its settings service, so the answer is this host's.
 #[cfg(target_os = "linux")]
@@ -167,9 +167,6 @@ mod controls;
 pub mod desktop_services;
 #[cfg(target_os = "linux")]
 mod device_actions;
-#[cfg(target_os = "linux")]
-#[cfg(target_os = "linux")]
-mod device_inbox;
 #[cfg(target_os = "linux")]
 mod device_lists;
 #[cfg(target_os = "linux")]

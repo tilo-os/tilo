@@ -58,7 +58,10 @@ use tilo_workspace_service::apps::{
     collab_core::{BrokerChannels, BrokerSealChecks},
     collab_history::CollabHistoryStore,
     collab_outbound::PeerPublisher,
-    services::{LauncherServices, ProcessServices, ShortcutLibraryServices, WorkspaceAuthority},
+    services::{
+        HostedWorkspaces, LauncherServices, ProcessServices, ShortcutLibraryServices,
+        WorkspaceAuthority,
+    },
 };
 use tilo_workspace_service::service::ServiceConfig;
 use tilo_workspace_service::workspaces::Refusal;
@@ -1223,6 +1226,15 @@ fn broker_services(
                 ),
             )));
     }
+    // The hosts of the workspaces placed on another device: the one dispatch sends a call of a
+    // typed action of one of their records there, as the broker sends its apps' invocations.
+    let hosts = super::hosts::Hosts::of(parts.workspaces);
+    let placed = Arc::clone(&hosts);
+    parts
+        .workspaces
+        .copies()
+        .providers()
+        .place_on_hosts(Arc::new(move |workspace| placed.host_actions(workspace)));
     Ok(ProcessServices {
         // The records of the workspaces this device keeps, read for the apps, agents and programs
         // it serves: each capture opens the record's document here, and counts it.
@@ -1284,6 +1296,10 @@ fn broker_services(
             parts.sockets.join(COLLAB_SOCKET),
             Arc::clone(parts.shell_dispatch),
         ))),
+        // A workspace placed on a host has its records changed there: the person's actions on
+        // them are sent to the host, which decides and runs them, and the change reaches this
+        // device's copy by sync.
+        hosted_workspaces: Some(Arc::clone(&hosts) as Arc<dyn HostedWorkspaces>),
         // The providers registered on this device ([`Daemon::provide`]): a call made here reaches
         // them through the same registry another device's call does.
         providers: Some(parts.workspaces.copies().providers()),

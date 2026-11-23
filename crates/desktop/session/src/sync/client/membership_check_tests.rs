@@ -304,259 +304,6 @@ fn on_shell(session: &tilo_session_core::desktop::state::DesktopHandle) -> Vec<W
     })
 }
 
-/// A computer restored from a person's root, with what it reached of them: the site that keeps
-/// their workspace, the laptop they wrote it on, and the sessions the restored computer follows
-/// their list on.
-struct Restore {
-    host: test_server::Host,
-    /// The person's workspace on the site: the site's own, which the person was invited into.
-    notes: WorkspaceId,
-    laptop: Device,
-    restored: Device,
-    /// The site's home, which a computer set up for a site joins on its own.
-    lounge: WorkspaceId,
-    runtime: tokio::runtime::Runtime,
-    hosting: crate::hosted_workspaces::HostedWorkspaces,
-    woken: std::sync::Arc<std::sync::atomic::AtomicBool>,
-}
-
-impl Restore {
-    /// A person (`seed` their root's bytes) invited into the site's Notes on their laptop, and a
-    /// computer restored from their root alone that joined the site's home and follows what the
-    /// site lists for them.
-    fn new(seed: u8) -> Self {
-        let host = test_server::Host::site(&SigningKey::from_bytes(&[seed ^ 0x20; 32]), "Lounge");
-        let notes = host.create("Notes");
-        let root = SigningKey::from_bytes(&[seed; 32]);
-        let laptop = Device::of(&root, "The laptop", &host);
-        let notes = laptop.join_to(&host, &notes, 0x01);
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1)
-            .enable_all()
-            .build()
-            .expect("the broker's runtime");
-        let restored = Device::of(&root, "The restored computer", &host);
-        let lounge = restored.join(&host, 0x02);
-        // The hosts of what the computer holds list the person's workspaces to it.
-        let hosting = crate::hosted_workspaces::HostedWorkspaces::service(
-            Some(&restored.engine),
-            Some(restored.network.endpoint_handle()),
-            runtime.handle().clone(),
-        )
-        .expect("a session holding workspaces reaches their hosts");
-        let woken = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        Self {
-            host,
-            notes,
-            laptop,
-            restored,
-            lounge,
-            runtime,
-            hosting,
-            woken,
-        }
-    }
-
-    /// Follow the person's list on the hosts of what the restored computer holds.
-    fn follow(&self) {
-        let woken = std::sync::Arc::clone(&self.woken);
-        let wake: tilo_service::Wake =
-            std::sync::Arc::new(move || woken.store(true, std::sync::atomic::Ordering::Relaxed));
-        self.hosting.follow_lists(&wake);
-    }
-
-    /// The workspaces the hosts listed that the restored computer holds no copy of, once they list
-    /// the person's Notes, and what every host lists then.
-    fn listed(
-        &self,
-    ) -> (
-        std::collections::BTreeMap<WorkspaceId, crate::hosted_workspaces::Listed>,
-        std::collections::BTreeSet<WorkspaceId>,
-    ) {
-        let deadline = tilo_test_env::hang_deadline();
-        let mut listed = std::collections::BTreeMap::new();
-        loop {
-            listed.append(&mut self.hosting.take_listed());
-            if listed.contains_key(&self.notes)
-                && let Some(everywhere) = self.hosting.listed_everywhere()
-            {
-                return (listed, everywhere);
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the host lists the person's workspace to the restored computer"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
-
-    /// The restored computer enters the person's Notes where its list says the host answers, and
-    /// holds it.
-    fn enter_notes(&self, personal: &mut Personal, list: &WorkspaceList) {
-        let adoption = personal.adopt_into(&fresh_session(), list, &|_| false);
-        let entering = adoption
-            .enter
-            .iter()
-            .find(|opened| opened.workspace == self.notes)
-            .expect("the restored computer enters the person's workspace");
-        assert_eq!(entering.name, "Notes");
-        let hint = Personal::host_hint(list, self.notes)
-            .expect("the list says where the workspace's host is reached");
-        assert!(
-            hint.host.is_of_device(&entering.host),
-            "it is entered at the host the list names"
-        );
-        self.restored.engine.bind(self.notes);
-        self.restored
-            .network
-            .enter(Entering {
-                workspace_id: self.notes,
-                name: entering.name.clone(),
-                host: hint,
-                held: false,
-            })
-            .expect("the peer network takes the entry");
-        let enrolled = self.restored.enrolled();
-        assert!(enrolled.member, "the entry is one of the person's own");
-        enrolled
-            .result
-            .expect("the host takes the restored computer in");
-    }
-}
-
-/// A computer restored from its person's root alone, with no invitation to their workspace and no
-/// other device of theirs about, learns the workspace from the host that keeps it for them — the
-/// list every device of theirs reads there — and enters it at that host as their further device:
-/// what they wrote on their laptop before is on the restored computer. The host is someone else's,
-/// as a hosting site is; the restored computer reaches it through the site's home workspace, which
-/// a computer set up for a site joins on its own.
-#[test]
-fn a_computer_restored_from_its_root_enters_the_workspaces_its_host_lists_for_the_person() {
-    let restore = Restore::new(0x52);
-    let earlier = uuid::Uuid::new_v4();
-    write(&restore.runtime, &restore.laptop, restore.notes, earlier);
-    assert!(
-        !restore.restored.engine.holds(restore.notes),
-        "nothing of the person's workspace is on the restored computer yet"
-    );
-
-    restore.follow();
-    let (listed, _) = restore.listed();
-    assert!(
-        restore.woken.load(std::sync::atomic::Ordering::Relaxed),
-        "the session is woken to take the list in"
-    );
-    assert!(
-        !listed.contains_key(&restore.lounge),
-        "a workspace the computer holds is not entered again"
-    );
-
-    // The session takes the list in and enters the workspace where the host said it answers.
-    let mut personal = Personal::open(restore.restored.engine.identity().clone());
-    let mut list = empty_list();
-    let taken = Personal::take_hosted(&list.state().expect("the list reads"), listed);
-    assert!(!taken.is_empty(), "the person's list gains the workspace");
-    let list = written(&mut list, taken);
-    restore.enter_notes(&mut personal, &list);
-    wait_for(&restore.restored, restore.notes, earlier);
-}
-
-/// A restored computer's shell starts, as every fresh shell does, with a workspace of its own. It
-/// waits, neither founded nor listed, until the host has listed what the person has: a person with
-/// workspaces has it taken off the shell, so restoring them again and again leaves them with exactly
-/// the workspaces they have; a person with none keeps it as their first.
-#[test]
-fn a_restored_computer_founds_no_workspace_beside_the_persons() {
-    let restore = Restore::new(0x53);
-    let session = fresh_session();
-    let [seed] = on_shell(&session)
-        .try_into()
-        .expect("a fresh shell shows one workspace");
-    let mut personal = Personal::open(restore.restored.engine.identity().clone());
-    let mut list = empty_list();
-    personal.hold_seed(seed);
-    // The site's home came onto the shell as the computer joined it, as a joined workspace does.
-    personal.joined(restore.lounge);
-    let mut tree = session.read(Clone::clone);
-    tree.workspaces
-        .push(tilo_desktop_model::Workspace::new(restore.lounge, "Lounge"));
-    session.replace_tree(tree);
-
-    // Before the host answered, nothing says what the person has: the workspace waits, unlisted.
-    let held = restore.restored.engine.workspaces();
-    let state = list.state().expect("the list reads");
-    assert!(!personal.settle_seed(
-        &session,
-        &state,
-        &held,
-        None,
-        &std::collections::BTreeSet::new()
-    ));
-    assert_eq!(personal.seed(), Some(seed), "it waits for the host's list");
-    let writes = personal.publish_local(&session, &state);
-    let listed = listed_ids(&written(&mut list, writes));
-    assert!(
-        listed.is_empty(),
-        "neither the waiting workspace nor the site's home is on the person's list: {listed:?}"
-    );
-
-    // The host lists the person's Notes: they have a workspace, so the shell's own goes.
-    restore.follow();
-    let (from_hosts, everywhere) = restore.listed();
-    let taken = Personal::take_hosted(&list.state().expect("the list reads"), from_hosts);
-    assert!(!taken.is_empty());
-    let state = written(&mut list, taken);
-    assert!(personal.settle_seed(
-        &session,
-        &state,
-        &held,
-        Some(&everywhere),
-        &std::collections::BTreeSet::new()
-    ));
-    assert_eq!(personal.seed(), None);
-    assert_eq!(
-        on_shell(&session),
-        [restore.lounge],
-        "the workspace the shell started with is taken off it, unfounded"
-    );
-    let writes = personal.publish_local(&session, &state);
-    let listed = listed_ids(&written(&mut list, writes));
-    assert_eq!(
-        listed,
-        [restore.notes.to_string()],
-        "the person's list is the workspaces they have, and no other"
-    );
-
-    // A person whose hosts list nothing of theirs has none: the shell's workspace is their first.
-    let alone = fresh_session();
-    let [first] = on_shell(&alone)
-        .try_into()
-        .expect("a fresh shell shows one workspace");
-    let key = test_server::fresh_signing_key("a new person's computer");
-    let cert = test_server::certified(
-        &SigningKey::from_bytes(&[0x54; 32]),
-        &key,
-        "A new person's computer",
-        DeviceCapabilities::member(),
-    );
-    let mut new = Personal::open(tilo_network_actor::DeviceIdentity::kept(cert, key));
-    let mut theirs = empty_list();
-    new.hold_seed(first);
-    assert!(new.settle_seed(
-        &alone,
-        &theirs.state().expect("the list reads"),
-        &[],
-        Some(&std::collections::BTreeSet::new()),
-        &std::collections::BTreeSet::new(),
-    ));
-    assert_eq!(new.seed(), None);
-    assert_eq!(on_shell(&alone), [first], "it stays on the shell");
-    assert!(new.made_here(first), "and is founded here, as theirs");
-    let writes = new.publish_local(&alone, &theirs.state().expect("the list reads"));
-    let listed = listed_ids(&written(&mut theirs, writes));
-    assert_eq!(listed, [first.to_string()], "and listed as theirs");
-}
-
 /// The shell's first workspace goes when the person has a workspace of their own, and one their
 /// governance names them the owner of is theirs however it came to this device: a computer restored
 /// from their words that joined their own site's workspace does not found a first workspace beside
@@ -595,106 +342,140 @@ fn a_joined_workspace_the_person_owns_is_theirs_before_any_host_answers() {
     );
 }
 
-/// A workspace the restored computer takes from its host's list is not claimed as the person's
-/// own: the person was invited into it, and the part they take in it is what its governance says
-/// once the workspace is here.
+/// What the device's daemon publishes of the person's workspaces on a host is what the session takes
+/// them from: one its list names with the host's signed address is listed and entered there, as a
+/// device restored from the person's root learns of their workspaces; and once the workspace names
+/// this device among its devices no more (the person left it, or was taken out of it), it is handed
+/// to the session to let go of, and nothing else of the person's goes with it.
 #[test]
-fn an_invited_workspace_a_restored_computer_takes_from_its_host_is_listed_as_invited() {
-    let restore = Restore::new(0x55);
-    restore.follow();
-    let (listed, _) = restore.listed();
-    let mut personal = Personal::open(restore.restored.engine.identity().clone());
-    let mut list = empty_list();
-    let taken = Personal::take_hosted(&list.state().expect("the list reads"), listed);
-    let list = written(&mut list, taken);
-    assert!(
-        !personal.made_here(restore.notes),
-        "a workspace entered from the host's list is not one this device founds, nor claims"
-    );
-    restore.enter_notes(&mut personal, &list);
+fn a_workspace_the_daemon_holds_elsewhere_is_listed_and_let_go_once_this_device_is_out_of_it() {
+    use tilo_peer_state::workspace_view::{LIST, Listed, WorkspaceReading, resource};
 
-    // The shell shows the workspace with the people its governance names, as every pass projects
-    // them.
-    let session = fresh_session();
-    let deadline = tilo_test_env::hang_deadline();
-    let policy = loop {
-        if let Ok(policy) = restore.restored.engine.policy(&restore.notes.to_string())
-            && policy.owner.is_some()
-        {
-            break policy;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the workspace's governance reaches the restored computer"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    };
-    let mut tree = session.read(Clone::clone);
-    let mut notes = tilo_desktop_model::Workspace::new(restore.notes, "Notes");
-    tilo_session_client::membership::project(&mut notes, &policy);
-    tree.workspaces.push(notes);
-    session.replace_tree(tree);
-    let person = hex::encode(restore.restored.person());
-    let role = session.read(|tree| {
-        tree.workspaces
-            .iter()
-            .find(|workspace| workspace.id() == restore.notes)
-            .and_then(|workspace| workspace.role_of(&person))
-            .map(|role| role.key().to_owned())
-    });
+    let notes = WorkspaceId::new();
+    // The host: a server of the site's, which runs the workspace's work.
+    let server = SigningKey::from_bytes(&[0x76; 32]);
+    let server_cert = test_server::certified(
+        &SigningKey::from_bytes(&[0x77; 32]),
+        &server,
+        "The site",
+        DeviceCapabilities::member(),
+    );
+    let signed = tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1 {
+        version: 1,
+        holds_keys: true,
+        runs_work: true,
+        label: String::new(),
+        cloud: false,
+        moderates: false,
+        origin: None,
+        workspace_id: tilo_peer_state::join::WorkspaceId::parse(&notes.to_string())
+            .expect("a workspace id"),
+        endpoint_addr: iroh::EndpointAddr::new(
+            iroh::EndpointId::from_bytes(&server_cert.device_public_key).expect("a key"),
+        ),
+        user_public_key: server_cert.user_public_key,
+        device_certificate: server_cert.clone(),
+        packet_relay_url: "iroh:direct".into(),
+    }
+    .transport_hint(&server)
+    .expect("the host signs where it answers");
+    let root = SigningKey::from_bytes(&[0x56; 32]);
+    let key = test_server::fresh_signing_key("The restored computer");
+    let cert = test_server::certified(
+        &root,
+        &key,
+        "The restored computer",
+        DeviceCapabilities::member(),
+    );
+    let device = cert.device_public_key;
+    let person = cert.user_public_key;
+    let mut personal = Personal::open(tilo_network_actor::DeviceIdentity::kept(cert, key));
+    let view = crate::workspace_view::WorkspaceView::new(
+        person,
+        device,
+        std::sync::Arc::new(Unasked) as std::sync::Arc<dyn crate::workspace_view::ShellAsks>,
+    );
+    let written_host =
+        hex::encode(postcard::to_allocvec(&signed).expect("the host's address encodes"));
+    let daemon_list = serde_json::to_string(&[Listed {
+        id: notes.to_string(),
+        name: "Notes".to_owned(),
+        labels: Vec::new(),
+        own: false,
+        kept_here: false,
+        host: Some(written_host),
+    }])
+    .expect("the list encodes");
+    view.apply(LIST, Some(&daemon_list))
+        .expect("the list reads");
+
+    let on_hosts = crate::workspaces::on_hosts(&view, &device, &std::collections::BTreeSet::new());
     assert_eq!(
-        role.as_deref(),
-        Some("editor"),
-        "the person takes the part they were invited at, not their own"
+        on_hosts.get(&notes).map(|entry| entry.name.as_str()),
+        Some("Notes"),
+        "the daemon's workspace on a host is taken"
     );
     assert!(
-        list.get(restore.notes).is_some(),
-        "the person's list names the workspace"
+        crate::workspaces::on_hosts(&view, &device, &std::collections::BTreeSet::from([notes]))
+            .is_empty(),
+        "a workspace this session holds is not entered again"
     );
+    let mut list = empty_list();
+    let taken = Personal::take_hosted(&list.state().expect("the list reads"), on_hosts);
+    let list = written(&mut list, taken);
+    assert_eq!(
+        listed_ids(&list),
+        [notes.to_string()],
+        "the person's list gains the workspace"
+    );
+    assert!(
+        !personal.made_here(notes),
+        "a workspace taken from the daemon's list is not one this device founds, nor claims"
+    );
+    let hint = Personal::host_hint(&list, notes)
+        .expect("the list says where the workspace's host is reached");
+    assert!(
+        hint.host.is_of_device(&server_cert.device_public_key),
+        "it is entered at the host the daemon named"
+    );
+
+    // A workspace that names this device among its devices keeps it; one that names it no more
+    // lets it go.
+    let devices = |devices: Vec<[u8; 32]>| {
+        serde_json::to_string(&WorkspaceReading {
+            id: notes.to_string(),
+            roster_devices: devices,
+            ..WorkspaceReading::default()
+        })
+        .expect("a reading encodes")
+    };
+    let named = resource(&notes.to_string());
+    view.apply(&named, Some(&devices(vec![device, [9; 32]])))
+        .expect("the reading reads");
+    assert!(personal.taken_out(&view).is_empty());
+    view.apply(&named, Some(&devices(vec![[9; 32]])))
+        .expect("the reading reads");
+    assert_eq!(personal.taken_out(&view), [notes]);
+    assert!(personal.taken_out(&view).is_empty(), "it is let go of once");
 }
 
-/// A workspace the host takes the person out of goes from the host's list, and the restored
-/// computer, which follows that list both ways, is handed it to let go of: nothing else of the
-/// person's goes with it.
-#[test]
-fn a_workspace_its_host_drops_from_the_persons_list_leaves_the_device() {
-    let restore = Restore::new(0x56);
-    restore.follow();
-    let (listed, _) = restore.listed();
-    let mut personal = Personal::open(restore.restored.engine.identity().clone());
-    let mut list = empty_list();
-    let taken = Personal::take_hosted(&list.state().expect("the list reads"), listed);
-    let list = written(&mut list, taken);
-    restore.enter_notes(&mut personal, &list);
-    assert!(restore.restored.engine.holds(restore.notes));
-    // A list that still names it lets nothing go.
-    let deadline = tilo_test_env::hang_deadline();
-    while !restore
-        .hosting
-        .listed_everywhere()
-        .is_some_and(|named| named.contains(&restore.notes))
-    {
-        assert!(std::time::Instant::now() < deadline, "the host lists Notes");
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(restore.hosting.take_dropped().is_empty());
+/// The daemon's asks, which these tests never make.
+struct Unasked;
 
-    restore
-        .host
-        .remove(&restore.notes.to_string(), restore.restored.person(), 0x03);
-    let deadline = tilo_test_env::hang_deadline();
-    let mut dropped = std::collections::BTreeSet::new();
-    while !dropped.contains(&restore.notes) {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the restored computer is handed the workspace its host no longer lists"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-        dropped.append(&mut restore.hosting.take_dropped());
+impl crate::workspace_view::ShellAsks for Unasked {
+    fn account(
+        &self,
+        _: &str,
+        _: &str,
+        _: serde_json::Map<String, serde_json::Value>,
+    ) -> tilo_session_client::engine::ServiceAnswer {
+        Box::pin(std::future::ready(Err("nothing is asked here".to_owned())))
     }
-    assert_eq!(
-        dropped,
-        std::collections::BTreeSet::from([restore.notes]),
-        "only the workspace the person was taken out of goes; the site's home stays"
-    );
+
+    fn invoke(
+        &self,
+        _: tilo_actions::remote::InvokeRequest,
+    ) -> tilo_session_client::engine::ServiceAnswer {
+        Box::pin(std::future::ready(Err("nothing is asked here".to_owned())))
+    }
 }

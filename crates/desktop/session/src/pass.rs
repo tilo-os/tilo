@@ -668,13 +668,8 @@ impl Session {
         // layouts through the same records.
         self.shared.follow_layouts();
         self.follow_automation();
-        // The person's list is kept on the hosts of their workspaces, and read from them, through
-        // the sessions the broker reaches them on.
-        let hosted = self
-            .app_wire
-            .as_ref()
-            .and_then(|wire| wire.hosting.as_ref());
-        self.shared.follow_records(hosted);
+        // The person's list takes in the workspaces of theirs the device's daemon holds on hosts.
+        self.shared.follow_records();
         // The person's settings follow them between their devices in the workspace whose only
         // member is them: what they set here is written there first, and what they set there
         // reaches the document this session reads.

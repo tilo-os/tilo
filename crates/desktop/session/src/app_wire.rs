@@ -531,10 +531,7 @@ pub fn serve(
     launches: std::sync::Arc<Launches>,
     fabric: Option<crate::platform::fabric::SharedLink>,
     hosted: Hosted,
-) -> std::io::Result<(
-    BrokerHandle,
-    Option<crate::hosted_workspaces::HostedWorkspaces>,
-)> {
+) -> std::io::Result<(BrokerHandle, Option<crate::workspace_terminals::Terminals>)> {
     let _ = link.launches.set(std::sync::Arc::clone(&launches));
     let membership: WorkspaceAuthorityHandle = std::sync::Arc::clone(&hosted.layout) as _;
     let channels = std::sync::Arc::clone(&hosted.sealed.broker);
@@ -581,7 +578,7 @@ pub fn serve(
             PeerPublisher::disabled()
         }
     };
-    let (services, hosting) = host_services_with_hosts(
+    let (services, terminals) = host_services_with_hosts(
         link,
         launches,
         fabric,
@@ -598,13 +595,7 @@ pub fn serve(
         channels,
         fanout,
     )?;
-    // What another device addresses to this device through a workspace's host — a
-    // listing of a window's resources, a page action on it — is served by the broker
-    // that now serves, and the answer goes back on the session it arrived on.
-    if let (Some(hosting), Some(host)) = (&hosting, broker.app_action_broker()) {
-        hosting.serve_inbound(host.device_host());
-    }
-    Ok((broker, hosting))
+    Ok((broker, terminals))
 }
 
 /// The session the broker's thread decides against: the workspaces it shows and
@@ -1056,9 +1047,8 @@ fn host_services(
     host_services_with_hosts(link, launches, fabric, hosted, certificates, memberships).0
 }
 
-/// [`host_services`], handing out the hosts of the workspaces placed away from this
-/// device as well: what serves what another device addresses here through one of them,
-/// once the broker can answer it.
+/// [`host_services`], handing out what a Terminal window's shell in a workspace placed on a
+/// host is opened through as well.
 fn host_services_with_hosts(
     link: std::sync::Arc<Link>,
     launches: std::sync::Arc<Launches>,
@@ -1068,18 +1058,51 @@ fn host_services_with_hosts(
     memberships: Option<std::sync::Arc<dyn WorkspaceMemberships>>,
 ) -> (
     ProcessServices,
-    Option<crate::hosted_workspaces::HostedWorkspaces>,
+    Option<crate::workspace_terminals::Terminals>,
 ) {
     // The hosts of the workspaces placed away from this device: where the person's actions on
-    // those workspaces go, where their workspace list is kept, and where the devices of that
-    // record are read back from.
-    let hosting = hosted.engine.as_ref().and_then(|engine| {
-        crate::hosted_workspaces::HostedWorkspaces::service(
-            Some(engine),
-            hosted.endpoint.clone(),
-            tilo_rt::app().handle().clone(),
-        )
-    });
+    // those workspaces go. The device's daemon publishes each workspace's host on the person's
+    // list and carries the actions there on its one dispatch; a session the host placed in a
+    // workspace's VM runs no daemon, and reaches its host itself.
+    let runtime = tilo_rt::app().handle().clone();
+    let on_daemon = hosted
+        .view
+        .clone()
+        .zip(hosted.daemon.clone().ok())
+        .map(|(view, link)| {
+            let _inside = runtime.enter();
+            (view, link.dispatch())
+        });
+    let hosting: Option<
+        std::sync::Arc<dyn tilo_workspace_service::apps::services::HostedWorkspaces>,
+    > = match &on_daemon {
+        Some((view, dispatch)) => Some(std::sync::Arc::new(crate::broker_services::DaemonHosts {
+            view: std::sync::Arc::clone(view),
+            dispatch: dispatch.clone(),
+        })),
+        None => hosted.engine.as_ref().and_then(|engine| {
+            crate::hosted_workspaces::HostedWorkspaces::service(
+                Some(engine),
+                hosted.endpoint.clone(),
+                runtime.clone(),
+            )
+            .map(|hosting| {
+                std::sync::Arc::new(hosting)
+                    as std::sync::Arc<dyn tilo_workspace_service::apps::services::HostedWorkspaces>
+            })
+        }),
+    };
+    let terminals = on_daemon
+        .zip(hosted.engine.as_ref())
+        .map(
+            |((view, dispatch), engine)| crate::workspace_terminals::Terminals {
+                view,
+                dispatch,
+                endpoint: hosted.endpoint.clone(),
+                device: engine.identity().device_cert.device_public_key,
+                runtime,
+            },
+        );
     let decided = broker_services(
         link,
         launches,
@@ -1087,7 +1110,7 @@ fn host_services_with_hosts(
         hosted,
         certificates,
         memberships,
-        hosting.clone(),
+        hosting,
     );
     // What this session serves nothing of, and why: a session start leaves
     // every decision in its log, so a service an app found missing can be found
@@ -1097,7 +1120,7 @@ fn host_services_with_hosts(
             tracing::debug!(service, why, "this session serves nothing of this service");
         }
     }
-    (decided.into_host_services(), hosting)
+    (decided.into_host_services(), terminals)
 }
 
 /// This session's decision for every service of the broker's [`ProcessServices`]:
@@ -1114,7 +1137,7 @@ fn broker_services(
     hosted: Hosted,
     certificates: Option<std::sync::Arc<tilo_identity_authority::NativeCertificates>>,
     memberships: Option<std::sync::Arc<dyn WorkspaceMemberships>>,
-    hosting: Option<crate::hosted_workspaces::HostedWorkspaces>,
+    hosting: Option<std::sync::Arc<dyn tilo_workspace_service::apps::services::HostedWorkspaces>>,
 ) -> BrokerServices {
     let Hosted {
         live_activities,
@@ -1217,8 +1240,6 @@ fn broker_services(
     crate::model_steps::ModelSteps::session(engine.clone()).register(&providers);
     std::sync::Arc::new(crate::identity_admin::BrokerApi {
         layout: layout_authority,
-        hosting: hosting.clone(),
-        engine: engine.clone(),
     })
     .register(&providers);
     crate::server_account::ServerAccountApi::session().register(&providers);
@@ -1444,14 +1465,8 @@ fn broker_services(
         )),
         // A workspace placed on a host has its records changed there: the
         // person's actions on them are sent to the host, which decides and
-        // runs them, and the change reaches the windows here by sync. The
-        // person's list is kept there too, and the devices of it read back
-        // from the host that keeps it, so Settings lists the same devices on
-        // every device of theirs.
-        hosted_workspaces: BrokerService::when(hosting.map(|hosting| {
-            std::sync::Arc::new(hosting)
-                as std::sync::Arc<dyn tilo_workspace_service::apps::services::HostedWorkspaces>
-        })),
+        // runs them, and the change reaches the windows here by sync.
+        hosted_workspaces: BrokerService::when(hosting),
         // Apps write and read their resources in the device's one store, which the daemon keeps:
         // the router sends an app's commands there, and an agent this session admits reads them
         // over the shell's link.
@@ -1576,9 +1591,8 @@ pub(crate) struct AppWire {
     pub(crate) file_clipboard: std::sync::Arc<crate::file_clipboard::NativeFileClipboard>,
     /// The workspaces' trees served to the files daemon that mounts them, until the session ends.
     pub(crate) _files_tree: Option<tilo_workspace_service::files::socket::Serving>,
-    /// The hosts of the workspaces this device takes part in but does not host: where the
-    /// person's actions on them go, and where their workspace list is kept and read.
-    pub(crate) hosting: Option<crate::hosted_workspaces::HostedWorkspaces>,
+    /// What a Terminal window's shell in a workspace placed on a host is opened through.
+    pub(crate) terminals: Option<crate::workspace_terminals::Terminals>,
     /// What Browser's asks for vault items are answered with, shared with the service that
     /// answers them.
     pub(crate) item_lending: std::sync::Arc<crate::item_lending::ItemLending>,

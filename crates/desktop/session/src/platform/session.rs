@@ -1369,7 +1369,7 @@ impl Session {
             server.open_terminals_on(
                 app_wire
                     .as_ref()
-                    .and_then(|app_wire| app_wire.hosting.clone()),
+                    .and_then(|app_wire| app_wire.terminals.clone()),
             );
             server
         });

@@ -16,6 +16,10 @@
 //! app the call names ([`Providers::publishing`]): an app's code calls by address and never knows
 //! whether an app or a provider answers, and the providers' packages are what that code compiles
 //! against ([`Providers::packages`]).
+//!
+//! A record of a workspace placed on a host (a home server, a cloud host) is the host's to change:
+//! a call on this device of a typed action of one of its records is sent to the host's actions
+//! ([`Providers::place_on_hosts`]), and its observations and its cancellation follow it there.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -94,9 +98,24 @@ pub struct Providers(Arc<Inner>);
 #[derive(Default)]
 struct Inner {
     provided: std::sync::RwLock<BTreeMap<Arc<str>, Registered>>,
-    /// Which registered provider took each invocation another device asked for, so its
-    /// observations and its cancellation reach that provider.
-    taken: std::sync::Mutex<HashMap<InvocationId, Arc<str>>>,
+    /// Which provider took each invocation another device asked for, or that was sent to a
+    /// workspace's host, so its observations and its cancellation reach that provider.
+    taken: std::sync::Mutex<HashMap<InvocationId, Taker>>,
+    /// The hosts of the workspaces placed on another device, once the embedder says where they
+    /// are reached.
+    hosts: std::sync::RwLock<Option<HostsOf>>,
+}
+
+/// The actions of the host a workspace is placed on, by workspace: `None` for one this device
+/// hosts itself or holds alone.
+pub type HostsOf = Arc<dyn Fn(&str) -> Option<Arc<dyn ActionProvider + Send + Sync>> + Send + Sync>;
+
+/// What took an invocation: a provider registered here, by name (one withdrawn since is asked no
+/// more), or the host of the workspace it was asked in.
+#[derive(Clone)]
+enum Taker {
+    Registered(Arc<str>),
+    Host(Arc<dyn ActionProvider + Send + Sync>),
 }
 
 impl Providers {
@@ -209,10 +228,40 @@ impl Providers {
             .cloned()
     }
 
+    /// Send the typed actions of the records of each workspace `hosts` places on another device
+    /// to that host from now on ([`Self::invoke`]).
+    pub fn place_on_hosts(&self, hosts: HostsOf) {
+        *self.0.hosts.write_recover() = Some(hosts);
+    }
+
+    /// The actions of the host the workspace `caller` asks in is placed on, for `request` when it
+    /// names a typed action of one of that workspace's records.
+    fn host_of(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Option<Arc<dyn ActionProvider + Send + Sync>> {
+        if !tilo_actions::remote::is_resource_provider(&request.target.provider) {
+            return None;
+        }
+        let hosts = self.0.hosts.read_recover().clone()?;
+        hosts(caller.workspace()?)
+    }
+
+    /// Remember that `taker` took invocation `id`.
+    fn take(&self, id: InvocationId, taker: Taker) {
+        let mut taken = self.0.taken.lock_recover();
+        if taken.len() >= TAKEN_KEPT {
+            taken.clear();
+        }
+        taken.insert(id, taker);
+    }
+
     /// Hand `request`, a call made on this device as `caller`, to the provider it names: the one
-    /// registered under that name, the one applying the typed actions of the resource it names
-    /// (registered under [`tilo_actions::remote::RESOURCE_PROVIDER`]), or the one registered for
-    /// its app. `None` when none is.
+    /// registered under that name, or the one applying the typed actions of the resource it names
+    /// (registered under [`tilo_actions::remote::RESOURCE_PROVIDER`]); else, for a record of a
+    /// workspace placed on a host ([`Self::place_on_hosts`]), that host, which runs its records'
+    /// actions; else the one registered for its app. `None` when none is.
     #[must_use]
     pub fn invoke(
         &self,
@@ -221,16 +270,21 @@ impl Providers {
     ) -> Option<Pending<Result<InvocationReceipt, ActionCallError>>> {
         let provider = request.target.provider.as_str();
         let named = self.0.provided.read_recover().get(provider).cloned();
-        let registered = named
-            .or_else(|| {
-                self.0
-                    .provided
-                    .read_recover()
-                    .get(tilo_actions::remote::RESOURCE_PROVIDER)
-                    .filter(|resources| resources.answers.serves(provider))
-                    .cloned()
-            })
-            .or_else(|| self.get(provider))?;
+        let registered = named.or_else(|| {
+            self.0
+                .provided
+                .read_recover()
+                .get(tilo_actions::remote::RESOURCE_PROVIDER)
+                .filter(|resources| resources.answers.serves(provider))
+                .cloned()
+        });
+        if registered.is_none()
+            && let Some(host) = self.host_of(caller, &request)
+        {
+            self.take(request.invocation, Taker::Host(Arc::clone(&host)));
+            return Some(host.invoke(caller, request));
+        }
+        let registered = registered.or_else(|| self.get(provider))?;
         Some(registered.answers.invoke(caller, request))
     }
 
@@ -253,8 +307,11 @@ impl Providers {
     }
 
     fn taker(&self, id: &InvocationId) -> Option<Arc<dyn ActionProvider + Send + Sync>> {
-        let name = self.0.taken.lock_recover().get(id)?.clone();
-        self.get(&name).map(|registered| registered.answers)
+        let taker = self.0.taken.lock_recover().get(id)?.clone();
+        match taker {
+            Taker::Registered(name) => self.get(&name).map(|registered| registered.answers),
+            Taker::Host(host) => Some(host),
+        }
     }
 
     /// What the provider `query` names offers another device's `caller`; `None` when no provider
@@ -306,35 +363,32 @@ impl Providers {
                 completer.complete(Err(refused));
                 return;
             }
-            {
-                let mut taken = providers.0.taken.lock_recover();
-                if taken.len() >= TAKEN_KEPT {
-                    taken.clear();
-                }
-                taken.insert(request.invocation, Arc::clone(&registered.provider));
-            }
+            providers.take(
+                request.invocation,
+                Taker::Registered(Arc::clone(&registered.provider)),
+            );
             let receipt = registered.answers.invoke(&caller, request).await;
             completer.complete(receipt.unwrap_or(Err(ActionCallError::Unanswered)));
         });
         Some(answer)
     }
 
-    /// Where invocation `id`, taken from another device by a registered provider, stands for
-    /// `caller`; `None` when no registered provider took it.
+    /// Where invocation `id`, taken from another device by a registered provider or sent to a
+    /// workspace's host, stands for `caller`; `None` when neither took it.
     #[must_use]
     pub fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<Option<InvocationState>> {
         Some(self.taker(id)?.observe(caller, id))
     }
 
-    /// When invocation `id`, taken from another device by a registered provider, may have changed;
-    /// `None` when no registered provider took it.
+    /// When invocation `id`, taken from another device by a registered provider or sent to a
+    /// workspace's host, may have changed; `None` when neither took it.
     #[must_use]
     pub fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Option<Pending<()>>> {
         Some(self.taker(id)?.next_change(caller, id))
     }
 
-    /// Ask the registered provider that took invocation `id` from another device to stop it;
-    /// `None` when none did.
+    /// Ask the registered provider that took invocation `id` from another device, or the host it
+    /// was sent to, to stop it; `None` when neither took it.
     #[must_use]
     pub fn cancel(
         &self,
