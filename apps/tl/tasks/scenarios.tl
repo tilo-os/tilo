@@ -1,102 +1,81 @@
 scenario "a busy week" -> Task {
-    tasks.numbers += 21
     let mia = person("Mia")
-    let flat = tasks.projects.insert(
-        Project(
-            name: "Move flat",
-            notes: RichText("Keys on the 15th. The van is booked for the morning."),
-        ),
-    )
-    let launch = tasks.projects.insert(Project(name: "Website launch"))
-    tasks.items.insert(Task(number: 1, title: "Take the bins out", status: .done, done: true))
-    let milk = tasks.items.insert(Task(number: 2, title: "Buy oat milk and eggs", due: 2026-06-30))
-    tasks.items.insert(
-        Task(
-            number: 3,
+    let flat = invoke(new_project(tasks))
+    invoke(rename(flat, "Move flat"))
+    let launch = invoke(new_project(tasks))
+    invoke(rename(launch, "Website launch"))
+    invoke(new_task(tasks, title: "Take the bins out", status: .some(.done)))
+    let milk = invoke(new_task(tasks, title: "Buy oat milk and eggs", due: 2026-06-30))
+    let fridge = invoke(
+        new_task(
+            tasks,
             title: "Check what is in the fridge",
-            parent: milk,
             due: 2026-06-30,
-            status: .done,
-            done: true,
+            status: .some(.done),
         ),
     )
+    invoke(move_to(fridge, milk, .none))
     // What no one has sorted yet: no project, no day.
-    tasks.items.insert(Task(number: 4, title: "Sort the paper mail"))
-    let call = tasks.items.insert(
-        Task(
-            number: 5,
+    invoke(new_task(tasks, title: "Sort the paper mail"))
+    let call = invoke(
+        new_task(
+            tasks,
             title: "Call the landlord about the boiler",
-            notes: RichText("Ask whether Tuesday morning works for the engineer."),
             due: 2026-06-30,
             at: 2026-06-30T09:00,
-            priority: .high,
         ),
     )
-    let service = tasks.items.insert(
-        Task(number: 6, title: "Find the last service date", parent: call, due: 2026-06-30),
+    invoke(set_priority_high(call))
+    let service = invoke(new_task(tasks, title: "Find the last service date", due: 2026-06-30))
+    invoke(move_to(service, call, .none))
+    let email = invoke(new_task(tasks, title: "Look through the email folder", due: 2026-06-30))
+    invoke(move_to(email, service, .none))
+    let tuesday = invoke(
+        new_task(tasks, title: "Ask whether Tuesday morning works", due: 2026-06-30),
     )
-    tasks.items.insert(
-        Task(number: 7, title: "Look through the email folder", parent: service, due: 2026-06-30),
-    )
-    tasks.items.insert(
-        Task(number: 8, title: "Ask whether Tuesday morning works", parent: call, due: 2026-06-30),
-    )
-    tasks.items.insert(Task(number: 9, title: "Book a haircut", due: 2026-06-29))
-    tasks.items.insert(Task(number: 10, title: "Reply to Mia about Sunday lunch", due: 2026-07-01))
-    tasks.items.insert(
-        Task(number: 11, title: "Order boxes and tape", project: flat, due: 2026-07-02),
-    )
-    tasks.items.insert(
-        Task(
-            number: 12,
+    invoke(move_to(tuesday, call, .none))
+    invoke(new_task(tasks, title: "Book a haircut", due: 2026-06-29))
+    invoke(new_task(tasks, title: "Reply to Mia about Sunday lunch", due: 2026-07-01))
+    invoke(new_task(tasks, p: flat, title: "Order boxes and tape", due: 2026-07-02))
+    let notice = invoke(
+        new_task(
+            tasks,
+            p: flat,
             title: "Give notice to the electricity company",
-            project: flat,
             due: 2026-07-04,
-            priority: .medium,
         ),
     )
-    tasks.items.insert(Task(number: 13, title: "Measure the new bedroom", project: flat))
-    tasks.items.insert(
-        Task(number: 14, title: "Pack the books", project: flat, status: .done, done: true),
-    )
-    let copy = tasks.items.insert(
-        Task(
-            number: 15,
+    invoke(set_priority_medium(notice))
+    invoke(new_task(tasks, p: flat, title: "Measure the new bedroom"))
+    invoke(new_task(tasks, p: flat, title: "Pack the books", status: .some(.done)))
+    let copy = invoke(
+        new_task(
+            tasks,
+            p: launch,
             title: "Write the launch post",
-            project: launch,
             due: 2026-07-06,
-            priority: .urgent,
-            notes: RichText("Lead with the offline editor, then sharing."),
             assignee: mia,
         ),
     )
-    // Checked off before the subtask under it was added: clearing it keeps the subtask.
-    let outline = tasks.items.insert(
-        Task(
-            number: 16,
-            title: "Outline",
-            status: .done,
-            done: true,
-            parent: copy,
-            project: launch,
-        ),
-    )
-    tasks.items.insert(
-        Task(number: 17, title: "Collect the beta quotes", parent: outline, project: launch),
-    )
-    tasks.items.insert(Task(number: 18, title: "First draft", parent: copy, project: launch))
-    tasks.items.insert(Task(number: 19, title: "Screenshots", parent: copy, project: launch))
-    tasks.items.insert(
-        Task(
-            number: 20,
+    invoke(set_priority_urgent(copy))
+    let outline = invoke(new_task(tasks, p: launch, title: "Outline"))
+    let quotes = invoke(new_task(tasks, p: launch, title: "Collect the beta quotes"))
+    invoke(move_to(quotes, outline, .none))
+    // Checked off with the step under it still open: clearing it keeps the step.
+    invoke(set_status_many([outline], .done))
+    let draft = invoke(new_task(tasks, p: launch, title: "First draft"))
+    invoke(move_to(draft, copy, .none))
+    let shots = invoke(new_task(tasks, p: launch, title: "Screenshots"))
+    invoke(move_to(shots, copy, .none))
+    invoke(
+        new_task(
+            tasks,
+            p: launch,
             title: "Check the pricing page on phones",
-            project: launch,
             due: 2026-07-08,
         ),
     )
-    tasks.items.insert(
-        Task(number: 21, title: "Set up the redirects", project: launch, status: .done, done: true),
-    )
+    invoke(new_task(tasks, p: launch, title: "Set up the redirects", status: .some(.done)))
     call
 }
 
