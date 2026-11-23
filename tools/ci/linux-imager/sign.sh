@@ -10,7 +10,7 @@
 set -euo pipefail
 
 arch="${1:?x86_64 or aarch64}"
-packages="${2:?the package/linux-<arch> output}"
+packages="${2:?the release/linux-<arch> output}"
 out="${3:?output directory}"
 repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
 : "${TILO_LINUX_SIGNING_KEY_ASC:?the release key is not configured for this check}"
