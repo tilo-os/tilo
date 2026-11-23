@@ -174,46 +174,12 @@ pub fn argument_hash(argument: &InvokeArgument) -> [u8; 32] {
         }
         InvokeArgument::Json(object) => {
             hasher.update(&[2]);
-            let mut canonical = String::new();
-            canonical_object(&mut canonical, object);
-            hasher.update(canonical.as_bytes());
+            tilo_canonical_json::write_object_bytes(object, |chunk| {
+                hasher.update(chunk);
+            });
         }
     }
     *hasher.finalize().as_bytes()
-}
-
-fn canonical_value(out: &mut String, value: &serde_json::Value) {
-    match value {
-        serde_json::Value::Object(object) => canonical_object(out, object),
-        serde_json::Value::Array(values) => {
-            out.push('[');
-            for (index, value) in values.iter().enumerate() {
-                if index > 0 {
-                    out.push(',');
-                }
-                canonical_value(out, value);
-            }
-            out.push(']');
-        }
-        // Scalars as serde_json writes them: a number reads back as the same
-        // number, so its text is stable across a transport.
-        scalar => out.push_str(&scalar.to_string()),
-    }
-}
-
-fn canonical_object(out: &mut String, object: &serde_json::Map<String, serde_json::Value>) {
-    let mut keys: Vec<&String> = object.keys().collect();
-    keys.sort_unstable();
-    out.push('{');
-    for (index, key) in keys.into_iter().enumerate() {
-        if index > 0 {
-            out.push(',');
-        }
-        out.push_str(&serde_json::Value::String(key.clone()).to_string());
-        out.push(':');
-        canonical_value(out, &object[key]);
-    }
-    out.push('}');
 }
 
 /// An invocation's [`InvocationStatement`], the signer's signature over it,
