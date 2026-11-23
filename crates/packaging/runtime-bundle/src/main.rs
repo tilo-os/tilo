@@ -76,11 +76,14 @@ enum Cmd {
         /// Native service executable included in the signed runtime payload.
         #[arg(long = "include-bin", value_name = "PATH")]
         include_bin: Vec<PathBuf>,
-        /// Build a bundle of the `--include-bin` binaries alone, without the host loader, libc
-        /// and `ld.so.cache`: a runtime apps name as their entrypoint runtime (the tilolang
-        /// runtime). The launcher mounts it beside the app's own runtime, whose loader and
-        /// libraries its binaries run on, so a loader set of its own would never be read.
-        #[arg(long, requires = "include_bin", conflicts_with_all = ["release", "from", "include"])]
+        /// Build a bundle of the `--include-bin` binaries, and any `--include`, without the host
+        /// loader, libc and `ld.so.cache`: a runtime apps name as their entrypoint runtime (the
+        /// tilolang runtime). The launcher mounts it beside the app's own runtime, whose loader
+        /// and libraries its binaries run on, so a loader set of its own would never be read; a
+        /// Mac runtime brings the libraries its binaries load relative to themselves as a
+        /// directory `--include`, and names each architecture of its universal binaries in
+        /// `--arch` (`aarch64+x86_64`).
+        #[arg(long, requires = "include_bin", conflicts_with_all = ["release", "from"])]
         binaries_only: bool,
     },
     /// Verify an existing bundle by recomputing hashes (and, when
@@ -164,6 +167,7 @@ fn main() -> ExitCode {
                     arch.as_deref(),
                     identity.as_deref(),
                     &include_bin,
+                    &include,
                 );
                 return cmd_build(
                     built.map(|manifest| (manifest, out)),

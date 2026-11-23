@@ -212,6 +212,22 @@ mkdir -p "$(python3 -c 'import sys; a=sys.argv[1:]; print(a[a.index("--out") + 1
             self.assertTrue(out.is_dir(), 'the bundle is written where the launcher looks')
             # The binary the bundle executes is executable, as the launcher runs it.
             self.assertTrue(os.access(root / 'tilolang-app', os.X_OK))
+            self.assertNotIn('--arch', invocation)
+            self.assertNotIn('--include ', invocation)
+
+            # A Mac's runtime: universal binaries, and the libraries they load beside them.
+            libraries = root / 'gstreamer'
+            libraries.mkdir()
+            child = subprocess.run(
+                ['bash', '-c', 'set -euo pipefail; . "$1"; shift; tilolang_bake_runtime "$@"',
+                 'bash', str(HELPER), str(bundle), str(root / 'tilolang-app'),
+                 str(root / 'tilolang-process'), str(root / 'identity.json'), str(out),
+                 '0.1.0+tilolang', 'aarch64+x86_64', str(libraries)],
+                capture_output=True, text=True)
+            self.assertEqual(child.returncode, 0, child.stderr)
+            invocation = log.read_text()
+            self.assertIn('--arch aarch64+x86_64', invocation)
+            self.assertIn(f'--include {libraries}', invocation)
 
     def test_the_runtime_version_is_the_one_the_manifest_provides(self):
         # The version every package names in `optional-runtimes` is the one the

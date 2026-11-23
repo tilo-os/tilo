@@ -30,6 +30,26 @@ pub const WORKSPACE_MOUNT: &str = "/var/workspace";
 /// to: what an app showing who a file is shared with names them from.
 pub const TRUSTED_IDENTITIES: &str = "/run/tilo/identity-projection/trusted-identities.json";
 
+/// The runtime publishers this device accepts, one hex Ed25519 key per line, `#` comments: the
+/// list the system ships beside the code that reads it. A Linux image ships it in `/etc/tilo`; on
+/// a Mac it is in the resources of the Tilo.app whose executable is running, sealed by the app's
+/// signature as that executable is. An executable outside an app bundle reads the image's path,
+/// which a Mac does not have, so it trusts no runtime.
+#[must_use]
+pub fn runtime_publishers() -> PathBuf {
+    const FILE: &str = "runtime-bundle-trusted-publishers.txt";
+    #[cfg(target_os = "macos")]
+    if let Some(contents) = std::env::current_exe()
+        .and_then(std::fs::canonicalize)
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.parent()?.to_path_buf()))
+        .filter(|contents| contents.join("Info.plist").is_file())
+    {
+        return contents.join("Resources").join(FILE);
+    }
+    PathBuf::from("/etc/tilo").join(FILE)
+}
+
 /// The directory, at the root of the device's files, that holds one tree per
 /// workspace: `<files>/.workspaces/<workspace id>`. The device's files are
 /// one namespace (`fs` serves one per device); a workspace's own files are

@@ -18873,6 +18873,7 @@ dependencies = [
  "tilo-device-protocol",
  "tilo-files",
  "tilo-identity",
+ "tilo-paths",
  "tilo-test-env",
  "toml 1.0.6+spec-1.1.0",
  "uuid",

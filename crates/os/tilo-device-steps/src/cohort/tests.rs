@@ -185,6 +185,7 @@ fn tilolang_runtime(layer: &Path, work: &Path, case: &str) -> String {
         Some(std::env::consts::ARCH),
         Some(&identity),
         &[binary],
+        &[],
     )
     .unwrap();
     version.to_owned()

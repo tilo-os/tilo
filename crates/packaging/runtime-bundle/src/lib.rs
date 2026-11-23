@@ -83,7 +83,9 @@ pub struct BundleManifest {
     pub version: String,
     /// Target architecture the bundle was built for (matches
     /// `std::env::consts::ARCH`); a launcher on the wrong arch refuses
-    /// the bundle rather than getting the loader wrong at exec time.
+    /// the bundle rather than getting the loader wrong at exec time. A
+    /// bundle of universal macOS binaries names each architecture they
+    /// hold, joined by `+` (`aarch64+x86_64`): see [`BundleManifest::runs_on`].
     pub arch: String,
     /// BLAKE3 root hash over the sorted (path, file-hash) list; hex, lowercase, 64 chars.
     pub root_hash: String,
@@ -106,6 +108,15 @@ pub struct BundleManifest {
     /// Absent on unsigned bundles and on bundles built before fs-verity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verity_signature_hex: Option<String>,
+}
+
+impl BundleManifest {
+    /// Whether the bundle holds code for `arch`: its one architecture, or one of a universal
+    /// bundle's.
+    #[must_use]
+    pub fn runs_on(&self, arch: &str) -> bool {
+        self.arch.split('+').any(|held| held == arch)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -350,10 +361,6 @@ pub fn system_bundle_path(version: &str) -> PathBuf {
     PathBuf::from("/usr/lib/tilo-runtime").join(version)
 }
 
-/// The image's list of runtime publishers the launcher accepts: one hex
-/// Ed25519 key per line, `#` comments.
-pub const TRUSTED_PUBLISHERS_FILE: &str = "/etc/tilo/runtime-bundle-trusted-publishers.txt";
-
 /// Walk the search path and return the first existing bundle dir with a `bundle.toml` (per-user, then system).
 pub fn resolve_bundle_path(version: &str) -> Option<PathBuf> {
     if let Ok(p) = default_bundle_path(version)
@@ -515,8 +522,11 @@ pub fn build_bundle_with(
     seal(out, version.to_string(), arch, files, opts.identity)
 }
 
-/// Build a bundle at `out` that holds `binaries` under `bin/` and nothing else: no loader, libc or
-/// `ld.so.cache`.
+/// Build a bundle at `out` that holds `binaries` under `bin/` and `includes` under `lib/`, as
+/// [`BuildOptions::extra_libs`] places them, and nothing else: no loader, libc or `ld.so.cache`.
+/// `arch` may name several architectures joined by `+`, for universal macOS binaries; a Mac
+/// runtime's libraries come in a directory include (`lib/gstreamer/`), loaded relative to the
+/// binaries.
 ///
 /// This is the shape of a runtime an app names as its entrypoint runtime. The launcher mounts it
 /// beside the app's own runtime and changes no loader path, so the app runtime's loader runs the
@@ -533,9 +543,13 @@ pub fn build_binaries_bundle(
     arch: Option<&str>,
     identity: Option<&Path>,
     binaries: &[PathBuf],
+    includes: &[PathBuf],
 ) -> Result<BundleManifest, BundleError> {
     let arch = arch.unwrap_or_else(|| host_arch());
-    if host_minimal_paths_for(arch).is_none() {
+    if arch
+        .split('+')
+        .any(|held| host_minimal_paths_for(held).is_none())
+    {
         return Err(BundleError::UnsupportedArch(arch.to_string()));
     }
     if binaries.is_empty() {
@@ -546,6 +560,7 @@ pub fn build_binaries_bundle(
     fs::create_dir_all(out)?;
     let mut written = Vec::new();
     copy_binaries(out, binaries, &mut written)?;
+    copy_includes(out, includes, &BTreeMap::new(), &mut written)?;
     let files = hash_payload(&written)?;
     seal(out, version.to_string(), arch.to_string(), files, identity)
 }
@@ -914,7 +929,7 @@ pub fn verify_bundle_manifest(
     opts: &VerifyOptions,
 ) -> Result<(), BundleError> {
     if let Some(required) = opts.require_arch.as_deref()
-        && manifest.arch != required
+        && !manifest.runs_on(required)
     {
         return Err(BundleError::ArchMismatch {
             actual: manifest.arch.clone(),
@@ -978,7 +993,7 @@ fn verify_bundle_impl(
         toml::from_str(&text).map_err(|e| BundleError::ManifestParse(e.to_string()))?;
 
     if let Some(required) = opts.require_arch.as_deref()
-        && manifest.arch != required
+        && !manifest.runs_on(required)
     {
         return Err(BundleError::ArchMismatch {
             actual: manifest.arch,
@@ -1808,6 +1823,7 @@ mod tests {
                 None,
                 Some(&identity_path),
                 std::slice::from_ref(&binary),
+                &[],
             )
             .unwrap();
             let paths: Vec<&str> = manifest.files.iter().map(|f| f.path.as_str()).collect();
@@ -1827,8 +1843,84 @@ mod tests {
             assert!(verify_bundle_with(&bundle, &options).is_err());
 
             assert!(matches!(
-                build_binaries_bundle(&work.path().join("empty"), "0.1.0", None, None, &[]),
+                build_binaries_bundle(&work.path().join("empty"), "0.1.0", None, None, &[], &[]),
                 Err(BundleError::NoSources { .. })
+            ));
+        }
+
+        phase a_universal_mac_runtime_holds_its_libraries_and_runs_only_where_it_has_code;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let work = tempfile::tempdir().unwrap();
+            let binary = work.path().join("tilolang-app");
+            fs::write(&binary, b"universal runtime binary").unwrap();
+            fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+            let libraries = work.path().join("gstreamer");
+            fs::create_dir_all(libraries.join("lib")).unwrap();
+            fs::create_dir_all(libraries.join("plugins")).unwrap();
+            fs::write(libraries.join("lib/libgstreamer-1.0.0.dylib"), b"library").unwrap();
+            fs::write(libraries.join("plugins/libgstplayback.dylib"), b"plugin").unwrap();
+            let identity = Identity::generate();
+            let identity_path = work.path().join("identity.json");
+            fs::write(&identity_path, identity.to_json_bytes()).unwrap();
+            let bundle = work.path().join("bundle");
+
+            let manifest = build_binaries_bundle(
+                &bundle,
+                "0.1.0+tilolang",
+                Some("aarch64+x86_64"),
+                Some(&identity_path),
+                std::slice::from_ref(&binary),
+                std::slice::from_ref(&libraries),
+            )
+            .unwrap();
+            let paths: Vec<&str> = manifest.files.iter().map(|f| f.path.as_str()).collect();
+            assert_eq!(
+                paths,
+                [
+                    "bin/tilolang-app",
+                    "lib/gstreamer/lib/libgstreamer-1.0.0.dylib",
+                    "lib/gstreamer/plugins/libgstplayback.dylib",
+                ]
+            );
+            for arch in ["aarch64", "x86_64"] {
+                let options = VerifyOptions {
+                    require_publisher: Some(identity.public_key_hex()),
+                    require_signature: true,
+                    require_arch: Some(arch.into()),
+                };
+                assert_eq!(
+                    verify_bundle_with(&bundle, &options).unwrap().root_hash,
+                    manifest.root_hash,
+                    "a universal bundle runs on {arch}"
+                );
+            }
+            // A machine whose architecture the binaries hold no code for is refused, and so is
+            // a name that merely contains one the bundle holds.
+            for host in ["riscv64", "aarch", "aarch64+x86_64"] {
+                let options = VerifyOptions {
+                    require_publisher: None,
+                    require_signature: true,
+                    require_arch: Some(host.into()),
+                };
+                assert!(
+                    matches!(
+                        verify_bundle_with(&bundle, &options),
+                        Err(BundleError::ArchMismatch { .. })
+                    ),
+                    "{host} is refused"
+                );
+            }
+            assert!(matches!(
+                build_binaries_bundle(
+                    &work.path().join("other"),
+                    "0.1.0",
+                    Some("aarch64+sparc"),
+                    None,
+                    std::slice::from_ref(&binary),
+                    &[],
+                ),
+                Err(BundleError::UnsupportedArch(_))
             ));
         }
 

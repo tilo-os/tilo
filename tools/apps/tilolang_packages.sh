@@ -21,11 +21,14 @@
 #       that declares it (the `tilolang/<version>` every package names in
 #       `optional-runtimes`).
 #
-#   tilolang_bake_runtime BUNDLE_BIN BIN HOST IDENTITY OUT VERSION
+#   tilolang_bake_runtime BUNDLE_BIN BIN HOST IDENTITY OUT VERSION [ARCH [LIBRARIES]]
 #       Build the signed bundle of the two binaries into OUT (which becomes
 #       `<runtime root>/<version>`). The bundle holds the binaries alone
 #       (`--binaries-only`): the launcher runs them on the Tilo runtime their
-#       libraries come from, so a loader set of their own is never read.
+#       libraries come from, so a loader set of their own is never read. A
+#       Mac's runtime names the architectures of its universal binaries in
+#       ARCH (`aarch64+x86_64`) and brings the libraries they load relative to
+#       themselves as the directory LIBRARIES, kept as `lib/<its name>/`.
 #
 #   tilolang_build_package TILOLANG_BIN REPO DIR NAME OUT IDENTITY VERSION TILO_RUNTIME [ID]
 #       Compile the package at REPO/DIR with the packages it uses (searching
@@ -51,8 +54,14 @@ tilolang_runtime_version() {
 }
 
 tilolang_bake_runtime() {
-    local bundle_bin=$1 bin=$2 host=$3 identity=$4 out=$5 version=$6
+    local bundle_bin=$1 bin=$2 host=$3 identity=$4 out=$5 version=$6 arch=${7:-} libraries=${8:-}
     [ -n "$version" ] || { tilolang_die "a tilolang runtime bundle needs its version"; return 1; }
+    local extra=()
+    [ -z "$arch" ] || extra+=(--arch "$arch")
+    if [ -n "$libraries" ]; then
+        [ -d "$libraries" ] || { tilolang_die "no runtime libraries at $libraries"; return 1; }
+        extra+=(--include "$libraries")
+    fi
     local binary
     for binary in "$bin" "$host"; do
         [ -f "$binary" ] || { tilolang_die "no tilolang runtime binary at $binary"; return 1; }
@@ -60,7 +69,7 @@ tilolang_bake_runtime() {
     done
     rm -rf -- "$out"
     "$bundle_bin" build --binaries-only --version "$version" --out "$out" \
-        --include-bin "$bin" --include-bin "$host" --identity "$identity" >/dev/null \
+        --include-bin "$bin" --include-bin "$host" --identity "$identity" "${extra[@]}" >/dev/null \
         || { tilolang_die "could not bake the tilolang runtime bundle $version"; return 1; }
 }
 
