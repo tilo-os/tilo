@@ -356,8 +356,8 @@ and need no login (`tilo-vm guide troubleshooting`).
 `tilo-vm doctor` says whether one is. If none is:
 
 - ask a human for a shared VM and use it: `tilo-vm vm use <name>`;
-- or, when this checkout has `os/dev/build-dev-image.sh`, build a disk
-  locally and pass it as `--image`. The error says whether it exists here.
+- or build a disk of this worktree on t, `tilo-vm image build --disk`, and
+  pass the disk it names as `--image` (`tilo-vm guide images`).
 
 ## A local disk, and throwaway VMs
 

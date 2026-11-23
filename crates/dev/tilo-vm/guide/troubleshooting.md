@@ -78,8 +78,8 @@ which side is older.
 non-Tilo image). SSH still works: `vm start` returns as soon as SSH answers,
 `vm status` says "reachable over SSH, but no tilo-vmd", and `vm ssh` works.
 If it has bootc, move it to a dev image:
-`tilo-vm vm upgrade --image registry.tilo.so/tilo/tilo-vm:<tag>`, or one built
-here: `tilo-vm vm upgrade --from local` (`tilo-vm guide images`).
+`tilo-vm vm upgrade --image registry.tilo.so/tilo/tilo-vm:<tag>`, or this
+worktree's, built on t: `tilo-vm vm upgrade --from local` (`tilo-vm guide images`).
 
 **"Not running a bootc dev image".** `vm upgrade` and `vm rollback-image`
 check for bootc before anything else. Without it they cannot move the VM:
@@ -130,8 +130,8 @@ names the missing piece with its fix. A 401/403 on the disk means the forge
 token is missing or lacks package read access. "No dev disk is published"
 means CI has not published one (or that tag). "Has no qcow2 disk for
 <arch>" means the tag exists but your architecture's job has not published
-yet, or failed: each architecture publishes on its own. Build a disk locally
-(`os/dev/build-dev-image.sh`), or ask a human for a shared VM
+yet, or failed: each architecture publishes on its own. Build a disk of this
+worktree on t (`tilo-vm image build --disk`), or ask a human for a shared VM
 (`tilo-vm vm use <name>`); `tilo-vm guide platforms` has the details. An
 interrupted download resumes when you rerun the command.
 

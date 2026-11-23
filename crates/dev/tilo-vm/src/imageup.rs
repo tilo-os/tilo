@@ -1,47 +1,22 @@
-//! Moving a running dev VM onto another image with bootc: a dev image built on
-//! this host (`vm upgrade --from local`), a CI build (`--from ci:<tag>`) or any
-//! dev image from a registry. A local image travels as an OCI layout mirrored
-//! into the VM, so only new blobs cross; no registry and no daemon on the host.
+//! Moving a running dev VM onto another image with bootc: this tree's dev
+//! image, built by t's `os-dev-image-<arch>` check (`vm upgrade --from local`,
+//! `image build`), a CI build (`--from ci:<tag>`) or any dev image from a
+//! registry. A built image travels as an OCI layout mirrored into the VM, so
+//! only new blobs cross; no registry and no daemon on the host.
+//!
+//! t is the one builder of dev images and disks: the checks that publish
+//! main's build it for this tree too, on a build server of the image's
+//! architecture, so no host compiles the OS or needs podman or loop devices.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::error::CliError;
 use crate::hypervisor::{CommandLine, SshEndpoint};
 use crate::vmbuild::sh_quote;
 
-pub fn local_tag() -> Result<String, CliError> {
-    parse_local_tag(std::env::var("TILO_LOCAL_TAG").ok().as_deref())
-}
-
-fn parse_local_tag(value: Option<&str>) -> Result<String, CliError> {
-    let tag = match value {
-        None | Some("") => return Ok("latest".to_owned()),
-        Some(tag) => tag,
-    };
-    let mut chars = tag.chars();
-    let first = chars
-        .next()
-        .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
-    if first && tag.len() <= 128 && chars.all(|c| c.is_ascii_alphanumeric() || "_.-".contains(c)) {
-        Ok(tag.to_owned())
-    } else {
-        Err(CliError::InvalidInput(format!(
-            "TILO_LOCAL_TAG={tag} is not an image tag ([A-Za-z0-9_][A-Za-z0-9_.-]*, at most 128 characters)"
-        )))
-    }
-}
-
-pub fn local_dev_image() -> Result<String, CliError> {
-    Ok(format!("localhost/tilo-vm:{}", local_tag()?))
-}
-
-pub fn local_base() -> Result<String, CliError> {
-    Ok(format!("localhost/tilo:{}", local_tag()?))
-}
-pub const BUILD_SCRIPT: &str = "os/dev/build-dev-image.sh";
 /// The OCI layout in the VM that bootc switches to; in /var, so it survives
 /// the switch, and each upgrade only adds the blobs that changed.
 pub const VM_LAYOUT: &str = "/var/lib/tilo-vm/image";
@@ -51,13 +26,197 @@ pub fn layout_imgref() -> String {
 }
 const LOCKS: &str = "/var/lib/tilo-vm/locks";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum UpgradeFrom {
-    Local { image: String, build: bool },
-    Ci { tag: String },
+/// Where `image build` and `vm upgrade --from local` leave t's outputs,
+/// relative to the worktree.
+pub const BUILD_OUT: &str = "target/tilo-vm";
+
+/// t's check that builds this tree's dev image for `arch`. The lean one
+/// (the development loop's) skips the local model runtimes and names no
+/// commit; its base carries the OS image's clock rather than the commit's.
+pub fn image_check(arch: &str, lean: bool) -> String {
+    format!("os-dev-image-{}{arch}", if lean { "lean-" } else { "" })
 }
 
-const FROM_FORMS: &str = "tilo-vm vm upgrade --from local (build this worktree's dev image)   |   --from ci:main-<sha7> or --from sha:<commit> (a CI build)   |   --from local:localhost/tilo-vm:<tag> (one already built)   |   --image registry.tilo.so/tilo/tilo-vm:<tag> (a published one)";
+/// t's check that installs that image onto a dev disk.
+pub fn disk_check(arch: &str, lean: bool) -> String {
+    format!("os-dev-disk-{}{arch}", if lean { "lean-" } else { "" })
+}
+
+/// Run `check` on this tree's state on t and download its outputs under
+/// `out`; t reuses its answer when nothing the check reads changed.
+pub fn outputs_command(check: &str, root: &Path, out: &Path) -> CommandLine {
+    CommandLine::new("t", &["outputs"])
+        .arg(check)
+        .arg("--dir")
+        .arg(root.display().to_string())
+        .arg("--to")
+        .arg(out.display().to_string())
+}
+
+/// The dev image `t outputs` left under `out`: `--to` keeps the check's own
+/// output path under the directory.
+pub fn built_image(out: &Path, arch: &str) -> PathBuf {
+    out.join("target/publish/os-dev").join(arch)
+}
+
+/// The dev disk `t outputs` left under `out`.
+pub fn built_disk(out: &Path, arch: &str) -> PathBuf {
+    out.join("target/publish/os-dev-disk")
+        .join(arch)
+        .join("disk")
+        .join("disk.qcow2")
+}
+
+/// A dev image as t's checks leave it: an OCI layout in `oci/`, its manifest
+/// digest in `digest` and the commit it is of (or `development-loop`) in
+/// `revision`.
+pub fn is_built_image(dir: &Path) -> bool {
+    is_layout(&dir.join("oci")) && dir.join("digest").is_file()
+}
+
+/// The name a built image goes by in reports and receipts: never a
+/// production name.
+pub fn built_name(dir: &Path) -> String {
+    let revision = std::fs::read_to_string(dir.join("revision")).unwrap_or_default();
+    let revision = revision.trim();
+    let tag = match revision.len() {
+        0 => "built",
+        40 if revision.bytes().all(|b| b.is_ascii_hexdigit()) => {
+            revision.get(..12).unwrap_or(revision)
+        }
+        _ => revision,
+    };
+    format!("localhost/tilo-vm:{tag}")
+}
+
+fn read_json(path: &Path) -> Result<Value, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    serde_json::from_slice(&bytes).map_err(|e| format!("{} is not JSON: {e}", path.display()))
+}
+
+fn digest_of<'a>(descriptor: &'a Value, what: &str) -> Result<&'a str, String> {
+    descriptor
+        .get("digest")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("its {what} names no digest"))
+}
+
+/// The one image an OCI layout holds: its manifest descriptor, read from
+/// `index.json`.
+fn layout_manifest(layout: &Path) -> Result<Value, String> {
+    let index = read_json(&layout.join("index.json"))?;
+    match index
+        .get("manifests")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+    {
+        Some([one]) => Ok(one.clone()),
+        Some(many) => Err(format!("holds {} images, not one", many.len())),
+        None => Err("has no manifests in its index.json".into()),
+    }
+}
+
+/// The facts of the image in an OCI layout, from its own configuration's
+/// labels: nothing runs and nothing is unpacked.
+pub fn layout_facts(layout: &Path) -> Result<ImageFacts, String> {
+    let manifest = layout_manifest(layout)?;
+    let path = |digest: &str| {
+        blob_path(layout, digest).ok_or_else(|| format!("names an unreadable digest {digest}"))
+    };
+    let manifest = read_json(&path(digest_of(&manifest, "index")?)?)?;
+    let config = manifest
+        .get("config")
+        .ok_or("its manifest names no configuration")?;
+    let config = read_json(&path(digest_of(config, "manifest's configuration")?)?)?;
+    Ok(facts_from_labels(config.pointer("/config/Labels")))
+}
+
+/// An image's facts from its labels: `sh.tilo.image.flavour`, whether it is
+/// sealed (`sh.tilo.image.sealed`), and the production base it was built
+/// FROM (`sh.tilo.base.*`, in base.json's own terms).
+pub fn facts_from_labels(labels: Option<&Value>) -> ImageFacts {
+    let label = |key: &str| {
+        labels
+            .and_then(|l| l.get(key))
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty())
+            .map(str::to_owned)
+    };
+    let base = [
+        ("base_created", "sh.tilo.base.created"),
+        ("image_digest", "sh.tilo.base.digest"),
+        ("base_image", "sh.tilo.base.image"),
+    ]
+    .into_iter()
+    .filter_map(|(key, name)| label(name).map(|v| (key.to_owned(), Value::String(v))))
+    .collect::<serde_json::Map<_, _>>();
+    ImageFacts {
+        flavour: label("sh.tilo.image.flavour"),
+        sealed: label("sh.tilo.image.sealed").as_deref() == Some("true"),
+        base: (!base.is_empty()).then_some(Value::Object(base)),
+    }
+}
+
+/// Put a built image into `layout`, the host's copy of what the VM holds,
+/// under [`LAYOUT_TAG`]: only blobs it lacks are copied, and blobs no longer
+/// referenced go. Returns the image's manifest digest.
+pub fn stage_built(built: &Path, layout: &Path) -> Result<String, String> {
+    let source = built.join("oci");
+    let mut manifest = layout_manifest(&source)?;
+    let digest = digest_of(&manifest, "index")?.to_owned();
+    let recorded = std::fs::read_to_string(built.join("digest")).unwrap_or_default();
+    if recorded.trim() != digest {
+        return Err(format!(
+            "its digest file names {}, its layout {digest}",
+            recorded.trim()
+        ));
+    }
+    let io = |what: &str, path: &Path, e: std::io::Error| format!("{what} {}: {e}", path.display());
+    for blob in referenced_blobs(&source).map_err(|e| io("read", &source, e))? {
+        let bad = || format!("names a bad digest {blob}");
+        let from = blob_path(&source, &blob).ok_or_else(bad)?;
+        let to = blob_path(layout, &blob).ok_or_else(bad)?;
+        if to.is_file() {
+            continue;
+        }
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| io("create", parent, e))?;
+        }
+        let partial = to.with_extension("partial");
+        std::fs::copy(&from, &partial).map_err(|e| io("copy", &from, e))?;
+        std::fs::rename(&partial, &to).map_err(|e| io("move", &partial, e))?;
+    }
+    if let Some(descriptor) = manifest.as_object_mut() {
+        descriptor.insert(
+            "annotations".into(),
+            json!({ "org.opencontainers.image.ref.name": LAYOUT_TAG }),
+        );
+    }
+    let index = json!({ "schemaVersion": 2, "manifests": [manifest] });
+    std::fs::write(
+        layout.join("oci-layout"),
+        r#"{"imageLayoutVersion":"1.0.0"}"#,
+    )
+    .map_err(|e| io("write", layout, e))?;
+    std::fs::write(
+        layout.join("index.json"),
+        serde_json::to_vec(&index).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| io("write", layout, e))?;
+    prune_layout(layout).map_err(|e| io("prune", layout, e))?;
+    Ok(digest)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpgradeFrom {
+    /// This worktree's dev image, built by t.
+    Local,
+    Ci {
+        tag: String,
+    },
+}
+
+const FROM_FORMS: &str = "tilo-vm vm upgrade --from local (this worktree's dev image, built by t)   |   --from ci:main-<sha7> or --from sha:<commit> (a CI build)   |   --image target/tilo-vm/target/publish/os-dev/<arch> (one tilo-vm image build left)   |   --image registry.tilo.so/tilo/tilo-vm:<tag> (a published one)";
 
 pub fn parse_from(
     from: &str,
@@ -68,14 +227,7 @@ pub fn parse_from(
         alternative: FROM_FORMS.into(),
     };
     match from.split_once(':') {
-        None if from == "local" => Ok(UpgradeFrom::Local {
-            image: local_dev_image()?,
-            build: true,
-        }),
-        Some(("local", image)) if !image.is_empty() => Ok(UpgradeFrom::Local {
-            image: image.to_owned(),
-            build: false,
-        }),
+        None if from == "local" => Ok(UpgradeFrom::Local),
         Some(("ci" | "sha", _)) => match crate::ci::parse(from, worktree) {
             Ok(crate::ci::Source::Ci { tag, .. }) => Ok(UpgradeFrom::Ci { tag }),
             _ => Err(unsupported()),
@@ -84,74 +236,19 @@ pub fn parse_from(
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CiCandidates {
-    pub dev_images: Vec<String>,
-    pub bases: Vec<String>,
-}
-
-pub fn ci_candidates(tag: &str, arch: &str) -> CiCandidates {
+/// The published dev image of a CI build for an architecture: what main
+/// signs (publish-os-dev-<arch>); a dev image's policy takes no unsigned index.
+pub fn ci_image(tag: &str, arch: &str) -> String {
     let tag = tag.strip_suffix(&format!("-{arch}")).unwrap_or(tag);
     let dev_tag = tag.strip_suffix("-ci").unwrap_or(tag);
-    CiCandidates {
-        // The architecture's own image: what main signs (publish-os-dev-<arch>); a dev
-        // image's policy takes no unsigned index.
-        dev_images: vec![format!("registry.tilo.so/tilo/tilo-vm:{dev_tag}-ci-{arch}")],
-        bases: vec![
-            format!("registry.tilo.so/tilo/tilo-ci:{dev_tag}-{arch}"),
-            format!("registry.tilo.so/tilo/tilo:{dev_tag}"),
-        ],
-    }
+    format!("registry.tilo.so/tilo/tilo-vm:{dev_tag}-ci-{arch}")
 }
 
-pub fn board_candidates(tag: &str, board: &str) -> CiCandidates {
+/// A board's dev image of a CI build.
+pub fn board_image(tag: &str, board: &str) -> String {
     let tag = tag.strip_suffix(&format!("-{board}")).unwrap_or(tag);
     let dev_tag = tag.strip_suffix("-ci").unwrap_or(tag);
-    CiCandidates {
-        dev_images: vec![format!("registry.tilo.so/tilo/tilo-vm:{dev_tag}-{board}")],
-        bases: Vec::new(),
-    }
-}
-
-/// The seven-hex commit a `sha:` tag (`main-<sha7>`) names.
-pub fn ci_commit(tag: &str) -> Option<&str> {
-    tag.strip_prefix("main-")
-        .filter(|sha| sha.len() == 7 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
-}
-
-pub fn ci_ref_bases(sha: &str, arch: &str, board: Option<&str>, ci_tags: &str) -> Vec<String> {
-    if board.is_some() {
-        return Vec::new();
-    }
-    let tags = serde_json::from_str::<serde_json::Value>(ci_tags)
-        .ok()
-        .and_then(|value| value.get("Tags").cloned())
-        .and_then(|tags| serde_json::from_value::<Vec<String>>(tags).ok())
-        .unwrap_or_default();
-    let suffix = format!("-{sha}-{arch}");
-    let mut bases: Vec<String> = tags
-        .into_iter()
-        .filter(|tag| {
-            tag.strip_suffix(&suffix).is_some_and(|name| {
-                !name.is_empty()
-                    && name
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
-            })
-        })
-        .map(|tag| format!("registry.tilo.so/tilo/tilo-ci:{tag}"))
-        .collect();
-    bases.sort();
-    bases
-}
-
-pub fn list_tags_command(repository: &str) -> CommandLine {
-    CommandLine::new("skopeo", &["list-tags"]).arg(format!("docker://{repository}"))
-}
-
-pub fn ci_dev_image(base: &str) -> String {
-    let tag = base.rsplit_once(':').map_or(base, |(_, tag)| tag);
-    format!("localhost/tilo-vm:ci-{tag}")
+    format!("registry.tilo.so/tilo/tilo-vm:{dev_tag}-{board}")
 }
 
 pub fn exists_command(reference: &str) -> CommandLine {
@@ -159,8 +256,7 @@ pub fn exists_command(reference: &str) -> CommandLine {
 }
 
 /// A dev image may only be named `localhost/tilo-vm` or
-/// `registry.tilo.so/tilo/tilo-vm`, with a tag or digest: the same rule
-/// `os/dev/build-dev-image.sh` enforces when it tags one.
+/// `registry.tilo.so/tilo/tilo-vm`, with a tag or digest.
 pub fn is_dev_name(reference: &str) -> bool {
     ["localhost/tilo-vm", "registry.tilo.so/tilo/tilo-vm"]
         .iter()
@@ -173,57 +269,9 @@ pub fn is_dev_name(reference: &str) -> bool {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ImageFacts {
-    pub id: String,
     pub flavour: Option<String>,
     pub sealed: bool,
     pub base: Option<Value>,
-}
-
-pub fn inspect_command(image: &str) -> CommandLine {
-    CommandLine::new("podman", &["image", "inspect", image])
-}
-
-pub fn probe_command(image_id: &str) -> CommandLine {
-    CommandLine::new(
-        "podman",
-        &[
-            "run",
-            "--rm",
-            "--network=none",
-            "--entrypoint",
-            "/bin/sh",
-            image_id,
-            "-c",
-            "cat /usr/share/tilo-vm/base.json 2>/dev/null; echo; echo @@uki; ls /boot/EFI/Linux/ 2>/dev/null | grep -i '[.]efi$' || true",
-        ],
-    )
-}
-
-pub fn parse_inspect(json: &str) -> Result<(String, Option<String>), String> {
-    let value: Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
-    let image = value.get(0).unwrap_or(&value);
-    let id = image
-        .get("Id")
-        .and_then(Value::as_str)
-        .ok_or("no Id in podman image inspect output")?
-        .to_owned();
-    let flavour = image
-        .pointer("/Labels/sh.tilo.image.flavour")
-        .or_else(|| image.pointer("/Config/Labels/sh.tilo.image.flavour"))
-        .and_then(Value::as_str)
-        .map(str::to_owned);
-    Ok((id, flavour))
-}
-
-pub const BUILT_LAYOUT: &str = "image";
-pub const BUILT_DISK: &str = "disk.qcow2";
-
-pub const DISK_SCRIPT: &str = "os/dev/build-image.sh";
-
-pub fn import_layout_command(layout: &Path, image: &str) -> CommandLine {
-    CommandLine::new("skopeo", &["copy", "--quiet"])
-        .arg(format!("oci:{}:{LAYOUT_TAG}", layout.display()))
-        .arg(format!("containers-storage:{image}"))
 }
 
 /// Did bootc refuse a switch because the VM already boots that image? The
@@ -267,12 +315,10 @@ pub fn registry_inspect_command(image: &str, arch: &str) -> CommandLine {
         .arg(format!("docker://{image}"))
 }
 
-pub fn registry_flavour(inspect: &str) -> Option<String> {
-    serde_json::from_str::<Value>(inspect)
-        .ok()?
-        .pointer("/Labels/sh.tilo.image.flavour")?
-        .as_str()
-        .map(str::to_owned)
+/// A registry image's facts, from `skopeo inspect`'s labels.
+pub fn registry_facts(inspect: &str) -> ImageFacts {
+    let value = serde_json::from_str::<Value>(inspect).unwrap_or_default();
+    facts_from_labels(value.get("Labels"))
 }
 
 /// bootc's refusal for want of space, as (free, needed) in its own units:
@@ -293,38 +339,6 @@ pub fn is_layout(path: &Path) -> bool {
     path.join("oci-layout").is_file() && path.join("index.json").is_file()
 }
 
-pub fn layout_facts_text(inspect: &str, probe: &str) -> String {
-    format!("{}\n@@probe\n{probe}", inspect.trim_end())
-}
-
-pub fn parse_layout_facts(text: &str) -> Result<(String, ImageFacts), String> {
-    let (inspect, probe) = text
-        .split_once("\n@@probe\n")
-        .ok_or("no @@probe section in the layout's facts")?;
-    let (id, flavour) = parse_inspect(inspect)?;
-    let name = serde_json::from_str::<Value>(inspect)
-        .ok()
-        .and_then(|v| {
-            v.pointer("/0/RepoTags/0")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
-        .map_or_else(|| local_dev_image().map_err(|e| e.to_string()), Ok)?;
-    let mut facts = ImageFacts {
-        id,
-        flavour,
-        ..ImageFacts::default()
-    };
-    parse_probe(probe, &mut facts);
-    Ok((name, facts))
-}
-
-pub fn parse_probe(output: &str, facts: &mut ImageFacts) {
-    let (base, uki) = output.split_once("@@uki").unwrap_or((output, ""));
-    facts.base = serde_json::from_str(base.trim()).ok();
-    facts.sealed = uki.lines().any(|l| !l.trim().is_empty());
-}
-
 fn refused(image: &str, problem: impl Into<String>, fix: impl Into<String>) -> CliError {
     CliError::ImageRefused {
         image: image.to_owned(),
@@ -335,7 +349,7 @@ fn refused(image: &str, problem: impl Into<String>, fix: impl Into<String>) -> C
 
 /// Only an unsealed dev image with a dev name may go into a dev VM.
 pub fn check_image(reference: &str, facts: &ImageFacts) -> Result<(), CliError> {
-    let build = "build the dev image FROM it: tilo-vm vm upgrade --from local   (or TILO_DEV_DISK=0 ./os/build.sh --dev)";
+    let build = "move onto this worktree's dev image, which t builds FROM the production image: tilo-vm vm upgrade --from local";
     if !is_dev_name(reference) {
         return Err(refused(
             reference,
@@ -343,7 +357,7 @@ pub fn check_image(reference: &str, facts: &ImageFacts) -> Result<(), CliError> 
             if reference.contains("/tilo:") || reference.contains("/tilo@") {
                 build.to_owned()
             } else {
-                "tag the dev image as localhost/tilo-vm:<tag>, then: tilo-vm vm upgrade --from local:localhost/tilo-vm:<tag>".to_owned()
+                "name a dev image: tilo-vm vm upgrade --image registry.tilo.so/tilo/tilo-vm:<tag>   |   or build this worktree's: tilo-vm vm upgrade --from local".to_owned()
             },
         ));
     }
@@ -764,17 +778,6 @@ pub fn host_layout(vm: &str) -> PathBuf {
         .join(vm)
 }
 
-pub fn export_command(image: &str, layout: &Path, digest_file: &Path) -> CommandLine {
-    CommandLine::new(
-        "skopeo",
-        &["copy", "--quiet", "--dest-oci-accept-uncompressed-layers"],
-    )
-    .arg("--digestfile")
-    .arg(digest_file.display().to_string())
-    .arg(format!("containers-storage:{image}"))
-    .arg(format!("oci:{}:{LAYOUT_TAG}", layout.display()))
-}
-
 pub fn rsync_command(
     layout: &Path,
     endpoint: &SshEndpoint,
@@ -933,43 +936,22 @@ mod tests {
     tilo_test_env::scenario! {
         fn upgrade_sources_resolve_to_labelled_dev_images;
 
-        phase local_tag_is_latest_unless_named;
-        {
-            assert_eq!(parse_local_tag(None).unwrap(), "latest");
-            assert_eq!(parse_local_tag(Some("")).unwrap(), "latest");
-            assert_eq!(parse_local_tag(Some("wt-2_a.b")).unwrap(), "wt-2_a.b");
-            assert_eq!(
-                parse_local_tag(Some(&"a".repeat(128))).unwrap(),
-                "a".repeat(128)
-            );
-            for bad in [".x", "-x", "a/b", "a:b", "a b", &"a".repeat(129)] {
-                assert!(parse_local_tag(Some(bad)).is_err(), "{bad}");
-            }
-        }
-
         phase image_upgrades_accept_only_fresh_labelled_dev_images;
         {
             {
-                assert_eq!(
-                    parse_from("local", None).unwrap(),
-                    UpgradeFrom::Local {
-                        image: local_dev_image().unwrap(),
-                        build: true
-                    }
-                );
-                assert_eq!(
-                    parse_from("local:localhost/tilo-vm:mine", None).unwrap(),
-                    UpgradeFrom::Local {
-                        image: "localhost/tilo-vm:mine".to_owned(),
-                        build: false
-                    }
-                );
-                for bad in ["local:", "ci:", "ci:a b", "sha:xyz", "worktree", "locally"] {
+                assert_eq!(parse_from("local", None).unwrap(), UpgradeFrom::Local);
+                for bad in [
+                    "local:localhost/tilo-vm:mine",
+                    "local:",
+                    "ci:",
+                    "ci:a b",
+                    "sha:xyz",
+                    "worktree",
+                    "locally",
+                ] {
                     let error = parse_from(bad, None).unwrap_err();
                     assert!(
-                        error
-                            .hint()
-                            .contains("--from local:localhost/tilo-vm:<tag>")
+                        error.hint().contains("--from local (this worktree's dev image, built by t)")
                             && error.hint().contains("--from ci:main-<sha7>"),
                         "{bad}: {error}"
                     );
@@ -1049,27 +1031,79 @@ mod tests {
             }
         }
 
-        phase built_layout_facts_read_as_the_images_own;
+        phase a_built_image_is_read_from_its_own_labels_and_staged_once;
         {
-            let inspect = "[{\"Id\": \"abc\", \"RepoTags\": [\"localhost/tilo-vm:latest\"], \"Labels\": {\"sh.tilo.image.flavour\": \"dev\"}}]\n";
-            let written = layout_facts_text(
-                inspect,
-                "{\"base_created\": \"2026-09-20T10:00:00Z\"}\n@@uki\n",
+            let out = tempfile::tempdir().unwrap();
+            let built = built_image(out.path(), "x86_64");
+            assert_eq!(
+                built,
+                out.path().join("target/publish/os-dev/x86_64"),
+                "t outputs --to keeps the check's own output path"
             );
-            let (name, facts) = parse_layout_facts(&written).unwrap();
-            assert_eq!(name, "localhost/tilo-vm:latest");
-            assert_eq!(facts.id, "abc");
+            assert!(!is_built_image(&built));
+            let digest = write_built(
+                &built,
+                &json!({
+                    "sh.tilo.image.flavour": "dev",
+                    "sh.tilo.base.created": "2026-09-20T10:00:00Z",
+                    "sh.tilo.base.digest": "sha256:aa",
+                    "sh.tilo.base.image": "localhost/tilo:ci",
+                }),
+                b"layer one",
+            );
+            assert!(is_built_image(&built));
+            std::fs::write(built.join("revision"), format!("{}\n", "1a2b3c4d".repeat(5))).unwrap();
+            assert_eq!(built_name(&built), "localhost/tilo-vm:1a2b3c4d1a2b");
+            std::fs::write(built.join("revision"), "development-loop\n").unwrap();
+            assert_eq!(built_name(&built), "localhost/tilo-vm:development-loop");
+
+            let facts = layout_facts(&built.join("oci")).unwrap();
             assert_eq!(facts.flavour.as_deref(), Some("dev"));
             assert!(!facts.sealed);
+            assert_eq!(text(facts.base.as_ref(), "base_created"), Some("2026-09-20T10:00:00Z"));
+            assert_eq!(text(facts.base.as_ref(), "image_digest"), Some("sha256:aa"));
+            check_image(&built_name(&built), &facts).unwrap();
+
+            // Into the host's copy under the VM's tag; a second build sends only its new layer
+            // and the first one's blobs go.
+            let layout = out.path().join("host");
+            assert_eq!(stage_built(&built, &layout).unwrap(), digest);
+            assert!(is_layout(&layout));
+            let index: Value =
+                serde_json::from_slice(&std::fs::read(layout.join("index.json")).unwrap()).unwrap();
             assert_eq!(
-                text(facts.base.as_ref(), "base_created"),
-                Some("2026-09-20T10:00:00Z")
+                index.pointer("/manifests/0/annotations/org.opencontainers.image.ref.name"),
+                Some(&json!(LAYOUT_TAG))
             );
-            check_image(&name, &facts).unwrap();
-            let (_, sealed) =
-                parse_layout_facts(&layout_facts_text(inspect, "{}\n@@uki\ntilo.efi\n")).unwrap();
-            assert!(sealed.sealed);
-            assert!(parse_layout_facts(inspect).is_err());
+            assert_eq!(layout_facts(&layout).unwrap(), facts);
+            let first = referenced_blobs(&layout).unwrap();
+            let second =
+                write_built(&built, &json!({"sh.tilo.image.flavour": "dev"}), b"layer two");
+            assert_eq!(stage_built(&built, &layout).unwrap(), second);
+            let now = referenced_blobs(&layout).unwrap();
+            assert!(now.contains(&second));
+            for gone in first.difference(&now) {
+                assert!(!blob_path(&layout, gone).unwrap().exists(), "{gone} was kept");
+            }
+
+            std::fs::write(built.join("digest"), "sha256:00\n").unwrap();
+            let refused = stage_built(&built, &layout).unwrap_err();
+            assert!(refused.contains("digest file names sha256:00"), "{refused}");
+
+            // A production image's labels say it is no dev image, a board image's that it is
+            // sealed; neither goes into a dev VM.
+            let production = facts_from_labels(Some(&json!({"org.tilo.rust-lto": "thin"})));
+            assert!(check_image("localhost/tilo-vm:x", &production)
+                .unwrap_err()
+                .to_string()
+                .contains("label is missing"));
+            let board = facts_from_labels(Some(&json!({
+                "sh.tilo.image.flavour": "dev", "sh.tilo.image.sealed": "true"
+            })));
+            assert!(check_image("localhost/tilo-vm:x", &board)
+                .unwrap_err()
+                .to_string()
+                .contains("sealed"));
 
             let dir = tempfile::tempdir().unwrap();
             assert!(!is_layout(dir.path()));
@@ -1077,6 +1111,20 @@ mod tests {
             std::fs::write(dir.path().join("index.json"), "{}").unwrap();
             assert!(is_layout(dir.path()));
             assert!(!is_layout(Path::new("registry.tilo.so/tilo/tilo-vm:main")));
+            assert!(layout_facts(dir.path()).unwrap_err().contains("no manifests"));
+
+            let root = Path::new("/w");
+            let out = Path::new("/w/target/tilo-vm");
+            assert_eq!(
+                outputs_command(&image_check("aarch64", false), root, out).display(),
+                "t outputs os-dev-image-aarch64 --dir /w --to /w/target/tilo-vm"
+            );
+            assert_eq!(disk_check("x86_64", true), "os-dev-disk-lean-x86_64");
+            assert_eq!(image_check("x86_64", true), "os-dev-image-lean-x86_64");
+            assert_eq!(
+                built_disk(out, "x86_64"),
+                Path::new("/w/target/tilo-vm/target/publish/os-dev-disk/x86_64/disk/disk.qcow2")
+            );
 
             assert!(is_already_booted(
                 "error: Switching: Composefs Switching: Target image has the same fs-verity digest as the existing Some(Booted) deployment."
@@ -1086,27 +1134,7 @@ mod tests {
             ));
         }
 
-        phase a_pull_request_commit_resolves_through_its_ref_tags;
-        {
-            assert_eq!(ci_commit("main-1a2b3c4"), Some("1a2b3c4"));
-            assert_eq!(ci_commit("main-1a2b3c4-x86_64"), None);
-            assert_eq!(ci_commit("v1.2.3"), None);
-            let ci =
-                r#"{"Tags":["pr-12-1a2b3c4-x86_64","pr-12-1a2b3c4-aarch64","main-1a2b3c4x-x86_64"]}"#;
-            assert_eq!(
-                ci_ref_bases("1a2b3c4", "x86_64", None, ci),
-                vec!["registry.tilo.so/tilo/tilo-ci:pr-12-1a2b3c4-x86_64".to_owned()]
-            );
-            assert!(ci_ref_bases("1a2b3c4", "aarch64", None, "not json").is_empty());
-            // A board never takes a base to build from.
-            assert!(ci_ref_bases("1a2b3c4", "aarch64", Some("lenovo-83ed"), ci).is_empty());
-            assert_eq!(
-                list_tags_command("registry.tilo.so/tilo/tilo-vm").display(),
-                "skopeo list-tags docker://registry.tilo.so/tilo/tilo-vm"
-            );
-        }
-
-        phase ci_upgrade_sources_resolve_to_published_or_locally_built_dev_images;
+        phase ci_upgrade_sources_resolve_to_published_dev_images;
         {
             {
                 assert_eq!(
@@ -1124,31 +1152,26 @@ mod tests {
             }
 
             {
-                let expected = CiCandidates {
-                    dev_images: vec!["registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci-x86_64".into()],
-                    bases: vec![
-                        "registry.tilo.so/tilo/tilo-ci:main-1a2b3c4-x86_64".into(),
-                        "registry.tilo.so/tilo/tilo:main-1a2b3c4".into(),
-                    ],
-                };
-                assert_eq!(ci_candidates("main-1a2b3c4", "x86_64"), expected);
-                assert_eq!(ci_candidates("main-1a2b3c4-x86_64", "x86_64"), expected);
-                assert_eq!(ci_candidates("main-1a2b3c4-ci", "x86_64"), expected);
-                for image in expected.dev_images {
-                    assert!(is_dev_name(&image), "{image}");
-                }
-                let board = CiCandidates {
-                    dev_images: vec!["registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-lenovo-83ed".into()],
-                    bases: Vec::new(),
-                };
+                let expected = "registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci-x86_64";
+                assert_eq!(ci_image("main-1a2b3c4", "x86_64"), expected);
+                assert_eq!(ci_image("main-1a2b3c4-x86_64", "x86_64"), expected);
+                assert_eq!(ci_image("main-1a2b3c4-ci", "x86_64"), expected);
+                assert!(is_dev_name(expected));
                 for tag in [
                     "main-1a2b3c4",
                     "main-1a2b3c4-ci",
                     "main-1a2b3c4-lenovo-83ed",
                 ] {
-                    assert_eq!(board_candidates(tag, "lenovo-83ed"), board, "{tag}");
+                    assert_eq!(
+                        board_image(tag, "lenovo-83ed"),
+                        "registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-lenovo-83ed",
+                        "{tag}"
+                    );
                 }
-                assert!(is_dev_name(&board.dev_images[0]));
+                assert_eq!(
+                    exists_command(expected).display(),
+                    format!("skopeo inspect --raw docker://{expected}")
+                );
             }
 
             {
@@ -1171,21 +1194,14 @@ mod tests {
                  oci:/c/images/yoga:tilo-vm"
                 );
                 assert_eq!(
-                    registry_flavour(r#"{"Labels":{"sh.tilo.image.flavour":"dev"}}"#).as_deref(),
+                    registry_facts(r#"{"Labels":{"sh.tilo.image.flavour":"dev"}}"#)
+                        .flavour
+                        .as_deref(),
                     Some("dev")
                 );
-                assert_eq!(registry_flavour(r#"{"Labels":null}"#), None);
+                assert_eq!(registry_facts(r#"{"Labels":null}"#), ImageFacts::default());
             }
 
-            {
-                let image = ci_dev_image("registry.tilo.so/tilo/tilo-ci:main-1a2b3c4-x86_64");
-                assert_eq!(image, "localhost/tilo-vm:ci-main-1a2b3c4-x86_64");
-                assert!(is_dev_name(&image));
-                assert_eq!(
-                    exists_command("registry.tilo.so/tilo/tilo-ci:main-1a2b3c4-x86_64").display(),
-                    "skopeo inspect --raw docker://registry.tilo.so/tilo/tilo-ci:main-1a2b3c4-x86_64"
-                );
-            }
         }
     }
 
@@ -1216,30 +1232,6 @@ mod tests {
 
         phase guest_facts_are_probed_in_one_round_trip;
         {
-            {
-                let (id, flavour) = parse_inspect(
-                    r#"[{"Id":"4bd2","Labels":{"sh.tilo.image.flavour":"dev","x":"y"}}]"#,
-                )
-                .unwrap();
-                assert_eq!((id.as_str(), flavour.as_deref()), ("4bd2", Some("dev")));
-                let (_, none) = parse_inspect(r#"[{"Id":"4bd2","Labels":null}]"#).unwrap();
-                assert_eq!(none, None);
-
-                let mut facts = ImageFacts::default();
-                parse_probe(
-                    "{\"base_created\":\"2026-09-01T00:00:00Z\"}\n\n@@uki\n",
-                    &mut facts,
-                );
-                assert!(!facts.sealed);
-                assert_eq!(
-                    text(facts.base.as_ref(), "base_created"),
-                    Some("2026-09-01T00:00:00Z")
-                );
-                parse_probe("\n@@uki\ntilo-1.efi\n", &mut facts);
-                assert!(facts.sealed);
-                assert!(facts.base.is_none());
-            }
-
             {
                 let status = parse_bootc_status(STATUS).unwrap();
                 assert_eq!(status.spec, Some((layout_imgref(), "oci".to_owned())));
@@ -1338,15 +1330,6 @@ mod tests {
             }
 
             {
-                let export = export_command(
-                    "localhost/tilo-vm:latest",
-                    Path::new("/c/dev"),
-                    Path::new("/c/dev.digest"),
-                );
-                assert_eq!(
-                    export.display(),
-                    "skopeo copy --quiet --dest-oci-accept-uncompressed-layers --digestfile /c/dev.digest containers-storage:localhost/tilo-vm:latest oci:/c/dev:tilo-vm"
-                );
                 let endpoint = SshEndpoint {
                     user: "root".into(),
                     host: "127.0.0.1".into(),
@@ -1424,9 +1407,41 @@ mod tests {
         }
     }
 
+    /// A dev image as t's check leaves it: one layer, a configuration with `labels`. Returns
+    /// its manifest digest.
+    fn write_built(dir: &Path, labels: &Value, layer: &[u8]) -> String {
+        use sha2::Digest as _;
+        let oci = dir.join("oci");
+        let blobs = oci.join("blobs/sha256");
+        std::fs::create_dir_all(&blobs).unwrap();
+        let put = |bytes: &[u8]| {
+            let hex = hex::encode(sha2::Sha256::digest(bytes));
+            std::fs::write(blobs.join(&hex), bytes).unwrap();
+            (format!("sha256:{hex}"), bytes.len())
+        };
+        let (layer, layer_size) = put(layer);
+        let (config, config_size) =
+            put(&serde_json::to_vec(&json!({"config": {"Labels": labels}})).unwrap());
+        let manifest = json!({
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "config": {"mediaType": "application/vnd.oci.image.config.v1+json", "digest": config, "size": config_size},
+            "layers": [{"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip", "digest": layer, "size": layer_size}],
+        });
+        let bytes = serde_json::to_vec(&manifest).unwrap();
+        let (digest, size) = put(&bytes);
+        let index = json!({"schemaVersion": 2, "manifests": [{
+            "mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": digest, "size": size,
+            "annotations": {"org.opencontainers.image.ref.name": "tilo"}
+        }]});
+        std::fs::write(oci.join("index.json"), serde_json::to_vec(&index).unwrap()).unwrap();
+        std::fs::write(oci.join("oci-layout"), r#"{"imageLayoutVersion":"1.0.0"}"#).unwrap();
+        std::fs::write(dir.join("digest"), format!("{digest}\n")).unwrap();
+        digest
+    }
+
     fn dev_facts() -> ImageFacts {
         ImageFacts {
-            id: "abc".into(),
             flavour: Some("dev".into()),
             sealed: false,
             base: None,

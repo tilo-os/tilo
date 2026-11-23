@@ -47,11 +47,13 @@ bases; each is only what changed since the one before.
 Images imported from a network path (`tilo-vm guide platforms`) are
 cached in `~/.cache/tilo-vm/imports/`; delete one once no VM is made from it.
 
-`tilo-vm vm upgrade --from local` keeps one uncompressed copy of the VM's image
+`tilo-vm vm upgrade --from local` (and `--image` with a built image) keeps one copy of the VM's image
 on the host (`~/.cache/tilo-vm/images/<vm>/`) and one in the VM
 (`/var/lib/tilo-vm/image`), so the next upgrade sends only new layers. Either
 can be deleted; the next upgrade then sends the whole image once
-(`tilo-vm guide images`). On a Tilo OS VM or device, `tilo-cache-gc.timer` deletes the
+(`tilo-vm guide images`). What t built for this worktree (`image build`,
+`--from local`) is downloaded to its `target/tilo-vm/`, which the next build
+replaces; delete it once no VM needs it. On a Tilo OS VM or device, `tilo-cache-gc.timer` deletes the
 in-VM copy once no upgrade has used it for 14 days (the `[vm_image]` policy in
 `/etc/tilo/cache-gc.toml`), never while an upgrade holds `image.lock` or
 `vm.lock`; `tilo os status` says when it went or when it will.

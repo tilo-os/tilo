@@ -1,53 +1,24 @@
 #!/bin/bash
-# Build the Tilo dev image (os/Containerfile.dev) and a bootable dev VM disk.
+# Build the Tilo dev image (os/Containerfile.dev) FROM a production image in local storage.
 #
-#   ./os/dev/build-dev-image.sh          (or ./os/build.sh --dev)
-#   TILO_DEV_DISK=0 TILO_DEV_BASE_BUILD=auto ./os/dev/build-dev-image.sh
-#                                        (what tilo-vm vm upgrade --from local runs)
+#   TILO_DEV_BASE=localhost/tilo:ci TILO_COMPILED_DEV=DIR ./os/dev/build-dev-image.sh
 #
-# Pipeline, which CI runs too (t's os-dev-image-{arch}):
-#   0. with TILO_DEV_BASE_BUILD=auto or 1 only: the production base
-#      (os/dev/build-image.sh, TILO_IMAGE_ONLY=1). auto rebuilds it only when its
-#      inputs changed since it was built (see below).
-#   1. rootless `podman build -f os/Containerfile.dev` FROM a production image
-#      that is already in local storage. The dev binaries compile inside the
-#      build, with the production builder's toolchain.
-#   2. os/dev/build-image.sh with TILO_SKIP_BUILD=1 installs that image to
-#      $TILO_OUTPUT/qcow2/disk.qcow2. The dev image is unsealed, so this is a
-#      single `bootc install` pass with ordinary boot entries. This step needs
-#      passwordless sudo (`sudo -n`) for the loop device and mounts; without it
-#      the script stops after step 1 and prints the command to run later.
+# What t's os-dev-image-{arch} check runs (tools/ci/publish/os-image.sh dev), the one build of
+# every dev image: main's published ones, and a worktree's for `tilo-vm vm upgrade --from local`
+# and `tilo-vm image build`, which ask t for it. The disk is os-dev-disk-{arch}'s
+# (tools/ci/publish/os-dev-disk.sh). `podman build -f os/Containerfile.dev` runs rootless; its
+# dev components come compiled (os/image/compile.sh --dev, t's os-compile-dev-<arch>), so
+# nothing compiles here.
 #
 # Environment:
-#   TILO_LOCAL_TAG    tag of the local images below instead of latest, to keep
-#                     builds from different checkouts apart
-#   TILO_DEV_BASE     production image to build FROM (default localhost/tilo:latest,
-#                     what ./os/build.sh produces). A CI image works too:
-#                       podman pull registry.tilo.so/tilo/tilo:<tag>
-#                       TILO_DEV_BASE=registry.tilo.so/tilo/tilo:<tag> ./os/dev/build-dev-image.sh
-#   TILO_DEV_BASE_BUILD  0 (default): the base must exist. 1: rebuild it first.
-#                     auto (./os/build.sh --dev --local): rebuild it when it is
-#                     missing or its inputs changed. The inputs are the files the
-#                     base build reads (os/dev/base-input-paths.py), hashed from
-#                     git's index and working tree (outside a git checkout, from
-#                     the files themselves), plus the build's input variables; the
-#                     hash is the base's sh.tilo.base-inputs label. A base without
-#                     that label (built elsewhere) is used as it is. The base is
-#                     built with os/dev/local-inputs.sh, which resolves the RPM
-#                     snapshot, kernel and owner key for this machine.
+#   TILO_DEV_BASE     production image to build FROM (required), in local storage
+#   TILO_COMPILED_DEV the dev components compiled already (required)
 #   TILO_DEV_BASE_CREATED  the base's time tilo-vm orders dev bases by (RFC 3339;
 #                     default: the base's commit time, see below). A base whose
 #                     clock is its Fedora base's and RPM snapshot's
 #                     (tools/ci/publish/os-image.sh) is given its commit's time here
 #   TILO_DEV_IMAGE    tag for the dev image (default localhost/tilo-vm:latest);
 #                     must name tilo-vm, never the production image
-#   TILO_DEV_DISK     0 builds the container only (default 1)
-#   TILO_OUTPUT       disk output root (default os/output/dev)
-#   TILO_BUILD_ARGS   extra `podman build` flags, e.g. --no-cache
-#   TILO_COMPILED_DEV the dev components compiled already (os/image/compile.sh --dev,
-#                     t's os-compile-dev-<arch>); without it they are compiled here, in
-#                     the OS builder image, with the build directory and sccache kept
-#                     under os/output so a rebuild compiles only what changed
 #   TILO_DEV_ENV_RUNTIME  a sealed env-runtime directory (install-env-runtime.sh's
 #                     layout; `env-runtime.sh dev` in os-image.sh): what the dev image ships when
 #                     its base ships no published runtime. A dev image with neither
@@ -56,30 +27,23 @@
 #                     (catalog.json, keys.json; `local-model-catalog.sh dev`):
 #                     what the dev image carries in place of the base's
 #                     catalog. Without it the dev image keeps the base's
-#   TILO_DEV_RUST_LTO thin (default here) or off, for that compile
-#   TILO_DEV_CARGO_BUILD_JOBS  parallel jobs of that compile (default: a CPU per
-#                     job, as far as memory holds out at 4 GiB a thin-LTO job)
-#   TILO_DISK_SIZE    the dev disk's size (default 64G, as the published dev
-#                     disks: the dev image alone fills most of 20G; qcow2 stays
-#                     sparse)
-#   TILO_TARGET_IMGREF, TILO_ACCOUNT  passed to the disk step
+#   TILO_OUTPUT       scratch root (default os/output/dev)
+#   TILO_BUILD_ARGS   extra `podman build` flags, e.g. --no-cache
 set -euo pipefail
 
 for a in "$@"; do
   case "$a" in
-    -h|--help) sed -n '2,66p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,/^set -euo/{/^set -euo/!p}' "$0"; exit 0 ;;
     *) printf 'build-dev-image: unknown arg: %s\n' "$a" >&2; exit 2 ;;
   esac
 done
 
 _dev_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-_production_output="${TILO_OUTPUT:-$(cd "$_dev_dir/.." && pwd)/output}"
 export TILO_OUTPUT="${TILO_OUTPUT:-$(cd "$_dev_dir/.." && pwd)/output/dev}"
-export TILO_DISK="${TILO_DISK:-$TILO_OUTPUT/qcow2/disk.qcow2}"
-export TILO_DISK_SIZE="${TILO_DISK_SIZE:-64G}"
 source "$_dev_dir/_common.sh"
 
-base="${TILO_DEV_BASE:-localhost/tilo:$TILO_LOCAL_TAG}"
+base="${TILO_DEV_BASE:?TILO_DEV_BASE names the production image to build FROM}"
+[ -n "${TILO_COMPILED_DEV:-}" ] || die "TILO_COMPILED_DEV names no compiled dev components (os/image/compile.sh --dev)"
 dev_image="${TILO_DEV_IMAGE:-localhost/tilo-vm:$TILO_LOCAL_TAG}"
 case "$dev_image" in
   localhost/tilo-vm:*|registry.tilo.so/tilo/tilo-vm:*) ;;
@@ -87,104 +51,11 @@ case "$dev_image" in
   registry.tilo.so/tilo/tilo-vm:<tag>. It runs sshd and dev-overrides binaries, so it must never
   carry a production image name." ;;
 esac
-base_build="${TILO_DEV_BASE_BUILD:-0}"
-case "$base_build" in 0|1|auto) ;; *) die "TILO_DEV_BASE_BUILD must be 0, 1 or auto" ;; esac
 
 python3 "$TILO_REPO/tools/policy/check_dev_image_contract.py" --build >/dev/null \
   || { python3 "$TILO_REPO/tools/policy/check_dev_image_contract.py" --build || true; die "fix the dev image contract first (see above)"; }
 
-# What the base build reads (os/dev/base-input-paths.py): os/Containerfile's build-context
-# sources, the workspace its compile builds, and the scripts and pins the build runs. A change
-# anywhere else (docs, the VM acceptance harness, CI scripts, the dev image's own sources)
-# reuses the base.
-mapfile -t _base_paths < <(python3 "$TILO_OS_DIR/dev/base-input-paths.py" --repo "$TILO_REPO")
-[ "${#_base_paths[@]}" -gt 0 ] || die "os/dev/base-input-paths.py named no base inputs"
-_base_spec=() _base_include=() _base_exclude=()
-for _p in "${_base_paths[@]}"; do
-  case "$_p" in
-    '!'*) _base_spec+=(":(exclude)${_p#!}"); _base_exclude+=("./${_p#!}") ;;
-    *) _base_spec+=("$_p"); _base_include+=("./$_p") ;;
-  esac
-done
-# Outside a git checkout (a copy of the tree synced to a build host) the same files are
-# hashed from the tree itself, leaving out what the build context does (.containerignore's
-# big entries).
-_base_prune=(./.git ./target ./os/output ./os/output-host ./os/external-assets/cache
-  "${_base_exclude[@]}")
-tree_inputs() {
-  local prune=() p present=()
-  for p in "${_base_prune[@]}"; do prune+=(-path "$p" -o); done
-  for p in "${_base_include[@]}"; do [ -e "$TILO_REPO/$p" ] && present+=("$p"); done
-  ( cd "$TILO_REPO" && find "${present[@]}" \( "${prune[@]}" -path '*/target' -o -false \) -prune -o -type f -print0 |
-      LC_ALL=C sort -zu | xargs -0 -r sha256sum )
-}
-base_inputs() {
-  {
-    # What os/dev/local-inputs.sh does not resolve by itself.
-    printf '%s=%s\n' browser "${TILO_WITH_BROWSER:-0}" rpms "${RPMS_REF:-}" \
-      rpms-trust "${TILO_RPMS_TRUST:-}" kernel "${KERNEL_RPMS_REF:-}" \
-      kernel-trust "${TILO_KERNEL_TRUST:-}"
-    if [ "$_base_from_git" = 0 ]; then
-      tree_inputs
-    else
-      git -C "$TILO_REPO" ls-files -s -- "${_base_spec[@]}"
-      # Edited and untracked files, which the index above does not describe.
-      git -C "$TILO_REPO" ls-files -z -m -o --exclude-standard -- "${_base_spec[@]}" |
-        while IFS= read -r -d '' f; do
-          if [ -f "$TILO_REPO/$f" ]; then
-            printf '%s %s\n' "$(git -C "$TILO_REPO" hash-object -- "$f")" "$f"
-          else
-            printf 'deleted %s\n' "$f"
-          fi
-        done
-    fi
-  } | sha256sum | cut -c1-64
-}
-_base_from_git=1
-[ "$(git -C "$TILO_REPO" rev-parse --show-toplevel 2>/dev/null)" = "$TILO_REPO" ] || _base_from_git=0
-
-base_seconds=""
-if [ "$base_build" != 0 ]; then
-  case "$base" in
-    localhost/tilo:*) ;;
-    *) die "TILO_DEV_BASE_BUILD=$base_build rebuilds the base, but TILO_DEV_BASE=$base is not a local
-  production image. Use localhost/tilo:<tag>, or TILO_DEV_BASE_BUILD=0 for a CI base." ;;
-  esac
-  [ "$_base_from_git" = 1 ] \
-    || msg "0/2 base: $TILO_REPO is not a git checkout; fingerprinting its files instead"
-  want="$(base_inputs)"
-  reason=""
-  if [ "$base_build" = 1 ]; then
-    reason="TILO_DEV_BASE_BUILD=1"
-  elif ! podman image exists "$base"; then
-    reason="$base is not in local storage"
-  else
-    have="$(podman image inspect --format '{{index .Labels "sh.tilo.base-inputs"}}' "$base" 2>/dev/null || true)"
-    case "$have" in
-      "$want") msg "0/2 base: $base is current (inputs ${want:0:12}); not rebuilding it" ;;
-      ""|"<no value>") msg "0/2 base: $base carries no sh.tilo.base-inputs label (built outside this script); using it as it is. TILO_DEV_BASE_BUILD=1 rebuilds it" ;;
-      *) reason="its inputs changed (${have:0:12} -> ${want:0:12})" ;;
-    esac
-  fi
-  if [ -n "$reason" ]; then
-    msg "0/2 base: building $base, because $reason"
-    base_started=$SECONDS
-    (
-      export TILO_OUTPUT="$_production_output"
-      # shellcheck disable=SC1091
-      source "$TILO_OS_DIR/dev/local-inputs.sh"
-      TILO_IMAGE="$base" TILO_IMAGE_ONLY=1 \
-        TILO_BUILD_ARGS="${TILO_BUILD_ARGS:-} --label sh.tilo.base-inputs=$want" \
-        "$TILO_OS_DIR/dev/build-image.sh"
-    )
-    base_seconds=$(( SECONDS - base_started ))
-  fi
-fi
-
-podman image exists "$base" || die "the production base $base is not in local storage.
-  Build it with ./os/build.sh (or TILO_DEV_BASE_BUILD=auto $0), or use a CI image:
-    podman pull registry.tilo.so/tilo/tilo:<tag>
-    TILO_DEV_BASE=registry.tilo.so/tilo/tilo:<tag> $0"
+podman image exists "$base" || die "the production base $base is not in local storage"
 base_digest="$(podman image inspect --format '{{.Digest}}' "$base" 2>/dev/null || true)"
 [[ "$base_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || base_digest=""
 # The base's commit time (its org.tilo.source-date-epoch label, else .Created,
@@ -207,8 +78,7 @@ mkdir -p "$TMPDIR"
 export TMPDIR
 
 # The dev packages come from the snapshot the base was built from: the one its
-# org.tilo.rpms.ref label records (a base built here may use a local snapshot,
-# which nothing else resolves), else the published one for this commit.
+# org.tilo.rpms.ref label records, else the published one for this commit.
 rpms_ref="${RPMS_REF:-}"
 if [ -z "$rpms_ref" ]; then
   rpms_ref="$(podman image inspect --format '{{index .Labels "org.tilo.rpms.ref"}}' "$base" 2>/dev/null || true)"
@@ -233,41 +103,9 @@ stage_context() {
   printf '%s\n' "$context"
 }
 
-# The dev components, compiled outside the image build: os/image/compile.sh --dev in the OS
-# builder image, rootless, with cargo's home, the build directory and sccache kept under
-# os/output, so a rebuild compiles only what changed. TILO_COMPILED_DEV names a tree compiled
-# already (t's os-compile-dev-<arch>).
-if [ -z "${TILO_COMPILED_DEV:-}" ]; then
-  builder=localhost/tilo-os-builder:latest cache="$TILO_OUTPUT/compile-cache"
-  mkdir -p "$cache/cargo-home" "$cache/dev-target" "$cache/sccache" "$TILO_OUTPUT/compiled-dev"
-  "$TILO_OS_DIR/dev/cache-github-assets.sh" >/dev/null
-  builder_context=$(stage_context "$TILO_OS_DIR/Containerfile")
-  podman build "${TILO_PODMAN_BUILD_FLAGS[@]}" -f "$TILO_OS_DIR/Containerfile" --target builder-base -t "$builder" \
-    --build-context "github-assets=$TILO_REPO/os/external-assets/cache" \
-    --build-arg "BASE_REF=$dev_compile_base" --build-arg "RPMS_REF=$rpms_ref" "$builder_context"
-  podman run --rm --security-opt label=disable $(keep_id_args) -v "$TILO_REPO:/src" -w /src \
-    -v "$cache/cargo-home:/cargo-home" -v "$cache/dev-target:/build-target" -v "$cache/sccache:/sccache" \
-    -v "$TILO_OUTPUT/compiled-dev:/compiled-dev" \
-    -e CARGO_HOME=/cargo-home -e CARGO_TARGET_DIR=/build-target -e SCCACHE_DIR=/sccache -e RUSTC_WRAPPER=sccache \
-    -e TILO_DEV_RUST_LTO="${TILO_DEV_RUST_LTO:-thin}" \
-    -e TILO_CARGO_FRESHNESS="${TILO_CARGO_FRESHNESS:-content}" \
-    -e CARGO_BUILD_JOBS="${TILO_DEV_CARGO_BUILD_JOBS:-$(cargo_build_jobs 4)}" \
-    "$builder" bash os/image/compile.sh --dev /compiled-dev
-  TILO_COMPILED_DEV="$TILO_OUTPUT/compiled-dev"
-fi
+# The dev components, compiled outside the image build (t's os-compile-dev-<arch>).
 
 # The env-runtime the dev image ships when its base ships none; an empty directory gives none.
-# With none published for this checkout's os/Containerfile.env-runtime and none given, it is
-# built here from the RPM snapshot the base was built from, as t's env-runtime-dev does, with
-# the packer the base's compile left (a base built elsewhere needs TILO_DEV_ENV_RUNTIME).
-if [ -z "${TILO_DEV_ENV_RUNTIME:-}" ] && [ -n "$rpms_ref" ] \
-    && ! "$TILO_OS_DIR/dev/resolve-env-runtime.sh" --exists >/dev/null 2>&1 \
-    && [ -x "$TILO_OUTPUT/compiled/tilo-app-package" ]; then
-  msg "no env-runtime published for this checkout: building one from $rpms_ref"
-  bash "$TILO_REPO/tools/ci/publish/env-runtime.sh" local-dev "$(uname -m)" "$rpms_ref" \
-    "$TILO_OUTPUT/compiled" "$TILO_OUTPUT/env-runtime"
-  TILO_DEV_ENV_RUNTIME="$TILO_OUTPUT/env-runtime"
-fi
 if [ -n "${TILO_DEV_ENV_RUNTIME:-}" ]; then
   dev_env_runtime="$(realpath "$TILO_DEV_ENV_RUNTIME")"
 else
@@ -286,7 +124,7 @@ else
   mkdir -p "$dev_model_catalog"
 fi
 
-msg "1/2 podman build $dev_image FROM $base${base_digest:+ ($base_digest)}"
+msg "podman build $dev_image FROM $base${base_digest:+ ($base_digest)}"
 dev_started=$SECONDS
 dev_context=$(stage_context "$TILO_OS_DIR/Containerfile.dev")
 podman build "${TILO_PODMAN_BUILD_FLAGS[@]}" -f "$TILO_OS_DIR/Containerfile.dev" \
@@ -304,18 +142,4 @@ podman build "${TILO_PODMAN_BUILD_FLAGS[@]}" -f "$TILO_OS_DIR/Containerfile.dev"
   "${_extra_build_args[@]}" \
   --tag "$dev_image" \
   "$dev_context"
-msg "built $dev_image in $(( SECONDS - dev_started ))s${base_seconds:+ (base: ${base_seconds}s)}"
-
-disk_command="TILO_IMAGE=$dev_image TILO_SKIP_BUILD=1 TILO_OUTPUT=$TILO_OUTPUT $TILO_OS_DIR/dev/build-image.sh"
-if [ "${TILO_DEV_DISK:-1}" = 0 ]; then
-  msg "DONE: $dev_image (TILO_DEV_DISK=0: no disk). Write one later with:
-  $disk_command
-  or move a running dev VM onto it: tilo-vm vm upgrade --from local:$dev_image"
-  exit 0
-fi
-sudo -n true 2>/dev/null || die "the disk step needs passwordless sudo (sudo -n) for its loop device and
-  mounts. $dev_image is built; write the disk from a shell that has it:
-  $disk_command"
-
-msg "2/2 disk image of $dev_image -> $TILO_DISK"
-TILO_IMAGE="$dev_image" TILO_SKIP_BUILD=1 exec "$TILO_OS_DIR/dev/build-image.sh"
+msg "built $dev_image in $(( SECONDS - dev_started ))s"

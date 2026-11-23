@@ -37,7 +37,7 @@
 #     greeter, installer, rollback) is all still there, so this is the image to
 #     build when the question is "does it boot?". Default is the full image.
 #   * TILO_IMAGE_ONLY=1 builds the container and stops: the base a dev image is
-#     derived from (os/dev/build-dev-image.sh, tilo-vm vm upgrade --from local).
+#     derived from (os/dev/build-dev-image.sh).
 #   * TILO_ENCRYPT_INSTALL=1 installs onto a LUKS2 root (the desktop installer's
 #     os/usr/libexec/tilo-disk-encrypt layout) with its recovery key in
 #     $OUTDIR/recovery-key.txt. It is for images that boot split kernel/initrd

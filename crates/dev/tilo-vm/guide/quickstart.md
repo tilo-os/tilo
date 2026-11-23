@@ -139,12 +139,11 @@ is for looking around; it refuses writes into `/usr`, `/etc`, `/boot` and
 tilo-vm's state unless you pass `--raw`.
 
 Changed a Containerfile, a unit, `/etc` or the package list instead of a
-component? `tilo-vm vm upgrade --from local` rebuilds the image and moves the
-running VM onto it; `tilo-vm image build` on another machine builds it there
-instead, for `tilo-vm vm upgrade --image
-target/tilo-vm/image` (`tilo-vm image disk` then writes a disk from it for `vm create --image`); once CI
-has built the commit, `tilo-vm vm upgrade --from sha:<commit>` moves it onto
-CI's build without building the OS here (`tilo-vm guide images`).
+component? `tilo-vm vm upgrade --from local` builds this worktree's image on t
+and moves the running VM onto it; `tilo-vm image build --disk` builds the image
+and a disk of it on t for `vm create --image`; once main has published the
+commit, `tilo-vm vm upgrade --from sha:<commit>` moves the VM onto that build
+(`tilo-vm guide images`).
 
 Next: `tilo-vm guide concepts`, `tilo-vm guide swapping`,
 `tilo-vm guide driving`, `tilo-vm guide images`, `tilo-vm guide fedora-loop`

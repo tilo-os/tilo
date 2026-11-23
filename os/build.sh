@@ -10,15 +10,9 @@
 #                                        one, the pinned or newest CI kernel or a
 #                                        local one, the non-production owner key,
 #                                        no browser. Nothing to set by hand.
-#   ./os/build.sh --dev                  the dev VM image (os/Containerfile.dev)
-#                                        and its disk, FROM an already built
-#                                        localhost/tilo:latest; see
-#                                        os/dev/build-dev-image.sh
-#   ./os/build.sh --dev --local          the same, building localhost/tilo:latest
-#                                        first with --local's inputs, only when
-#                                        its inputs changed. TILO_DEV_DISK=0 for
-#                                        the container alone (what
-#                                        tilo-vm vm upgrade --from local runs).
+#
+# The dev VM image and its disk are t's os-dev-image-ARCH and os-dev-disk-ARCH checks:
+# `tilo device image build --disk` builds them for this worktree.
 #
 # This is a wrapper around os/dev/build-image.sh, which is the one implementation.
 # It used to be a second one, and that is a hazard rather than a duplication:
@@ -32,20 +26,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-dev=0; local_inputs=0; rest=()
+local_inputs=0; rest=()
 for a in "$@"; do
   case "$a" in
-    --dev) dev=1 ;;
+    --dev) echo "the dev image is built on t: tilo device image build --disk (tilo device guide images)" >&2; exit 2 ;;
     --local) local_inputs=1 ;;
     *) rest+=("$a") ;;
   esac
 done
-
-if [ "$dev" = 1 ]; then
-  echo "=== Building Tilo Dev Image ==="
-  [ "$local_inputs" = 0 ] || export TILO_DEV_BASE_BUILD="${TILO_DEV_BASE_BUILD:-auto}"
-  exec "$SCRIPT_DIR/dev/build-dev-image.sh" "${rest[@]}"
-fi
 
 echo "=== Building Tilo Image ==="
 if [ "$local_inputs" = 1 ]; then

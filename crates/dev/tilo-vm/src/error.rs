@@ -7,8 +7,6 @@ use tilo_vm_protocol::RpcError;
 use crate::host::Missing;
 use crate::remote::LOCAL_DAEMON;
 
-pub const LOCAL_BUILD_SCRIPT: &str = "os/dev/build-dev-image.sh";
-
 // Images are public on registry.tilo.so: pulls need no login. Only dev disk
 // downloads, from the forge's package registry, need a credential.
 
@@ -22,16 +20,11 @@ pub const NOT_BOOTC_FIX: &str = "create a VM from a dev image instead: tilo-vm v
 
 const UNCHECKED_BOOTC: &str = "whether it runs a bootc dev image could not be checked";
 
-pub fn no_disk_help(local_build: Option<&str>) -> String {
-    let local = match local_build {
-        Some(script) => format!(
-            "or build a disk locally: {script}, then tilo-vm vm create <name> --image <disk.qcow2>   |   or run tilo-vm image build on a build machine, bring back target/tilo-vm/image, write its disk here: tilo-vm image disk, then tilo-vm vm create <name> --image target/tilo-vm/disk.qcow2 (tilo-vm guide images)"
-        ),
-        None => format!(
-            "no local dev-image build is available in this checkout ({LOCAL_BUILD_SCRIPT} is missing)"
-        ),
-    };
-    format!("ask a human for a shared VM and use it: tilo-vm vm use <name>   |   {local}")
+pub fn no_disk_help() -> String {
+    format!(
+        "ask a human for a shared VM and use it: tilo-vm vm use <name>   |   or build a disk of this worktree on t: tilo-vm image build --disk, then tilo-vm vm create <name> --image target/tilo-vm/target/publish/os-dev-disk/{arch}/disk/disk.qcow2 (tilo-vm guide images)",
+        arch = std::env::consts::ARCH
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,18 +188,13 @@ pub enum CliError {
         bootc: Option<bool>,
     },
     #[error("no dev disk is published for tag '{tag}' ({url})")]
-    NoDiskPublished {
-        tag: String,
-        url: String,
-        local_build: Option<String>,
-    },
+    NoDiskPublished { tag: String, url: String },
     #[error("tag '{tag}' has no {format} disk for {arch} (published: {})", if available.is_empty() { "none".to_owned() } else { available.join(", ") })]
     NoDiskForHost {
         tag: String,
         arch: String,
         format: String,
         available: Vec<String>,
-        local_build: Option<String>,
     },
     #[error("the {} adapter cannot run here: {}", .0.adapter, .0.detail)]
     NoHypervisor(Missing),
@@ -472,16 +460,14 @@ impl CliError {
                     format!("{image}   |   or swap a CI build: --from ci:<tag>")
                 }
             }
-            Self::NoDiskPublished { tag, local_build, .. } if tag != "(any)" => format!(
+            Self::NoDiskPublished { tag, .. } if tag != "(any)" => format!(
                 "pick a published tag (tilo-vm vm create <name> without --tag takes the newest)   |   {}",
-                no_disk_help(local_build.as_deref())
+                no_disk_help()
             ),
-            Self::NoDiskPublished { local_build, .. } => no_disk_help(local_build.as_deref()),
-            Self::NoDiskForHost {
-                arch, local_build, ..
-            } => format!(
-                "each architecture publishes on its own, so {arch}'s job may still be running or may have failed: fgj run list -R tilo/tilo   |   pick a tag that has one: tilo-vm vm create <name> --tag <tag>   |   {}",
-                no_disk_help(local_build.as_deref())
+            Self::NoDiskPublished { .. } => no_disk_help(),
+            Self::NoDiskForHost { arch, .. } => format!(
+                "each architecture publishes on its own, so {arch}'s check may still be running or may have failed: t main   |   pick a tag that has one: tilo-vm vm create <name> --tag <tag>   |   {}",
+                no_disk_help()
             ),
             Self::NoHypervisor(missing) => missing.fix.clone(),
             Self::ImageNotFound { .. } => {
@@ -558,7 +544,7 @@ impl CliError {
             ),
             Self::ImageRefused { fix, .. } | Self::Branch { fix, .. } => fix.clone(),
             Self::BaseOlder { .. } => {
-                "rebuild the base from this worktree: tilo-vm vm upgrade --from local --rebuild-base   |   or rebase onto a newer commit   |   or, to go back on purpose: add --allow-older-base".into()
+                "rebase onto a newer commit and build again: tilo-vm vm upgrade --from local   |   or a published image: tilo-vm vm upgrade   |   or, to go back on purpose: add --allow-older-base".into()
             }
             Self::Io { .. } => "check the path and permissions named above; tilo-vm doctor checks the setup".into(),
             Self::ScenarioMedium { .. } => {
@@ -851,19 +837,16 @@ mod tests {
             CliError::NoDiskPublished {
                 tag: "main-abc1234".into(),
                 url: "https://x/tilo-vm-disk.json".into(),
-                local_build: None,
             },
             CliError::NoDiskPublished {
                 tag: "(any)".into(),
                 url: "u".into(),
-                local_build: Some("/w/os/dev/build-dev-image.sh".into()),
             },
             CliError::NoDiskForHost {
                 tag: "t".into(),
                 arch: "aarch64".into(),
                 format: "qcow2".into(),
                 available: vec!["x86_64 qcow2".into()],
-                local_build: None,
             },
             CliError::NoHypervisor(Missing {
                 adapter: "libvirt".into(),
@@ -1139,23 +1122,12 @@ mod tests {
                 let without = CliError::NoDiskPublished {
                     tag: "(any)".into(),
                     url: "u".into(),
-                    local_build: None,
                 }
                 .hint();
                 assert!(without.contains("tilo-vm vm use <name>"), "{without}");
                 assert!(
-                    without.contains("no local dev-image build is available in this checkout"),
+                    without.contains("tilo-vm image build --disk"),
                     "{without}"
-                );
-                let with = CliError::NoDiskPublished {
-                    tag: "(any)".into(),
-                    url: "u".into(),
-                    local_build: Some("/w/os/dev/build-dev-image.sh".into()),
-                }
-                .hint();
-                assert!(
-                    with.contains("build a disk locally: /w/os/dev/build-dev-image.sh"),
-                    "{with}"
                 );
             }
 

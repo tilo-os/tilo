@@ -253,7 +253,7 @@ case ${1:-} in
       below=$scratch/dev-base/oci
     fi
     phase build
-    SOURCE_DATE_EPOCH=$epoch TILO_DEV_BASE=localhost/tilo:ci TILO_DEV_IMAGE=localhost/tilo-vm:ci TILO_DEV_DISK=0 \
+    SOURCE_DATE_EPOCH=$epoch TILO_DEV_BASE=localhost/tilo:ci TILO_DEV_IMAGE=localhost/tilo-vm:ci \
       TILO_DEV_BASE_CREATED=$base_created \
       TILO_COMPILED_DEV=$compiled \
       TILO_DEV_ENV_RUNTIME=/target/publish/env-runtime/dev/$arch \

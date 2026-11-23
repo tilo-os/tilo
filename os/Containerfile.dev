@@ -45,9 +45,9 @@
 #         --build-arg BASE_IMAGE=registry.tilo.so/tilo/tilo:<tag> \
 #         -t localhost/tilo-vm:latest .
 #
-# os/dev/build-dev-image.sh (./os/build.sh --dev) does that for the local
-# production image and then writes a disk. CI builds the same image in t's
-# os-dev-image-{arch} check FROM the os-image-{arch} of the same tree.
+# t's os-dev-image-{arch} check builds it (os/dev/build-dev-image.sh) FROM the
+# os-image-{arch} of the same tree, for main's published images and for a
+# worktree's (`tilo device image build`), and os-dev-disk-{arch} installs it.
 # ============================================================================
 
 # The production image to derive from: `localhost/tilo:latest` (./os/build.sh),
@@ -229,7 +229,7 @@ COPY --from=dev-tools-tree /out-tools/ /
 # ---- Dev binaries -----------------------------------------------------------
 # Compiled outside any image build, as the production binaries are: os/image/compile.sh --dev
 # in the OS builder image (the base and RPM snapshot with the toolchains), with t's compiler
-# cache and warm build directories on t, or os/output's locally (os/dev/build-dev-image.sh).
+# cache and warm build directories (t's os-compile-dev-<arch>).
 # The tree comes in as the `compiled-dev` build context: the components with their dev
 # features, as os/scripts/install-components.py --dev names them.
 FROM scratch AS dev-builder
@@ -324,5 +324,10 @@ RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
     && bash /run/tilo-dev/os/scripts/verify-boot-ordering.sh \
     && bootc container lint
 
+# The production base it was built FROM, as base.json records it: tilo-vm reads these from the
+# image's configuration and refuses to move a VM onto an older base than the one it runs.
 LABEL sh.tilo.image.flavour="dev" \
+      sh.tilo.base.image="${BASE_IMAGE}" \
+      sh.tilo.base.digest="${TILO_BASE_DIGEST}" \
+      sh.tilo.base.created="${TILO_BASE_CREATED}" \
       org.opencontainers.image.title="Tilo dev image (not for production)"

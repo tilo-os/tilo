@@ -6,6 +6,7 @@ packages, the pieces `os/components.toml` does not list. For those, rebuild the
 image and move the running VM onto it:
 
 ```sh
+tilo-vm vm upgrade --from local        # this worktree's image, built on t
 tilo-vm vm upgrade --from sha:1a2b3c4  # main's build of a commit, the same way
 tilo-vm vm upgrade                     # back to the VM's channel's newest image
 tilo-vm vm rollback-image              # back to the image before, if the new one is bad
@@ -43,7 +44,7 @@ needed and how much is free.
 |---|---|
 | a component `os/components.toml` lists (tilo-session, fs, an app, ...) | `tilo-vm swap <component>`: seconds, no reboot (`tilo-vm guide swapping`) |
 | anything else, on main | `tilo-vm vm upgrade --from sha:<commit>` |
-| anything else, on a branch | `tilo-vm vm upgrade --from local`, or build on another machine (below) and `vm upgrade --image target/tilo-vm/image` |
+| anything else, on a branch | `tilo-vm vm upgrade --from local` |
 
 Swap whatever it can swap. An image upgrade reboots the VM and restarts every
 account's session, including other agents'.
@@ -58,32 +59,44 @@ published in `registry.tilo.so/tilo/tilo-vm`:
 | `<arch>-ci`, `<board>-ci` | the dev channel: main's newest guarded image |
 | `main-<sha7>-ci-<arch>`, `main-<sha7>-<board>` | main's build of one commit |
 
-`--from sha:<commit>` takes the build of that commit: main's dev image, else a
-dev image built here from that commit's integration image (`tilo-ci`), found by
-listing its tags. A pinned build lasts until the VM's
+`--from sha:<commit>` takes main's dev image of that commit; a commit main has
+not published (a branch's, or one whose checks failed) is built on t from a
+checkout of it with `--from local`. A pinned build lasts until the VM's
 channel publishes something newer; `tilo-vm vm upgrade` without an image returns
 to the channel at once. To see what exists:
 `skopeo list-tags docker://registry.tilo.so/tilo/tilo-vm`.
 
-## A disk of this tree, from t
+## This tree's image and disk, from t
 
-The published disk is main's, moved when the publishing job passes; when you
-need a disk of the commit you are on (or the channel has not moved), `t`
-builds the same disk for this tree on the build server and fetches it:
+t builds every dev image and disk: main's published ones and yours. The checks
+that publish main's build this worktree's state, uncommitted edits included, on
+a build server of the image's architecture, and `tilo-vm` downloads the result:
 
 ```sh
-t outputs os-dev-disk-x86_64 --to ~/tilo-disks
-tilo-vm vm create dev \
-  --image ~/tilo-disks/target/publish/os-dev-disk/x86_64/disk/disk.qcow2 --gl
+tilo-vm vm upgrade --from local      # build the image for the VM's architecture, move the VM onto it
+tilo-vm image build                  # just build it: target/tilo-vm/target/publish/os-dev/<arch>
+tilo-vm image build --disk           # and a disk of it, for a new VM:
+tilo-vm vm create dev --image target/tilo-vm/target/publish/os-dev-disk/x86_64/disk/disk.qcow2 --gl
+tilo-vm image build --arch aarch64   # for an ARM VM or board, from any host
+tilo-vm vm upgrade --image target/tilo-vm/target/publish/os-dev/x86_64   # one image build left
 ```
 
-It installs this tree's dev image onto a disk with `os/dev/build-image.sh` in a
-micro-VM step, the script the published disk comes from too; `--to` keeps the
-check's output path (`/target/...`) under the directory. `os-dev-disk-lean-x86_64`
-is the same disk from the development-loop image, which skips the local model
-runtimes and the commit, so it is the faster one to ask for while working on
-the disk or the desktop. Nothing is published and the disk is uncompressed (a
-64 GiB sparse qcow2); run the check once and reuse the file for every VM.
+The image is t's `os-dev-image-<arch>` check, the disk `os-dev-disk-<arch>`:
+the same build, from the same `os/image` pieces and `os/Containerfile.dev`,
+that main's dev channel publishes. t keeps every step's answer by what it reads,
+so after a one-crate change only that crate's binaries and the layers above them
+build again, and a change under `os/` that no binary reads compiles nothing.
+Nothing compiles here, and no podman, sudo or loop device is needed; only `t`
+(CONTRIBUTING.md says how to set it up). The build's progress shows here, and
+a failed one names its step: `t log os-dev-image-<arch>` has the whole log.
+
+`--lean` builds the development loop's image and disk instead
+(`os-dev-image-lean-<arch>`): no local model runtimes and no commit named, so
+they build faster while working on the disk or the desktop. Their base carries
+the OS image's clock rather than the commit's, so a VM on a newer published
+image takes a lean image only with `--allow-older-base`; `--from local` builds
+the full one. Disks are uncompressed (a 64 GiB sparse qcow2): build one once and
+make every VM from it.
 
 ## Windows support (Proton) on a dev image
 
@@ -128,91 +141,27 @@ On a check server, `t test os-vm-x86_64` from a tree that differs from main
 gives a VM to reach with `t vm ssh` (a VM of main's own result takes no
 connections); move it onto the published image with `bootc switch` first.
 
-## Building somewhere else: `tilo-vm image build`
-
-The local builds below (`image build`, `--from local`, `--image <layout>`) are the
-temporary path for an image t cannot yet publish from a branch: they send an
-unsigned image over SSH instead of the device's signed update path, and go away
-once every branch can be published.
-
-`tilo-vm image build` runs the same build as `--from local` without a VM and
-leaves the dev image as an OCI layout, `target/tilo-vm/image`, with its
-`.facts` and `.digest` beside it. `vm upgrade --image <that layout>` moves a VM
-onto it. `tilo-vm image disk` writes a dev disk from it,
-`target/tilo-vm/disk.qcow2` (`image build --disk` does both in one go), for
-`vm create --image`.
-
-A laptop does not have to compile the OS: run `image build` on a build
-machine, in a copy of the worktree inside the dev build container, and bring
-`target/tilo-vm` back:
-
-```sh
-# on the build machine, in the synced worktree:
-export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)   # the commit time dates the image (needed without git)
-tilo-vm image build
-# back here, after syncing target/tilo-vm:
-tilo-vm vm upgrade --image target/tilo-vm/image       # new layers into the VM, reboot
-
-# no VM yet, and no published disk to create one from:
-tilo-vm image disk                                    # here: loop device, sudo
-tilo-vm vm create dev --image target/tilo-vm/disk.qcow2 && tilo-vm vm start
-```
-
-- Sync the worktree over, uncommitted edits included, and mirror
-  `target/tilo-vm` back incrementally (rsync or similar): blobs the laptop has
-  stay, only new layers cross.
-- On the build machine the build is incremental like a local one: the base is
-  rebuilt only when its inputs changed (outside a git checkout its files are
-  fingerprinted directly), podman's layer cache and the compile's build
-  directory and sccache under os/output (os/image/compile.sh runs outside the
-  image build) keep everything else, and a failed step reruns on its own.
-- The nested podman keeps its image store in whatever directory the build
-  container binds at `/var/lib/containers`; a persistent directory there is the
-  whole cache.
-- The disk is written where loop devices are, not in a rootless build
-  container. A new disk replaces `target/tilo-vm/disk.qcow2`,
-  which backs any VM made from it: keep a VM current with `vm upgrade
-  --image`, and write a disk only for a new VM.
-
-## Building the base here
-
-`--from local` builds the production base `localhost/tilo:latest` itself when
-its inputs changed, with the same `os/Containerfile` and scripts CI uses. Local
-builds link without LTO (`TILO_RUST_LTO=off`, recorded in the image's
-`org.tilo.rust-lto` label) and keep the Rust target cache between builds, so
-after a one-crate change only the binaries that depend on it are relinked, and
-a change under `os/` that no binary reads does not recompile at all. Published
-images use thin LTO.
-
 ## What `--from local` does
 
-1. **Build**, with `os/dev/build-dev-image.sh` (`TILO_DEV_DISK=0`), which is
-   also `./os/build.sh --dev --local`:
-   - the production base `localhost/tilo:latest` is rebuilt only when its inputs
-     changed: every file of its build context except the dev-image-only
-     sources (`os/Containerfile.dev`, `os/dev-image/`, ...), hashed from git and
-     compared with the base's `sh.tilo.base-inputs` label. The inputs for this
-     machine (RPM snapshot, kernel, the non-production owner key, no browser)
-     are resolved by `os/dev/local-inputs.sh`, which says what it chose and why;
-   - the dev image `localhost/tilo-vm:latest` is rebuilt FROM it with podman's
-     layer cache, so only the steps after your change run. Editing `/etc`, a
-     unit or `os/dev-image/` does not recompile the dev binaries: that stage
-     copies only what cargo reads.
-2. **Check** the image: named `localhost/tilo-vm:<tag>` (never a production
-   name), labelled `sh.tilo.image.flavour=dev`, and not sealed (no UKI under
-   `/boot/EFI/Linux`). Its production base must not be older than the VM's
-   (`base_created` in `/usr/share/tilo-vm/base.json`); `--allow-older-base`
-   goes back on purpose.
-3. **Send only new layers.** `skopeo` writes the image into an OCI layout on
-   this host (`~/.cache/tilo-vm/images/<vm>/`, reusing every blob it already
-   has), `rsync` mirrors it to `/var/lib/tilo-vm/image` in the VM over the
-   VM's SSH (only new blobs cross), and bootc imports only the layers its store
-   lacks.
+1. **Build** this worktree's dev image on t for the VM's architecture
+   (`os-dev-image-<arch>`), into `target/tilo-vm/` of the worktree.
+2. **Check** the image, from its own labels: a dev image
+   (`sh.tilo.image.flavour=dev`), not sealed (a board image, whose UKI carries
+   its device tree, says `sh.tilo.image.sealed=true`), and built FROM a
+   production base no older than the VM's (`sh.tilo.base.created`, compared
+   with `base_created` in the VM's `/usr/share/tilo-vm/base.json`);
+   `--allow-older-base` goes back on purpose.
+3. **Send only new layers.** The image's blobs it lacks are copied into an OCI
+   layout on this host (`~/.cache/tilo-vm/images/<vm>/`), `rsync` mirrors it
+   to `/var/lib/tilo-vm/image` in the VM over the VM's SSH (only new blobs
+   cross), and bootc imports only the layers its store lacks.
 4. **Switch and reboot**: `bootc switch --transport oci
    /var/lib/tilo-vm/image:tilo-vm` (then `bootc upgrade` on later runs) under
    the VM lock, a reboot, and a wait for a new boot, SSH and tilo-vmd. The
    report names the booted digest, the image kept for rollback and each phase's
    time.
+
+`--image <dir>` with what `image build` left does steps 2 to 4.
 
 Why an OCI layout and not a registry: it needs nothing but the SSH every other
 command uses, so it works the same under libvirt, UTM and Hyper-V; there is no
@@ -220,10 +169,8 @@ registry container to keep running, no port to forward into the VM and no
 insecure-registry setting to add to the image.
 
 ```sh
-tilo-vm vm upgrade --from local --rebuild-base        # rebuild the base even if it looks current
-tilo-vm vm upgrade --from local --base registry.tilo.so/tilo/tilo:main-1a2b3c4   # a CI base, as it is
-tilo-vm vm upgrade --from local:localhost/tilo-vm:mine   # an image already built; no build
 tilo-vm vm upgrade --from local --no-reboot            # stage only; boots at the next restart
+tilo-vm vm upgrade --from local --allow-older-base     # a branch older than the VM's image
 ```
 
 ## Going back
@@ -237,7 +184,7 @@ gone; rebuild it or upgrade to a published one:
 
 ## Storage
 
-The host keeps one uncompressed copy of the image per VM in
+The host keeps one copy of the image per VM in
 `~/.cache/tilo-vm/images/<vm>/`, and the VM one in `/var/lib/tilo-vm/image`;
 both are what makes the next upgrade send only the difference. Deleting either
 is safe: the next upgrade sends the whole image once.
@@ -245,10 +192,12 @@ is safe: the next upgrade sends the whole image once.
 ## When it refuses
 
 - **not named as a dev image** or **not a dev image**: a production image
-  (`localhost/tilo:latest`, `registry.tilo.so/tilo/tilo:*`) is sealed and has no
-  sshd or tilo-vmd. Build the dev image FROM it: `--from local`.
-- **is sealed**: the image carries a UKI; only `os/Containerfile.dev` output
-  (which unseals its base) can go into a dev VM.
-- **older base**: your `localhost/tilo:latest` predates the VM's base.
-  `--rebuild-base`, rebase, or `--allow-older-base`.
+  (`registry.tilo.so/tilo/tilo:*`, or `os-image-<arch>`'s layout) is sealed
+  and has no sshd or tilo-vmd. Build the dev image FROM it: `--from local`.
+- **is sealed**: the image carries a UKI (a board image); only
+  `os/Containerfile.dev` output (which unseals its base) can go into a dev VM.
+- **older base**: this worktree's commit predates the VM's base. Rebase,
+  move onto a published image, or `--allow-older-base`.
+- **t is missing**: `tilo-vm` builds images only on t; set it up
+  (CONTRIBUTING.md) or move onto a published image.
 - **busy**: a swap, gc or another upgrade holds the VM lock; wait and rerun.

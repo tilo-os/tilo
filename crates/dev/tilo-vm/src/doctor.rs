@@ -239,11 +239,7 @@ pub fn credential_checks(token: Option<&Token>) -> Vec<Check> {
     vec![forge]
 }
 
-pub fn disk_check(
-    listing: Result<(u16, String), CliError>,
-    token: Option<&Token>,
-    local_build: Option<&str>,
-) -> Check {
+pub fn disk_check(listing: Result<(u16, String), CliError>, token: Option<&Token>) -> Check {
     let name = "published disk";
     match listing {
         Ok((200, body)) => match disk::newest_tag(&body) {
@@ -259,7 +255,7 @@ pub fn disk_check(
             None => Check::warn(
                 name,
                 "no dev disk is published yet: vm create cannot download one",
-                no_disk_help(local_build),
+                no_disk_help(),
             ),
         },
         Ok((status @ (401 | 403), _)) => {
@@ -281,11 +277,6 @@ pub fn disk_check(
             error.hint(),
         ),
     }
-}
-
-pub fn local_build(root: &Path) -> Option<String> {
-    let script = root.join(crate::error::LOCAL_BUILD_SCRIPT);
-    script.is_file().then(|| script.display().to_string())
 }
 
 #[cfg(unix)]
@@ -555,7 +546,7 @@ mod tests {
             }
         }
 
-        phase doctor_explains_credentials_disks_and_local_builds;
+        phase doctor_explains_credentials_and_disks;
         {
             {
                 let token = Token {
@@ -578,20 +569,17 @@ mod tests {
                 };
                 let listing =
                     r#"[{"name":"tilo-vm-disk","version":"main-1a2b3c4","created_at":"2026-09-22"}]"#;
-                let ok = disk_check(Ok((200, listing.into())), Some(&token), None);
+                let ok = disk_check(Ok((200, listing.into())), Some(&token));
                 assert_eq!(ok.state, "ok");
                 assert!(ok.detail.contains("main-1a2b3c4"));
-                let none = disk_check(Ok((200, "[]".into())), Some(&token), None);
+                let none = disk_check(Ok((200, "[]".into())), Some(&token));
                 assert_eq!(none.state, "warn");
                 let fix = none.fix.unwrap();
                 assert!(fix.contains("tilo-vm vm use <name>"), "{fix}");
-                assert!(
-                    fix.contains("no local dev-image build is available"),
-                    "{fix}"
-                );
-                let hidden = disk_check(Ok((200, "[]".into())), None, None);
+                assert!(fix.contains("tilo-vm image build --disk"), "{fix}");
+                let hidden = disk_check(Ok((200, "[]".into())), None);
                 assert!(hidden.fix.unwrap().contains("FORGEJO_TOKEN"));
-                let refused = disk_check(Ok((401, String::new())), Some(&token), None);
+                let refused = disk_check(Ok((401, String::new())), Some(&token));
                 assert!(refused.fix.unwrap().contains("token from fgj"));
                 let offline = disk_check(
                     Err(CliError::ToolMissing {
@@ -599,21 +587,8 @@ mod tests {
                         purpose: "p".into(),
                     }),
                     None,
-                    None,
                 );
                 assert_eq!(offline.state, "warn");
-            }
-
-            {
-                let dir = tempfile::tempdir().unwrap();
-                assert_eq!(local_build(dir.path()), None);
-                std::fs::create_dir_all(dir.path().join("os/dev")).unwrap();
-                std::fs::write(dir.path().join("os/dev/build-dev-image.sh"), "").unwrap();
-                assert!(
-                    local_build(dir.path())
-                        .unwrap()
-                        .ends_with("os/dev/build-dev-image.sh")
-                );
             }
         }
     }

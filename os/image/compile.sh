@@ -106,7 +106,7 @@ if [[ ${1:-} == --dev ]]; then
   # below). Under t (`cargo`, the default) a job's sources are stamped newer wherever they
   # changed, and hashing every file would make the whole checkout this step's reads, so any
   # commit would run it again. A kept target directory fed a tree whose times were rewritten or
-  # kept from the checkout (os/dev/build-dev-image.sh) asks for `content`.
+  # kept from the checkout asks for `content`.
   : "${TILO_CARGO_FRESHNESS:=cargo}"
   dev_built_sources="$CARGO_TARGET_DIR/.tilo-built-sources-dev"
   case "$TILO_CARGO_FRESHNESS" in

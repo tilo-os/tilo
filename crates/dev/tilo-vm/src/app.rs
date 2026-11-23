@@ -24,8 +24,9 @@ use crate::ci;
 use crate::cicache;
 use crate::cli::{
     AccountAppsCommand, AccountCommand, AddArgs, Builder, Command, CreateArgs, DeviceCommand,
-    FlightCommand, GamepadCommand, ImageCommand, InputCommand, PenCommand, QemuCommand,
-    ScenarioCommand, SeatCommand, TouchCommand, TouchpadCommand, UpgradeArgs, VmCommand,
+    FlightCommand, GamepadCommand, ImageBuildArgs, ImageCommand, InputCommand, PenCommand,
+    QemuCommand, ScenarioCommand, SeatCommand, TouchCommand, TouchpadCommand, UpgradeArgs,
+    VmCommand,
 };
 use crate::config::{self, DirectKernel, Registry, Source, VmEntry, WORKTREE_FILE};
 use crate::context::Worktree;
@@ -1048,8 +1049,7 @@ impl App {
             Some(command @ (Command::LayerPack { .. } | Command::AppPack { .. })) => {
                 Self::pack_command(command)
             }
-            Some(Command::Image(ImageCommand::Build { disk, out })) => self.image_build(disk, &out),
-            Some(Command::Image(ImageCommand::Disk { image })) => self.image_disk(&image),
+            Some(Command::Image(ImageCommand::Build(args))) => self.image_build(&args),
             Some(Command::Qemu(command)) => qemu_command(&command),
             Some(Command::Gc {
                 dry_run,
@@ -1281,11 +1281,7 @@ impl App {
         ));
         let listing = disk::AuthHeader::new(token.as_ref())
             .and_then(|auth| disk::get(&mut self.runner, disk::VERSIONS, &auth));
-        checks.push(doctor::disk_check(
-            listing,
-            token.as_ref(),
-            doctor::local_build(&root).as_deref(),
-        ));
+        checks.push(doctor::disk_check(listing, token.as_ref()));
         let vm = match self.resolve_vm(None) {
             Ok(vm) => vm,
             Err(e) => {
@@ -2366,7 +2362,6 @@ impl App {
     ) -> Result<Published, CliError> {
         let token = disk::find_token();
         let auth = disk::AuthHeader::new(token.as_ref())?;
-        let local_build = doctor::local_build(&self.base_dir());
         let refused = |url: &str, status: u16| CliError::ForgeAuth {
             url: url.to_owned(),
             status,
@@ -2396,7 +2391,6 @@ impl App {
                 return Err(CliError::NoDiskPublished {
                     tag: "(any)".into(),
                     url: disk::VERSIONS.into(),
-                    local_build,
                 });
             }
             tags.truncate(disk::TAGS_SEARCHED);
@@ -2426,7 +2420,6 @@ impl App {
                         arch: arch.to_owned(),
                         format: format.to_owned(),
                         available: manifest.offered(),
-                        local_build: local_build.clone(),
                     })?;
             let dest = disk::cache_path(tag, &chosen.file);
             let direct_boot = if auto_direct_boot {
@@ -2443,14 +2436,7 @@ impl App {
                 auth,
             });
         }
-        Err(self.no_disk_for_host(
-            &tags,
-            tag.is_some(),
-            (arch, format),
-            &auth,
-            token.is_none(),
-            local_build,
-        ))
+        Err(self.no_disk_for_host(&tags, tag.is_some(), (arch, format), &auth, token.is_none()))
     }
 
     fn no_disk_for_host(
@@ -2460,7 +2446,6 @@ impl App {
         (arch, format): (&str, &str),
         auth: &disk::AuthHeader,
         anonymous: bool,
-        local_build: Option<String>,
     ) -> CliError {
         let newest = tags.first().cloned().unwrap_or_default();
         let available = match disk::get(&mut self.runner, &disk::files_url(&newest), auth) {
@@ -2476,7 +2461,6 @@ impl App {
             return CliError::NoDiskPublished {
                 url: disk::manifest_url(&newest, arch),
                 tag: newest,
-                local_build,
             };
         }
         if tags.len() > 1 {
@@ -2491,7 +2475,6 @@ impl App {
             arch: arch.to_owned(),
             format: format.to_owned(),
             available,
-            local_build,
         }
     }
 
@@ -2850,39 +2833,33 @@ impl App {
         let vm = self.resolve_vm(args.name.as_deref())?;
         let endpoint = self.endpoint(&vm)?;
         let Some(from) = args.from.as_deref() else {
-            if let Some(layout) = args.image.as_deref().map(Path::new)
-                && imageup::is_layout(layout)
+            if let Some(built) = args.image.as_deref().map(Path::new)
+                && imageup::is_built_image(built)
             {
-                return self.vm_upgrade_layout(&vm, &endpoint, args, layout);
+                return self.vm_upgrade_built(&vm, &endpoint, args, built);
             }
             return self.vm_upgrade_registry(&vm, &endpoint, args, args.image.as_deref());
         };
-        let (image, build, base) = match self.upgrade_source(&vm, &endpoint, args, from)? {
-            UpgradeSource::Local { image, build, base } => (image, build, base),
-            UpgradeSource::Published(image) => {
-                return self.vm_upgrade_registry(&vm, &endpoint, args, Some(&image));
+        match imageup::parse_from(from, self.worktree.as_ref())? {
+            imageup::UpgradeFrom::Local => {
+                let root = self.checkout()?;
+                let facts = self.vm_facts(&vm, &endpoint, "vm upgrade")?;
+                let arch = facts
+                    .arch()
+                    .unwrap_or_else(|| std::env::consts::ARCH.to_owned());
+                let out = root.join(imageup::BUILD_OUT);
+                self.t_outputs(&root, &imageup::image_check(&arch, false), &out)?;
+                let built = imageup::built_image(&out, &arch);
+                self.vm_upgrade_built(&vm, &endpoint, args, &built)
             }
-        };
-        self.receipt.set("image", &image);
-        if !imageup::is_dev_name(&image) {
-            imageup::check_image(&image, &imageup::ImageFacts::default())?;
+            imageup::UpgradeFrom::Ci { tag } => {
+                let image = self.resolve_ci_upgrade(&vm, &endpoint, &tag)?;
+                self.vm_upgrade_registry(&vm, &endpoint, args, Some(&image))
+            }
         }
-        self.vm_facts(&vm, &endpoint, "vm upgrade")?;
-        if build {
-            self.build_dev_image(&image, base.as_deref(), args.rebuild_base)?;
-        }
-        let runner = &mut self.runner;
-        let image_facts = self
-            .receipt
-            .phase("check", || local_image_facts(runner, &image))?;
-        let layout = imageup::host_layout(&vm.name);
-        let runner = &mut self.runner;
-        let digest = self
-            .receipt
-            .phase("export", || export_layout(runner, &image, &layout))?;
-        self.move_onto_layout(&vm, &endpoint, args, &image, &image_facts, &layout, digest)
     }
 
+    /// The worktree t builds from: the one this command runs in.
     fn checkout(&self) -> Result<PathBuf, CliError> {
         match &self.worktree {
             Some(worktree) => Ok(worktree.root.clone()),
@@ -2893,174 +2870,103 @@ impl App {
         }
     }
 
-    fn image_disk(&mut self, layout: &Path) -> Result<Outcome, CliError> {
-        let started = Instant::now();
-        let root = self.checkout()?;
-        let local_image = imageup::local_dev_image()?;
-        let layout = if layout.is_absolute() {
-            layout.to_path_buf()
-        } else {
-            root.join(layout)
-        };
-        if !imageup::is_layout(&layout) {
-            return Err(CliError::ImageRefused {
-                image: layout.display().to_string(),
-                problem: "is not an OCI layout".into(),
-                fix:
-                    "build one: tilo-vm image build (tilo-vm image build --help to build elsewhere)"
-                        .into(),
-            });
+    /// Build `check` on t from this worktree's state and download its outputs under `out`,
+    /// with t's own progress on this terminal.
+    fn t_outputs(&mut self, root: &Path, check: &str, out: &Path) -> Result<(), CliError> {
+        let command = imageup::outputs_command(check, root, out);
+        if !self.json {
+            eprintln!(
+                "tilo-vm: building {check} from this worktree on t; t reuses its answer when nothing it reads changed"
+            );
         }
-        let facts_file = layout.with_extension("facts");
-        let facts_text = std::fs::read_to_string(&facts_file)
-            .map_err(CliError::io(format!("read {}", facts_file.display())))?;
-        let (image, facts) =
-            imageup::parse_layout_facts(&facts_text).map_err(|problem| CliError::ImageRefused {
-                image: layout.display().to_string(),
-                problem,
-                fix: "rebuild it: tilo-vm image build".into(),
-            })?;
-        imageup::check_image(&image, &facts)?;
-        let out = layout
-            .parent()
-            .map_or_else(|| root.clone(), Path::to_path_buf);
-        let scratch = build_scratch(&out);
-        let import = imageup::import_layout_command(&layout, &local_image);
-        let runner = &mut self.runner;
-        let imported = self.receipt.phase("import", || runner.output(&import))?;
-        if !imported.success {
-            return Err(CliError::CommandFailed {
-                command: import.display(),
-                status: imported.status,
-                stderr: imported.stderr.trim().to_owned(),
-            });
-        }
-        let command = image_disk_command(&root.join(imageup::DISK_SCRIPT), &local_image, &scratch);
-        self.runner.cwd = Some(root);
-        let runner = &mut self.runner;
-        let written = self
-            .receipt
-            .phase("disk", || runner.interactive(&command))?;
-        // Root podman's copy of the image is root's; only sudo removes it.
-        let drop_store = CommandLine::new("sudo", &["-n", "rm", "-rf", "--"])
-            .arg(root_podman_store(&scratch).display().to_string());
-        if !self.runner.output(&drop_store)?.success {
-            self.warnings.push(format!(
-                "could not remove {}; remove it with: {}",
-                root_podman_store(&scratch).display(),
-                drop_store.display()
-            ));
-        }
-        if !written {
-            return Err(CliError::CommandFailed {
-                command: command.display(),
-                status: "disk step failed".into(),
-                stderr: "the output above names the cause".into(),
-            });
-        }
-        let dest = move_built_disk(&scratch, &out)?;
-        Ok(Outcome::new(
-            format!(
-                "wrote {} from {image} in {}s\n  {}",
-                dest.display(),
-                started.elapsed().as_secs(),
-                self.receipt.summary()
-            ),
-            json!({ "disk": dest.display().to_string(), "image": image }),
-        )
-        .next(&[&format!(
-            "tilo-vm vm create <name> --image {}",
-            dest.display()
-        )]))
-    }
-
-    fn image_build(&mut self, disk: bool, out: &Path) -> Result<Outcome, CliError> {
-        let started = Instant::now();
-        let root = self.checkout()?;
-        let script = root.join(imageup::BUILD_SCRIPT);
-        if !script.is_file() {
-            return Err(CliError::Unsupported {
-                what: format!("image build without {}", imageup::BUILD_SCRIPT),
-                alternative: "run it from a Tilo checkout".into(),
-            });
-        }
-        let out = if out.is_absolute() {
-            out.to_path_buf()
-        } else {
-            root.join(out)
-        };
-        let scratch = build_scratch(&out);
-        std::fs::create_dir_all(&out).map_err(CliError::io(format!("create {}", out.display())))?;
-        if self.worktree.is_none() && std::env::var_os("SOURCE_DATE_EPOCH").is_none() {
-            self.warnings.push("no git checkout here and no SOURCE_DATE_EPOCH: the image is dated 1970, so a VM on a newer base refuses it without --allow-older-base; pass the commit time (SOURCE_DATE_EPOCH=$(git log -1 --format=%ct))".into());
-        }
-        let local_image = imageup::local_dev_image()?;
-        let command = image_build_command(&script, &local_image, disk, &scratch);
-        eprintln!(
-            "tilo-vm: building {local_image} ({}); cached steps are skipped",
-            if disk { "and its disk" } else { "no disk" }
-        );
-        self.runner.cwd = Some(root);
         let runner = &mut self.runner;
         let built = self
             .receipt
-            .phase("image-build", || runner.interactive(&command))?;
-        if !built {
-            return Err(CliError::CommandFailed {
+            .phase(check, || runner.interactive(&command))
+            .map_err(|error| match error {
+                CliError::ToolMissing { .. } => CliError::ToolMissing {
+                    tool: "t".into(),
+                    purpose: "build the dev image and disk on a build server (CONTRIBUTING.md says how to set it up)".into(),
+                },
+                other => other,
+            })?;
+        if built {
+            Ok(())
+        } else {
+            Err(CliError::CommandFailed {
                 command: command.display(),
                 status: "build failed".into(),
-                stderr: "the build output above names the failed step; rerunning resumes there"
-                    .into(),
-            });
+                stderr: format!(
+                    "t's output above names the failed step; its full log: t log {check}"
+                ),
+            })
         }
-        let layout = out.join(imageup::BUILT_LAYOUT);
-        let runner = &mut self.runner;
-        let digest = self
-            .receipt
-            .phase("export", || export_layout(runner, &local_image, &layout))?;
-        let runner = &mut self.runner;
-        let facts_text = self
-            .receipt
-            .phase("check", || image_facts_text(runner, &local_image))?;
-        let (image, facts) =
-            imageup::parse_layout_facts(&facts_text).map_err(|detail| CliError::CommandFailed {
-                command: imageup::inspect_command(&local_image).display(),
-                status: "unreadable output".into(),
-                stderr: detail,
-            })?;
+    }
+
+    fn image_build(&mut self, args: &ImageBuildArgs) -> Result<Outcome, CliError> {
+        let started = Instant::now();
+        let root = self.checkout()?;
+        let arch = args
+            .arch
+            .clone()
+            .unwrap_or_else(|| std::env::consts::ARCH.to_owned());
+        let out = if args.out.is_absolute() {
+            args.out.clone()
+        } else {
+            root.join(&args.out)
+        };
+        self.t_outputs(&root, &imageup::image_check(&arch, args.lean), &out)?;
+        let built = imageup::built_image(&out, &arch);
+        let facts = imageup::layout_facts(&built.join("oci")).map_err(|problem| {
+            CliError::ImageRefused {
+                image: built.display().to_string(),
+                problem,
+                fix: format!(
+                    "t outputs left no dev image there; its log: t log {}",
+                    imageup::image_check(&arch, args.lean)
+                ),
+            }
+        })?;
+        let image = imageup::built_name(&built);
         imageup::check_image(&image, &facts)?;
-        let facts_file = layout.with_extension("facts");
-        std::fs::write(&facts_file, &facts_text)
-            .map_err(CliError::io(format!("write {}", facts_file.display())))?;
-        let mut next = vec![format!("tilo-vm vm upgrade --image {}", layout.display())];
-        let disk_path = if disk {
-            let dest = move_built_disk(&scratch, &out)?;
+        let mut next = vec![format!("tilo-vm vm upgrade --image {}", built.display())];
+        let disk = if args.disk {
+            self.t_outputs(&root, &imageup::disk_check(&arch, args.lean), &out)?;
+            let disk = imageup::built_disk(&out, &arch);
             next.insert(
                 0,
-                format!("tilo-vm vm create <name> --image {}", dest.display()),
+                format!("tilo-vm vm create <name> --image {}", disk.display()),
             );
-            Some(dest.display().to_string())
+            Some(disk.display().to_string())
         } else {
             None
         };
+        let layout = built.join("oci");
+        let digest = std::fs::read_to_string(built.join("digest"))
+            .map_err(CliError::io(format!(
+                "read {}",
+                built.join("digest").display()
+            )))?
+            .trim()
+            .to_owned();
+        self.receipt.set("digest", &digest);
         let data = json!({
             "image": image,
+            "arch": arch,
             "digest": digest,
-            "layout": layout.display().to_string(),
+            "layout": built.display().to_string(),
             "layout_bytes": imageup::layout_bytes(&layout),
-            "disk": disk_path,
+            "disk": disk,
             "seconds": started.elapsed().as_secs(),
         });
-        self.receipt.set("digest", &digest);
         let text = format!(
-            "built {image} ({}) in {}s\n  layout: {} ({}){}\n  {}",
+            "built {image} for {arch} ({}) in {}s\n  image: {} ({}){}\n  {}",
             imageup::short_digest(&digest),
             started.elapsed().as_secs(),
-            layout.display(),
+            built.display(),
             human_bytes(imageup::layout_bytes(&layout)),
-            disk_path
-                .as_deref()
-                .map(|d| format!("\n  disk:   {d}"))
+            disk.as_deref()
+                .map(|d| format!("\n  disk:  {d}"))
                 .unwrap_or_default(),
             self.receipt.summary()
         );
@@ -3068,32 +2974,31 @@ impl App {
         Ok(Outcome::new(text, data).next(&next))
     }
 
-    fn vm_upgrade_layout(
+    fn vm_upgrade_built(
         &mut self,
         vm: &Resolved,
         endpoint: &SshEndpoint,
         args: &UpgradeArgs,
-        layout: &Path,
+        built: &Path,
     ) -> Result<Outcome, CliError> {
-        let read = |path: PathBuf| {
-            std::fs::read_to_string(&path).map_err(|error| CliError::ImageRefused {
-                image: layout.display().to_string(),
-                problem: format!("has no {} ({error})", path.display()),
-                fix: "write the layout with tilo-vm image build (it saves the image's facts and digest beside it)".into(),
-            })
-        };
-        let (image, image_facts) = imageup::parse_layout_facts(&read(
-            layout.with_extension("facts"),
-        )?)
-        .map_err(|problem| CliError::ImageRefused {
-            image: layout.display().to_string(),
+        let image = imageup::built_name(built);
+        let refused = |problem: String| {
+            CliError::ImageRefused {
+            image: built.display().to_string(),
             problem,
-            fix: "rebuild it: tilo-vm image build".into(),
-        })?;
-        let digest = read(layout.with_extension("digest"))?.trim().to_owned();
+            fix: "build it again: tilo-vm image build   (or move onto this worktree's at once: tilo-vm vm upgrade --from local)".into(),
+        }
+        };
+        let image_facts = imageup::layout_facts(&built.join("oci")).map_err(refused)?;
+        imageup::check_image(&image, &image_facts)?;
+        let layout = imageup::host_layout(&vm.name);
+        let digest = self
+            .receipt
+            .phase("stage", || imageup::stage_built(built, &layout))
+            .map_err(refused)?;
         self.receipt.set("image", &image);
-        self.receipt.set("layout", layout.display().to_string());
-        self.move_onto_layout(vm, endpoint, args, &image, &image_facts, layout, digest)
+        self.receipt.set("layout", built.display().to_string());
+        self.move_onto_layout(vm, endpoint, args, &image, &image_facts, &layout, digest)
     }
 
     fn move_onto_layout(
@@ -3168,125 +3073,43 @@ impl App {
         self.stage_and_boot(vm, endpoint, &facts, &stage)
     }
 
-    fn upgrade_source(
+    fn resolve_ci_upgrade(
         &mut self,
         vm: &Resolved,
         endpoint: &SshEndpoint,
-        args: &UpgradeArgs,
-        from: &str,
-    ) -> Result<UpgradeSource, CliError> {
-        match imageup::parse_from(from, self.worktree.as_ref())? {
-            imageup::UpgradeFrom::Local { image, build } => {
-                if !build && (args.base.is_some() || args.rebuild_base) {
-                    return Err(CliError::Unsupported {
-                        what: "--base or --rebuild-base with --from local:<image>".into(),
-                        alternative: "those choose how --from local builds; an image you name is used as it is: tilo-vm vm upgrade --from local --rebuild-base".into(),
-                    });
-                }
-                Ok(UpgradeSource::Local {
-                    image,
-                    build,
-                    base: args.base.clone(),
-                })
-            }
-            imageup::UpgradeFrom::Ci { tag } => {
-                if args.base.is_some() || args.rebuild_base {
-                    return Err(CliError::Unsupported {
-                        what: "--base or --rebuild-base with --from ci:<tag>".into(),
-                        alternative: "the CI build is the base: tilo-vm vm upgrade --from ci:<tag>   |   or build one here: tilo-vm vm upgrade --from local --rebuild-base".into(),
-                    });
-                }
-                let facts = self.vm_facts(vm, endpoint, "vm upgrade")?;
-                let target = CiTarget {
-                    arch: facts
-                        .arch()
-                        .unwrap_or_else(|| std::env::consts::ARCH.to_owned()),
-                    board: facts.board,
-                };
-                if cfg!(windows)
-                    && tag.starts_with("main-")
-                    && let Some(image) = target.candidates(&tag).dev_images.into_iter().next()
-                {
-                    return Ok(UpgradeSource::Published(image));
-                }
-                Ok(match self.resolve_ci_upgrade(&tag, &target)? {
-                    CiUpgrade::Published(image) => UpgradeSource::Published(image),
-                    CiUpgrade::Base(base) => UpgradeSource::Local {
-                        image: imageup::ci_dev_image(&base),
-                        build: true,
-                        base: Some(base),
-                    },
-                })
-            }
-        }
-    }
-
-    fn resolve_ci_upgrade(&mut self, tag: &str, target: &CiTarget) -> Result<CiUpgrade, CliError> {
-        let candidates = target.candidates(tag);
-        let runner = &mut self.runner;
-        let found = self.receipt.phase("resolve", || -> Result<_, CliError> {
-            for image in &candidates.dev_images {
-                if runner.output(&imageup::exists_command(image))?.success {
-                    return Ok(Some(CiUpgrade::Published(image.clone())));
-                }
-            }
-            for base in &candidates.bases {
-                if runner.output(&imageup::exists_command(base))?.success {
-                    return Ok(Some(CiUpgrade::Base(base.clone())));
-                }
-            }
-            let Some(sha) = imageup::ci_commit(tag) else {
-                return Ok(None);
-            };
-            let mut listing = |repository| -> Result<String, CliError> {
-                let output = runner.output(&imageup::list_tags_command(repository))?;
-                Ok(if output.success {
-                    output.stdout
-                } else {
-                    String::new()
-                })
-            };
-            let ci_tags = listing("registry.tilo.so/tilo/tilo-ci")?;
-            let bases = imageup::ci_ref_bases(sha, &target.arch, target.board.as_deref(), &ci_tags);
-            Ok(bases.first().cloned().map(CiUpgrade::Base))
-        })?;
-        let Some(found) = found else {
-            let tried = candidates
-                .dev_images
-                .iter()
-                .chain(&candidates.bases)
-                .map(String::as_str)
-                .collect::<Vec<_>>()
-                .join(", ");
-            return Err(CliError::ImageRefused {
-                image: format!("ci:{tag}"),
-                problem: match &target.board {
-                    Some(board) => format!(
-                        "names no {board} board image this host can pull (tried {tried}); CI builds one in each Build / OS dev run with an aarch64 job"
-                    ),
-                    None => format!("names no CI build this host can pull (tried {tried})"),
-                },
-                fix: "list the builds CI pushed: skopeo list-tags docker://registry.tilo.so/tilo/tilo-ci   |   main and pull request builds are tagged <ref>-<sha7>: tilo-vm vm upgrade --from sha:<commit>   |   or build this worktree: tilo-vm vm upgrade --from local".into(),
-            });
+        tag: &str,
+    ) -> Result<String, CliError> {
+        let facts = self.vm_facts(vm, endpoint, "vm upgrade")?;
+        let arch = facts
+            .arch()
+            .unwrap_or_else(|| std::env::consts::ARCH.to_owned());
+        let image = match &facts.board {
+            Some(board) => imageup::board_image(tag, board),
+            None => imageup::ci_image(tag, &arch),
         };
-        if let CiUpgrade::Base(base) = &found {
-            eprintln!(
-                "tilo-vm: no dev image is published for ci:{tag}; pulling its base {base} to build one here"
-            );
-            let pull =
-                CommandLine::new("podman", &["pull", "--arch", ci::podman_arch(&target.arch)])
-                    .arg(base.clone());
-            let runner = &mut self.runner;
-            let pulled = self.receipt.phase("pull", || runner.interactive(&pull))?;
-            if !pulled {
-                return Err(CliError::CommandFailed {
-                    command: pull.display(),
-                    status: "pull failed".into(),
-                    stderr: "the podman output above names the cause".into(),
-                });
-            }
+        if cfg!(windows) && tag.starts_with("main-") {
+            return Ok(image);
         }
-        Ok(found)
+        let runner = &mut self.runner;
+        let exists = self
+            .receipt
+            .phase("resolve", || {
+                runner.output(&imageup::exists_command(&image))
+            })?
+            .success;
+        if exists {
+            return Ok(image);
+        }
+        Err(CliError::ImageRefused {
+            image: format!("ci:{tag}"),
+            problem: match &facts.board {
+                Some(board) => format!(
+                    "names no {board} board image this host can pull (tried {image}); main publishes one with each aarch64 build"
+                ),
+                None => format!("names no published dev image (tried {image}); main publishes one once its dev image checks pass"),
+            },
+            fix: "list what is published: skopeo list-tags docker://registry.tilo.so/tilo/tilo-vm   |   or build that commit on t: check it out, then tilo-vm vm upgrade --from local".into(),
+        })
     }
 
     fn vm_upgrade_registry(
@@ -3367,11 +3190,11 @@ impl App {
             imageup::registry_inspect_command(image, arch),
         )?;
         // A board dev image is sealed by design (its UKI carries the board's
-        // device tree) and the device already boots one, so only the flavour
-        // is checked, as for any image the VM pulls itself.
+        // device tree) and the device already boots one, so its seal is no
+        // refusal here, as for any image the VM pulls itself.
         let facts = imageup::ImageFacts {
-            flavour: imageup::registry_flavour(&inspect),
-            ..imageup::ImageFacts::default()
+            sealed: false,
+            ..imageup::registry_facts(&inspect)
         };
         let layout = imageup::host_layout(&vm.name);
         if let Some(parent) = layout.parent() {
@@ -3418,62 +3241,6 @@ impl App {
             status: sent.status,
             stderr,
         })
-    }
-
-    fn build_dev_image(
-        &mut self,
-        image: &str,
-        base: Option<&str>,
-        rebuild_base: bool,
-    ) -> Result<(), CliError> {
-        let worktree = self.worktree.clone().ok_or(CliError::NotInWorktree)?;
-        let script = worktree.root.join(imageup::BUILD_SCRIPT);
-        if !script.is_file() {
-            return Err(CliError::Unsupported {
-                what: format!("--from local without {}", imageup::BUILD_SCRIPT),
-                alternative: "run from a Tilo worktree, or name an image already built: tilo-vm vm upgrade --from local:localhost/tilo-vm:<tag>".into(),
-            });
-        }
-        let base_build = if rebuild_base {
-            "1"
-        } else if base.is_some() {
-            "0"
-        } else {
-            "auto"
-        };
-        let mut command = CommandLine::new(&script.display().to_string(), &[])
-            .env("TILO_DEV_DISK", "0")
-            .env("TILO_DEV_IMAGE", image)
-            .env("TILO_DEV_BASE_BUILD", base_build);
-        if let Some(base) = base {
-            command = command.env("TILO_DEV_BASE", base);
-        }
-        let base_name = match base {
-            Some(base) => base.to_owned(),
-            None => imageup::local_base()?,
-        };
-        eprintln!(
-            "tilo-vm: building {image} FROM {base_name} ({}); podman's layer cache skips unchanged steps",
-            match base_build {
-                "1" => "rebuilding the base first",
-                "0" => "the base as it is",
-                _ => "the base is rebuilt only if its inputs changed",
-            }
-        );
-        self.runner.cwd = Some(worktree.root);
-        let runner = &mut self.runner;
-        let built = self
-            .receipt
-            .phase("image-build", || runner.interactive(&command))?;
-        if built {
-            Ok(())
-        } else {
-            Err(CliError::CommandFailed {
-                command: command.display(),
-                status: "build failed".into(),
-                stderr: "the build output above names the cause".into(),
-            })
-        }
     }
 
     fn vm_locked(
@@ -5494,20 +5261,6 @@ impl App {
     }
 }
 
-struct CiTarget {
-    arch: String,
-    board: Option<String>,
-}
-
-impl CiTarget {
-    fn candidates(&self, tag: &str) -> imageup::CiCandidates {
-        match &self.board {
-            Some(board) => imageup::board_candidates(tag, board),
-            None => imageup::ci_candidates(tag, &self.arch),
-        }
-    }
-}
-
 struct Stage {
     transport: &'static str,
     imgref: String,
@@ -5516,62 +5269,9 @@ struct Stage {
     no_reboot: bool,
 }
 
-enum UpgradeSource {
-    Local {
-        image: String,
-        build: bool,
-        base: Option<String>,
-    },
-    Published(String),
-}
-
-enum CiUpgrade {
-    Published(String),
-    Base(String),
-}
-
-fn local_image_facts(
-    runner: &mut SystemRunner,
-    image: &str,
-) -> Result<imageup::ImageFacts, CliError> {
-    let inspect = runner.output(&imageup::inspect_command(image))?;
-    if !inspect.success {
-        return Err(CliError::ImageRefused {
-            image: image.to_owned(),
-            problem: "is not in this host's podman storage".into(),
-            fix: "build it: tilo-vm vm upgrade --from local   |   or see what is there: podman images"
-                .into(),
-        });
-    }
-    let (id, flavour) =
-        imageup::parse_inspect(&inspect.stdout).map_err(|detail| CliError::CommandFailed {
-            command: imageup::inspect_command(image).display(),
-            status: "unreadable output".into(),
-            stderr: detail,
-        })?;
-    let mut facts = imageup::ImageFacts {
-        id,
-        flavour,
-        ..imageup::ImageFacts::default()
-    };
-    if facts.flavour.as_deref() == Some("dev") {
-        let probe = imageup::probe_command(&facts.id);
-        let output = runner.output(&probe)?;
-        if !output.success {
-            return Err(CliError::CommandFailed {
-                command: probe.display(),
-                status: output.status,
-                stderr: output.stderr.trim().to_owned(),
-            });
-        }
-        imageup::parse_probe(&output.stdout, &mut facts);
-    }
-    Ok(facts)
-}
-
 fn checkout_root(dir: &Path) -> Option<PathBuf> {
     dir.ancestors()
-        .find(|d| d.join(imageup::BUILD_SCRIPT).is_file())
+        .find(|d| d.join("t.toml").is_file() && d.join("os").is_dir())
         .map(Path::to_path_buf)
 }
 
@@ -5601,99 +5301,6 @@ fn daemon_import_receipt<'a>(
         ));
     }
     Ok(provenance)
-}
-
-fn image_build_command(script: &Path, image: &str, disk: bool, scratch: &Path) -> CommandLine {
-    CommandLine::new(&script.display().to_string(), &[])
-        .env("TILO_DEV_DISK", if disk { "1" } else { "0" })
-        .env("TILO_DEV_IMAGE", image)
-        .env("TILO_DEV_BASE_BUILD", "auto")
-        .env("TILO_OUTPUT", scratch.display().to_string())
-}
-
-fn image_disk_command(script: &Path, image: &str, scratch: &Path) -> CommandLine {
-    CommandLine::new(&script.display().to_string(), &[])
-        .env("TILO_IMAGE", image)
-        .env("TILO_SKIP_BUILD", "1")
-        .env("TILO_OUTPUT", scratch.display().to_string())
-        .env("TILO_DISK_SIZE", "64G")
-        .env(
-            "TILO_ROOT_PODMAN_STORE",
-            root_podman_store(scratch).display().to_string(),
-        )
-}
-
-fn root_podman_store(scratch: &Path) -> PathBuf {
-    scratch.join("root-podman")
-}
-
-fn move_built_disk(scratch: &Path, out: &Path) -> Result<PathBuf, CliError> {
-    let built = scratch.join("qcow2").join("disk.qcow2");
-    let dest = out.join(imageup::BUILT_DISK);
-    std::fs::rename(&built, &dest).map_err(CliError::io(format!(
-        "move {} to {}",
-        built.display(),
-        dest.display()
-    )))?;
-    Ok(dest)
-}
-
-fn build_scratch(out: &Path) -> PathBuf {
-    let name = out
-        .file_name()
-        .map_or_else(|| "tilo-vm".into(), |n| n.to_string_lossy().into_owned());
-    out.with_file_name(format!("{name}-build"))
-}
-
-fn image_facts_text(runner: &mut SystemRunner, image: &str) -> Result<String, CliError> {
-    let mut run = |command: CommandLine| -> Result<String, CliError> {
-        let output = runner.output(&command)?;
-        if output.success {
-            Ok(output.stdout)
-        } else {
-            Err(CliError::CommandFailed {
-                command: command.display(),
-                status: output.status,
-                stderr: output.stderr.trim().to_owned(),
-            })
-        }
-    };
-    let inspect = run(imageup::inspect_command(image))?;
-    let probe = run(imageup::probe_command(image))?;
-    Ok(imageup::layout_facts_text(&inspect, &probe))
-}
-
-fn export_layout(
-    runner: &mut SystemRunner,
-    image: &str,
-    layout: &Path,
-) -> Result<String, CliError> {
-    if let Some(parent) = layout.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(CliError::io(format!("create {}", parent.display())))?;
-    }
-    let digest_file = layout.with_extension("digest");
-    let export = imageup::export_command(image, layout, &digest_file);
-    let output = runner.output(&export).map_err(|error| match error {
-        CliError::ToolMissing { .. } => CliError::ToolMissing {
-            tool: "skopeo".into(),
-            purpose: "copy the image's layers out of podman's storage".into(),
-        },
-        other => other,
-    })?;
-    if !output.success {
-        return Err(CliError::CommandFailed {
-            command: export.display(),
-            status: output.status,
-            stderr: output.stderr.trim().to_owned(),
-        });
-    }
-    let digest = std::fs::read_to_string(&digest_file)
-        .map_err(CliError::io(format!("read {}", digest_file.display())))?
-        .trim()
-        .to_owned();
-    imageup::prune_layout(layout).map_err(CliError::io(format!("prune {}", layout.display())))?;
-    Ok(digest)
 }
 
 fn key_refusal(
@@ -7310,70 +6917,11 @@ mod tests {
             }
         }
 
-        phase image_build_runs_the_local_build_into_its_own_directory;
+        phase the_checkout_t_builds_from_is_found_above_the_working_directory;
         {
-            let command = image_build_command(
-                Path::new("/w/os/dev/build-dev-image.sh"),
-                "localhost/tilo-vm:mine",
-                true,
-                Path::new("/w/target/tilo-vm-build"),
-            );
-            assert_eq!(command.program, "/w/os/dev/build-dev-image.sh");
-            let env = |key: &str| {
-                command
-                    .env
-                    .iter()
-                    .find(|(k, _)| k == key)
-                    .map(|(_, v)| v.as_str())
-            };
-            assert_eq!(env("TILO_DEV_DISK"), Some("1"));
-            assert_eq!(env("TILO_DEV_IMAGE"), Some("localhost/tilo-vm:mine"));
-            assert_eq!(env("TILO_DEV_BASE_BUILD"), Some("auto"));
-            assert_eq!(env("TILO_OUTPUT"), Some("/w/target/tilo-vm-build"));
-            let no_disk = image_build_command(
-                Path::new("/s"),
-                "localhost/tilo-vm:x",
-                false,
-                Path::new("/o"),
-            );
-            assert!(no_disk.env.contains(&("TILO_DEV_DISK".into(), "0".into())));
-
-            assert_eq!(
-                build_scratch(Path::new("/w/target/tilo-vm")),
-                Path::new("/w/target/tilo-vm-build")
-            );
-
-            let disk = image_disk_command(
-                Path::new("/w/os/dev/build-image.sh"),
-                "localhost/tilo-vm:mine",
-                Path::new("/w/target/tilo-vm-build"),
-            );
-            assert!(disk.env.contains(&("TILO_SKIP_BUILD".into(), "1".into())));
-            assert!(disk.env.contains(&("TILO_DISK_SIZE".into(), "64G".into())));
-            assert_eq!(
-                disk.env
-                    .iter()
-                    .find(|(key, _)| key == "TILO_ROOT_PODMAN_STORE")
-                    .map(|(_, value)| PathBuf::from(value)),
-                Some(Path::new("/w/target/tilo-vm-build").join("root-podman"))
-            );
-            assert!(
-                disk.env
-                    .contains(&("TILO_IMAGE".into(), "localhost/tilo-vm:mine".into()))
-            );
-            assert_eq!(
-                imageup::import_layout_command(
-                    Path::new("/w/target/tilo-vm/image"),
-                    "localhost/tilo-vm:latest"
-                )
-                .display(),
-                "skopeo copy --quiet oci:/w/target/tilo-vm/image:tilo-vm containers-storage:localhost/tilo-vm:latest"
-            );
-
             let tree = tempfile::tempdir().unwrap();
-            let script = tree.path().join(imageup::BUILD_SCRIPT);
-            std::fs::create_dir_all(script.parent().unwrap()).unwrap();
-            std::fs::write(&script, "").unwrap();
+            std::fs::write(tree.path().join("t.toml"), "").unwrap();
+            std::fs::create_dir_all(tree.path().join("os")).unwrap();
             let deep = tree.path().join("crates/dev/tilo-vm");
             std::fs::create_dir_all(&deep).unwrap();
             assert_eq!(checkout_root(&deep).as_deref(), Some(tree.path()));

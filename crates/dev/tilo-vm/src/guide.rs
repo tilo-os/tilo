@@ -230,6 +230,10 @@ mod tests {
                     "cargo install --locked --path crates/dev/tilo-vm",
                     "refusing to deploy",
                     "podman login code.tilo.so",
+                    "image disk",
+                    "--rebuild-base",
+                    "build-dev-image.sh",
+                    "os/build.sh --dev",
                 ] {
                     assert!(!text.contains(stale), "guide {name} still says `{stale}`");
                 }
