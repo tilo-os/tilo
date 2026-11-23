@@ -1106,6 +1106,43 @@ requires = ["arch=x86_64"]
 on = ["tag:v[0-9]*.[0-9]*.[0-9]*", "dispatch"]
 secrets = ["NPM_TOKEN", "PYPI_TOKEN"]
 
+# The builder crates' release to crates.io, tools/sdk/publish_check.py: every workspace crate in
+# the closure of the toolkit (tilo-ui), the app SDK (tilo-app) and tilolang (its compiler,
+# runtime, lexer, command and browser build), forks included, all at the release tag's version.
+# A crate is published once it is marked `publish = true` and everything it builds on is
+# publishable too; until then the report says what it waits for. On release tags publish-crates
+# publishes every ready crate not yet on crates.io at that version, in dependency order, with the
+# registry's token; a crate already there is skipped, so re-running a tag (`t dispatch
+# publish-crates --ref tag:vX.Y.Z`) finishes a release that stopped halfway, on crates.io's limit
+# for new names or anything else. Dispatched on a branch it publishes nothing: the script refuses
+# any ref but a release tag.
+#
+# What runs on main is everything short of the upload: the report, which fails on a crate marked
+# publishable whose own manifest is not (no description, a path dependency without a version...)
+# and on a name crates.io holds for another project; then every ready crate packaged at a
+# stand-in version, each package's size checked against crates.io's 10 MiB, and each built from
+# its package alone, against crates.io and the packages before it, so a file a build needs that
+# the package leaves out breaks here, long before a tag does.
+[[check]]
+name = "publish-crates-dry-run"
+# Resolves against crates.io and asks it about names: no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "python3 -I tools/sdk/publish_check.py --check-names --verify"
+requires = ["arch=x86_64"]
+timeout_secs = 5400
+on = ["main", "dispatch"]
+
+[[check]]
+name = "publish-crates"
+# Publishes with a stored token, to hosts no fixed list names.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "python3 -I tools/sdk/publish_check.py --publish"
+needs = ["publish-crates-dry-run"]
+requires = ["arch=x86_64"]
+cache = false
+on = ["tag:v[0-9]*.[0-9]*.[0-9]*", "dispatch"]
+secrets = ["CARGO_REGISTRY_TOKEN"]
+
 # The SDKs' native halves are designed, not built: sdk/python/native (PyO3, wheels of the same
 # tilo-sdk project) and sdk/typescript/native (napi-rs, the tilo-sdk-native packages) do not
 # exist yet, and nothing here publishes something a tree does not build. The step that will, with

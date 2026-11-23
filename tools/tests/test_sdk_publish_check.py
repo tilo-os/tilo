@@ -5,7 +5,9 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
+import tarfile
 import tempfile
 import sys
 import unittest
@@ -26,26 +28,35 @@ assert REGISTRY_SPEC.loader is not None
 REGISTRY_SPEC.loader.exec_module(registry)
 
 
-class TakenNamesTests(unittest.TestCase):
-    def test_registered_crate_is_taken(self):
-        response = io.BytesIO(json.dumps({"crate": {"name": "tilo-example"}}).encode())
-        with patch.object(check.urllib.request, "urlopen", return_value=response):
-            self.assertEqual(check.taken_names(["tilo-example"]), {"tilo-example"})
+def answer(document):
+    return io.BytesIO(json.dumps(document).encode())
+
+
+class ForeignNamesTests(unittest.TestCase):
+    def test_a_crate_of_another_repository_is_foreign(self):
+        document = {"crate": {"name": "tilo-example", "repository": "https://example.com/other"}}
+        with patch.object(check.urllib.request, "urlopen", return_value=answer(document)):
+            self.assertEqual(check.foreign_names(["tilo-example"]), {"tilo-example"})
+
+    def test_a_crate_this_repository_published_is_ours(self):
+        # Once a release published it, the name exists on crates.io: that is no reason to fail.
+        document = {"crate": {"name": "tilo-example", "repository": check.REPOSITORY + "/"}}
+        with patch.object(check.urllib.request, "urlopen", return_value=answer(document)):
+            self.assertEqual(check.foreign_names(["tilo-example"]), set())
 
     def test_only_not_found_means_available(self):
         error = urllib.error.HTTPError("https://crates.io", 404, "Not Found", {}, None)
         with patch.object(check.urllib.request, "urlopen", side_effect=error):
-            self.assertEqual(check.taken_names(["tilo-example"]), set())
+            self.assertEqual(check.foreign_names(["tilo-example"]), set())
 
     def test_invalid_success_response_cannot_mark_a_name_available(self):
         for document in ({}, {"errors": [{"detail": "unavailable"}]},
                          {"crate": None}, {"crate": {}}, {"crate": []},
                          {"crate": {"name": ""}}, []):
             with self.subTest(document=document):
-                response = io.BytesIO(json.dumps(document).encode())
-                with patch.object(check.urllib.request, "urlopen", return_value=response):
+                with patch.object(check.urllib.request, "urlopen", return_value=answer(document)):
                     with self.assertRaisesRegex(ValueError, "tilo-example.*cannot determine"):
-                        check.taken_names(["tilo-example"])
+                        check.foreign_names(["tilo-example"])
 
     def test_service_and_transport_failures_propagate(self):
         for error in (urllib.error.HTTPError("https://crates.io", 503, "Unavailable", {}, None),
@@ -53,13 +64,13 @@ class TakenNamesTests(unittest.TestCase):
             with self.subTest(error=error):
                 with patch.object(check.urllib.request, "urlopen", side_effect=error):
                     with self.assertRaises(type(error)) as raised:
-                        check.taken_names(["tilo-example"])
+                        check.foreign_names(["tilo-example"])
                     self.assertIs(raised.exception, error)
 
     def test_invalid_json_propagates(self):
         with patch.object(check.urllib.request, "urlopen", return_value=io.BytesIO(b"not json")):
             with self.assertRaises(json.JSONDecodeError):
-                check.taken_names(["tilo-example"])
+                check.foreign_names(["tilo-example"])
 
 
 class LocalRegistryChecksumTests(unittest.TestCase):
@@ -231,32 +242,106 @@ class RegistryRebuildTests(unittest.TestCase):
             self.assertEqual(list(root.glob(".tilo-registry-*")), [])
 
 
-class ForkManifestRestorationTests(unittest.TestCase):
-    def test_partial_manifest_write_is_restored(self):
+class VersionRewriteTests(unittest.TestCase):
+    """Every manifest of a release asks for the one version: the package's own, and each
+    dependency by path on a published crate, in each way a manifest writes one."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        for crate in ("ui", "app", "private", "fork"):
+            (self.root / crate).mkdir()
+        self.published = {self.root / "ui", self.root / "fork"}
+
+    def rewrite(self, text, own=True):
+        return check.rewrite_manifest(text, self.root / "app", self.published, "1.2.3", own)
+
+    def test_the_package_and_its_dependencies_on_published_crates_take_the_version(self):
+        manifest = (
+            '[package]\nname = "app"\nversion = "0.1.0"\n\n'
+            '[dependencies]\n'
+            'ui = { version = "0.1.0", package = "tilo-ui", path = "../ui" }\n'
+            'private = { version = "0.1.0", path = "../private" }\n'
+            'serde = { version = "1" }\n\n'
+            "[target.'cfg(target_arch = \"wasm32\")'.dependencies]\n"
+            'ui = { path = "../ui", version = "0.1.0", default-features = false }\n\n'
+            '[dependencies.winit]\nversion = "0.30.13"\npackage = "tilo-winit"\npath = "../fork"\n\n'
+            '[dev-dependencies.winit]\npath = "../fork"\nversion = "0.30.13"\n\n'
+            '[[bin]]\nname = "app"\npath = "src/main.rs"\n'
+        )
+        self.assertEqual(self.rewrite(manifest), (
+            '[package]\nname = "app"\nversion = "1.2.3"\n\n'
+            '[dependencies]\n'
+            'ui = { version = "=1.2.3", package = "tilo-ui", path = "../ui" }\n'
+            'private = { version = "0.1.0", path = "../private" }\n'
+            'serde = { version = "1" }\n\n'
+            "[target.'cfg(target_arch = \"wasm32\")'.dependencies]\n"
+            'ui = { path = "../ui", version = "=1.2.3", default-features = false }\n\n'
+            '[dependencies.winit]\nversion = "=1.2.3"\npackage = "tilo-winit"\npath = "../fork"\n\n'
+            '[dev-dependencies.winit]\npath = "../fork"\nversion = "=1.2.3"\n\n'
+            '[[bin]]\nname = "app"\npath = "src/main.rs"\n'
+        ))
+
+    def test_a_crate_that_is_not_published_keeps_its_version(self):
+        manifest = '[package]\nname = "app"\nversion = "0.1.0"\n'
+        self.assertEqual(self.rewrite(manifest, own=False), manifest)
+
+    def test_a_dependency_without_a_version_is_left_for_the_report(self):
+        manifest = '[dependencies]\nui = { path = "../ui" }\n'
+        self.assertEqual(self.rewrite(manifest, own=False), manifest)
+
+    def test_workspace_dependencies_take_the_version(self):
+        manifest = '[workspace.dependencies]\nui = { version = "0.1.0", path = "ui" }\n'
+        rewritten = check.rewrite_manifest(manifest, self.root, self.published, "1.2.3", False)
+        self.assertEqual(rewritten, '[workspace.dependencies]\nui = { version = "=1.2.3", path = "ui" }\n')
+
+    def test_a_version_from_the_workspace_is_refused(self):
+        with self.assertRaisesRegex(SystemExit, "comes from the workspace"):
+            self.rewrite('[package]\nname = "app"\nversion.workspace = true\n')
+
+
+class ScratchTreeTests(unittest.TestCase):
+    def test_packaging_rewrites_a_copy_never_the_tree(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            manifest, lock = root / "Cargo.toml", root / "Cargo.lock"
-            original = '[workspace]\nmembers = [\n]\nexclude = [\n    "vendor/fork",\n]\n'
-            manifest.write_text(original)
-            lock.write_text("locked")
-            write = Path.write_text
-            failed = False
+            root = Path(directory).resolve()
+            repo = root / "repo"
+            (repo / "vendor/fork").mkdir(parents=True)
+            (repo / "target").mkdir()
+            (repo / "target/big").write_text("build output")
+            original = '[workspace]\nmembers = [\n    "app",\n]\nexclude = [\n    "vendor/fork",\n]\n'
+            (repo / "Cargo.toml").write_text(original)
+            fork = '[workspace]\n\n[package]\nname = "tilo-fork"\n'
+            (repo / "vendor/fork/Cargo.toml").write_text(fork)
+            with patch.object(check, "REPO", repo), patch.object(check, "FORKS", ("vendor/fork",)), \
+                    patch.dict(check.os.environ, {"TMPDIR": str(root)}):
+                work = check.scratch_tree()
+                tree = work / "tree"
+                check.forks_as_members(tree)
+            self.assertFalse((tree / "target").exists(), "build output stays behind")
+            self.assertEqual((tree / "Cargo.toml").read_text(),
+                             '[workspace]\nmembers = [\n    "vendor/fork",\n    "app",\n]\nexclude = [\n]\n')
+            self.assertEqual((tree / "vendor/fork/Cargo.toml").read_text(), '\n[package]\nname = "tilo-fork"\n')
+            self.assertEqual((repo / "Cargo.toml").read_text(), original)
+            self.assertEqual((repo / "vendor/fork/Cargo.toml").read_text(), fork)
 
-            def interrupted(path, text, *args, **kwargs):
-                nonlocal failed
-                if path == manifest and not failed:
-                    failed = True
-                    write(path, "partial")
-                    raise OSError("disk write interrupted")
-                return write(path, text, *args, **kwargs)
 
-            with patch.object(check, "REPO", root), patch.object(check, "FORKS", ("vendor/fork",)), \
-                    patch.object(Path, "write_text", interrupted):
-                with self.assertRaisesRegex(OSError, "interrupted"):
-                    with check.forks_as_members():
-                        self.fail("must not enter after a failed write")
-            self.assertEqual(manifest.read_text(), original)
-            self.assertEqual(lock.read_text(), "locked")
+class OversizeTests(unittest.TestCase):
+    def test_a_package_over_the_limit_names_its_biggest_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            crate = Path(directory) / "big-1.0.0.crate"
+            with tarfile.open(crate, "w:gz") as archive:
+                for name, size in (("big-1.0.0/assets/font.ttf", 3_000_000), ("big-1.0.0/src/lib.rs", 10)):
+                    data = os.urandom(size)
+                    info = tarfile.TarInfo(name)
+                    info.size = len(data)
+                    archive.addfile(info, io.BytesIO(data))
+            with patch.object(check, "MAX_CRATE_BYTES", 1_000_000):
+                over = check.too_big({"big": crate})
+            self.assertEqual(len(over), 1)
+            self.assertIn("big:", over[0])
+            self.assertLess(over[0].index("assets/font.ttf"), over[0].index("src/lib.rs"), "biggest first")
+            self.assertEqual(check.too_big({"big": crate}), [], "under crates.io's own limit")
 
 
 if __name__ == "__main__":
