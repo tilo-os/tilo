@@ -20,7 +20,10 @@ pub(super) async fn handle_workspaces(
     frame: &[u8],
 ) -> Result<Option<Envelope>, PeerError> {
     let reply = match postcard::from_bytes::<WorkspacesRequest>(frame) {
-        Ok(request) => match (session.admin, super::actions::session_caller(peer, session)) {
+        Ok(request) => match (
+            session.admin,
+            super::actions::session_caller(peer, session, false),
+        ) {
             (Some(admin), Ok(caller)) => {
                 // The session's own agent asks as its grants let it, as
                 // through the workspace's actions.

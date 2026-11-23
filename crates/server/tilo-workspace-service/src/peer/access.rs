@@ -89,6 +89,22 @@ pub(super) fn session_peer_authorized(peer: &AuthenticatedPeer, session: &Sessio
     session.trust().cert(peer, unix_now_ns()).is_ok()
 }
 
+/// The answer the workspace's grants keep for `device` about the person's agents from their
+/// other devices ([`tilo_action_policy::device_agents`]): `None` when nobody turned it on there,
+/// which refuses them.
+pub(super) fn agents_from_other_devices(
+    wr: &crate::workspace::WorkspaceRuntime,
+    device: &[u8; 32],
+) -> Option<tilo_action_policy::Answer> {
+    let access = wr.device_access.as_ref()?;
+    let policy = access
+        .get(device)
+        .or_else(|| access.values().next())?
+        .policy
+        .clone();
+    tilo_action_policy::device_agents::answer(&policy, device)
+}
+
 /// May this connection originate (or receive) a remote action in this workspace
 /// right now? One rule for v1 `RemoteAction` and v2 `Directed`: a current,
 /// unrevoked, trusted device certificate; an agent only inside its live

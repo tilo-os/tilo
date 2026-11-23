@@ -58,6 +58,8 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&DeviceMeshArea> {
 
 const DEFAULT_CONFIG: &str = "/etc/tilo/server.toml";
 const CONTINUITY_ENABLED_KEY: &str = "device_mesh.continuity.enabled";
+const AGENTS_ACCEPT_KEY: &str = "device_mesh.agents.accept_other_devices";
+const AGENTS_ACT_KEY: &str = "device_mesh.agents.act_without_asking";
 const CONTROL_HELPER: &str = "/usr/libexec/tilo-home-peer-control";
 
 const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
@@ -360,6 +362,16 @@ pub enum DeviceMeshEffect {
     /// Keep the device whose removal was asked about.
     #[effect(view)]
     CancelRemoval,
+    /// Accept the person's agents from their other devices on this computer, or stop accepting
+    /// them: the grant the computer's workspaces keep for it.
+    #[effect(kind = "outside")]
+    #[effect(idempotent)]
+    SetAcceptOtherDeviceAgents { on: bool },
+    /// Let the steps of the person's agents from their other devices go unasked here, or put
+    /// them to the person again: the answer of the same grant.
+    #[effect(kind = "outside")]
+    #[effect(idempotent)]
+    SetOtherDeviceAgentsUnasked { on: bool },
 }
 
 const ROOM_PARTS: [&str; 2] = ["processors", "memory"];
@@ -436,6 +448,7 @@ impl DeviceMeshArea {
             model.remote = self.remote.clone();
             if self.devices {
                 model.follow_personal_devices();
+                model.read_other_device_agents();
                 // The person's servers are another app's to list, and reading them asks the
                 // person first: only the pane being shown asks, never a window's warm-up.
             } else if let Some(scene) = self.scene.as_deref() {
@@ -623,6 +636,14 @@ pub struct DeviceMeshModel {
     following: std::rc::Weak<MeshFollow>,
     pages: std::rc::Weak<()>,
     health_round: usize,
+    /// Whether this computer accepts the person's agents from their other devices, and whether
+    /// their steps go unasked here: the session's reading of the grant the workspaces keep for
+    /// it, `None` until it lands.
+    other_device_agents: Option<(bool, bool)>,
+    /// The session's reading of that grant, followed without waiting for it.
+    other_device_agents_call: Option<ui::InvocationCall>,
+    /// The change being written while it runs.
+    other_device_agents_asking: Option<ui::InvocationCall>,
 }
 
 /// What the pane asked about one of the person's home servers, named by its
@@ -867,6 +888,9 @@ impl DeviceMeshModel {
             following: std::rc::Weak::new(),
             pages: std::rc::Weak::new(),
             health_round: 0,
+            other_device_agents: None,
+            other_device_agents_call: None,
+            other_device_agents_asking: None,
         }
     }
 
@@ -936,6 +960,20 @@ impl DeviceMeshModel {
                 false
             }
             DeviceMeshEffect::ReviewRemoval { .. } | DeviceMeshEffect::CancelRemoval => false,
+            DeviceMeshEffect::SetAcceptOtherDeviceAgents { on } => {
+                self.set_other_device_agents(
+                    ui::tilo_actions::remote::session_actions::SET_ACCEPT_OTHER_DEVICE_AGENTS,
+                    *on,
+                );
+                false
+            }
+            DeviceMeshEffect::SetOtherDeviceAgentsUnasked { on } => {
+                self.set_other_device_agents(
+                    ui::tilo_actions::remote::session_actions::SET_OTHER_DEVICE_AGENTS_UNASKED,
+                    *on,
+                );
+                false
+            }
         };
         if configured {
             self.persist();
@@ -1008,8 +1046,92 @@ impl DeviceMeshModel {
         }
     }
 
+    /// Ask the session whether this computer accepts the person's agents from their other
+    /// devices, and whether their steps go unasked here; the answer lands in
+    /// [`Self::poll_other_device_agents`].
+    fn read_other_device_agents(&mut self) {
+        use ui::tilo_actions::remote::{InvokeArgument, session_actions};
+        if self.other_device_agents_call.is_some() {
+            return;
+        }
+        self.other_device_agents_call = Some(self.remote.invoke(
+            session_actions::agents_target(session_actions::OTHER_DEVICE_AGENTS),
+            InvokeArgument::None,
+            None,
+        ));
+    }
+
+    /// Take the session's reading of the grant, and read it again once a change answered.
+    fn poll_other_device_agents(&mut self) {
+        if let Some(answer) = self
+            .other_device_agents_call
+            .as_ref()
+            .and_then(crate::device_fleet::settled)
+        {
+            self.other_device_agents_call = None;
+            match answer.map(|output| output.value) {
+                Ok(Some(value)) => {
+                    let said = |field: &str| {
+                        value
+                            .get(field)
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false)
+                    };
+                    let read = (said("accept"), said("unasked"));
+                    self.changed |= self.other_device_agents != Some(read);
+                    self.other_device_agents = Some(read);
+                }
+                Ok(None) => tracing::warn!(
+                    target: "tilo::settings",
+                    "the session's reading of the other devices' agents is empty"
+                ),
+                Err(detail) => tracing::warn!(
+                    target: "tilo::settings",
+                    %detail,
+                    "the session did not read the other devices' agents"
+                ),
+            }
+        }
+        if self
+            .other_device_agents_asking
+            .as_ref()
+            .is_some_and(|call| crate::device_fleet::settled(call).is_some())
+        {
+            self.other_device_agents_asking = None;
+            self.read_other_device_agents();
+        }
+    }
+
+    /// Change this computer's answer for the person's agents from their other devices, through
+    /// the session's own action for the grant its workspaces keep.
+    fn set_other_device_agents(&mut self, verb: &str, on: bool) {
+        use ui::tilo_actions::remote::{Confirmation, InvokeArgument, session_actions};
+        if self.other_device_agents_asking.is_some() {
+            return;
+        }
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("on".into(), on.into());
+        self.other_device_agents_asking = Some(self.remote.invoke(
+            session_actions::agents_target(verb),
+            InvokeArgument::Json(arguments),
+            Some(Confirmation::Confirmed),
+        ));
+        let (accept, unasked) = self.other_device_agents.unwrap_or((false, false));
+        self.other_device_agents =
+            Some(if verb == session_actions::SET_ACCEPT_OTHER_DEVICE_AGENTS {
+                (on, unasked && on)
+            } else {
+                (accept, on)
+            });
+        self.changed = true;
+    }
+
     fn poll_host_calls(&mut self) {
-        if self.management_call.is_some() || self.servers_call.is_some() {
+        if self.management_call.is_some()
+            || self.servers_call.is_some()
+            || self.other_device_agents_call.is_some()
+            || self.other_device_agents_asking.is_some()
+        {
             self.remote.poll();
         }
         if let Some(answer) = self
@@ -1290,7 +1412,39 @@ impl Page<'_> {
             // Sharing history comes from other devices.
             groups.extend(self.continuity_group(|_, continuity| activity_section(continuity)));
         }
+        groups.push(self.agents_group());
         page_of(groups)
+    }
+
+    /// This computer's answer for the person's agents from their other devices: the grant its
+    /// workspaces keep, which the session's own action sets.
+    fn agents_group(&self) -> Element {
+        let (accept, unasked) = self.other_device_agents.unwrap_or((false, false));
+        let act = if accept {
+            t("mesh-agents-act-desc")
+        } else {
+            t("mesh-agents-act-needs-accept")
+        };
+        section(
+            &t("mesh-agents-title"),
+            rows(vec![
+                self.switch(
+                    t("mesh-agents-accept"),
+                    t("mesh-agents-accept-desc"),
+                    AGENTS_ACCEPT_KEY.to_owned(),
+                    accept,
+                    effect(DeviceMeshEffect::SET_ACCEPT_OTHER_DEVICE_AGENTS),
+                ),
+                self.switch(
+                    t("mesh-agents-act"),
+                    act,
+                    AGENTS_ACT_KEY.to_owned(),
+                    accept && unasked,
+                    effect(DeviceMeshEffect::SET_OTHER_DEVICE_AGENTS_UNASKED),
+                ),
+            ]),
+        )
+        .into_element()
     }
 
     fn continuity_group(
@@ -1574,6 +1728,7 @@ impl DeviceMeshModel {
 
         self.poll_ticket();
         self.poll_host_calls();
+        self.poll_other_device_agents();
     }
 }
 

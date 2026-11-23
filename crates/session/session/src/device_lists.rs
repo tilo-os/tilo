@@ -21,6 +21,8 @@ use tilo_session_core::desktop::navigation::ChromeEffect;
 
 use crate::windows::{reaching, windows};
 
+use tilo_action_policy::{Answer, Change, Grantee};
+
 /// What the device's lists are made from ([`DeviceLists::lists_key`]), one entry per resource: the
 /// windows, the tray, the agents and the styles. An entry that moved is a reading that moved.
 #[derive(Clone, PartialEq, Eq)]
@@ -244,6 +246,27 @@ pub(crate) enum AgentsEffect {
     StopAgent {
         #[param("The agent session, by its key")]
         agent: String,
+    },
+    /// Whether this computer accepts the person's agents from their other devices, and whether
+    /// their steps go unasked here: the grant this device keeps in its workspaces.
+    #[effect(kind = "outside")]
+    #[effect(label = "session-agents-other-devices", audience = "people")]
+    OtherDeviceAgents,
+    /// Accept agents from the person's other devices on this computer, or stop accepting them:
+    /// the grant this device keeps in its workspaces.
+    #[effect(kind = "outside")]
+    #[effect(label = "session-agents-accept-other-devices", audience = "people")]
+    SetAcceptOtherDeviceAgents {
+        #[param("Whether this computer accepts the person's agents from their other devices")]
+        on: bool,
+    },
+    /// Let the steps of agents from the person's other devices go unasked on this computer, or
+    /// put them to the person again.
+    #[effect(kind = "outside")]
+    #[effect(label = "session-agents-act-without-asking", audience = "people")]
+    SetOtherDeviceAgentsUnasked {
+        #[param("Whether their steps go unasked on this computer")]
+        on: bool,
     },
 }
 
@@ -1023,6 +1046,96 @@ fn no_holder() -> ApiError {
 }
 
 impl DeviceLists {
+    /// Whether this computer accepts the person's agents from their other devices, and whether
+    /// their steps go unasked here, as the grant it keeps in its workspaces says.
+    fn other_device_agents(&self) -> Started {
+        let Some(engine) = &self.engine else {
+            return other_device_agents_reading(false, false);
+        };
+        let device = engine.identity().device_cert.device_public_key;
+        let answers: Vec<Option<Answer>> = self
+            .handle
+            .read(|tree| {
+                tree.workspaces
+                    .iter()
+                    .map(|workspace| workspace.id().to_string())
+                    .collect::<Vec<_>>()
+            })
+            .into_iter()
+            .filter_map(|workspace| engine.policy(&workspace).ok())
+            .map(|policy| tilo_action_policy::device_agents::answer(&policy, &device))
+            .collect();
+        let accept = !answers.is_empty() && answers.iter().all(Option::is_some);
+        let unasked = accept && answers.iter().all(|answer| *answer == Some(Answer::Allow));
+        other_device_agents_reading(accept, unasked)
+    }
+
+    /// Keep, change or take back the grant this computer's workspaces keep for the person's
+    /// agents from their other devices ([`tilo_action_policy::device_agents`]): `Some(Ask)`
+    /// accepts them with a step their grants ask first put to the person here, `Some(Allow)` lets
+    /// those steps go unasked, and `None` refuses them.
+    fn set_other_device_agents(&self, answer: Option<Answer>) -> Result<Started, ApiError> {
+        let Some(engine) = self.engine.clone() else {
+            return Err(ApiError::Failed(
+                "this session has no workspace to answer in".to_owned(),
+            ));
+        };
+        let device = engine.identity().device_cert.device_public_key;
+        let person = self.person.clone();
+        let workspaces: Vec<String> = self.handle.read(|tree| {
+            tree.workspaces
+                .iter()
+                .map(|workspace| workspace.id().to_string())
+                .collect::<Vec<_>>()
+        });
+        Ok(Started::Later(crate::landing::off_loop(async move {
+            for workspace in workspaces {
+                let Some(id) = WorkspaceId::parse(&workspace) else {
+                    continue;
+                };
+                let current = engine
+                    .policy(&workspace)
+                    .ok()
+                    .and_then(|policy| tilo_action_policy::device_agents::answer(&policy, &device));
+                if current == answer {
+                    continue;
+                }
+                let mut changes = Vec::new();
+                if current.is_some() {
+                    changes.push(Change::Revoke(tilo_action_policy::device_agents::grant_id(
+                        &device,
+                    )));
+                }
+                if let Some(answer) = answer {
+                    changes.push(Change::Grant(tilo_action_policy::device_agents::grant(
+                        &workspace,
+                        &device,
+                        answer,
+                        Grantee::person(person.clone()),
+                    )));
+                }
+                if changes.is_empty() {
+                    continue;
+                }
+                tilo_session_client::membership::Membership::of(&engine, id)
+                    .write(&changes)
+                    .await
+                    .map_err(ApiError::Failed)?;
+            }
+            Ok(tilo_actions::ActionOutput::default())
+        })))
+    }
+}
+
+/// What this computer answers for the person's agents from their other devices.
+fn other_device_agents_reading(accept: bool, unasked: bool) -> Started {
+    Started::Done(tilo_actions::ActionOutput {
+        value: Some(serde_json::json!({ "accept": accept, "unasked": unasked })),
+        resources: Vec::new(),
+    })
+}
+
+impl DeviceLists {
     /// Open the invite sheet on a workspace: the workspace comes to the front, and the sheet the
     /// bar's button opens is shown on it, through the session, which holds the surface.
     fn show_invite(&self, workspace: Option<&str>) -> Result<Started, ApiError> {
@@ -1234,17 +1347,31 @@ impl Service for DeviceLists {
                 self.open_tray_item(&key)
             }
             AGENTS_RESOURCE => {
-                let AgentsEffect::StopAgent { agent } =
+                let effect =
                     decode::<AgentsEffect>(&self.resources(), resource, action, arguments)?;
-                if !self
-                    .agent_sessions
-                    .stop(&tilo_action_policy::AgentSessionId::new(agent.clone()))
-                {
-                    return Err(ApiError::InvalidArguments(format!(
-                        "no agent session {agent} works here"
-                    )));
+                match effect {
+                    AgentsEffect::StopAgent { agent } => {
+                        if !self
+                            .agent_sessions
+                            .stop(&tilo_action_policy::AgentSessionId::new(agent.clone()))
+                        {
+                            return Err(ApiError::InvalidArguments(format!(
+                                "no agent session {agent} works here"
+                            )));
+                        }
+                        Ok(Started::Done(tilo_actions::ActionOutput::default()))
+                    }
+                    AgentsEffect::OtherDeviceAgents => Ok(self.other_device_agents()),
+                    AgentsEffect::SetAcceptOtherDeviceAgents { on } => {
+                        self.set_other_device_agents(if on { Some(Answer::Ask) } else { None })
+                    }
+                    AgentsEffect::SetOtherDeviceAgentsUnasked { on } => self
+                        .set_other_device_agents(Some(if on {
+                            Answer::Allow
+                        } else {
+                            Answer::Ask
+                        })),
                 }
-                Ok(Started::Done(tilo_actions::ActionOutput::default()))
             }
             INVITE_RESOURCE => {
                 let effect =

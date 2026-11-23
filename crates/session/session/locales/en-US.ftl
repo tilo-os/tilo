@@ -350,6 +350,9 @@ session-answer-ask = Answer
 session-ask-later = Ask me later
 session-tray-open = Open
 session-agents-stop = Stop
+session-agents-other-devices = Whether agents from my other devices work here
+session-agents-accept-other-devices = Accept agents from my other devices
+session-agents-act-without-asking = Let them act without asking
 session-people = People
 
 ## What the lock screen is called while it is up.
