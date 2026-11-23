@@ -642,6 +642,10 @@ fn write_text(
             now,
         )
         .unwrap();
+    // A link carries it; only the write's own cost is measured here.
+    for frame in owner.frames(workspace) {
+        owner.sent(workspace, &frame).unwrap();
+    }
     started.elapsed()
 }
 
@@ -720,6 +724,10 @@ fn documents(
             .owner
             .admit_writes(workspace, writes, fixture.now)
             .unwrap();
+        // A link carries what this device wrote; nothing waits in its record.
+        for frame in fixture.owner.frames(workspace) {
+            fixture.owner.sent(workspace, &frame).unwrap();
+        }
         n = end;
     }
 }
