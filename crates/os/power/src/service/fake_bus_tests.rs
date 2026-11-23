@@ -51,11 +51,29 @@ struct FakeLogind {
     verdict: String,
     /// Another program's locks, as `ListInhibitors` reports them.
     foreign: Vec<LogindInhibitorRow>,
+    /// Optional pause gate for `Inhibit` calls so bus tests can queue concurrent
+    /// signals and owner transitions while the service awaits logind.
+    inhibit_gate: Option<InhibitGate>,
+}
+
+#[derive(Clone)]
+struct InhibitGate {
+    entered: Arc<std::sync::atomic::AtomicBool>,
+    release: Arc<Notify>,
+    sleep_pause: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[zbus::interface(name = "org.freedesktop.login1.Manager")]
 impl FakeLogind {
-    fn inhibit(&self, what: &str, who: &str, why: &str, mode: &str) -> OwnedFd {
+    async fn inhibit(&self, what: &str, who: &str, why: &str, mode: &str) -> OwnedFd {
+        if let Some(gate) = &self.inhibit_gate {
+            if what == "idle:sleep" {
+                gate.entered.store(true, Ordering::SeqCst);
+                gate.release.notified().await;
+            } else if what == "sleep" && gate.sleep_pause.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        }
         let (ours, theirs) = UnixStream::pair().expect("socketpair");
         ours.set_nonblocking(true).expect("nonblocking");
         assert!(!who.is_empty() && !why.is_empty() && !mode.is_empty());
@@ -196,6 +214,7 @@ async fn start(policy: PowerPolicy, foreign: Vec<LogindInhibitorRow>) -> Session
                 calls: Arc::clone(&calls),
                 verdict: "yes".into(),
                 foreign,
+                inhibit_gate: None,
             },
         )
         .expect("logind")
@@ -589,6 +608,7 @@ async fn the_proxy_takes_its_locks_and_reads_loginds_verdict() {
                 calls: Arc::clone(&recorded),
                 verdict: "challenge".into(),
                 foreign: Vec::new(),
+                inhibit_gate: None,
             },
         )
         .expect("logind")
@@ -629,6 +649,32 @@ async fn the_proxy_takes_its_locks_and_reads_loginds_verdict() {
 
 const PROFILES_PATH: &str = "/net/hadess/PowerProfiles";
 
+fn profile_entries(
+    profiles: &[String],
+) -> Vec<std::collections::HashMap<String, zbus::zvariant::OwnedValue>> {
+    profiles
+        .iter()
+        .map(|name| {
+            std::collections::HashMap::from([
+                (
+                    "Profile".to_owned(),
+                    zbus::zvariant::OwnedValue::try_from(zbus::zvariant::Value::from(
+                        name.as_str(),
+                    ))
+                    .expect("profile"),
+                ),
+                (
+                    "Driver".to_owned(),
+                    zbus::zvariant::OwnedValue::try_from(zbus::zvariant::Value::from(
+                        "platform_profile",
+                    ))
+                    .expect("driver"),
+                ),
+            ])
+        })
+        .collect()
+}
+
 struct FakePowerProfiles {
     active: String,
     profiles: Vec<String>,
@@ -643,27 +689,7 @@ impl FakePowerProfiles {
 
     #[zbus(property)]
     fn profiles(&self) -> Vec<std::collections::HashMap<String, zbus::zvariant::OwnedValue>> {
-        self.profiles
-            .iter()
-            .map(|name| {
-                std::collections::HashMap::from([
-                    (
-                        "Profile".to_owned(),
-                        zbus::zvariant::OwnedValue::try_from(zbus::zvariant::Value::from(
-                            name.as_str(),
-                        ))
-                        .expect("profile"),
-                    ),
-                    (
-                        "Driver".to_owned(),
-                        zbus::zvariant::OwnedValue::try_from(zbus::zvariant::Value::from(
-                            "platform_profile",
-                        ))
-                        .expect("driver"),
-                    ),
-                ])
-            })
-            .collect()
+        profile_entries(&self.profiles)
     }
 }
 
@@ -683,6 +709,7 @@ where
                 calls: Arc::clone(&calls),
                 verdict: "yes".into(),
                 foreign: Vec::new(),
+                inhibit_gate: None,
             },
         )
         .expect("logind")
@@ -785,18 +812,14 @@ async fn power_profiles_and_active_profile_follow_dbus_signals_live() {
     .await;
 }
 
-async fn wait_short(what: &str, mut pred: impl FnMut() -> bool) {
-    let deadline = after(tokio::time::Instant::now(), Duration::from_secs(3));
-    while tokio::time::Instant::now() < deadline {
-        if pred() {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    panic!("timed out waiting for: {what}");
+async fn serve_base_daemons_on_bus(address: &str) -> Connection {
+    serve_base_daemons_with_gate(address, None).await
 }
 
-async fn serve_base_daemons_on_bus(address: &str) -> Connection {
+async fn serve_base_daemons_with_gate(
+    address: &str,
+    inhibit_gate: Option<InhibitGate>,
+) -> Connection {
     let calls = Shared::default();
     Builder::address(address)
         .expect("addr")
@@ -806,6 +829,7 @@ async fn serve_base_daemons_on_bus(address: &str) -> Connection {
                 calls: Arc::clone(&calls),
                 verdict: "yes".into(),
                 foreign: Vec::new(),
+                inhibit_gate,
             },
         )
         .expect("logind")
@@ -858,32 +882,70 @@ async fn serve_profiles_on_bus(address: &str, active: &str, profiles: &[&str]) -
         .expect("profiles daemon conn")
 }
 
+async fn spawn_service_on_bus(
+    address: &str,
+) -> (
+    PowerBridge,
+    InhibitRegistry,
+    Arc<AtomicU64>,
+    tempfile::TempDir,
+    tokio::task::JoinHandle<()>,
+) {
+    let client = Builder::address(address)
+        .expect("addr")
+        .build()
+        .await
+        .expect("client");
+    let bridge = PowerBridge::new();
+    let registry = InhibitRegistry::new();
+    let state_home = tempfile::tempdir().expect("state home");
+    let mut service =
+        PowerService::with_connection(&client, bridge.clone(), registry.clone(), quiet_policy())
+            .await
+            .expect("service");
+    service.history = PowerHistoryWriter::in_state_home(Some(state_home.path().to_path_buf()));
+    let wakeups = service.wakeup_counter();
+    let task = tokio::spawn(async move {
+        let _client = client;
+        service.run().await;
+    });
+    (bridge, registry, wakeups, state_home, task)
+}
+
+async fn apply_quiet_policy(bridge: &PowerBridge, wakeups: &AtomicU64) {
+    let before = wakeups.load(Ordering::SeqCst);
+    bridge.update_policy(quiet_policy());
+    eventually("quiet policy applied", || {
+        wakeups.load(Ordering::SeqCst) > before
+    })
+    .await;
+}
+
+async fn close_lid_on(conn: &Connection) {
+    let upower = conn
+        .object_server()
+        .interface::<_, FakeUPower>(UPOWER_PATH)
+        .await
+        .expect("upower iface");
+    upower.get_mut().await.lid_closed = true;
+    upower
+        .get()
+        .await
+        .lid_is_closed_changed(upower.signal_emitter())
+        .await
+        .expect("LidIsClosed");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn power_profiles_follow_daemon_removal_and_return_without_signals() {
     let bus = tilo_test_env::PrivateBus::start();
     let _base = serve_base_daemons_on_bus(bus.address()).await;
     let daemon1 =
         serve_profiles_on_bus(bus.address(), "power-saver", &["balanced", "power-saver"]).await;
-    let client = Builder::address(bus.address())
-        .expect("addr")
-        .build()
-        .await
-        .expect("client");
+    let (bridge, _registry, _wakeups, _state_home, task) =
+        spawn_service_on_bus(bus.address()).await;
 
-    let bridge = PowerBridge::new();
-    let registry = InhibitRegistry::new();
-    let state_home = tempfile::tempdir().expect("state home");
-    let mut service =
-        PowerService::with_connection(&client, bridge.clone(), registry, quiet_policy())
-            .await
-            .expect("service");
-    service.history = PowerHistoryWriter::in_state_home(Some(state_home.path().to_path_buf()));
-    let task = tokio::spawn(async move {
-        let _client = client;
-        service.run().await;
-    });
-
-    wait_short("startup primes power-saver", || {
+    eventually("startup primes power-saver", || {
         bridge.profiles_snapshot()
             == (
                 vec!["balanced".to_owned(), "power-saver".to_owned()],
@@ -893,7 +955,7 @@ async fn power_profiles_follow_daemon_removal_and_return_without_signals() {
     .await;
 
     daemon1.close().await.expect("close daemon1");
-    wait_short("owner exit clears both profiles and active_profile", || {
+    eventually("owner exit clears both profiles and active_profile", || {
         bridge.profiles_snapshot() == (Vec::new(), None)
     })
     .await;
@@ -904,7 +966,7 @@ async fn power_profiles_follow_daemon_removal_and_return_without_signals() {
         &["performance", "balanced", "power-saver"],
     )
     .await;
-    wait_short("replacement owner is read uncached without signals", || {
+    eventually("replacement owner is read uncached without signals", || {
         bridge.profiles_snapshot()
             == (
                 vec![
@@ -917,6 +979,104 @@ async fn power_profiles_follow_daemon_removal_and_return_without_signals() {
     })
     .await;
     task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn startup_reads_power_profiles_even_without_an_owner_and_does_not_retry() {
+    let bus = tilo_test_env::PrivateBus::start();
+    let base = serve_base_daemons_on_bus(bus.address()).await;
+
+    // Verify `name_owner` distinguishes NameHasNoOwner (Ok(None)) from a
+    // bus-level failure (Err) on a disconnected connection.
+    let probe = Builder::address(bus.address())
+        .expect("addr")
+        .build()
+        .await
+        .expect("probe");
+    let monitor = PowerProfilesMonitor::with_connection(&probe)
+        .await
+        .expect("monitor");
+    assert_eq!(monitor.name_owner().await.expect("name_owner"), None);
+    probe.close().await.expect("close probe");
+    assert!(monitor.name_owner().await.is_err());
+
+    // Monitor method calls addressed to net.hadess.PowerProfiles before starting
+    // the service so we observe the startup activation read directly.
+    let tap = Builder::address(bus.address())
+        .expect("addr")
+        .build()
+        .await
+        .expect("tap");
+    let mut tap_stream = zbus::MessageStream::from(&tap);
+    tap.call_method(
+        Some("org.freedesktop.DBus"),
+        "/org/freedesktop/DBus",
+        Some("org.freedesktop.DBus.Monitoring"),
+        "BecomeMonitor",
+        &(
+            &["type='method_call',destination='net.hadess.PowerProfiles'"][..],
+            0u32,
+        ),
+    )
+    .await
+    .expect("BecomeMonitor");
+    let requested = Arc::new(Mutex::new(Vec::<String>::new()));
+    let tap_task = tokio::spawn({
+        let requested = Arc::clone(&requested);
+        async move {
+            let _tap = tap;
+            while let Some(Ok(msg)) = tap_stream.next().await {
+                if msg.header().member().map(|m| m.as_str()) == Some("Get")
+                    && let Ok((_iface, prop)) = msg.body().deserialize::<(String, String)>()
+                {
+                    requested.lock().expect("requested").push(prop);
+                }
+            }
+        }
+    });
+
+    let (bridge, _registry, wakeups, _state_home, task) = spawn_service_on_bus(bus.address()).await;
+    apply_quiet_policy(&bridge, &wakeups).await;
+
+    // Wait for the failed startup read to settle, then confirm startup sent
+    // both reads and did not arm a retry past SIGNAL_STREAM_RETRY_DELAY.
+    tilo_test_env::within("startup loop settles without daemon", async {
+        loop {
+            let seen = wakeups.load(Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            if seen > 0 && wakeups.load(Ordering::SeqCst) == seen {
+                return;
+            }
+        }
+    })
+    .await;
+    {
+        let props = requested.lock().expect("requested");
+        assert!(
+            props.iter().any(|p| p == "Profiles") && props.iter().any(|p| p == "ActiveProfile"),
+            "startup must send initial Profiles and ActiveProfile reads even with no owner: {props:?}"
+        );
+    }
+    let settled_wakeups = wakeups.load(Ordering::SeqCst);
+    tokio::time::sleep(SIGNAL_STREAM_RETRY_DELAY + Duration::from_millis(500)).await;
+    let wakeups_after_window = wakeups.load(Ordering::SeqCst);
+    close_lid_on(&base).await;
+    eventually("lid close is handled after idle window", || {
+        bridge.drain_signals().contains(&PowerSignal::Lock)
+    })
+    .await;
+    assert_eq!(
+        wakeups_after_window, settled_wakeups,
+        "a failed startup read with no owner must not arm a retry timer"
+    );
+    assert_eq!(
+        requested.lock().expect("requested").len(),
+        2,
+        "only the initial startup reads are sent when no daemon exists"
+    );
+    assert_eq!(bridge.profiles_snapshot(), (Vec::new(), None));
+    task.abort();
+    tap_task.abort();
 }
 
 /// Fake `net.hadess.PowerProfiles` that owns the bus name but never answers
@@ -944,30 +1104,12 @@ impl SilentPowerProfiles {
 async fn a_silent_power_profiles_daemon_does_not_block_lid_or_sleep_handling() {
     let bus = tilo_test_env::PrivateBus::start();
     let base = serve_base_daemons_on_bus(bus.address()).await;
-    let client = Builder::address(bus.address())
-        .expect("addr")
-        .build()
-        .await
-        .expect("client");
-
-    let bridge = PowerBridge::new();
-    let registry = InhibitRegistry::new();
-    let state_home = tempfile::tempdir().expect("state home");
-    let mut service =
-        PowerService::with_connection(&client, bridge.clone(), registry, quiet_policy())
-            .await
-            .expect("service");
-    service.history = PowerHistoryWriter::in_state_home(Some(state_home.path().to_path_buf()));
-    let wakeups = service.wakeup_counter();
-    let task = tokio::spawn(async move {
-        let _client = client;
-        service.run().await;
-    });
+    let (bridge, _registry, wakeups, _state_home, task) = spawn_service_on_bus(bus.address()).await;
 
     // Wait until start() has finished subscribing to lid/sleep/owner streams and
     // the loop is running in select!, then bring up a silent PowerProfiles daemon.
     bridge.update_policy(quiet_policy());
-    wait_short("service loop enters select!", || {
+    eventually("service loop enters select!", || {
         wakeups.load(Ordering::SeqCst) >= 1
     })
     .await;
@@ -988,27 +1130,14 @@ async fn a_silent_power_profiles_daemon_does_not_block_lid_or_sleep_handling() {
         .await
         .expect("silent conn");
 
-    wait_short("priming starts against the silent daemon", || {
+    eventually("priming starts against the silent daemon", || {
         reads_started.load(Ordering::SeqCst) >= 1
     })
     .await;
 
-    // Close the lid while priming is stuck awaiting the silent daemon.
-    let upower = base
-        .object_server()
-        .interface::<_, FakeUPower>(UPOWER_PATH)
-        .await
-        .expect("upower iface");
-    upower.get_mut().await.lid_closed = true;
-    upower
-        .get()
-        .await
-        .lid_is_closed_changed(upower.signal_emitter())
-        .await
-        .expect("LidIsClosed");
-
+    close_lid_on(&base).await;
     let mut signals = Vec::new();
-    wait_short(
+    eventually(
         "lid close locks while power-profiles-daemon is silent",
         || {
             signals.extend(bridge.drain_signals());
@@ -1017,7 +1146,6 @@ async fn a_silent_power_profiles_daemon_does_not_block_lid_or_sleep_handling() {
     )
     .await;
 
-    // Sleep signals are still handled too.
     let logind = base
         .object_server()
         .interface::<_, FakeLogind>(LOGIND_PATH)
@@ -1027,7 +1155,7 @@ async fn a_silent_power_profiles_daemon_does_not_block_lid_or_sleep_handling() {
         .await
         .expect("PrepareForSleep");
 
-    wait_short(
+    eventually(
         "PrepareForSleep locks while power-profiles-daemon is silent",
         || {
             signals.extend(bridge.drain_signals());
@@ -1038,115 +1166,251 @@ async fn a_silent_power_profiles_daemon_does_not_block_lid_or_sleep_handling() {
     task.abort();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn property_signals_while_power_profiles_has_no_owner_are_ignored() {
-    let (server, client) = p2p_with_profiles_iface(FakePowerProfiles {
-        active: "balanced".into(),
-        profiles: vec!["balanced".into(), "power-saver".into()],
+async fn pause_service_in_inhibit(
+    registry: &InhibitRegistry,
+    gate: &InhibitGate,
+    reason: &str,
+) -> InhibitToken {
+    let hold = registry.acquire(reason);
+    eventually("service awaits logind Inhibit", || {
+        gate.entered.load(Ordering::SeqCst)
     })
     .await;
+    hold
+}
 
-    let bridge = PowerBridge::new();
-    let registry = InhibitRegistry::new();
-    let mut service =
-        PowerService::with_connection(&client, bridge.clone(), registry, quiet_policy())
-            .await
-            .expect("service");
-    let mut deadlines = Deadlines::default();
-    let mut streams = service.start(&mut deadlines).await;
-    let primed = service.profile_prime.take().expect("initial prime").await;
-    service.finish_profile_prime(primed, &mut deadlines);
-    assert_eq!(
-        bridge.profiles_snapshot(),
-        (
-            vec!["balanced".to_owned(), "power-saver".to_owned()],
-            Some("balanced".to_owned()),
-        )
-    );
-
-    // Emit a real PropertiesChanged signal from the daemon and read it off the
-    // properties stream, then deliver owner=None before applying that signal.
-    let iface = server
+async fn emit_active_burst(daemon: &Connection, active: &str, count: usize) {
+    let iface = daemon
         .object_server()
         .interface::<_, FakePowerProfiles>(PROFILES_PATH)
         .await
-        .expect("power profiles iface");
-    iface.get_mut().await.active = "power-saver".into();
-    iface
+        .expect("profiles iface");
+    iface.get_mut().await.active = active.to_owned();
+    for _ in 0..count {
+        iface
+            .get()
+            .await
+            .active_profile_changed(iface.signal_emitter())
+            .await
+            .expect("ActiveProfile changed");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn property_signals_while_power_profiles_has_no_owner_are_ignored() {
+    let bus = tilo_test_env::PrivateBus::start();
+    let gate = InhibitGate {
+        entered: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        release: Arc::new(Notify::new()),
+        sleep_pause: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    };
+    let base = serve_base_daemons_with_gate(bus.address(), Some(gate.clone())).await;
+    let daemon1 =
+        serve_profiles_on_bus(bus.address(), "balanced", &["balanced", "power-saver"]).await;
+    let (bridge, registry, wakeups, _state_home, task) = spawn_service_on_bus(bus.address()).await;
+
+    eventually("startup primes balanced", || {
+        bridge.profiles_snapshot()
+            == (
+                vec!["balanced".to_owned(), "power-saver".to_owned()],
+                Some("balanced".to_owned()),
+            )
+    })
+    .await;
+
+    // Hold the service inside logind.Inhibit while daemon1 emits a burst of
+    // PropertiesChanged signals and releases the bus name, so both streams are
+    // ready together when the loop returns to select!.
+    let hold = pause_service_in_inhibit(&registry, &gate, "queue signals across owner exit").await;
+    emit_active_burst(&daemon1, "power-saver", 32).await;
+    daemon1
+        .release_name("net.hadess.PowerProfiles")
+        .await
+        .expect("release daemon1 name");
+    gate.release.notify_one();
+    drop(hold);
+
+    eventually("owner exit clears bridge", || {
+        bridge.profiles_snapshot() == (Vec::new(), None)
+    })
+    .await;
+
+    // Confirm with a later event that the trailing signals left no trace.
+    apply_quiet_policy(&bridge, &wakeups).await;
+    close_lid_on(&base).await;
+    eventually("lid close is processed after daemon exit", || {
+        bridge.drain_signals().contains(&PowerSignal::Lock)
+    })
+    .await;
+    assert_eq!(bridge.profiles_snapshot(), (Vec::new(), None));
+    assert_eq!(
+        bridge.active_profile(),
+        None,
+        "a PropertiesChanged signal arriving after owner exit must be dropped"
+    );
+
+    // Once a replacement owner takes the name, both its prime and its later
+    // property signals apply again.
+    let daemon2 = serve_profiles_on_bus(
+        bus.address(),
+        "balanced",
+        &["performance", "balanced", "power-saver"],
+    )
+    .await;
+    eventually("replacement daemon is primed", || {
+        bridge.profiles_snapshot()
+            == (
+                vec![
+                    "performance".to_owned(),
+                    "balanced".to_owned(),
+                    "power-saver".to_owned(),
+                ],
+                Some("balanced".to_owned()),
+            )
+    })
+    .await;
+
+    emit_active_burst(&daemon2, "performance", 1).await;
+    eventually("later signal from replacement owner applies", || {
+        bridge.active_profile().as_deref() == Some("performance")
+    })
+    .await;
+    task.abort();
+}
+
+async fn emit_prepare_for_sleep_burst(base: &Connection, count: usize) {
+    let logind = base
+        .object_server()
+        .interface::<_, FakeLogind>(LOGIND_PATH)
+        .await
+        .expect("logind iface");
+    for _ in 0..count {
+        FakeLogind::prepare_for_sleep(logind.signal_emitter(), false)
+            .await
+            .expect("PrepareForSleep(false)");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stale_signal_from_departed_owner_does_not_overwrite_new_owner() {
+    let bus = tilo_test_env::PrivateBus::start();
+    let gate = InhibitGate {
+        entered: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        release: Arc::new(Notify::new()),
+        sleep_pause: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    };
+    let base = serve_base_daemons_with_gate(bus.address(), Some(gate.clone())).await;
+    let daemon1 =
+        serve_profiles_on_bus(bus.address(), "balanced", &["balanced", "power-saver"]).await;
+    let daemon2 = Builder::address(bus.address())
+        .expect("addr")
+        .serve_at(
+            PROFILES_PATH,
+            FakePowerProfiles {
+                active: "performance".into(),
+                profiles: vec![
+                    "performance".into(),
+                    "balanced".into(),
+                    "power-saver".into(),
+                ],
+            },
+        )
+        .expect("daemon2")
+        .build()
+        .await
+        .expect("daemon2 conn");
+    let (bridge, registry, _wakeups, _state_home, task) = spawn_service_on_bus(bus.address()).await;
+
+    eventually("startup primes daemon1", || {
+        bridge.profiles_snapshot()
+            == (
+                vec!["balanced".to_owned(), "power-saver".to_owned()],
+                Some("balanced".to_owned()),
+            )
+    })
+    .await;
+
+    let hold =
+        pause_service_in_inhibit(&registry, &gate, "queue signals across owner handoff").await;
+    emit_active_burst(&daemon1, "power-saver", 28).await;
+    daemon1
+        .release_name("net.hadess.PowerProfiles")
+        .await
+        .expect("release daemon1 name");
+    daemon2
+        .request_name("net.hadess.PowerProfiles")
+        .await
+        .expect("daemon2 claims bus name");
+
+    // Queue PrepareForSleep(false) signals whose logind inhibit takes a couple
+    // of milliseconds, letting daemon2's prime complete while daemon1's
+    // buffered PropertiesChanged signals are still queued on their stream.
+    gate.sleep_pause.store(true, Ordering::SeqCst);
+    emit_prepare_for_sleep_burst(&base, 24).await;
+    gate.release.notify_one();
+    drop(hold);
+
+    eventually("daemon2 initial prime lands in bridge", || {
+        bridge.profiles_snapshot().0 == ["performance", "balanced", "power-saver"]
+    })
+    .await;
+    gate.sleep_pause.store(false, Ordering::SeqCst);
+
+    // Emit a later Profiles-only signal from daemon2 on the same stream so
+    // waiting for it guarantees every queued daemon1 signal has been drained
+    // without overwriting ActiveProfile.
+    let iface2 = daemon2
+        .object_server()
+        .interface::<_, FakePowerProfiles>(PROFILES_PATH)
+        .await
+        .expect("daemon2 iface");
+    iface2.get_mut().await.profiles = vec!["performance".into(), "balanced".into()];
+    iface2
         .get()
         .await
-        .active_profile_changed(iface.signal_emitter())
+        .profiles_changed(iface2.signal_emitter())
         .await
-        .expect("ActiveProfile changed");
-    let stale_signal = streams
-        .power_profiles
-        .as_mut()
-        .expect("properties stream")
-        .next()
-        .await
-        .expect("buffered PropertiesChanged");
+        .expect("daemon2 Profiles changed");
 
-    service.handle_power_profiles_owner(None, &mut deadlines);
-    assert_eq!(bridge.profiles_snapshot(), (Vec::new(), None));
-    let moved_after_clear = bridge.profiles_moved();
-
-    service.handle_power_profile_properties(&stale_signal, &mut deadlines);
+    eventually("daemon2 later Profiles signal reaches bridge", || {
+        bridge.profiles_snapshot().0 == ["performance", "balanced"]
+    })
+    .await;
     assert_eq!(
-        bridge.profiles_snapshot(),
-        (Vec::new(), None),
-        "a PropertiesChanged signal arriving while the name has no owner must be dropped"
+        bridge.active_profile().as_deref(),
+        Some("performance"),
+        "a departed owner's buffered signal must not overwrite the new owner's active profile"
     );
-    assert_eq!(bridge.profiles_moved(), moved_after_clear);
-
-    // Once an owner returns, priming and subsequent property signals apply again.
-    let new_owner = zbus::names::UniqueName::try_from(":1.42").expect("unique name");
-    service.handle_power_profiles_owner(Some(&new_owner), &mut deadlines);
-    let primed = service
-        .profile_prime
-        .take()
-        .expect("re-prime on new owner")
-        .await;
-    service.finish_profile_prime(primed, &mut deadlines);
-    assert_eq!(bridge.active_profile().as_deref(), Some("power-saver"));
+    task.abort();
 }
 
 /// Fake `net.hadess.PowerProfiles` whose properties emit invalidation-only
-/// `PropertiesChanged` signals without values.
+/// `PropertiesChanged` signals without values, and can optionally stall reads.
 struct InvalidatingPowerProfiles {
     active: String,
     profiles: Vec<String>,
+    hang_reads: Arc<std::sync::atomic::AtomicBool>,
+    hung_reads: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[zbus::interface(name = "net.hadess.PowerProfiles")]
 impl InvalidatingPowerProfiles {
     #[zbus(property(emits_changed_signal = "invalidates"))]
-    fn active_profile(&self) -> String {
+    async fn active_profile(&self) -> String {
+        if self.hang_reads.load(Ordering::SeqCst) {
+            self.hung_reads.fetch_add(1, Ordering::SeqCst);
+            std::future::pending().await
+        }
         self.active.clone()
     }
 
     #[zbus(property(emits_changed_signal = "invalidates"))]
-    fn profiles(&self) -> Vec<std::collections::HashMap<String, zbus::zvariant::OwnedValue>> {
-        self.profiles
-            .iter()
-            .map(|name| {
-                std::collections::HashMap::from([
-                    (
-                        "Profile".to_owned(),
-                        zbus::zvariant::OwnedValue::try_from(zbus::zvariant::Value::from(
-                            name.as_str(),
-                        ))
-                        .expect("profile"),
-                    ),
-                    (
-                        "Driver".to_owned(),
-                        zbus::zvariant::OwnedValue::try_from(zbus::zvariant::Value::from(
-                            "platform_profile",
-                        ))
-                        .expect("driver"),
-                    ),
-                ])
-            })
-            .collect()
+    async fn profiles(&self) -> Vec<std::collections::HashMap<String, zbus::zvariant::OwnedValue>> {
+        if self.hang_reads.load(Ordering::SeqCst) {
+            self.hung_reads.fetch_add(1, Ordering::SeqCst);
+            std::future::pending().await
+        }
+        profile_entries(&self.profiles)
     }
 }
 
@@ -1155,6 +1419,8 @@ async fn invalidated_power_profile_properties_are_reread_into_bridge() {
     let (server, client) = p2p_with_profiles_iface(InvalidatingPowerProfiles {
         active: "balanced".into(),
         profiles: vec!["balanced".into(), "power-saver".into()],
+        hang_reads: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        hung_reads: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     })
     .await;
 
@@ -1171,7 +1437,7 @@ async fn invalidated_power_profile_properties_are_reread_into_bridge() {
         service.run().await;
     });
 
-    wait_short("startup primes invalidating daemon", || {
+    eventually("startup primes invalidating daemon", || {
         bridge.profiles_snapshot()
             == (
                 vec!["balanced".to_owned(), "power-saver".to_owned()],
@@ -1192,7 +1458,7 @@ async fn invalidated_power_profile_properties_are_reread_into_bridge() {
         .active_profile_invalidate(iface.signal_emitter())
         .await
         .expect("ActiveProfile invalidated");
-    wait_short("invalidated ActiveProfile is re-read into bridge", || {
+    eventually("invalidated ActiveProfile is re-read into bridge", || {
         bridge.active_profile().as_deref() == Some("power-saver")
     })
     .await;
@@ -1204,9 +1470,70 @@ async fn invalidated_power_profile_properties_are_reread_into_bridge() {
         .profiles_invalidate(iface.signal_emitter())
         .await
         .expect("Profiles invalidated");
-    wait_short("invalidated Profiles is re-read into bridge", || {
+    eventually("invalidated Profiles is re-read into bridge", || {
         bridge.profiles_snapshot().0 == ["performance", "balanced"]
     })
+    .await;
+    task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_invalidated_property_reread_against_a_silent_daemon_does_not_block_lid_handling() {
+    let bus = tilo_test_env::PrivateBus::start();
+    let base = serve_base_daemons_on_bus(bus.address()).await;
+    let hang_reads = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let hung_reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let daemon = Builder::address(bus.address())
+        .expect("addr")
+        .serve_at(
+            PROFILES_PATH,
+            InvalidatingPowerProfiles {
+                active: "balanced".into(),
+                profiles: vec!["balanced".into(), "power-saver".into()],
+                hang_reads: Arc::clone(&hang_reads),
+                hung_reads: Arc::clone(&hung_reads),
+            },
+        )
+        .expect("invalidating daemon")
+        .name("net.hadess.PowerProfiles")
+        .expect("ppd name")
+        .build()
+        .await
+        .expect("invalidating conn");
+
+    let (bridge, _registry, wakeups, _state_home, task) = spawn_service_on_bus(bus.address()).await;
+    eventually("startup primes invalidating daemon", || {
+        bridge.profiles_snapshot()
+            == (
+                vec!["balanced".to_owned(), "power-saver".to_owned()],
+                Some("balanced".to_owned()),
+            )
+    })
+    .await;
+    apply_quiet_policy(&bridge, &wakeups).await;
+
+    hang_reads.store(true, Ordering::SeqCst);
+    let iface = daemon
+        .object_server()
+        .interface::<_, InvalidatingPowerProfiles>(PROFILES_PATH)
+        .await
+        .expect("power profiles iface");
+    iface
+        .get()
+        .await
+        .active_profile_invalidate(iface.signal_emitter())
+        .await
+        .expect("ActiveProfile invalidated");
+    eventually("invalidation triggers a stalled re-read", || {
+        hung_reads.load(Ordering::SeqCst) >= 1
+    })
+    .await;
+
+    close_lid_on(&base).await;
+    eventually(
+        "lid close still locks while invalidated re-read is stalled",
+        || bridge.drain_signals().contains(&PowerSignal::Lock),
+    )
     .await;
     task.abort();
 }
