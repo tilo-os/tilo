@@ -91,38 +91,19 @@ async fn four_devices() -> Four {
     let workspaces = host.server.workspaces().unwrap();
     let person = root.verifying_key().to_bytes();
     // The person's workspaces are theirs: the server keeps them for them, and every device of
-    // theirs enters each through its entry, as a device opening a workspace does.
+    // theirs takes part in each as a device of the person whose workspace it is.
     let work = workspaces.create("Work").await.unwrap().workspace;
     let home = workspaces.create("Home").await.unwrap().workspace;
-    let person_workspace = person_workspace_id(&person);
-    if workspaces.summary(&person_workspace).await.is_err() {
-        workspaces
-            .create_workspace("Servers", Some(&person_workspace))
-            .await
-            .unwrap();
-    }
-    // Every workspace takes a device that opens it through its entry, as a listed workspace
-    // does.
-    for workspace in [&work, &home, &person_workspace] {
-        workspaces
-            .publish(
-                workspace,
-                &server_device.cert,
-                tilo_server_protocol::directory::Listing {
-                    description: "Ada's workspace".into(),
-                    default_role: tilo_server_protocol::workspaces::Role::Editor,
-                },
-            )
-            .await
-            .unwrap();
-    }
+    // The person's own workspace, founded on their server as a server founds it.
+    let person_workspace = tilo_server::servers::found(workspaces).await.unwrap();
+    assert_eq!(person_workspace, person_workspace_id(&person));
     let desktop_session = flow::session(&host, &desktop, &server_device.cert);
     let pi_session = flow::session(&host, &pi, &server_device.cert);
     let laptop_session = flow::session(&host, &laptop, &server_device.cert);
     for session in [&desktop_session, &pi_session, &laptop_session] {
         flow::join(session, &work, "Work").await;
         flow::join(session, &home, "Home").await;
-        flow::join(session, &person_workspace, "Servers").await;
+        flow::join(session, &person_workspace, "Ada").await;
     }
     let (desktop_home, desktop_person) = (desktop_session.clone(), desktop_session.clone());
     let pi_person = pi_session.clone();
@@ -249,11 +230,17 @@ async fn flow_all_four_devices_see_every_workspace_app_and_file() {
         "the file the desktop writes is one of the workspace's folder, which every device of \
          theirs reads: {put:?}"
     );
+    flow::folder_index(
+        &f.desktop_session,
+        &f.work,
+        "the folder's index at the desktop",
+    )
+    .await;
     for (label, session) in [
         ("the Orange Pi", &f.pi_session),
         ("the laptop", &f.laptop_session),
     ] {
-        flow::open(session, &flow::tree_route(&f.work, 0));
+        flow::folder_index(session, &f.work, "the folder's index at the device").await;
         let files = crate::support::wait_for("the folder's file at the device", || async {
             let count = flow::file_count(session, &f.work);
             (count > 0).then_some(count)

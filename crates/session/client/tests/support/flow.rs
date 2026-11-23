@@ -336,13 +336,54 @@ fn read_tree_record(
     }
 }
 
-/// How many files the folder `workspace` holds as `peer`'s replica reads it: the tree's index
-/// and each chunk it lists.
+/// Open the folder `workspace` on `peer` and wait until its device reads the folder's index
+/// listing a chunk. A device that refuses the writes it opened fails at once, naming the
+/// refusal; a timeout says what the device reads of the index, and its status.
+pub async fn folder_index(peer: &Link, workspace: &str, what: &str) {
+    let index = tree_route(workspace, 0);
+    open(peer, &index);
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let mut tree = fs_protocol::TreeChunks::default();
+        let mut docs = std::collections::BTreeMap::new();
+        read_tree_record(peer, workspace, 0, &mut docs, &mut tree);
+        if !tree.listed().is_empty() {
+            return;
+        }
+        let read = super::reading_of(peer, &index, None);
+        if let Err(refusal) = &read
+            && refusal.contains("document change forbidden")
+        {
+            panic!(
+                "{what}: the device refuses the folder's writes it opened: {refusal}. A \
+                 computer's folder writes its tree as the person at that device \
+                 (`tilo_fs::namespace::acting_as(None)`), whose history entry names no \
+                 invoker, and every device that opens such a sealed write refuses it \
+                 (`StatePeer::callers_named_in`, tilo-peer-state state/authority.rs)"
+            );
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {what}; the device reads {:?}; status: {:?}",
+            read.map(|read| match read {
+                super::DocumentRead::Whole { bytes, .. } => format!("whole, {} bytes", bytes.len()),
+                other => format!("{other:?}"),
+            }),
+            peer.status(),
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// How many files the folder `workspace` holds as `peer`'s device reads it: the tree's index,
+/// and each chunk it lists, opened as the device's folder opens them: a workspace sends a
+/// device the records it opens, and a chunk is one of them.
 pub fn file_count(peer: &Link, workspace: &str) -> usize {
     let mut tree = fs_protocol::TreeChunks::default();
     let mut docs = std::collections::BTreeMap::new();
     read_tree_record(peer, workspace, 0, &mut docs, &mut tree);
     for chunk in tree.listed() {
+        open(peer, &tree_route(workspace, chunk));
         read_tree_record(peer, workspace, chunk, &mut docs, &mut tree);
     }
     tree.listed()
