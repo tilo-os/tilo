@@ -21,7 +21,7 @@ service = ["dep:zbus", "dep:tilo-media"]
 tracing = { workspace = true }
 # The platform's own now-playing controls (macOS) reuse the one surface tilo-media
 # already holds.
-tilo-media = { path = "../../platform/tilo-media", optional = true }
+tilo-media = { path = "../../engines/tilo-media", optional = true }
 # The server runs on the host's runtime, whose handle the public API takes.
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 

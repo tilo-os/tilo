@@ -40,7 +40,7 @@ workspace-hack = { version = "0.1" }
 # device's content store and stages a file the toolkit plays. A page's media element plays the
 # address itself, so this is native only.
 tilo-content-device = { version = "0.1.0", path = "../../system/content-device" }
-media = { package = "tilo-media", path = "../../platform/tilo-media" }
+media = { package = "tilo-media", path = "../../engines/tilo-media" }
 
 [[example]]
 name = "component-catalogue"
