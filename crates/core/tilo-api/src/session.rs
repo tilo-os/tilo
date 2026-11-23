@@ -882,16 +882,19 @@ fn queue(workspace: &str, program: Option<&str>) -> String {
 
 /// Why a call of an account session that names no workspace was refused.
 const NAME_THE_WORKSPACE: &str = "name the workspace this acts in: `workspace`, its id or its \
-name as account/workspaces#list answers them; only paths under `account` need none";
+name as account/workspaces#list answers them; only paths under `account` and the person's keys' \
+record (`record:tilo.account:keys`) need none";
 
 /// Whether a call with `arguments` and no workspace walks the account's tree: a path under
-/// `account`, or none, which lists it.
+/// `account`, the person's keys' record, or none, which lists it.
 fn on_account(arguments: Option<&Value>) -> bool {
     let path = arguments
         .and_then(|arguments| arguments.get("path"))
         .and_then(Value::as_str)
         .unwrap_or_default();
-    path.is_empty() || path.split(['/', '#']).next() == Some("account")
+    path.is_empty()
+        || path.split(['/', '#']).next() == Some("account")
+        || path == crate::account::KEYS_RECORD
 }
 
 /// What an account session is told first: how to reach the account and its

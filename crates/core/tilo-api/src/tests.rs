@@ -934,7 +934,11 @@ async fn a_server_key_lasts_until_revoked_unless_its_person_chose_an_expiry() {
     // never a key's bytes.
     assert_eq!(grant.created_by.as_deref(), Some("Laptop"));
     let row = account::grant_row(&server.store.grants_of(&alice.id())[0]);
-    assert_eq!(row["last_used_at_ms"], later);
+    // Shown to the minute.
+    assert_eq!(
+        row["last_used_at_ms"],
+        later.saturating_sub(later % crate::store::LAST_USED_SAVE_MS)
+    );
     assert_eq!(row["created_by"], "Laptop");
     assert!(row["expires_at_ms"].is_null());
     let page = pages::grants(

@@ -756,7 +756,11 @@ pub(crate) fn grant_row(grant: &Grant) -> Value {
         "created_at_ms": grant.created_ms,
         "created_by": grant.created_by,
         "browser_pages": grant.browser_pages,
-        "last_used_at_ms": grant.last_used_ms,
+        // To the minute: every call uses a key, and the keys' record changes only by what was
+        // done to them, not by a reader reading it.
+        "last_used_at_ms": grant
+            .last_used_ms
+            .map(|ms| ms.saturating_sub(ms % crate::store::LAST_USED_SAVE_MS)),
         "expires_at_ms": grant.expires_ms,
     })
 }

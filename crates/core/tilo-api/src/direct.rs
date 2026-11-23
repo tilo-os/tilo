@@ -1278,14 +1278,22 @@ mod tests {
         });
         // The follower waits before the laptop revokes, so only the revocation can wake it.
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        assert!(!following.is_finished(), "nothing changed yet");
+        if following.is_finished() {
+            let (early, _) = following.await.unwrap();
+            panic!("nothing changed yet, and the follower read {early} after {first}");
+        }
 
         let revoke = serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
             "params": {"name": "tilo_do",
                 "arguments": {"path": "account/keys/visa-backend#revoke", "args": {}}}});
         let revoked = laptop.mcp(revoke).await.unwrap();
+        let answered = revoked["result"]["content"][0]["text"]
+            .as_str()
+            .and_then(|text| text.strip_prefix("ok\n"))
+            .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok());
         assert_eq!(
-            revoked["result"]["structuredContent"]["result"]["revoked"], "visa-backend",
+            answered.as_ref().map(|answered| &answered["revoked"]),
+            Some(&serde_json::json!("visa-backend")),
             "{revoked}"
         );
 

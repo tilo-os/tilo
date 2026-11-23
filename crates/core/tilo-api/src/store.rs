@@ -41,8 +41,10 @@ const MAX_CODES: usize = 4_096;
 /// itself ([`Store::keep_carried`]).
 pub const MAX_CARRIED_PER_PERSON: usize = 32;
 /// How often using a token writes when its grant was last used to the file:
-/// a use is noted in memory at once, and kept at most this much later.
-const LAST_USED_SAVE_MS: u64 = 60 * 1000;
+/// a use is noted in memory at once, and kept at most this much later. It is
+/// also how precisely a key's last use is shown ([`crate::account::grant_row`]),
+/// so a key following the keys' record is not woken by its own calls.
+pub(crate) const LAST_USED_SAVE_MS: u64 = 60 * 1000;
 
 /// What a grant lets its agent reach.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
