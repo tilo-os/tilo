@@ -850,7 +850,7 @@ mod tests {
             "00",
         );
         assert!(
-            manifest.contains("[entrypoint]\nwindow = \"device\""),
+            manifest.contains("type = \"gui\"\nwindow = \"device\""),
             "a package showing a page declares a window that runs where its engine is: {manifest}"
         );
         assert!(

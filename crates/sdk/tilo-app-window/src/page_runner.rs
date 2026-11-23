@@ -17,6 +17,7 @@ use ui::webview;
 pub type Page = Rc<RefCell<Option<PageSession>>>;
 
 /// The engine of `page`, made now when the window has none: the window's one page.
+#[must_use]
 pub fn engine_of(page: &Page) -> SharedEngine {
     let mut held = page.borrow_mut();
     match held.as_ref() {
@@ -38,6 +39,9 @@ pub enum Asked {
 }
 
 /// Ask the page `request` (JSON an app's action wrote) to do what it says.
+///
+/// # Errors
+/// The request is no JSON the page reads, or the window keeps no page.
 pub fn ask(page: &Page, request: &str) -> Result<Asked, String> {
     let engine = engine_of(page);
     match codec::decode(request)? {
@@ -49,13 +53,14 @@ pub fn ask(page: &Page, request: &str) -> Result<Asked, String> {
             let mut held = page.borrow_mut();
             let session = held
                 .as_mut()
-                .expect("the page was made before it was asked");
+                .ok_or_else(|| "this window has no page".to_owned())?;
             Ok(Asked::Waiting(session.ask(None, request)))
         }
     }
 }
 
 /// Take the answers the page has given since the window last looked, oldest first.
+#[must_use]
 pub fn answers(page: &Page) -> Vec<(u32, String)> {
     let mut held = page.borrow_mut();
     let Some(session) = held.as_mut() else {
