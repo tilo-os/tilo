@@ -133,7 +133,7 @@ impl Workspaces {
                 agent: Some(agent.to_owned()),
                 workspace: String::new(),
                 policy: None,
-                granted: acting.handed_preset(""),
+                granted: [acting.handed_preset(""), caller.granted(&[])].concat(),
             };
         };
         let now = tilo_clock::unix_now_ns();

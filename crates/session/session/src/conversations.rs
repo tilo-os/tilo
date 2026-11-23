@@ -377,8 +377,8 @@ impl Conversations {
 
     /// Open each workspace's conversations as `person`, where they are not open yet, and follow
     /// them from then on.
-    pub(crate) fn feed(&self, person: &str, workspaces: Vec<WorkspaceFacts>) {
-        for facts in &workspaces {
+    pub(crate) fn feed(&self, person: &str, workspaces: &[WorkspaceFacts]) {
+        for facts in workspaces {
             self.open_chat(facts, person);
         }
     }
