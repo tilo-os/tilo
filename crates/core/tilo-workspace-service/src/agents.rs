@@ -91,6 +91,7 @@ mod steps;
 mod sub_agents;
 mod team;
 mod turn_provider;
+mod turn_tools;
 mod vault_uses;
 pub mod web_search;
 
@@ -2453,10 +2454,9 @@ async fn work(
         Ok(server) => server,
         Err(error) => return (Outcome::Failed(error.to_string()), 0, TurnUsage::default()),
     };
-    // What the turn keeps about its person, in a conversation the view it may answer with, and
-    // the public web it may look up, are its own tools beside the agent tools.
-    let mut own_tools = learned::with_tools(Vec::new(), keeping);
-    own_tools.extend(shares::tools(turn));
+    // How the turn answers, what it keeps about its person and the public web it may look up are
+    // actions beside the agent tools, each told to the model as it publishes it.
+    let mut own_tools = turn_tools::definitions(turn, keeping.is_some());
     own_tools.extend(web_search::definitions());
     // What was learned about the person, where the turn is their own keeper's conversation
     // with the agent, is told beside its instructions as data.
@@ -2598,19 +2598,26 @@ impl tilo_agent_turn::Doing<McpServer<WorkspaceActionProvider>> for Answering<'_
         answer
     }
 
-    /// What the turn keeps about its person is carried out here, the view or document it answers
-    /// with, and the public web it looks up; every other tool is the agent tools'.
+    /// The turn's own actions are carried out here ([`turn_tools`]), and the public web it looks
+    /// up; every other tool is the agent tools'.
     async fn own(&self, call: &ToolCall) -> Option<tilo_agent_turn::Answer> {
-        let (text, is_error) = if call.name == shares::ANSWER_WITH_VIEW {
-            let at = self.at.lock().await;
-            Box::pin(at.1.view(&call.input)).await
-        } else if call.name == shares::ANSWER_WITH_DOCUMENT {
-            let at = self.at.lock().await;
-            Box::pin(at.1.document(self.server, &call.input)).await
-        } else if let Some(web) = self.web.tool(&call.name, &call.input).await {
+        let (text, is_error) = if let Some(web) = self.web.tool(&call.name, &call.input).await {
             web
         } else {
-            learned::call(self.keeping, &call.name, &call.input).await?
+            match turn_tools::call(&call.name, &call.input)? {
+                Err(why) => (why, true),
+                Ok(turn_tools::Call::View { title, source }) => {
+                    let at = self.at.lock().await;
+                    Box::pin(at.1.view(&title, &source)).await
+                }
+                Ok(turn_tools::Call::Document { path, title }) => {
+                    let at = self.at.lock().await;
+                    Box::pin(at.1.document(self.server, &path, title.as_deref())).await
+                }
+                Ok(turn_tools::Call::Learned(action)) => {
+                    learned::invoke(self.keeping, action, &call.input).await
+                }
+            }
         };
         Some(tilo_agent_turn::Answer {
             text,

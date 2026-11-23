@@ -72,8 +72,10 @@ their own workspace (TiloLang's `resources: .own`). Recovery uses the locally
 held copy for that person and workspace and marks unconfirmed outside effects
 as unknown. The original archive remains available to its original reader.
 
-Signature profiles, saved TiloLang views, and facts from private agent turns
-live in the person's store outside workspaces. Views retain their workspace
+What an agent learns about a person, in a turn of their own conversation with
+it, is kept in the workspace's store, and each fact is read for the person it
+is about alone. Signature profiles and saved TiloLang views live in the
+person's store outside workspaces. Views retain their workspace
 context so they can refer to its resources. Device-only data such as pending
 local writes and granted file paths stays on that device.
 

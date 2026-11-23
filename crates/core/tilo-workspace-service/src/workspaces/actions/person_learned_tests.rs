@@ -86,6 +86,18 @@ impl Asking<'_> {
     }
 }
 
+/// `fact` kept for `person` in `workspace`, with where it came from, as the agent's turn keeps it.
+fn scout_keeps(
+    workspaces: &crate::workspaces::Workspaces,
+    person: &[u8; 32],
+    workspace: &str,
+    (text, source): (&str, &str),
+) -> Answered<Facts> {
+    let arguments = json!({"text": text, "source": source});
+    let arguments = arguments.as_object().unwrap();
+    workspaces.learned_invoke(person, workspace, Some(SCOUT), LEARN, arguments)
+}
+
 /// A server with one workspace and two people admitted to it, kept under `$dir`.
 macro_rules! stage {
     ($dir:ident, $served:ident, $workspaces:ident, $workspace:ident, $provider:ident, $ada:ident, $bo:ident) => {
@@ -123,9 +135,7 @@ async fn a_member_reads_and_changes_what_the_workspaces_agents_learned() {
 
     // An agent on the workspace's server for her keeps a fact in a turn of hers.
     let coffee = ("Takes her coffee black.", KEPT_IN);
-    workspaces
-        .keep_learned_fact(&ada.user_public_key, &workspace, SCOUT, coffee)
-        .unwrap();
+    scout_keeps(workspaces, &ada.user_public_key, &workspace, coffee).unwrap();
     let listed = provider.list(&ada).await;
     let [fact] = listed.facts.as_slice() else {
         panic!("one fact, not {listed:?}");
@@ -186,9 +196,13 @@ async fn a_member_reads_and_changes_what_the_workspaces_agents_learned() {
 async fn what_a_member_forgets_is_gone_and_what_is_no_change_is_refused() {
     stage!(_dir, served, workspaces, workspace, provider, ada, _bo);
     for fact in ["Takes her coffee black.", "Works from Graz on Fridays."] {
-        workspaces
-            .keep_learned_fact(&ada.user_public_key, &workspace, SCOUT, (fact, KEPT_IN))
-            .unwrap();
+        scout_keeps(
+            workspaces,
+            &ada.user_public_key,
+            &workspace,
+            (fact, KEPT_IN),
+        )
+        .unwrap();
     }
     let listed = provider.list(&ada).await;
     let coffee = listed
@@ -396,14 +410,13 @@ async fn nobody_outside_the_workspace_reaches_what_was_learned() {
     let (elsewhere, _, _) = governed(workspaces).await;
     let cy = admit(workspaces, &elsewhere, &owner, 3).await;
     let (_, stranger) = governor();
-    workspaces
-        .keep_learned_fact(
-            &ada.user_public_key,
-            &workspace,
-            SCOUT,
-            ("Takes her coffee black.", "They said so"),
-        )
-        .unwrap();
+    scout_keeps(
+        workspaces,
+        &ada.user_public_key,
+        &workspace,
+        ("Takes her coffee black.", "They said so"),
+    )
+    .unwrap();
     let hers = provider.ask(&ada, (LIST, json!({}))).await.unwrap();
     let fact = hers.facts.first().expect("her fact").id.clone();
     let asks = || {
@@ -509,22 +522,19 @@ async fn what_was_learned_is_kept_for_one_workspace() {
             .unwrap_or_default()
     };
     assert!(workspaces.learned_about(&here).is_none());
-    workspaces
-        .keep_learned_fact(
-            &ADA,
-            &here,
-            SCOUT,
-            ("Takes her coffee black.", "They said so"),
-        )
-        .unwrap();
+    scout_keeps(
+        workspaces,
+        &ADA,
+        &here,
+        ("Takes her coffee black.", "They said so"),
+    )
+    .unwrap();
     assert_eq!(texts(&here), ["Takes her coffee black."]);
     assert!(
         workspaces.learned_about(&there).is_none(),
         "no other workspace's"
     );
-    workspaces
-        .keep_learned_fact(&BO, &there, SCOUT, ("Drinks tea.", "They said so"))
-        .unwrap();
+    scout_keeps(workspaces, &BO, &there, ("Drinks tea.", "They said so")).unwrap();
     assert_eq!(texts(&here), ["Takes her coffee black."]);
     assert_eq!(texts(&there), ["Drinks tea."]);
 
@@ -532,11 +542,7 @@ async fn what_was_learned_is_kept_for_one_workspace() {
     let refused: Result<(), String> =
         workspaces.change_learned(&ADA, &here, Some(SCOUT), |_| Err("refused".to_owned()));
     assert_eq!(refused, Err("refused".to_owned()));
-    assert!(
-        workspaces
-            .keep_learned_fact(&ADA, &here, SCOUT, ("two\nlines", "They said so"))
-            .is_err()
-    );
+    assert!(scout_keeps(workspaces, &ADA, &here, ("two\nlines", "They said so")).is_err());
     assert_eq!(texts(&here), ["Takes her coffee black."]);
 
     // Only a workspace's id names a resource: nothing else becomes part of a path.
@@ -552,9 +558,13 @@ async fn what_was_learned_is_kept_for_one_workspace() {
             "{no_workspace:?}"
         );
         assert!(
-            workspaces
-                .keep_learned_fact(&ADA, no_workspace, SCOUT, ("Likes tea.", "They said so"))
-                .is_err(),
+            scout_keeps(
+                workspaces,
+                &ADA,
+                no_workspace,
+                ("Likes tea.", "They said so")
+            )
+            .is_err(),
             "{no_workspace:?}"
         );
     }

@@ -301,7 +301,7 @@ impl Turns {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     #![allow(
         clippy::panic,
         reason = "in a test this is the assertion, not a hazard"
@@ -312,7 +312,7 @@ mod tests {
     use super::*;
 
     /// What `ada` wrote her agent as `message`, in their own conversation.
-    fn wrote(message: &str) -> Turn {
+    pub(in crate::agents) fn wrote(message: &str) -> Turn {
         Turn {
             agent: Agent {
                 id: tilo_resource::Atom("scout".to_owned()),

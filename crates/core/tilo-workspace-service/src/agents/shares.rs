@@ -4,9 +4,9 @@
 //!
 //! The card stands in the reply after its body, which shows the document in its own app where
 //! the reply is drawn and opens it: the person who asked sees the document
-//! their agent wrote and works in it. The tool the model has for it, [`ANSWER_WITH_DOCUMENT`],
-//! takes the thing by the path the model worked on it with and what its card is called, and
-//! nothing else:
+//! their agent wrote and works in it. The turn's action for it ([`super::turn_tools`]) takes
+//! the thing by the path the model worked on it with and what its card is called, and nothing
+//! else:
 //!
 //! - **Where it is shown is the turn's, never the model's.** It is the reply the turn writes;
 //!   no argument names another place, and none names whose card it is.
@@ -18,51 +18,14 @@
 //!   with what they hold: one the workspace lets read the document sees it, anyone else reads
 //!   only that something is there, never what it is called.
 
-use serde_json::{Value, json};
+use serde_json::json;
 use tilo_mcp::McpServer;
-use tilo_model_gateway::host_backend::protocol::ToolDefinition;
 use tilo_reference::Embed as Reference;
 
 use super::{Reply, Turn, WorkspaceActionProvider};
 
-/// The tool a turn answers through with the thing it worked on.
-pub(super) const ANSWER_WITH_DOCUMENT: &str = "answer_with_document";
-
-/// The tool a turn answers through with a view it wrote.
-pub(super) const ANSWER_WITH_VIEW: &str = "answer_with_view";
-
-/// When a view is the answer and how one is written, as the model is told it.
-pub(super) const VIEW_GUIDE: &str = "Answer with a view: a small piece of interface you write in Tilo's \
-app language over what the workspace's apps keep. It goes with your reply, and everyone who \
-reads it can add it to their own views, where it is drawn as that reader, with what they may \
-read, and again whenever what it reads changes. Use it when what was asked for keeps changing \
-or is easier seen than read: a count, a list, a status, things someone wants to keep an eye on. \
-Answer in words alone when the answer is one fact that will not move. `title` is what the view \
-is called. `source` is one `view` declaration and the functions it calls, and nothing else: no \
-types, no actions, no `use`. It names an app by the last part of its id (`tasks` for \
-`so.tilo.tasks`) and reads what that app keeps for the workspace: `view projects() { for a in \
-tasks.tracker.areas { text(a.name) } }`. A control invokes one of the app's own actions, named \
-as the app names it with `_` for `-`: `button(\"Delete\", on: tasks.delete_area(tasks.tracker, \
-a.id))`; in a view a press only suggests, and the reader allows that one thing or not. Numbers \
-that are compared are a chart: `ui.BarChart([.bars(values: [3.0, 5.0], label: \"Closed\")], \
-categories: [\"Mon\", \"Tue\"])` for amounts side by side, `ui.PieChart([.slice(label: \
-\"Open\", value: 3.0)])` for the parts of one whole, `ui.Chart([.series(values: [1.0, 2.0], \
-label: \"Opened\")])` for a history. A view reads a field by its type: an option with `??` or \
-`if let v = x {}`; a list or a collection with `for i in xs {}`, `.len()` or `.map()`; a plain \
-case by `== .name`. After it, say in a sentence or two what the view shows: those words are all \
-that search, notifications and a reader that cannot show a view have.";
-
 /// The longest a view's source the model gives is taken, in bytes.
 const MOST_SOURCE_BYTES: usize = 32 * 1024;
-
-/// When the tool is the answer and what it takes, as the model is told it.
-const GUIDE: &str = "Answer with the thing itself that you worked on, shown live in your reply \
-in its own app: the document, the sheet, the board. The person sees it change while you or they \
-work on it, and opens it from there to work in it. Use it when they ask to see what you made or \
-changed, or to work on it with you. `path` is the path you worked on it with, without an \
-action: `word-processor`. `title` is what its card is called. Where it is shown is never an \
-argument: it is your reply. For a count, a list or a status over what apps keep, write a view \
-with `answer_with_view` instead. Afterwards say in a sentence what it is.";
 
 /// The longest a card's name the model gives is kept, in characters.
 const MOST_TITLE_CHARS: usize = 120;
@@ -71,140 +34,40 @@ const MOST_TITLE_CHARS: usize = 120;
 const WINDOW_KIND: &str = "tilo.window";
 
 /// Whether `turn` answers with a reply that can carry a card: one made from an ask.
-fn answers_with_a_reply(turn: &Turn) -> bool {
+pub(super) fn answers_with_a_reply(turn: &Turn) -> bool {
     turn.ask.message().is_some()
 }
 
-/// What a turn's instructions say of the tools: when a view or the thing itself is the answer.
-/// Nothing for a turn whose answer is no reply to an ask.
-pub(super) fn told(turn: &Turn) -> &'static str {
-    if answers_with_a_reply(turn) {
-        " When what is asked for keeps changing or is easier seen than read (a count, a list, \
-         a status), answer with a view through `answer_with_view`, then say in a sentence \
-         what it shows. When the person asks to see the thing you made or changed, or to work \
-         in it with you, show it live through `answer_with_document`, then say in a sentence \
-         what it is."
-    } else {
-        ""
+/// The view the model wrote: what it is called, in one line, and its source.
+fn view_asked(title: &str, source: &str) -> Result<(String, String), String> {
+    let source = source.trim();
+    if source.is_empty() {
+        return Err("`source` is the view, as text".to_owned());
     }
-}
-
-/// The tools as the model is told them. None for a turn whose answer is no reply to an ask, as
-/// an issue's comment is.
-pub(super) fn tools(turn: &Turn) -> Vec<ToolDefinition> {
-    if !answers_with_a_reply(turn) {
-        return Vec::new();
-    }
-    vec![
-        ToolDefinition {
-            name: ANSWER_WITH_VIEW.to_owned(),
-            description: VIEW_GUIDE.to_owned(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "title": {"type": "string"},
-                    "source": {"type": "string"},
-                },
-                "required": ["title", "source"],
-                "additionalProperties": false,
-            }),
-        },
-        ToolDefinition {
-            name: ANSWER_WITH_DOCUMENT.to_owned(),
-            description: GUIDE.to_owned(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string"},
-                    "title": {"type": "string"},
-                },
-                "required": ["path"],
-                "additionalProperties": false,
-            }),
-        },
-    ]
-}
-
-/// The view the model wrote: what it is called, and its source. Anything else it gave is
-/// refused with why.
-fn view_asked(input: &Value) -> Result<(String, String), String> {
-    let given = input.as_object().cloned().unwrap_or_default();
-    if let Some(other) = given
-        .keys()
-        .find(|key| !matches!(key.as_str(), "title" | "source"))
-    {
-        return Err(format!(
-            "{ANSWER_WITH_VIEW} takes `title` and `source` and nothing else, not `{other}`: \
-             whose view it is and which reply it goes with are never arguments"
-        ));
-    }
-    let Some(source) = given
-        .get("source")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|source| !source.is_empty())
-    else {
-        return Err(format!(
-            "{ANSWER_WITH_VIEW} takes `source`, the view as text"
-        ));
-    };
     if source.len() > MOST_SOURCE_BYTES {
         return Err(format!(
-            "{ANSWER_WITH_VIEW} takes a view of at most {MOST_SOURCE_BYTES} bytes; this one \
-             is {}: write a smaller one",
+            "a view is at most {MOST_SOURCE_BYTES} bytes; this one is {}: write a smaller one",
             source.len()
         ));
     }
-    let title = given
-        .get("title")
-        .and_then(Value::as_str)
-        .and_then(|title| title.lines().map(str::trim).find(|line| !line.is_empty()))
-        .unwrap_or_default()
-        .chars()
-        .take(MOST_TITLE_CHARS)
-        .collect();
-    Ok((title, source.to_owned()))
+    Ok((one_line(Some(title)).unwrap_or_default(), source.to_owned()))
 }
 
-/// What the model asked to show: the path it worked on the thing with, and what its card is
-/// called. Anything else it gave is refused with why.
-fn asked(input: &Value) -> Result<(String, String), String> {
-    let given = input.as_object().cloned().unwrap_or_default();
-    if let Some(other) = given
-        .keys()
-        .find(|key| !matches!(key.as_str(), "path" | "title"))
-    {
-        return Err(format!(
-            "{ANSWER_WITH_DOCUMENT} takes `path` and `title` and nothing else, not `{other}`: \
-             where it is shown and whose card it is are never arguments"
-        ));
+/// What the model asked to show: the path it worked on the thing with, without an action, and
+/// what its card is called, in one line: the first it gave, or the path.
+fn asked(path: &str, title: Option<&str>) -> Result<(String, String), String> {
+    let path = path.trim();
+    if path.is_empty() || path.contains('#') {
+        return Err("`path` names the thing you worked on, without an action".to_owned());
     }
-    let Some(path) = given
-        .get("path")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-    else {
-        return Err(format!(
-            "{ANSWER_WITH_DOCUMENT} takes `path`, the path you worked on the thing with"
-        ));
-    };
-    if path.contains('#') {
-        return Err(format!(
-            "{ANSWER_WITH_DOCUMENT} takes the path of a thing, not of an action: leave out \
-             what follows `#`"
-        ));
-    }
-    // A card is called by one line: the first the model gave, or the path.
-    let title = given
-        .get("title")
-        .and_then(Value::as_str)
-        .and_then(|title| title.lines().map(str::trim).find(|line| !line.is_empty()))
-        .unwrap_or(path)
-        .chars()
-        .take(MOST_TITLE_CHARS)
-        .collect();
+    let title = one_line(title).unwrap_or_else(|| path.chars().take(MOST_TITLE_CHARS).collect());
     Ok((path.to_owned(), title))
+}
+
+/// The first line of `text` that says something, within [`MOST_TITLE_CHARS`].
+fn one_line(text: Option<&str>) -> Option<String> {
+    let line = text?.lines().map(str::trim).find(|line| !line.is_empty())?;
+    Some(line.chars().take(MOST_TITLE_CHARS).collect())
 }
 
 /// The card of the document `document` of `app`: a window of that app on it. An app's own
@@ -226,8 +89,8 @@ fn card((app, document): (&str, &str)) -> Reference {
 impl Reply {
     /// Answer with the view the model wrote, on the turn's reply: what the model reads back,
     /// and whether it failed. Nothing the model says names the reply or whose view it is.
-    pub(super) async fn view(&self, input: &Value) -> (String, bool) {
-        let (title, source) = match view_asked(input) {
+    pub(super) async fn view(&self, title: &str, source: &str) -> (String, bool) {
+        let (title, source) = match view_asked(title, source) {
             Ok(asked) => asked,
             Err(why) => return (why, true),
         };
@@ -248,9 +111,10 @@ impl Reply {
     pub(super) async fn document(
         &self,
         tools: &McpServer<WorkspaceActionProvider>,
-        input: &Value,
+        path: &str,
+        title: Option<&str>,
     ) -> (String, bool) {
-        let (path, title) = match asked(input) {
+        let (path, title) = match asked(path, title) {
             Ok(asked) => asked,
             Err(why) => return (why, true),
         };
@@ -308,22 +172,25 @@ fn names_app(path: &str, app: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use super::{MOST_SOURCE_BYTES, Reference, asked, card, names_app, view_asked};
 
-    use super::{MOST_SOURCE_BYTES, Reference, card, names_app, view_asked};
-
-    /// A view is taken by its title and source alone, a title as its first line.
+    /// A view is taken by its source and a title as its first line; a document by its path
+    /// without an action, called by the path where no title is given.
     #[test]
-    fn a_view_is_taken_by_its_title_and_source_alone() {
+    fn a_view_and_a_document_are_taken_by_what_the_model_gave() {
         let source = "view open() { text(\"3\") }";
         assert_eq!(
-            view_asked(&json!({"title": "\n Open \nissues", "source": source})),
+            view_asked("\n Open \nissues", source),
             Ok(("Open".to_owned(), source.to_owned()))
         );
-        assert!(view_asked(&json!({"title": "Open", "source": " "})).is_err());
-        assert!(view_asked(&json!({"source": source, "reply": "elsewhere"})).is_err());
-        let long = "x".repeat(MOST_SOURCE_BYTES + 1);
-        assert!(view_asked(&json!({"source": long})).is_err());
+        assert!(view_asked("Open", " ").is_err());
+        assert!(view_asked("", &"x".repeat(MOST_SOURCE_BYTES + 1)).is_err());
+        assert_eq!(
+            asked(" word-processor ", None),
+            Ok(("word-processor".to_owned(), "word-processor".to_owned()))
+        );
+        assert!(asked("word-processor#open", Some("Poem")).is_err());
+        assert!(asked(" ", None).is_err());
     }
 
     /// A card names the document of the app it shows, and an app's own document of the

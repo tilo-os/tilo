@@ -2121,8 +2121,8 @@ impl Workspaces {
                 self.person_telling_invoke(workspace_id, caller, certificate, request)
                     .await
             }
-            // What the agents on this server learned about the person: theirs to read
-            // and to change, and no agent's. A turn keeps a fact through its own tools.
+            // What the workspace's agents learned about the person: theirs to read and to
+            // change. A turn reaches the same actions only as its engine offers them.
             #[cfg(not(target_arch = "wasm32"))]
             (LEARNED, _) => {
                 self.person_learned_invoke(workspace_id, caller, certificate, request)
