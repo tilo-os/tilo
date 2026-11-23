@@ -76,31 +76,6 @@ def git(root: Path, *args: str, input: bytes | None = None, empty: tuple[int, ..
     return finished.stdout
 
 
-#: The longest expression one ``git grep`` is handed. Git refuses an expression
-#: over 64 KiB, so a search for many names goes as several expressions of one
-#: call (``alternations``), which keeps a file any of them matches.
-MAX_EXPRESSION = 16 * 1024
-
-
-def alternations(before: str, names: Sequence[str], after: str) -> list[str]:
-    """``before(a|b|...)after`` over ``names``, in as few expressions as stay
-    within ``MAX_EXPRESSION`` each: together they match what the one would."""
-    room = MAX_EXPRESSION - len(before.encode()) - len(after.encode())
-    expressions: list[str] = []
-    held: list[str] = []
-    size = 0
-    for name in names:
-        length = len(name.encode())
-        if held and size + 1 + length > room:
-            expressions.append(before + "|".join(held) + after)
-            held, size = [], 0
-        size += length + (1 if held else 0)
-        held.append(name)
-    if held:
-        expressions.append(before + "|".join(held) + after)
-    return expressions
-
-
 @dataclass
 class Judged:
     """The files a check judges in one tree: all of them, or one commit's.
@@ -121,10 +96,12 @@ class Judged:
 
         A check that needs a name defined somewhere in the tree reads only the
         files that can define it. One ``git grep`` answers which they are: the
-        expression is an extended regular one (``fn[[:space:]]+(decode|parse)``),
-        and a file it does not match cannot hold what the check looks for.
-        Several expressions keep a file any of them matches, which is how a
-        search too long for one expression is asked (``alternations``).
+        expression is an extended regular one, and a file it does not match
+        cannot hold what the check looks for. Keep it one constant expression:
+        an alternation of every name a commit calls grows without bound, and a
+        large commit then waits on a grep that never ends. Ask for the loose
+        shape (``fn[[:space:]]+[A-Za-z_]``) and match the names in Python over
+        the few files that answer.
         """
         patterns = [pattern] if isinstance(pattern, str) else list(pattern)
         scopes = [Path(scope) for scope in scopes if (self.root / scope).exists()]

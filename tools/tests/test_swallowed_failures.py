@@ -164,18 +164,43 @@ class DefinitionsOfALargeCommit(unittest.TestCase):
 
     NAMES = [f"reads_row_{n:05}_of_a_commit_that_calls_a_great_many_names" for n in range(4000)]
 
-    def test_many_names_are_asked_for_in_expressions_git_takes(self):
-        judged = sys.modules["judged"]
-        before, after = "fn[[:space:]]+(", ")"
-        expressions = failures.alternations(before, self.NAMES, after)
-        self.assertGreater(len(expressions), 1)
-        self.assertTrue(all(len(one) <= judged.MAX_EXPRESSION for one in expressions))
-        asked = [name for one in expressions for name in one[len(before) : -len(after)].split("|")]
-        self.assertEqual(asked, self.NAMES)
-        self.assertEqual(failures.alternations(before, ["decode", "parse"], after), [before + "decode|parse" + after])
-        self.assertEqual(failures.alternations(before, [], after), [])
+    def test_the_search_does_not_grow_with_the_names(self):
+        """One constant expression asks for definitions, however many names a commit calls."""
+        scanned = failures.SCANNED[0]
+        with tempfile.TemporaryDirectory() as held:
+            root = Path(held)
 
-    def test_a_commit_calling_more_names_than_one_expression_holds_finds_their_definitions(self):
+            def git(*arguments):
+                subprocess.run(["git", "-C", held, *arguments], check=True, capture_output=True)
+
+            git("init", "--quiet")
+            source = root / scanned / "src"
+            source.mkdir(parents=True)
+            (source / "calls.rs").write_text(
+                "fn all() {\n" + "".join(f"    {name}();\n" for name in self.NAMES) + "}\n")
+            (source / "first.rs").write_text(f"fn {self.NAMES[0]}() {{}}\n")
+            git("add", "--all")
+            files = failures.judged(root, True)
+            judged_module = sys.modules["judged"]
+            calls = []
+            original = judged_module.git
+
+            def recording(where, *arguments, **keywords):
+                calls.append(arguments)
+                return original(where, *arguments, **keywords)
+
+            judged_module.git = recording
+            try:
+                failures.definitions_of(files)
+            finally:
+                judged_module.git = original
+        greps = [arguments for arguments in calls if arguments[0] == "grep"]
+        self.assertEqual(len(greps), 1, calls)
+        expressions = [arguments[index + 1] for arguments in greps
+                       for index, argument in enumerate(arguments) if argument == "-e"]
+        self.assertEqual(expressions, [r"fn[[:space:]]+[A-Za-z_]"])
+
+    def test_a_commit_calling_a_great_many_names_finds_their_definitions(self):
         scanned = failures.SCANNED[0]
         with tempfile.TemporaryDirectory() as held:
             root = Path(held)

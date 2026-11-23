@@ -53,7 +53,7 @@ from dataclasses import replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from judged import STAGED_FLAG, Judged, alternations, judged  # noqa: E402
+from judged import STAGED_FLAG, Judged, judged  # noqa: E402
 from rust_source import Literal, blank_test_items, is_test_file, lex, matching  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -514,16 +514,25 @@ def definitions_of(files: Judged) -> Judged:
     """The crates' files that may define a name the judged files call.
 
     A name the judged files never call cannot change their verdict, so only the
-    files that can define one of the names they do call are read. The
-    expression is a loose one -- every file holding ``fn <name>``, whatever
-    surrounds it -- because it only narrows what is read: the files it keeps are
-    parsed by the same rules as ever. A commit that calls more names than one
-    expression holds asks in several, and is narrowed the same.
+    files that can define one of the names they do call are read. One `git grep`
+    for any function definition at all narrows the reading to the files that
+    define something, and the names are matched here, in one pass over those
+    files' text: it only narrows what is read, since the files it keeps are
+    parsed by the same rules as ever. An expression alternating every name, as
+    this asked before, grew with the commit and on a large one did not finish;
+    the constant pattern does not, however many names a commit calls.
     """
     names = judged_names(files)
     if not names:
         return replace(files, _only=set())
-    return files.holding(alternations("fn[[:space:]]+(", sorted(names), ")"), *SCANNED)
+    candidates = files.holding(r"fn[[:space:]]+[A-Za-z_]", *SCANNED)
+    definition = re.compile(r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)")
+    kept = {
+        relative
+        for relative, text in candidates.sources(*SCANNED)
+        if any(match.group(1) in names for match in definition.finditer(text))
+    }
+    return replace(candidates, _only=kept)
 
 
 def findings_of_file(
