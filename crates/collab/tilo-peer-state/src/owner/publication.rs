@@ -247,9 +247,9 @@ impl StoredOutgoing {
     }
 }
 
-/// A write's binding as an earlier build recorded it
-/// (`owner_commit::CommitBinding`), kept byte for byte so a journal that
-/// encodes one still replays. The variants stay at their encoded positions.
+/// A write's binding as an earlier build recorded it, kept byte for byte so a
+/// journal that encodes one still replays. The variants stay at their encoded
+/// positions.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct RecordBinding {
     workspace: String,

@@ -144,13 +144,25 @@ async fn one_device_holds_a_workspace_through_its_first_use_and_leaving_it() {
     let workspace = fixture.workspace_id();
     let owner_b = open_file(&directory.path().join("b.json")).unwrap();
     write(&owner_a, workspace, &a_key).await;
+    // The two devices link: what one wrote is carried to the other.
+    for frame in owner_a.frames(workspace) {
+        let message = NeighbourMsg::decode(&frame).unwrap();
+        owner_b
+            .receive(
+                workspace,
+                TransportOrigin::ServerDelta(a_key.verifying_key().to_bytes()),
+                message,
+                tilo_clock::wall(),
+            )
+            .unwrap();
+    }
     assert!(
         owner_b
             .with_current(workspace, |view| Ok(view
                 .peer()
                 .holds_document(APP, RECORD)))
             .unwrap_or(false),
-        "the joiner holds the workspace it was admitted into"
+        "the joiner holds what the earlier device wrote"
     );
     write(&owner_b, workspace, &b_key).await;
     assert_eq!(
@@ -223,16 +235,6 @@ async fn a_joiner_gets_the_history_and_writes_right_away() {
     let workspace = fixture.workspace_id();
     fixture = testing::enroll_into(fixture, &owner_a, &a_key, &a_cert).unwrap();
     write(&owner_a, workspace, &a_key).await;
-    // The device answering the join has the history the joiner is sent.
-    for frame in owner_a.frames(workspace) {
-        let message = NeighbourMsg::decode(&frame).unwrap();
-        fixture
-            .receive(
-                TransportOrigin::ServerDelta(a_key.verifying_key().to_bytes()),
-                message,
-            )
-            .unwrap();
-    }
     let owner_b = open_file(&directory.path().join("b.json")).unwrap();
     let _fixture = testing::enroll_into(fixture, &owner_b, &b_key, &b_cert).unwrap();
     for frame in owner_a.frames(workspace) {
