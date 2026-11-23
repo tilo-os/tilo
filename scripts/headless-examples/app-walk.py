@@ -1978,11 +1978,21 @@ def compare(now: dict, before: dict) -> dict:
     gone: list[dict] = []
     elsewhere = moved()
     held: dict = {}
-    for variant, found in now["versions"].items():
+    pairs = []
+    for variant in now["versions"]:
         against = variant if variant in before["versions"] else before.get("live")
-        if against not in before["versions"]:
-            continue
-        held[variant] = against
+        if against in before["versions"]:
+            pairs.append((variant, against))
+    # The version a person got is gone (the Rust shell or app deleted): what is
+    # live now answers for it too, or what it gave would leave unheard.
+    was_live = before.get("live")
+    if was_live in before["versions"] and was_live not in now["versions"] and now["versions"]:
+        heir = now.get("live") if now.get("live") in now["versions"] else sorted(now["versions"])[0]
+        if (heir, was_live) not in pairs:
+            pairs.append((heir, was_live))
+    for variant, against in pairs:
+        found = now["versions"][variant]
+        held.setdefault(variant, against)
         base = before["versions"][against]["steps"]
         for step_id, was in base.items():
             if not was.get("walked"):

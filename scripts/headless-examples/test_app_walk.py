@@ -255,6 +255,24 @@ class HoldingTheCapabilitiesToMain(unittest.TestCase):
         finally:
             walk.moved = original
 
+    def test_deleting_the_version_a_person_got_holds_what_is_live_now_to_it(self):
+        """The Rust shell goes and the tilolang one stays: an action only the Rust
+        one published must be published by the tilolang one or named in the
+        record, even though the tilolang one is held to its own baseline too."""
+        banner = "so.tilo.session notifications.banners#snooze"
+        before = self.catalogue("so.tilo.session desktop:shell#search", banner)
+        before["versions"]["tl"] = self.catalogue(
+            "so.tilo.session desktop:shell#search", variant="tl")["versions"]["tl"]
+        now = self.catalogue("so.tilo.session desktop:shell#search", variant="tl")
+        now["live"] = "tl"
+        original, walk.moved = walk.moved, lambda: {}
+        try:
+            regressions = walk.compare(now, before)["regressions"]
+        finally:
+            walk.moved = original
+        self.assertEqual([(r["version"], r["against"]) for r in regressions], [("tl", "rust")])
+        self.assertIn(banner, regressions[0]["why"])
+
     def test_new_capabilities_are_never_a_regression(self):
         before = self.catalogue("so.tilo.tasks tasks.task#check")
         now = self.catalogue("so.tilo.tasks tasks.task#check", "so.tilo.tasks tasks.task#snooze")
