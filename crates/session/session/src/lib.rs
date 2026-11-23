@@ -289,6 +289,8 @@ mod machine_steps;
 pub mod mcp_server;
 pub mod mentions;
 #[cfg(target_os = "linux")]
+mod nearby_airdrop;
+#[cfg(target_os = "linux")]
 pub mod nearby_transfer;
 #[cfg(target_os = "linux")]
 mod network;

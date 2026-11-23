@@ -1720,6 +1720,8 @@ impl Session {
             file_picker,
             lock,
             keyboard,
+            nearby: nearby.as_ref().map(std::sync::Arc::clone),
+            air_drop_consent: crate::nearby_airdrop::Consent::default(),
             owner_session: crate::owner_session::SessionFollow::default(),
             display_confirm,
             notices: notices.clone(),

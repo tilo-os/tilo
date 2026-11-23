@@ -587,3 +587,20 @@ machines-waiting-decline = Ablehnen
 session-toggle-touchpad-on = Ob das Touchpad an ist; weglassen zum Umschalten
 session-night-light-toggle-on = Ob das Nachtlicht an ist; weglassen zum Umschalten
 session-apps-uninstall-app = Der Name der App
+
+## Eine Datei an einen Empfänger geben, der nicht eines der eigenen Geräte ist.
+
+airdrop-verify-title = AirDrop-Empfänger überprüfen
+airdrop-verify-detail = Datei: { $name }
+    Größe: { $bytes } Bytes
+    Empfänger: { $endpoint }
+    Den SHA-256-Zertifikatsfingerabdruck des Empfängers als 64 Hexadezimalziffern von dessen vertrauenswürdiger Konsole oder einem anderen unabhängig geprüften Weg eingeben. Dies sendet die bereitgestellte Datei einmal, nur wenn der Fingerabdruck übereinstimmt. Abbrechen, wenn der Empfänger nicht geprüft werden kann.
+airdrop-verify-send-once = Einmal senden
+airdrop-verify-cancel = Abbrechen
+airdrop-error-unavailable = AirDrop benötigt Dateiübertragungsrechte und aktuellen Dateizugriff.
+airdrop-error-source = AirDrop unterstützt eine lesbare reguläre Datei bis 16 MiB.
+airdrop-error-busy = Eine AirDrop-Übertragung läuft bereits. Vor einer weiteren Übertragung abbrechen.
+airdrop-error-failed = AirDrop-Übertragung fehlgeschlagen. Den Empfänger vor einem neuen Versuch erneut prüfen.
+airdrop-error-declined = Die AirDrop-Übertragung wurde vor dem Senden abgebrochen.
+airdrop-error-verification = Fingerabdruck stimmt nicht überein. Keine Datei gesendet.
+airdrop-error-fresh-consent = Einen neuen AirDrop-Versuch starten, um Empfänger und Datei erneut zu bestätigen.
