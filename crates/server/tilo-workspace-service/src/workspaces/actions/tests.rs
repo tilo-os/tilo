@@ -2199,51 +2199,12 @@ fn holder_refused(answered: Result<Value, ActionCallError>) -> String {
     }
 }
 
-/// An owner names a holder by its site, and this device then asks that site
-/// from inside its own network. It asks an https address on the internet
-/// and nothing else: a plain-http address and an address on its own network
-/// are refused before anything is asked, for adding a holder and for
-/// removing one.
+/// An owner names a server by its own web-host.json line, which its operator hands over: this
+/// device asks no site where a server is. A site's address, on the internet or on this device's
+/// own network, is no server's line, and is refused before anything is asked, for adding a server
+/// and for removing one, even where its operator lets this device call its own network.
 #[tokio::test]
-async fn a_holder_is_named_by_an_https_address_on_the_internet_and_nothing_else_is_asked() {
-    use test_http::{Reply, Responder};
-
-    let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
-    let server = test_host(dir.path(), &key, &owner).await;
-    let (workspace, workspace_id, governance) = governed(server.workspaces()).await;
-    let owner = caller(&owner);
-    let inside = Responder::handle(|_| Some(Reply::status(403).body(SAID_INSIDE)));
-    for origin in [
-        inside.url(),
-        format!("https://127.0.0.1:{}", inside.port()),
-        "https://10.0.0.5:8500".to_owned(),
-        "http://holder.example".to_owned(),
-    ] {
-        let adding = request(&workspace, super::ADD_SERVER, json!({ "origin": origin }));
-        let reason = holder_refused(invoke(&governance, workspace_id, &owner, adding).await);
-        assert!(reason.contains("is no holder's address"), "{reason}");
-        assert!(!reason.contains(SAID_INSIDE), "{reason}");
-    }
-    let removing = request(
-        &workspace,
-        super::REMOVE_SERVER,
-        json!({ "server": inside.url() }),
-    );
-    let reason = holder_refused(invoke(&governance, workspace_id, &owner, removing).await);
-    assert!(reason.contains("is no holder's address"), "{reason}");
-    assert!(
-        inside.drain_requests().is_empty(),
-        "an address on this device's own network was asked"
-    );
-}
-
-/// Where its operator lets a device call its own network, a holder's site
-/// there is asked. Still no redirect is followed, so a site an owner names
-/// sends this device nowhere else, and what a site answers a refusal with
-/// is not handed on to whoever named it.
-#[tokio::test]
-async fn a_holders_site_sends_the_device_nowhere_else_and_its_refusal_is_not_handed_on() {
+async fn a_server_is_named_by_its_own_line_and_no_site_is_asked() {
     use test_http::{Reply, Responder};
 
     let dir = tempfile::tempdir().unwrap();
@@ -2252,26 +2213,34 @@ async fn a_holders_site_sends_the_device_nowhere_else_and_its_refusal_is_not_han
     let (workspace, workspace_id, governance) = governed(server.workspaces()).await;
     server.workspaces().call_private_model_addresses(true);
     let owner = caller(&owner);
-    let adding =
-        |origin: String| request(&workspace, super::ADD_SERVER, json!({ "origin": origin }));
-
-    let elsewhere = Responder::handle(|_| Some(Reply::status(403).body(SAID_INSIDE)));
-    let onward = format!("{}/elsewhere", elsewhere.url());
-    let redirecting =
-        Responder::handle(move |_| Some(Reply::status(307).header("Location", &onward)));
-    let asked = adding(redirecting.url());
-    let reason = holder_refused(invoke(&governance, workspace_id, &owner, asked).await);
-    assert_eq!(redirecting.drain_requests().len(), 1, "{reason}");
-    assert!(
-        elsewhere.drain_requests().is_empty(),
-        "a redirect was followed: {reason}"
+    let inside = Responder::handle(|_| Some(Reply::status(403).body(SAID_INSIDE)));
+    for site in [
+        inside.url(),
+        format!("https://127.0.0.1:{}", inside.port()),
+        "https://10.0.0.5:8500".to_owned(),
+        "http://holder.example".to_owned(),
+        "https://holder.example".to_owned(),
+    ] {
+        let adding = request(&workspace, super::ADD_SERVER, json!({ "host": site }));
+        let reason = holder_refused(invoke(&governance, workspace_id, &owner, adding).await);
+        assert!(
+            reason.contains("not the host's own web-host.json line"),
+            "{site}: {reason}"
+        );
+        assert!(!reason.contains(SAID_INSIDE), "{reason}");
+    }
+    let removing = request(
+        &workspace,
+        super::REMOVE_SERVER,
+        json!({ "server": inside.url() }),
     );
-    assert!(!reason.contains(SAID_INSIDE), "{reason}");
-
-    let refusing = Responder::handle(|_| Some(Reply::status(401).body(SAID_INSIDE)));
-    let asked = adding(refusing.url());
-    let reason = holder_refused(invoke(&governance, workspace_id, &owner, asked).await);
-    assert_eq!(refusing.drain_requests().len(), 1, "{reason}");
-    assert!(reason.contains("refused to say"), "{reason}");
-    assert!(!reason.contains(SAID_INSIDE), "{reason}");
+    let reason = holder_refused(invoke(&governance, workspace_id, &owner, removing).await);
+    assert!(
+        reason.contains("no server keeping the workspace goes by"),
+        "{reason}"
+    );
+    assert!(
+        inside.drain_requests().is_empty(),
+        "a site was asked where a server is"
+    );
 }
