@@ -83,8 +83,6 @@ description = "Connect to another desktop when you need to be there."
 description = "Keep a small, immediate space for temporary thoughts and text."
 [apps.settings]
 description = "Shape Tilo around your devices, preferences, and daily work."
-[apps.sheets]
-description = "Build and explore spreadsheets in a collaborative native workspace."
 [apps.slides]
 description = "Create presentations that stay easy to revise and share."
 [apps.shortcuts]

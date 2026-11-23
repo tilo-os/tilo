@@ -405,7 +405,7 @@ fn chats_document_offers_what_chat_keeps_for_the_workspace_once_told() {
     });
 }
 
-/// A sealed record is acted on for its owner and no one else: the owner's agent opens a Sheets
+/// A sealed record is acted on for its owner and no one else: the owner's agent opens a Writer
 /// record and acts on it, and a guest the owner admitted as an editor sees the change through
 /// their own device and makes their own edit as theirs.
 #[test]
@@ -416,26 +416,26 @@ fn a_sealed_record_is_acted_on_for_its_owner_and_no_one_else() {
         let owner = host.agent();
         let (opened, is_error) = said(
             &owner
-                .tool("tilo_do", &json!({"path": "sheets#open", "args": {}}))
+                .tool("tilo_do", &json!({"path": "word-processor#open", "args": {}}))
                 .await,
         );
-        assert!(!is_error, "the owner opens a Sheets record: {opened}");
+        assert!(!is_error, "the owner opens a Writer record: {opened}");
         let (made, is_error) = said(
             &owner
                 .tool(
                     "tilo_do",
-                    &json!({"path": "sheets#new-sheet", "args": {"name": "Through the host"}}),
+                    &json!({"path": "word-processor#append-paragraph", "args": {"text": "Through the host"}}),
                 )
                 .await,
         );
-        assert!(!is_error, "the owner's sheet is made: {made}");
+        assert!(!is_error, "the owner's paragraph is made: {made}");
 
         let editor = guest(&host, &owner_device, "editor", "Bo").await;
         let seen = editor
             .call(
-                &record("so.tilo.sheets"),
-                tilo_actions::ActionAddress::new("sheets.sheets", "new-sheet"),
-                &json!({"name": "By the member"}),
+                &record("so.tilo.word-processor"),
+                tilo_actions::ActionAddress::new("word-processor.document", "append-paragraph"),
+                &json!({"text": "By the member"}),
             )
             .await
             .expect("an editor's edit answers");
@@ -443,10 +443,10 @@ fn a_sealed_record_is_acted_on_for_its_owner_and_no_one_else() {
             matches!(seen, InvocationUpdate::Succeeded { .. }),
             "an editor's edit runs: {seen:?}"
         );
-        let (read, is_error) = said(&owner.tool("tilo_read", &json!({"path": "sheets"})).await);
+        let (read, is_error) = said(&owner.tool("tilo_read", &json!({"path": "word-processor"})).await);
         assert!(!is_error, "{read}");
         for name in ["Through the host", "By the member"] {
-            assert!(read.contains(name), "the sheet reads back: {read}");
+            assert!(read.contains(name), "the document reads back: {read}");
         }
     });
 }

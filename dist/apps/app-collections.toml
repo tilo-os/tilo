@@ -2,7 +2,7 @@
 # beside it: `*` is every native app, and a package joins the collection in the
 # change that retires the native app it replaces.
 [collections.default]
-include = ["*", "tl-calendar", "tl-ebook", "tl-music", "tl-notes", "tl-tube", "tl-photos", "tl-pdf", "tl-video"]
+include = ["*", "tl-calendar", "tl-ebook", "tl-music", "tl-notes", "tl-sheets", "tl-tube", "tl-photos", "tl-pdf", "tl-video"]
 
 [collections.desktop]
 extends = ["default"]
@@ -39,8 +39,6 @@ model-providers = ["runtime-engine"]
 calendar = ["runtime-engine"]
 clocks = ["runtime-engine"]
 messages = ["runtime-engine"]
-# The spreadsheet formula engine from its engine library beside the runtime.
-sheets = ["runtime-engine"]
 file-explorer = ["runtime-engine"]
 print-centre = ["runtime-engine"]
 # The installer's home-capture worker (not an app: the capture service builds

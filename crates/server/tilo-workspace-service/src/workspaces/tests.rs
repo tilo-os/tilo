@@ -545,7 +545,7 @@ async fn a_seeded_workspace_default_record_names_the_default_id() {
     let catalogue = tilo_agent_session::AppCatalogue::native();
     // An app whose windows each show a resource of their own: one that keeps
     // a workspace record (Scratchpad, Notes) seeds its package primary instead.
-    let app = "so.tilo.sheets";
+    let app = "so.tilo.word-processor";
     assert!(!catalogue.get(app).unwrap().keeps_workspace_resource());
     let record = collab_types::document::DocumentId::workspace_default()
         .as_str()

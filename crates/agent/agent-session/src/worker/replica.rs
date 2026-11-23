@@ -2032,10 +2032,10 @@ mod tests {
         );
         assert_eq!(replica.worker_id(), worker, "the worker was not stopped");
         let mut arguments = serde_json::Map::new();
-        arguments.insert("name".into(), "Made after a slow request".into());
+        arguments.insert("text".into(), "Made after a slow request".into());
         replica
             .invoke(
-                &ActionAddress::new("sheets.workbook", "new-sheet"),
+                &ActionAddress::new("word-processor.document", "append-paragraph"),
                 &arguments,
                 false,
             )
@@ -2049,11 +2049,11 @@ mod tests {
         );
     }
 
-    /// A replica of a new workbook, at the change that began it.
+    /// A replica of a new document, at the change that began it.
     fn begun() -> ConfinedReplica {
         let replica = ConfinedReplica::open(
             &AppCatalogue::native(),
-            "so.tilo.sheets",
+            "so.tilo.word-processor",
             WORKSPACE,
             &tilo_actions::MemberId::agent("maker"),
             &ReplicaActor::Agent {
@@ -2205,14 +2205,14 @@ mod tests {
 
         // The app makes a change of its own while that one waits.
         let mut arguments = serde_json::Map::new();
-        arguments.insert("name".into(), "Made while another waited".into());
+        arguments.insert("text".into(), "Made while another waited".into());
         replica
             .invoke(
-                &ActionAddress::new("sheets.workbook", "new-sheet"),
+                &ActionAddress::new("word-processor.document", "append-paragraph"),
                 &arguments,
                 false,
             )
-            .expect("the app adds a sheet");
+            .expect("the app adds a paragraph");
 
         let taken = replica
             .take_mutation()

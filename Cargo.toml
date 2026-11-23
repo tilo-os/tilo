@@ -184,7 +184,6 @@ members = [
     "apps/scratchpad-model-wasm",
     "apps/speed-test",
     "apps/settings",
-    "apps/sheets",
     "apps/slides",
     "apps/shortcuts",
     "apps/snippets",

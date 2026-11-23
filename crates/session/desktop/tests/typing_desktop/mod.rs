@@ -2,7 +2,7 @@
 //! hosts run: what one keystroke into one of them costs, and what each
 //! window's app did about it.
 //!
-//! The three are windows the browser's launch demo opens — Sheets, Writer
+//! The three are windows the browser's launch demo opens — Writer, Calendar
 //! and Slides — one window each on one strip, as they stand after a person
 //! opened them one by one and went back to typing in their document.
 
@@ -44,7 +44,7 @@ pub type DemoApp = (
 /// The apps the demo opens, in the order it opens them.
 pub const DEMO: [DemoApp; 3] = [
     ("word_processor", "Writer", test_document_app::definition),
-    ("sheets", "Sheets", sheets::definition),
+    ("calendar", "Calendar", calendar::definition),
     ("slides", "Slides", slides::definition),
 ];
 

@@ -98,20 +98,20 @@ fn an_idle_shell_syncs_no_window_and_a_change_from_elsewhere_syncs_the_one_it_re
         0,
         "nothing reached any window: none syncs"
     );
-    // Another member's edit reaches the sheets' record.
-    shell.change_elsewhere("sheets");
+    // Another member's edit reaches the calendar's record.
+    shell.change_elsewhere("calendar");
     let reached = shell.syncs_during(|shell| {
         shell.idle();
         shell.idle();
     });
     assert!(
         (1..=2).contains(&reached),
-        "the sheets take up the change to their record, and only the sheets \
+        "the calendar takes up the change to its record, and only the calendar \
          ({reached} syncs)"
     );
     assert_eq!(
         shell.syncs_during(Demo::idle),
         0,
-        "once it showed the change, the sheets rest again"
+        "once it showed the change, the calendar rests again"
     );
 }

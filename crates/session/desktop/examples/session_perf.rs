@@ -196,7 +196,7 @@ fn fixture(
     let definitions = [
         test_document_app::definition(),
         calendar::definition(),
-        sheets::definition(),
+        slides::definition(),
     ];
     // The host's catalogue holds each app once, as a session's does; a tab names it again without
     // adding it.
@@ -228,7 +228,7 @@ fn fixture(
                         // not the first opens what one before it made.
                         if created.insert((definition.app_id().to_string(), checkout.id.clone())) {
                             store.create_resource(&checkout).unwrap();
-                            // Calendar and Sheets open empty ones of their own on a blank record.
+                            // Calendar and Slides open empty ones of their own on a blank record.
                             store.with(&checkout.id, |doc| {
                                 if which == 0 {
                                     test_document_app::initialize_empty_document(doc).unwrap();

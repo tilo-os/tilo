@@ -15463,37 +15463,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sheets"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "iana-time-zone",
- "ironcalc_base",
- "runtime-dylib",
- "serde",
- "serde_json",
- "sheets",
- "taffy",
- "tempfile",
- "tilo-actions",
- "tilo-app",
- "tilo-automerge-fork",
- "tilo-doc",
- "tilo-doc-codecs",
- "tilo-files",
- "tilo-locale",
- "tilo-rich-text",
- "tilo-spreadsheet-engine",
- "tilo-test-env",
- "tilo-vello",
- "tilo-winit",
- "tracing",
- "uuid",
- "workspace-hack",
- "zip",
-]
-
-[[package]]
 name = "shell-words"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -17068,7 +17037,6 @@ dependencies = [
  "serde_json",
  "settings",
  "sha2 0.11.0",
- "sheets",
  "shortcuts",
  "slides",
  "snippets",
@@ -18430,7 +18398,6 @@ dependencies = [
  "jiff",
  "serde",
  "serde_json",
- "sheets",
  "slides",
  "taffy",
  "test-document-app",
@@ -28599,7 +28566,6 @@ dependencies = [
  "shake",
  "shannon",
  "sharded-slab",
- "sheets",
  "shell-words",
  "shlex",
  "shortcuts",

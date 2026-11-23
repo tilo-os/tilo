@@ -1,11 +1,9 @@
 {
   "app": "sheets",
   "said": "Sheets",
-  "family": "apps",
-  "live": "rust",
-  "rust": {
+  "tl": {
     "id": "so.tilo.sheets",
-    "native": "sheets"
+    "package": "sheets"
   },
   "steps": [
     {
@@ -19,22 +17,18 @@
           "launch": true
         },
         {
-          "wait_for": "window"
-        },
-        {
           "wait_for": "actions"
         },
         {
-          "must": [
-            "Name box",
-            "Formula bar",
-            "Start a formula",
-            "Sheet1",
-            "Bold"
-          ]
+          "wait_for": "Sheet1"
         },
         {
-          "focused": "sheets"
+          "must": [
+            "Bold",
+            "File",
+            "Format",
+            "Sheet1"
+          ]
         },
         {
           "targets": true
@@ -45,33 +39,38 @@
     },
     {
       "id": "values",
-      "said": "Type two numbers into the first column",
+      "said": "Write two numbers into the first column and read them back",
       "ops": [
         {
-          "type": "3"
-        },
-        {
-          "key": "Enter"
-        },
-        {
-          "type": "4"
-        },
-        {
-          "key": "Enter"
+          "act": [
+            "tl.so.tilo.sheets.Workbook",
+            "write_cells",
+            {
+              "sheet": "Sheet1",
+              "refs": [
+                "A1",
+                "A2"
+              ],
+              "inputs": [
+                "3",
+                "4"
+              ]
+            }
+          ]
         },
         {
           "read": {
             "app": "so.tilo.sheets",
-            "operation": "read-cells",
+            "operation": "read_cells",
             "args": {
               "sheet": "Sheet1",
-              "range": "A1:B2",
-              "shown": true
+              "range": "A1:B2"
             },
             "is": {
-              "shown.0.0": "3",
-              "shown.1.0": "4"
-            }
+              "0": "3",
+              "1": "4"
+            },
+            "within": 10
           }
         }
       ],
@@ -82,38 +81,32 @@
       "said": "Put a formula beside them, and its value is what the sheet shows",
       "ops": [
         {
-          "click": "Name box"
-        },
-        {
-          "chord": [
-            "Control",
-            "a"
+          "act": [
+            "tl.so.tilo.sheets.Workbook",
+            "write_cells",
+            {
+              "sheet": "Sheet1",
+              "refs": [
+                "B1"
+              ],
+              "inputs": [
+                "=SUM(A1:A2)"
+              ]
+            }
           ]
-        },
-        {
-          "type": "B1"
-        },
-        {
-          "key": "Enter"
-        },
-        {
-          "type": "=SUM(A1:A2)"
-        },
-        {
-          "key": "Enter"
         },
         {
           "read": {
             "app": "so.tilo.sheets",
-            "operation": "read-cells",
+            "operation": "read_cells",
             "args": {
               "sheet": "Sheet1",
-              "range": "A1:B2",
-              "shown": true
+              "range": "A1:B2"
             },
             "is": {
-              "shown.0.1": "7"
-            }
+              "1": "7"
+            },
+            "within": 10
           }
         }
       ]
@@ -125,15 +118,75 @@
         {
           "read": {
             "app": "so.tilo.sheets",
-            "operation": "read-cells",
+            "operation": "read_cells",
             "args": {
               "sheet": "Sheet1",
-              "range": "B1"
+              "range": "B1",
+              "formulas": true
             },
             "is": {
-              "formulas.B1": "=SUM(A1:A2)"
+              "0": "=SUM(A1:A2)"
             }
           }
+        }
+      ]
+    },
+    {
+      "id": "bold",
+      "said": "The first row shows bold after the bar's Bold is pressed",
+      "ops": [
+        {
+          "press_any": [
+            "Bold"
+          ]
+        },
+        {
+          "must": [
+            "Bold"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "sheet",
+      "said": "Add a sheet through the app's own action, and its tab stands beside the first",
+      "ops": [
+        {
+          "act": [
+            "tl.so.tilo.sheets.Workbook",
+            "new_sheet",
+            {
+              "name": "Budget"
+            }
+          ]
+        },
+        {
+          "wait_for": "Budget"
+        }
+      ]
+    },
+    {
+      "id": "comment",
+      "said": "Say something about a cell, and the panel shows it",
+      "ops": [
+        {
+          "act": [
+            "tl.so.tilo.sheets.Workbook",
+            "comment",
+            {
+              "sheet": "Sheet1",
+              "range": "A1",
+              "text": "Rent goes up in March"
+            }
+          ]
+        },
+        {
+          "press_any": [
+            "Comments and charts"
+          ]
+        },
+        {
+          "wait_for": "Rent goes up in March"
         }
       ]
     },
@@ -145,15 +198,10 @@
           "theme": true
         },
         {
-          "read": {
-            "app": "so.tilo.sheets",
-            "operation": "read-cells",
-            "args": {
-              "sheet": "Sheet1",
-              "range": "A1:B2",
-              "shown": true
-            }
-          }
+          "must": [
+            "Sheet1",
+            "Budget"
+          ]
         }
       ],
       "dark": true

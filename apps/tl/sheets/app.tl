@@ -211,6 +211,47 @@ fn kind_at(cells: List<List<Text>>, reference: Text) -> Text {
     text_at(found ?? [], 3)
 }
 
+/// What the cells of `range` of the sheet named `sheet` show, row by row from its first cell to
+/// its last, or their input as typed when `formulas`: what a person reads in the grid, for an
+/// agent that never opened the window.
+action read_cells(w: Workbook, sheet: Text, range: Text = "A1:B2", formulas: Bool = false) -> List<Text> (
+    icon: .hash,
+    label: "Read cells",
+) {
+    let found = w.sheets.find(x -> x.name == sheet)
+    if let s = found {
+        let book = book_of(
+            [sheet_book(
+                s.name,
+                s.hidden,
+                s.cells.keys().map(k -> pair(k, s.cells.get(k) ?? "")),
+                s.formats.keys().map(k -> pair(k, s.formats.get(k) ?? "")),
+                s.bold.map(b -> b),
+            )],
+            currency_code(w.currency),
+        )
+        let cells = shown_cells(shown_sheet(values_of(book), s.name))
+        let first_column = column_index(column_of(range_start(range)))
+        let last_column = column_index(column_of(range_end(range)))
+        let first_row = row_of(range_start(range))
+        let last_row = row_of(range_end(range))
+        let rows = count_up(first_row, last_row)
+        [rows.map(r -> count_up(first_column, last_column).map(c -> cell_text(s, cells, "{column_letter(c)}{r}", formulas)))].flat_map(row -> row)
+    } else {
+        []
+    }
+}
+
+/// The text a cell of `cells` reads for `reference`: its input when `formulas`, else what it
+/// shows.
+fn cell_text(s: Sheet, cells: List<List<Text>>, reference: Text, formulas: Bool) -> Text {
+    if formulas {
+        input_at(s, reference)
+    } else {
+        text_at(cell_row(cells, reference), 2)
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // References, formats and settings, as code writes them.
 
@@ -396,26 +437,29 @@ action set_sheet_color(s: Sheet, color: Option<Int> = .none) (icon: .palette, la
 /// A typed entry keeps the format it is read in (a date, money, a percent), unless the cell has
 /// one the person set. A `seen` stamp refuses the write when rows, columns or sheets have moved
 /// since it was read.
-action write_cells(w: Workbook, s: Sheet, refs: List<Text>, inputs: List<Text>, seen: Text = "") (
+action write_cells(w: Workbook, sheet: Text, refs: List<Text>, inputs: List<Text>, seen: Text = "") (
     icon: .pencil,
     label: "Write cells",
     did: "wrote cells",
 ) {
     require seen == "" or seen == w.structure.to_text() "Rows, columns or sheets moved since this write was made from; read the sheet again and write against what it answers now"
-    for i in refs.map((r, i) -> i) {
-        let reference = refs.at(i) ?? ""
-        let input = inputs.at(i) ?? ""
-        if reference != "" {
-            if input == "" {
-                if s.cells.get(reference) != .none {
-                    s.cells.remove(reference)
-                }
-            } else {
-                let entry = entry_of(input, currency_code(w.currency))
-                s.cells.put(reference, text_at(entry, 0))
-                let format = text_at(entry, 1)
-                if format != "general" and s.formats.get(reference) == .none {
-                    s.formats.put(reference, format)
+    require w.sheets.any(x -> x.name == sheet) "No sheet is called {sheet}"
+    if let s = w.sheets.find(x -> x.name == sheet) {
+        for i in refs.map((r, i) -> i) {
+            let reference = refs.at(i) ?? ""
+            let input = inputs.at(i) ?? ""
+            if reference != "" {
+                if input == "" {
+                    if s.cells.get(reference) != .none {
+                        s.cells.remove(reference)
+                    }
+                } else {
+                    let entry = entry_of(input, currency_code(w.currency))
+                    s.cells.put(reference, text_at(entry, 0))
+                    let format = text_at(entry, 1)
+                    if format != "general" and s.formats.get(reference) == .none {
+                        s.formats.put(reference, format)
+                    }
                 }
             }
         }
@@ -723,14 +767,15 @@ destructive action delete_chart(s: Sheet, c: Chart) (icon: .trash, label: "Delet
 // Comments.
 
 /// Says `text` about the cells `range` of a sheet.
-action comment(w: Workbook, s: Sheet, range: Text, text: RichText) (
+action comment(w: Workbook, sheet: Text, range: Text, text: RichText) (
     icon: .message_square_plus,
     label: "Comment",
     did: "commented",
 ) -> Comment {
     require not text.is_empty() "Write a comment first"
     require range.trim() != "" "Comment on a cell or a range"
-    w.comments.insert(Comment(sheet: s.name, range: range.trim().upper(), text: text))
+    require w.sheets.any(x -> x.name == sheet) "No sheet is called {sheet}"
+    w.comments.insert(Comment(sheet: sheet, range: range.trim().upper(), text: text))
 }
 
 /// Answers a comment.

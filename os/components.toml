@@ -524,7 +524,7 @@ features = [
   "model-providers/runtime-engine", "calendar/runtime-engine",
   "clocks/runtime-engine", "messages/runtime-engine",
   "pdf-viewer/runtime-engine", "file-explorer/runtime-engine",
-  "print-centre/runtime-engine", "sheets/runtime-engine",
+  "print-centre/runtime-engine",
   "browser/runtime-engine",
   "store/runtime-engine", "chat/runtime-engine", "osk/runtime-engine",
 ]

@@ -692,8 +692,6 @@ theme should supply.
 | `tube/src/widgets/thumbnail.rs` | 2 | 0 | 2 | LIVE badge and watch-progress bar |
 | `tube/src/screens.rs` | 2 | 2 | 0 | segment-category identity colours |
 | `terminal/src/main_body.rs`, `tests.rs` | 10 | 10 | 0 | ANSI/truecolor conversion; fixtures |
-| `sheets/src/grid.rs` | 7 | 0 | 7 | formula reference colours; needs a shared distinct-hue role |
-| `sheets/src/app.rs` | 1 | 1 | 0 | stored sheet-tab colour |
 | `camera/src/app.rs` | 6 | 5 | 1 | white controls and dark washes over the viewfinder, document paper are content; the settings-sheet scrim is chrome (`surfaces.scrim`) |
 | `video-editor/src/**` | 8 | 8 | 0 | title colours rendered into the video, stored swatches, blend helpers, test |
 | `themes/src/**` | 5 | 4 | 1 | spec conversion and tests are content; the customizer's seed colour should be the active accent |

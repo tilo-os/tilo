@@ -27,8 +27,8 @@ const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 #[test]
 fn a_confined_record_kept_at_an_older_storage_version_sends_its_migration() {
     use ui::tilo_resource::evolution::{VERSION_KEY, stored_version};
-    // Sheets keeps its workbook at a version it migrates up to.
-    let app = "so.tilo.sheets";
+    // The suite's document app keeps its record at a version it migrates up to.
+    let app = DOCUMENT;
     let mut page = crate::common::open(
         app,
         &MemberId::person("ada"),
@@ -94,13 +94,13 @@ fn the_app_worker_cannot_read_the_hosts_state_directory() {
 /// A record a host creates under the workspace's default route is the record
 /// every member's first window opens: its genesis names that id, not one
 /// of its own, or a member's store refuses it as not matching its binding.
-/// Only an app whose windows each show a resource of their own (Sheets)
-/// keeps such records; Scratchpad keeps the workspace's one record, its
-/// package primary.
+/// Only an app whose windows each show a resource of their own (the suite's
+/// document app) keeps such records; Scratchpad keeps the workspace's one
+/// record, its package primary.
 #[test]
 fn a_confined_record_created_under_a_workspace_route_names_that_route() {
     assert_seed_route(
-        "so.tilo.sheets",
+        DOCUMENT,
         ui::resource::DocumentId::workspace_default(),
     );
 }
@@ -432,7 +432,6 @@ const CANVAS: &str = "so.tilo.canvas";
 const PDF: &str = "so.tilo.pdf-viewer";
 /// The document app the suites open, in place of a product app.
 const DOCUMENT: &str = test_document_app::APP_ID;
-const SHEETS: &str = "so.tilo.sheets";
 
 /// A new record of `app` held for an agent, lent `workspace`'s content when
 /// there is a workspace.
@@ -710,32 +709,6 @@ fn an_agent_exports_its_artwork_as_content_the_workspace_keeps() {
         picture,
         "the picture the record refers to reached the other worker"
     );
-}
-
-/// Importing a workbook the workspace keeps edits the record and reaches nothing
-/// outside the workspace: an agent does it unasked, as it exports one.
-#[test]
-fn an_agent_imports_a_workbook_the_workspace_keeps_unasked() {
-    let workspace = ContentStore::memory();
-    let source = agents_document(SHEETS, Some(&workspace));
-    let export = operation(&source, "export-xlsx-content");
-    let exported = source
-        .invoke(&export.address, &serde_json::Map::new(), false)
-        .expect("the agent exports the workbook unasked");
-    let [address] = exported.resources.as_slice() else {
-        panic!("one content resource: {exported:?}");
-    };
-    // The bare hash, as a step carrying the content gives it.
-    let hash = tilo_actions::content_hash(address).unwrap().to_owned();
-    let target = agents_document(SHEETS, Some(&workspace));
-    let import = operation(&target, "import-xlsx-content");
-    target
-        .invoke(
-            &import.address,
-            &arguments(serde_json::json!({ "content": hash })),
-            false,
-        )
-        .expect("the agent imports the workbook unasked");
 }
 
 /// An event on the local calendar stays in the record: an agent adds one

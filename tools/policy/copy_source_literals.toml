@@ -58,11 +58,6 @@ file = "crates/ui/ui-core/src/widget/replaced_tripwire.rs"
 text = "Tripwire"
 reason = "A sample label in the widget that trips on a replaced widget."
 
-[[allow]]
-file = "apps/sheets/src/app/annotations.rs"
-text = "Ag"
-reason = "A sample word measured to lay out a card; never shown."
-
 # A headless screenshot's sample content: the words are part of the picture
 # the shot shows, not this window's own copy.
 

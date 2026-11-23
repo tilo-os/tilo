@@ -159,7 +159,6 @@ touch. Expanded neighbouring targets must not overlap.
 | Crate            | What it is                                                                                                                                                                                 |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `word-processor` | Rich-text word processor over `tilo-doc`; round-trips .odt/.docx/.md plus PDF/HTML/RTF/EPUB via the `tilo-doc-*` codec crates. Binary `word-processor`.                                    |
-| `sheets`         | Spreadsheet: A1 addressing, tokenizer→parser→evaluator formula engine with dependency-aware recalc; .xlsx and .ods import/export through tilo-doc's bounded codecs, and .csv.              |
 | `slides`         | Presentation editor: slide editor, inspector, thumbnail rail, present mode; image import via the XDG file-chooser portal.                                                                  |
 | `notes`          | Collaborative block notes: nested note tree, rich Markdown editing, `[[Note]]` links, tables, formulas, images, metadata, history-aware actions, and host-owned Automerge storage.         |
 | `calendar`       | Calendar + task manager (Planify-style): month/week/day/agenda, recurrence, tasks; iCalendar interop and live CalDAV sync (PROPFIND/REPORT/ETag PUT, worker thread, `live` on by default). |

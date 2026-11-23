@@ -12,8 +12,8 @@ const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 #[test]
 fn a_record_kept_at_an_older_storage_version_opens_and_is_brought_up() {
     use ui::tilo_resource::evolution::{VERSION_KEY, stored_version};
-    // Sheets keeps its workbook at a version it migrates up to.
-    let app = "so.tilo.sheets";
+    // Writer keeps its document at a version it migrates up to.
+    let app = "so.tilo.word-processor";
     let mut page = crate::common::open(
         app,
         &MemberId::person("ada"),
@@ -475,7 +475,7 @@ fn a_bot_without_a_write_grant_is_offered_only_reads() {
 #[test]
 fn an_agent_acting_for_a_person_hands_back_what_it_wrote_as_the_agent() {
     let mut made = crate::common::open(
-        "so.tilo.sheets",
+        "so.tilo.word-processor",
         &MemberId::person("ada"),
         ReplicaActor::Owner,
         Seed::New,
@@ -492,7 +492,7 @@ fn an_agent_acting_for_a_person_hands_back_what_it_wrote_as_the_agent() {
     .access()
     .clone();
     let mut agent = crate::common::open(
-        "so.tilo.sheets",
+        "so.tilo.word-processor",
         &MemberId::person("ada"),
         ReplicaActor::Member {
             access: access
@@ -512,18 +512,18 @@ fn an_agent_acting_for_a_person_hands_back_what_it_wrote_as_the_agent() {
     )
     .unwrap();
     let _ = agent.take_mutation();
-    let new_sheet = agent
+    let add = agent
         .survey()
         .into_iter()
-        .find(|descriptor| descriptor.address.action == "new-sheet")
-        .expect("the workbook offers the agent a new sheet")
+        .find(|descriptor| descriptor.address.action == "append-paragraph")
+        .expect("the document offers the agent a paragraph")
         .address;
-    let arguments = serde_json::json!({"name": "Launch plan"});
+    let arguments = serde_json::json!({"text": "Launch plan"});
     agent
-        .invoke(&new_sheet, arguments.as_object().unwrap(), false)
+        .invoke(&add, arguments.as_object().unwrap(), false)
         .unwrap();
     let Some(DocumentMutation::Incremental(wrote)) = agent.take_mutation().unwrap() else {
-        panic!("the agent's sheet is handed back to be saved");
+        panic!("the agent's paragraph is handed back to be saved");
     };
     let mut doc = automerge::AutoCommit::new();
     tilo_automerge::ApplyIncoming::load_incoming(&mut doc, &genesis).unwrap();
@@ -569,7 +569,7 @@ fn an_agent_acting_for_a_person_hands_back_what_it_wrote_as_the_agent() {
 #[test]
 fn two_replicas_of_one_agent_never_write_one_sequence_twice() {
     let mut made = crate::common::open(
-        "so.tilo.sheets",
+        "so.tilo.word-processor",
         &MemberId::person("ada"),
         ReplicaActor::Owner,
         Seed::New,
@@ -588,7 +588,7 @@ fn two_replicas_of_one_agent_never_write_one_sequence_twice() {
     let mut wrote = Vec::new();
     for title in ["Launch plan", "Retro"] {
         let mut agent = crate::common::open(
-            "so.tilo.sheets",
+            "so.tilo.word-processor",
             &MemberId::person("ada"),
             ReplicaActor::Member {
                 access: access
@@ -610,18 +610,18 @@ fn two_replicas_of_one_agent_never_write_one_sequence_twice() {
         )
         .unwrap();
         let _ = agent.take_mutation();
-        let new_sheet = agent
+        let add = agent
             .survey()
             .into_iter()
-            .find(|descriptor| descriptor.address.action == "new-sheet")
-            .expect("the workbook offers the agent a new sheet")
+            .find(|descriptor| descriptor.address.action == "append-paragraph")
+            .expect("the document offers the agent a paragraph")
             .address;
-        let arguments = serde_json::json!({ "name": title });
+        let arguments = serde_json::json!({ "text": title });
         agent
-            .invoke(&new_sheet, arguments.as_object().unwrap(), false)
+            .invoke(&add, arguments.as_object().unwrap(), false)
             .unwrap();
         let Some(DocumentMutation::Incremental(changes)) = agent.take_mutation().unwrap() else {
-            panic!("the agent's sheet is handed back to be saved");
+            panic!("the agent's paragraph is handed back to be saved");
         };
         wrote.push(changes);
     }

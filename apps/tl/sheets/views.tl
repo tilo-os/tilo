@@ -97,7 +97,7 @@ template view workbook_bar(
         on submit(reference): set(area, reference.trim().upper())
     }
     ui.TextInput(bind: typed, placeholder: "Value or formula") {
-        on submit(input): write_cells(w, s, [range_start(area)], [input]).then(set(typed, ""))
+        on submit(input): write_cells(w, s.name, [range_start(area)], [input]).then(set(typed, ""))
     }
     spacer
     ui.Button("Bold", icon: .bold, icon_only: true, toggled: s.bold.any(b -> in_range(area, b))) {
@@ -436,10 +436,10 @@ template view comments_panel(w: Workbook, s: Sheet, area: State<Text>) {
         comment_card(w, c, area)
     }
     ui.RichInput(bind: draft, placeholder: "Comment on {area}") {
-        on submit: comment(w, s, area, draft).then(set(draft, RichText("")))
+        on submit: comment(w, s.name, area, draft).then(set(draft, RichText("")))
     }
     ui.Button("Comment", icon: .message_square_plus, size: .small) {
-        on press: comment(w, s, area, draft).then(set(draft, RichText("")))
+        on press: comment(w, s.name, area, draft).then(set(draft, RichText("")))
     }
 }
 

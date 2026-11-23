@@ -2,9 +2,10 @@
   "app": "capabilities",
   "said": "Every capability the shell and the apps publish",
   "live": "rust",
-  "apps": "code-editor word-processor chat settings sheets tasks file-explorer browser terminal pdf-viewer activity photos calendar",
+  "apps": "code-editor word-processor chat settings tasks file-explorer browser terminal pdf-viewer activity photos calendar",
   "packages": [
     "notes",
+    "sheets",
     "tasks",
     "chat",
     "mail",
@@ -67,19 +68,6 @@
         {
           "open": {
             "app": "settings",
-            "deadline": 30
-          }
-        }
-      ],
-      "shot": true
-    },
-    {
-      "id": "open-sheets",
-      "said": "Open sheets",
-      "ops": [
-        {
-          "open": {
-            "app": "sheets",
             "deadline": 30
           }
         }
@@ -189,6 +177,18 @@
         }
       ],
       "shot": true
+    },
+    {
+      "id": "open-tl-sheets",
+      "said": "Open the tilolang sheets",
+      "ops": [
+        {
+          "open": {
+            "app": "so.tilo.sheets",
+            "deadline": 30
+          }
+        }
+      ]
     },
     {
       "id": "open-tl-notes",
