@@ -195,10 +195,10 @@ impl AppBrokerState {
     /// Start one of saved shortcut `shortcut_id`'s triggers, `trigger`, in
     /// `workspace` on behalf of `caller`, who must be the person who saved it.
     ///
-    /// A keyboard trigger means the person is at the screen, like a palette
-    /// run. Nobody is present at a scheduled invocation: a step asking for confirmation proceeds
-    /// only when its saver consented to exactly that action in advance, and
-    /// a question stops the run. Before anything runs the
+    /// Nobody is present at a triggered invocation: a step asking for confirmation proceeds
+    /// only when its saver consented to exactly that action in advance, and a question stops
+    /// the run. A key the person pressed is not started here: it runs the shortcut through the
+    /// device's dispatch as theirs, where a step that needs their yes asks them. Before anything runs the
     /// shortcut is checked again against what `caller` is offered now, so a
     /// shortcut that was deleted, lost the trigger, or reaches past a grant
     /// that has since been revoked does not start.
@@ -211,6 +211,11 @@ impl AppBrokerState {
         invocation: tilo_automation::AutomationInvocationId,
         inputs: serde_json::Map<String, serde_json::Value>,
     ) -> Result<u64, ActionCallError> {
+        if matches!(trigger, tilo_automation::TriggerSpec::Keyboard { .. }) {
+            return Err(ActionCallError::InvalidRequest {
+                reason: "a pressed key runs its shortcut through the device's dispatch".into(),
+            });
+        }
         let shortcut = self.saved_shortcut(caller, workspace, shortcut_id)?;
         // The one rule arming holds too: started for its saver only, the
         // person a device of theirs proved saved it in this workspace.
@@ -260,26 +265,6 @@ impl AppBrokerState {
                     .join("; "),
             }
         })?;
-        if matches!(trigger, tilo_automation::TriggerSpec::Keyboard { .. }) {
-            let runs = self.ended_invocations.open.running.clone();
-            let hooks = move |runtime, run| automation::ApiHooks::new(runtime, runs, run);
-            return self.start_shortcut_run(
-                caller,
-                workspace,
-                shortcut,
-                automation::InvocationStart {
-                    invocation,
-                    trigger: tilo_automation::InvocationTrigger::Fired(trigger.clone()),
-                    mode: tilo_automation::InvocationMode::Interactive,
-                    inputs: serde_json::Map::new(),
-                    parent: None,
-                    approval: None,
-                },
-                hooks,
-                None,
-                None,
-            );
-        }
         self.start_shortcut_run(
             caller,
             workspace,

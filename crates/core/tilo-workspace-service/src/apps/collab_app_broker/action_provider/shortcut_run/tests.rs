@@ -286,12 +286,9 @@ fn start_direct(
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn direct_palette_keyboard_and_unattended_runs_cross_signed_barriers() {
+async fn direct_palette_and_triggered_runs_cross_signed_barriers() {
     for trigger in [
         None,
-        Some(tilo_automation::TriggerSpec::Keyboard {
-            chord: "Super+Shift+E".into(),
-        }),
         Some(tilo_automation::TriggerSpec::AppOpened {
             app_id: "notes".into(),
         }),
@@ -386,9 +383,6 @@ async fn direct_palette_keyboard_and_unattended_runs_cross_signed_barriers() {
 async fn direct_entry_points_refuse_missing_journal_before_spawning() {
     for trigger in [
         None,
-        Some(tilo_automation::TriggerSpec::Keyboard {
-            chord: "Super+Shift+E".into(),
-        }),
         Some(tilo_automation::TriggerSpec::AppOpened {
             app_id: "notes".into(),
         }),

@@ -611,3 +611,78 @@ fn a_secret_is_answered_only_where_it_was_asked_and_never_kept() {
         "the device's record of the call carries no secret"
     );
 }
+
+/// Ada's saved shortcut, as the workspace asks for a step of it that needs her yes.
+fn shortcut_asks() -> AskedFacts {
+    AskedFacts {
+        verb: "run".into(),
+        ..AskedFacts::by(asked::AskedBy::App {
+            app: "so.tilo.shortcuts".into(),
+            title: "Send the weekly mail".into(),
+            author: None,
+        })
+    }
+    .with_fact("Send", "bo@example.com")
+}
+
+/// Ada presses the key of her shortcut: its run reaches the dispatch as her own call.
+fn press(device: &Device, call: &InvokeRequest) -> InvocationReceipt {
+    let route: Route = (device.workspace.clone(), ada());
+    let run = Run::Own {
+        workspace: WORKSPACE.into(),
+        pressed: None,
+    };
+    device
+        .asked
+        .send(run, &ada(), route, call.clone())
+        .wait_timeout(WAIT)
+        .ok()
+        .flatten()
+        .expect("the dispatch answers at once")
+        .expect("kept, not refused")
+}
+
+/// Ada presses the key of a shortcut with a step that needs her yes: it waits as the
+/// shortcut's asked record with nothing of it run, and runs once on her approve, under its id.
+#[test]
+fn a_pressed_shortcut_asks_and_runs_on_the_persons_approve() {
+    let workspace = Arc::<Workspace>::default();
+    *workspace.asks.lock().unwrap() = Some(shortcut_asks());
+    let device = Device::start(&Arc::default(), &workspace);
+    let call = send_mail();
+    let receipt = press(&device, &call);
+    assert!(
+        matches!(receipt.status, ReceiptStatus::Accepted),
+        "it waits under way: {receipt:?}"
+    );
+    let questions = device.store.asked_of(&ADA);
+    assert_eq!(questions.len(), 1, "Ada is asked");
+    assert_eq!(
+        questions[0].facts.by,
+        shortcut_asks().by,
+        "named as the shortcut that asks"
+    );
+    assert!(device.workspace.ran().is_empty(), "nothing ran yet");
+
+    device.resolve(&call, &ada(), Offer::Approve).unwrap();
+    let ran = device.workspace.ran();
+    assert_eq!(ran.len(), 1, "it ran once");
+    assert_eq!(ran[0].invocation, call.invocation, "under its id");
+    assert!(asked::same_call(&ran[0], &call));
+}
+
+/// Ada declines what her pressed shortcut asks: nothing of it runs, and she is asked no more.
+#[test]
+fn a_declined_pressed_shortcut_runs_nothing() {
+    let workspace = Arc::<Workspace>::default();
+    *workspace.asks.lock().unwrap() = Some(shortcut_asks());
+    let device = Device::start(&Arc::default(), &workspace);
+    let call = send_mail();
+    press(&device, &call);
+    device.resolve(&call, &ada(), Offer::Decline).unwrap();
+    assert!(device.workspace.ran().is_empty(), "nothing ran");
+    assert!(
+        device.store.asked_of(&ADA).is_empty(),
+        "Ada is asked no more"
+    );
+}

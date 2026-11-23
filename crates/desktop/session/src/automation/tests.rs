@@ -38,6 +38,30 @@ fn a_chord_fires_the_shortcuts_that_name_it() {
     assert!(chord_pressed(&armed, &other).is_empty());
 }
 
+/// A pressed chord's call is its shortcut's run under the firing's id: the call the device's
+/// dispatch keeps as the shortcut's asked record when a step needs the person's yes.
+#[test]
+fn a_pressed_chord_calls_its_shortcuts_run_through_the_dispatch() {
+    let armed = [armed_with(&TriggerSpec::Keyboard {
+        chord: "Super+Shift+N".into(),
+    })];
+    let fired = chord_pressed(&armed, &KeyChord::parse("Super+Shift+N").expect("a chord"));
+    let call = pressed_run(&fired[0]);
+    assert_eq!(
+        tilo_workspace_service::apps::automation::run_target(&call.target.address),
+        Some("tidy"),
+        "the dispatch reads it as the shortcut's run"
+    );
+    assert_eq!(
+        call.invocation.0, fired[0].invocation.0,
+        "under the firing's id"
+    );
+    assert_eq!(
+        fired[0].caller().workspace(),
+        Some(armed[0].workspace.as_str())
+    );
+}
+
 #[test]
 fn an_app_opened_fires_once_and_never_on_the_first_look() {
     let armed = [armed_with(&TriggerSpec::AppOpened {

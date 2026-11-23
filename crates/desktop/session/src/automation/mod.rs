@@ -1,7 +1,10 @@
 //! The shortcuts a person saved that a trigger of this device starts: a chord pressed at its
 //! keyboard, an app it started, a focus mode switching on it. These happen on this device only,
-//! so it starts them itself, through the apps' broker, which checks again that the shortcut still
-//! exists and that its saver may still run it. A trigger every device of the workspace can see (a
+//! so it starts them itself. A chord the person pressed runs its shortcut as they run it from
+//! anywhere: through the device's one dispatch, as them, where a step that needs their yes asks
+//! them as the shortcut's asked record and the run starts once they approve. The others start
+//! through the apps' broker, which checks again that the shortcut still exists and that its
+//! saver may still run it. A trigger every device of the workspace can see (a
 //! schedule, a record changing, a folder, a workspace joined) is the device's daemon's to watch
 //! ([`tilo_workspace_service::apps::triggers`]), which places each firing on one device.
 //! Only the person this device acts for has armed shortcuts
@@ -15,6 +18,9 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use settings_store::hardware::{ActionChord, KeyChord};
 use settings_store::notification_policy::NotificationPolicy;
+use tilo_actions::InvocationId;
+use tilo_actions::api::ActionAddress;
+use tilo_actions::remote::{ActionProvider as _, InvokeRequest, RemoteActionTarget};
 use tilo_automation::{FOCUS_DO_NOT_DISTURB, FOCUS_SCHEDULE, FocusTransition, TriggerSpec};
 use tilo_lock::MutexRecover as _;
 use tilo_session_core::desktop::state::DesktopHandle;
@@ -51,8 +57,12 @@ impl FocusState {
 
 /// The session's own triggers: the shortcuts it arms, what it shows them, and the runs it starts.
 pub struct Automation {
-    /// The apps' broker, while the session serves one: every firing starts through it.
+    /// The apps' broker, while the session serves one: every firing but a pressed chord's starts
+    /// through it.
     broker: Option<Arc<AppActionBroker>>,
+    /// The device's one dispatch, on the session's shell link: where a pressed chord's shortcut
+    /// runs, as the person.
+    daemon: Option<runtime_collab::ShellClient>,
     /// The apps this session started, which an application-opened trigger follows.
     launches: Arc<crate::launches::Launches>,
     /// The person's notification policy, as the session keeps it current: the focus modes a
@@ -90,6 +100,8 @@ pub struct Feeds {
     pub launches: Arc<crate::launches::Launches>,
     pub policy: Arc<std::sync::Mutex<NotificationPolicy>>,
     pub revocations: crate::engine::Revocations,
+    /// The session's link to the device's daemon, when it has one.
+    pub daemon: Option<runtime_collab::ShellClient>,
 }
 
 impl Automation {
@@ -100,9 +112,11 @@ impl Automation {
             launches,
             policy,
             revocations,
+            daemon,
         } = feeds;
         Self {
             broker: None,
+            daemon,
             launches,
             policy,
             revocations,
@@ -268,6 +282,15 @@ impl Automation {
 
     /// Start every firing as its saver.
     fn start(&self, firings: Vec<Firing>) {
+        let (pressed, firings): (Vec<Firing>, Vec<Firing>) = firings
+            .into_iter()
+            .partition(|firing| matches!(firing.trigger, TriggerSpec::Keyboard { .. }));
+        for firing in &pressed {
+            self.run_pressed(firing);
+        }
+        if firings.is_empty() {
+            return;
+        }
         let Some(broker) = self.broker.clone() else {
             // The broker may still be starting: what fired waits for it, and starts from the pass
             // that finds it.
@@ -288,6 +311,37 @@ impl Automation {
         }
     }
 
+    /// Run the shortcut a pressed chord names through the device's one dispatch, as the person
+    /// who saved it: the run they would start from anywhere. One that needs their yes waits for
+    /// it as its asked record, which they answer from any device.
+    fn run_pressed(&self, firing: &Firing) {
+        let Some(daemon) = &self.daemon else {
+            tracing::warn!(shortcut = %firing.shortcut, "a chord was pressed, but this session reaches no dispatch to run its shortcut");
+            return;
+        };
+        let runtime = match tilo_rt::try_app() {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                tracing::warn!(shortcut = %firing.shortcut, %error, "a chord was pressed, but its shortcut has nowhere to run");
+                return;
+            }
+        };
+        let _entered = runtime.handle().enter();
+        let shortcut = firing.shortcut.clone();
+        daemon
+            .dispatch()
+            .invoke(&firing.caller(), pressed_run(firing))
+            .then(move |answered| match answered {
+                Some(Ok(_)) => {}
+                Some(Err(error)) => {
+                    tracing::info!(%shortcut, %error, "a chord was pressed but its shortcut did not start");
+                }
+                None => {
+                    tracing::info!(%shortcut, "a chord was pressed but the dispatch stopped before its shortcut started");
+                }
+            });
+    }
+
     /// Keep the runs the broker finished until the history recorder takes them.
     fn keep_finished(&self) {
         let Some(broker) = &self.broker else {
@@ -305,6 +359,20 @@ impl Automation {
     pub fn take_finished(&self) -> Vec<FinishedInvocation> {
         std::mem::take(&mut *self.finished.borrow_mut())
     }
+}
+
+/// The call a pressed chord makes: its shortcut's `run`, under the firing's id.
+fn pressed_run(firing: &Firing) -> InvokeRequest {
+    let target = chord_target(&firing.workspace, &firing.shortcut);
+    let mut request = InvokeRequest::plain(
+        RemoteActionTarget {
+            provider: target.provider,
+            address: ActionAddress::new(target.resource, target.action),
+        },
+        firing.inputs.clone(),
+    );
+    request.invocation = InvocationId(firing.invocation.0);
+    request
 }
 
 /// Every trigger of `armed` that `matches`, with its payload, firing here.

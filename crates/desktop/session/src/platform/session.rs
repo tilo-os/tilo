@@ -1,11 +1,11 @@
 //! The native session's own assembly: the compositor half of [`crate::platform`]
 //! composing the desktop and the services a Linux login runs.
 
+use crate::window_share::peer::PeerViews as _;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
-use crate::window_share::peer::PeerViews as _;
 
 use tilo_actions::remote::InvokeArgument;
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
@@ -19,10 +19,10 @@ use tilo_session_core::desktop::osd::Hint;
 
 use tilo_session_core::desktop::osd::Osd;
 
-use tilo_session_core::desktop::osd::OsdKind;
-use tilo_session_core::desktop::overlays::{Overlays, Part};
 use tilo_liveness::watchdog::{Policy, Watchdog, end_process};
 use tilo_lock::MutexRecover as _;
+use tilo_session_core::desktop::osd::OsdKind;
+use tilo_session_core::desktop::overlays::{Overlays, Part};
 use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_session_core::surfaces::Surfaces;
 use tilo_shell_surface::{ShellDesktop, WidgetSurface};
@@ -361,11 +361,10 @@ impl Session {
         // The shell link the device's daemon handed this session when it started it: the
         // session's own reads and writes go there, the workspace resources it shows itself are
         // followed there, and its apps are vouched for on it.
-        let daemon_link =
-            tilo_session_client::daemon_documents::inherited_link(
-                options.shell_link.take(),
-                tilo_rt::app().handle(),
-            );
+        let daemon_link = tilo_session_client::daemon_documents::inherited_link(
+            options.shell_link.take(),
+            tilo_rt::app().handle(),
+        );
         if let Err(reason) = &daemon_link {
             tracing::error!(%reason, "this session reads and writes no workspace");
         }
@@ -868,8 +867,8 @@ impl Session {
         // What the desktop may do and the facts it reads are the session's: who may change the
         // workspaces, who is here, and the machine's own readings, answered by the session's own
         // source. What the desktop asks of the session lands with the shell's asks.
-        let rules = Rc::new(tilo_session_core::desktop::host::chrome::HostChrome::new(Rc::new(
-            crate::chrome::SessionChrome::new(
+        let rules = Rc::new(tilo_session_core::desktop::host::chrome::HostChrome::new(
+            Rc::new(crate::chrome::SessionChrome::new(
                 handle.clone(),
                 Rc::clone(&intents),
                 options.person.clone(),
@@ -887,8 +886,8 @@ impl Session {
                 sync.clone(),
                 options.launches.notes(),
                 view.clone(),
-            ),
-        )));
+            )),
+        ));
         handle.set_rules(rules);
         handle.set_asks(Rc::clone(&asks));
         // The chrome's verbs as the session publishes them, which the shell reads through the API.
@@ -1206,7 +1205,7 @@ impl Session {
             crate::services::app_wire::Collaboration {
                 revocations: std::sync::Arc::clone(&revocations),
                 sync: sync.as_deref(),
-                daemon: daemon_link,
+                daemon: daemon_link.clone(),
                 daemon_writes,
                 service: workspace_service.clone(),
                 engine: engine.as_ref().map(std::sync::Arc::clone),
@@ -1377,6 +1376,8 @@ impl Session {
                 launches: std::sync::Arc::clone(&options.launches),
                 policy: std::sync::Arc::clone(&notification_policy),
                 revocations,
+                // A chord the person presses runs its shortcut through the device's one dispatch.
+                daemon: daemon_link.ok(),
             },
         );
 
@@ -2165,9 +2166,7 @@ impl Session {
         self.shared.pending_paste.set(false);
         // This pass's reading of the caret, which the overlays follow next pass: the panel is
         // placed beside where it stands now, not a pass behind.
-        self.shared
-            .overlays
-            .set_caret(self.caret.get());
+        self.shared.overlays.set_caret(self.caret.get());
         self.shared.open_clipboard_beside_caret();
     }
 
@@ -2215,9 +2214,7 @@ impl Session {
             .map(rect);
         self.shared.overlays.set_displays(&outputs, focused);
         // Where the person types, for the surfaces a key opens at the caret.
-        self.shared
-            .overlays
-            .set_caret(self.caret.get());
+        self.shared.overlays.set_caret(self.caret.get());
     }
 
     /// Take the displays a fullscreen window owns from the compositor, so
@@ -2333,7 +2330,6 @@ impl Session {
     pub fn handle(&self) -> &DesktopHandle {
         &self.shared.handle
     }
-
 
     /// The shell's notifications: the banners it is showing now and the
     /// centre it keeps behind them.
