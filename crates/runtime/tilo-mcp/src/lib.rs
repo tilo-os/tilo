@@ -9,6 +9,7 @@ mod images;
 pub mod lines;
 mod session;
 pub mod session_api;
+#[cfg(unix)]
 pub mod task_hosts;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_hosts;
@@ -144,10 +145,18 @@ pub struct McpServer<H> {
     /// programs made, for `undo` and `history task`.
     programs: std::sync::Mutex<agent::Programs>,
     /// Where this server starts its task's tilolang host
-    /// ([`task_hosts::TaskHosts`]); `None` for a server that runs no programs.
+    /// ([`task_hosts::TaskHosts`]); `None` for a server that runs no programs. A host
+    /// that cannot start one holds a value nothing constructs: its process link is a
+    /// descriptor, which Windows has none of.
+    #[cfg(unix)]
     task_hosts: Option<std::sync::Arc<dyn TaskHosts>>,
+    #[cfg(windows)]
+    task_hosts: Option<std::convert::Infallible>,
     /// The program connection to the task's host, once its first program started it.
+    #[cfg(unix)]
     task: tokio::sync::Mutex<Option<agent::TaskLink>>,
+    #[cfg(windows)]
+    task: tokio::sync::Mutex<Option<std::convert::Infallible>>,
     /// How the task's programs write what the apps declare, once its host answered its
     /// catalogue: a listing reads it once a session rather than every page
     /// ([`McpServer::program_forms`]).
@@ -200,8 +209,10 @@ pub struct McpServer<H> {
     until_ended: bool,
 }
 
+#[cfg(unix)]
+pub use agent::TaskHosts;
+pub use agent::TaskProgram;
 pub use agent::{PersonStep, literals_in};
-pub use agent::{TaskHosts, TaskProgram};
 
 /// The record an agent call worked in: the app's id and the workspace's
 /// record id, as the provider of the resource the call resolved names it.
@@ -696,6 +707,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     }
 
     /// Run the `tilo` tool's programs in task hosts `hosts` starts.
+    #[cfg(unix)]
     #[must_use]
     pub fn with_task_hosts(mut self, hosts: Option<std::sync::Arc<dyn TaskHosts>>) -> Self {
         self.task_hosts = hosts;

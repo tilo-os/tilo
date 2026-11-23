@@ -540,6 +540,7 @@ where
 /// programs run, and the person's devices as the host reaches them.
 #[derive(Default)]
 pub struct Beside {
+    #[cfg(unix)]
     pub tasks: Option<std::sync::Arc<dyn crate::TaskHosts>>,
     pub devices: Option<std::sync::Arc<dyn crate::devices::DeviceDirectory>>,
 }

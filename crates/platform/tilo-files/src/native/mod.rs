@@ -37,7 +37,6 @@ pub mod migration;
 pub mod nofollow;
 pub mod private;
 pub mod retained_home;
-#[cfg(unix)]
 pub use tilo_socket as socket;
 pub mod tree;
 #[cfg(unix)]
