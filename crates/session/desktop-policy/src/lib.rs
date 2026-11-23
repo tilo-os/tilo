@@ -642,7 +642,8 @@ impl DesktopPolicy {
 
     /// Show that the app `asked` names stopped, in a tab of its own with its button
     /// asking for `asked` again: the window it had is gone, and this is what the person
-    /// finds in its place.
+    /// finds in its place. An app whose window `tab` the person closed ended as theirs,
+    /// whatever its end: nothing comes back to say so, and the window stays closed.
     /// # Errors
     /// The desktop has no workspace or strip to open it in.
     pub fn stopped(
@@ -653,17 +654,25 @@ impl DesktopPolicy {
         tab: Option<TabId>,
     ) -> Result<(), String> {
         let answer = closed.outcome(title, tilo_session_core::desktop::i18n::t("answer-reopen"));
-        if let Some(tab) = tab
-            && self.answer_where_it_was(tab, asked, title)
-        {
-            self.failed_at(tab, asked, answer);
-            return Ok(());
+        if let Some(tab) = tab {
+            if self.answer_where_it_was(tab, asked, title) {
+                self.failed_at(tab, asked, answer);
+                return Ok(());
+            }
+            if self.handle.read(|tree| {
+                tree.workspaces
+                    .iter()
+                    .any(|workspace| workspace.closed_tabs().closed_by_person(tab))
+            }) {
+                return Ok(());
+            }
         }
         self.notice(asked, title, answer)
     }
 
     /// Make `tab`, the last window of the app `asked` names, the place that says what became of
-    /// it: still on the desktop, or put back where it was closed. False when it is neither.
+    /// it: still on the desktop, or put back where it was when the window went away by itself
+    /// (never a window the person closed). False when it is neither.
     fn answer_where_it_was(&self, tab: TabId, asked: &str, title: &str) -> bool {
         let mut tree = self.handle.read(Clone::clone);
         let placed = tree.tab(tab).is_some()
@@ -1626,8 +1635,9 @@ impl DesktopPolicy {
         place
     }
 
-    /// `window` went away: its tab closes, and focus goes back to the
-    /// window the person had in front before it.
+    /// `window` went away: its tab closes, remembered as a window that went by
+    /// itself (where its app says so if it stopped working), and focus goes
+    /// back to the window the person had in front before it.
     pub fn unmap(&mut self, window: u64) {
         self.to_carry.retain(|(pending, _)| *pending != window);
         self.cards.gone(window);
@@ -1648,7 +1658,7 @@ impl DesktopPolicy {
         let Some(tab) = tab_of(&tree, window) else {
             return;
         };
-        if tree.close_tab(tab).is_some() {
+        if tree.window_went(tab).is_some() {
             self.handle.replace_tree(tree);
         }
     }

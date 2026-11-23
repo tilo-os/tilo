@@ -320,6 +320,33 @@ tilo_test_env::scenario! {
         assert_eq!(ids(&tree, 20), [30, 32, 31], "no second window under it");
     }
 
+    phase only_a_window_that_went_by_itself_comes_back_to_say_its_app_stopped;
+    // The place a stopped app answers in is a window that went away by itself. A window the
+    // person closed stays closed until they reopen it, and its app's end is theirs.
+    {
+        let mut tree = layout();
+        tree.close_tab(31).unwrap();
+        tree.window_went(40).unwrap();
+        let workspace = &mut tree.workspaces[0];
+        assert!(workspace.closed_tabs().closed_by_person(31));
+        assert!(!workspace.closed_tabs().closed_by_person(40));
+        assert!(
+            workspace.reopen_closed_tab(31).is_none(),
+            "a window the person closed is not put back for its app"
+        );
+        assert_eq!(
+            workspace.reopen_closed_tab(40).map(|put| (put.group, put.tab)),
+            Some((21, 40)),
+            "a window that went is put back where it stood"
+        );
+        assert_eq!(
+            tree.reopen_closed(WorkspaceId::from_u128(1), None)
+                .map(|put| (put.group, put.tab)),
+            Some((20, 31)),
+            "the person's reopen still brings back what they closed"
+        );
+    }
+
     phase the_reopen_command_puts_back_the_last_close_of_its_workspace;
     // The desktop's reopen command reduces to the same restore, so a host that
     // holds only a workspace puts its last close back at the strip the caller

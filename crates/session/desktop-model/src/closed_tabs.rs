@@ -44,6 +44,9 @@ pub struct ClosedTab {
     /// The monitor this device showed the window's group on, when it had
     /// several: a group made again goes back to it.
     pub display: Option<String>,
+    /// Whether the window went away by itself ([`Leaving::WindowWent`]) rather
+    /// than the person closing it.
+    pub window_went: bool,
 }
 
 /// Where a reopen put a window back.
@@ -57,12 +60,18 @@ pub struct Reopened {
     pub display: Option<String>,
 }
 
-/// Why a window left its group: a person closed it, or it only moved.
+/// Why a window left its group: a person closed it, it went away by itself,
+/// or it only moved.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Leaving {
     /// A person closed the window: the close is remembered, so it can be
     /// undone.
     Closed,
+    /// The window went away by itself while its tab was on the shell: its
+    /// app closed it, or ended. Remembered as a close the person can undo,
+    /// and the place an app that stopped working says so in
+    /// ([`Workspace::reopen_closed_tab`]).
+    WindowWent,
     /// The window moves elsewhere in the desktop, or leaves it as a whole
     /// workspace or strip goes: nothing was closed, and nothing is
     /// remembered.
@@ -85,6 +94,16 @@ impl ClosedTabs {
         self.entries.push_back(entry);
     }
 
+    /// Whether the person closed the window `tab`, as far as the closes
+    /// remembered go: its app's end after that is theirs, not a window that
+    /// stopped working.
+    #[must_use]
+    pub fn closed_by_person(&self, tab: TabId) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| entry.tab.id == tab && !entry.window_went)
+    }
+
     /// The newest close `pick` takes, taken off the stack: a close is undone
     /// once, never twice.
     pub fn take_newest(&mut self, pick: impl Fn(&ClosedTab) -> bool) -> Option<ClosedTab> {
@@ -103,8 +122,18 @@ impl ClosedTabs {
     }
 }
 
+impl Leaving {
+    /// Whether the window is gone from the desktop, so its leaving is
+    /// remembered as a close.
+    #[must_use]
+    pub fn closes(self) -> bool {
+        self != Self::Moved
+    }
+}
+
 impl Workspace {
-    /// Remember the window at `strip`, `group` and `tab` (indices) as closed,
+    /// Remember the window at `strip`, `group` and `tab` (indices) as closed
+    /// for the reason `leaving` gives,
     /// shown on monitor `display`, so [`Self::reopen_closed`] puts it back,
     /// and end the shares it showed
     /// ([`Self::end_window_shares`]): a window that closes stops being shared.
@@ -118,6 +147,7 @@ impl Workspace {
         group: usize,
         tab: usize,
         display: Option<String>,
+        leaving: Leaving,
     ) -> bool {
         let Some((strip_id, holding)) = self
             .strips
@@ -139,6 +169,7 @@ impl Workspace {
             whole_group: holding.tabs.len() == 1,
             tab: closing.relaunchable(),
             display,
+            window_went: leaving == Leaving::WindowWent,
         };
         self.closed_tabs.push(entry);
         self.end_window_shares(closing_id);
@@ -182,10 +213,11 @@ impl Workspace {
         })
     }
 
-    /// Put the closed window `tab` back where it was, as [`Self::reopen_closed`] does: a window
-    /// whose app stopped working takes its place again to say so.
+    /// Put the window `tab` back where it was, as [`Self::reopen_closed`] does, when it went away
+    /// by itself ([`Leaving::WindowWent`]): a window whose app stopped working takes its place
+    /// again to say so. A window the person closed stays closed: only their reopen brings it back.
     pub fn reopen_closed_tab(&mut self, tab: TabId) -> Option<Reopened> {
-        self.reopen_closed_where(None, |entry| entry.tab.id == tab)
+        self.reopen_closed_where(None, |entry| entry.tab.id == tab && entry.window_went)
     }
 
     fn reopen_closed_where(

@@ -945,7 +945,16 @@ impl Layouts {
     /// resolves a window that runs here to the window it shows here. Returns whether anything
     /// changed.
     pub(crate) fn follow(&self, engine: &Engine, device: &str, tree: &mut Layout) -> bool {
-        let changed = self.follow_layout(engine, device, tree) | self.follow_view(engine, tree);
+        // The person's view of each workspace as the shell shows it before the layouts are laid
+        // in: what they closed here is gone from it, and what a layout's fold takes off the shell
+        // is not.
+        let shown: HashMap<WorkspaceId, PersonView> = tree
+            .workspaces
+            .iter()
+            .map(|workspace| (workspace.id(), PersonView::of(tree, workspace.id())))
+            .collect();
+        let changed =
+            self.follow_layout(engine, device, tree) | self.follow_view(engine, tree, &shown);
         // What the workspaces' layouts laid in is theirs: only what changes here after it is
         // this device's to write.
         *self.shown.borrow_mut() = tree
@@ -1350,8 +1359,14 @@ impl Layouts {
         changed
     }
 
-    /// Show every workspace in `tree` as the person here last left it.
-    fn follow_view(&self, engine: &Engine, tree: &mut Layout) -> bool {
+    /// Show every workspace in `tree` as the person here last left it. `shown` is the person's view
+    /// of each as the shell showed it before this look laid the layouts in.
+    fn follow_view(
+        &self,
+        engine: &Engine,
+        tree: &mut Layout,
+        shown: &HashMap<WorkspaceId, PersonView>,
+    ) -> bool {
         let Some(person) = self.person.borrow().clone() else {
             return false;
         };
@@ -1374,14 +1389,22 @@ impl Layouts {
             // it — the changes it made that the workspace does not hold yet, else what it read
             // last. A workspace that holds no view of them yet is no different: they are the
             // person's, and the session shows them before the workspace has one.
+            // A window the person closed here since is gone, whatever the kept view still says of
+            // it: until their view rests and is written again, it names the window, and laying it
+            // back would open a window they closed.
             let kept = self.held(&key, |held| {
-                held.pending_view
+                let kept = held
+                    .pending_view
                     .last()
                     .map(|step| step.changed.clone())
                     .or_else(|| match &held.written {
                         Some(Written::View(view)) => Some(view.clone()),
                         _ => None,
-                    })
+                    })?;
+                Some(match shown.get(&workspace_id) {
+                    Some(here) => kept.over(here, held.seen.as_ref()),
+                    None => kept,
+                })
             });
             if let Some(view) = kept
                 && let Some(workspace) = tree

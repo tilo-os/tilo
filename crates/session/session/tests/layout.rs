@@ -981,6 +981,119 @@ fn opens_again_after_a_restart(app: &str) {
     );
 }
 
+/// The person closes a window of their own (Settings) and goes on to open another app: the closed
+/// window stays closed, its app is not asked for it again, and opening Settings later makes a new
+/// window rather than bringing back the closed one. The view this device last wrote still names the
+/// window until the person's view rests and is written again, and the look between is no reason to
+/// put it back.
+#[test]
+fn a_window_of_the_persons_own_stays_closed() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let started = home.home().join("started");
+    crate::common::probe_app(&mut home, SETTINGS, "Settings");
+    crate::common::probe_app(&mut home, PROBE, "Probe");
+    let launcher = launcher(&home, &started);
+    let state = Device::in_home(&mut home).state;
+    let apps = apps_at(&home, Some(launcher.path().to_owned()));
+    let mut session = session_keeping(&state, Some(Rc::clone(&apps)));
+    let workspace = session
+        .handle()
+        .read(|tree| tree.active_workspace().map(|held| held.id().to_string()))
+        .expect("a workspace is in front");
+    let open = |app: &str| {
+        apps.start(
+            &tilo_app_launch::Launch::Package {
+                app: app.into(),
+                open: None,
+            },
+            &apps.workspace_named(&workspace),
+        )
+        .expect("the person opens the app");
+    };
+    let shown_in = |session: &Session, surface: u64| {
+        tabs(session).into_iter().find(|(tab, _)| {
+            matches!(
+                tile_of(session, *tab),
+                Some(TileContent::Foreign { surface_id, .. }) if surface_id == surface
+            )
+        })
+    };
+
+    open(SETTINGS);
+    until(&mut session, "Settings is started", |_| {
+        starts(&started) == 1
+    });
+    session
+        .desktop()
+        .with_policy(|policy| policy.map(window(11, SETTINGS)))
+        .expect("the window maps");
+    until(&mut session, "Settings' window is in its tab", |session| {
+        shown_in(session, 11).is_some()
+    });
+    let (closed, _) = shown_in(&session, 11).expect("Settings' window has a tab");
+    // The person's view rests with the window in it, and this device writes it.
+    let _ = crate::common::steps_within(&mut session, Duration::from_secs(1), |_| None::<()>);
+
+    assert!(
+        session
+            .desktop()
+            .with_policy(|policy| policy.close_tab_of(SETTINGS)),
+        "the person closes Settings' window"
+    );
+    session.desktop().with_policy(|policy| policy.unmap(11));
+    until(&mut session, "the window is closed", |session| {
+        tabs(session).is_empty()
+    });
+
+    // The person goes on to another app: the look that takes its window in is no reason to put
+    // Settings back.
+    open(PROBE);
+    until(&mut session, "the other app is started", |_| {
+        starts(&started) == 2
+    });
+    session
+        .desktop()
+        .with_policy(|policy| policy.map(window(12, PROBE)))
+        .expect("the other app's window maps");
+    until(
+        &mut session,
+        "the other app's window is in its tab",
+        |session| shown_in(session, 12).is_some(),
+    );
+    let came_back = crate::common::steps_within(&mut session, Duration::from_secs(2), |session| {
+        (tabs(session).len() != 1 || starts(&started) != 2)
+            .then(|| (tabs(session), starts(&started)))
+    });
+    assert_eq!(
+        came_back, None,
+        "the closed window stays closed and its app is not asked for it (tabs, starts)"
+    );
+
+    // Opening Settings again makes a window of its own, not the closed one. Its app still runs, so
+    // the new window comes from it rather than from a second start.
+    open(SETTINGS);
+    until(&mut session, "Settings' new window has a tab", |session| {
+        tabs(session).len() == 2
+    });
+    session
+        .desktop()
+        .with_policy(|policy| policy.map(window(13, SETTINGS)))
+        .expect("the new window maps");
+    until(
+        &mut session,
+        "Settings' new window is in its tab",
+        |session| shown_in(session, 13).is_some(),
+    );
+    let (reopened, _) = shown_in(&session, 13).expect("the new window has a tab");
+    assert_ne!(reopened, closed, "a new window, not the closed one back");
+    assert_eq!(
+        tabs(&session).len(),
+        2,
+        "the other app's window and Settings' new one"
+    );
+}
+
 /// The person opens an app before the session first laid out the workspace's layout, and the
 /// layout holds no window of it: the place the launch made is the person's, not one an earlier
 /// session left unfilled. It stays, and the window takes it.
