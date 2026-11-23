@@ -162,6 +162,8 @@ accounts = { path = "../../system/accounts", features = ["person"] }
 # Which vault items a workspace's machine hands its programs: a Terminal document.
 tilo-environment = { path = "../../vm/environment", optional = true }
 agent-provider-config = { path = "../../agent/provider-config" }
+# Server-sent event framing for streamable HTTP MCP connections (`connections::mcp`).
+wire-frame = { path = "../../system/wire-frame" }
 settings-store = { path = "../../system/settings-store" }
 tilo-account-probe = { path = "../../platform/account-probe" }
 # The client registrations, token renewal and Nextcloud login flow a

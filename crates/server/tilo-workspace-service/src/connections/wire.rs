@@ -85,8 +85,9 @@ pub(crate) struct Ask {
     pub(crate) whole: Option<Whole>,
 }
 
-/// Whether what was read of a streamed answer holds all that was asked for.
-pub(crate) type Whole = Arc<dyn Fn(&[u8]) -> bool + Send + Sync>;
+/// Whether what was read of a streamed answer holds all that was asked for,
+/// told the answer's `content-type` (empty when absent) and each arriving chunk.
+pub(crate) type Whole = Box<dyn FnMut(&str, &[u8]) -> bool + Send>;
 
 /// What a service answered.
 #[derive(Debug)]
@@ -125,7 +126,7 @@ impl Wire {
             Problem::NoAnswer
         })?;
         Ok(Self {
-            send: Box::new(move |ask| {
+            send: Box::new(move |mut ask| {
                 let client = client.clone();
                 Box::pin(async move {
                     allowed(&ask.url, destinations)?;
@@ -150,13 +151,17 @@ impl Wire {
                     if (300..400).contains(&status) {
                         return Err(Problem::SentOn);
                     }
-                    let headers = READ_HEADERS
+                    let headers: Vec<(&'static str, String)> = READ_HEADERS
                         .iter()
                         .filter_map(|name| {
                             let value = response.headers().get(*name)?.to_str().ok()?;
                             Some((*name, value.to_owned()))
                         })
                         .collect();
+                    let kind = headers
+                        .iter()
+                        .find(|(kept, _)| *kept == "content-type")
+                        .map_or("", |(_, value)| value.as_str());
                     let mut body = Vec::new();
                     while let Some(chunk) = response.chunk().await.map_err(|error| {
                         let error = error.without_url();
@@ -167,7 +172,7 @@ impl Wire {
                             return Err(Problem::Unreadable);
                         }
                         body.extend_from_slice(&chunk);
-                        if ask.whole.as_ref().is_some_and(|whole| whole(&body)) {
+                        if ask.whole.as_mut().is_some_and(|whole| whole(kind, &chunk)) {
                             break;
                         }
                     }
