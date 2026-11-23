@@ -130,6 +130,33 @@ fn unexpected(reply: &ShellReply) -> String {
 #[derive(Clone, Debug)]
 pub struct DaemonDocuments(pub DaemonShell);
 
+impl DaemonDocuments {
+    /// Whether the member whose device `certificate` names may read `app`'s `resource` of
+    /// `workspace`, as the daemon decides it at the resource.
+    ///
+    /// # Errors
+    /// The member may not, or the daemon did not answer.
+    pub fn authorizes(
+        &self,
+        workspace: &str,
+        app: &str,
+        resource: &str,
+        certificate: &tilo_user_identity::DeviceCert,
+    ) -> Result<(), String> {
+        let certificate = serde_json::to_string(certificate)
+            .map_err(|error| format!("a certificate does not encode: {error}"))?;
+        match self.0.ask_blocking(ShellCall::Authorizes {
+            workspace: workspace.to_owned(),
+            app: app.to_owned(),
+            resource: resource.to_owned(),
+            certificate,
+        })? {
+            ShellReply::Authorized(allowed) => allowed,
+            other => Err(unexpected(&other)),
+        }
+    }
+}
+
 impl DeviceDocuments for DaemonDocuments {
     fn read(
         &self,
@@ -313,6 +340,41 @@ pub fn on_daemon(
         Arc::new(DaemonWrites(shell.clone())),
         shell,
     )
+}
+
+/// The receipts of the effects the desktop's own actions had, recorded by the device's daemon in
+/// their workspaces as this device's: the desktop keeps no copy to record them in.
+#[derive(Clone, Debug)]
+pub struct DaemonReceipts(pub DaemonShell);
+
+impl tilo_peer_state::owner_commit::OwnerCommitService for DaemonReceipts {
+    fn records_effects(&self, workspace: &str) -> bool {
+        let asked = self.0.ask_blocking(ShellCall::KeepsReceipts {
+            workspace: workspace.to_owned(),
+        });
+        answered_is(asked, workspace)
+    }
+
+    fn commit(
+        &self,
+        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+    ) -> tilo_peer_state::owner_commit::CommitFuture {
+        let shell = self.0.clone();
+        Box::pin(async move {
+            let request = serde_json::to_string(&request)
+                .map_err(|error| format!("a receipt does not encode: {error}"))?;
+            match shell.ask(ShellCall::Receipt { request }).await? {
+                ShellReply::Receipted(Ok(receipt)) => serde_json::from_str(&receipt)
+                    .map_err(|error| format!("the daemon's receipt does not read: {error}")),
+                ShellReply::Receipted(Err(refusal)) => Err(refusal),
+                other => Err(unexpected(&other)),
+            }
+        })
+    }
+
+    fn health(&self) -> Result<(), String> {
+        self.0.link().map(drop)
+    }
 }
 
 /// Followers of the device's writes, told each document written as the daemon tells it.

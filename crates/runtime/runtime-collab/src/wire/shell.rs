@@ -115,6 +115,21 @@ pub enum ShellCall {
     /// Admit one connection as the app `Vouch` names, which the shell launched: answered with the
     /// one-use secret that connection opens with after [`VOUCH_MAGIC`].
     Vouch(Vouch),
+    /// Record the receipt of an effect an action the shell ran had, in its workspace, as this
+    /// device's: `tilo_peer_state::owner_commit::OwnerCommitRequest` JSON of an effect receipt.
+    Receipt { request: String },
+    /// Whether the device records the receipts of effects in `workspace`: it does in a workspace
+    /// it joined, each device in its own slice of it.
+    KeepsReceipts { workspace: String },
+    /// Whether the member whose device `certificate` names (`tilo_user_identity::DeviceCert` JSON)
+    /// may read `app`'s `resource` of `workspace`: decided at the resource, for an agent the shell
+    /// admitted itself, before the shell reads it for that agent.
+    Authorizes {
+        workspace: String,
+        app: String,
+        resource: String,
+        certificate: String,
+    },
 }
 
 /// A shell's ask of a workspace's vault and accounts. The vault opens on this device alone, so the
@@ -192,7 +207,7 @@ impl std::fmt::Debug for VaultAnswer {
 pub enum ShellReply {
     /// A [`ShellCall::Read`].
     Read(ShellRead),
-    /// A [`ShellCall::Readable`] or [`ShellCall::Holds`].
+    /// A [`ShellCall::Readable`], [`ShellCall::Holds`] or [`ShellCall::KeepsReceipts`].
     Is(bool),
     /// A [`ShellCall::Listing`]: `(app, route)` of each document.
     Listing(Vec<(String, String)>),
@@ -223,6 +238,11 @@ pub enum ShellReply {
         socket: std::path::PathBuf,
         secret: [u8; SHELL_SECRET_BYTES],
     },
+    /// A [`ShellCall::Receipt`]: the receipt as the workspace took it
+    /// (`tilo_peer_state::owner_commit::OwnerCommitReceipt` JSON), or why it took none.
+    Receipted(Result<String, String>),
+    /// A [`ShellCall::Authorizes`]: allowed, or why not.
+    Authorized(Result<(), String>),
 }
 
 /// What the device holds of one document, as `tilo_peer_state::workspace_documents::DocumentRead`.

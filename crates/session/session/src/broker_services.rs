@@ -174,6 +174,100 @@ pub(crate) fn session_documents(
     (documents, writes, feed)
 }
 
+/// The workspaces' records as the device's daemon keeps them, read over the shell's link: what an
+/// agent this session admits reads a record outside its app with. The session keeps no copy;
+/// the agent's read is decided here, at the record's node, before the daemon is asked.
+pub(crate) struct DaemonRecordReads(
+    pub(crate) tilo_session_client::daemon_documents::DaemonDocuments,
+);
+
+impl tilo_workspace_service::apps::collab_app_broker::NativeDocumentReads for DaemonRecordReads {
+    fn resource_read(
+        &self,
+        workspace: &str,
+        app: &str,
+        record: &str,
+    ) -> tilo_workspace_service::apps::collab_app_broker::ResourceRead {
+        use tilo_peer_state::workspace_documents::DeviceDocuments as _;
+        if self.0.holds(workspace, app, record) {
+            tilo_workspace_service::apps::collab_app_broker::ResourceRead::Sealed
+        } else {
+            tilo_workspace_service::apps::collab_app_broker::ResourceRead::Own
+        }
+    }
+
+    fn authorize(
+        &self,
+        context: &tilo_workspace_service::apps::collab_app_broker::NativeDocumentReadContext,
+    ) -> Result<(), String> {
+        context.revalidate()?;
+        let route = context.route();
+        self.0.authorizes(
+            &route.cluster_id,
+            &route.app_id,
+            &route.document_id,
+            context.certificate(),
+        )?;
+        context.revalidate()
+    }
+
+    fn capture(
+        &self,
+        context: &tilo_workspace_service::apps::collab_app_broker::NativeDocumentReadContext,
+        known_revision: Option<[u8; 32]>,
+        maximum: usize,
+    ) -> Result<tilo_workspace_service::apps::collab_app_broker::NativeDocumentRead, String> {
+        use tilo_peer_state::workspace_documents::{DeviceDocuments as _, DocumentRead};
+        use tilo_workspace_service::apps::collab_app_broker::NativeDocumentRead;
+        context.revalidate()?;
+        let route = context.route();
+        let read = self
+            .0
+            .read(&route.cluster_id, &route.app_id, &route.document_id, None)?;
+        let answer = match read {
+            DocumentRead::Whole { revision, .. } | DocumentRead::Unchanged(revision)
+                if Some(revision) == known_revision =>
+            {
+                NativeDocumentRead::Unchanged(revision)
+            }
+            DocumentRead::Whole {
+                revision,
+                heads,
+                bytes,
+            } => {
+                if bytes.len() > maximum {
+                    return Err(format!(
+                        "the record is {} bytes, more than the {maximum} one read takes",
+                        bytes.len()
+                    ));
+                }
+                NativeDocumentRead::Captured {
+                    revision,
+                    heads,
+                    body: Box::new(Captured(bytes)),
+                }
+            }
+            // A read asked for nothing since: the daemon answers the record whole or not at all.
+            DocumentRead::Changes { .. } | DocumentRead::Unchanged(_) => {
+                return Err("the daemon answered a whole read with a part".to_owned());
+            }
+            DocumentRead::Absent => NativeDocumentRead::Absent,
+            DocumentRead::Pending => NativeDocumentRead::Pending,
+        };
+        context.revalidate()?;
+        Ok(answer)
+    }
+}
+
+/// A record's bytes as the daemon answered them.
+struct Captured(Vec<u8>);
+
+impl tilo_workspace_service::apps::collab_app_broker::DocumentBytes for Captured {
+    fn bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
 /// What each installed app declared it may do on the action API, read from the lists search keeps:
 /// a ceiling the broker decides an app's calls against, never a grant.
 pub(crate) fn declared_access(

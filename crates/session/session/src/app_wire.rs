@@ -526,9 +526,23 @@ pub fn serve(
     // lists as each app's name and offered actions, and what decides the
     // reach the device's settings app has of the settings document.
     launches.watching(hosted.lists.clone());
-    // An app's writes go to the device's daemon on its own connection there: this session
-    // commits none.
-    let publisher = PeerPublisher::disabled();
+    // An app's writes go to the device's daemon on its own connection there; the receipts of the
+    // effects the actions this session runs had are recorded by the daemon too.
+    let publisher = match hosted.daemon.clone() {
+        Ok(link) => PeerPublisher::with_optional_owner_commit(
+            None,
+            std::sync::Arc::new(tilo_session_client::daemon_documents::DaemonReceipts(
+                tilo_session_client::daemon_documents::DaemonShell::new(
+                    Ok(link),
+                    tilo_rt::app().handle().clone(),
+                ),
+            )),
+        ),
+        Err(reason) => {
+            tracing::warn!(%reason, "no daemon records the effects of this session's actions");
+            PeerPublisher::disabled()
+        }
+    };
     let (services, hosting) = host_services_with_hosts(
         link,
         launches,
@@ -1151,10 +1165,19 @@ fn broker_services(
             "no project's approved check runs here: this session installs no check service",
         ),
         // The device's daemon keeps the workspaces: an app's Open of a record is answered there,
-        // on the connection the router joins for it, never from a copy here.
-        committed_documents: BrokerService::unserved(
-            "the device's daemon answers an app's records, on the app's connection there",
-        ),
+        // on the connection the router joins for it, and an agent's read of one is read from it
+        // over the shell's link, never from a copy here.
+        committed_documents: BrokerService::when(daemon.clone().ok().map(|link| {
+            std::sync::Arc::new(crate::broker_services::DaemonRecordReads(
+                tilo_session_client::daemon_documents::DaemonDocuments(
+                    tilo_session_client::daemon_documents::DaemonShell::new(
+                        Ok(link),
+                        tilo_rt::app().handle().clone(),
+                    ),
+                ),
+            ))
+                as std::sync::Arc<dyn tilo_workspace_service::apps::services::NativeDocumentReads>
+        })),
         // A call an app joins is this session's: the channel it is in, who
         // else is there, and what the app hears of it until it leaves.
         native_media: BrokerService::when(native_media.map(|media| {

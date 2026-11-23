@@ -156,38 +156,7 @@ pub(super) async fn answer(shell: Option<Shell>, call: ShellCall) -> Result<Repl
             resource,
         } => ShellReply::Is(services.documents.holds(&workspace, &app, &resource)),
         ShellCall::Workspaces => ShellReply::Workspaces(services.documents.workspaces()),
-        ShellCall::Write {
-            workspace,
-            app,
-            document,
-            readers,
-            founding,
-            snapshot,
-            changes,
-        } => {
-            // The device seals with the keys of the document's group itself: the shell holds
-            // none.
-            let written = services
-                .writes
-                .write(
-                    &workspace,
-                    &changes,
-                    DocumentWriting {
-                        app: &app,
-                        document: &document,
-                        readers: readers.as_deref(),
-                        founding,
-                        snapshot,
-                        sealed: None,
-                    },
-                )
-                .await;
-            ShellReply::Written(match written {
-                Ok(write) => Ok(write_on_wire(&write)?),
-                Err(refusal) => Err(serde_json::to_string(&refusal)
-                    .map_err(|error| format!("a refusal does not encode: {error}"))?),
-            })
-        }
+        call @ ShellCall::Write { .. } => write(&services, call).await?,
         ShellCall::Served {
             workspace,
             documents,
@@ -203,9 +172,11 @@ pub(super) async fn answer(shell: Option<Shell>, call: ShellCall) -> Result<Repl
             })
         }
         ShellCall::Writes => ShellReply::Writes(next_writes(&shell.writes).await),
-        call @ (ShellCall::Resources { .. } | ShellCall::Vault(_)) => {
-            kept(&services.workspaces, call).await
-        }
+        call @ (ShellCall::Resources { .. }
+        | ShellCall::Vault(_)
+        | ShellCall::Receipt { .. }
+        | ShellCall::KeepsReceipts { .. }
+        | ShellCall::Authorizes { .. }) => kept(&services.workspaces, call).await,
         ShellCall::Vouch(vouch) => vouch_for(&services, vouch)?,
         ShellCall::Invoke { request } => {
             let request = serde_json::from_str(&request)
@@ -215,6 +186,62 @@ pub(super) async fn answer(shell: Option<Shell>, call: ShellCall) -> Result<Repl
         }
     };
     Ok(Reply::Shell(reply))
+}
+
+/// A [`ShellCall::Write`], written as the device.
+async fn write(services: &ShellServices, call: ShellCall) -> Result<ShellReply, String> {
+    let ShellCall::Write {
+        workspace,
+        app,
+        document,
+        readers,
+        founding,
+        snapshot,
+        changes,
+    } = call
+    else {
+        return Err("that is no write".to_owned());
+    };
+    // The device seals with the keys of the document's group itself: the shell holds none.
+    let written = services
+        .writes
+        .write(
+            &workspace,
+            &changes,
+            DocumentWriting {
+                app: &app,
+                document: &document,
+                readers: readers.as_deref(),
+                founding,
+                snapshot,
+                sealed: None,
+            },
+        )
+        .await;
+    Ok(ShellReply::Written(match written {
+        Ok(write) => Ok(write_on_wire(&write)?),
+        Err(refusal) => Err(serde_json::to_string(&refusal)
+            .map_err(|error| format!("a refusal does not encode: {error}"))?),
+    }))
+}
+
+/// The effect receipt `request` names, recorded in its workspace as this device's.
+async fn receipt(
+    workspaces: &crate::workspaces::Workspaces,
+    request: &str,
+) -> Result<String, String> {
+    let request: tilo_peer_state::owner_commit::OwnerCommitRequest = serde_json::from_str(request)
+        .map_err(|error| format!("the receipt does not read: {error}"))?;
+    if !matches!(
+        request.operation,
+        tilo_peer_state::owner_commit::CommitOperation::EffectReceipt { .. }
+    ) {
+        return Err("a shell records only effect receipts: an app's writes are its own".to_owned());
+    }
+    let receipt = workspaces
+        .commit_member_effect_receipt(&request.workspace, &request)
+        .await?;
+    serde_json::to_string(&receipt).map_err(|error| error.to_string())
 }
 
 /// Where and with which secret a connection opens to be admitted as the app `vouch` names, which
@@ -260,9 +287,28 @@ async fn next_writes(
     }
 }
 
-/// `call`, a resource command or a vault ask, answered from the workspaces the device holds.
+/// `call`, a resource command, a vault ask, a receipt or a read to decide, answered from the
+/// workspaces the device holds.
 async fn kept(workspaces: &crate::workspaces::Workspaces, call: ShellCall) -> ShellReply {
     match call {
+        ShellCall::Receipt { request } => {
+            ShellReply::Receipted(receipt(workspaces, &request).await)
+        }
+        ShellCall::KeepsReceipts { workspace } => {
+            ShellReply::Is(workspaces.is_member(&workspace).await.unwrap_or(false))
+        }
+        ShellCall::Authorizes {
+            workspace,
+            app,
+            resource,
+            certificate,
+        } => ShellReply::Authorized(
+            serde_json::from_str(&certificate)
+                .map_err(|error| format!("the certificate does not read: {error}"))
+                .and_then(|certificate| {
+                    workspaces.authorizes_resource_read(&workspace, &certificate, &app, &resource)
+                }),
+        ),
         ShellCall::Resources {
             workspace,
             app,
