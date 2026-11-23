@@ -65,6 +65,12 @@ messages-account-failed = This account's connection stopped. Check its connectio
 
 messages-account-unknown = Connection status is unavailable.
 
+messages-listed-account-type-id = Changed the service of { $item }
+messages-listed-account-display-name = Changed the name of { $item }
+messages-listed-account-config = Changed the setup of { $item }
+messages-listed-account-enabled = Turned { $item } on or off
+messages-listed-account-tint = Changed the colour of { $item }
+
 messages-setup-accounts = Accounts
 messages-setup-select = Select the service and account to link on this device.
 messages-start-link = Link this device
