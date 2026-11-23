@@ -42,6 +42,8 @@ __all__ = [
     "LabelArgs",
     "MuteArgs",
     "MarkReadArgs",
+    "AttachArgs",
+    "DetachArgs",
     "SendFromArgs",
     "SendAsArgs",
     "SetHoldArgs",
@@ -114,6 +116,16 @@ MarkReadArgs = TypedDict("MarkReadArgs", {
 })
 """The arguments of `mark_read`."""
 
+AttachArgs = TypedDict("AttachArgs", {
+    "file": "Any",
+})
+"""The arguments of `attach`."""
+
+DetachArgs = TypedDict("DetachArgs", {
+    "name": "str",
+})
+"""The arguments of `detach`."""
+
 SendFromArgs = TypedDict("SendFromArgs", {
     "a": "Account",
 })
@@ -147,7 +159,7 @@ DiscardArgs = TypedDict("DiscardArgs", {
 
 class Account(Resource):
     """Account — `tl.so.tilo.mail.Account`."""
-    __surface__ = "so.tilo.mail@8e566cb43d7b1955"
+    __surface__ = "so.tilo.mail@0cbc5f7b812193d8"
     yujnud5c: str  # key
     @property
     def _4lo3ei5n(self) -> str:
@@ -204,7 +216,7 @@ class Account(Resource):
 
 class Mailbox(Resource):
     """Mailbox — `tl.so.tilo.mail.Mailbox`."""
-    __surface__ = "so.tilo.mail@8e566cb43d7b1955"
+    __surface__ = "so.tilo.mail@0cbc5f7b812193d8"
     mh47w3p6: str  # key
     tlasysm5: str  # name
     xhiqdk3p: str  # role
@@ -223,7 +235,7 @@ class Mailbox(Resource):
 
 class Thread(Resource):
     """Thread — `tl.so.tilo.mail.Thread`."""
-    __surface__ = "so.tilo.mail@8e566cb43d7b1955"
+    __surface__ = "so.tilo.mail@0cbc5f7b812193d8"
     ecmpoary: str  # key
     zu23m2dm: str  # account
     u732lnuk: str  # subject
@@ -262,7 +274,7 @@ class Thread(Resource):
         return self.action("reply_all")
 
     def forward(self) -> Draft:
-        """Sends the conversation's newest message on, with its sender and what it says."""
+        """Sends the conversation's newest message on, with its sender, what it says and the files it came with."""
         return self.action("forward")
 
     def archive(self) -> None:
@@ -402,13 +414,13 @@ class Thread(Resource):
 
 class Label(Resource):
     """Label — `tl.so.tilo.mail.Label`."""
-    __surface__ = "so.tilo.mail@8e566cb43d7b1955"
+    __surface__ = "so.tilo.mail@0cbc5f7b812193d8"
     ammoua3h: str  # name
 
 
 class Message(Resource):
     """Message — `tl.so.tilo.mail.Message`."""
-    __surface__ = "so.tilo.mail@8e566cb43d7b1955"
+    __surface__ = "so.tilo.mail@0cbc5f7b812193d8"
     kzjq6hvc: str  # key
     kdxoo3c6: str  # account
     ntqgnz4f: str  # subject
@@ -433,16 +445,10 @@ class Message(Resource):
     @_4bchz3ch.setter
     def _4bchz3ch(self, value: str) -> None:
         self.edit("4bchz3ch", value=value)
+    plb4mg2p: str  # html
     anuds3qt: str  # message_id
     asu6ymha: str  # references
-    @property
-    def _4zhzrkne(self) -> str:
-        """attachments (`4zhzrkne` on the wire)."""
-        return self.fields["4zhzrkne"]
-
-    @_4zhzrkne.setter
-    def _4zhzrkne(self, value: str) -> None:
-        self.edit("4zhzrkne", value=value)
+    yltl32r3: list[Any]  # attachments
     ubfcf6ep: bool  # unread
     vxxb4sqr: bool  # flagged
     xlejsz5j: str  # mailbox
@@ -470,17 +476,21 @@ class Message(Resource):
         return self.action("reply_all_to")
 
     def forward_message(self) -> Draft:
-        """Sends one message of the conversation on, with its sender, when and what it says."""
+        """Sends one message of the conversation on, with its sender, when and what it says, and the files it came with."""
         return self.action("forward_message")
+
+    def attachment(self, *, name: str) -> Any:
+        """One file the message came with, as a file of its own: what Save puts in Files, and what an agent reads or hands another app."""
+        return self.action("attachment", name=name)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"export_markdown", "export_json", "export_eml", "reply_to", "reply_all_to", "forward_message"})
+    __actions__ = frozenset({"export_markdown", "export_json", "export_eml", "reply_to", "reply_all_to", "forward_message", "attachment"})
 
 
 class Draft(Resource):
     """Draft — `tl.so.tilo.mail.Draft`."""
-    __surface__ = "so.tilo.mail@8e566cb43d7b1955"
+    __surface__ = "so.tilo.mail@0cbc5f7b812193d8"
     m2g6zrle: str  # from
     zx2b4ax2: str  # from_address
     hd3o4gkq: str  # to
@@ -494,7 +504,31 @@ class Draft(Resource):
     lgrwf5yf: str  # send_at
     h2nvr2op: bool  # recalled
     em6rrmae: str  # invitation
+    @property
+    def _2tq2zegc(self) -> list[Any]:
+        """attachments (`2tq2zegc` on the wire)."""
+        return self.fields["2tq2zegc"]
+
+    @_2tq2zegc.setter
+    def _2tq2zegc(self, value: list[Any]) -> None:
+        self.edit("2tq2zegc", value=value)
     ozukvva2: str  # set_aside
+
+    def attach(self, *, file: Any) -> None:
+        """Takes a file along with the message: one the person picks, or one an agent hands over. A message takes up to sixteen files of up to 32 MB each, as mail servers take them."""
+        return self.action("attach", file=file)
+
+    def attach_many(self, items: list[AttachArgs]) -> list[dict[str, Any]]:
+        """Runs `attach` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("attach", items)
+
+    def detach(self, *, name: str) -> None:
+        """Leaves a file the message was to take along behind."""
+        return self.action("detach", name=name)
+
+    def detach_many(self, items: list[DetachArgs]) -> list[dict[str, Any]]:
+        """Runs `detach` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("detach", items)
 
     def cancel_later(self) -> None:
         """Brings a message back to the outbox: it was sent to go at a moment still to come, and it is a draft again, whatever the moment."""
@@ -534,12 +568,12 @@ class Draft(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"cancel_later", "send_later", "send_in_the_morning", "send_from", "send_from_many", "send_as", "send_as_many", "send", "undo_send"})
+    __actions__ = frozenset({"attach", "attach_many", "detach", "detach_many", "cancel_later", "send_later", "send_in_the_morning", "send_from", "send_from_many", "send_as", "send_as_many", "send", "undo_send"})
 
 
 class Mail(Resource):
     """Mail — `tl.so.tilo.mail.Mail`."""
-    __surface__ = "so.tilo.mail@8e566cb43d7b1955"
+    __surface__ = "so.tilo.mail@0cbc5f7b812193d8"
     blig7xcq: list[Entry[Account]]  # accounts
     gkuo27e6: list[Entry[Draft]]  # drafts
     z3zcztpz: list[Entry[Label]]  # labels
@@ -589,9 +623,9 @@ class Mail(Resource):
         message_id: str | None = None,
         original: str | None = None,
         parts: list[str] | None = None,
-        attachments: list[str] | None = None,
+        attachments: list[Any] | None = None,
     ) -> Message:
-        """Takes in a message that reached the workspace from outside its accounts' servers: one moved in from another mail program (`tilo migrate`), or handed over through the API. It is kept with the mail held outside the accounts, in the conversation it belongs to (`conversation`, the Message-ID the conversation began with) and the folder it was in, read or not. `from` is the sender as a header writes it (`Ada Lovelace <ada@example.com>`), and `original` the content reference of the message as it was sent, less its large parts: `parts` says where each of those stands in it and which pieces of content it is in, one JSON text each (`{'at': 120, 'size': 4096, 'pieces': ['tilo.content:…']}`). `attachments` names the files it carries. A message already held under its Message-ID is answered as it is, so delivering it again keeps it once."""
+        """Takes in a message that reached the workspace from outside its accounts' servers: one moved in from another mail program (`tilo migrate`), or handed over through the API. It is kept with the mail held outside the accounts, in the conversation it belongs to (`conversation`, the Message-ID the conversation began with) and the folder it was in, read or not. `from` is the sender as a header writes it (`Ada Lovelace <ada@example.com>`), and `original` the content reference of the message as it was sent, less its large parts: `parts` says where each of those stands in it and which pieces of content it is in, one JSON text each (`{'at': 120, 'size': 4096, 'pieces': ['tilo.content:…']}`). `attachments` are the files it carries, each content the workspace holds. A message already held under its Message-ID is answered as it is, so delivering it again keeps it once."""
         args: dict[str, Any] = {}
         args["from"] = from_
         if subject is not None:
@@ -659,5 +693,5 @@ class Mail(Resource):
 
 class TiloMail(Resource):
     """Mail — `tl.so.tilo.mail`."""
-    __surface__ = "so.tilo.mail@8e566cb43d7b1955"
+    __surface__ = "so.tilo.mail@0cbc5f7b812193d8"
 

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.mail@8e566cb43d7b1955";
+export const SURFACE = "so.tilo.mail@0cbc5f7b812193d8";
 
 /** The arguments of `set_signature`. */
 export interface SetSignatureArgs {
@@ -86,6 +86,16 @@ export interface MuteArgs {
 /** The arguments of `mark_read`. */
 export interface MarkReadArgs {
   unread?: boolean;
+}
+
+/** The arguments of `attach`. */
+export interface AttachArgs {
+  file: unknown;
+}
+
+/** The arguments of `detach`. */
+export interface DetachArgs {
+  name: string;
 }
 
 /** The arguments of `send_from`. */
@@ -197,7 +207,7 @@ export interface Thread extends tilo.Resource {
   reply(): Promise<Draft>;
   /** Answers the conversation's newest message, to everyone it went to, quoting it. */
   reply_all(): Promise<Draft>;
-  /** Sends the conversation's newest message on, with its sender and what it says. */
+  /** Sends the conversation's newest message on, with its sender, what it says and the files it came with. */
   forward(): Promise<Draft>;
   /** Archives the conversation: its messages leave the inbox. */
   archive(): Promise<void>;
@@ -303,9 +313,10 @@ export interface Message extends tilo.Resource {
   tfxwkfn2: string;  // received
   sbrol5fc: string;  // snippet
   "4bchz3ch": string;  // body
+  plb4mg2p: string;  // html
   anuds3qt: string;  // message_id
   asu6ymha: string;  // references
-  "4zhzrkne": string;  // attachments
+  yltl32r3: unknown[];  // attachments
   ubfcf6ep: boolean;  // unread
   vxxb4sqr: boolean;  // flagged
   xlejsz5j: string;  // mailbox
@@ -321,13 +332,17 @@ export interface Message extends tilo.Resource {
   reply_to(): Promise<Draft>;
   /** Answers one message of the conversation, to everyone it went to but the person answering. */
   reply_all_to(): Promise<Draft>;
-  /** Sends one message of the conversation on, with its sender, when and what it says. */
+  /** Sends one message of the conversation on, with its sender, when and what it says, and the files it came with. */
   forward_message(): Promise<Draft>;
+  /** One file the message came with, as a file of its own: what Save puts in Files, and what an agent reads or hands another app. */
+  attachment(args: {
+    name: string;
+  }): Promise<unknown>;
 }
 
 /** The actions `Message` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const MESSAGE_ACTIONS = ["export_markdown", "export_json", "export_eml", "reply_to", "reply_all_to", "forward_message"] as const;
+export const MESSAGE_ACTIONS = ["export_markdown", "export_json", "export_eml", "reply_to", "reply_all_to", "forward_message", "attachment"] as const;
 
 /** The `tl.so.tilo.mail.Message` kind at `path`. */
 export function message(ws: tilo.Workspace, path: string): Message {
@@ -349,7 +364,20 @@ export interface Draft extends tilo.Resource {
   lgrwf5yf: string;  // send_at
   h2nvr2op: boolean;  // recalled
   em6rrmae: string;  // invitation
+  "2tq2zegc": unknown[];  // attachments
   ozukvva2: string;  // set_aside
+  /** Takes a file along with the message: one the person picks, or one an agent hands over. A message takes up to sixteen files of up to 32 MB each, as mail servers take them. */
+  attach(args: {
+    file: unknown;
+  }): Promise<void>;
+  /** Runs `attach` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  attachMany(items: AttachArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Leaves a file the message was to take along behind. */
+  detach(args: {
+    name: string;
+  }): Promise<void>;
+  /** Runs `detach` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  detachMany(items: DetachArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Brings a message back to the outbox: it was sent to go at a moment still to come, and it is a draft again, whatever the moment. */
   cancel_later(): Promise<void>;
   /** Sends the message at a moment instead of now: it waits in the outbox until then, as the person's hold makes a message wait, and goes with no window open. Until it goes it can be taken back, and bringing it back leaves it a draft. */
@@ -378,7 +406,7 @@ export interface Draft extends tilo.Resource {
 
 /** The actions `Draft` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const DRAFT_ACTIONS = ["cancel_later", "send_later", "send_in_the_morning", "send_from", "send_fromMany", "send_as", "send_asMany", "send", "undo_send"] as const;
+export const DRAFT_ACTIONS = ["attach", "attachMany", "detach", "detachMany", "cancel_later", "send_later", "send_in_the_morning", "send_from", "send_fromMany", "send_as", "send_asMany", "send", "undo_send"] as const;
 
 /** The `tl.so.tilo.mail.Draft` kind at `path`. */
 export function draft(ws: tilo.Workspace, path: string): Draft {
@@ -407,7 +435,7 @@ export interface Mail extends tilo.Resource {
     body: string;
     calendar_ics: string;
   }): Promise<Draft>;
-  /** Takes in a message that reached the workspace from outside its accounts' servers: one moved in from another mail program (`tilo migrate`), or handed over through the API. It is kept with the mail held outside the accounts, in the conversation it belongs to (`conversation`, the Message-ID the conversation began with) and the folder it was in, read or not. `from` is the sender as a header writes it (`Ada Lovelace <ada@example.com>`), and `original` the content reference of the message as it was sent, less its large parts: `parts` says where each of those stands in it and which pieces of content it is in, one JSON text each (`{'at': 120, 'size': 4096, 'pieces': ['tilo.content:…']}`). `attachments` names the files it carries. A message already held under its Message-ID is answered as it is, so delivering it again keeps it once. */
+  /** Takes in a message that reached the workspace from outside its accounts' servers: one moved in from another mail program (`tilo migrate`), or handed over through the API. It is kept with the mail held outside the accounts, in the conversation it belongs to (`conversation`, the Message-ID the conversation began with) and the folder it was in, read or not. `from` is the sender as a header writes it (`Ada Lovelace <ada@example.com>`), and `original` the content reference of the message as it was sent, less its large parts: `parts` says where each of those stands in it and which pieces of content it is in, one JSON text each (`{'at': 120, 'size': 4096, 'pieces': ['tilo.content:…']}`). `attachments` are the files it carries, each content the workspace holds. A message already held under its Message-ID is answered as it is, so delivering it again keeps it once. */
   deliver_message(args: {
     from: string;
     subject?: string;
@@ -421,7 +449,7 @@ export interface Mail extends tilo.Resource {
     message_id?: string;
     original?: string;
     parts?: string[];
-    attachments?: string[];
+    attachments?: unknown[];
   }): Promise<Message>;
   /** Opens a message kept as a file a mail program writes (`.eml`, a single message of an mbox, or Apple Mail's `.emlx`): its headers are read, and it is kept with the mail held outside the accounts, read, in the inbox. The same file opened again is the message already kept. */
   open_message_file(args: {

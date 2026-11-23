@@ -29319,7 +29319,7 @@
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Sends the conversation's newest message on, with its sender and what it says."
+        "description": "Sends the conversation's newest message on, with its sender, what it says and the files it\ncame with."
       },
       "tl.so.tilo.mail.Thread.archive.Arguments": {
         "type": "object",
@@ -29544,9 +29544,9 @@
               "cc",
               "snippet",
               "body",
+              "html",
               "message_id",
               "references",
-              "attachments",
               "mailbox",
               "original",
               "parts"
@@ -29623,7 +29623,19 @@
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Sends one message of the conversation on, with its sender, when and what it says."
+        "description": "Sends one message of the conversation on, with its sender, when and what it says, and the\nfiles it came with."
+      },
+      "tl.so.tilo.mail.Message.attachment.Arguments": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "description": "One file the message came with, as a file of its own: what Save puts in Files, and what an\nagent reads or hands another app."
       },
       "tl.so.tilo.mail.Draft.$create.Arguments": {
         "type": "object",
@@ -29686,6 +29698,28 @@
         "properties": {},
         "required": [],
         "description": "What the outside service said is taken in."
+      },
+      "tl.so.tilo.mail.Draft.attach.Arguments": {
+        "type": "object",
+        "properties": {
+          "file": {}
+        },
+        "required": [
+          "file"
+        ],
+        "description": "Takes a file along with the message: one the person picks, or one an agent hands over. A\nmessage takes up to sixteen files of up to 32 MB each, as mail servers take them."
+      },
+      "tl.so.tilo.mail.Draft.detach.Arguments": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "description": "Leaves a file the message was to take along behind."
       },
       "tl.so.tilo.mail.Draft.cancel_later.Arguments": {
         "type": "object",
@@ -29910,16 +29944,14 @@
             "type": "array"
           },
           "attachments": {
-            "items": {
-              "type": "string"
-            },
+            "items": {},
             "type": "array"
           }
         },
         "required": [
           "from"
         ],
-        "description": "Takes in a message that reached the workspace from outside its accounts' servers: one moved\nin from another mail program (`tilo migrate`), or handed over through the API. It is kept\nwith the mail held outside the accounts, in the conversation it belongs to (`conversation`,\nthe Message-ID the conversation began with) and the folder it was in, read or not. `from` is\nthe sender as a header writes it (`Ada Lovelace <ada@example.com>`), and `original` the\ncontent reference of the message as it was sent, less its large parts: `parts` says where\neach of those stands in it and which pieces of content it is in, one JSON text each\n(`{\"at\": 120, \"size\": 4096, \"pieces\": [\"tilo.content:…\"]}`). `attachments` names the\nfiles it carries. A message already held under its Message-ID is answered as it is, so\ndelivering it again keeps it once."
+        "description": "Takes in a message that reached the workspace from outside its accounts' servers: one moved\nin from another mail program (`tilo migrate`), or handed over through the API. It is kept\nwith the mail held outside the accounts, in the conversation it belongs to (`conversation`,\nthe Message-ID the conversation began with) and the folder it was in, read or not. `from` is\nthe sender as a header writes it (`Ada Lovelace <ada@example.com>`), and `original` the\ncontent reference of the message as it was sent, less its large parts: `parts` says where\neach of those stands in it and which pieces of content it is in, one JSON text each\n(`{\"at\": 120, \"size\": 4096, \"pieces\": [\"tilo.content:…\"]}`). `attachments` are the files it\ncarries, each content the workspace holds. A message already held under its Message-ID is\nanswered as it is, so delivering it again keeps it once."
       },
       "tl.so.tilo.mail.Mail.open_message_file.Arguments": {
         "type": "object",
@@ -41422,6 +41454,12 @@
     },
     {
       "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Message",
+      "action": "attachment",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Message.attachment.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
       "resource": "tl.so.tilo.mail.Draft",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Draft.$create.Arguments"
@@ -41443,6 +41481,18 @@
       "resource": "tl.so.tilo.mail.Draft",
       "action": "$origin",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Draft.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Draft",
+      "action": "attach",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Draft.attach.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Draft",
+      "action": "detach",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Draft.detach.Arguments"
     },
     {
       "app": "so.tilo.mail",
