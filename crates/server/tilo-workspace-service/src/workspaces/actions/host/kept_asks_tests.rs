@@ -2013,11 +2013,11 @@ mod agents_kinds {
         server.shutdown().await;
     }
 
-    struct RecordingCarrier {
+    struct RecordingCarries {
         seen: Arc<Mutex<Vec<(String, crate::agents::Answered)>>>,
     }
 
-    impl crate::agents::Carries for RecordingCarrier {
+    impl crate::agents::Carries for RecordingCarries {
         fn carry<'a>(
             &'a self,
             ask: &'a crate::workspaces::person_asking::kept_asks::KeptAsk,
@@ -2166,7 +2166,7 @@ mod agents_kinds {
         );
         agents.carries(
             "test-carrier",
-            Arc::new(RecordingCarrier {
+            Arc::new(RecordingCarries {
                 seen: Arc::clone(&carried),
             }),
         );
