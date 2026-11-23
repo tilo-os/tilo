@@ -667,3 +667,37 @@ fn the_overviews_ground_is_the_wallpapers_and_not_the_fallback() {
         "the overview draws the shell's wallpaper, and the one it reads is the backdrop's"
     );
 }
+
+/// The strips ribbon's own controls are named where they stand: the ribbon at rest offers New
+/// strip by name, and the labels Super+S opens name each strip, so a harness or an agent presses
+/// the one it sees rather than a guessed point.
+#[test]
+fn the_strips_ribbon_names_each_strip_where_it_stands() {
+    en();
+    let (chrome, _handle) = chrome_over_a_shell();
+    let mut harness = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        chrome,
+        (1280, 800),
+        ui::theme::Theme::default(),
+    );
+    harness.relayout();
+    assert!(
+        harness
+            .targets()
+            .keys()
+            .any(|name| name.starts_with("strip_switcher")),
+        "the ribbon is named at rest: {:?}",
+        harness.targets().keys().collect::<Vec<_>>()
+    );
+    harness
+        .root_mut::<DesktopChrome>()
+        .fixed_shortcut(ui::shortcut_table::FixedAction::StripSwitcher);
+    harness.relayout();
+    let targets = harness.targets();
+    assert!(
+        targets.contains_key("strip_switcher.strip.1"),
+        "the open ribbon names its strip: {:?}",
+        targets.keys().collect::<Vec<_>>()
+    );
+}

@@ -2100,3 +2100,44 @@ fn enter_on_the_row_search_put_first_acts_at_once() {
     until(&mut session, |_| !asked.invoked.borrow().is_empty());
     assert_eq!(asked.invoked.borrow()[0].0.address.action, "show-tasks");
 }
+
+/// With the shell's search card over the windows, the compositor knows the person types into its
+/// field: the input method serves it, a caret is published where it stands, and a touch on the
+/// glass asks for the on-screen keyboard as it does over any field.
+#[test]
+fn the_searches_field_takes_typing_and_asks_for_the_glass_keyboard() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = with_slow_keys();
+    open(&mut session, true);
+    await_search(&mut session, None);
+    let entry = session.compositor().text_entry();
+    assert!(entry.wants_typing, "the search's own field takes typing");
+    assert!(
+        session.compositor().text_caret().is_some(),
+        "the caret the search draws is where the person types"
+    );
+    // A key first, then a touch on the caret the field draws: the keyboard belongs over the
+    // field now, and the touch stays in the card rather than dismissing it.
+    type_key(&mut session, 46);
+    let caret = session
+        .compositor()
+        .text_caret()
+        .expect("the search field's caret");
+    session
+        .compositor()
+        .input(InputEvent::TouchDown {
+            slot: 0,
+            x: caret.x + caret.width / 2.0,
+            y: caret.y + caret.height / 2.0,
+        })
+        .expect("touch");
+    session.step(Duration::from_millis(16)).expect("step");
+    assert!(
+        find(&session.resources(), SEARCH_RESOURCE).is_some(),
+        "the touch on the field keeps the search up"
+    );
+    let entry = session.compositor().text_entry();
+    assert!(entry.wants_typing, "the search's field still takes typing");
+    assert!(entry.on_the_glass, "the last typing was on the glass");
+    assert!(entry.touch_available, "the glass can be typed on again");
+}

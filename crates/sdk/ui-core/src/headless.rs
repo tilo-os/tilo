@@ -2902,10 +2902,15 @@ impl FrameHarness {
     /// The IME window of the current keyboard owner: the `ime` of [`Self::frame_output`] without
     /// building the whole inspection tree.
     pub fn ime_window(&self) -> Option<crate::ime::ImeWindowState> {
-        self.caller_palette
-            .palette
-            .as_ref()
-            .and_then(|p| crate::ime::ImeWindowState::from_widget(p.presentation_widgets().0))
+        // A field the root presents without the tree's focus reaching it (the shell's search
+        // card) is the one the person types into while it stands over the windows.
+        self.root
+            .ime_field()
+            .or_else(|| {
+                self.caller_palette.palette.as_ref().and_then(|p| {
+                    crate::ime::ImeWindowState::from_widget(p.presentation_widgets().0)
+                })
+            })
             .or_else(|| {
                 self.focused.and_then(|id| {
                     self.inspect_node(id, crate::ime::ImeWindowState::from_widget)
@@ -5380,10 +5385,27 @@ impl FrameHarness {
                 .is_ok_and(|access| access.action_target.as_deref() == Some(target))
         });
         let targets = self.named_target_nodes();
-        let node = targets
-            .get(name)
-            .copied()
-            .ok_or_else(|| format!("no addressable widget named {name:?}"))?;
+        let Some(node) = targets.get(name).copied() else {
+            // A name a widget paints into its own rect (a strip's label, a window's tab) is no
+            // widget of its own: pressing it is the press the person makes at the rect it paints.
+            if semantic_target.is_none()
+                && let Some(rect) = self.targets().get(name).copied()
+                && rect.area() > 0.0
+            {
+                return match action {
+                    SemanticAction::Activate | SemanticAction::ToggleCheck => {
+                        let center = rect.center();
+                        self.click_at(center.x, center.y);
+                        self.frame_for_input();
+                        Ok(())
+                    }
+                    _ => Err(format!(
+                        "widget {name:?} does not support semantic action {action:?}"
+                    )),
+                };
+            }
+            return Err(format!("no addressable widget named {name:?}"));
+        };
         if self.tree().history_owns(node) {
             let handled = {
                 let _framework_frame = FrameworkInputFrame::new(&self.framework_input, true);
@@ -12930,6 +12952,10 @@ mod replaced_composition_tests;
 #[cfg(test)]
 #[path = "headless/undrawn_measure_tests.rs"]
 mod undrawn_measure_tests;
+
+#[cfg(test)]
+#[path = "headless/named_target_tests.rs"]
+mod named_target_tests;
 
 #[cfg(test)]
 #[path = "headless/owner_background_work.rs"]

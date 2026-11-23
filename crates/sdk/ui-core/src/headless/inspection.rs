@@ -161,6 +161,17 @@ fn collect_targets_called(
             .unwrap_or_else(|| w.get_rect());
         out.insert(id.to_string(), rect);
     }
+    // Affordances a widget paints into its own rect instead of composing children of their own:
+    // a strip's labels, a window's tabs, a launchpad card. They are named here where they stand,
+    // so a tool that reads the shell's targets finds the chip it sees; one whose rect is empty is
+    // not on screen and is not named. A name a widget already answers to keeps its own place.
+    for (name, rect) in w.test_rects() {
+        if rect.area() <= 0.0 {
+            continue;
+        }
+        out.entry(format!("{path}/{name}")).or_insert(rect);
+        out.entry(name).or_insert(rect);
+    }
     let mut child_counts: HashMap<String, usize> = HashMap::new();
     for (index, child) in w.children().into_iter().enumerate() {
         collect_targets_called(

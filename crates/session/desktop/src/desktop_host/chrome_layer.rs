@@ -2877,4 +2877,24 @@ impl Widget for DesktopChrome {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+
+    /// The strip navigator's own affordances — the ribbon, each strip's label while the labels
+    /// are open, New strip and a strip's Rename and Remove. The navigator paints them into its
+    /// own rect instead of composing children, so they are named here for the harnesses and
+    /// agents that press what they see.
+    fn test_rects(&self) -> Vec<(String, Rect)> {
+        self.navigator.test_rects(&self.navigator_frame)
+    }
+
+    /// The shell's search field while its card stands over the windows. The card takes the keys
+    /// by the shell's own rule, so no focus in the tree reaches the field: named here, the input
+    /// method serves it (and the on-screen keyboard shows for it) as it serves any focused field.
+    fn ime_field(&self) -> Option<ui::ime::ImeWindowState> {
+        if !self.search.is_open() {
+            return None;
+        }
+        let search = self.handle.search_palette();
+        let search = search.borrow();
+        ui::ime::ImeWindowState::from_widget(search.palette().field_widget())
+    }
 }

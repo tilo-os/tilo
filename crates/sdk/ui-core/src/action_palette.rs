@@ -2625,6 +2625,13 @@ impl ActionPalette {
         }
     }
 
+    /// The widget of the field the palette types into. A host that presents the card outside its
+    /// own tree names it to the input method, which serves it as a focused field's.
+    #[must_use]
+    pub fn field_widget(&self) -> &dyn Widget {
+        self.presentation_widgets().0
+    }
+
     pub(crate) fn perform_host_semantic(
         &mut self,
         results_owner: bool,
