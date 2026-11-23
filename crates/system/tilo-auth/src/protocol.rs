@@ -144,51 +144,6 @@ mod tests {
     tilo_test_env::scenario! {
         fn the_protocol_keeps_its_wire_form;
 
-        phase requests_and_replies_have_their_documented_wire_form;
-        {
-            let request: Request =
-                serde_json::from_str(r#"{"op":"verify","user":"ada","secret":"123456"}"#).unwrap();
-            assert!(matches!(request, Request::Verify { ref user, ref secret }
-                if user == "ada" && secret.as_str() == "123456"));
-            assert!(matches!(
-                serde_json::from_str::<Request>(r#"{"op":"pending-sign-in"}"#).unwrap(),
-                Request::PendingSignIn
-            ));
-            assert!(matches!(
-                serde_json::from_str::<Request>(r#"{"op":"sign-in-comforts"}"#).unwrap(),
-                Request::SignInComforts
-            ));
-            assert!(matches!(
-                serde_json::from_str::<Request>(
-                    r#"{"op":"set-sign-in-comforts","comforts":{"screen_reader":true}}"#
-                )
-                .unwrap(),
-                Request::SetSignInComforts { ref comforts }
-                    if comforts.get("screen_reader") == Some(&serde_json::Value::Bool(true))
-            ));
-            assert_eq!(
-                serde_json::to_string(&Reply {
-                    tries_left: Some(9),
-                    retry_in_s: Some(7200),
-                    ..Reply::refused(Refusal::Wrong)
-                })
-                .unwrap(),
-                r#"{"ok":false,"error":"wrong","tries_left":9,"retry_in_s":7200}"#
-            );
-            assert_eq!(
-                serde_json::to_string(&Reply::success()).unwrap(),
-                r#"{"ok":true}"#
-            );
-            assert_eq!(
-                serde_json::to_string(&Some(PendingSignIn { name: "ada".into() })).unwrap(),
-                r#"{"name":"ada"}"#
-            );
-            assert_eq!(
-                serde_json::to_string(&None::<PendingSignIn>).unwrap(),
-                "null"
-            );
-        }
-
         phase every_request_and_refusal_keeps_its_wire_name;
         // `pam_tilo`, the login screen and the boot sign-in write and read these
         // lines by hand, so every name is pinned on the daemon's side too.
@@ -262,6 +217,29 @@ mod tests {
                 serde_json::to_string(&SecretKind::Password).unwrap(),
                 r#""password""#
             );
+            let request: Request =
+                serde_json::from_str(r#"{"op":"set-sign-in-comforts","comforts":{"screen_reader":true}}"#)
+                    .unwrap();
+            assert!(matches!(request, Request::SetSignInComforts { ref comforts }
+                if comforts.get("screen_reader") == Some(&serde_json::Value::Bool(true))));
+            assert_eq!(
+                serde_json::to_string(&Reply {
+                    tries_left: Some(9),
+                    retry_in_s: Some(7200),
+                    ..Reply::refused(Refusal::Wrong)
+                })
+                .unwrap(),
+                r#"{"ok":false,"error":"wrong","tries_left":9,"retry_in_s":7200}"#
+            );
+            assert_eq!(
+                serde_json::to_string(&Reply::success()).unwrap(),
+                r#"{"ok":true}"#
+            );
+            assert_eq!(
+                serde_json::to_string(&Some(PendingSignIn { name: "ada".into() })).unwrap(),
+                r#"{"name":"ada"}"#
+            );
+            assert_eq!(serde_json::to_string(&None::<PendingSignIn>).unwrap(), "null");
         }
     }
 

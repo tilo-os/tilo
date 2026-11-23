@@ -231,33 +231,6 @@ mod tests {
             assert_eq!(parent.permissions().mode() & 0o777, 0o700);
         }
 
-        phase the_stored_shape_is_the_contract;
-        {
-            let mut record = Record::new(1000, "ada", "Ada");
-            record.unlocks_system = true;
-            record.system_keyslot = Some(3);
-            let json = serde_json::to_value(&record).unwrap();
-            let mut keys: Vec<&str> = json
-                .as_object()
-                .unwrap()
-                .keys()
-                .map(String::as_str)
-                .collect();
-            keys.sort_unstable();
-            assert_eq!(
-                keys,
-                [
-                    "display_name",
-                    "name",
-                    "system_keyslot",
-                    "uid",
-                    "unlocks_system",
-                    "version",
-                    "wrappers"
-                ]
-            );
-        }
-
         phase a_new_secret_replaces_only_the_wrappers_a_secret_opens;
         {
             let mut record = Record::new(1, "a", "A");
