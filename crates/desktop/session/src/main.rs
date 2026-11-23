@@ -1205,6 +1205,32 @@ fn start_command(
 #[cfg(target_os = "linux")]
 type Following = Vec<Box<dyn std::any::Any>>;
 
+/// The image model's work as the app that shows the pictures asks it (`engine.call`): a
+/// sentence about a picture, the words in it, the objects and pets, or the faces it groups.
+#[cfg(target_os = "linux")]
+struct ImageModelEngine(tilo_vision_service::ImageModelWork);
+
+#[cfg(target_os = "linux")]
+impl tilolang_tilo::engine::Provider for ImageModelEngine {
+    fn call(&self, op: &str, input: &str) -> Result<String, String> {
+        self.0.call(op, input)
+    }
+
+    fn start(&self, op: &str, _input: &str) -> Result<String, String> {
+        Err(format!(
+            "`{op}` is answered now: the image model runs no job for this app"
+        ))
+    }
+
+    fn status(&self, job: &str) -> Result<String, String> {
+        Err(format!("no job `{job}` runs on this device"))
+    }
+
+    fn cancel(&self, _job: &str) -> bool {
+        false
+    }
+}
+
 /// The system services the session hosts, on this device's own daemons,
 /// and what keeps their readings following the device. A session in a
 /// window of another desktop hosts only the settings service: the machine's
@@ -1226,14 +1252,23 @@ fn services(
     // The device's image model, and the library analysis whose words join each picture's entry in
     // the system index. The service holds its own model-gateway connection (as `so.tilo.vision`,
     // the package it answers as) and finds its pictures through the index search reads.
-    services.push(Box::new(tilo_vision_service::VisionService::new(
+    let vision = tilo_vision_service::VisionService::new(
         std::sync::Arc::new(tilo_vision_service::LocalVision::local()),
         std::sync::Arc::new(tilo_vision_service::index::VisionIndexSource(
             std::sync::Arc::clone(&content),
         )),
         std::sync::Arc::new(tilo_vision_service::index::VisionIndexSink(content)),
         wake.handle(),
-    )));
+    );
+    // The model's work, which Photos asks the session for by name (`engine.call`): the app
+    // reads the JSON answer into its own records, and no other app asks it.
+    tilolang_tilo::engine::register(
+        tilo_vision_service::PHOTOS_APP,
+        std::sync::Arc::new(ImageModelEngine(tilo_vision_service::ImageModelWork::of(
+            &vision,
+        ))),
+    );
+    services.push(Box::new(vision));
     // What this session ran into: the list as the resource's reading and each record's text as its
     // own, which Settings reads as an app does.
     services.push(Box::new(tilo_crash_reports::CrashReports::new()));

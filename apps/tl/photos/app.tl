@@ -62,6 +62,22 @@ type Person (untitled: "Person") {
     photos: Set<Text>
 }
 
+/// A picture asked of the device's image model: its address in the content store.
+type AskedPicture {
+    image: Text
+}
+
+/// What the device's image model says a picture shows: a sentence.
+type Description {
+    description: Text
+}
+
+/// The objects and pets the device's image model finds in a picture.
+type Findings {
+    objects: List<Text>
+    pets: List<Text>
+}
+
 /// The workspace's photo library: every photo, the albums people made of them, and the people
 /// the photos show.
 type Library {
@@ -217,6 +233,40 @@ action rotate_left(p: Photo) uses image (icon: .rotate_ccw, label: "Rotate left"
 action reset_edits(p: Photo) (label: "Reset edits", group: "Edits") {
     p.rotation = 0
     p.edited = ""
+}
+
+/// What a picture shows, in a sentence, as the device's image model reads it: the sentence the
+/// library's details show and search finds. The work is the device's own, asked of this session
+/// on the app's behalf, so the app never runs a model itself.
+action describe_photo(p: Photo) (icon: .sparkles, label: "Describe", group: "Details") {
+    let asked = json.encode(AskedPicture(image: shown_picture(p)))
+    match engine.call("describe", asked) {
+        .ok(text) => match json.decode<Description>(text) {
+            .ok(found) => p.description = found.description
+            .err(_) => {}
+        },
+        .err(_) => {}
+    }
+}
+
+/// The objects and pets the device's image model finds in a picture, added to what the photo
+/// already lists.
+action tag_photo(p: Photo) (icon: .tag, label: "Tags", group: "Details") {
+    let asked = json.encode(AskedPicture(image: shown_picture(p)))
+    match engine.call("tags", asked) {
+        .ok(text) => match json.decode<Findings>(text) {
+            .ok(found) => {
+                for word in found.objects {
+                    p.objects.add(word)
+                }
+                for word in found.pets {
+                    p.pets.add(word)
+                }
+            }
+            .err(_) => {}
+        },
+        .err(_) => {}
+    }
 }
 
 /// Keeps the part of the photograph its person chose: `x`, `y`, `width` and `height` are
@@ -927,6 +977,12 @@ view viewer(
             }
             ui.Button("Crop", icon: .crop) {
                 on press: set(cropping, true)
+            }
+            ui.Button("Describe", icon: .sparkles) {
+                on press: describe_photo(p)
+            }
+            ui.Button("Tags", icon: .tag) {
+                on press: tag_photo(p)
             }
             if p.edited != "" {
                 ui.Button("Reset edits", icon: .undo_2) {
