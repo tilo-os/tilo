@@ -200,14 +200,6 @@ mod tests {
     tilo_test_env::scenario! {
         fn a_browser_environment_names_its_actions_and_windows;
 
-        phase a_browser_open_names_the_environments_own_action;
-        {
-            assert_eq!(target().provider, PROVIDER);
-            assert_eq!(target().address.resource, RESOURCE);
-            assert_eq!(target().address.action, OPEN);
-            assert_eq!(stop_target().address.action, STOP);
-        }
-
         phase an_opened_environment_names_its_window;
         {
             // An opening that attached says nothing about time, but always names

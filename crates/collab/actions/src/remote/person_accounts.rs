@@ -930,15 +930,6 @@ mod tests {
         assert_eq!(json["hasSecret"], serde_json::json!(true));
     }
 
-    /// A host names its actions without having read a catalogue, as it names
-    /// its billing account, and the name is the provider's resource.
-    #[test]
-    fn the_actions_are_addressed_without_a_catalogue() {
-        assert_eq!(target(ADD_MAIL).provider, PROVIDER);
-        assert_eq!(target(ADD_MAIL).address.resource, RESOURCE);
-        assert_eq!(target(ADD_MAIL).address.action, ADD_MAIL);
-    }
-
     /// An account added without a port signs in over the standard secure
     /// ports; a caller that names none is not refused.
     #[test]

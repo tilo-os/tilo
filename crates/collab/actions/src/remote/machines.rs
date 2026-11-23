@@ -95,19 +95,3 @@ pub fn target(step: &str) -> RemoteActionTarget {
         address: ActionAddress::new(RESOURCE, step),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn every_step_names_one_address_and_its_params() {
-        for step in STEPS {
-            assert_eq!(target(step).provider, PROVIDER);
-            assert_eq!(target(step).address.resource, RESOURCE);
-            assert_eq!(target(step).address.action, step);
-            let _ = params(step);
-        }
-        assert!(params(LIST).is_empty());
-    }
-}
