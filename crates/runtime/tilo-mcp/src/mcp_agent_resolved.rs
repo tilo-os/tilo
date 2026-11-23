@@ -137,6 +137,22 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 "invalid_arguments: name the action: {path}#<action>; tilo_ls {path} lists them"
             )
         })?;
+        // An app that is not running declares its actions in the surface its package
+        // publishes: a name none of them has is no action of it, and nothing starts for it.
+        // Answered here, the caller reads the refusal at once instead of after a launch.
+        if below_app(&parsed).is_empty()
+            && !starts_app(&action)
+            && let Ok(AppRef::Installed { app_id, .. }) = self.tree.app_ref(&app_of(&parsed)).await
+            && self.declares_action(&app_id, &action).await == Some(false)
+        {
+            let name = app_of(&parsed);
+            return Err(Failure {
+                message: format!(
+                    "unknown_action: {name} has no action {action}; tilo_ls {name} lists them"
+                ),
+                host: Some(tilo_actions::remote::ActionCallError::UnknownAction),
+            });
+        }
         // The app is looked up once: resolving the path in it does not ask
         // again which apps run.
         let Some((app_id, provider, pinned)) = self
@@ -218,6 +234,37 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         self.acted_in(&resolved.provider, &resolved.app_id);
         self.resolve_in_target(&parsed, &action, resolved, arguments, invocation, wait_ms)
             .await
+    }
+
+    /// Whether the installed app `app_id` declares `action` in the surface its package
+    /// publishes: the actions its resources offer, and those that open a window. `None` when
+    /// the workspace lists no surface for it here, or one that does not read.
+    async fn declares_action(&self, app_id: &str, action: &str) -> Option<bool> {
+        let installed = self.tree.installed().await.ok()?;
+        let surface = installed
+            .iter()
+            .find(|app| app.app_id == app_id)?
+            .surface
+            .as_deref()?;
+        let file: Value = serde_json::from_str(surface).ok()?;
+        let resources = file.get("resources")?.as_array()?;
+        Some(resources.iter().any(|resource| {
+            let shows = resource
+                .get("shows")
+                .and_then(Value::as_array)
+                .is_some_and(|shows| shows.iter().any(|show| show.as_str() == Some(action)));
+            shows
+                || resource
+                    .get("verbs")
+                    .and_then(Value::as_array)
+                    .is_some_and(|verbs| {
+                        verbs.iter().any(|verb| {
+                            ["id", "name"].iter().any(|field| {
+                                verb.get(*field).and_then(Value::as_str) == Some(action)
+                            })
+                        })
+                    })
+        }))
     }
 
     /// The action `action` in the target `resolved`: the action and the path
