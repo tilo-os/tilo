@@ -117,20 +117,35 @@ impl Kind for Home {
     fn package(cx: &Context<Self>, directory: &Path) -> io::Result<(PathBuf, String)> {
         let receipt =
             continuation::private_file::<Self>(&directory.join("expectation.json"), 16 * 1024)?;
-        let expected =
-            serde_json::from_slice::<prepared_setup_model::stored::StoredHomeExpectation>(&receipt)
-                .map_err(|_| failure())?
-                .0;
-        if !expected.valid() || expected.setup_binding != cx.declaration.setup_binding {
+        let receipt: serde_json::Value = serde_json::from_slice(&receipt).map_err(|_| failure())?;
+        let operation = receipt
+            .get("operation")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(failure)?;
+        let filename = receipt
+            .get("filename")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(failure)?;
+        if operation.is_empty()
+            || operation.len() > 96
+            || !operation
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            || filename != format!("home-{operation}.sealed")
+            || receipt
+                .get("setup_binding")
+                .and_then(serde_json::Value::as_str)
+                != Some(cx.declaration.setup_binding.as_str())
+        {
             return Err(failure());
         }
         // Refuse missing/redirected files before launching. The helper validates
         // exact ciphertext, limits and authenticated footer.
         let pin = crate::migration::directory(directory)?;
         crate::migration::private(&pin)?;
-        let package = directory.join(&expected.filename);
-        continuation::private_package::<Self>(&package, Some(expected.sealed_bytes))?;
-        Ok((package, expected.operation))
+        let package = directory.join(filename);
+        continuation::private_package::<Self>(&package, None)?;
+        Ok((package, operation.to_owned()))
     }
     fn settle(_: &Context<Self>, event: HelperEvent) -> Settled {
         match event {
@@ -357,7 +372,7 @@ mod tests {
             assert_eq!(std::fs::read_dir(elsewhere.path()).unwrap().count(), 0);
         }
 
-        phase portable_home_expectation_uses_shared_wire_shape_and_refuses_unknown_fields;
+        phase portable_home_expectation_accepts_kind_flat_and_extra_keys;
         {
             use std::os::unix::fs::PermissionsExt;
             let mut env = tilo_test_env::ScopedEnv::new();
@@ -393,16 +408,50 @@ mod tests {
                 std::fs::write(&file, bytes).unwrap();
                 std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600)).unwrap();
             }
-            let pending = Pending::open(home.path().into(), identity, declaration).unwrap();
+            let pending = Pending::open(home.path().into(), identity, declaration.clone()).unwrap();
             let (package, operation) = Home::package(pending.context(), &directory).unwrap();
             assert_eq!(package, directory.join(&expectation.filename));
             assert_eq!(operation, "home_op-1");
 
-            let mut with_unknown = serde_json::to_value(&expectation).unwrap();
-            with_unknown["unexpected"] = serde_json::json!(true);
+            // Earlier flat shape and extra keys remain accepted, as on main;
+            // the helper owns exact ciphertext, bounds and footer validation.
+            let flat = serde_json::json!({
+                "schema": 1,
+                "operation": expectation.operation,
+                "purpose": "home",
+                "filename": expectation.filename,
+                "setup_binding": declaration.setup_binding,
+                "sealed_bytes": 999,
+                "plaintext_bytes": 16,
+                "entries": 2,
+                "runtime_sockets": 0,
+                "ciphertext_sha256": vec![1u8; 32],
+                "limits": {"plaintext_bytes": 1024, "entries": 16, "metadata_bytes": 1024},
+            });
             std::fs::write(
                 directory.join("expectation.json"),
-                serde_json::to_vec(&with_unknown).unwrap(),
+                serde_json::to_vec(&flat).unwrap(),
+            )
+            .unwrap();
+            let (package, operation) = Home::package(pending.context(), &directory).unwrap();
+            assert_eq!(package, directory.join(&expectation.filename));
+            assert_eq!(operation, "home_op-1");
+
+            let mut with_extra = serde_json::to_value(&expectation).unwrap();
+            with_extra["unexpected"] = serde_json::json!(true);
+            std::fs::write(
+                directory.join("expectation.json"),
+                serde_json::to_vec(&with_extra).unwrap(),
+            )
+            .unwrap();
+            let (package, operation) = Home::package(pending.context(), &directory).unwrap();
+            assert_eq!(package, directory.join(&expectation.filename));
+            assert_eq!(operation, "home_op-1");
+
+            with_extra["setup_binding"] = serde_json::json!("other-binding");
+            std::fs::write(
+                directory.join("expectation.json"),
+                serde_json::to_vec(&with_extra).unwrap(),
             )
             .unwrap();
             assert!(Home::package(pending.context(), &directory).is_err());
