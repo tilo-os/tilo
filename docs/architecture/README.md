@@ -4,7 +4,8 @@ Tilo is a desktop, a set of apps and the system underneath them, built so that
 people and their devices work on the same things together. This page is the
 map: the model every part follows, and where each part lives in the code.
 [`workspace.md`](workspace.md) is the full specification of the model; the
-[code map](../codemap.md) lists every crate.
+[code map](../codemap.md) lists every crate. [`flows.md`](flows.md) lists the uses of
+Tilo that must work end to end.
 
 ## The model
 
