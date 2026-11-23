@@ -275,9 +275,12 @@ impl Session {
         self.windows.step(&mut self.compositor, now);
         // The overview's windows fly between the session and the overview: its panel names them, the
         // session says where each stands, and the compositor draws their own pixels.
-        self.shared
-            .overview
-            .step(&self.shared.handle, &self.shared.desktop, now);
+        self.shared.overview.step(
+            &self.shared.handle,
+            &self.shared.desktop,
+            now,
+            self.compositor.frames_presented(),
+        );
         // The session this pass laid out is published before it is drawn: whoever reads the session's
         // state reads the session the frame about to be presented shows, not the one before it.
         self.control
