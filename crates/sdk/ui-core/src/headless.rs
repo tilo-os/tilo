@@ -2529,6 +2529,10 @@ impl FrameHarness {
                 .into(),
                 serde_json::Value::from(preset.id()),
             );
+            #[expect(
+                clippy::expect_used,
+                reason = "a capture's own settings document that cannot be written is a broken capture"
+            )]
             settings
                 .update_section(crate::theme::APPEARANCE_SECTION, section)
                 .expect("a capture stores the theme it draws in");
