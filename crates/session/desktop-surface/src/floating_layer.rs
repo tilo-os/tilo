@@ -509,7 +509,8 @@ impl FloatingLayer {
     }
 
     /// The layer as assistive technology reads it: one group per card, named by the activity's
-    /// title, with its reading and its controls.
+    /// title, with its reading and its controls. Every control carries the place it is drawn, so a
+    /// screen reader and an agent can reach it where the card puts it.
     #[must_use]
     pub fn accessibility(&self) -> Option<AccessNode> {
         self.drawn().next()?;
@@ -517,23 +518,28 @@ impl FloatingLayer {
             .drawn()
             .map(|card| {
                 let summary = &card.summary;
+                let rect = self.dragged(card);
+                let parts = card_parts(rect, summary);
                 let mut children = vec![
                     AccessNode::new(Role::StaticText)
                         .with_name(summary.title.clone())
                         .with_value(summary.value.clone()),
                 ];
                 for control in summary.action_controls() {
-                    children.push(
-                        AccessNode::new(Role::Button)
-                            .with_name(control.label.clone())
-                            .with_action_target(target(card, &control.id))
-                            .with_state(AccessState::new().focusable(true)),
-                    );
+                    let mut node = AccessNode::new(Role::Button)
+                        .with_name(control.label.clone())
+                        .with_action_target(target(card, &control.id))
+                        .with_state(AccessState::new().focusable(true));
+                    if let Some((_, at)) = parts.controls.iter().find(|(id, _)| *id == control.id) {
+                        node = node.with_bounds(*at);
+                    }
+                    children.push(node);
                 }
                 children.push(
                     AccessNode::new(Role::Button)
                         .with_name(tilo_session_core::desktop::i18n::t("activity-collapse"))
-                        .with_action_target(target(card, "collapse")),
+                        .with_action_target(target(card, "collapse"))
+                        .with_bounds(parts.collapse),
                 );
                 children.push(
                     AccessNode::new(Role::Button)
@@ -541,12 +547,13 @@ impl FloatingLayer {
                             || tilo_session_core::desktop::i18n::t("activity-close"),
                             |close| close.label.clone(),
                         ))
-                        .with_action_target(target(card, "close")),
+                        .with_action_target(target(card, "close"))
+                        .with_bounds(parts.close),
                 );
                 AccessNode::new(Role::Group)
                     .with_name(summary.title.clone())
                     .with_description(summary.value.clone())
-                    .with_bounds(card.rect)
+                    .with_bounds(rect)
                     .with_children(children)
             })
             .collect();
@@ -645,6 +652,18 @@ mod tests {
                 "End",
                 ControlKind::Close,
             ))
+    }
+
+    /// Every control in `node`'s subtree that answers an action but says no
+    /// place it is drawn: one a session cannot offer to a screen reader or an
+    /// agent.
+    fn unplaced(node: &AccessNode, out: &mut Vec<String>) {
+        if node.action_target.is_some() && node.bounds.is_none() {
+            out.push(node.name.clone().unwrap_or_default());
+        }
+        for child in &node.children {
+            unplaced(child, out);
+        }
     }
 
     fn layer() -> FloatingLayer {
@@ -995,6 +1014,20 @@ mod tests {
                     control: "toggle".into(),
                 })
             );
+            // Each control carries where the card draws it: the session offers a
+            // control by its place, so one read without bounds is one a screen
+            // reader and an agent cannot reach.
+            let mut missing = Vec::new();
+            unplaced(&tree, &mut missing);
+            assert!(missing.is_empty(), "controls read without a place: {missing:?}");
+            let toggle = group
+                .children
+                .iter()
+                .find(|child| child.action_target.as_deref() == Some("activity:so.tilo.clocks:tea:toggle"))
+                .and_then(|child| child.bounds)
+                .map(ui::a11y::AccessBounds::to_rect)
+                .expect("the control is read where it is drawn");
+            assert!(toggle.width() > 0.0 && toggle.height() > 0.0);
         }
 
         phase the_shadow_lets_the_pointer_through;
