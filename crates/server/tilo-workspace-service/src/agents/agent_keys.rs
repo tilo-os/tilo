@@ -130,11 +130,13 @@ impl FleetAgentKeys {
         statement.extend_from_slice(workspace.as_uuid().as_bytes());
         statement.extend_from_slice(agent.as_bytes());
         let digest = *blake3::hash(&statement).as_bytes();
-        let signature = self.fleets.sign_root(identity, &digest).map_err(|_| {
-            "this computer does not hold its person's root, so it cannot give the agent a key of \
-             its own: approve this computer's ticket on a device of theirs that holds the root \
-             (`tilo device add <ticket>`), then connect the agent again"
-                .to_owned()
+        let signature = self.fleets.sign_root(identity, &digest).map_err(|error| {
+            format!(
+                "this computer cannot give the agent a key of its own: it does not hold its \
+                 person's root here ({error}). Approve this computer's ticket on a device of \
+                 theirs that holds the root (`tilo device add <ticket>`), then connect the agent \
+                 again"
+            )
         })?;
         Ok(SigningKey::from_bytes(blake3::hash(&signature).as_bytes()))
     }
@@ -472,6 +474,106 @@ mod tests {
         )
     }
 
+    /// Copy `from`'s files to `to`, as a disk copy of a computer carries what
+    /// its account's identity directory holds.
+    fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_tree(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), &target).unwrap();
+            }
+        }
+    }
+
+    /// A person's own computer: the account's identity directory, carried over
+    /// from the computer that made their root, still holds that root here, and
+    /// this computer's device key is certified under it.
+    fn a_computer_holding_its_persons_root(
+        dir: &std::path::Path,
+    ) -> (
+        tilo_identity::device_fleet::DeviceFleetStore,
+        String,
+        [u8; 32],
+    ) {
+        let first = dir.join("first");
+        let first_identity = first.join("config/tilo/identity");
+        let first_paths = tilo_device_identity::IdentityPaths::under(first.join("system"));
+        tilo_identity::provisioning::ensure_collaboration_identity(
+            &first_identity,
+            &first_paths,
+            tilo_identity::provisioning::IdentityStorage::Files,
+        )
+        .unwrap();
+        let record = tilo_identity::store::resolve_active_identity(&first_identity).unwrap();
+        let root = tilo_identity::store::load_from_path(record).unwrap();
+        let person = root.group_public_key();
+
+        let here = dir.join("here");
+        let identity_dir = here.join("config/tilo/identity");
+        copy_tree(&first_identity, &identity_dir);
+        let paths = tilo_device_identity::IdentityPaths::under(here.join("system"));
+        let sign = |digest: &[u8]| {
+            let digest: [u8; 32] = digest.try_into().map_err(|_| "not a digest".to_owned())?;
+            root.sign(&digest).map_err(|error| error.to_string())
+        };
+        tilo_device_identity::persist::provision_joined_device(
+            &paths,
+            person,
+            sign,
+            "this computer",
+            tilo_clock::unix_now_ns(),
+        )
+        .unwrap();
+        // Its session's start takes up the identity this device is enrolled for, as a device's
+        // session does before it lists what it holds.
+        tilo_identity::provisioning::complete_enrolled_device(
+            &identity_dir,
+            &paths,
+            tilo_clock::unix_now_ns(),
+        )
+        .unwrap();
+
+        (
+            tilo_identity::device_fleet::DeviceFleetStore::at(&identity_dir, paths),
+            hex::encode(person),
+            person,
+        )
+    }
+
+    #[test]
+    fn a_computer_that_holds_its_persons_root_gives_its_agents_keys_of_their_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let (fleets, identity, person) = a_computer_holding_its_persons_root(dir.path());
+        assert_eq!(
+            fleets
+                .sign_root(&identity, &[3; 32])
+                .map_err(|error| error.to_string())
+                .expect("the root this computer holds signs")
+                .len(),
+            64,
+            "the person's root signs where the identity directory carries it"
+        );
+
+        let workspace = WorkspaceId::new();
+        let keys = FleetAgentKeys::of(fleets);
+        let key = keys.grant(workspace, "scout", "Scout", person).unwrap();
+        let mut asked = request();
+        keys.sign(workspace, &key, &mut asked).unwrap();
+        let signer = tilo_server_protocol::invocation::verify_invocation(
+            &workspace.to_string(),
+            &asked,
+            &tilo_user_identity::RevocationList::new(),
+            tilo_clock::unix_now_ns(),
+        )
+        .expect("the agent's own key signed it");
+        assert_eq!(signer.device_public_key, key);
+        assert_eq!(signer.user_public_key, person);
+    }
+
     fn request() -> InvokeRequest {
         InvokeRequest {
             target: RemoteActionTarget {
@@ -561,9 +663,7 @@ mod tests {
             .grant(workspace, "scribe", "Scribe", [7; 32])
             .unwrap_err();
         assert!(
-            refused.contains(
-                "approve this computer's ticket on a device of theirs that holds the root"
-            ),
+            refused.contains("computer's ticket on a device of theirs that holds the root"),
             "{refused}"
         );
         let mut asked = request();
