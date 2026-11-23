@@ -6068,6 +6068,11 @@
           "value": "float"
         },
         {
+          "name": "progress",
+          "doc": "Where playback got to while it played, as a share of its length (`0..=1`): reported on the first frame it plays, then every five seconds, and once more when it stops, so a view remembers the place a video was left at even when nobody moved the playhead.",
+          "value": "float"
+        },
+        {
           "name": "set_volume",
           "doc": "The volume was set: carries `0..=1`.",
           "value": "float"

@@ -223,7 +223,7 @@ pub struct VideoPlayer {
     transport_enabled: bool,
     fullscreen: bool,
     fullscreen_touched: bool,
-    on_seek: Option<Box<dyn FnMut(Duration)>>,
+    on_seek: Option<Box<dyn FnMut(f64)>>,
     rect: Rect,
     play_button_rect: Rect,
     scrub_track_rect: Rect,
@@ -770,10 +770,21 @@ impl VideoPlayer {
         self.duration_ms
     }
 
+    /// Report where playback was moved to, as a share of its length (`0..=1`): what an app keeps
+    /// as the place a video was left at.
     #[must_use]
-    pub fn on_seek<F: FnMut(Duration) + 'static>(mut self, f: F) -> Self {
+    pub fn on_seek<F: FnMut(f64) + 'static>(mut self, f: F) -> Self {
         self.on_seek = Some(Box::new(f));
         self
+    }
+
+    /// How long the video is when its app declares it before the engine does: the scrubber and the
+    /// share a seek reports stand on the declared length until the engine knows the real one.
+    pub fn set_duration_ms(&mut self, ms: u64) {
+        if ms > 0 {
+            self.duration_ms = ms;
+            self.dirty = true;
+        }
     }
 
     /// `ms` is clamped to the duration.
@@ -786,8 +797,9 @@ impl VideoPlayer {
         if let Some(e) = &mut self.engine {
             e.seek_ms(target);
         }
+        let share = self.playhead_fraction();
         if let Some(report) = self.on_seek.as_mut() {
-            report(Duration::from_millis(target));
+            report(share);
         }
         self.dirty = true;
         if self.mpris.is_active() {
