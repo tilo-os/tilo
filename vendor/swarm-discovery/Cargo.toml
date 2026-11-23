@@ -12,7 +12,7 @@
 [package]
 edition = "2021"
 name = "swarm-discovery"
-version = "0.6.5"
+version = "0.6.6"
 authors = ["Roland Kuhn"]
 build = false
 autolib = false

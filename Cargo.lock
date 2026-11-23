@@ -16605,7 +16605,7 @@ dependencies = [
 
 [[package]]
 name = "swarm-discovery"
-version = "0.6.5"
+version = "0.6.6"
 dependencies = [
  "acto",
  "hickory-proto",

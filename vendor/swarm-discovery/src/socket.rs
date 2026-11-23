@@ -3,6 +3,7 @@ use hickory_proto::op::Message;
 use socket2::{Domain, Protocol, Socket, Type};
 use std::{
     collections::HashMap,
+    io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4},
     sync::{Arc, Mutex, RwLock},
 };
@@ -280,14 +281,37 @@ pub fn socket_v6() -> Result<UdpSocket, SocketError> {
     })
 }
 
+/// Which sends are currently failing, and with what: each interface-specific
+/// socket by its interface's address, and the shared IPv4 and IPv6 sockets by
+/// their multicast group's.
+///
+/// An interface that can never send multicast (e.g. a WireGuard tunnel, which
+/// has no MULTICAST flag and answers with ENOKEY), or a host that refuses
+/// multicast altogether, would otherwise log the same error on every round. A
+/// failure is reported once, and again only when the error changes.
+#[derive(Debug, Default)]
+struct SendFailures(Mutex<HashMap<IpAddr, (io::ErrorKind, Option<i32>)>>);
+
+impl SendFailures {
+    /// Records a failed send; returns true if it differs from the last one
+    /// recorded for this interface and should be logged.
+    fn failed(&self, addr: impl Into<IpAddr>, error: &io::Error) -> bool {
+        let key = (error.kind(), error.raw_os_error());
+        self.0.lock().unwrap().insert(addr.into(), key) != Some(key)
+    }
+
+    /// Records a successful send; returns true if the interface was failing.
+    fn succeeded(&self, addr: impl Into<IpAddr>) -> bool {
+        self.0.lock().unwrap().remove(&addr.into()).is_some()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Sockets {
     v4: Option<Arc<UdpSocket>>,
     v6: Option<Arc<UdpSocket>>,
     interface_sockets_v4: Arc<RwLock<HashMap<Ipv4Addr, Arc<UdpSocket>>>>,
-    /// The last send failure said, so one that keeps repeating is said once
-    /// and again only when its cause changes.
-    last_send_failure: Arc<Mutex<Option<String>>>,
+    send_failures: Arc<SendFailures>,
 }
 
 impl Sockets {
@@ -306,6 +330,7 @@ impl Sockets {
             }
         }
         let interface_sockets_v4 = Arc::new(RwLock::new(interface_sockets_v4));
+        let send_failures = Arc::new(SendFailures::default());
 
         let sockets = match class {
             IpClass::Auto => {
@@ -313,7 +338,7 @@ impl Sockets {
                     v4: socket_v4(None).ok().map(Arc::new),
                     v6: socket_v6().ok().map(Arc::new),
                     interface_sockets_v4: interface_sockets_v4.clone(),
-                    last_send_failure: Arc::new(Mutex::new(None)),
+                    send_failures: send_failures.clone(),
                 };
                 if socket.v4.is_none() && socket.v6.is_none() {
                     return Err(SocketError::CannotBind);
@@ -330,7 +355,7 @@ impl Sockets {
                     .then(|| socket_v6().map(Arc::new))
                     .transpose()?,
                 interface_sockets_v4: interface_sockets_v4.clone(),
-                last_send_failure: Arc::new(Mutex::new(None)),
+                send_failures: send_failures.clone(),
             },
         };
         for addr in sockets.get_all_interface_addresses_v4() {
@@ -418,6 +443,7 @@ impl Sockets {
             drop(interfaces);
             // drop socket outside the lock
             drop(socket);
+            self.send_failures.succeeded(addr);
             self.leave_group_on_main_v4(addr);
             tracing::info!("Removed interface {} from multicast", addr);
 
@@ -451,9 +477,6 @@ impl Sockets {
             }
         };
 
-        let mut sent = 0;
-        let mut failures = Vec::new();
-
         // Use multi-interface mode only for IPv4 when interface sockets are available
         let use_multi_interface = !self.interface_sockets_v4.read().unwrap().is_empty()
             && matches!(mode, Mode::V4 | Mode::Any);
@@ -463,30 +486,24 @@ impl Sockets {
                 "Using multi-interface mode for IPv4 sending, {} interfaces available",
                 self.interface_sockets_v4.read().unwrap().len()
             );
-            // Send on all IPv4 interface-specific sockets
-            let interfaces = self.interface_sockets_v4.read().unwrap().clone();
-            for (addr, socket) in interfaces.iter() {
-                if let Err(e) = socket.send_to(&bytes, (MDNS_IPV4, MDNS_PORT)).await {
-                    failures.push(format!("{addr}: {e}"));
-                } else {
-                    tracing::debug!(
-                        addr = %addr,
-                        q = msg.queries.len(),
-                        an = msg.answers.len(),
-                        ad = msg.additionals.len(),
-                        "sent {} bytes on interface",
-                        bytes.len()
-                    );
-                    sent += 1;
-                }
-            }
+            self.send_msg_multi_interface_v4(&bytes, msg).await;
 
             // If mode is Any, also send on IPv6 if available
             if matches!(mode, Mode::Any) {
                 if let Some(v6) = &self.v6 {
                     if let Err(e) = v6.send_to(&bytes, (MDNS_IPV6, MDNS_PORT)).await {
-                        failures.push(format!("{MDNS_IPV6}: {e}"));
+                        if self.send_failures.failed(MDNS_IPV6, &e) {
+                            tracing::warn!(
+                                "error sending mDNS on IPv6: {} (not repeated while it persists)",
+                                e
+                            );
+                        } else {
+                            tracing::debug!("error sending mDNS on IPv6: {}", e);
+                        }
                     } else {
+                        if self.send_failures.succeeded(MDNS_IPV6) {
+                            tracing::info!("sending mDNS on IPv6 works again");
+                        }
                         tracing::debug!(
                             q = msg.queries.len(),
                             an = msg.answers.len(),
@@ -494,7 +511,6 @@ impl Sockets {
                             "sent {} bytes on IPv6",
                             bytes.len()
                         );
-                        sent += 1;
                     }
                 }
             }
@@ -512,8 +528,19 @@ impl Sockets {
                 }
             };
             if let Err(e) = socket.send_to(&bytes, (addr, MDNS_PORT)).await {
-                failures.push(format!("{addr}: {e}"));
+                if self.send_failures.failed(addr, &e) {
+                    tracing::warn!(
+                        "error sending mDNS to {}: {} (not repeated while it persists)",
+                        addr,
+                        e
+                    );
+                } else {
+                    tracing::debug!("error sending mDNS to {}: {}", addr, e);
+                }
             } else {
+                if self.send_failures.succeeded(addr) {
+                    tracing::info!("sending mDNS to {} works again", addr);
+                }
                 tracing::debug!(
                     q = msg.queries.len(),
                     an = msg.answers.len(),
@@ -521,66 +548,53 @@ impl Sockets {
                     "sent {} bytes",
                     bytes.len()
                 );
-                sent += 1;
-            }
-        }
-
-        self.report_send(sent, failures);
-    }
-
-    /// Say a send failure once, and again only when its cause changes. A
-    /// failure that clears is said once too, so a log tells the state of
-    /// local discovery rather than repeating the same line on every
-    /// announcement.
-    fn report_send(&self, sent: usize, failures: Vec<String>) {
-        match record_send(&self.last_send_failure, sent, failures) {
-            SendReport::Quiet => {}
-            SendReport::Recovered => tracing::info!("mDNS sending works again"),
-            SendReport::FailedEveryInterface(cause) => {
-                tracing::error!("mDNS sending failed on every interface: {cause}");
-            }
-            SendReport::FailedSomeInterfaces(cause) => {
-                tracing::warn!("mDNS sending failed on some interfaces: {cause}");
             }
         }
     }
-}
 
-/// What a send says about local discovery, given the failure last said.
-#[derive(Debug, PartialEq, Eq)]
-enum SendReport {
-    /// Nothing: the state was said before, or never changed.
-    Quiet,
-    /// Sending works again after a failure was said.
-    Recovered,
-    /// No interface took the message; the cause is new or changed.
-    FailedEveryInterface(String),
-    /// Some interfaces took it; the cause is new or changed.
-    FailedSomeInterfaces(String),
-}
+    async fn send_msg_multi_interface_v4(&self, bytes: &[u8], msg: &Message) {
+        let mut sent_count = 0;
+        let mut newly_failing = false;
 
-fn record_send(
-    last: &Mutex<Option<String>>,
-    sent: usize,
-    failures: Vec<String>,
-) -> SendReport {
-    let mut said = last.lock().unwrap();
-    if failures.is_empty() {
-        return if said.take().is_some() {
-            SendReport::Recovered
-        } else {
-            SendReport::Quiet
-        };
-    }
-    let cause = failures.join("; ");
-    if said.as_deref() == Some(cause.as_str()) {
-        return SendReport::Quiet;
-    }
-    *said = Some(cause.clone());
-    if sent == 0 {
-        SendReport::FailedEveryInterface(cause)
-    } else {
-        SendReport::FailedSomeInterfaces(cause)
+        // Send on all IPv4 interface-specific sockets
+        let interfaces = self.interface_sockets_v4.read().unwrap().clone();
+        for (addr, socket) in interfaces.iter() {
+            if let Err(e) = socket.send_to(bytes, (MDNS_IPV4, MDNS_PORT)).await {
+                if self.send_failures.failed(*addr, &e) {
+                    newly_failing = true;
+                    tracing::error!(
+                        "error sending mDNS on interface {}: {} (not repeated while it persists)",
+                        addr,
+                        e
+                    );
+                } else {
+                    tracing::debug!("error sending mDNS on interface {}: {}", addr, e);
+                }
+            } else {
+                if self.send_failures.succeeded(*addr) {
+                    tracing::info!("sending mDNS on interface {} works again", addr);
+                }
+                tracing::debug!(
+                    addr = %addr,
+                    q = msg.queries.len(),
+                    an = msg.answers.len(),
+                    ad = msg.additionals.len(),
+                    "sent {} bytes on interface",
+                    bytes.len()
+                );
+                sent_count += 1;
+            }
+        }
+
+        if sent_count == 0 {
+            // Said with the interface whose failure is new; each round after
+            // that only repeats it.
+            if newly_failing {
+                tracing::error!("failed to send mDNS on any IPv4 interface in multi-interface mode");
+            } else {
+                tracing::debug!("failed to send mDNS on any IPv4 interface in multi-interface mode");
+            }
+        }
     }
 }
 
@@ -593,46 +607,44 @@ pub enum Mode {
 
 #[cfg(test)]
 mod tests {
-    use super::{SendReport, record_send};
-    use std::sync::Mutex;
+    use super::{MDNS_IPV4, MDNS_IPV6, SendFailures};
+    use std::{io, net::Ipv4Addr};
 
-    const DENIED: &str = "10.0.0.5: Permission denied (os error 13)";
-    const UNREACHABLE: &str = "10.0.0.5: Network is unreachable (os error 101)";
-
-    /// A failure that keeps repeating is said once, and again only when its
-    /// cause changes; sending that works again is said once.
     #[test]
-    fn a_repeating_send_failure_is_said_once() {
-        let last = Mutex::new(None);
-        let down = |cause: &str| vec![cause.to_owned()];
-        assert_eq!(
-            record_send(&last, 0, down(DENIED)),
-            SendReport::FailedEveryInterface(DENIED.to_owned())
-        );
-        assert_eq!(record_send(&last, 0, down(DENIED)), SendReport::Quiet);
-        assert_eq!(record_send(&last, 0, down(DENIED)), SendReport::Quiet);
-        assert_eq!(
-            record_send(&last, 0, down(UNREACHABLE)),
-            SendReport::FailedEveryInterface(UNREACHABLE.to_owned())
-        );
-        assert_eq!(record_send(&last, 2, Vec::new()), SendReport::Recovered);
-        assert_eq!(record_send(&last, 2, Vec::new()), SendReport::Quiet);
+    fn repeated_send_failures_are_reported_once() {
+        let failures = SendFailures::default();
+        let tunnel = Ipv4Addr::new(10, 99, 99, 132);
+        let enokey = || io::Error::from_raw_os_error(126);
+
+        assert!(failures.failed(tunnel, &enokey()));
+        assert!(!failures.failed(tunnel, &enokey()));
+        // a different error on the same interface is reported again
+        assert!(failures.failed(tunnel, &io::Error::from_raw_os_error(101)));
+
+        assert!(failures.succeeded(tunnel));
+        assert!(!failures.succeeded(tunnel));
+        // and a failure after recovering counts as new
+        assert!(failures.failed(tunnel, &enokey()));
     }
 
-    /// One interface failing while another sends is a warning, said once; the
-    /// same warning whose cause changes is said again.
     #[test]
-    fn a_partial_send_failure_is_said_once_per_cause() {
-        let last = Mutex::new(None);
-        let down = |cause: &str| vec![cause.to_owned()];
-        assert_eq!(
-            record_send(&last, 1, down(DENIED)),
-            SendReport::FailedSomeInterfaces(DENIED.to_owned())
-        );
-        assert_eq!(record_send(&last, 1, down(DENIED)), SendReport::Quiet);
-        assert_eq!(
-            record_send(&last, 1, down(UNREACHABLE)),
-            SendReport::FailedSomeInterfaces(UNREACHABLE.to_owned())
-        );
+    fn interfaces_are_tracked_separately() {
+        let failures = SendFailures::default();
+        let error = io::Error::from_raw_os_error(126);
+        assert!(failures.failed(Ipv4Addr::new(10, 0, 0, 1), &error));
+        assert!(failures.failed(Ipv4Addr::new(10, 0, 0, 2), &error));
+    }
+
+    #[test]
+    fn the_shared_sockets_are_tracked_by_their_group() {
+        let failures = SendFailures::default();
+        let refused = || io::Error::from_raw_os_error(1);
+        assert!(failures.failed(MDNS_IPV4, &refused()));
+        assert!(failures.failed(MDNS_IPV6, &refused()));
+        assert!(!failures.failed(MDNS_IPV6, &refused()));
+        // an interface's own socket is not the shared one
+        assert!(failures.failed(Ipv4Addr::new(10, 0, 0, 1), &refused()));
+        assert!(failures.succeeded(MDNS_IPV6));
+        assert!(!failures.failed(MDNS_IPV4, &refused()));
     }
 }

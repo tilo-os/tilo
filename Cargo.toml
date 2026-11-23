@@ -1672,8 +1672,9 @@ hexane = { path = "vendor/hexane" }
 # The content store's metadata database keeps the page cache its owner bounds, not redb's
 # Build outputs must not become Cargo inputs; see vendor/buffa-build/PROVENANCE.md.
 buffa-build = { path = "vendor/buffa-build" }
-# A multicast send failure is said once, and again only when its cause
-# changes, so a network that refuses multicast does not bury the log. See
+# A multicast send failure on the shared IPv4 and IPv6 sockets is said once,
+# as 0.6.6 says one on an interface socket, so a network that refuses multicast
+# does not bury the log. See
 # vendor/swarm-discovery/PROVENANCE.md.
 swarm-discovery = { path = "vendor/swarm-discovery" }
 # Verify Cast TLS handshake signatures and bound cancellation; identity
