@@ -542,6 +542,41 @@ impl Server {
     pub(in crate::setup) fn requests(&self) -> Vec<String> {
         self.requests.lock().unwrap().clone()
     }
+    /// A release server that answers by what was asked for rather than by
+    /// request order: the manifest, either component, every time. A download
+    /// that is paused, cancelled or retried abandons requests, and the next
+    /// one must still find its own bytes.
+    pub(in crate::setup) fn serve_release(
+        manifest: Vec<u8>,
+        esp: Vec<u8>,
+        root: Vec<u8>,
+        on_request: impl FnMut(&str) + Send + 'static,
+    ) -> Self {
+        let bodies = Arc::new((manifest, esp, root));
+        let on_request = Arc::new(Mutex::new(on_request));
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&requests);
+        let served = Responder::serve(move |peer| {
+            let target = peer.request().target.clone();
+            seen.lock().unwrap().push(target.clone());
+            (on_request.lock().unwrap())(&target);
+            let (manifest, esp, root) = &*bodies;
+            let body = if target.ends_with("staging-esp.img") {
+                esp
+            } else if target.ends_with("staging-root.img") {
+                root
+            } else {
+                manifest
+            };
+            let _ = peer.write(&response(200, "", body));
+        });
+        let url = format!("{}/releases/manifest.json", served.url());
+        Self {
+            url,
+            requests,
+            _served: served,
+        }
+    }
     pub(in crate::setup) fn transport(&self) -> InternalTransport {
         InternalTransport::client(Url::parse(&self.url).unwrap(), tilo_test_env::hang_bound())
             .unwrap()
