@@ -271,6 +271,88 @@ fn lending<T>(pictures: &[(String, Vec<u8>)], build: impl FnOnce() -> T) -> T {
     made
 }
 
+/// `picture` with the grade `adjust` names applied, as PNG bytes.
+///
+/// # Errors
+///
+/// Why the picture cannot be decoded, the grade read, or the result encoded.
+pub fn grade(picture: &[u8], adjust: &str) -> Result<Vec<u8>, String> {
+    use tilo_ui::image_codec::{Encoding, decode_now, encode_now};
+    let adjust: crate::model::Adjust = serde_json::from_str(adjust)
+        .map_err(|error| format!("a grade's fields cannot be read: {error}"))?;
+    let mut image =
+        decode_now(picture, None).map_err(|error| format!("the picture cannot be read: {error}"))?;
+    if let Some(grade) = adjust.grade() {
+        crate::adjust::grade_pixels(&mut image.rgba, &[grade]);
+    }
+    encode_now(&image, Encoding::Png).map_err(|error| format!("the graded picture cannot be written: {error}"))
+}
+
+/// The area of `picture` like `request` names it, as SVG path data: the magic wand over one
+/// picture, at one point or one colour.
+///
+/// # Errors
+///
+/// Why the picture cannot be decoded, the request read, or nothing is found.
+pub fn wand(picture: &[u8], request: &str) -> Result<String, String> {
+    use tilo_ui::image_codec::decode_now;
+    #[derive(serde::Deserialize)]
+    struct Find {
+        #[serde(default)]
+        at: Option<[f64; 2]>,
+        #[serde(default)]
+        colour: Option<String>,
+        #[serde(default)]
+        tolerance: Option<f64>,
+        #[serde(default)]
+        everywhere: Option<bool>,
+    }
+    let find: Find = serde_json::from_str(request)
+        .map_err(|error| format!("what to find cannot be read: {error}"))?;
+    if find.at.is_none() && find.colour.is_none() {
+        return Err("give at (a point) or colour: what to find".to_owned());
+    }
+    let image =
+        decode_now(picture, None).map_err(|error| format!("the picture cannot be read: {error}"))?;
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a point outside the picture is clamped to its pixels"
+    )]
+    let seed = find.at.map(|at| {
+        (
+            at[0].max(0.0).min(f64::from(image.width.saturating_sub(1))) as usize,
+            at[1].max(0.0).min(f64::from(image.height.saturating_sub(1))) as usize,
+        )
+    });
+    let colour = find.colour.as_deref().and_then(tilo_ui::color::parse_hex).map(|colour| {
+        let rgba = colour.to_rgba8();
+        [rgba.r, rgba.g, rgba.b]
+    });
+    let field = crate::wand::coverage(
+        &crate::wand::Picture {
+            rgba: &image.rgba,
+            width: image.width as usize,
+            height: image.height as usize,
+        },
+        &crate::wand::Wand {
+            seed,
+            colour,
+            tolerance: find.tolerance.unwrap_or(0.15).clamp(0.0, 1.0),
+            everywhere: find.everywhere.unwrap_or(false),
+            allowed: None,
+            pixels_per_unit: 1.0,
+        },
+    );
+    let region = crate::region::Coverage {
+        width: image.width as usize,
+        height: image.height as usize,
+        cells: &field,
+    }
+    .traced(vello::kurbo::Affine::IDENTITY);
+    Ok(region.to_path().to_svg())
+}
+
 /// A look at `art` as `request` asks, as PNG or JPEG bytes and the info JSON.
 ///
 /// # Errors

@@ -47,20 +47,12 @@ impl CanvasHost for Engine {
         canvas_engine::host::export(&art, request, pictures)
     }
 
-    fn grade(&self, _picture: &[u8], _adjust: &str) -> Result<Vec<u8>, String> {
-        Err(
-            "grading a picture on its own is not on this device's drawing engine yet; the \
-             artwork is graded as it is drawn"
-                .to_owned(),
-        )
+    fn grade(&self, picture: &[u8], adjust: &str) -> Result<Vec<u8>, String> {
+        canvas_engine::host::grade(picture, adjust)
     }
 
-    fn wand(&self, _picture: &[u8], _request: &str) -> Result<String, String> {
-        Err(
-            "finding an area in a picture on its own is not on this device's drawing engine \
-             yet; select the area in the artwork instead"
-                .to_owned(),
-        )
+    fn wand(&self, picture: &[u8], request: &str) -> Result<String, String> {
+        canvas_engine::host::wand(picture, request)
     }
 
     fn svg(&self, artwork_json: &str, request: &str) -> Result<String, String> {
