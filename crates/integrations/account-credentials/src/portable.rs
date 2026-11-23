@@ -196,8 +196,7 @@ fn valid_entries(entries: &[Entry]) -> Result<(), PortableError> {
     }
     let mut ids = BTreeSet::new();
     for entry in entries {
-        if entry.account.owner.is_some()
-            || entry.account.id.as_str().is_empty()
+        if entry.account.id.as_str().is_empty()
             || entry.account.id.as_str().len() > 256
             || entry.secret.is_empty()
             || entry.secret.password.len() > MAX_PLAINTEXT
@@ -251,7 +250,6 @@ pub fn seal_selected_accounts(
     for id in selected {
         let account = record
             .account(id.as_str())
-            .filter(|account| account.owner.is_none())
             .ok_or(PortableError::AccountMissing)?;
         let secret = vault.get(id).ok_or(PortableError::CredentialUnavailable)?;
         entries.push(Entry { account, secret });
@@ -677,16 +675,12 @@ mod tests {
             assert!(PasswordSealedAccounts::from_bytes(short).is_err());
         }
 
-        phase foreign_owner_bundle_is_refused_before_target_creation;
+        phase invalid_bundle_is_refused_before_target_creation;
         {
             let temp = tempfile::tempdir().unwrap();
             let to = temp.path().join("never-created");
             let key = SymmetricKey::generate().unwrap();
-            let mut account = Account::new(
-                AccountId::new("foreign-account"),
-                accounts::AccountTypeId::new("webdav"),
-            );
-            account.owner = Some("another-member".into());
+            let account = Account::new(AccountId::new(""), accounts::AccountTypeId::new("webdav"));
             let bundle = Bundle {
                 version: 1,
                 entries: vec![Entry {

@@ -1,4 +1,4 @@
-//! Bounded metadata-only review of owner-local canonical connections.
+//! Bounded metadata-only review of a Tilo home's accounts.
 use super::{Inventory, SourceRoots};
 use crate::account_store::{Accounts, ConnectionError};
 use accounts::Account;
@@ -10,7 +10,7 @@ pub struct TiloCandidate {
     pub account_id: String,
     pub label: String,
     pub type_id: String,
-    /// Pins provider, owner, enabled state and configuration without projecting
+    /// Pins provider, enabled state and configuration without projecting
     /// arbitrary configuration fields or reading the vault during discovery.
     pub metadata_sha256: [u8; 32],
 }
@@ -47,7 +47,7 @@ pub(super) fn discover(roots: &SourceRoots, inventory: &mut Inventory) {
             if !ids.insert(account.id.as_str().to_owned()) {
                 return Err(ConnectionError::InvalidConfiguration);
             }
-            if account.owner.is_some() || !account.enabled || !supported(account) {
+            if !account.enabled || !supported(account) {
                 continue;
             }
             if account.id.as_str().is_empty()

@@ -165,10 +165,6 @@ pub struct Account {
     /// visually distinct.
     #[serde(default)]
     pub tint: u8,
-    /// The member that owns this account, when it was contributed in a shared workspace.
-    /// `None` for the local user's own accounts.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub owner: Option<String>,
 }
 
 impl Account {
@@ -182,7 +178,6 @@ impl Account {
             config: serde_json::Value::Null,
             enabled: true,
             tint: 0,
-            owner: None,
         }
     }
 

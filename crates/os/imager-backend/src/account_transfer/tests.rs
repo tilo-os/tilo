@@ -252,18 +252,15 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase selected_tilo_credentials_are_resealed_without_overwriting_or_adopting_members;
+    phase selected_tilo_credentials_are_resealed_without_overwriting_and_refuse_an_absent_account;
     {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
         let target = temp.path().join("target");
         let own = AccountId::new("own");
-        let other = AccountId::new("other");
+        let absent = AccountId::new("absent");
         let accounts = Accounts::empty();
         accounts.keep(&Account::new(own.clone(), "webdav")).unwrap();
-        let mut shared = Account::new(other.clone(), "nextcloud");
-        shared.owner = Some("another-person".into());
-        accounts.keep(&shared).unwrap();
         accounts.project(&source).unwrap();
         let mut vault = SecretVault::open_in(&source);
         vault.put(
@@ -287,7 +284,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(connector.import_tilo(&source, &own).unwrap(), own);
         assert_eq!(
-            connector.import_tilo(&source, &other),
+            connector.import_tilo(&source, &absent),
             Err(ConnectionError::AccountMissing)
         );
         assert_eq!(

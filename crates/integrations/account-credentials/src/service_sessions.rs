@@ -270,7 +270,6 @@ impl CredentialStore {
         let id = &account.id;
         if account.type_id.as_str() != SERVICE_SESSION_TYPE
             || !account.enabled
-            || account.owner.is_some()
             || account
                 .config
                 .get("setup_binding")
@@ -302,10 +301,9 @@ impl CredentialStore {
     }
 }
 
-/// Whether `account` is a service session no app owns, set up under `binding`.
+/// Whether `account` is a service session set up under `binding`.
 fn is_bound_service_session(account: &accounts::Account, binding: &str) -> bool {
     account.type_id.as_str() == SERVICE_SESSION_TYPE
-        && account.owner.is_none()
         && account
             .config
             .get("setup_binding")

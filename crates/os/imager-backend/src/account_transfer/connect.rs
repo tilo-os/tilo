@@ -302,7 +302,6 @@ impl Connector {
         let source_accounts = Accounts::read(source)?;
         let account = source_accounts
             .get(id.as_str())?
-            .filter(|account| account.owner.is_none())
             .ok_or(ConnectionError::AccountMissing)?;
         if let Some(reviewed) = reviewed {
             if account.type_id.as_str() != reviewed.type_id

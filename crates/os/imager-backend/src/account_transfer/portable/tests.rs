@@ -169,10 +169,9 @@ tilo_test_env::scenario! {
                 .is_none()
         );
         assert!(SecretVault::open_in(&target).get(&first).is_none());
+        // An account the source no longer holds is refused, not sealed from a stale selection.
         let record = Accounts::read(&source).unwrap();
-        let mut contributed = record.get(first.as_str()).unwrap().unwrap();
-        contributed.owner = Some("another-member".into());
-        record.keep(&contributed).unwrap();
+        assert!(record.remove(first.as_str()).unwrap());
         record.project(&source).unwrap();
         assert!(
             source_connector

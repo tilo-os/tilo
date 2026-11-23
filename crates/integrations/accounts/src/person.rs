@@ -276,7 +276,6 @@ fn account_of(id: &Id, account: &ListedAccount) -> Account {
         config: account.config.clone(),
         enabled: account.enabled,
         tint: account.tint,
-        owner: None,
     }
 }
 

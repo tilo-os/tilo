@@ -260,7 +260,7 @@ fn resolve(
             for account in accounts
                 .iter()
                 .filter(is_session)
-                .filter(|account| account.enabled && account.owner.is_none())
+                .filter(|account| account.enabled)
             {
                 let Some(binding) = account
                     .config

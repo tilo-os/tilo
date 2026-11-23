@@ -44,6 +44,7 @@ setup::staging::fake::tests::remove_after_a_crash_at_every_stage_mutation_leaves
 setup::staging::fake::tests::remove_restores_owned_state_and_never_touches_changed_objects	storage publishes only to volumes with local-disk evidence, which Wine's lack
 setup::staging::fake::tests::windows_resumes_after_a_crash_at_every_mutation	storage publishes only to volumes with local-disk evidence, which Wine's lack
 setup::staging::record::tests::staging_records_track_steps_persist_atomically_and_reject_foreign_owners	storage publishes only to volumes with local-disk evidence, which Wine's lack
+setup::staging::record::tests::stored_record_with_bad_hostname_loads_and_asks_for_hostname_again	storage publishes only to volumes with local-disk evidence, which Wine's lack
 setup::staging::windows::tests::final_boot_geometry_snapshot_executes_without_shrink_probe	Windows' disk geometry query returns nothing under Wine
 app::tests::capture_progress_owns_worker_until_actual_host_teardown	Wine reports a directory's volume as FILE_DEVICE_DISK_FILE_SYSTEM, never FILE_DEVICE_DISK, so the local-disk publication admission refuses it
 app::tests::release_download_is_local_visible_and_cancellable	Wine reports a directory's volume as FILE_DEVICE_DISK_FILE_SYSTEM, never FILE_DEVICE_DISK, so the local-disk publication admission refuses it

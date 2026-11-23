@@ -96,7 +96,6 @@ fn validate_manifest(manifest: &Manifest) -> io::Result<()> {
                 .chars()
                 .any(|c| !c.is_ascii_alphanumeric() && !matches!(c, '-' | '_' | '.' | ':'))
             || !ids.insert(&entry.selected.id)
-            || entry.account.owner.is_some()
             || entry.selected.label.len() > 4096
             || entry.selected.label.chars().any(char::is_control)
             || entry
