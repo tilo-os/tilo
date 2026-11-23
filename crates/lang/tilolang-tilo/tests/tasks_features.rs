@@ -657,9 +657,13 @@ fn an_imported_issue_keeps_its_origin_and_imports_once() {
     assert_eq!(read(&ada, &made, "title"), Value::text("Fix the printer"));
     match read(&ada, &made, "origin") {
         Value::Opt(Some(held)) => {
+            // The origin is a resource of the workspace: the task refers to it.
+            let Value::Ref(held) = *held else {
+                panic!("the origin the task names: {held:?}");
+            };
             assert_eq!(
-                field(&ada, &held, "Origin", "reference"),
-                Some(some(Value::text("7")))
+                read(&ada, &Value::Ref(held), "reference"),
+                some(Value::text("7"))
             );
         }
         other => panic!("its origin is kept: {other:?}"),
@@ -842,9 +846,7 @@ fn the_task_page_offers_the_tasks_commands_beside_its_title() {
             _ => None,
         })
         .collect();
-    for wanted in [
-        "Complete", "Today", "Tomorrow", "No date", "Priority", "Delete",
-    ] {
+    for wanted in ["Complete", "Today", "Tomorrow", "No date", "High", "Delete"] {
         assert!(
             commands.iter().any(|command| command == wanted),
             "the page offers {wanted}: {commands:?}"
