@@ -679,7 +679,7 @@ impl Server {
         #[cfg(feature = "web")]
         if let Some(origin) = live_origin.as_ref() {
             let (alpn, handler) = origin.protocol();
-            protocols.push((alpn.to_vec(), handler));
+            protocols.push((alpn, handler));
         }
         let background_tasks = spawn_background_tasks(&cfg, &identity, &metrics, &live);
         #[cfg(feature = "web")]
