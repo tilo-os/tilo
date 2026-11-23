@@ -2482,6 +2482,8 @@ pub mod popover;
 pub use popover::{PanelAlign, Popover, PopoverButton, PopoverPrompt, PopoverSide};
 pub mod emoji_picker;
 pub use emoji_picker::{EmojiPicker, PickerEvent};
+mod emoji_pane_component;
+pub use emoji_pane_component::{EmojiPane, EmojiPaneProps};
 pub mod reaction_strip;
 pub use reaction_strip::{ReactionStrip, ReactionStripWidget, ReactionToggle, StripHit};
 pub mod modal_dialog;

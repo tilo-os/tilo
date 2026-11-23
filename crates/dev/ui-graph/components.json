@@ -2303,6 +2303,39 @@
       }
     },
     {
+      "name": "EmojiPane",
+      "doc": "The emoji picker as a card a view places: search, groups, tones and recents, writing each pick into the field the person was typing in. It is modal while it is open.",
+      "props": [
+        {
+          "name": "open",
+          "doc": "Whether it is open; a closed pane paints nothing and takes no input.",
+          "type": "bool"
+        },
+        {
+          "name": "label",
+          "doc": "What assistive technology calls it; the picker's own card name unless said.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "pick",
+          "doc": "An emoji was picked: carries it.",
+          "value": "text"
+        },
+        {
+          "name": "dismiss",
+          "doc": "It was closed without a pick (Escape, or a press outside it)."
+        }
+      ],
+      "semantics": {
+        "role": "Dialog",
+        "label": "label"
+      }
+    },
+    {
       "name": "EmptyState",
       "doc": "What a place says while it holds nothing: a sentence and at most one action.",
       "props": [
