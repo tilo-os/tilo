@@ -4416,13 +4416,17 @@ arch = ["x86_64", "aarch64"]
 name = "build/macos-{arch}"
 # Installs packages (rustup targets) from hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/macos/build-imager.sh {arch} /target/macos/{arch}/build"
+run = "bash tools/ci/macos/build-imager.sh {arch} \"$CARGO_TARGET_DIR/macos/{arch}/build\""
 # Both architectures build on the one Mac node: Apple silicon builds its own,
-# and cross-builds x86_64, which the install check starts through Rosetta.
+# and cross-builds x86_64, which the install check starts through Rosetta. The
+# job writes into its build directory, which a Mac node keeps where the job
+# runs it, not at /target.
 requires = ["os=macos", "arch=arm64"]
 outputs = ["/target/macos/{arch}/build/*"]
 default = false
-timeout_secs = 7200
+# A cold release build of the imager took 68 minutes on the Mac node with an
+# empty compiler cache, and the library's tests compile beside it.
+timeout_secs = 10800
 on = ["dispatch", "idle"]
 [check.matrix]
 arch = ["aarch64", "x86_64"]
@@ -4431,8 +4435,8 @@ arch = ["aarch64", "x86_64"]
 name = "package/macos-{arch}"
 run = '''set -eu
 case "${T_REF:-}" in tag:imager-v*) export TILO_VERSION="${T_REF#tag:imager-v}" ;; esac
-TILO_IMAGER_BINARY="${TILO_IMAGER_BINARY:-/target/macos/{arch}/build/imager}"
-bash apps/imager/packaging/package-macos.sh {arch} "$TILO_IMAGER_BINARY" /target/macos/{arch}/package
+TILO_IMAGER_BINARY="${TILO_IMAGER_BINARY:-$CARGO_TARGET_DIR/macos/{arch}/build/imager}"
+bash apps/imager/packaging/package-macos.sh {arch} "$TILO_IMAGER_BINARY" "$CARGO_TARGET_DIR/macos/{arch}/package"
 '''
 needs = ["build/macos-{arch}"]
 requires = ["os=macos", "arch=arm64"]
@@ -4450,7 +4454,7 @@ name = "install/macos-{arch}"
 run = '''set -eu
 case "${T_REF:-}" in tag:imager-v*) export TILO_VERSION="${T_REF#tag:imager-v}" ;; esac
 bash apps/imager/packaging/macos/verify-dmg.sh {arch} \
-  "/target/macos/{arch}/package/tilo-imager-macos-{arch}.dmg" /target/macos/{arch}/install
+  "$CARGO_TARGET_DIR/macos/{arch}/package/tilo-imager-macos-{arch}.dmg" "$CARGO_TARGET_DIR/macos/{arch}/install"
 '''
 needs = ["package/macos-{arch}"]
 requires = ["os=macos", "arch=arm64"]
@@ -4469,7 +4473,7 @@ arch = ["aarch64", "x86_64"]
 name = "sign/macos-{arch}"
 # Takes the Developer ID certificate and Apple notarization credentials from t's secrets, and reaches Apple's notary service.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/macos/sign-imager.sh {arch} /target/macos/{arch}/build /target/macos/{arch}/package /target/macos/{arch}/signed"
+run = "bash tools/ci/macos/sign-imager.sh {arch} \"$CARGO_TARGET_DIR/macos/{arch}/build\" \"$CARGO_TARGET_DIR/macos/{arch}/package\" \"$CARGO_TARGET_DIR/macos/{arch}/signed\""
 needs = ["build/macos-{arch}", "package/macos-{arch}"]
 requires = ["os=macos", "arch=arm64"]
 outputs = ["/target/macos/{arch}/signed/*"]
