@@ -2221,7 +2221,7 @@
         },
         {
           "id": "hand-to-agent",
-          "label": "Hand the notification to your agent",
+          "label": "Hand to agent",
           "description": "Hand a notification to the agent the person keeps: it works on what it was told, and its answer comes where their conversation with it is",
           "kind": "outside",
           "params": [
@@ -2851,7 +2851,7 @@
       "types": [
         {
           "name": "Style",
-          "doc": "A style: a view of the layout an installed package declares (shell.md \u00a76).",
+          "doc": "A style: a view of the layout an installed package declares (shell.md §6).",
           "fields": [
             {
               "name": "style",
