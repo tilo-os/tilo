@@ -65,12 +65,6 @@ messages-account-failed = Die Verbindung dieses Kontos wurde beendet. Prüfe sei
 
 messages-account-unknown = Der Verbindungsstatus ist nicht verfügbar.
 
-messages-listed-account-type-id = Den Dienst von { $item } geändert
-messages-listed-account-display-name = Den Namen von { $item } geändert
-messages-listed-account-config = Die Einrichtung von { $item } geändert
-messages-listed-account-enabled = { $item } ein- oder ausgeschaltet
-messages-listed-account-tint = Die Farbe von { $item } geändert
-
 messages-setup-accounts = Konten
 messages-setup-select = Wähle den Dienst und das Konto, das du auf diesem Gerät verknüpfen willst.
 messages-start-link = Dieses Gerät verknüpfen
