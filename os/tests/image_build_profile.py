@@ -35,6 +35,10 @@ class ImageBuildProfileTests(unittest.TestCase):
         self.write("os/dev/hardware_profile.py", (REPO / "os/dev/hardware_profile.py").read_text())
         self.write("os/dev/raw-rootfs-receipt.py", (REPO / "os/dev/raw-rootfs-receipt.py").read_text())
         self.write("os/dev/windows_provider.py", (REPO / "os/dev/windows_provider.py").read_text())
+        # The build stages its podman context from the Containerfile with the production stager;
+        # the fixture's Containerfile copies nothing, so its context is empty.
+        self.write("os/dev/build-context.py", (REPO / "os/dev/build-context.py").read_text())
+        self.write("os/Containerfile", "FROM scratch\n")
         self.write("os/hardware/profiles/lenovo-83ed.json", (REPO / "os/hardware/profiles/lenovo-83ed.json").read_text())
         self.write("os/dev/_common.sh", """\
 set -euo pipefail
