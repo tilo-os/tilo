@@ -80,3 +80,4 @@ pub mod services;
 pub mod system_authority;
 #[cfg(target_os = "linux")]
 pub mod system_stats;
+pub mod user_namespaces;

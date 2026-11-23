@@ -459,8 +459,9 @@ mod tests {
         out
     }
 
-    /// `TILO_OUTCOME_SHOTS=<dir>` writes the card of a window whose app could not be built, as it
-    /// stands and with its Details open, in the dark and light themes.
+    /// `TILO_OUTCOME_SHOTS=<dir>` writes the card of a window whose app could not be built, and of
+    /// one whose app this computer gives no sandbox, as each stands and with its Details open, in
+    /// the dark and light themes.
     #[test]
     fn shots_of_a_window_that_could_not_be_built() {
         let Ok(directory) = std::env::var("TILO_OUTCOME_SHOTS") else {
@@ -471,12 +472,31 @@ mod tests {
 
     /// The pictures [`shots_of_a_window_that_could_not_be_built`] writes into `directory`.
     fn window_not_built_shots(directory: &std::path::Path) {
-        for (scheme, theme) in [("dark", ui::Theme::dark()), ("light", ui::Theme::light())] {
-            let outcome = Outcome::not_built(
-                "Notes",
-                "application setup failed: application binding does not match",
-            );
-            let card = OutcomeCard::new(&outcome, || {});
+        let cards = [
+            (
+                "window-not-built",
+                Outcome::not_built(
+                    "Notes",
+                    "application setup failed: application binding does not match",
+                ),
+            ),
+            (
+                "window-no-sandbox",
+                Outcome::not_built_because(
+                    "Settings",
+                    crate::i18n::t("answer-why-no-sandbox"),
+                    "tilo-launcher: so.tilo.settings ended: exit status: 1\n\
+                     tilo-launcher: this computer allows no user namespaces, which every app's \
+                     sandbox is made in",
+                ),
+            ),
+        ];
+        for ((scheme, theme), (name, outcome)) in
+            [("dark", ui::Theme::dark()), ("light", ui::Theme::light())]
+                .into_iter()
+                .flat_map(|scheme| cards.iter().map(move |card| (scheme.clone(), card)))
+        {
+            let card = OutcomeCard::new(outcome, || {});
             let mut frame = ui::headless::FrameHarness::new(
                 ui::state::State::new(),
                 Box::new(card),
@@ -484,12 +504,12 @@ mod tests {
             );
             frame.set_theme(theme);
             frame.relayout();
-            frame.render_png(&directory.join(format!("window-not-built-{scheme}.png")));
+            frame.render_png(&directory.join(format!("{name}-{scheme}.png")));
             // The same card with its Details open, as a press on the control opens it.
             if let Some((x, y)) = centre_of_control(frame.root_widget(), "Details") {
                 frame.click_at(x, y);
                 frame.relayout();
-                frame.render_png(&directory.join(format!("window-not-built-details-{scheme}.png")));
+                frame.render_png(&directory.join(format!("{name}-details-{scheme}.png")));
             }
         }
     }

@@ -225,8 +225,17 @@ impl Apps {
                 // The tab the window was asked for says the launch could not open, rather than
                 // waiting on a window that is not coming.
                 let held = launch.as_ref().and_then(|launch| launch.instance);
+                // The card says why in the person's words; what the app said is its Details.
+                let said = sentence_not_opened(&event);
+                let details = event.said.stderr.join("\n");
                 if let Some(tab) = held.filter(|_| could_not_open) {
-                    self.could_not_open(Some(tab), &asked, Some(&event.title), &why);
+                    self.could_not_open_saying(
+                        Some(tab),
+                        &asked,
+                        Some(&event.title),
+                        &said,
+                        &details,
+                    );
                     continue;
                 }
                 // A Windows program with no window that ends at once never showed: the manager
@@ -238,7 +247,8 @@ impl Apps {
                 }
                 let notice = desktop.with_policy(|policy| {
                     if could_not_open {
-                        let answer = not_opened(policy, &asked, Some(&event.title), &why);
+                        let answer =
+                            not_opened(policy, &asked, Some(&event.title), &said, &details);
                         policy.not_opened(&asked, &event.title, answer)
                     } else {
                         // In the tab its last window was in, where the person left it.
@@ -370,6 +380,20 @@ fn log_what_it_said(event: &Event) {
             tilo_app_launch::output::line(&event.app, "stderr", said)
         );
     }
+}
+
+/// What the person reads of why the launch `event` ended before its window came: the cause the
+/// launcher named by its exit, when it is one it knows, else that it stopped first. What the app
+/// itself said is the card's Details.
+fn sentence_not_opened(event: &Event) -> String {
+    let key = match event.end {
+        tilo_app_launch::End::Exited {
+            code: launcher::user_namespaces::EXIT_NO_USER_NAMESPACES,
+            ..
+        } => "answer-why-no-sandbox",
+        _ => "answer-why-not-opened",
+    };
+    tilo_desktop_surface::i18n::t(key)
 }
 
 /// The reason the app whose launch `event` ended gives the person: its own last word when it said

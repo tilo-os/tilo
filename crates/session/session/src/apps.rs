@@ -57,7 +57,8 @@ struct AppConnections {
 
 use crate::search::AppActions;
 
-/// The answer for `asked` that did not open, and `why`, with trying again as its button.
+/// The answer for `asked` that did not open, and `why`, with trying again as its button and
+/// `details`, what the launch itself said, behind the card's Details.
 /// `title` names the launch when the asked string is an internal one (a Windows program's entry):
 /// a person reads the name the manager started it by, never an id.
 fn not_opened(
@@ -65,17 +66,15 @@ fn not_opened(
     asked: &str,
     title: Option<&str>,
     why: &str,
+    details: &str,
 ) -> Outcome {
-    use tilo_desktop_surface::i18n::{t, t_args};
     // The name its launch was started with is what a person knows it by; the shell's own name
     // for an asked string can be derived from an internal id.
     let name = match title {
         Some(title) => title.to_owned(),
         None => policy.name_of(asked),
     };
-    Outcome::new(t_args("answer-app-not-opened", &[("app", name.into())]))
-        .saying(why)
-        .retryable(t("answer-try-again"))
+    Outcome::not_built_because(&name, why, details)
 }
 
 /// Why a launch this session planned starts nothing, said where a person reads it: an app this
@@ -1457,11 +1456,23 @@ impl Apps {
     /// and shows the answer, with the button that asks for the app again. A launch no tab holds is
     /// answered by whoever asked for it.
     fn could_not_open(&self, tab: Option<u64>, asked: &str, title: Option<&str>, why: &str) {
+        self.could_not_open_saying(tab, asked, title, why, "");
+    }
+
+    /// [`Self::could_not_open`] with `details`, what the launch said, behind the card's Details.
+    fn could_not_open_saying(
+        &self,
+        tab: Option<u64>,
+        asked: &str,
+        title: Option<&str>,
+        why: &str,
+        details: &str,
+    ) {
         let Some(tab) = tab else {
             return;
         };
         self.answer_in_tabs(|policy| {
-            let outcome = not_opened(policy, asked, title, why);
+            let outcome = not_opened(policy, asked, title, why, details);
             policy.failed_at(tab, asked, outcome);
         });
     }
