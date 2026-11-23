@@ -240,15 +240,16 @@ pub const WORKSPACE_MEMBERS: &str = "members";
 pub const WORKSPACE_MEMBER: &str = "members/*";
 /// The question a device of a person's asks the workspace's host before it signs a change to
 /// who is in the workspace: `{change, ...the change's arguments}`, where `change` is the action
-/// the tree publishes the change at ([`WORKSPACE_MEMBER_ADDED`],
+/// the tree publishes the change at ([`WORKSPACE_MEMBER_ADMITTED`],
 /// [`WORKSPACE_MEMBER_PLACED`] or [`WORKSPACE_MEMBER_REMOVED`]). Answered `{}` when the change
 /// is the device's to make, and refused when it is not.
 pub const WORKSPACE_MEMBER_ADMIT: &str = "member.admit";
-/// The action `workspace/members#add` publishes: give a person a place in the workspace,
-/// whether or not they held one, as [`WORKSPACE_MEMBER_PLACED`] would a member's.
-pub const WORKSPACE_MEMBER_ADDED: &str = "add";
+/// The action `workspace/members#admit` publishes: admit a person to the workspace at a place,
+/// whether or not they held one, as [`WORKSPACE_MEMBER_PLACED`] would a member's. The change that
+/// admits them keeps their membership record with it.
+pub const WORKSPACE_MEMBER_ADMITTED: &str = "admit";
 /// The action `workspace/members/<person>#role` publishes: change the place of a person the
-/// workspace holds. A person it does not hold is added by [`WORKSPACE_MEMBER_ADDED`], never
+/// workspace holds. A person it does not hold is added by [`WORKSPACE_MEMBER_ADMITTED`], never
 /// given a place here.
 pub const WORKSPACE_MEMBER_PLACED: &str = "role";
 /// The action `workspace/members/<person>#remove` publishes: remove the person, as the
@@ -294,7 +295,7 @@ pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 41] = [
     (
         "member.add",
         Some(WORKSPACE_MEMBERS),
-        WORKSPACE_MEMBER_ADDED,
+        WORKSPACE_MEMBER_ADMITTED,
     ),
     (
         "member.add",

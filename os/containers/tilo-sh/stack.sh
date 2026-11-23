@@ -107,7 +107,7 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
                          With KEY, the person with that user public key is an
                          administrator at once (NAME is how the Lounge names
                          them): the stack's owner runs
-                         tilo do workspace/members#add person=KEY role=administrator -w WORKSPACE
+                         tilo do workspace/members#admit person=KEY role=administrator -w WORKSPACE
   stack.sh invite [WORKSPACE] [-- --role ROLE] [--email ADDRESS]
                          an invite link to WORKSPACE (its id; the Lounge when
                          none), made by the stack's owner with tilo do
@@ -1063,7 +1063,7 @@ lounge_id() {
 # administrator of the Lounge and lets them in. The Lounge has one owner, the
 # stack's own person, and only they hand it on, from a device of their own.
 # With KEY, the person whose user public key (hex) is KEY is an administrator
-# at once: the stack's own person adds them (`tilo do workspace/members#add
+# at once: the stack's own person adds them (`tilo do workspace/members#admit
 # person=KEY role=administrator`), and a key of theirs reaches the Lounge before any
 # device of theirs joins. NAME is how the Lounge names them then.
 declare_owner() {
@@ -1095,7 +1095,7 @@ declare_owner() {
   [[ $key =~ ^[0-9a-f]{64}$ ]] || die 'owner KEY: the person'"'"'s user public key, 64 hex characters (tilo login --json names it as user_public_key)'
   local -a named=()
   [[ -z $name ]] || named=("name=$name")
-  owner_tilo do workspace/members#add person="$key" role=administrator "${named[@]}" -w "$(lounge_id)" >/dev/null \
+  owner_tilo do workspace/members#admit person="$key" role=administrator "${named[@]}" -w "$(lounge_id)" >/dev/null \
     || die "the Lounge did not make $key an administrator"
   say "$key is an administrator of the Lounge: let in at once${name:+ as $name}"
 }

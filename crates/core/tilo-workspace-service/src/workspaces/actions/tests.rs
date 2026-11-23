@@ -9,7 +9,7 @@ use tilo_actions::InvocationId;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CatalogueQuery, CatalogueRow, InvokeArgument,
     InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
-    WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_MEMBER_ADDED, WORKSPACE_MEMBER_ADMIT,
+    WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_MEMBER_ADMIT, WORKSPACE_MEMBER_ADMITTED,
     WORKSPACE_MEMBER_PLACED, WORKSPACE_MEMBER_REMOVED, WORKSPACE_MEMBERS,
     workspace_governance_child, workspace_governance_operation, workspace_member,
 };
@@ -1317,7 +1317,7 @@ async fn a_devices_role_change_is_admitted_for_a_member_and_refused_for_someone_
         &host,
         workspace_id,
         &caller(&ada),
-        admission_request(&workspace, WORKSPACE_MEMBER_ADDED, &stranger, "viewer"),
+        admission_request(&workspace, WORKSPACE_MEMBER_ADMITTED, &stranger, "viewer"),
     )
     .await
     .unwrap();
