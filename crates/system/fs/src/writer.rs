@@ -42,21 +42,21 @@ pub enum Writer {
 }
 
 impl Writer {
-    /// Who the file actions it writes are done by, for `person` (the hex key of the person at
-    /// this device, when the mount knows it): a Tilo app or another program acting for them,
-    /// named as it goes by. `None` for the person themselves.
+    /// Who the file actions it writes are done by, for `person`: a Tilo app or another program
+    /// acting for them, or the person themselves. `None` where the mount knows no person.
     #[must_use]
     pub fn invoker(&self, person: Option<&str>) -> Option<tilo_actions::ActionInvoker> {
-        // A program the person uses writes as the person through it: an editor saving into
-        // the folder has the person's access, and history names the program. A Tilo app goes
-        // by the name its catalogue gives it.
+        // A program writes as the person through it; a Tilo app by its catalogue name; the
+        // person themselves by their key, which a change to a shared workspace must carry.
         match self {
             Self::App { id } => Some(tilo_actions::ActionInvoker::admitted(&through(person, id))),
             Self::Program { id, name } => Some(
                 tilo_actions::ActionInvoker::admitted(&through(person, id))
                     .named(Some(bounded(name))),
             ),
-            Self::Person => None,
+            Self::Person => person.map(|person| {
+                tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::person(person))
+            }),
         }
     }
 }

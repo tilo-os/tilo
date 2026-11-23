@@ -87,6 +87,9 @@ fn keep_in_run(source: &FileKeys, keys: &ContentKeys) {
 /// writer a mount runs at once, beyond which a burst opens more and closes them after.
 const IDLE_KEY_LINKS: usize = 16;
 
+/// What a caller waiting for a workspace's Files content keys is told.
+pub const KEYS_NOT_READY: &str = "the Files content keys are not ready";
+
 /// The key authority for the Files endpoint's workspace.
 #[derive(Clone)]
 pub struct FileKeys {
@@ -112,7 +115,7 @@ impl FileKeys {
                 Ok(if reply.access == KeyAccess::Ready {
                     reply.keys.ok_or_else(|| anyhow!("no Files keys returned"))
                 } else {
-                    Err(anyhow!("{}", crate::sync_folder::KEYS_NOT_READY))
+                    Err(anyhow!("{KEYS_NOT_READY}"))
                 })
             },
         )

@@ -1,10 +1,4 @@
-//! A logged-in computer's synced folder runs on its own workspace service: the workspace's tree
-//! is a record of the member copy that service holds, and the folder is a plain folder synced
-//! both ways (no FUSE). A file the server holds appears in the folder, a file written in the
-//! folder reaches the server, and both still hold after the computer's device restarts, an edit
-//! made just before the restart included. A workspace made later on another device of the
-//! person's reaches the computer through their server's account, which it follows, and gets a
-//! folder of its own. No session carries any of it.
+//! A logged-in Linux computer's FUSE folder, both ways, across a restart.
 
 #![allow(
     clippy::unwrap_used,
@@ -286,7 +280,7 @@ impl Computer {
             login.server_cert.device_public_key,
             &login.workspace,
         ));
-        let peer = Arc::new(Peer::open(dir, home, false).await.unwrap());
+        let peer = Arc::new(Peer::open(dir, home).await.unwrap());
         let keeping = tokio::spawn(Arc::clone(&peer).keep(Arc::clone(&own), account));
         Self { own, peer, keeping }
     }
@@ -366,7 +360,15 @@ fn folder_at(dir: &Path, home: &Path, workspace: &str) -> PathBuf {
     clippy::too_many_lines,
     reason = "one person's folder from its first sync through a restart, read top to bottom"
 )]
-async fn a_synced_folder_follows_the_server_both_ways_across_a_restart() {
+async fn a_mounted_folder_follows_the_server_both_ways_across_a_restart() {
+    tilo_test_env::require_capability!(
+        Fuse,
+        tilo_fs::fuse_session::mountable(
+            Path::new("/dev/fuse"),
+            std::env::var_os("PATH").as_deref()
+        ),
+        "a workspace's folder is a FUSE mount"
+    );
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let (server_key, server_cert) = enrol(&root, "home-server", DeviceCapabilities::member());
     let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
@@ -424,6 +426,19 @@ async fn a_synced_folder_follows_the_server_both_ways_across_a_restart() {
         "a file written in the folder reaches the server",
     )
     .await;
+    let written_by = hex::encode(root.verifying_key().to_bytes());
+    let agenda = server_tree(&hosted, &workspace)
+        .await
+        .children(ROOT_ID)
+        .into_iter()
+        .find(|(_, node)| node.name.as_bytes() == b"agenda.txt")
+        .map(|(_, node)| node.author.clone())
+        .expect("the server's tree holds the file the folder wrote");
+    assert_eq!(
+        agenda.as_deref(),
+        Some(written_by.as_str()),
+        "history names its writer"
+    );
     // An edit the computer took in just before it stops, which need not have gone out yet.
     std::fs::write(
         folder.join("late.txt"),

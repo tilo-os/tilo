@@ -699,7 +699,7 @@ async fn open_peer(state: &Path, home: &Path) -> anyhow::Result<super::peer::Pee
         .unwrap_or_else(Instant::now);
     let mut waiting = false;
     loop {
-        match super::peer::Peer::open(state, home, true).await {
+        match super::peer::Peer::open(state, home).await {
             Ok(peer) => return Ok(peer),
             Err(error) if tilo_fs::ContentStore::held_elsewhere(&error) => {
                 if Instant::now() >= deadline {
@@ -1046,11 +1046,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let runtime = bridge_runtime().unwrap();
         let first = runtime
-            .block_on(super::super::peer::Peer::open(
-                dir.path(),
-                dir.path(),
-                false,
-            ))
+            .block_on(super::super::peer::Peer::open(dir.path(), dir.path()))
             .expect("the first holder opens the files");
         let (started, starting) = std::sync::mpsc::channel();
         let (opened, opening) = std::sync::mpsc::channel();

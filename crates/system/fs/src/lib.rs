@@ -66,7 +66,9 @@ pub mod smart_monitor;
 #[cfg(feature = "filesystem")]
 pub mod storage;
 pub mod store;
-#[cfg(feature = "filesystem")]
+/// macOS's working folder while its file provider extension cannot yet write one: built for the
+/// Mac alone, and for the unit tests that keep it honest on any host.
+#[cfg(all(feature = "filesystem", unix, any(target_os = "macos", test)))]
 pub mod sync_folder;
 #[cfg(feature = "filesystem")]
 pub mod thumbs;

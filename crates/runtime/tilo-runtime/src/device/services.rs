@@ -518,7 +518,6 @@ impl Daemon {
         let replicas = take_work_files(
             &TakenFiles {
                 root,
-                sockets,
                 workspaces: &workspaces,
                 media: &media,
                 apps: &apps,
@@ -1674,16 +1673,14 @@ fn channels(root: &Path) -> BrokerChannels {
 /// What the files of the workspaces whose work this device takes are held with.
 struct TakenFiles<'a> {
     root: &'a Path,
-    /// The directory the daemon's sockets are in.
-    sockets: &'a Path,
     workspaces: &'a Arc<ServiceWorkspaces>,
     media: &'a profile::MediaHost,
     apps: &'a Arc<apps::Apps>,
     author: take_work::files::Author,
 }
 
-/// Where the files of the workspaces this device holds are shown, each mirrored at a folder in
-/// this user's home. When it `takes` work, the files of every workspace it holds are held from
+/// Where the files of the workspaces this device holds are shown, each at a folder in this
+/// user's home. When it `takes` work, the files of every workspace it holds are held from
 /// the start, where its shells run. So are they on a computer with no login, which `founded` a
 /// workspace here: its folders are where the person keeps their files, the founded workspace's
 /// and every one they joined, with no `tilo folders` to choose them. Without a home, or
@@ -1705,12 +1702,12 @@ fn take_work_files(
             own_folder: None,
             store: parts.media.store(),
             author: parts.author,
+            writers: Arc::new(tilo_fs::writer::WriterResolver::default()),
             credentials: Box::new(move |workspace| {
                 held.upgrade()
                     .ok_or_else(|| io::Error::other("the workspace service closed"))?
                     .files_credentials(workspace)
             }),
-            identity: parts.sockets.join(IDENTITY_SOCKET),
             content,
             apps: Arc::clone(parts.apps),
         },
@@ -1732,7 +1729,7 @@ fn take_work_files(
 }
 
 /// Hold `workspace`'s files in `replicas`, under the name its governance gives
-/// it: the folder that mirrors them, unless they cannot be held.
+/// it: the folder that shows them, unless they cannot be held.
 pub(super) fn hold_files(
     replicas: &take_work::files::Replicas,
     name: &str,

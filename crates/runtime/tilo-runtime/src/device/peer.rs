@@ -1,5 +1,5 @@
 //! This computer as a peer of the person's workspaces: each workspace's one
-//! folder, at `~/<workspace>` by default, kept in sync both ways.
+//! folder, at `~/<workspace>` by default, served through the platform's file provider.
 //!
 //! The device `tilo login` made runs its own workspace service, which holds
 //! each of the person's workspaces as a member copy ([`super::workspaces`]),
@@ -8,10 +8,10 @@
 //! account ([`super::account`]), which this peer follows ([`Peer::keep`]). In
 //! that copy this device holds each workspace's
 //! file tree, the Files app's record ([`tree`]), with the bytes its files are
-//! made of ([`shelf`]), and shows it as a folder ([`mount`]): a FUSE mount of the
-//! filesystem Tilo OS mounts at `/var/workspace`, where this user can mount
-//! one. Which workspaces get a folder, where, and whether it syncs is the
-//! person's ([`folders`], `tilo folders`).
+//! made of ([`shelf`]), and shows it at a folder ([`mount`]): a FUSE mount, Linux's
+//! file provider, on Tilo OS and every other distribution alike. Which
+//! workspaces get a folder, where, and whether it syncs is the person's
+//! ([`folders`], `tilo folders`).
 //!
 //! So `cp`, `ls`, `grep`, an editor and an agent work on the workspace's real
 //! files, each write is named for who made it ([`tilo_fs::writer`]), and what
@@ -85,8 +85,6 @@ pub(crate) struct Peer {
     /// The device's directory, where [`folders`] are kept.
     device_dir: PathBuf,
     state: PathBuf,
-    /// Whether to mount with FUSE where this user can.
-    mount: bool,
     /// The content of the files, routed by this device's own workspace service over `store`:
     /// made once that service is first at hand, and held for as long as this peer is, since the
     /// service keeps what answers its members only weakly.
@@ -139,7 +137,7 @@ impl Peer {
     ///
     /// # Errors
     /// The content store cannot be opened.
-    pub(crate) async fn open(device_dir: &Path, home: &Path, mount: bool) -> anyhow::Result<Self> {
+    pub(crate) async fn open(device_dir: &Path, home: &Path) -> anyhow::Result<Self> {
         let files = device_dir.join("files");
         std::fs::create_dir_all(&files)?;
         let store = Arc::new(tilo_fs::ContentStore::open(files.join("content")).await?);
@@ -163,7 +161,6 @@ impl Peer {
             home: home.to_path_buf(),
             device_dir: device_dir.to_path_buf(),
             state: files,
-            mount,
             routed: std::sync::OnceLock::new(),
             listed: tokio::sync::Mutex::new(None),
             connected: std::sync::atomic::AtomicBool::new(false),
@@ -520,12 +517,7 @@ impl Peer {
             admission: Arc::clone(&admission),
             state: &state,
         };
-        let showing = mount::show(
-            || mount::filesystem(&parts),
-            at,
-            &state.join("folder"),
-            self.mount,
-        )?;
+        let showing = mount::show(|| mount::filesystem(&parts), at, &state.join("folder"))?;
         Ok(Held {
             workspace,
             name: folder_name.to_owned(),
