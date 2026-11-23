@@ -392,6 +392,7 @@ members = [
     "crates/platform/tilolang-process",
     "crates/platform/tilolang-mail",
     "crates/platform/tilolang-youtube",
+    "crates/integrations/tilolang-calendar",
     "crates/platform/tilo-failure",
     "crates/platform/tilo-lock",
     "crates/platform/tilo-socket",
