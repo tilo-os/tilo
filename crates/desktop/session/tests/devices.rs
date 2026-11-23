@@ -774,12 +774,24 @@ fn pressing_a_device_with_nothing_playing_opens_its_settings() {
     }
     harness.press("laptop", RowPart::Row);
     assert!(link.sent().is_empty(), "nothing plays: nothing is sent");
+    let workspace = harness.session.handle().read(|tree| {
+        tree.active_workspace()
+            .map(|workspace| workspace.id().to_string())
+            .unwrap_or_default()
+    });
+    let displays = application_action_target(
+        &workspace,
+        "so.tilo.settings",
+        "settings.section:displays",
+        "open-pane",
+    );
     assert!(
         host.invoked
             .borrow()
             .iter()
-            .any(|(_, arguments)| arguments["anchor"] == "settings.section:displays"),
-        "a device that shows opens the displays page"
+            .any(|(target, _)| *target == displays),
+        "a device that shows opens the displays page, through the page's own row: {:?}",
+        host.invoked.borrow()
     );
 }
 
