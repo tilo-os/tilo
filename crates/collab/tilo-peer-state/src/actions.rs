@@ -714,7 +714,7 @@ impl ActionService {
         // admitted only to what the workspace's grants to any key open, decided here, so no
         // dispatcher behind this one ever meets a caller off the roster it did not open to.
         let Some(certificate) = certificate else {
-            if action.agent.is_some() || !opened {
+            if !opened {
                 return Err(not_permitted(
                     source,
                     "a key the workspace holds no certificate for asks what it opens to no visitor",

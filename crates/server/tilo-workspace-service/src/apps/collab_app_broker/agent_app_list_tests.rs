@@ -544,7 +544,7 @@ tilo_test_env::scenario! {
         );
         // A caller who may not act in the workspace is told nothing is there, never an
         // empty list that reads as "nothing publishes".
-        let stranger = turn_caller("scribe", "outsider", &workspace_id);
+        let stranger = agent_caller("scribe", "outsider", &workspace_id);
         assert!(
             matches!(publishers(&state, &stranger), Err(ActionCallError::Unavailable { .. })),
             "a denied caller sees no providers"
