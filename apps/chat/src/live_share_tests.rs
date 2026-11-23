@@ -743,14 +743,12 @@ fn a_person_ends_the_share_their_own_agent_made_and_nobody_else_does() {
 }
 
 /// What is not this person's own agent's share for them is not theirs to end: another
-/// member's own share, one an agent made for another member, one an agent made for nobody,
-/// and one made for several people at once, which is nobody's alone.
+/// member's own share, one an agent made for another member, and one an agent made for
+/// nobody.
 #[test]
-fn a_share_made_for_someone_else_for_nobody_or_for_several_is_not_theirs_to_end() {
+fn a_share_made_for_someone_else_or_for_nobody_is_not_theirs_to_end() {
     let mut app = TestApp::<ChatShell>::new().unwrap();
-    let person = person_here(&mut app);
-    let mut several = Acting::agent(SCOUT);
-    several.acted_for = vec![Acting::person(person.as_str()), Acting::person("u_bob")];
+    person_here(&mut app);
     for (whose, sharer) in [
         ("of another member's own", ActionInvoker::person("u_bob")),
         (
@@ -758,10 +756,6 @@ fn a_share_made_for_someone_else_for_nobody_or_for_several_is_not_theirs_to_end(
             ActionInvoker::agent(PLANNER).acting_for("u_bob"),
         ),
         ("an agent made for nobody", ActionInvoker::agent(PLANNER)),
-        (
-            "an agent made for several people at once",
-            ActionInvoker::admitted(&several),
-        ),
     ] {
         let shared = share_as(&mut app, Some(sharer), None);
         assert!(
@@ -774,6 +768,31 @@ fn a_share_made_for_someone_else_for_nobody_or_for_several_is_not_theirs_to_end(
             "a share {whose} stays live"
         );
     }
+}
+
+/// Bob's agent answering this person works for them, bounded by Bob: a share it makes is
+/// this person's to end, and not Bob's, who only bounds what it does.
+#[test]
+fn a_share_another_members_agent_made_answering_this_person_is_theirs_to_end() {
+    let mut app = TestApp::<ChatShell>::new().unwrap();
+    let person = person_here(&mut app);
+    let mut answering = Acting::agent(SCOUT);
+    answering.acted_for = vec![Acting::person(person.as_str()), Acting::person("u_bob")];
+    let shared = share_as(&mut app, Some(ActionInvoker::admitted(&answering)), None);
+    let item = message_item(&shared.id);
+    assert!(
+        app.call_by(
+            ActionInvoker::person("u_bob"),
+            &item,
+            "stop-sharing",
+            json!({})
+        )
+        .is_err(),
+        "the agent's owner does not end a share made for someone else"
+    );
+    app.call_on(&item, "stop-sharing", json!({}))
+        .expect("the person the agent answered ends the share it made for them");
+    assert!(held(&mut app, &shared.id).share.unwrap().ended);
 }
 
 /// The page's own Chat offers the way to end such a share to the person the agent made it

@@ -53,8 +53,7 @@ fn own(cx: &ActionCx, message: &Message) -> Result<(), Refusal> {
 /// change anything of their message. So does the person it was shared for
 /// ([`shared_for`]), when they invoke the verb themselves, on any device of theirs: an agent
 /// shares in its person's name, and that person takes the share back without removing the
-/// message. Nobody else does: not another member, not what acts for that person, and nobody
-/// for what was posted for several people at once.
+/// message. Nobody else does: not another member, and not what acts for that person.
 fn ends_share(cx: &ActionCx, message: &Message) -> Result<(), Refusal> {
     let invoker = author(cx)?;
     if invoker == message.author {
@@ -77,8 +76,7 @@ fn ends_share(cx: &ActionCx, message: &Message) -> Result<(), Refusal> {
 
 /// The one person the software that posted a message acted for, as the message keeps who wrote
 /// it for whom (`acting`: pinned from whoever invoked the verb that posted it, never an
-/// argument). None for a person's own message, for software that acted for nobody, and for
-/// what acted for several people at once.
+/// argument). None for a person's own message and for software that acted for nobody.
 pub(crate) fn shared_for(acting: Option<&tilo_actions::Acting>) -> Option<&str> {
     acting
         .filter(|acting| !acting.is_person())
