@@ -769,12 +769,11 @@ pub(crate) fn item_of(
     id: &str,
     items: &[String],
 ) -> Option<ResourceRef> {
-    match items {
-        [ty] => Some(at.item(id, ty.clone())),
-        _ => {
-            let ty = store.type_of_id(&at.item(id, String::new()).id_string())?;
-            Some(at.item(id, ty))
-        }
+    if let [ty] = items {
+        Some(at.item(id, ty.clone()))
+    } else {
+        let ty = store.type_of_id(&at.item(id, String::new()).id_string())?;
+        Some(at.item(id, ty))
     }
 }
 

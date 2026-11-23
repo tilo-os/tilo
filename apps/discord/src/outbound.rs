@@ -150,7 +150,7 @@ pub fn plan_post(
             tilo: message.id.clone(),
         },
         root: message.parent.clone(),
-        channel: target.tilo.clone(),
+        channel: target.tilo,
     });
     plan
 }
@@ -338,7 +338,7 @@ pub fn plan_delete(
             message: mapped.discord.clone(),
             thread,
         },
-        tilo: message.to_owned(),
+        tilo: message.clone(),
     }]
 }
 
@@ -367,20 +367,19 @@ pub fn plan_reaction(
     let Some(row) = chat.message(&message) else {
         return none;
     };
-    let channel_id = match row
+    let channel_id = if let Some(thread) = row
         .parent
         .as_ref()
         .and_then(|root| guild.mapping(MappedKind::Thread, root))
     {
-        Some(thread) => thread.discord.clone(),
-        None => {
-            let channel = chat
-                .thread_channel(&row.channel)
-                .unwrap_or_else(|| row.channel.clone());
-            match guild.mapping(MappedKind::Channel, &channel) {
-                Some(channel) => channel.discord.clone(),
-                None => return none,
-            }
+        thread.discord.clone()
+    } else {
+        let channel = chat
+            .thread_channel(&row.channel)
+            .unwrap_or_else(|| row.channel.clone());
+        match guild.mapping(MappedKind::Channel, &channel) {
+            Some(channel) => channel.discord.clone(),
+            None => return none,
         }
     };
     let wanted = emoji::key(&discord_emoji);

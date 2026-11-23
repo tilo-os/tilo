@@ -231,7 +231,7 @@ impl ChatRead {
     fn conversation_messages(&self, conversation: &str, parent: Option<&str>) -> Vec<Message> {
         self.rows_of(conversation, "messages")
             .into_iter()
-            .filter_map(|row| self.read_message(row, conversation, parent))
+            .filter_map(|row| Self::read_message(row, conversation, parent))
             .collect()
     }
 
@@ -245,15 +245,10 @@ impl ChatRead {
                     .and_then(reference_id)
                     .is_some_and(|found| publish(&found) == thread)
             })
-            .map(|row| item(row))
+            .map(item)
     }
 
-    fn read_message(
-        &self,
-        row: &Value,
-        conversation: &str,
-        parent: Option<&str>,
-    ) -> Option<Message> {
+    fn read_message(row: &Value, conversation: &str, parent: Option<&str>) -> Option<Message> {
         let author = row
             .get("created")
             .and_then(|created| created.get("who"))
@@ -375,12 +370,12 @@ impl ChatRead {
     /// The collection `field` of the resource whose published id is `id`.
     fn rows_of(&self, id: &str, field: &str) -> Vec<&Value> {
         let wanted = publish(id);
-        let found = self.find_row(self.root(), &wanted);
+        let found = Self::find_row(self.root(), &wanted);
         self.rows(found, field)
     }
 
     /// The row whose published id is `item`, anywhere in the tree.
-    fn find_row<'v>(&self, node: Option<&'v Value>, item_id: &str) -> Option<&'v Value> {
+    fn find_row<'v>(node: Option<&'v Value>, item_id: &str) -> Option<&'v Value> {
         let node = node?;
         if item(node) == item_id {
             return Some(node);
@@ -393,7 +388,7 @@ impl ChatRead {
         {
             if let Some(items) = field.get("items").and_then(Value::as_array) {
                 for row in items {
-                    if let Some(found) = self.find_row(Some(row), item_id) {
+                    if let Some(found) = Self::find_row(Some(row), item_id) {
                         return Some(found);
                     }
                 }
@@ -594,15 +589,39 @@ fn iso_ms(at: &str) -> Option<i64> {
         }
         None => (second.parse::<i64>().ok()?, 0),
     };
-    // Days from the civil date: Howard Hinnant's `days_from_civil`.
-    let year = if month <= 2 { year - 1 } else { year };
-    let era = if year >= 0 { year } else { year - 399 } / 400;
-    let yoe = year - era * 400;
-    let mp = (month + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    Some(days * 86_400_000 + hour * 3_600_000 + minute * 60_000 + second * 1000 + millis)
+    // Days from the civil date: Howard Hinnant's `days_from_civil`, in checked arithmetic: a
+    // date so far from the epoch that its milliseconds do not fit is no instant here.
+    let year = if month <= 2 {
+        year.checked_sub(1)?
+    } else {
+        year
+    };
+    let era = if year >= 0 {
+        year
+    } else {
+        year.checked_sub(399)?
+    } / 400;
+    let yoe = year.checked_sub(era.checked_mul(400)?)?;
+    let mp = month.checked_add(9)? % 12;
+    let doy = (153_i64.checked_mul(mp)?.checked_add(2)? / 5)
+        .checked_add(day)?
+        .checked_sub(1)?;
+    let doe = yoe
+        .checked_mul(365)?
+        .checked_add(yoe / 4)?
+        .checked_sub(yoe / 100)?
+        .checked_add(doy)?;
+    let days = era
+        .checked_mul(146_097)?
+        .checked_add(doe)?
+        .checked_sub(719_468)?;
+    let at = days
+        .checked_mul(86_400_000)?
+        .checked_add(hour.checked_mul(3_600_000)?)?
+        .checked_add(minute.checked_mul(60_000)?)?
+        .checked_add(second.checked_mul(1000)?)?
+        .checked_add(millis)?;
+    Some(at)
 }
 
 #[cfg(test)]

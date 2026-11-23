@@ -302,6 +302,11 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "Map<List<Actor>>",
                 "Each field whose words name members of the workspace, by its name: the members they name (a native app's author, or the people of a direct conversation its id names).",
             ),
+            (
+                "records",
+                "Map<List<Map<Text>>>",
+                "Each field that keeps records of its own in a collection, by its name: the records in the order they stood, each record's fields as words.",
+            ),
         ],
     },
     ValueType {

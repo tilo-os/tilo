@@ -1207,6 +1207,11 @@ mod hosted_asks;
 #[path = "hosted_agent_shares.rs"]
 mod shares;
 
+/// The workspace's skills, which a turn is told of and reads through its tools, and which its
+/// people write through Chat's actions.
+#[path = "hosted_skills.rs"]
+mod skills;
+
 #[cfg(test)]
 #[path = "hosted_initiative.rs"]
 mod hosted_initiative;

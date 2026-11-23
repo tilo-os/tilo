@@ -15,6 +15,8 @@
 //! draft's sender, its account and address) reads as that record's fields too, each under the
 //! field's name and its own (`sender.email`); one at a document's root (the draft a composer
 //! writes, beside the collection of the others) is besides an item of its own, `of` the field.
+//! A field that keeps records of its own in a collection (a skill's examples) reads in
+//! `records`, the records in the order they stood, each record's fields by their names.
 //! A document that is no record of that layout (one written before it, which carries neither
 //! `tilo:version` nor `tilo:record` nor any collection of the layout) yields nothing: it is left
 //! where it is, unread.
@@ -61,6 +63,9 @@ pub struct EarlierItem {
     /// Each field that maps keys to words (a native app's watch times, by video): what each key
     /// holds, as words. Its keys are in [`Self::lists`] too.
     pub entries: BTreeMap<String, BTreeMap<String, String>>,
+    /// Each field that keeps records of its own in a collection (a skill's examples): the
+    /// records in the order they stood, each record's fields as words.
+    pub records: BTreeMap<String, Vec<BTreeMap<String, String>>>,
 }
 
 impl EarlierItem {
@@ -136,6 +141,25 @@ impl EarlierItem {
                             .map(|member| Value::Actor(crate::ids::Actor::Member(member)))
                             .collect();
                         Some((text(name), Value::List(named)))
+                    })
+                    .collect(),
+            ),
+            Value::Map(
+                self.records
+                    .iter()
+                    .map(|(name, records)| {
+                        let records = records
+                            .iter()
+                            .map(|record| {
+                                Value::Map(
+                                    record
+                                        .iter()
+                                        .map(|(field, said)| (text(field), text(said)))
+                                        .collect(),
+                                )
+                            })
+                            .collect();
+                        (text(name), Value::List(records))
                     })
                     .collect(),
             ),
@@ -379,7 +403,14 @@ fn read_field_at(
                     item.entries.insert(name.to_owned(), said);
                 }
                 item.lists.insert(name.to_owned(), doc.keys(obj).collect());
-                if depth < RECORD_DEPTH && record(doc, value, obj) {
+                if let Some(records) = collection(doc, name, value, obj, 0) {
+                    // A collection kept in a field (a skill's examples): its records, in the
+                    // order they stood, each record's words by its field's name.
+                    item.records.insert(
+                        name.to_owned(),
+                        records.into_iter().map(|record| record.texts).collect(),
+                    );
+                } else if depth < RECORD_DEPTH && record(doc, value, obj) {
                     read_fields(doc, item, name, obj, depth.saturating_add(1));
                 }
             }
@@ -614,6 +645,57 @@ mod tests {
             own.texts.keys().all(|key| !key.contains('.')),
             "{:?}",
             own.texts
+        );
+    }
+
+    /// A collection a record keeps in a field (a skill's examples) reads as its records, oldest
+    /// first by the order they stood, each record's words by its field's name; its ids stay the
+    /// field's `lists` entries.
+    #[test]
+    fn a_collection_in_a_field_reads_as_its_records() {
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "tilo:version", 1_i64).unwrap();
+        let skills = doc.put_object(ROOT, "skills", ObjType::Map).unwrap();
+        let skill = doc.put_object(&skills, "weekly", ObjType::Map).unwrap();
+        doc.put(&skill, "k", "a").unwrap();
+        let fields = doc.put_object(&skill, "v", ObjType::Map).unwrap();
+        let name = doc.put_object(&fields, "name", ObjType::Text).unwrap();
+        doc.splice_text(&name, 0, 0, "Weekly report").unwrap();
+        let examples = doc.put_object(&fields, "examples", ObjType::Map).unwrap();
+        for (id, order, text, accepted, note) in [
+            ("e1", "a", "Revenue rose 4 %.", true, "Exactly this"),
+            ("e2", "b", "It was a week of things.", false, ""),
+        ] {
+            let entry = doc.put_object(&examples, id, ObjType::Map).unwrap();
+            doc.put(&entry, "k", order).unwrap();
+            let held = doc.put_object(&entry, "v", ObjType::Map).unwrap();
+            for (field, said) in [("text", text), ("note", note)] {
+                let at = doc.put_object(&held, field, ObjType::Text).unwrap();
+                doc.splice_text(&at, 0, 0, said).unwrap();
+            }
+            doc.put(&held, "accepted", accepted).unwrap();
+            doc.put(&held, "at", 1_700_000_000_000_i64).unwrap();
+        }
+
+        let items = super::items("chat.skills", &doc);
+        let skill = items
+            .iter()
+            .find(|item| item.of == "skills")
+            .expect("the skill");
+        assert_eq!(skill.texts["name"], "Weekly report");
+        assert_eq!(skill.lists["examples"], ["e1", "e2"]);
+        let records = &skill.records["examples"];
+        assert_eq!(records.len(), 2, "{records:?}");
+        assert_eq!(records[0]["text"], "Revenue rose 4 %.");
+        assert_eq!(records[0]["accepted"], "true");
+        assert_eq!(records[0]["note"], "Exactly this");
+        assert_eq!(records[0]["at"], "1700000000000");
+        assert_eq!(records[1]["text"], "It was a week of things.");
+        assert_eq!(records[1]["accepted"], "false");
+        assert_eq!(records[1]["note"], "", "an empty field reads as no words");
+        assert!(
+            items.iter().all(|item| item.of != "examples"),
+            "the records are the skill's, not items of their own"
         );
     }
 }

@@ -182,7 +182,7 @@ pub(crate) async fn writes_to_assistant(
             let direct = opened.invoke(
                 &me,
                 (&chat, "message_person"),
-                vec![Value::resource(&all), Value::Actor(assistant.clone())],
+                vec![Value::resource(&all), Value::Actor(assistant)],
                 None,
             )?;
             let said = Value::Rich(RichValue::from_text(&text));

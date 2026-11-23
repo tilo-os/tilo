@@ -9,9 +9,12 @@ app so.tilo.chat "Chat" (
 use so.tilo.agent as agent
 
 /// The workspace's conversations in the sidebar's order: channels outside any category, the
-/// categories each with its own, and the direct messages, in the list as people.
+/// categories each with its own, and the direct messages, in the list as people. Beside them,
+/// how kinds of work are done here: the workspace's skills, which its people write and its
+/// agents read before they start.
 type Conversations {
     channels: Collection<Category | TextChannel | VoiceChannel | Direct>
+    skills: Collection<Skill>
 }
 
 root conversations: Conversations
@@ -152,6 +155,39 @@ type Part {
     body: Text
 }
 
+/// How one kind of work is done in this workspace: what a person writes down once, and what an
+/// agent reads before it starts that work.
+type Skill (untitled: "New skill") {
+    /// What it is called, in a few words: what an agent names it by.
+    name: Text
+    /// The kind of work it is for, in a sentence or two: when it applies.
+    work: Text
+    /// How that work is done here.
+    how: Text
+    /// The form the result takes; empty when it has no fixed form.
+    form: Text = ""
+    /// The model the work is done with, as `provider/model`; empty for the person's choice for
+    /// the kind of work.
+    model: Text = ""
+    /// Results the person accepted and rejected, oldest first: how the work is done, shown by
+    /// what came of it.
+    examples: Collection<Example>
+}
+
+/// A result a person accepted or rejected, kept with its skill as an example of how that work is
+/// done: more like this, or less like this.
+type Example {
+    /// The result, or the part of it that is meant.
+    text: Text
+    /// Whether the person accepted it (more like this) or rejected it (less like this).
+    accepted: Bool
+    /// What the person said about it; empty when they said nothing more.
+    note: Text = ""
+    /// When it was kept where this skill came from, in milliseconds since 1970; 0 for one kept
+    /// here, which the skill's history says when.
+    at: Int = 0
+}
+
 default view sidebar for Conversations
 
 default view channel for TextChannel
@@ -169,6 +205,10 @@ row view direct_summary for Direct
 row view category_summary for Category
 
 row view voice_summary for VoiceChannel
+
+default view skill for Skill
+
+row view skill_row for Skill
 
 /// Adds a text channel to the sidebar, about `topic` when it is given.
 primary action new_channel(
@@ -210,6 +250,66 @@ action add_voice_channel(c: Category, name: Text = std.say("Voice")) -> VoiceCha
     label: "New voice channel",
 ) {
     c.channels.insert(VoiceChannel(name: name))
+}
+
+/// Starts a skill, called `name`. What it is for and how its work is done are written on its
+/// page, or by an agent told to share the guidance with the workspace.
+action new_skill(all: Conversations, name: Text = "") -> Skill (icon: .plus, label: "New skill") {
+    require name == "" or not all.skills.any(s -> s.name == name) "The workspace already has a skill called {name}"
+    all.skills.insert(Skill(name: name))
+}
+
+/// Corrects a skill: only what is given changes, and what is left out stays as it is.
+action correct_skill(
+    s: Skill,
+    name: Text = s.name,
+    work: Text = s.work,
+    how: Text = s.how,
+    form: Text = s.form,
+    model: Text = s.model,
+) (icon: .pencil, label: "Correct skill") {
+    require name == ""
+        or name == s.name
+        or not conversations.skills.any(other -> other != s and other.name == name) "The workspace already has a skill called {name}"
+    s.name = name
+    s.work = work
+    s.how = how
+    s.form = form
+    s.model = model
+}
+
+/// Forgets a skill: no later turn reads it.
+action forget_skill(s: Skill) (icon: .trash_2, label: "Forget skill") {
+    conversations.skills.remove(s)
+}
+
+/// Keeps an example of a skill: a result the person accepted (more like this) or rejected (less
+/// like this), with what they said about it. The same result said again is that example, moved
+/// newest, and a skill keeps its newest twelve.
+action keep_example(s: Skill, text: Text, accepted: Bool, note: Text = "") (
+    icon: .bookmark,
+    label: "Keep an example",
+) {
+    require text.trim() != "" "An example says what the result was"
+    let text = text.trim()
+    let note = note.trim()
+    if let known = s.examples.find(e -> e.text == text) {
+        known.accepted = accepted
+        known.note = note
+        if let last = s.examples.last() {
+            if last != known { s.examples.move(known, after: last) }
+        }
+    } else {
+        s.examples.insert(Example(text: text, accepted: accepted, note: note))
+        if s.examples.len() > 12 {
+            if let first = s.examples.first() { s.examples.remove(first) }
+        }
+    }
+}
+
+/// Takes an example out of a skill.
+action drop_example(s: Skill, example: Example) (icon: .trash_2, label: "Remove the example") {
+    s.examples.remove(example)
 }
 
 /// The direct conversations an earlier version kept with one person alone (`person`), which
@@ -372,6 +472,55 @@ migration action carry_native_chat(all: Conversations) {
             }
         }
     }
+}
+
+/// The workspace's skills the native Chat kept before this app took its id over, carried into
+/// these once: what each is called, the work it is for, how the work is done here, the form of
+/// its result and the model, under the id it had there and in the order it stood, and the
+/// examples it kept, oldest first, each with what the result was, whether the person accepted
+/// it, what they said and when it was kept. The native app's own document is left as it is; a
+/// document whose examples do not read as records of their own carries nothing, so no skill
+/// comes without the examples it kept.
+migration action carry_native_skills(all: Conversations) {
+    let earlier = earlier(all)
+    let skills = earlier.filter(e -> e.of == "skills")
+    if not skills.any(e -> examples_problem(e) != "") {
+        for e in skills {
+            let skill = all.skills.insert(
+                Skill(
+                    name: e.texts.get("name") ?? "",
+                    work: e.texts.get("work") ?? "",
+                    how: e.texts.get("how") ?? "",
+                    form: e.texts.get("form") ?? "",
+                    model: e.texts.get("model") ?? "",
+                ),
+                id: e.id,
+            )
+            // Each example it kept, oldest first, with when it was kept there.
+            for example in e.records.get("examples") ?? [] {
+                skill.examples.insert(
+                    Example(
+                        text: example.get("text") ?? "",
+                        accepted: (example.get("accepted") ?? "") == "true",
+                        note: example.get("note") ?? "",
+                        at: (example.get("at") ?? "").to_int() ?? 0,
+                    ),
+                )
+            }
+        }
+    }
+}
+
+/// What of the examples the native skill `e` kept cannot be carried: a skill whose examples do
+/// not read as records of their own, or an example that says nothing. Empty when they all read.
+fn examples_problem(e: host.Earlier) -> Text {
+    let kept = e.lists.get("examples") ?? []
+    let held = e.records.get("examples") ?? []
+    if kept.len() != held.len() {
+        "examples that do not read as records"
+    } else if held.any(example -> (example.get("text") ?? "").trim() == "") {
+        "an example that says nothing"
+    } else { "" }
 }
 
 /// Who is in a direct conversation `opener` opens with `who`: the two of them, or `opener` alone
@@ -817,6 +966,104 @@ fn unread_in(c: Category) -> List<TextChannel | Direct> {
     )
 }
 
+/// The workspace's skills: how kinds of work are done here, each as a row that opens it, with
+/// the entry that starts another at their foot.
+view skills(all: Conversations) {
+    state opened: Option<Skill> = .none
+    on show(s: Skill): set(opened, s)
+    ui.Docked {
+        foot: {
+            stack {
+                std.add_entry("New skill", new_skill(all))
+            }
+        }
+        if all.skills.is_empty() {
+            ui.EmptyState(
+                "No skills yet",
+                icon: .sparkles,
+                message: "Skills say how work is done in this workspace, and its agents read them.",
+            )
+        } else {
+            std.list(all.skills, opened) { (s, at) ->
+                ui.ListItem(item: s, presence: at) {
+                    skill_row(s)
+                }
+            }
+        }
+    }
+}
+
+/// A skill: what it is called, the work it is for, how that work is done here and the form of
+/// its result, each written in place.
+view skill(s: Skill) {
+    std.document(s) {
+        ui.TextInput(bind: s.name, title: true, placeholder: "What it is called")
+        stack(gap: .group) {
+            stack(gap: .tight) {
+                text("When it applies", role: .label)
+                ui.TextInput(
+                    bind: s.work,
+                    placeholder: "The kind of work this is for, in a sentence or two",
+                )
+            }
+            stack(gap: .tight) {
+                text("How it is done here", role: .label)
+                ui.TextInput(
+                    bind: s.how,
+                    lines: 6,
+                    placeholder: "What to do, step by step where that helps",
+                )
+            }
+            stack(gap: .tight) {
+                text("The form of the result", role: .label)
+                ui.TextInput(bind: s.form, placeholder: "Empty when it has no fixed form")
+            }
+            stack(gap: .tight) {
+                text("The model", role: .label)
+                ui.TextInput(
+                    bind: s.model,
+                    placeholder: "provider/model, empty for the person's choice",
+                )
+            }
+            if not s.examples.is_empty() {
+                stack(gap: .tight) {
+                    text("Examples", role: .label)
+                    for e in s.examples {
+                        example_row(s, e)
+                    }
+                }
+            }
+        }
+        std.after_body {
+            std.history(s)
+        }
+    }
+}
+
+/// An example a skill keeps: the result, whether the person accepted it, and what they said
+/// about it, with the way to take it out.
+view example_row(s: Skill, e: Example) {
+    row(gap: .related, align: .start) {
+        ui.Icon(
+            if e.accepted { .circle_check } else { .x },
+            size: .small,
+            tone: if e.accepted { .success } else { .danger },
+            description: if e.accepted {
+                "Accepted: more like this"
+            } else { "Rejected: less like this" },
+        )
+        stack(fill: 1.0, gap: .none) {
+            text(e.text, role: .body)
+            if e.note != "" {
+                text(e.note, role: .caption, secondary: true)
+            }
+        }
+        ui.Button("Remove") {
+            on press: drop_example(s, e)
+        }
+    }
+}
+
 /// The sidebar: channels outside any category first, then each category with its channels.
 /// Choosing one shows it beside the sidebar.
 /// TODO(language): a resource's own key for a navigation item; the category and name stand in.
@@ -963,6 +1210,13 @@ view sidebar(all: Conversations) {
                             }
                         }
                     }
+                    // How work is done here, which the workspace's agents read before they
+                    // start: a window of its own.
+                    ui.NavSection("Workspace") {
+                        ui.NavItem("/skills", "Workspace skills", icon: .sparkles) {
+                            on select: set(shown, "/skills").then(open(all, view: skills))
+                        }
+                    }
                 }
             }
         }
@@ -1100,6 +1354,11 @@ view category_summary(c: Category) {
         secondary: if c.channels.len() == 1 { "1 channel" } else { "{c.channels.len()} channels" },
         icon: .folder,
     )
+}
+
+/// A skill as another app's page summarizes it: what it is called, and the work it is for.
+view skill_row(s: Skill) {
+    ui.ListRow(title: meta(s).title, secondary: s.work, icon: .sparkles)
 }
 
 /// A message of a direct conversation, with what can be done to it on hover.

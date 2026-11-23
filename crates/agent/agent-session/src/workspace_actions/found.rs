@@ -572,9 +572,7 @@ impl Worker {
         person: &ui::permissions::policy::PersonId,
         route: &DocumentRoute,
     ) -> Option<Vec<IndexEntry>> {
-        let Some(link) = self.shared.link.get().cloned() else {
-            return None;
-        };
+        let link = self.shared.link.get().cloned()?;
         if let Some(who) = who {
             let key = Reader::of(who);
             if let Some(access) = self.access(workspace_id, &key)
@@ -790,15 +788,14 @@ impl Worker {
         // published when no listing of this workspace holds it: the host that keeps the record
         // publishes its entries, and this device holds no catalogue app to list them through. It
         // is still exactly what the search found and what a caller addresses it by.
-        let (kind, label) = match named {
-            Some(named) => named,
-            None => {
-                let type_name = entry
-                    .resource
-                    .starts_with("tl:")
-                    .then(|| entry.subtitle.clone().unwrap_or_default())?;
-                (type_name, entry.title.clone())
-            }
+        let (kind, label) = if let Some(named) = named {
+            named
+        } else {
+            let type_name = entry
+                .resource
+                .starts_with("tl:")
+                .then(|| entry.subtitle.clone().unwrap_or_default())?;
+            (type_name, entry.title.clone())
         };
         Some(Found {
             resource: id.to_owned(),

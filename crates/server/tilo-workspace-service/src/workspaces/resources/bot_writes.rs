@@ -139,9 +139,15 @@ pub(super) fn decide(
                 declared.name, declared.name
             )));
         }
+        let held = access.get(bot).ok_or_else(|| {
+            refused(&format!(
+                "{} in {app}: the bot's access is not read here",
+                declared.name
+            ))
+        })?;
         if !nodes
             .iter()
-            .any(|node| access[bot].allows(node, declared.kind, &cx))
+            .any(|node| held.allows(node, declared.kind, &cx))
         {
             return Err(refused(&format!("{} in {app}", declared.name)));
         }
@@ -194,6 +200,9 @@ fn gather<'c>(
     }
 }
 
+/// Where a resource it names is placed: its kind, and the resource above it.
+type Placement = Option<(String, Option<String>)>;
+
 /// Every node the action `declared` may have been invoked at, by writes starting from `starts`:
 /// each resource at or above them of a type it takes, or its package's own node for an action
 /// invoked on no resource, as the host's authority names it.
@@ -201,7 +210,7 @@ fn invoked_at(
     workspace: &str,
     declared: &Declared,
     starts: &[Option<String>],
-    up: &dyn Fn(&str) -> Option<(String, Option<String>)>,
+    up: &dyn Fn(&str) -> Placement,
 ) -> Vec<TreePath> {
     let app = TreePath::workspace(workspace).app(declared.app.clone());
     if declared.targets.is_empty() {

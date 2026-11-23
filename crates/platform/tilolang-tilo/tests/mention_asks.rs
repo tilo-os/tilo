@@ -344,7 +344,7 @@ fn two_devices_asking_from_one_message_apart_hold_one_ask_once_they_meet() {
         "new_channel",
         vec![all, Value::text("design")],
     );
-    settle(&mut ada);
+    settle(&ada);
     let said = "Can someone review the shots?";
     let message = call(
         &ada,
@@ -357,12 +357,12 @@ fn two_devices_asking_from_one_message_apart_hold_one_ask_once_they_meet() {
             Value::Opt(None),
         ],
     );
-    settle(&mut ada);
+    settle(&ada);
     let message = target(&message);
     // The agents' asks exist on both before they part, so each device's ask goes into the
     // same list.
     let agents = ada.host.root_of(AGENT_APP).unwrap();
-    settle(&mut ada);
+    settle(&ada);
     let mut grace = ada.fork("grace", &[DISCUSSION, NOTES, AGENT, CHAT]);
     assert!(
         asks(&ada).is_empty() && asks(&grace).is_empty(),
@@ -406,7 +406,7 @@ fn two_devices_asking_from_one_message_apart_hold_one_ask_once_they_meet() {
         assert_eq!(asks(replica).len(), 1, "{who}'s device holds its own ask");
     }
 
-    ada.sync_with(&mut grace);
+    ada.sync_with(&grace);
     let (on_ada, on_grace) = (asks(&ada), asks(&grace));
     assert_eq!(on_ada.len(), 1, "one ask, not one per device: {on_ada:#?}");
     assert_eq!(on_grace.len(), 1, "{on_grace:#?}");

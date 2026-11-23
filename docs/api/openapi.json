@@ -23954,6 +23954,16 @@
         "required": [],
         "description": "Adds a voice channel to the sidebar."
       },
+      "tl.so.tilo.chat.Conversations.new_skill.Arguments": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "description": "Starts a skill, called `name`. What it is for and how its work is done are written on its\npage, or by an agent told to share the guidance with the workspace."
+      },
       "tl.so.tilo.chat.Conversations.report_problem.Arguments": {
         "type": "object",
         "properties": {
@@ -25522,6 +25532,187 @@
           "field": {
             "description": "The name of the field to set.",
             "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chat.Skill.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.chat.Skill.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "name",
+              "work",
+              "how",
+              "form",
+              "model"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chat.Skill.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chat.Skill.correct_skill.Arguments": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "work": {
+            "type": "string"
+          },
+          "how": {
+            "type": "string"
+          },
+          "form": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "description": "Corrects a skill: only what is given changes, and what is left out stays as it is."
+      },
+      "tl.so.tilo.chat.Skill.forget_skill.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Forgets a skill: no later turn reads it."
+      },
+      "tl.so.tilo.chat.Skill.keep_example.Arguments": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "accepted": {
+            "type": "boolean"
+          },
+          "note": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "accepted"
+        ],
+        "description": "Keeps an example of a skill: a result the person accepted (more like this) or rejected (less\nlike this), with what they said about it. The same result said again is that example, moved\nnewest, and a skill keeps its newest twelve."
+      },
+      "tl.so.tilo.chat.Skill.drop_example.Arguments": {
+        "type": "object",
+        "properties": {
+          "example": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chat.Example",
+            "type": "object"
+          }
+        },
+        "required": [
+          "example"
+        ],
+        "description": "Takes an example out of a skill."
+      },
+      "tl.so.tilo.chat.Example.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.chat.Example.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "text",
+              "note"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chat.Example.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "accepted"
+            ],
             "type": "string"
           },
           "value": {
@@ -37365,6 +37556,12 @@
     {
       "app": "so.tilo.chat",
       "resource": "tl.so.tilo.chat.Conversations",
+      "action": "new_skill",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Conversations.new_skill.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Conversations",
       "action": "report_problem",
       "arguments": "#/components/schemas/tl.so.tilo.chat.Conversations.report_problem.Arguments"
     },
@@ -37709,6 +37906,66 @@
       "resource": "tl.so.tilo.chat.Part",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.chat.Part.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Skill",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Skill.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Skill",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Skill.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Skill",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Skill.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Skill",
+      "action": "correct_skill",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Skill.correct_skill.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Skill",
+      "action": "forget_skill",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Skill.forget_skill.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Skill",
+      "action": "keep_example",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Skill.keep_example.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Skill",
+      "action": "drop_example",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Skill.drop_example.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Example",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Example.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Example",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Example.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Example",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Example.edit-flag.Arguments"
     },
     {
       "app": "so.tilo.lang.counter",

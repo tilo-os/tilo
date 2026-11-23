@@ -216,12 +216,13 @@ impl Workspaces {
             })
             .await;
             let waited = match waited {
-                Ok(Ok(login)) => {
-                    Ok(
-                        keep_nextcloud(workspaces.vault_at(&workspace), &login, services, &account)
-                            .await,
-                    )
-                }
+                Ok(Ok(login)) => Ok(Box::pin(keep_nextcloud(
+                    workspaces.vault_at(&workspace),
+                    &login,
+                    services,
+                    &account,
+                ))
+                .await),
                 Ok(Err(reason)) => Ok(Err(reason)),
                 Err(error) => Err(error),
             };

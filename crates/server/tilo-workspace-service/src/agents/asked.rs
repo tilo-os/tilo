@@ -104,55 +104,8 @@ pub(super) async fn turns(
                     continue;
                 };
                 let team = sub_agents::is_team(agent, asked);
-                let around = if team {
-                    None
-                } else {
-                    asked
-                        .from
-                        .as_ref()
-                        .map(|from| asks::around(opened, from, AROUND))
-                };
-                // What is private to the person who asked and the agent: a turn about it knows
-                // and keeps what the agent learns about that person ([`super::learned`]).
-                let asker = match &asked.who {
-                    Some(asks::Actor::Member(who)) if who.person_id().is_some() => Some(who),
-                    _ => None,
-                };
-                // What the agent kept of what came before the window, where the window leaves
-                // any of the conversation out.
-                let summary = around
-                    .as_ref()
-                    .filter(|around| around.earlier > 0)
-                    .and_then(|around| {
-                        let conversation = around.holder.as_ref().or(asked.from.as_ref())?;
-                        summaries
-                            .iter()
-                            .find(|summary| {
-                                summary.agent == asked.agent
-                                    && summary
-                                        .conversation
-                                        .as_ref()
-                                        .is_some_and(|at| at.same(conversation))
-                            })
-                            .map(|summary| summary.text.clone())
-                    });
-                let private = !team
-                    && asker.is_some_and(|asker| {
-                        // What an event of theirs asked is shown in their Direct with the
-                        // agent, so it is as private as that conversation.
-                        let by_event = asked
-                            .from
-                            .as_ref()
-                            .and_then(crate::agents::events::event_named)
-                            .is_some();
-                        if by_event {
-                            asks::direct_with(opened, asker, &asked.agent).is_some_and(|direct| {
-                                asks::alone_with(opened, &direct, asker, &asked.agent)
-                            })
-                        } else {
-                            asks::private_to(opened, asked, asker, &asked.agent)
-                        }
-                    });
+                let (around, private) = around_and_private(opened, asked, team);
+                let summary = summary_of(&summaries, asked, around.as_ref());
                 read.push((agent.id.0.clone(), index, around, private, summary));
             }
             Ok((all, read))
@@ -221,6 +174,64 @@ pub(super) async fn turns(
         }
     }
     Ok((owed, stopped))
+}
+
+/// What is read around the ask `asked`, and whether it is private to the person who asked and
+/// the agent: a turn about it knows and keeps what the agent learns about that person
+/// ([`super::learned`]). A team's ask is read as the workspace's roster says, with nothing around
+/// it. What an event of theirs asked is shown in their Direct with the agent, so it is as private
+/// as that conversation.
+fn around_and_private(
+    opened: &crate::tl_records::Opened,
+    asked: &Asked,
+    team: bool,
+) -> (Option<asks::Around>, bool) {
+    if team {
+        return (None, false);
+    }
+    let around = asked
+        .from
+        .as_ref()
+        .map(|from| asks::around(opened, from, AROUND));
+    let asker = match &asked.who {
+        Some(asks::Actor::Member(who)) if who.person_id().is_some() => Some(who),
+        _ => None,
+    };
+    let private = asker.is_some_and(|asker| {
+        let by_event = asked
+            .from
+            .as_ref()
+            .and_then(crate::agents::events::event_named)
+            .is_some();
+        if by_event {
+            asks::direct_with(opened, asker, &asked.agent)
+                .is_some_and(|direct| asks::alone_with(opened, &direct, asker, &asked.agent))
+        } else {
+            asks::private_to(opened, asked, asker, &asked.agent)
+        }
+    });
+    (around, private)
+}
+
+/// What the agent of `asked` kept of what its conversation said before the window `around`
+/// shows, where the window leaves any of it out.
+fn summary_of(
+    summaries: &[asks::Summary],
+    asked: &Asked,
+    around: Option<&asks::Around>,
+) -> Option<String> {
+    let around = around.filter(|around| around.earlier > 0)?;
+    let conversation = around.holder.as_ref().or(asked.from.as_ref())?;
+    summaries
+        .iter()
+        .find(|summary| {
+            summary.agent == asked.agent
+                && summary
+                    .conversation
+                    .as_ref()
+                    .is_some_and(|at| at.same(conversation))
+        })
+        .map(|summary| summary.text.clone())
 }
 
 /// The turn `asked` gives `agent`, kept in `app`'s record; none for an ask nobody we know made.

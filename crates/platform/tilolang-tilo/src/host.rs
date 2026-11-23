@@ -1247,7 +1247,7 @@ impl Host {
             let reads: Vec<Meta> = meta
                 .uses
                 .iter()
-                .filter_map(|app| self.package(app).map(|package| package.meta.clone()))
+                .filter_map(|app| self.package(app).map(|package| package.meta))
                 .collect();
             if let Ok(bytes) = crate::surface::surface_toml_reading(
                 &[&meta],

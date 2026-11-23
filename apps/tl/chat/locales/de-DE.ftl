@@ -11,6 +11,8 @@ d-lmdoxbnn = Unterhaltungen
 
 d-5kzdptyg = Kanäle
 
+d-n2xgh234 = Fähigkeiten
+
 d-fe2st4jb = Kategorie
     .doc = Eine benannte Gruppe von Kanälen in der Seitenleiste.
     .noun = { $count ->
@@ -125,6 +127,55 @@ d-zevnbs3i = Art
 
 d-3hkzkqvr = Text
 
+d-fp7zx7jn = Fähigkeit
+    .doc = Wie eine Art Arbeit in diesem Arbeitsbereich getan wird: was eine Person einmal festhält und was ein Agent liest, bevor er diese Arbeit beginnt.
+    .noun = { $count ->
+        [one] Fähigkeit
+       *[other] Fähigkeiten
+    }
+    .untitled = Neue Fähigkeit
+
+d-gfk6pm4a = Name
+    .doc = Wie sie heißt, in wenigen Worten: womit ein Agent sie benennt.
+
+d-gnfldsvz = Wofür sie gilt
+    .doc = Die Art Arbeit, für die sie gilt, in einem oder zwei Sätzen: wann sie zutrifft.
+
+d-bn3w5doj = So wird sie getan
+    .doc = Wie diese Arbeit hier getan wird.
+
+d-ijpa4i7d = Form des Ergebnisses
+    .doc = Die Form, die das Ergebnis hat; leer, wenn es keine feste Form hat.
+
+d-3wlkwi6k = Modell
+    .doc = Das Modell, mit dem die Arbeit getan wird, als `provider/model`; leer für die Wahl der Person für diese Art Arbeit.
+
+d-bxx5rykt = Beispiele
+    .doc = Ergebnisse, die die Person angenommen und abgelehnt hat, älteste zuerst: wie die Arbeit getan wird, gezeigt an dem, was daraus wurde.
+
+d-so72kbuk = Beispiel
+    .doc = Ein Ergebnis, das eine Person angenommen oder abgelehnt hat, bei seiner Fähigkeit aufbewahrt als Beispiel, wie diese Arbeit getan wird: mehr davon, oder weniger davon.
+    .noun = { $count ->
+        [one] Beispiel
+       *[other] Beispiele
+    }
+
+d-fspydtu6 = Text
+    .doc = Das Ergebnis, oder der Teil davon, der gemeint ist.
+
+d-2u2ngevv = Angenommen
+    .doc = Ob die Person es angenommen (mehr davon) oder abgelehnt (weniger davon) hat.
+
+d-agcun6lt = Notiz
+    .doc = Was die Person dazu gesagt hat; leer, wenn sie nichts weiter gesagt hat.
+
+d-3ccutu3r = Wann
+    .doc = Wann es aufbewahrt wurde, woher diese Fähigkeit kommt, in Millisekunden seit 1970; 0 für eines, das hier aufbewahrt wurde, dessen Zeit der Verlauf der Fähigkeit sagt.
+
+d-so72kbuk-filter-accepted = Angenommen
+
+d-so72kbuk-filter-at = Wann
+
 d-msf7yzn7 = Neuer Kanal
     .doc = Fügt der Seitenleiste einen Textkanal hinzu, über `topic`, wenn es angegeben ist.
     .w-new-channel = new-channel
@@ -191,6 +242,12 @@ d-6uysx57s = Thread beginnen
 
 d-dgrvpxre = Ansicht senden~present
 
+d-clq6mq5o = Neue Fähigkeit~present
+
+d-umfqj3us = Fähigkeit korrigieren~present
+
+d-3e27liaz = Beispiel aufbewahren~present
+
 d-comllwls = Bearbeiten~present
 
 d-c2x2a6dh = Anheften~present
@@ -199,11 +256,35 @@ d-dzzuovny = Ungelesen
     .w-unread = Ungelesen
     .w-show-all = Alle { $n } zeigen
 
+d-ou6h2s2u = Fähigkeiten
+    .w-new-skill = Neue Fähigkeit
+    .w-no-skills-yet = Noch keine Fähigkeiten
+    .w-skills-say-how-work-is-done = Fähigkeiten sagen, wie Arbeit in diesem Arbeitsbereich getan wird, und seine Agenten lesen sie.
+
+d-2dkm5gja = Fähigkeit
+    .w-what-it-is-called = Wie sie heißt
+    .w-when-it-applies = Wann sie gilt
+    .w-the-kind-of-work-this-is = Die Art Arbeit, für die sie gilt, in einem oder zwei Sätzen
+    .w-how-it-is-done-here = So wird sie hier getan
+    .w-what-to-do-step-by-step = Was zu tun ist, Schritt für Schritt, wo das hilft
+    .w-the-form-of-the-result = Die Form des Ergebnisses
+    .w-empty-when-it-has-no-fixed = Leer, wenn es keine feste Form hat
+    .w-the-model = Das Modell
+    .w-provider-model-empty-for-the-person = provider/model, leer für die Wahl der Person
+    .w-examples = Beispiele
+
+d-gnhwq4qd = Beispielzeile
+    .w-accepted-more-like-this = Angenommen: mehr davon
+    .w-rejected-less-like-this = Abgelehnt: weniger davon
+    .w-remove = Entfernen
+
 d-5rkfnkg4 = Seitenleiste
     .w-channels = Kanäle
     .w-no-channels-yet = Noch keine Kanäle
     .w-channels-are-where-your-workspace-talks = Kanäle sind, wo dein Arbeitsbereich spricht, jeder ein Thema.
     .w-direct-messages = Direktnachrichten
+    .w-workspace = Arbeitsbereich
+    .w-workspace-skills = Fähigkeiten im Arbeitsbereich
     .w-no-channel-open = Kein Kanal offen
 
 d-ymtess4x = Kanal
@@ -219,6 +300,8 @@ d-q45utnmh = Kanalübersicht
 d-enkldjck = Direktübersicht
 
 d-oqg63mfd = Kategorieübersicht
+
+d-hrbsxhor = Fähigkeitszeile
 
 d-enkgjyn7 = Thread
     .w-message = Nachricht an { $name }
@@ -303,12 +386,53 @@ d-bjtbjfox = Neuer Sprachkanal
 
 d-bjtbjfox-name = Name
 
+d-dra3nelb = Neue Fähigkeit
+    .doc = Beginnt eine Fähigkeit namens `name`.
+    .w-the-workspace-already-has-a-skill = Der Arbeitsbereich hat schon eine Fähigkeit namens { $name }
+
+d-dra3nelb-name = Name
+
+d-fvl622e2 = Fähigkeit korrigieren
+    .doc = Korrigiert eine Fähigkeit: nur das Angegebene ändert sich, und was fehlt, bleibt, wie es ist.
+    .w-the-workspace-already-has-a-skill = Der Arbeitsbereich hat schon eine Fähigkeit namens { $name }
+
+d-fvl622e2-name = Name
+
+d-fvl622e2-work = Wofür sie gilt
+
+d-fvl622e2-how = So wird sie getan
+
+d-fvl622e2-form = Form des Ergebnisses
+
+d-fvl622e2-model = Modell
+
+d-wmxknkkc = Fähigkeit vergessen
+    .doc = Vergisst eine Fähigkeit: keine spätere Runde liest sie.
+
+d-4fojczoe = Ein Beispiel aufbewahren
+    .doc = Bewahrt ein Beispiel einer Fähigkeit auf: ein Ergebnis, das die Person angenommen (mehr davon) oder abgelehnt (weniger davon) hat, mit dem, was sie dazu gesagt hat.
+    .w-an-example-says-what-the-result = Ein Beispiel sagt, was das Ergebnis war
+
+d-4fojczoe-text = Text
+
+d-4fojczoe-accepted = Angenommen
+
+d-4fojczoe-note = Notiz
+
+d-aqrwkeib = Das Beispiel entfernen
+    .doc = Nimmt ein Beispiel aus einer Fähigkeit heraus.
+
+d-aqrwkeib-example = Beispiel
+
 d-qnkkcusk = Sprachkanal
 
 d-lkjppscz = Sprachkanalübersicht
 
 d-aod7dups = Früheren Chat übernehmen
     .doc = Die Unterhaltungen, die der frühere Chat vor der Übernahme dieser Kennung hielt, einmalig in diese übernommen: seine Kategorien und Kanäle in der Reihenfolge der Seitenleiste, jeweils mit Name und Thema, und jede Nachricht eines Kanals mit ihrem Wortlaut, ob sie angeheftet war und welche Kennung sie dort hatte.
+
+d-uuhhrrha = Frühere Fähigkeiten übernehmen
+    .doc = Die Fähigkeiten des Arbeitsbereichs, die der frühere Chat vor der Übernahme dieser Kennung hielt, einmalig in diese übernommen: wie jede heißt, welche Arbeit sie betrifft, wie die Arbeit hier getan wird, die Form ihres Ergebnisses und das Modell, unter der Kennung, die sie dort hatte, und in der Reihenfolge, in der sie stand, und die Beispiele, die sie aufbewahrte, älteste zuerst, jedes mit dem, was das Ergebnis war, ob die Person es angenommen hat, was sie dazu gesagt hat und wann es aufbewahrt wurde.
 
 d-4da5gcom = Geschrieben in
     .doc = Wo eine hierher übernommene oder weitergeleitete Nachricht geschrieben wurde.

@@ -680,37 +680,54 @@ fn layout_changed(plan: &mut BridgePlan, read: Reading<'_>, layout: &LayoutChang
 /// What a Discord post becomes in Chat: a message relayed at the name and time it was written
 /// there, answering the message it replied to.
 fn relay_item(post: &inbound::PostItem, chat: &tilo::ChatRead) -> Value {
-    json!({
-        "channel": post.channel,
-        "channel_kind": chat.conversation_kind(&post.channel),
-        "text": post.text,
-        "reply_to": post.parent,
-        "by": post.appearance.name,
-        "written_in": "Discord",
-        "written": post.written.saturating_mul(1000),
-        "appearance": post.appearance,
-        "discord": post.discord,
-        "persona": post.persona,
-    })
+    relay_item_fetched(post, chat, None)
+}
+
+/// [`relay_item`], with what the worker fetches for the file's post (`fetch`) when the item
+/// relays a file.
+fn relay_item_fetched(
+    post: &inbound::PostItem,
+    chat: &tilo::ChatRead,
+    fetch: Option<Value>,
+) -> Value {
+    let mut fields = serde_json::Map::new();
+    fields.insert("channel".into(), json!(post.channel));
+    fields.insert(
+        "channel_kind".into(),
+        json!(chat.conversation_kind(&post.channel)),
+    );
+    fields.insert("text".into(), json!(post.text));
+    fields.insert("reply_to".into(), json!(post.parent));
+    fields.insert("by".into(), json!(post.appearance.name));
+    fields.insert("written_in".into(), json!("Discord"));
+    fields.insert("written".into(), json!(post.written.saturating_mul(1000)));
+    fields.insert("appearance".into(), json!(post.appearance));
+    fields.insert("discord".into(), json!(post.discord));
+    fields.insert("persona".into(), json!(post.persona));
+    if let Some(fetch) = fetch {
+        fields.insert("fetch".into(), fetch);
+    }
+    Value::Object(fields)
 }
 
 fn inbound_plan(plan: &mut BridgePlan, read: Reading<'_>, inbound: InboundPlan) {
     plan.avatars.extend(values(inbound.avatars));
     plan.posts
         .extend(inbound.posts.iter().map(|p| relay_item(p, read.chat)));
-    plan.files.extend(inbound.files.into_iter().map(|f| {
-        let mut item = relay_item(&f.post, read.chat);
-        item["fetch"] = json!(f.fetch);
-        item
-    }));
+    plan.files.extend(
+        inbound
+            .files
+            .into_iter()
+            .map(|f| relay_item_fetched(&f.post, read.chat, Some(json!(f.fetch)))),
+    );
     plan.imports
         .extend(inbound.imports.iter().map(|p| relay_item(p, read.chat)));
-    plan.file_imports
-        .extend(inbound.file_imports.iter().map(|f| {
-            let mut item = relay_item(&f.post, read.chat);
-            item["fetch"] = json!(f.fetch);
-            item
-        }));
+    plan.file_imports.extend(
+        inbound
+            .file_imports
+            .into_iter()
+            .map(|f| relay_item_fetched(&f.post, read.chat, Some(json!(f.fetch)))),
+    );
     plan.chat_edits.extend(
         inbound
             .edits

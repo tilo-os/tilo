@@ -12,6 +12,8 @@ d-lmdoxbnn = Conversations
 
 d-5kzdptyg = Channels
 
+d-n2xgh234 = Skills
+
 d-fe2st4jb = Category
     .doc = A named group of channels in the sidebar.
     .noun = { $count ->
@@ -194,6 +196,55 @@ d-zevnbs3i = Kind
 
 d-3hkzkqvr = Body
 
+d-fp7zx7jn = Skill
+    .doc = How one kind of work is done in this workspace: what a person writes down once, and what an agent reads before it starts that work.
+    .noun = { $count ->
+        [one] skill
+       *[other] skills
+    }
+    .untitled = New skill
+
+d-gfk6pm4a = Name
+    .doc = What it is called, in a few words: what an agent names it by.
+
+d-gnfldsvz = Work
+    .doc = The kind of work it is for, in a sentence or two: when it applies.
+
+d-bn3w5doj = How
+    .doc = How that work is done here.
+
+d-ijpa4i7d = Form
+    .doc = The form the result takes; empty when it has no fixed form.
+
+d-3wlkwi6k = Model
+    .doc = The model the work is done with, as `provider/model`; empty for the person's choice for the kind of work.
+
+d-bxx5rykt = Examples
+    .doc = Results the person accepted and rejected, oldest first: how the work is done, shown by what came of it.
+
+d-so72kbuk = Example
+    .doc = A result a person accepted or rejected, kept with its skill as an example of how that work is done: more like this, or less like this.
+    .noun = { $count ->
+        [one] example
+       *[other] examples
+    }
+
+d-fspydtu6 = Text
+    .doc = The result, or the part of it that is meant.
+
+d-2u2ngevv = Accepted
+    .doc = Whether the person accepted it (more like this) or rejected it (less like this).
+
+d-agcun6lt = Note
+    .doc = What the person said about it; empty when they said nothing more.
+
+d-3ccutu3r = At
+    .doc = When it was kept where this skill came from, in milliseconds since 1970; 0 for one kept here, which the skill's history says when.
+
+d-so72kbuk-filter-accepted = Accepted
+
+d-so72kbuk-filter-at = At
+
 d-msf7yzn7 = New channel
     .doc = Adds a text channel to the sidebar, about `topic` when it is given.
     .w-new-channel = new-channel
@@ -228,11 +279,52 @@ d-bjtbjfox = New voice channel
 
 d-bjtbjfox-name = Name
 
+d-dra3nelb = New skill
+    .doc = Starts a skill, called `name`.
+    .w-the-workspace-already-has-a-skill = The workspace already has a skill called { $name }
+
+d-dra3nelb-name = Name
+
+d-fvl622e2 = Correct skill
+    .doc = Corrects a skill: only what is given changes, and what is left out stays as it is.
+    .w-the-workspace-already-has-a-skill = The workspace already has a skill called { $name }
+
+d-fvl622e2-name = Name
+
+d-fvl622e2-work = Work
+
+d-fvl622e2-how = How
+
+d-fvl622e2-form = Form
+
+d-fvl622e2-model = Model
+
+d-wmxknkkc = Forget skill
+    .doc = Forgets a skill: no later turn reads it.
+
+d-4fojczoe = Keep an example
+    .doc = Keeps an example of a skill: a result the person accepted (more like this) or rejected (less like this), with what they said about it.
+    .w-an-example-says-what-the-result = An example says what the result was
+
+d-4fojczoe-text = Text
+
+d-4fojczoe-accepted = Accepted
+
+d-4fojczoe-note = Note
+
+d-aqrwkeib = Remove the example
+    .doc = Takes an example out of a skill.
+
+d-aqrwkeib-example = Example
+
 d-tkh5jonr = Carry direct people
     .doc = The direct conversations an earlier version kept with one person alone (`person`), which every member could read: in each are that person and whoever opened it, as its history says.
 
 d-aod7dups = Carry native chat
     .doc = The conversations the native Chat kept before this app took its id over, carried into these once: its categories and channels in the sidebar's order, each with its name and topic, and every message of a channel with what it said, whether it was pinned and the id it had there.
+
+d-uuhhrrha = Carry native skills
+    .doc = The workspace's skills the native Chat kept before this app took its id over, carried into these once: what each is called, the work it is for, how the work is done here, the form of its result and the model, under the id it had there and in the order it stood, and the examples it kept, oldest first, each with what the result was, whether the person accepted it, what they said and when it was kept.
 
 d-uhenzjex = Report a problem
     .doc = Files a problem report, what someone ran into while using Tilo, in the workspace's #feedback channel, which the first report opens.
@@ -378,6 +470,12 @@ d-6uysx57s-m = M
 
 d-6uysx57s-name = Name
 
+d-clq6mq5o = New skill~present
+
+d-umfqj3us = Correct skill~present
+
+d-3e27liaz = Keep example~present
+
 d-v6wnfixl = Report problem~present
 
 d-dgrvpxre = Send view~present
@@ -396,11 +494,35 @@ d-dzzuovny = Unread
     .w-unread = Unread
     .w-show-all = Show all { $n }
 
+d-ou6h2s2u = Skills
+    .w-new-skill = New skill
+    .w-no-skills-yet = No skills yet
+    .w-skills-say-how-work-is-done = Skills say how work is done in this workspace, and its agents read them.
+
+d-2dkm5gja = Skill
+    .w-what-it-is-called = What it is called
+    .w-when-it-applies = When it applies
+    .w-the-kind-of-work-this-is = The kind of work this is for, in a sentence or two
+    .w-how-it-is-done-here = How it is done here
+    .w-what-to-do-step-by-step = What to do, step by step where that helps
+    .w-the-form-of-the-result = The form of the result
+    .w-empty-when-it-has-no-fixed = Empty when it has no fixed form
+    .w-the-model = The model
+    .w-provider-model-empty-for-the-person = provider/model, empty for the person's choice
+    .w-examples = Examples
+
+d-gnhwq4qd = Example row
+    .w-accepted-more-like-this = Accepted: more like this
+    .w-rejected-less-like-this = Rejected: less like this
+    .w-remove = Remove
+
 d-5rkfnkg4 = Sidebar
     .w-channels = Channels
     .w-no-channels-yet = No channels yet
     .w-channels-are-where-your-workspace-talks = Channels are where your workspace talks, each one a topic.
     .w-direct-messages = Direct messages
+    .w-workspace = Workspace
+    .w-workspace-skills = Workspace skills
     .w-no-channel-open = No channel open
 
 d-ymtess4x = Channel
@@ -420,6 +542,8 @@ d-lkjppscz = Voice summary
 d-enkldjck = Direct summary
 
 d-oqg63mfd = Category summary
+
+d-hrbsxhor = Skill row
 
 d-enkgjyn7 = Thread
     .w-message = Message { $name }

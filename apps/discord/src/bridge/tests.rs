@@ -467,12 +467,14 @@ tilo_test_env::scenario! {
         );
         let first = planned_on(&g, &talk(&["c_one", "c_two"]), &event);
         assert_eq!(first.observe.len(), 1);
-        let moves: Vec<_> = first
-            .chat_moves
-            .iter()
-            .map(|moved| moved["id"].as_str().unwrap_or_default())
-            .collect();
-        assert!(moves.contains(&"tl:so.tilo.chat:c_two"), "{:?}", first.chat_moves);
+        assert!(
+            first
+                .chat_moves
+                .iter()
+                .any(|moved| moved["id"].as_str().unwrap_or_default() == "tl:so.tilo.chat:c_two"),
+            "{:?}",
+            first.chat_moves
+        );
         assert!(
             first.chat_moves.iter().any(|moved| {
                 moved["id"] == json!(at("c_two"))

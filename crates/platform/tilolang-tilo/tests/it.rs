@@ -39,6 +39,7 @@ mod mention_asks;
 mod migrations;
 mod naming;
 mod native_chat;
+mod native_chat_skills;
 mod native_mail;
 mod native_notes;
 mod note_import;

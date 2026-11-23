@@ -174,21 +174,9 @@ pub(super) async fn gather(
             }
         }
         next.documents.insert(key, heads);
-        let tasks_part = app == TASKS
-            && collab_types::document::DocumentId::parse(&document)
-                .and_then(|id| id.chain_part())
-                .is_some_and(|(chain, _)| chain == tasks::issue_list::chain());
-        if tasks_part
-            && let Ok(part) = crate::agents::opened::<tasks::issue_list::IssueList>(&mut doc)
-        {
-            tasks_in(
-                part.issues.iter(),
-                &against,
-                &mut found,
-                &mut due,
-                &mut next,
-            );
-        }
+        tasks_of(
+            &app, &document, &mut doc, &against, &mut found, &mut due, &mut next,
+        );
     }
     // The first look starts at the newest arrival: mail from before it is
     // where the inbox stands.
@@ -305,6 +293,26 @@ struct Against<'a> {
     assistant: Option<String>,
     seen: &'a Seen,
     now_ms: i64,
+}
+
+/// Count what `document` of `app` holds into `found`, `due` and `next` when it is one of the
+/// tracker's issues parts.
+fn tasks_of(
+    app: &str,
+    document: &str,
+    doc: &mut AutoCommit,
+    against: &Against<'_>,
+    found: &mut Found,
+    due: &mut Vec<Value>,
+    next: &mut Seen,
+) {
+    let tasks_part = app == TASKS
+        && collab_types::document::DocumentId::parse(document)
+            .and_then(|id| id.chain_part())
+            .is_some_and(|(chain, _)| chain == tasks::issue_list::chain());
+    if tasks_part && let Ok(part) = crate::agents::opened::<tasks::issue_list::IssueList>(doc) {
+        tasks_in(part.issues.iter(), against, found, due, next);
+    }
 }
 
 /// The open tasks among `issues`: those that are the person's or their
