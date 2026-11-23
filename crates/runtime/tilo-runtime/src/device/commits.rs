@@ -1,11 +1,11 @@
-//! The broker's owner commits, through the device's workspace service.
+//! The broker's writes, through the device's workspace service.
 //!
-//! Every workspace this daemon's apps write in is held by the device's
-//! workspace service: the member copies of the workspaces other devices serve,
-//! or the workspace founded here, which the service governs. A document
-//! write is admitted here, in the writing device's name, and answered with the
-//! receipt that binds it; the service keeps it in the workspace's ordered
-//! persistence and carries it to the workspace's other devices.
+//! Every workspace this daemon's apps write in is kept by the device's
+//! workspace service: a workspace another device serves, or the workspace
+//! founded here, which the service governs. A document write is admitted here,
+//! in the writing device's name, and answered with the signed write that binds
+//! it; the service keeps it in the workspace's ordered persistence and carries
+//! it to the workspace's other devices.
 
 use std::{sync::Arc, time::SystemTime};
 
