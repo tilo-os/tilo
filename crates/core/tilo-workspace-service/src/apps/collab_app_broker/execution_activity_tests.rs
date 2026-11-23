@@ -2061,3 +2061,90 @@ async fn an_agents_turn_does_only_what_both_it_and_its_asker_may() {
         "Ada's own turn of the agent changes the block: the agent may, so Bo's grants refused it: {own:?}"
     );
 }
+
+/// [`fixture`], its action asking its person to type `phrase` before it runs.
+fn asking_to_type(
+    phrase: &str,
+) -> (
+    Arc<AppBrokerState>,
+    Caller,
+    mpsc::UnboundedReceiver<InvocationEnvelope>,
+) {
+    let (state, person, app) = fixture();
+    let mut surface = state.publishers.surfaces.lock().unwrap()[&7].clone();
+    surface.actions[0].contract.confirmation = tilo_actions::ConfirmationPolicy::Phrase {
+        phrase: phrase.into(),
+    };
+    state.replace_published_surfaces_for_test(vec![surface]);
+    (state, person, app)
+}
+
+/// `request` as the dispatch sends it again once its person approved its asked record, having
+/// typed `typed`.
+fn approved(request: &InvokeRequest, typed: &str) -> InvokeRequest {
+    use tilo_actions::remote::asked::{Approval, RecordRef};
+    let mut approval = Approval::new(
+        RecordRef {
+            workspace: "workspace".into(),
+            record: format!("invocations/{}", request.invocation.0),
+            device: None,
+        },
+        None,
+    );
+    approval
+        .typed
+        .push(zeroize::Zeroizing::new(typed.to_owned()));
+    InvokeRequest {
+        confirmation: Some(tilo_actions::remote::Confirmation::Asked(approval)),
+        ..request.clone()
+    }
+}
+
+tilo_test_env::scenario! {
+    fn a_press_that_asks_waits_for_its_person_and_the_phrase_they_type;
+
+    phase unapproved_it_is_refused_with_what_the_person_is_shown;
+    // Nobody approved it yet: it is refused with what its person is shown, the phrase to type
+    // among it, and the app never hears of it.
+    {
+        let (state, person, mut app) = asking_to_type("erase Block");
+        let asked = state.action_invoke(&person, None, None, &request()).poll_ready();
+        let PendingPoll::Ready(Err(ActionCallError::ConfirmationRequired(facts))) = asked else {
+            panic!("the person is asked: {asked:?}");
+        };
+        assert_eq!(
+            facts.by,
+            tilo_actions::remote::asked::AskedBy::default(),
+            "their own press, answered on their device"
+        );
+        assert_eq!(facts.verb, "Update");
+        assert_eq!(facts.on.as_deref(), Some("Block"));
+        assert_eq!(facts.takes.len(), 1, "one thing to type: {facts:?}");
+        assert!(facts.takes[0].label.contains("erase Block"), "{facts:?}");
+        assert!(!facts.takes[0].secret, "a phrase is no secret");
+        assert!(app.try_recv().is_err(), "the app never hears of it");
+    }
+
+    phase approved_with_the_wrong_phrase_it_is_refused;
+    {
+        let (state, person, mut app) = asking_to_type("erase Block");
+        let refused = state
+            .action_invoke(&person, None, None, &approved(&request(), "erase"))
+            .poll_ready();
+        assert!(
+            matches!(refused, PendingPoll::Ready(Err(ActionCallError::Refused { .. }))),
+            "{refused:?}"
+        );
+        assert!(app.try_recv().is_err(), "the app never hears of it");
+    }
+
+    phase approved_with_the_phrase_it_runs;
+    {
+        let (state, person, mut app) = asking_to_type("erase Block");
+        let ran = state
+            .action_invoke(&person, None, None, &approved(&request(), "erase Block"))
+            .poll_ready();
+        assert!(matches!(ran, PendingPoll::Ready(Ok(_))), "{ran:?}");
+        assert!(app.try_recv().is_ok(), "the app runs it");
+    }
+}
