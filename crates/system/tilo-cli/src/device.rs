@@ -330,12 +330,26 @@ fn named(device: &PersonalDevice) -> &str {
     device.name.as_deref().unwrap_or(&device.cert.device_label)
 }
 
-/// `tilo device key`: this computer's device key, its person and its label, from its login.
+/// `tilo device key`: this computer's device key, its person and its label, from its login; with
+/// no login, the workspace its daemon founded for its person, as the daemon answers it.
 ///
 /// # Errors
-/// This computer is not logged in, or its login is damaged.
+/// This computer's login is damaged, or with none its daemon serves no workspace.
 pub fn key() -> Result<ExitCode> {
-    let here = login::home().ok_or_else(|| anyhow!(login::NOT_LOGGED_IN))?;
+    let Some(here) = login::home() else {
+        login::ensure_daemon()?;
+        let workspace = login::runtime()?.block_on(async {
+            Client::open(Reach {
+                api: None,
+                key_file: None,
+                json: false,
+            })?
+            .founded_workspace()
+            .await
+        })?;
+        println!("{}", json!({ "workspace": workspace }));
+        return Ok(ExitCode::SUCCESS);
+    };
     println!(
         "{}",
         json!({

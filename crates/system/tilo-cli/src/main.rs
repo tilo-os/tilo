@@ -537,7 +537,8 @@ enum DeviceCmd {
         json: bool,
     },
     /// This computer's device key, the person it is certified for and its label, as one JSON
-    /// line, read from its login without reaching any host.
+    /// line, read from its login without reaching any host; with no login, the workspace its
+    /// daemon founded.
     #[command(hide = true)]
     Key,
     /// End the login of one of your devices, everywhere it reaches.

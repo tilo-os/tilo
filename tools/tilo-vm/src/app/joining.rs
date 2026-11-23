@@ -15,21 +15,11 @@ use super::{App, Resolved};
 use crate::config::{self, DeviceRoute};
 use crate::error::CliError;
 use crate::hypervisor::{self, run_all};
-use crate::remote::{Machine, own_env};
+use crate::remote::{Machine, own_env, tilo_program};
 use crate::sshkey;
 
 /// How long a booting VM has to spend its ticket.
 const JOIN_WAIT: Duration = Duration::from_secs(300);
-
-/// The `tilo` command that adds VMs: the one built beside this tilo-vm when there is one (a
-/// checkout's build, or CI's tilo-vm with the command it built), else the one on `PATH`.
-fn tilo_program() -> std::path::PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| Some(exe.parent()?.join("tilo")))
-        .filter(|beside| beside.is_file())
-        .unwrap_or_else(|| "tilo".into())
-}
 
 /// A ticket handed to a VM, and the `tilo device add` that waits for it to be spent.
 pub(super) struct Joining {
@@ -48,7 +38,7 @@ impl Drop for Joining {
 impl App {
     /// The person this machine adds VMs as: its own login, else tilo-vm's throwaway one under
     /// `Err(dir)`, made now when there is none. That one's workspace is founded by the daemon the
-    /// first `tilo device add` starts, so it is read once that printed its ticket.
+    /// first `tilo device add` starts, so it is asked for once that printed its ticket.
     fn adding_machine(&self) -> Result<Result<Machine, std::path::PathBuf>, CliError> {
         if let Some(machine) = &self.machine {
             return Ok(Ok(machine.clone()));

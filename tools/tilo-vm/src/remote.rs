@@ -54,9 +54,15 @@ impl std::fmt::Debug for Machine {
     }
 }
 
-/// The file the daemon of a computer with no login keeps the workspace it founded for a person in,
-/// beside its login: this, then the person's key in hex.
-const FOUNDED: &str = "workspace-of-";
+/// The `tilo` command tilo-vm asks: the one built beside this tilo-vm when there is one (a
+/// checkout's build, or CI's tilo-vm with the command it built), else the one on `PATH`.
+pub(crate) fn tilo_program() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.join("tilo")))
+        .filter(|beside| beside.is_file())
+        .unwrap_or_else(|| "tilo".into())
+}
 
 impl Machine {
     /// The person's own login on this machine (`tilo login`), or the person whose root it holds;
@@ -107,19 +113,34 @@ impl Machine {
         else {
             return Ok(None);
         };
-        let founded = place.dir().join(format!("{FOUNDED}{}", hex::encode(user)));
-        let Ok(founded) = std::fs::read_to_string(founded) else {
-            return Ok(None);
-        };
+        let workspace = founded(scope.as_deref().map(own_env).unwrap_or_default())?;
         let key = tilo_device_identity::persist::load_device_key(place.keys())
             .map_err(|error| login_error(&anyhow::anyhow!("{error}")))?;
         Ok(Some(Self {
             key,
             user,
-            workspace: founded.trim().to_owned(),
+            workspace,
             scope,
         }))
     }
+}
+
+/// The workspace the daemon `tilo` reaches in `env` founded for its person, as it answers
+/// `tilo device key` with no login.
+fn founded(env: Vec<(String, String)>) -> Result<String, CliError> {
+    let output = std::process::Command::new(tilo_program())
+        .args(["device", "key"])
+        .envs(env)
+        .output()
+        .map_err(CliError::io("run tilo device key"))?;
+    serde_json::from_slice::<serde_json::Value>(&output.stdout)
+        .ok()
+        .and_then(|answer| answer.get("workspace")?.as_str().map(str::to_owned))
+        .ok_or_else(|| CliError::CommandFailed {
+            command: "tilo device key".into(),
+            status: output.status.to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        })
 }
 
 /// The environment that keeps `tilo` to tilo-vm's own person under `dir`.

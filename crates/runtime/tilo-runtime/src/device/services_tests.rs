@@ -459,10 +459,11 @@ fn sdk_apps_join_the_daemon_and_publish_to_mcp() {
             .is_some_and(|name| name.starts_with("dev.tilo.same ("))),
         "{listed}"
     );
+    let founded = session.workspace().to_owned();
     drop(session);
     // The profile is released and served again with the same workspace.
     let reopened = Daemon::start_reporting(&root, &mut |_| {}).unwrap();
-    assert_eq!(reopened.workspace(), listed_workspace());
+    assert_eq!(reopened.workspace(), founded);
 }
 
 const WRITER_TEST: &str = "device::services::tests::an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_restart";
@@ -699,22 +700,6 @@ fn the_session_hands_its_workspace_service_a_route_that_asks_the_workspaces_devi
     assert!(state.action_offload().is_none(), "offload is off: no route");
     drop(state);
     drop(session);
-}
-
-/// The workspace founded on this computer, as its device's directory keeps it.
-fn listed_workspace() -> String {
-    let place = tilo_device_identity::login::Place::here(tilo_api::client::device_keys()).unwrap();
-    let mut kept = std::fs::read_dir(place.dir())
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with(FOUNDED))
-        });
-    let path = kept.next().expect("a workspace founded here");
-    assert!(kept.next().is_none(), "one person founds here");
-    std::fs::read_to_string(path).unwrap().trim().to_owned()
 }
 
 fn consent(
