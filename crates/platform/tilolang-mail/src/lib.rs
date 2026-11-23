@@ -13,6 +13,7 @@ pub mod connector;
 #[cfg(feature = "engine")]
 pub mod engine;
 pub mod origin;
+#[cfg(unix)]
 pub mod remote;
 #[cfg(feature = "engine")]
 pub mod serve;
@@ -31,6 +32,7 @@ use origin::ImapOrigin;
 
 /// The origin of an instance in a tilolang host, over the mail connector process at the far end
 /// of `stream`, waking the instance with `wake` when it says something.
+#[cfg(unix)]
 pub fn remote_origin(
     stream: std::os::unix::net::UnixStream,
     wake: tilolang_tilo::background::Waker,
@@ -47,11 +49,13 @@ pub fn remote_origin(
 /// Register the mail origin's client of the mail connector with the platform, so a crate that
 /// keeps a package's records reaches the connector without naming this one
 /// (`tilolang_tilo::origin::remote`).
+#[cfg(unix)]
 pub fn register() {
     tilolang_tilo::origin::register_remote("imap", CONNECTOR_CLIENT);
 }
 
 /// The client [`register`] hands the platform.
+#[cfg(unix)]
 const CONNECTOR_CLIENT: &Remote = &|stream, wake| {
     remote_origin(stream, wake)
         .map(|origin| origin as tilolang_tilo::origin::SharedOrigin)
@@ -59,6 +63,7 @@ const CONNECTOR_CLIENT: &Remote = &|stream, wake| {
 };
 
 /// The client [`register`] hands the platform.
+#[cfg(unix)]
 type Remote = dyn Fn(
         std::os::unix::net::UnixStream,
         tilolang_tilo::background::Waker,
