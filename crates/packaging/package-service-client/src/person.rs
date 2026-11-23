@@ -50,7 +50,7 @@ pub fn connect() -> Result<BlockingClient, String> {
         "no runtime directory (XDG_RUNTIME_DIR) to reach the package service through: \
          changes to the package store go through it",
     )?;
-    let mut stream = match std::os::unix::net::UnixStream::connect(&socket) {
+    let mut stream = match tilo_socket::connect(&socket) {
         Ok(stream) => stream,
         Err(first) => {
             let started = std::process::Command::new("systemctl")
@@ -59,7 +59,7 @@ pub fn connect() -> Result<BlockingClient, String> {
                 .stderr(std::process::Stdio::null())
                 .status()
                 .is_ok_and(|status| status.success());
-            match std::os::unix::net::UnixStream::connect(&socket) {
+            match tilo_socket::connect(&socket) {
                 Ok(stream) if started => stream,
                 _ => {
                     return Err(format!(

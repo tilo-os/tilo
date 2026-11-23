@@ -11970,6 +11970,7 @@ dependencies = [
  "serde_json",
  "tilo-app-package",
  "tilo-paths",
+ "tilo-socket",
  "tokio",
  "wire-frame",
  "workspace-hack",

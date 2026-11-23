@@ -9,6 +9,7 @@ description = "Package service's wire and typed client: how the Store, Settings,
 [dependencies]
 hex.workspace = true
 tilo-paths.workspace = true
+tilo-socket = { version = "0.1.0", path = "../../platform/tilo-socket" }
 tilo-app-package = { path = "../tilo-app-package" }
 # The rows the client lists, read from the one package registry.
 package-store = { path = "../package-store" }
