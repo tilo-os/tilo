@@ -225,12 +225,19 @@ fn copy_object(
     match from.object_type(source)? {
         ObjType::Map | ObjType::Table => {
             for key in from.keys(source).collect::<Vec<_>>() {
-                match from.get(source, key.as_str())? {
+                // Chat's lists were written under the old field name for the
+                // person an agent acts for.
+                let (from_key, into_key) = if key == "keeper" {
+                    ("keeper", "acts_for")
+                } else {
+                    (key.as_str(), key.as_str())
+                };
+                match from.get(source, from_key)? {
                     Some((Value::Scalar(scalar), _)) => {
-                        to.put(target, key.as_str(), scalar.into_owned())?;
+                        to.put(target, into_key, scalar.into_owned())?;
                     }
                     Some((Value::Object(kind), child)) => {
-                        let copy = to.put_object(target, key.as_str(), kind)?;
+                        let copy = to.put_object(target, into_key, kind)?;
                         copy_object(from, &child, to, &copy)?;
                     }
                     None => {}
