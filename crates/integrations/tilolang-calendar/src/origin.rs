@@ -1867,7 +1867,9 @@ fn entry_fields(ty: &OriginType, entry: &Entry, calendar: Option<&str>) -> Vec<(
     );
     put(ty, &mut fields, "color", text(&entry.color));
     put(ty, &mut fields, "organizer", text(&entry.organizer));
-    put(ty, &mut fields, "remind", text(&entry.remind));
+    if !entry.remind.is_empty() {
+        put(ty, &mut fields, "remind", text(&entry.remind));
+    }
     put(ty, &mut fields, "day", text(&wall_day(&entry.start)));
     put(ty, &mut fields, "end_day", text(&end_day(entry)));
     if let Some(calendar) = calendar
