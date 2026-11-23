@@ -109,7 +109,8 @@ use the same addresses.
 
 ### Apps
 
-An app is a tilolang package installed in a workspace. It declares resource
+An app is a package installed in a workspace, written in tilolang or Rust
+against the one app SDK. It declares resource
 types, actions (verbs with a typed input, a typed result and a kind:
 read, edit or privileged) and views (functions from a resource to UI whose
 controls name fields and actions). Installing it publishes all three into the
@@ -563,10 +564,23 @@ The copies:
 
 ### What survives
 
-- **One declaration language for apps: tilolang.** An app is types, actions
-  and views in `.tl`. Rust remains for the core and for engines an app uses
-  as host capabilities (pixels for Imager, the browser engine, PDF, video,
-  the terminal), never for app UI.
+- **Two layers: a UI library and an app SDK.**
+  - **The UI library** is raw UI that knows nothing about Tilo: widgets,
+    layout, text, input, animation and rendering on every platform, good
+    enough to compete as a UI library on its own on speed and developer
+    experience. It holds no resources, actions, workspaces, identity,
+    history, presence, search or permissions. ui-core's `history_mode`,
+    `history_source`, `presence`, `search`, `action_palette`, its action
+    dispatch and its shell widgets leave it.
+  - **The app SDK** gives an app the whole of Tilo (workspace, resources,
+    actions, history, identity, permissions, search, presence) with a pleasant
+    developer experience. An app changes state only through actions, and
+    everything it holds is in the normal store with permissions, history and
+    an author. It may use the UI library directly, but only by declaring how
+    that UI maps onto its resources, actions and views. tilolang and Rust are
+    two languages for this one SDK, each with one path into the system; the
+    showing of history, presence and search is SDK views over the system's
+    services.
 - **One model ABI**: `tilo-resource` (`DynResource`, merge kinds,
   `ActionCx`), with models running as WebAssembly in every host.
 - **One action registry**: `tilo-actions` (the published tree,
