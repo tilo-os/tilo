@@ -265,6 +265,11 @@ action show_grid(f: Files, grid: Bool) {
     s.grid = grid
 }
 
+/// Draws the folder the way the segment at place `i` says: the list at 0, the grid at 1.
+action choose_view(f: Files, i: Int) {
+    show_grid(f, i == 1)
+}
+
 /// Shows or hides the names that start with a dot.
 action toggle_hidden(f: Files) (icon: .eye, label: "Show hidden files") {
     let s = f.sessions.first() ?? f.sessions.insert(Session())
@@ -282,6 +287,11 @@ action open_entry(f: Files, e: Entry) uses files, time {
             .err(why) => { s.notice = "Nothing here opens “{e.name}”: {why}" },
         }
     }
+}
+
+/// Opens a file from Recent again, as the entry it was.
+action open_recent(f: Files, r: Recent) uses files, time {
+    open_entry(f, Entry(name: r.name, path: r.path, modified: r.opened))
 }
 
 /// A press on an entry: a folder opens as a person presses it once, and a file is read into the
@@ -829,7 +839,7 @@ view view_options(f: Files, s: Session, chosen: List<Text>, naming: State<Text>,
         ui.ToggleGroup(selected: if s.grid { 1 } else { 0 }, label: "How the folder shows") {
             ui.Segment("List", icon: .list)
             ui.Segment("Grid", icon: .layout_grid)
-            on change(i): show_grid(f, i == 1)
+            on change(i): choose_view(f, i)
         }
         ui.MenuButton("Sort", icon: .arrow_up_down, icon_only: true) {
             ui.MenuItem("Sort by name", checked: s.sort == .name) {
@@ -917,7 +927,6 @@ action name_it(f: Files, naming: Text, typed: Text) uses files, time {
 /// The folder as rows, each with its menu.
 view entry_list(f: Files, s: Session, entries: List<Entry>, chosen: List<Text>, naming: State<Text>, name: State<Text>) {
     ui.VirtualList(name: "Files", multi_select: true, in_column: true) {
-        on selected(items): set(chosen, items.map(e -> e.path))
         on activate(e): open_entry(f, e)
         on select(e): set(chosen, [e.path]).then(touch_entry(f, e))
         for e in entries {
@@ -973,7 +982,7 @@ view entry_list(f: Files, s: Session, entries: List<Entry>, chosen: List<Text>, 
 view entry_grid(f: Files, s: Session, entries: List<Entry>) {
     ui.Scroll {
         page(full) {
-            ui.CardGrid(name: "Files", card_width: .small) {
+            ui.CardGrid(name: "Files", card_width: .regular) {
                 for e in entries {
                     ui.CardGridCard(item: e, title: e.name) {
                         on activate: open_entry(f, e)
@@ -1012,7 +1021,7 @@ view recent_files(f: Files, s: Session) {
         ui.EmptyState("No recent files yet", icon: .clock, message: "Files you open stand here, one press away.")
     } else {
         ui.VirtualList(name: "Recent files", in_column: true) {
-            on activate(r: Recent): open_entry(f, Entry(name: r.name, path: r.path, modified: r.opened))
+            on activate(r: Recent): open_recent(f, r)
             for r in f.recent.sort_by(x -> x.opened, desc) {
                 ui.ListItem(item: r) {
                     row: {
