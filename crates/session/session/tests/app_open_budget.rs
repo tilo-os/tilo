@@ -229,10 +229,12 @@ fn timeline(device: &Device, app: &str) -> Option<serde_json::Value> {
 
 /// A timeline's steps, each the milliseconds since the one before it: the launcher's marks (Unix
 /// epoch), the app's process starting (`exec-to-main`: from the sandbox executing it to the app's
-/// own first mark), then the app's own marks up to its first frame. Steps under a millisecond are
-/// left out.
+/// own first mark), then the app's own marks up to its first frame. An app's step is
+/// `name:wall/ran`, the CPU its process ran in that step beside the wall time, where its timeline
+/// says. Steps under a millisecond of either are left out. The steps that ran the most follow,
+/// heaviest first, so a failure says where an app's own work went.
 fn steps(timeline: &serde_json::Value) -> String {
-    let mut marks: Vec<(String, f64)> = timeline["launcher"]
+    let mut marks: Vec<(String, f64, Option<f64>)> = timeline["launcher"]
         .as_array()
         .into_iter()
         .flatten()
@@ -240,11 +242,12 @@ fn steps(timeline: &serde_json::Value) -> String {
             Some((
                 mark["name"].as_str()?.to_owned(),
                 mark["epoch_us"].as_f64()?,
+                None,
             ))
         })
         .collect();
     let origin = timeline["origin_epoch_us"].as_f64().unwrap_or(0.0);
-    marks.push(("exec-to-main".to_owned(), origin));
+    marks.push(("exec-to-main".to_owned(), origin, None));
     marks.extend(
         timeline["events"]
             .as_array()
@@ -254,19 +257,46 @@ fn steps(timeline: &serde_json::Value) -> String {
                 Some((
                     event["name"].as_str()?.to_owned(),
                     origin + event["ns"].as_f64()? / 1000.0,
+                    event["cpu_ns"].as_f64(),
                 ))
             }),
     );
-    let mut previous = marks.first().map_or(0.0, |(_, at)| *at);
+    let mut previous = marks.first().map_or(0.0, |(_, at, _)| *at);
+    let mut previous_cpu = 0.0;
     let mut out = Vec::new();
-    for (name, at) in marks {
+    let mut ran = Vec::new();
+    for (name, at, cpu) in marks {
         let elapsed = (at - previous) / 1000.0;
         previous = previous.max(at);
-        if elapsed >= 1.0 {
-            out.push(format!("{name}:{elapsed:.0}"));
+        let step_ran = cpu.map(|cpu| {
+            let step = (cpu - previous_cpu).max(0.0) / 1e6;
+            previous_cpu = previous_cpu.max(cpu);
+            step
+        });
+        match step_ran {
+            Some(step) if elapsed >= 1.0 || step >= 1.0 => {
+                out.push(format!("{name}:{elapsed:.0}/{step:.0}"));
+                ran.push((step, name));
+            }
+            None if elapsed >= 1.0 => out.push(format!("{name}:{elapsed:.0}")),
+            _ => {}
         }
     }
-    out.join(",")
+    ran.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let heaviest = ran
+        .iter()
+        .take(6)
+        .map(|(step, name)| format!("{name} {step:.0}"))
+        .collect::<Vec<_>>();
+    if heaviest.is_empty() {
+        out.join(",")
+    } else {
+        format!(
+            "{}\n               ran most: {}",
+            out.join(","),
+            heaviest.join(", ")
+        )
+    }
 }
 
 /// Open `app` on `device` and return the open the session logged for it: the window asked for to

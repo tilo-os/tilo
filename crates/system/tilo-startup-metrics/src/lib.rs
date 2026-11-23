@@ -23,10 +23,10 @@
 //!     { "name": "sandbox-exec",       "epoch_us": 1783249999955000 }
 //!   ],
 //!   "events": [
-//!     { "name": "main-start",           "ns": 0 },
-//!     { "name": "compositor-run-start", "ns": 42100000 },
-//!     { "name": "font-system-ready",    "ns": 118400000 },
-//!     { "name": "first-paint",          "ns": 305200000 }
+//!     { "name": "main-start",           "ns": 0,         "cpu_ns": 1200000 },
+//!     { "name": "compositor-run-start", "ns": 42100000,  "cpu_ns": 30500000 },
+//!     { "name": "font-system-ready",    "ns": 118400000, "cpu_ns": 61000000 },
+//!     { "name": "first-paint",          "ns": 305200000, "cpu_ns": 140800000 }
 //!   ]
 //! }
 //! ```
@@ -39,6 +39,10 @@
 //! `sandbox-entered` when it starts inside the sandbox and `sandbox-exec` just before it
 //! executes the app ([`handoff_entry`]), so `origin_epoch_us` minus `sandbox-exec` is the
 //! dynamic loader and library constructors.
+//!
+//! `cpu_ns` is the CPU every thread of the process had run by the mark (Linux only), so the
+//! difference between two marks is the work done between them, which their wall time on a
+//! machine that is busy with other work is not.
 
 use serde::Serialize;
 use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
@@ -561,6 +565,23 @@ fn write_marks(metrics: &'static Metrics, writer: &'static Writer) -> ! {
 struct Event {
     name: String,
     ns: u128,
+    /// The CPU every thread of the process had run by the mark, where the system says: the
+    /// work of a step, which a step's wall time on a busy machine is not.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cpu_ns: Option<u128>,
+}
+
+/// The CPU time every thread of this process has run so far.
+fn process_cpu_ns() -> Option<u128> {
+    #[cfg(target_os = "linux")]
+    {
+        let ran = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
+        let seconds = u64::try_from(ran.tv_sec).ok()?;
+        let nanos = u32::try_from(ran.tv_nsec).ok()?;
+        Some(std::time::Duration::new(seconds, nanos).as_nanos())
+    }
+    #[cfg(not(target_os = "linux"))]
+    None
 }
 
 /// The variable `tilo-launcher` sets in the sandbox it starts, holding its own phase marks
@@ -722,6 +743,7 @@ impl Metrics {
         self.events.lock_recover().push(Event {
             name: name.to_owned(),
             ns,
+            cpu_ns: process_cpu_ns(),
         });
         if !self.wake_writer() {
             self.write_snapshot();
@@ -1168,6 +1190,7 @@ mod tests {
             metrics.events.lock().unwrap().push(Event {
                 name: "exit".into(),
                 ns: 1,
+                cpu_ns: None,
             });
             metrics.write_snapshot();
             assert_eq!(
