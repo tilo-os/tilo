@@ -175,10 +175,7 @@ impl WebTasks {
     /// Stop serving: every task is aborted and the browser locators name no origin of
     /// this listener any more. Stopping twice does nothing the second time.
     fn stop(&self) {
-        if self
-            .stopped
-            .swap(true, std::sync::atomic::Ordering::SeqCst)
-        {
+        if self.stopped.swap(true, std::sync::atomic::Ordering::SeqCst) {
             return;
         }
         if let Ok(mut published) = self.locator_origin.write()
@@ -535,6 +532,17 @@ impl Server {
         &self,
         config: WebConfig,
     ) -> Result<Option<WebHandle>, ServerError> {
+        // Its entry among its person's servers says whether it serves one: read before
+        // binding, so a server its person turned off opens no port at all.
+        if let Some(workspaces) = self.workspaces() {
+            let cert = workspaces.serving_certificate().clone();
+            if let Ok(servers) = crate::servers::read(workspaces).await
+                && let Some(entry) = servers.active(&cert.device_public_key)
+            {
+                self.web_ui
+                    .set_wanted(entry.web != crate::servers::WEB_SERVED[1]);
+            }
+        }
         let parts = self.web_parts(config, Vec::new());
         if !self.web_ui.wanted() {
             self.web_ui.ready(parts);

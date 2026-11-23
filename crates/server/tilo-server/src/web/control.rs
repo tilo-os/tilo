@@ -43,6 +43,12 @@ impl Control {
         self.wanted.load(Ordering::SeqCst)
     }
 
+    /// Remember whether the device serves a web UI, as its entry among its person's
+    /// servers says: what its start reads before it binds a listener.
+    pub(crate) fn set_wanted(&self, wanted: bool) {
+        self.wanted.store(wanted, Ordering::SeqCst);
+    }
+
     /// Remember how to serve the listener, without serving it: what a device whose
     /// person turned its web UI off keeps, so that turning it on serves it.
     pub(crate) fn ready(&self, parts: WebParts) {
