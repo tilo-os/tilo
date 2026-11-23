@@ -13,6 +13,7 @@ mod file_store;
 #[cfg(test)]
 #[path = "owner/fixture_tests.rs"]
 pub(crate) mod fixture;
+#[cfg(not(target_arch = "wasm32"))]
 mod history_content;
 mod history_keys;
 mod journal;
@@ -34,6 +35,7 @@ pub use crate::document_read::{
     CommittedDocument, DocumentChanges, DocumentRead, History, Holding, revision_of_heads,
 };
 pub use crate::draft::{LocalWrite, admit_local_write, draft_local_write};
+#[cfg(not(target_arch = "wasm32"))]
 pub use crate::enroll;
 pub(crate) use crate::enrollment;
 #[cfg(not(target_arch = "wasm32"))]
