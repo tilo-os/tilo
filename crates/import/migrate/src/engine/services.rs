@@ -167,7 +167,7 @@ fn account(place: &Place, source: &str, record: &AccountList) -> Result<String> 
     let kind = kind(source)?;
     let connected = service::connected(record);
     let last: Option<String> = if kind == ServiceKind::Mail {
-        place.read(&place.path(source, "account.json"))?
+        place.field(source, ACCOUNT)?
     } else {
         None
     };
@@ -233,7 +233,7 @@ pub fn connect(cx: &super::Cx<'_>, source: &str, how: super::Connecting<'_>) -> 
     .map_err(|error| anyhow!("{source}: {error}"))?;
     super::writer::change_accounts(&mut *workspace, (&saving.address(), &saving.arguments))?;
     if kind == ServiceKind::Mail {
-        place.keep(&place.path(source, "account.json"), &account.as_str())?;
+        place.keep_field(source, ACCOUNT, &account.as_str())?;
     }
     let kept = if kind == ServiceKind::Mail {
         "its password"
@@ -274,16 +274,19 @@ pub fn sources(cx: &super::Cx<'_>) -> Vec<Value> {
     found
 }
 
-fn journal_path(place: &Place, source: &str) -> std::path::PathBuf {
-    place.path(source, "service.json")
-}
+/// The account a mail source was connected with last.
+const ACCOUNT: &str = "account";
+/// A service's own journal of what it brought.
+const SERVICE: &str = "service";
+/// The ids a service's items were made under in the workspace.
+const IDS: &str = "ids";
 
 fn keep_service(place: &Place, source: &str, journal: &ServiceJournal) -> Result<()> {
-    place.keep(&journal_path(place, source), journal)
+    place.keep_field(source, SERVICE, journal)
 }
 
 fn service_journal(place: &Place, source: &str) -> Result<Option<ServiceJournal>> {
-    place.read(&journal_path(place, source))
+    place.field(source, SERVICE)
 }
 
 /// How many of `source`'s items the workspace has, as its journal says.
@@ -313,10 +316,9 @@ pub fn forget(
         }
         keep_service(place, source, &journal)?;
     }
-    let kept_path = place.path(source, "ids.json");
-    if let Some(mut kept) = place.read::<Kept>(&kept_path)? {
+    if let Some(mut kept) = place.field::<Kept>(source, IDS)? {
         kept.forget_invocation(invocation);
-        place.keep(&kept_path, &kept)?;
+        place.keep_field(source, IDS, &kept)?;
     }
     Ok(())
 }
@@ -463,23 +465,19 @@ pub(super) fn land_with(
     let mut journal =
         service_journal(&place, source)?.ok_or_else(|| super::not_reviewed(source))?;
     journal.recovered();
-    let kept_path = place.path(source, "ids.json");
-    let kept: Kept = place.read(&kept_path)?.unwrap_or_default();
+    let kept: Kept = place.field(source, IDS)?.unwrap_or_default();
     let cancel = AtomicBool::new(false);
     lander.open(if source == OUTLINE { "notes" } else { "tasks" });
     let mut landing = Landing {
         lander,
         kept,
-        kept_path: kept_path.clone(),
         failure: None,
     };
     let mut save = |journal: &ServiceJournal| -> Result<(), String> {
-        place
-            .keep(&journal_path(&place, source), journal)
-            .map_err(|error| error.to_string())
+        keep_service(&place, source, journal).map_err(|error| error.to_string())
     };
     let result = hand_over(&mut journal, &mut landing, &mut save, &cancel);
-    place.keep(&kept_path, &landing.kept)?;
+    place.keep_field(source, IDS, &landing.kept)?;
     if let Some(error) = landing.failure.take() {
         return Err(error);
     }
@@ -613,8 +611,6 @@ impl Kept {
 struct Landing<'a, 'b> {
     lander: &'a mut Lander<'b>,
     kept: Kept,
-    /// Where `kept` is saved, after every call that made something.
-    kept_path: std::path::PathBuf,
     /// Why the import stopped, when the workspace did (rather than the service).
     failure: Option<anyhow::Error>,
 }
@@ -754,14 +750,15 @@ impl Landing<'_, '_> {
 
     fn stop_check(&mut self) -> std::io::Result<()> {
         if self.lander.stopping() {
-            let _ = self.lander.place.stop_asked(self.lander.source, true);
             return Err(self.fail(super::Stopped.into()));
         }
         Ok(())
     }
 
     fn keep(&self) -> Result<()> {
-        self.lander.place.keep(&self.kept_path, &self.kept)
+        self.lander
+            .place
+            .keep_field(self.lander.source, IDS, &self.kept)
     }
 
     /// Note what landed in the import's own journal, so taking the import back forgets it, and count it.

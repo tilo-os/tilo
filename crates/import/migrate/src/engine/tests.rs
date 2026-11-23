@@ -11,7 +11,7 @@ use super::state::{Journal, Place, RunState};
 use super::thunderbird;
 use super::writer::{Call, Invocation, Status, Workspace};
 
-pub(super) mod test_env;
+pub(crate) mod test_env;
 
 use self::test_env::{Recorded, Told, land_as};
 
@@ -328,9 +328,12 @@ fn a_stopped_run_resumes_where_it_stopped() {
     place.keep_review(&review).unwrap();
 
     // Asked to stop before it starts: nothing lands.
-    place.ask_stop(thunderbird::SOURCE).unwrap();
     let mut workspace = Recorded::default();
-    let error = run_once(&home, &place, &mut workspace).unwrap_err();
+    let mut stopped = Told {
+        stop: true,
+        ..Told::default()
+    };
+    let error = migrate_saying(&home, &place, &mut workspace, true, &mut stopped).unwrap_err();
     assert!(error.is::<Stopped>(), "{error:#}");
     assert!(workspace.actions.is_empty(), "{:?}", workspace.actions);
     assert_eq!(

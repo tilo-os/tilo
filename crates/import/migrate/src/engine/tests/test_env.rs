@@ -17,6 +17,8 @@ pub struct Told {
     pub lines: Vec<String>,
     pub asked: Vec<String>,
     pub yes: bool,
+    /// Whether the run is asked to stop from its first item.
+    pub stop: bool,
 }
 
 /// A workspace that keeps every action and upload it is asked for, and the person's mail
@@ -97,12 +99,16 @@ pub fn with_cx<T>(
     f: impl FnOnce(&super::super::Cx<'_>) -> T,
 ) -> T {
     let folders = std::collections::BTreeMap::new();
+    let running = |_: &str| false;
+    let scratch = std::env::temp_dir();
     let open = || -> Result<Box<dyn Workspace>> { anyhow::bail!("this test reaches no workspace") };
     let secret = |_: &str, _: Option<&std::path::Path>| -> Result<zeroize::Zeroizing<String>> {
         anyhow::bail!("nobody types a secret in this test")
     };
     f(&super::super::Cx {
         place,
+        running: &running,
+        scratch: &scratch,
         home,
         folders: &folders,
         open: &open,
@@ -126,6 +132,9 @@ pub fn land_as(
     let lines = std::cell::RefCell::new(Vec::new());
     let asked = std::cell::RefCell::new(Vec::new());
     let mut progress = |line: &str| lines.borrow_mut().push(line.to_owned());
+    let stop = told.stop;
+    let stopping = || stop;
+    let scratch = tempfile::tempdir()?;
     let mut confirm = |question: &str| {
         asked.borrow_mut().push(question.to_owned());
         Ok(told.yes)
@@ -140,6 +149,8 @@ pub fn land_as(
             place,
             source,
             progress: &mut progress,
+            stopping: &stopping,
+            scratch: scratch.path(),
             confirm: &mut confirm,
         };
         land(&mut lander)

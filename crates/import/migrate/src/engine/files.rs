@@ -18,7 +18,6 @@
 //! only what is new or changed, and a stopped migration resumes.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -419,7 +418,7 @@ pub fn land(
         }
         let counts = match sink {
             Sink::Folder(root) => copy_into(tree, &entries, root, place, lander)?,
-            Sink::Upload(under) => upload(tree, &entries, under, place, lander)?,
+            Sink::Upload(under) => upload(tree, &entries, under, lander)?,
         };
         let failed = std::mem::take(
             &mut *counts
@@ -461,40 +460,34 @@ pub fn land(
     Ok(())
 }
 
-/// The file an invocation notes what it wrote in, so `undo` removes it.
-fn written_list(place: &Place, source: &str, invocation: &str) -> PathBuf {
-    place.path(source, &format!("{invocation}{WRITTEN}"))
+/// What an invocation wrote into a mounted folder, so `undo` removes it: the folder, and each
+/// file with the size it wrote.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct Written {
+    root: PathBuf,
+    files: Vec<(u64, PathBuf)>,
 }
 
-const WRITTEN: &str = ".written";
-/// The line of a written list naming the folder the invocation wrote into.
-const ROOT: &str = "root";
+/// The field an invocation notes what it wrote in.
+fn written_field(invocation: &str) -> String {
+    format!("{WRITTEN}{invocation}")
+}
+
+const WRITTEN: &str = "written-";
 
 /// The files every other invocation of `source` wrote, which undoing one leaves alone.
-fn written_by_others(
-    place: &Place,
-    source: &str,
-    invocation: &str,
-) -> std::collections::BTreeSet<String> {
-    let mut paths = std::collections::BTreeSet::new();
-    let own = written_list(place, source, invocation);
-    let Some(dir) = own.parent() else {
-        return paths;
-    };
-    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-        let path = entry.path();
-        if path == own || !path.to_string_lossy().ends_with(WRITTEN) {
+fn written_by_others(place: &Place, source: &str, invocation: &str) -> Result<BTreeSet<PathBuf>> {
+    let own = written_field(invocation);
+    let mut paths = BTreeSet::new();
+    for field in place.fields(source) {
+        if field == own || !field.starts_with(WRITTEN) {
             continue;
         }
-        for line in std::fs::read_to_string(&path).unwrap_or_default().lines() {
-            if let Some((size, written)) = line.split_once('\t')
-                && size != ROOT
-            {
-                paths.insert(written.to_owned());
-            }
+        if let Some(written) = place.field::<Written>(source, &field)? {
+            paths.extend(written.files.into_iter().map(|(_, path)| path));
         }
     }
-    paths
+    Ok(paths)
 }
 
 /// Copy `entries` into the mounted folder `root`, many at once.
@@ -506,23 +499,15 @@ fn copy_into(
     lander: &mut Lander<'_>,
 ) -> Result<Counts> {
     let counts = Counts::default();
-    let list = written_list(place, lander.source(), &lander.invocation().id);
-    if let Some(dir) = list.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let fresh = !list.exists();
-    let mut file = std::io::BufWriter::new(
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&list)
-            .with_context(|| format!("keeping {}", list.display()))?,
+    let (source, field) = (
+        lander.source().to_owned(),
+        written_field(&lander.invocation().id),
     );
-    if fresh {
-        // Undo empties folders up to here and no further.
-        writeln!(file, "{ROOT}\t{}", root.display())?;
-    }
-    let written = Mutex::new(file);
+    // Undo empties folders up to `root` and no further.
+    let written = Mutex::new(place.field::<Written>(&source, &field)?.unwrap_or(Written {
+        root: root.to_path_buf(),
+        files: Vec::new(),
+    }));
     let next = AtomicUsize::new(0);
     let stop = AtomicBool::new(false);
     let mut reported = (0_usize, 0_usize);
@@ -571,10 +556,13 @@ fn copy_into(
         now.0.saturating_sub(reported.0),
         now.1.saturating_sub(reported.1),
     )?;
-    written
-        .into_inner()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .flush()?;
+    place.keep_field(
+        &source,
+        &field,
+        &written
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    )?;
     if stop.load(Ordering::Relaxed) {
         return Err(super::Stopped.into());
     }
@@ -588,7 +576,7 @@ fn copy_one(
     entry: &Entry,
     root: &Path,
     counts: &Counts,
-    written: &Mutex<std::io::BufWriter<std::fs::File>>,
+    written: &Mutex<Written>,
 ) {
     let to = root.join(&entry.path);
     if std::fs::metadata(&to).is_ok_and(|meta| meta.len() == entry.size) {
@@ -607,8 +595,8 @@ fn copy_one(
             {
                 let _ = file.set_modified(modified);
             }
-            if let Ok(mut list) = written.lock() {
-                let _ = writeln!(list, "{}\t{}", entry.size, to.display());
+            if let Ok(mut written) = written.lock() {
+                written.files.push((entry.size, to.clone()));
             }
             counts.copied.fetch_add(1, Ordering::Relaxed);
             counts.bytes.fetch_add(entry.size, Ordering::Relaxed);
@@ -628,13 +616,12 @@ fn upload(
     tree: &dyn Tree,
     entries: &[Entry],
     under: &str,
-    place: &Place,
     lander: &mut Lander<'_>,
 ) -> Result<Counts> {
     let counts = Counts::default();
     // A file that is not on this computer is fetched into a staging folder first, which goes
     // once the workspace took its files.
-    let staging = place.path(lander.source(), "staging");
+    let staging = lander.scratch().join(lander.source()).join("staging");
     let mut files = Vec::with_capacity(entries.len());
     for entry in entries {
         if lander.stopping() {
@@ -706,39 +693,25 @@ fn upload(
 /// # Errors
 /// Its list could not be read.
 pub fn undo_written(place: &Place, source: &str, invocation: &str) -> Result<Option<usize>> {
-    let list = written_list(place, source, invocation);
-    let text = match std::fs::read_to_string(&list) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error).context("reading what the migration wrote"),
+    let field = written_field(invocation);
+    let Some(written) = place.field::<Written>(source, &field)? else {
+        return Ok(None);
     };
-    let others = written_by_others(place, source, invocation);
+    let others = written_by_others(place, source, invocation)?;
+    let root = written.root;
     let mut removed = 0_usize;
-    let mut root: Option<PathBuf> = None;
     let mut folders = BTreeSet::new();
-    for line in text.lines() {
-        let Some((size, path)) = line.split_once('\t') else {
-            continue;
-        };
-        if size == ROOT {
-            root = Some(PathBuf::from(path));
-            continue;
-        }
+    for (size, path) in written.files {
         // A later migration wrote it again: it is that one's now.
-        if others.contains(path) {
+        if others.contains(&path) {
             continue;
         }
-        let path = PathBuf::from(path);
-        let unchanged = std::fs::metadata(&path)
-            .is_ok_and(|meta| size.parse::<u64>().is_ok_and(|size| size == meta.len()));
+        let unchanged = std::fs::metadata(&path).is_ok_and(|meta| meta.len() == size);
         if unchanged && std::fs::remove_file(&path).is_ok() {
             removed = removed.saturating_add(1);
             let mut dir = path.parent().map(Path::to_path_buf);
             while let Some(at) = dir {
-                if root
-                    .as_ref()
-                    .is_none_or(|root| !at.starts_with(root) || at == *root)
-                {
+                if !at.starts_with(&root) || at == root {
                     break;
                 }
                 folders.insert((
@@ -754,7 +727,7 @@ pub fn undo_written(place: &Place, source: &str, invocation: &str) -> Result<Opt
     for (_, dir) in folders {
         let _ = std::fs::remove_dir(&dir);
     }
-    std::fs::remove_file(&list)?;
+    place.forget_field(source, &field)?;
     Ok(Some(removed))
 }
 

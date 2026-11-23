@@ -19,6 +19,7 @@ pub mod destination_security;
 pub mod engine;
 pub mod known_folders;
 pub mod pinned;
+pub mod provider;
 pub mod service;
 pub mod thunderbird;
 pub mod vault;

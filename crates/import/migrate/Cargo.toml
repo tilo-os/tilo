@@ -30,10 +30,10 @@ browser-continuity = { workspace = true, features = ["native"] }
 # The accounts record a migration connects an account in, and the edit Settings makes of it.
 collab-types = { path = "../../collab/collab-types" }
 tilo-actions = { path = "../../collab/actions" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 rand.workspace = true
 # Whether a run's process still runs.
-rustix = { workspace = true, features = ["process"] }
 # What a typo-free edit to the workspace's accounts record is.
 tilo-resource = { path = "../../sdk/tilo-resource" }
 base64.workspace = true

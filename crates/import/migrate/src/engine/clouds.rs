@@ -26,6 +26,9 @@ use super::files::{self, Entry, Tree};
 use super::registry::Row as Source;
 use super::state::{Item, Place, Review};
 
+/// The field the account a drive was connected with is kept in.
+const ACCOUNT: &str = "account";
+
 /// The most folders a review lists to count what a drive holds; past it, counts are "at least".
 const REVIEW_FOLDERS: usize = 400;
 
@@ -77,7 +80,7 @@ pub fn connect(cx: &super::Cx<'_>, source: &Source, how: super::Connecting<'_>) 
     let id = crate::vault::persist::<anyhow::Error>(&root, &account, secret)?;
     let saving = accounts::person::AccountList::saving(&account);
     super::writer::change_accounts(&mut *workspace, (&saving.address(), &saving.arguments))?;
-    place.keep(&place.path(source.key, "account.json"), &id.as_str())?;
+    place.keep_field(source.key, ACCOUNT, &id.as_str())?;
     Ok(json!({
         "source": source.key,
         "account": id.as_str(),
@@ -241,7 +244,7 @@ fn account(cx: &super::Cx<'_>, source: &Source) -> Result<Account> {
     let place = cx.place;
     let record = super::writer::accounts(&mut *cx.open()?)?;
     let type_id = type_of(source.key)?;
-    let kept: Option<String> = place.read(&place.path(source.key, "account.json"))?;
+    let kept: Option<String> = place.field(source.key, ACCOUNT)?;
     record
         .of_type(type_id)
         .into_iter()
@@ -531,7 +534,7 @@ pub struct Clouds;
 impl super::Source for Clouds {
     fn here(&self, cx: &super::Cx<'_>, row: &'static Source) -> super::Here {
         super::Here {
-            next: if cx.place.path(row.key, "account.json").is_file() {
+            next: if cx.place.field::<String>(row.key, ACCOUNT).is_ok_and(|kept| kept.is_some()) {
                 Some(format!("tilo migrate review {}", row.key))
             } else {
                 row.connect_command()

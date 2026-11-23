@@ -28,6 +28,7 @@
 //! never pass through the agent: a service's key is typed by the person at a hidden prompt or
 //! read from a file they name, and kept in this computer's vault.
 
+mod runs;
 mod workspace;
 
 use std::collections::BTreeMap;
@@ -147,9 +148,9 @@ impl Target {
         }
     }
 
-    /// The place a run's journal is kept in: named by the workspace it lands in.
-    fn place(&self) -> Result<Place> {
-        Place::of(&self.workspace_id()?)
+    /// Where the migrations into the workspace a run lands in are kept on this computer.
+    fn root(&self) -> Result<PathBuf> {
+        runs::root(&self.workspace_id()?)
     }
 
     /// The id of the workspace a run lands in.
@@ -190,12 +191,16 @@ pub fn run(cmd: MigrateCmd, json: bool) -> Result<ExitCode> {
 
 /// Run `cmd` into `target`'s workspace; `json` answers as JSON.
 pub fn run_into(cmd: MigrateCmd, json: bool, target: &Target) -> Result<ExitCode> {
-    let place = target.place()?;
+    let root = target.root()?;
+    let place = Place::at(&root);
     let home = home()?;
     let folders = folders();
     let open = || -> Result<Box<dyn Workspace>> { Ok(Box::new(workspace::Held::connect()?)) };
+    let running = |source: &str| runs::running(&root, source);
     let cx = engine::Cx {
         place: &place,
+        running: &running,
+        scratch: &root,
         home: &home,
         folders: &folders,
         open: &open,
@@ -232,11 +237,20 @@ pub fn run_into(cmd: MigrateCmd, json: bool, target: &Target) -> Result<ExitCode
             };
             let mut confirm = |question: &str| confirmed(question, json, yes);
             let workspace = target.workspace_id()?;
+            let key = engine::registry::named(&source)?.key;
+            if runs::running(&root, key) {
+                bail!(
+                    "{key} is already being brought over; `tilo migrate status {key}` says how far"
+                );
+            }
+            let going = runs::begin(&root, key)?;
+            let stopping = || going.stopping();
             engine::start(
                 &cx,
                 &source,
                 engine::Asking {
                     progress: &mut progress,
+                    stopping: &stopping,
                     confirm: &mut confirm,
                     workspace: &workspace,
                     hosted: target.is_hosted(),
@@ -246,7 +260,9 @@ pub fn run_into(cmd: MigrateCmd, json: bool, target: &Target) -> Result<ExitCode
         }
         MigrateCmd::Status { source } => engine::status(&cx, source.as_deref())?,
         MigrateCmd::Undo { run } => engine::undo(&cx, &run, &mut *target.connect()?)?,
-        MigrateCmd::Stop { source } => engine::stop(&cx, &source)?,
+        MigrateCmd::Stop { source } => {
+            runs::stop(&root, engine::registry::named(&source)?.key)?
+        }
     };
     if json {
         println!("{}", serde_json::to_string_pretty(&answer)?);

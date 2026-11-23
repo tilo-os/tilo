@@ -1,5 +1,5 @@
-//! What a migration keeps on this computer between commands: each source's review with the
-//! person's choices, and the journal of what already reached the workspace.
+//! What a migration keeps between its steps: each source's review with the person's choices,
+//! and the journal of what already reached the workspace.
 //!
 //! An agent reviews a source, shows the person, chooses, and starts, each a command of its own,
 //! so the review is durable. The journal is durable item by item: a run that was stopped, or a
@@ -8,9 +8,11 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// One thing a review lists, which the person chooses or leaves out.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -137,9 +139,6 @@ pub struct Journal {
     /// The keys of everything the workspace has from this source.
     pub landed: BTreeSet<String>,
     pub state: RunState,
-    /// The process running it, while it runs.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pid: Option<u32>,
     /// What History calls the last run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<String>,
@@ -161,38 +160,99 @@ pub struct Journal {
     pub runs: std::collections::BTreeMap<String, BTreeSet<String>>,
 }
 
-/// Where one workspace's migrations are kept on this computer.
-#[derive(Clone, Debug)]
-pub struct Place {
-    root: PathBuf,
-}
-
-impl Place {
-    /// The migrations into `workspace` of this computer's account.
+/// Where a workspace's migrations keep what they know, field by field for each source: its
+/// `review`, its `journal`, and what a source keeps of its own (the account it was connected
+/// with, a service's journal, the ids its items were made under, the files a run wrote).
+/// Whoever runs the engine says where that is.
+pub trait Fields: Send + Sync {
+    /// The field `field` of `source`'s migration, when it was kept.
     ///
     /// # Errors
-    /// The account has no state directory.
-    pub fn of(workspace: &str) -> Result<Self> {
-        let root = match std::env::var_os("TILO_MIGRATE_DIR") {
-            Some(dir) => PathBuf::from(dir),
-            None => tilo_paths::state_dir()
-                .context("this account has no state directory (no HOME)")?
-                .join("tilo/migrate"),
-        };
-        Ok(Self::at(&root.join(safe(workspace))))
+    /// It could not be read.
+    fn get(&self, source: &str, field: &str) -> Result<Option<Value>>;
+
+    /// Keep `value` as the field `field` of `source`'s migration, durably; `None` forgets it.
+    ///
+    /// # Errors
+    /// It could not be kept.
+    fn put(&self, source: &str, field: &str, value: Option<Value>) -> Result<()>;
+
+    /// The fields `source`'s migration keeps.
+    fn fields(&self, source: &str) -> Vec<String>;
+
+    /// The sources with a review.
+    fn sources(&self) -> Vec<String>;
+}
+
+/// One workspace's migrations, as the engine reads and keeps them.
+#[derive(Clone)]
+pub struct Place {
+    fields: Arc<dyn Fields>,
+}
+
+impl std::fmt::Debug for Place {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("Place").finish_non_exhaustive()
+    }
+}
+
+const REVIEW: &str = "review";
+const JOURNAL: &str = "journal";
+
+impl Place {
+    /// The migrations `fields` keeps.
+    #[must_use]
+    pub fn new(fields: Arc<dyn Fields>) -> Self {
+        Self { fields }
     }
 
+    /// The migrations kept in files under `root`, readable only by this account.
     #[must_use]
     pub fn at(root: &Path) -> Self {
-        Self {
+        Self::new(Arc::new(OnDisk {
             root: root.to_path_buf(),
-        }
+        }))
     }
 
-    /// The file `name` of `source`'s migration.
+    /// The field `name` of `source`'s migration, when it was kept.
+    ///
+    /// # Errors
+    /// It could not be read, or it is damaged.
+    pub fn field<T: serde::de::DeserializeOwned>(
+        &self,
+        source: &str,
+        name: &str,
+    ) -> Result<Option<T>> {
+        self.fields
+            .get(source, name)?
+            .map(|value| {
+                serde_json::from_value(value)
+                    .with_context(|| format!("the {source} migration's {name} is damaged"))
+            })
+            .transpose()
+    }
+
+    /// Keep `value` as the field `name` of `source`'s migration, durably.
+    ///
+    /// # Errors
+    /// It could not be kept.
+    pub fn keep_field<T: Serialize>(&self, source: &str, name: &str, value: &T) -> Result<()> {
+        self.fields
+            .put(source, name, Some(serde_json::to_value(value)?))
+    }
+
+    /// Forget the field `name` of `source`'s migration.
+    ///
+    /// # Errors
+    /// It could not be forgotten.
+    pub fn forget_field(&self, source: &str, name: &str) -> Result<()> {
+        self.fields.put(source, name, None)
+    }
+
+    /// The fields `source`'s migration keeps.
     #[must_use]
-    pub fn path(&self, source: &str, name: &str) -> PathBuf {
-        self.root.join(safe(source)).join(name)
+    pub fn fields(&self, source: &str) -> Vec<String> {
+        self.fields.fields(source)
     }
 
     /// The review of `source`, when it was reviewed.
@@ -200,15 +260,15 @@ impl Place {
     /// # Errors
     /// The kept review could not be read.
     pub fn review(&self, source: &str) -> Result<Option<Review>> {
-        read(&self.path(source, "review.json"))
+        self.field(source, REVIEW)
     }
 
     /// Keep `review`.
     ///
     /// # Errors
-    /// It could not be written.
+    /// It could not be kept.
     pub fn keep_review(&self, review: &Review) -> Result<()> {
-        write(&self.path(&review.source, "review.json"), review)
+        self.keep_field(&review.source, REVIEW, review)
     }
 
     /// The journal of `source`; an empty one before its first run.
@@ -216,68 +276,87 @@ impl Place {
     /// # Errors
     /// The kept journal could not be read.
     pub fn journal(&self, source: &str) -> Result<Journal> {
-        Ok(read(&self.path(source, "journal.json"))?.unwrap_or_default())
+        Ok(self.field(source, JOURNAL)?.unwrap_or_default())
     }
 
     /// Keep `journal`, durably.
     ///
     /// # Errors
-    /// It could not be written.
+    /// It could not be kept.
     pub fn keep_journal(&self, source: &str, journal: &Journal) -> Result<()> {
-        write(&self.path(source, "journal.json"), journal)
+        self.keep_field(source, JOURNAL, journal)
     }
 
-    /// Ask the run of `source` to stop at its next item.
-    ///
-    /// # Errors
-    /// The request could not be written.
-    pub fn ask_stop(&self, source: &str) -> Result<()> {
-        let path = self.path(source, "stop");
-        std::fs::create_dir_all(path.parent().unwrap_or(&self.root))?;
-        std::fs::write(path, b"")?;
-        Ok(())
-    }
-
-    /// Whether the run of `source` was asked to stop; `clear` forgets the ask.
-    #[must_use]
-    pub fn stop_asked(&self, source: &str, clear: bool) -> bool {
-        let path = self.path(source, "stop");
-        let asked = path.exists();
-        if asked && clear {
-            let _ = std::fs::remove_file(path);
-        }
-        asked
-    }
-
-    /// What `path` keeps, when it was written.
-    ///
-    /// # Errors
-    /// It could not be read.
-    pub fn read<T: serde::de::DeserializeOwned>(&self, path: &Path) -> Result<Option<T>> {
-        self.within(path)?;
-        read(path)
-    }
-
-    /// Keep `value` at `path`, durably.
-    ///
-    /// # Errors
-    /// It could not be written.
-    pub fn keep<T: Serialize>(&self, path: &Path, value: &T) -> Result<()> {
-        self.within(path)?;
-        write(path, value)
-    }
-
-    /// Refuse a path outside this workspace's migrations.
-    fn within(&self, path: &Path) -> Result<()> {
-        if !path.starts_with(&self.root) {
-            bail!("{} is not a migration's file", path.display());
-        }
-        Ok(())
-    }
-
-    /// The sources with a review here.
+    /// The sources with a review.
     #[must_use]
     pub fn sources(&self) -> Vec<String> {
+        self.fields.sources()
+    }
+}
+
+/// Migrations kept in files under a folder of this account, one folder for each source and one
+/// file for each field.
+struct OnDisk {
+    root: PathBuf,
+}
+
+impl OnDisk {
+    fn path(&self, source: &str, field: &str) -> PathBuf {
+        self.root
+            .join(safe(source))
+            .join(format!("{}.json", safe(field)))
+    }
+}
+
+impl Fields for OnDisk {
+    fn get(&self, source: &str, field: &str) -> Result<Option<Value>> {
+        let path = self.path(source, field);
+        match std::fs::read(&path) {
+            Ok(bytes) => Ok(Some(
+                serde_json::from_slice(&bytes)
+                    .with_context(|| format!("{} is damaged", path.display()))?,
+            )),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error).with_context(|| format!("{} is unreadable", path.display())),
+        }
+    }
+
+    fn put(&self, source: &str, field: &str, value: Option<Value>) -> Result<()> {
+        let path = self.path(source, field);
+        match value {
+            Some(value) => tilo_files::native::atomic::write_creating_parent_with_mode(
+                &path,
+                &serde_json::to_vec_pretty(&value)?,
+                0o600,
+            )
+            .with_context(|| format!("keeping {}", path.display())),
+            None => match std::fs::remove_file(&path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => {
+                    Err(error).with_context(|| format!("forgetting {}", path.display()))
+                }
+            },
+        }
+    }
+
+    fn fields(&self, source: &str) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(self.root.join(safe(source))) else {
+            return Vec::new();
+        };
+        entries
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                entry
+                    .file_name()
+                    .to_str()?
+                    .strip_suffix(".json")
+                    .map(str::to_owned)
+            })
+            .collect()
+    }
+
+    fn sources(&self) -> Vec<String> {
         let Ok(entries) = std::fs::read_dir(&self.root) else {
             return Vec::new();
         };
@@ -304,26 +383,4 @@ fn safe(name: &str) -> String {
         .collect::<String>()
         .trim_start_matches('.')
         .to_owned()
-}
-
-fn read<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>> {
-    match std::fs::read(path) {
-        Ok(bytes) => {
-            Ok(Some(serde_json::from_slice(&bytes).with_context(|| {
-                format!("{} is damaged", path.display())
-            })?))
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error).with_context(|| format!("{} is unreadable", path.display())),
-    }
-}
-
-/// Replace `path` with `value`, durably, readable only by this account.
-fn write<T: Serialize>(path: &Path, value: &T) -> Result<()> {
-    tilo_files::native::atomic::write_creating_parent_with_mode(
-        path,
-        &serde_json::to_vec_pretty(value)?,
-        0o600,
-    )?;
-    Ok(())
 }

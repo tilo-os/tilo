@@ -14,7 +14,7 @@
 //! review         what it holds: accounts, folders, …
 //! choose         what comes over
 //! start          bring the chosen things over, as one run in the workspace
-//! status / stop
+//! status         how each source's migration stands
 //! undo           take a run back
 //! ```
 //!
@@ -23,8 +23,10 @@
 //!
 //! A run lands in a [`Workspace`] its caller reaches: what comes over is the agent's run in the
 //! workspace, one History entry per run, each record arriving live in the person's tab, the run
-//! undone as one step. A run keeps a journal here, item by item ([`state::Place`]), so it resumes
-//! after a stop and a second run adds nothing. Keys and passwords never pass through the agent: a
+//! undone as one step. A run keeps a journal, item by item, where its caller keeps the
+//! migration ([`state::Place`]), so it resumes after a stop and a second run adds nothing. Whoever
+//! runs it says whether a run is going and when one is asked to stop ([`Cx::running`],
+//! [`Asking::stopping`]). Keys and passwords never pass through the agent: a
 //! service's key is typed by the person ([`Cx::secret`]) and kept in this computer's vault.
 
 pub mod browsers;
@@ -42,7 +44,7 @@ mod files_tests;
 #[cfg(test)]
 mod services_tests;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -62,6 +64,10 @@ pub use text::sentences;
 pub struct Cx<'a> {
     /// Where the journals of the workspace the migration lands in are kept.
     pub place: &'a Place,
+    /// Whether a run of a source is going now: its caller knows the runs it started.
+    pub running: &'a dyn Fn(&str) -> bool,
+    /// A folder of this computer a run may stage what it fetches in, for a while.
+    pub scratch: &'a Path,
     /// The home this computer's folders, browsers and Thunderbird are read from.
     pub home: &'a Path,
     /// The workspace folders this computer keeps, by workspace id: what a home review leaves out,
@@ -216,6 +222,8 @@ fn of(row: &'static Row) -> &'static dyn Source {
 /// How a run talks to the person: a line of how it goes, and a question only they answer.
 pub struct Asking<'a> {
     pub progress: &'a mut dyn FnMut(&str),
+    /// Whether the run was asked to stop: it stops after the item it is on.
+    pub stopping: &'a dyn Fn() -> bool,
     /// Whether the person says yes to the question; `Err` when nobody can be asked.
     pub confirm: &'a mut dyn FnMut(&str) -> Result<bool>,
     /// Where the files of the workspace the run lands in go: the folder this computer keeps of
@@ -297,25 +305,6 @@ pub fn choose(
     of(row).chose(cx, &review)?;
     cx.place.keep_review(&review)?;
     Ok(review_answer(&review, &cx.place.journal(row.key)?))
-}
-
-/// `stop`: stop `source`'s running migration after the item it is on.
-///
-/// # Errors
-/// No such source, or the stop could not be asked.
-pub fn stop(cx: &Cx<'_>, source: &str) -> Result<Value> {
-    let source = registry::named(source)?.key;
-    let journal = cx.place.journal(source)?;
-    Ok(
-        if journal.state != RunState::Running || !alive(journal.pid) {
-            json!({"source": source, "said": format!("no {source} migration is running")})
-        } else {
-            cx.place.ask_stop(source)?;
-            json!({"source": source, "said": format!(
-                "the {source} migration stops after the item it is on; `tilo migrate start {source}` resumes it"
-            )})
-        },
-    )
 }
 
 /// Why `source` cannot be chosen from or started yet.
@@ -411,12 +400,11 @@ pub fn start(
     }
     let place = cx.place;
     let mut journal = place.journal(source)?;
-    if journal.state == RunState::Running && alive(journal.pid) {
+    if journal.state == RunState::Running && (cx.running)(source) {
         bail!(
             "{source} is already being brought over; `tilo migrate status {source}` says how far"
         );
     }
-    let _ = place.stop_asked(source, true);
     let engine = of(row);
     let run = begin(place, source, &mut journal, engine.summary(row, &review))?;
     // Files are written into the workspace's folder here when it has one; only uploads need the
@@ -447,11 +435,12 @@ pub fn start(
             place,
             source,
             progress: asking.progress,
+            stopping: asking.stopping,
+            scratch: cx.scratch,
             confirm: asking.confirm,
         };
         engine.land(cx, row, &review, sink.as_ref(), &mut lander)
     };
-    journal.pid = None;
     journal.state = match &result {
         Ok(()) => RunState::Complete,
         Err(error) if error.is::<Stopped>() => RunState::Stopped,
@@ -477,7 +466,6 @@ fn begin(place: &Place, source: &str, journal: &mut Journal, title: String) -> R
         title,
     };
     journal.state = RunState::Running;
-    journal.pid = Some(std::process::id());
     journal.run = Some(invocation.title.clone());
     journal.run_id = Some(invocation.id.clone());
     journal.brought.clear();
@@ -496,7 +484,6 @@ fn failed<T>(
     error: anyhow::Error,
 ) -> Result<T> {
     journal.state = RunState::Failed;
-    journal.pid = None;
     journal.failure = Some(format!("{error:#}"));
     place.keep_journal(source, journal)?;
     Err(error)
@@ -649,8 +636,8 @@ pub fn status(cx: &Cx<'_>, source: Option<&str>) -> Result<Value> {
             .review(&source)?
             .ok_or_else(|| not_reviewed(&source))?;
         let mut journal = place.journal(&source)?;
-        if journal.state == RunState::Running && !alive(journal.pid) {
-            // Its process ended without saying how: what it brought is kept, start resumes.
+        if journal.state == RunState::Running && !(cx.running)(&source) {
+            // Its run ended without saying how: what it brought is kept, start resumes.
             journal.state = RunState::Stopped;
         }
         let landed = of(row).landed(cx, row, &journal)?;
@@ -668,7 +655,7 @@ fn status_of(source: &str, review: &Review, journal: &Journal, landed: usize) ->
         RunState::Reviewed | RunState::Stopped | RunState::Failed => {
             Some(format!("tilo migrate start {source}"))
         }
-        RunState::Running => Some(format!("tilo migrate stop {source}")),
+        RunState::Running => None,
         RunState::Complete => None,
     };
     json!({
@@ -683,17 +670,6 @@ fn status_of(source: &str, review: &Review, journal: &Journal, landed: usize) ->
         "failure": journal.failure,
         "next": next,
     })
-}
-
-/// Whether the process `pid` still runs.
-fn alive(pid: Option<u32>) -> bool {
-    pid.and_then(|pid| i32::try_from(pid).ok())
-        .is_some_and(|pid| {
-            rustix::process::test_kill_process(
-                rustix::process::Pid::from_raw(pid).unwrap_or(rustix::process::Pid::INIT),
-            )
-            .is_ok()
-        })
 }
 
 /// `n` bytes as a person reads them: one decimal in the largest unit that holds a whole one.
@@ -752,6 +728,9 @@ pub struct Lander<'a> {
     place: &'a Place,
     source: &'a str,
     progress: &'a mut dyn FnMut(&str),
+    stopping: &'a dyn Fn() -> bool,
+    /// Where the run may stage what it fetches.
+    scratch: &'a Path,
     /// Asks the person whether a step that is theirs alone goes ahead.
     confirm: &'a mut dyn FnMut(&str) -> Result<bool>,
 }
@@ -775,7 +754,7 @@ impl Lander<'_> {
     }
 
     fn stop_asked(&self) -> Result<()> {
-        if self.place.stop_asked(self.source, true) {
+        if (self.stopping)() {
             return Err(Stopped.into());
         }
         Ok(())
@@ -900,7 +879,7 @@ impl Lander<'_> {
     /// Whether the run was asked to stop.
     #[must_use]
     pub fn stopping(&self) -> bool {
-        self.place.stop_asked(self.source, false)
+        (self.stopping)()
     }
 
     /// Tell the person a line of how the run goes.
@@ -938,6 +917,12 @@ impl Lander<'_> {
                 self.landed([key.to_owned()], kind, 0)
             }
         }
+    }
+
+    /// Where the run may stage what it fetches, for a while.
+    #[must_use]
+    pub const fn scratch(&self) -> &Path {
+        self.scratch
     }
 
     /// The source the run brings from.
