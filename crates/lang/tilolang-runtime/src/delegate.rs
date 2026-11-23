@@ -38,10 +38,14 @@ pub enum Invocation {
         /// the dispatch keeps it as its invocation record, asked, until they answer.
         asks: bool,
     },
-    /// The field `field` (its name; `field_id` its id) of the resource `target` set to `value`.
+    /// The field `field` (its name; `field_id` its id) of the resource `target` set to `value`,
+    /// at `path` when the field is one of a record inside the resource.
     Edit {
         app: AppId,
         target: ResourceRef,
+        /// The fields from the resource down to the record `field` is a field of, by the keys
+        /// the record stores them under; empty when `field` is a field of the resource itself.
+        path: Vec<String>,
         field: String,
         field_id: FieldId,
         value: Value,
@@ -77,12 +81,14 @@ impl Invocation {
         }
     }
 
-    /// Its name as a preview lists it: the action's name, or `field =` for an edit.
+    /// Its name as a preview lists it: the action's name, or `field =` for an edit, under the
+    /// record it is a field of when it is nested.
     #[must_use]
     pub fn name(&self) -> String {
         match self {
             Self::Action { name, .. } => name.clone(),
-            Self::Edit { field, .. } => format!("{field} ="),
+            Self::Edit { path, field, .. } if path.is_empty() => format!("{field} ="),
+            Self::Edit { path, field, .. } => format!("{}.{field} =", path.join(".")),
         }
     }
 

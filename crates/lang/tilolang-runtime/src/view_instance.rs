@@ -1262,7 +1262,9 @@ impl ViewInstance {
     }
 
     /// Send the edit of `field` of `target`, a resource of the app `app` this runtime does not
-    /// run, to the host's invoker.
+    /// run, to the host's invoker. A record held in a field of the resource stands inside its
+    /// reading: the edit goes to the resource itself, at the path down to the field, so an edit
+    /// of a nested record is the resource's own field edit like any other.
     fn edit_foreign(
         &self,
         app: String,
@@ -1271,9 +1273,11 @@ impl ViewInstance {
         value: &Value,
     ) -> Result<EditOutcome, RuntimeError> {
         use crate::delegate::{Invocation, Invoked};
+        let (root, path) = self.core.foreign.borrow().root_of(target);
         let invocation = Invocation::Edit {
             app: AppId::from(app),
-            target: target.clone(),
+            target: root,
+            path,
             field: field.name.clone(),
             field_id: field.id.clone(),
             value: value.clone(),

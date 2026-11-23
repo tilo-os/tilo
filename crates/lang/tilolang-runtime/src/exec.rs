@@ -2307,6 +2307,9 @@ impl Core {
         let invocation = Invocation::Edit {
             app,
             target: ResourceRef::clone(&target.target),
+            // A program sets a field of the resource it names; a record's own fields change
+            // through the resource's actions.
+            path: Vec::new(),
             field,
             field_id,
             value,

@@ -9,7 +9,8 @@ use serde_json::json;
 use tilolang::IdsLock;
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::{
-    Actor, AmStore, ModuleHash, Patch, ResourceRef, Runtime, SimpleAuthority, Value, ViewInstance,
+    Actor, AmStore, EditOutcome, ModuleHash, Patch, ResourceRef, Runtime, SimpleAuthority, Value,
+    ViewInstance,
 };
 use tilolang_tilo::catalogue;
 use tilolang_tilo::host::Host;
@@ -327,6 +328,165 @@ fn the_same_reading_twice_changes_nothing() {
         .unwrap();
     assert!(!again, "a reading that did not change moves nothing");
     assert_eq!(view.poll_patches().unwrap(), Vec::new());
+}
+
+/// Settings' notification policy: the quiet hours are a record held in one of its fields.
+const NOTIFICATIONS: &str = r#"
+[[resources]]
+kind = "settings.notifications"
+label = "Notifications"
+version = 1
+fields = [
+  { path = "show_banners", type = "bool" },
+  { path = "focus", type = { named = "FocusSchedule" }, stored = "record" },
+  { path = "focus.enabled", type = "bool" },
+]
+
+[[resources.types]]
+name = "FocusSchedule"
+fields = [{ name = "enabled", type = "bool" }]
+"#;
+
+/// A view whose switch edits a field of the record held in the policy's `focus` field: the
+/// person's quiet hours, set where they stand.
+const QUIET: &str = r#"app test.quiet "Quiet"
+
+use settings as settings
+
+view notifications(n: settings.Notifications) {
+  stack {
+    toggle(bind: n.focus.enabled) as quiet
+  }
+}
+"#;
+
+fn notifications_meta() -> tilolang_runtime::Meta {
+    let surfaces = catalogue::parse_surfaces(NOTIFICATIONS).expect("a surface file");
+    catalogue::package_of("settings", "Settings", &surfaces)
+}
+
+/// The policy, as the session publishes it: one resource of Settings', its quiet hours inside.
+fn notifications() -> ResourceRef {
+    ResourceRef::parse_id("settings:settings.notifications", "settings#Notifications")
+        .expect("a resource id")
+}
+
+/// A view over the policy's quiet hours, and the switch bound to them.
+fn quiet() -> (Host, ViewInstance, String) {
+    let host = Host::new(
+        Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+        || None,
+    )
+    .unwrap();
+    let meta = notifications_meta();
+    host.runtime().load_foreign(meta.clone()).unwrap();
+    let compiled = tilolang::compile_package(QUIET, &IdsLock::new(), std::slice::from_ref(&meta))
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
+    let package = host.load_compiled(&compiled).unwrap();
+    let view = package
+        .meta
+        .views
+        .iter()
+        .find(|view| view.name == "notifications")
+        .expect("the view's declaration")
+        .id
+        .clone();
+    let quiet = package
+        .meta
+        .views
+        .iter()
+        .flat_map(|view| &view.anchors)
+        .find(|anchor| anchor.name == "quiet")
+        .expect("the switch's anchor")
+        .id
+        .clone();
+    host.runtime()
+        .set_reading(
+            &notifications(),
+            &json!({ "show_banners": true, "focus": { "enabled": false } }).to_string(),
+        )
+        .unwrap();
+    let open = host.open_resource(&notifications(), Some(&view)).unwrap();
+    (host, open, quiet)
+}
+
+#[test]
+fn a_field_of_a_record_held_in_a_resource_is_edited_at_its_path() {
+    let (host, view, quiet) = quiet();
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    host.runtime().set_invoker(Sent(Rc::clone(&sent)));
+    assert_eq!(
+        view.bound_value(&quiet),
+        Some(Value::Bool(false)),
+        "the switch shows the record's own field"
+    );
+    assert_eq!(
+        view.edit(&quiet, &Value::Bool(true)).unwrap(),
+        EditOutcome::Applied
+    );
+    let sent = sent.borrow();
+    let [
+        Invocation::Edit {
+            app,
+            target,
+            path,
+            field,
+            field_id,
+            value,
+        },
+    ] = sent.as_slice()
+    else {
+        panic!("one field edit: {sent:?}");
+    };
+    assert_eq!(app.as_str(), "settings");
+    assert_eq!(
+        target.id_string(),
+        notifications().id_string(),
+        "the edit goes to the resource the record is held in, not a name of the record"
+    );
+    assert_eq!(
+        path.as_slice(),
+        ["focus".to_owned()],
+        "the field the record stands in"
+    );
+    assert_eq!(
+        (field.as_str(), field_id.as_str()),
+        ("enabled", "FocusSchedule.enabled")
+    );
+    assert_eq!(value, &Value::Bool(true));
+    drop(sent);
+    // The app's own field edit runs: the reading it publishes holds the change, and the switch
+    // shows it.
+    host.runtime()
+        .set_reading(
+            &notifications(),
+            &json!({ "show_banners": true, "focus": { "enabled": true } }).to_string(),
+        )
+        .unwrap();
+    assert_eq!(view.bound_value(&quiet), Some(Value::Bool(true)));
+}
+
+#[test]
+fn a_field_a_changed_surface_no_longer_has_is_refused_before_anything_is_sent() {
+    // The app's package is replaced under the view: the quiet hours keep their start but lose
+    // the switch the compiled view still binds.
+    let (host, view, quiet) = quiet();
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    host.runtime().set_invoker(Sent(Rc::clone(&sent)));
+    assert!(host.runtime().unload_foreign("settings"));
+    let narrowed = catalogue::parse_surfaces(&NOTIFICATIONS.replace(
+        r#"fields = [{ name = "enabled", type = "bool" }]"#,
+        r#"fields = [{ name = "start_minute", type = "int" }]"#,
+    ))
+    .expect("a surface file");
+    host.runtime()
+        .load_foreign(catalogue::package_of("settings", "Settings", &narrowed))
+        .expect("the changed surface loads");
+    let refused = view
+        .edit(&quiet, &Value::Bool(true))
+        .expect_err("the record no longer has the switch's field");
+    assert!(format!("{refused}").contains("enabled"), "{refused}");
+    assert!(sent.borrow().is_empty(), "nothing was sent on: {sent:?}");
 }
 
 /// A scenario stands a reading in for the app that publishes it: a view over that app's resource

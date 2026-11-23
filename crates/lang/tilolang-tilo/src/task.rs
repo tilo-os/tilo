@@ -1378,6 +1378,7 @@ mod tests {
                 },
                 field: "agent_names".to_owned(),
                 field_id: "Workspace.agent_names".to_owned(),
+                path: Vec::new(),
                 value: Value::Text("Reviewer".to_owned()),
             };
             assert!(matches!(invoker.invoke(&invocation), Invoked::Done(_)));

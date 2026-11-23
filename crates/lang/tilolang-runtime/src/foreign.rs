@@ -206,6 +206,28 @@ impl Foreign {
             .map_or(0, |(_, moved)| moved)
     }
 
+    /// The resource an edit of `target` changes, and the fields from it down to `target`: a
+    /// record that stands inside another app's reading (a record held in a field) is changed on
+    /// the resource the reading is of, at the path the reading holds it ([`Reading::Inside`]).
+    /// A resource read from its root is its own, with no path.
+    pub(crate) fn root_of(&self, target: &ResourceRef) -> (ResourceRef, Vec<String>) {
+        let mut steps = Vec::new();
+        let mut at = Self::key(target);
+        // Each record names the reading it stands in and its path from that reading's root, so
+        // where it stands is read from where its parent stands.
+        while let Some(Reading::Inside(inside)) = self.readings.get(&at) {
+            if steps.is_empty() {
+                steps.clone_from(&inside.steps);
+            } else {
+                steps.splice(0..0, inside.steps.iter().cloned());
+            }
+            at = inside.parent.clone();
+        }
+        at.split_once('@')
+            .and_then(|(ty, id)| ResourceRef::parse_id(id, ty))
+            .map_or_else(|| (target.clone(), Vec::new()), |root| (root, steps))
+    }
+
     /// The type of the resource of another app whose id is `id`, as its reading came in:
     /// `None` until one did.
     ///

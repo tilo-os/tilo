@@ -196,24 +196,29 @@ fn published_call(
         return match invocation {
             // A control bound to a field of one of the package's resources: the resource publishes
             // its own typed field edit, so a field is set as a resource's field is set, and the
-            // change is admitted, recorded and undone like any other.
+            // change is admitted, recorded and undone like any other. A field of a record held in
+            // one is set at its path from the resource.
             Invocation::Edit {
                 app,
                 target,
+                path,
                 field,
+                field_id,
                 value,
                 ..
             } => {
-                let path: Vec<Json> = field
-                    .split('.')
-                    .filter(|name| !name.is_empty())
-                    .map(|name| json!({ "field": name }))
-                    .collect();
+                let mut at: Vec<Json> = path.iter().map(|key| json!({ "field": key })).collect();
+                // The key the record stores the field under, as the field's own edit names it.
+                at.push(json!({
+                    "field": field_id
+                        .rsplit_once('.')
+                        .map_or(field.as_str(), |(_, key)| key)
+                }));
                 Ok(json!({
                     "app": app,
                     "resource": target.id_string(),
                     "action": "field-edit",
-                    "arguments": { "edit": { "path": path, "op": "set", "value": edited(value)? } },
+                    "arguments": { "edit": { "path": at, "op": "set", "value": edited(value)? } },
                     "published": true,
                 }))
             }
