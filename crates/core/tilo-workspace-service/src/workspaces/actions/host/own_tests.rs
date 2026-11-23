@@ -1018,7 +1018,7 @@ async fn govern(
 
 #[tokio::test]
 async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own() {
-    use tilo_action_policy::roles::governance;
+    use tilo_actions::remote::WORKSPACE_INVITE;
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
@@ -1043,7 +1043,7 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
         &host,
         workspace,
         &backend,
-        governance::INVITE,
+        WORKSPACE_INVITE,
         invite("moderator"),
     )
     .await
@@ -1052,7 +1052,7 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
         &host,
         workspace,
         &backend,
-        governance::INVITE,
+        WORKSPACE_INVITE,
         invite("editor"),
     )
     .await
@@ -1071,7 +1071,7 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
         &host,
         workspace,
         &consented,
-        governance::INVITE,
+        WORKSPACE_INVITE,
         invite("viewer"),
     )
     .await
@@ -1108,7 +1108,7 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
         &host,
         workspace,
         &reviewer,
-        governance::INVITE,
+        WORKSPACE_INVITE,
         invite("viewer"),
     )
     .await;
@@ -1326,7 +1326,7 @@ async fn listed_for(
     reason = "one workspace's people and its listing read top to bottom"
 )]
 async fn people_are_named_as_people_and_their_listing_names_what_they_were_invited_into() {
-    use tilo_action_policy::roles::governance;
+    use tilo_actions::remote::WORKSPACE_INVITE;
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
@@ -1354,7 +1354,7 @@ async fn people_are_named_as_people_and_their_listing_names_what_they_were_invit
         &host,
         workspace,
         &backend,
-        governance::INVITE,
+        WORKSPACE_INVITE,
         json!({"role": "editor"}),
     )
     .await
@@ -1376,7 +1376,7 @@ async fn people_are_named_as_people_and_their_listing_names_what_they_were_invit
         &host,
         workspace,
         &backend,
-        governance::INVITE,
+        WORKSPACE_INVITE,
         json!({"role": "editor"}),
     )
     .await
@@ -2224,7 +2224,7 @@ async fn own_workspace_is_asked_for_by_no_id_and_an_unknown_id_is_refused() {
 /// having joined it.
 #[tokio::test]
 async fn a_declared_owners_key_lists_the_workspace_and_invites_before_any_device_joined() {
-    use tilo_action_policy::roles::governance;
+    use tilo_actions::remote::WORKSPACE_INVITE;
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
@@ -2262,7 +2262,7 @@ async fn a_declared_owners_key_lists_the_workspace_and_invites_before_any_device
         &host,
         &lounge,
         &backend,
-        governance::INVITE,
+        WORKSPACE_INVITE,
         json!({"role": "editor"}),
     )
     .await

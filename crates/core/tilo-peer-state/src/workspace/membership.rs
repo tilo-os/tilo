@@ -350,7 +350,7 @@ pub fn invitation_admission(
     let cx = Context::at_secs(at_ns / 1_000_000_000);
     let authority = policy.person_on_device(&issuer, foreign);
     policy
-        .check_invite(&authority, grant.role, &cx, false)
+        .check_admission(&authority, grant.role, &cx, false)
         .map_err(|refusal| refused(format!("its issuer may not invite: {refusal}")))?;
     if !join.administrator() {
         return Ok(Admitted {
@@ -605,12 +605,7 @@ fn identities(
             && identity.admission.is_none()
             && identity.admissions.is_empty()
             && identity.delegate.is_none();
-        if person != actor
-            && !redeemed
-            && !further
-            && !may(governance::ADD_MEMBER)
-            && !may(governance::INVITE)
-        {
+        if person != actor && !redeemed && !further && !may(governance::ADD_MEMBER) {
             return Err(MembershipRefusal::Refused(format!(
                 "device {device} is not the writer's to admit"
             )));

@@ -688,7 +688,7 @@ mod tests {
             workspace: workspace.clone(),
             node: tilo_action_policy::roles::governance_action(
                 &workspace,
-                tilo_action_policy::roles::governance::INVITE,
+                tilo_action_policy::roles::governance::ADD_MEMBER,
             )
             .to_string(),
         };

@@ -54,10 +54,10 @@ use tilo_actions::remote::{
     CatalogueResource, CatalogueRow, InvocationLog, InvocationReceipt, InvocationState,
     InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, WORKSPACE_APPS,
     WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_GRANT_REVOKE,
-    WORKSPACE_INVITATIONS, WORKSPACE_MEMBER_PLACED, WORKSPACE_MEMBER_REMOVED, WORKSPACE_MEMBERS,
-    WORKSPACE_REGISTRIES, WORKSPACE_SERVERS, WORKSPACE_TRUST, WORKSPACE_WAITING, asked, formats,
-    mcp_server, person_accounts, person_connections, person_models, person_telling, person_vault,
-    server_account, workspace_app, workspace_app_named, workspace_governance_address,
+    WORKSPACE_INVITATIONS, WORKSPACE_INVITE, WORKSPACE_MEMBER_PLACED, WORKSPACE_MEMBER_REMOVED,
+    WORKSPACE_MEMBERS, WORKSPACE_REGISTRIES, WORKSPACE_SERVERS, WORKSPACE_TRUST, WORKSPACE_WAITING,
+    asked, formats, mcp_server, person_accounts, person_connections, person_models, person_telling,
+    person_vault, server_account, workspace_app, workspace_app_named, workspace_governance_address,
     workspace_governance_child, workspace_governance_operation, workspace_governance_resource,
     workspace_member, workspace_person,
 };
@@ -250,30 +250,30 @@ struct Verb {
 /// What the workspaces serve, in catalogue order.
 const VERBS: [Verb; 45] = [
     Verb {
-        id: governance::INVITE,
+        id: WORKSPACE_INVITE,
         label: "Invite",
-        check: governance::INVITE,
+        check: governance::ADD_MEMBER,
         kind: roles::GOVERNANCE_KIND,
         params: invite_params,
     },
     Verb {
         id: INVITATIONS,
         label: "List invitations",
-        check: governance::INVITE,
+        check: governance::ADD_MEMBER,
         kind: ActionKind::Read,
         params: Vec::new,
     },
     Verb {
         id: CANCEL_INVITATION,
         label: "Cancel invitation",
-        check: governance::INVITE,
+        check: governance::ADD_MEMBER,
         kind: roles::GOVERNANCE_KIND,
         params: invitation_params,
     },
     Verb {
         id: MEMBERS,
         label: "List members",
-        check: governance::INVITE,
+        check: governance::ADD_MEMBER,
         kind: ActionKind::Read,
         params: Vec::new,
     },
@@ -301,21 +301,21 @@ const VERBS: [Verb; 45] = [
     Verb {
         id: WAIT_LIST,
         label: "List the wait list",
-        check: governance::INVITE,
+        check: governance::ADD_MEMBER,
         kind: ActionKind::Read,
         params: Vec::new,
     },
     Verb {
         id: UNLIST,
         label: "Take an address off the wait list",
-        check: governance::INVITE,
+        check: governance::ADD_MEMBER,
         kind: roles::GOVERNANCE_KIND,
         params: wait_list_entry_params,
     },
     Verb {
         id: MAIL_INVITATION,
         label: "Mail an invitation to an address on the wait list",
-        check: governance::INVITE,
+        check: governance::ADD_MEMBER,
         kind: roles::GOVERNANCE_KIND,
         params: mail_invitation_params,
     },
@@ -1576,7 +1576,7 @@ impl Workspaces {
         let Some(workspace) = self.workspace_identity(workspace_id).await else {
             return false;
         };
-        let wanted = workspace_governance_address(&workspace, governance::INVITE);
+        let wanted = workspace_governance_address(&workspace, WORKSPACE_INVITE);
         let query = CatalogueQuery {
             needle: "invite".to_owned(),
             provider: Some(WORKSPACE_GOVERNANCE_PROVIDER.to_owned()),
@@ -1637,7 +1637,7 @@ impl Workspaces {
     /// Invite the address `entry` waiting at the workspace `workspace_id`'s
     /// entry, as whoever may invite does: the invitation is issued for it,
     /// with the short link mailed to the address where the entry sends mail.
-    /// Answers what [`governance::INVITE`] answered.
+    /// Answers what [`WORKSPACE_INVITE`] answered.
     ///
     /// # Errors
     ///
@@ -1655,7 +1655,7 @@ impl Workspaces {
         let mut arguments = Map::new();
         arguments.insert("role".to_owned(), Value::from("editor"));
         arguments.insert("wait_list_entry".to_owned(), Value::from(entry));
-        let request = Self::governance_ask(&workspace, governance::INVITE, arguments);
+        let request = Self::governance_ask(&workspace, WORKSPACE_INVITE, arguments);
         self.page_invoke(workspace_id, caller, &request).await
     }
 
@@ -1679,7 +1679,7 @@ impl Workspaces {
             .ok_or(ActionCallError::UnknownAction)?;
         let mut arguments = Map::new();
         arguments.insert("role".to_owned(), Value::from("editor"));
-        let request = Self::governance_ask(&workspace, governance::INVITE, arguments);
+        let request = Self::governance_ask(&workspace, WORKSPACE_INVITE, arguments);
         let issued = self.page_invoke(workspace_id, caller, &request).await?;
         // The short link where this host has a web origin to ask; the
         // invitation's own where it has none, which joins just the same.
@@ -2241,9 +2241,11 @@ impl Workspaces {
                     WorkspaceOp::Place(person, place)
                 }
             }
-            governance::INVITE => match args.place_at("role")? {
-                super::MemberPlace::Role(role) => WorkspaceOp::Invite(role),
-                super::MemberPlace::Administrator => WorkspaceOp::InviteAdministrator,
+            // An invitation is letting someone in put off: issuing one is decided as letting
+            // them in at its place is.
+            WORKSPACE_INVITE => match args.place_at("role")? {
+                super::MemberPlace::Role(role) => WorkspaceOp::Admit(role),
+                super::MemberPlace::Administrator => WorkspaceOp::AdmitAdministrator,
                 super::MemberPlace::Owner => WorkspaceOp::MakeOwner,
             },
             governance::REMOVE_MEMBER | governance::BAN | governance::UNBAN => {
@@ -2268,7 +2270,7 @@ impl Workspaces {
         call: GovernanceCall<'_>,
     ) -> Result<Value, ActionCallError> {
         match action {
-            governance::INVITE | INVITATIONS | CANCEL_INVITATION | MEMBERS | NAME => {
+            WORKSPACE_INVITE | INVITATIONS | CANCEL_INVITATION | MEMBERS | NAME => {
                 self.governance_invitations(action, call).await
             }
             ADD_MEMBER => self.governance_add_member(call).await,
@@ -2975,7 +2977,7 @@ impl Workspaces {
         action: &str,
         call: GovernanceCall<'_>,
     ) -> Result<Value, ActionCallError> {
-        if action == governance::INVITE {
+        if action == WORKSPACE_INVITE {
             return self.invite_answered(call).await;
         }
         let GovernanceCall {
@@ -4051,8 +4053,7 @@ impl GovernedServer {
         // apps place elsewhere (a Browser window on a VM host) is theirs.
         if let RemoteActionMessage::Invoke(request) = message
             && (PROVIDERS.contains(&request.target.provider.as_str())
-                || request.target.provider
-                    == tilo_actions::remote::workspace_invocations::PROVIDER
+                || request.target.provider == tilo_actions::remote::workspace_invocations::PROVIDER
                 || tilo_actions::remote::asked::is_resolve(&request.target)
                 || self.governance.answers_own_account(&request.target))
         {

@@ -692,7 +692,7 @@ impl DispatchCore {
     /// Whether the member may invite people to the workspace.
     pub(crate) fn may_invite(&self) -> bool {
         self.may_scope(&PermissionScope::governance(
-            policy::roles::governance::INVITE,
+            policy::roles::governance::ADD_MEMBER,
         ))
     }
 

@@ -393,7 +393,7 @@ async fn an_address_left_at_the_entry_is_on_the_wait_list_and_never_a_person_to_
 
     // Someone the workspace does not let invite reads no wait list.
     assert!(matches!(ask(list()).await, WorkspacesReply::Refused(_)));
-    grant(workspaces, &workspace, &owner, &ada, governance::INVITE).await;
+    grant(workspaces, &workspace, &owner, &ada, governance::ADD_MEMBER).await;
     let WorkspacesReply::WaitList(listed) = ask(list()).await else {
         panic!("someone who may invite reads the wait list");
     };
@@ -1031,7 +1031,7 @@ async fn an_invitation_asked_without_a_name_names_the_inviter_as_the_workspace_s
     let workspaces = server.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
-    grant(workspaces, &workspace, &owner, &ada, governance::INVITE).await;
+    grant(workspaces, &workspace, &owner, &ada, governance::ADD_MEMBER).await;
     let inviter = |issued: crate::workspaces::IssuedInvitation| {
         tilo_peer_state::join::decode_and_verify_invitation(
             &issued.signed_invitation,

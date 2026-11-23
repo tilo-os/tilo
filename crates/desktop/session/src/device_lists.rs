@@ -9,14 +9,14 @@ use fs::tree_sync::{Refusal, Waiting};
 use serde_json::{Map, Value};
 use tilo_actions::remote::session_actions::INVITE_RESOURCE;
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
-use tilo_session_core::desktop::host::chrome::ChromeIntent;
-use tilo_session_core::desktop::host::contract::DesktopAsk;
-use tilo_session_core::desktop::overlays::{Overlay, Overlays, Part, SwitcherScope};
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_peer_state::join::Role;
 use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};
+use tilo_session_core::desktop::host::chrome::ChromeIntent;
+use tilo_session_core::desktop::host::contract::DesktopAsk;
 use tilo_session_core::desktop::navigation::ChromeEffect;
+use tilo_session_core::desktop::overlays::{Overlay, Overlays, Part, SwitcherScope};
 use tilo_session_core::desktop::state::DesktopHandle;
 
 use crate::windows::{reaching, windows};
@@ -603,7 +603,8 @@ pub(crate) struct DeviceLists {
     pub(crate) view: Option<std::sync::Arc<crate::workspace_view::WorkspaceView>>,
     /// What the shell asks the session for while it runs: opening the invite sheet, which is the
     /// session's own surface and not a layer the shell draws.
-    pub(crate) asks: Rc<std::cell::RefCell<Vec<tilo_session_core::desktop::host::contract::DesktopAsk>>>,
+    pub(crate) asks:
+        Rc<std::cell::RefCell<Vec<tilo_session_core::desktop::host::contract::DesktopAsk>>>,
     /// The styles every installed package offers, as `device.styles` reads them
     /// (shell.md §6): what the person's switch offers. The session fills it from its package
     /// store, and moves it when a package is installed or taken away.
@@ -624,7 +625,8 @@ pub(crate) struct Shared {
     pub(crate) surfaces: Surfaces,
     pub(crate) tray: Option<std::sync::Arc<tilo_tray::Tray>>,
     pub(crate) view: Option<std::sync::Arc<crate::workspace_view::WorkspaceView>>,
-    pub(crate) asks: Rc<std::cell::RefCell<Vec<tilo_session_core::desktop::host::contract::DesktopAsk>>>,
+    pub(crate) asks:
+        Rc<std::cell::RefCell<Vec<tilo_session_core::desktop::host::contract::DesktopAsk>>>,
     pub(crate) folders: tilo_workspace_service::files::Folders,
 }
 
@@ -906,7 +908,7 @@ impl DeviceLists {
         let asked = view
             .ask_holder(
                 workspace_id,
-                tilo_action_policy::roles::governance::INVITE,
+                tilo_actions::remote::WORKSPACE_INVITE,
                 arguments,
             )
             .ok_or_else(no_holder)?;

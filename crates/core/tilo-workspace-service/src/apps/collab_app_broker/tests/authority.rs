@@ -968,7 +968,7 @@ fn the_persons_workspace_admits_only_its_own_roots_devices_as_owner() {
             access
                 .authority()
                 .decide(
-                    &roles::governance_action(&route.cluster_id, roles::governance::INVITE),
+                    &roles::governance_action(&route.cluster_id, roles::governance::ADD_MEMBER),
                     roles::GOVERNANCE_KIND,
                     &tilo_desktop_model::context_at(0),
                 )

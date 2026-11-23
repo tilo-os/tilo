@@ -238,6 +238,10 @@ pub const WORKSPACE_MEMBERS: &str = "members";
 /// One person among a workspace's people (`workspace/members/<person>`, their user public key
 /// in hex): what changes their role and removes them is published on them.
 pub const WORKSPACE_MEMBER: &str = "members/*";
+/// The workspace's action that issues an invitation: letting someone in put off until they
+/// redeem it, so the workspace's `add-member` grants decide it for the role it hands out, as they
+/// decide redeeming it.
+pub const WORKSPACE_INVITE: &str = "invite";
 /// The action `workspace/members#admit` publishes: admit a person to the workspace at a place,
 /// whether or not they held one, as [`WORKSPACE_MEMBER_PLACED`] would a member's. The change that
 /// admits them keeps their membership record with it.

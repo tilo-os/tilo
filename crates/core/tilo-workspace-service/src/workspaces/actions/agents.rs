@@ -303,8 +303,8 @@ const PAGE_ACTIONS: [(&str, bool, &str); 20] = [
     ("Create", true, CREATE_WORKSPACE),
     ("Place", true, CREATE_WORKSPACE),
     ("Enter", true, ENTER_WORKSPACE),
-    ("Invite", false, governance::INVITE),
-    ("PreAdmit", false, governance::INVITE),
+    ("Invite", false, tilo_actions::remote::WORKSPACE_INVITE),
+    ("PreAdmit", false, tilo_actions::remote::WORKSPACE_INVITE),
     ("Cancel", false, super::CANCEL_INVITATION),
     ("Pending", false, super::INVITATIONS),
     ("WaitList", false, super::WAIT_LIST),
@@ -439,12 +439,12 @@ impl Workspaces {
                 role,
                 administrator,
                 ..
-            } => (Some(workspace), WorkspaceOp::invite(*role, *administrator)),
+            } => (Some(workspace), WorkspaceOp::admit(*role, *administrator)),
             Asked::Create { .. } | Asked::Place { .. } => (None, CREATING),
             Asked::Cancel { workspace, .. }
             | Asked::Unlist { workspace, .. }
             | Asked::MailInvite { workspace, .. } => {
-                (Some(workspace), WorkspaceOp::Govern(governance::INVITE))
+                (Some(workspace), WorkspaceOp::Govern(governance::ADD_MEMBER))
             }
             Asked::Rename { workspace, .. } => {
                 (Some(workspace), WorkspaceOp::Govern(governance::RENAME))

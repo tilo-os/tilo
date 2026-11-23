@@ -41,6 +41,9 @@ use super::{GovernedWorkspace, Workspaces, system_time};
 /// [`Admitting`], answered in order with a [`Admitted`] each.
 pub(super) const ADMISSIONS: &str = "admissions";
 
+/// What the holder of an invitation reads when its issuer may no longer let them in.
+const ISSUER_ADMITS_NO_MORE: &str = "invitation-issuer-admits-no-more";
+
 /// One device admitted with its invitation.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -521,7 +524,14 @@ impl Workspaces {
                 Some(workspace),
                 WorkspaceOp::Admit(grant.role),
                 now,
-            )?;
+            )
+            .map_err(|_| {
+                CollaborationError::new(crate::i18n::message(
+                    None,
+                    ISSUER_ADMITS_NO_MORE,
+                    &tilo_history::FluentArgs::new(),
+                ))
+            })?;
         }
         Ok(Ok(Checked {
             index,

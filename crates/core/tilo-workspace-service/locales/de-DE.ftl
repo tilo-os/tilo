@@ -90,6 +90,10 @@ airdrop-error-declined = Die AirDrop-Übertragung wurde vor dem Senden abgebroch
 
 device-agents-not-accepted = Dieses Gerät nimmt keine Agenten von deinen anderen Geräten an. Schalte „Agenten von meinen anderen Geräten annehmen“ in seinen Einstellungen unter Geräte ein.
 
+admit-not-permitted = Du kannst niemanden in diesen Arbeitsbereich einladen. Seine Eigentümerin oder ein Administrator kann dir erlauben, Mitglieder hinzuzufügen.
+admit-above-role = Du kannst Personen mit deiner eigenen Rolle oder darunter einladen, und { $role } liegt darüber.
+invitation-issuer-admits-no-more = Die Person, die dich eingeladen hat, kann niemanden mehr mit dieser Rolle aufnehmen. Bitte sie um eine neue Einladung.
+
 task-programs-resource = Aufgabenprogramme
 task-programs-run = Ein Programm ausführen
 task-programs-run-detail = Führt ein Programm als Schritt der Aufgabe aus und antwortet, was es gelesen oder geändert hat.

@@ -325,7 +325,7 @@ mod tests {
                 Grantee::person("person-a"),
             ));
             let cx = Context::at(0);
-            let invite = roles::governance_action("workspace-a", roles::governance::INVITE);
+            let invite = roles::governance_action("workspace-a", roles::governance::ADD_MEMBER);
             assert_eq!(
                 projection
                     .authority()

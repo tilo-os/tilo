@@ -876,9 +876,9 @@ tilo_test_env::scenario! {
             Err(Refusal::OwnerRole)
         );
 
-        // The owner hands Bob the invite and add-member actions; Bob can then add
+        // The owner hands Bob the add-member action; Bob can then add
         // people up to his own role and no further.
-        for action in [governance::INVITE, governance::ADD_MEMBER] {
+        for action in [governance::ADD_MEMBER] {
             let delegated = Grant::new(
                 format!("bob-{action}"),
                 Grantee::person(BOB),
@@ -895,9 +895,9 @@ tilo_test_env::scenario! {
         }
         let bob = Authority::person(workspace.party(BOB));
         workspace
-            .check_invite(&bob, Role::Editor, &cx(), false)
+            .check_admission(&bob, Role::Editor, &cx(), false)
             .expect("editor invites editor");
-        let refused = workspace.check_invite(&bob, Role::Owner, &cx(), false);
+        let refused = workspace.check_admission(&bob, Role::Owner, &cx(), false);
         assert_eq!(refused, Err(Refusal::OwnerRole));
         let add = Change::AddMember {
             person: CAROL.into(),
@@ -915,23 +915,23 @@ tilo_test_env::scenario! {
             Err(Refusal::NotPermitted(_))
         ));
 
-        // A commenter given the invite action still cannot invite an editor.
+        // A commenter given add-member still cannot invite an editor.
         let mut workspace = workspace_with_members(&[(CAROL, Role::Commenter)]);
         workspace.grants.push(Grant::new(
             "carol-invite",
             Grantee::person(CAROL),
-            roles::governance_action("r", governance::INVITE),
+            roles::governance_action("r", governance::ADD_MEMBER),
             KindSet::OUTSIDE,
             Answer::Allow,
             Grantee::person(ALICE),
         ));
         let carol = Authority::person(workspace.party(CAROL));
         assert_eq!(
-            workspace.check_invite(&carol, Role::Editor, &cx(), false),
+            workspace.check_admission(&carol, Role::Editor, &cx(), false),
             Err(Refusal::AboveActorRole(Role::Editor))
         );
         workspace
-            .check_invite(&carol, Role::Viewer, &cx(), false)
+            .check_admission(&carol, Role::Viewer, &cx(), false)
             .expect("commenter invites viewer");
 
         // A workspace that denies its Editors outside effects denies them to
@@ -950,7 +950,7 @@ tilo_test_env::scenario! {
             Grant::new(
                 "editors-invite",
                 Grantee::role(Role::Editor),
-                roles::governance_action("r", governance::INVITE),
+                roles::governance_action("r", governance::ADD_MEMBER),
                 KindSet::OUTSIDE,
                 Answer::Allow,
                 Grantee::person(ALICE),
@@ -958,10 +958,10 @@ tilo_test_env::scenario! {
         ]);
         let bob = Authority::person(workspace.party(BOB));
         workspace
-            .check_invite(&bob, Role::Editor, &cx(), false)
+            .check_admission(&bob, Role::Editor, &cx(), false)
             .expect("an Editor held to the workspace's Deny invites an Editor");
         assert_eq!(
-            workspace.check_invite(&bob, Role::Moderator, &cx(), false),
+            workspace.check_admission(&bob, Role::Moderator, &cx(), false),
             Err(Refusal::AboveActorRole(Role::Moderator))
         );
     }
@@ -1053,7 +1053,7 @@ tilo_test_env::scenario! {
             Answer::Deny
         );
         let owner = MemberAccess::person(workspace, ALICE).on_foreign_device();
-        let invite = roles::governance_action("r", governance::INVITE);
+        let invite = roles::governance_action("r", governance::ADD_MEMBER);
         assert_eq!(
             owner.answer(&invite, roles::GOVERNANCE_KIND, &cx()),
             Answer::Deny
@@ -1448,19 +1448,19 @@ tilo_test_env::scenario! {
         workspace.grants.push(Grant::new(
             "bob-invite",
             Grantee::person(BOB),
-            roles::governance_action("r", governance::INVITE),
+            roles::governance_action("r", governance::ADD_MEMBER),
             KindSet::OUTSIDE,
             Answer::Ask,
             Grantee::person(ALICE),
         ));
         let bob = Authority::person(workspace.party(BOB));
-        let refused = workspace.check_invite(&bob, Role::Viewer, &cx(), false);
+        let refused = workspace.check_admission(&bob, Role::Viewer, &cx(), false);
         assert!(
             matches!(refused, Err(Refusal::NeedsApproval(_))),
             "{refused:?}"
         );
         workspace
-            .check_invite(&bob, Role::Viewer, &cx(), true)
+            .check_admission(&bob, Role::Viewer, &cx(), true)
             .expect("approved");
     }
 
@@ -1864,7 +1864,7 @@ tilo_test_env::scenario! {
                 .answer,
             Answer::Allow
         );
-        let invite = roles::governance_action("r", governance::INVITE);
+        let invite = roles::governance_action("r", governance::ADD_MEMBER);
         assert_eq!(
             authority
                 .decide(&invite, roles::GOVERNANCE_KIND, &cx())
@@ -2398,7 +2398,7 @@ tilo_test_env::scenario! {
             .resource("m1")
             .field("comments")
             .action("insert");
-        let governance = roles::governance_action("r", governance::INVITE);
+        let governance = roles::governance_action("r", governance::ADD_MEMBER);
         let workspace_settings = roles::workspace_resource("r");
         let table: [(Role, [Answer; 6]); 4] = [
             // content Read, Undoable, Outside; comment Undoable; governance Undoable; workspace Read

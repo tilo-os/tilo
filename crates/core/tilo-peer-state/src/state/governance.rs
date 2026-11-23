@@ -1665,7 +1665,7 @@ impl super::StatePeer {
             .policy
             .check_action(
                 &member.authority(),
-                tilo_action_policy::roles::governance::INVITE,
+                tilo_action_policy::roles::governance::ADD_MEMBER,
                 &tilo_action_policy::Context::at_time(now),
                 false,
             )
@@ -1684,7 +1684,7 @@ impl super::StatePeer {
         let member = self.inviter(key, now)?;
         member
             .policy
-            .check_invite(
+            .check_admission(
                 &member.authority(),
                 role,
                 &tilo_action_policy::Context::at_time(now),

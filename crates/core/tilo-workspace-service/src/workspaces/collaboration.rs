@@ -233,7 +233,7 @@ impl Workspaces {
             self.authorize(
                 administrator,
                 Some(&governed),
-                WorkspaceOp::invite(request.role, makes_administrator),
+                WorkspaceOp::admit(request.role, makes_administrator),
                 now,
             )?;
             // An invitation says who it is from. A caller that names nobody
@@ -346,7 +346,7 @@ impl Workspaces {
         self.authorize(
             administrator,
             Some(&workspace),
-            WorkspaceOp::Govern(governance::INVITE),
+            WorkspaceOp::Govern(governance::ADD_MEMBER),
             tilo_clock::unix_now_ns(),
         )?;
         let mut state = workspace.collaboration().clone();
@@ -382,7 +382,7 @@ impl Workspaces {
         self.authorize(
             administrator,
             Some(&workspace),
-            WorkspaceOp::Govern(governance::INVITE),
+            WorkspaceOp::Govern(governance::ADD_MEMBER),
             now,
         )?;
         Ok(workspace.collaboration().pending(now))

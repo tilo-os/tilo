@@ -266,7 +266,7 @@ impl TwoTenants {
         let globex = workspaces.create("Globex").await.unwrap();
         assert_ne!(acme.workspace_id, globex.workspace_id);
 
-        // Ann invites in Acme: the owner grants her the workspace's `invite`
+        // Ann invites in Acme: the owner grants her the workspace's `add-member`
         // governance action, as an owner hands a member a part of running
         // their workspace.
         admit(&server, &host, &ann_laptop, &acme.workspace, Role::Editor).await;
@@ -274,7 +274,7 @@ impl TwoTenants {
         let grant = Grant::new(
             format!("tenant-isolation:invite:{who}"),
             Grantee::person(who),
-            roles::governance_action(&acme.workspace, governance::INVITE),
+            roles::governance_action(&acme.workspace, governance::ADD_MEMBER),
             KindSet::ALL,
             Answer::Allow,
             Grantee::person(hex::encode(provider.user_pk)),

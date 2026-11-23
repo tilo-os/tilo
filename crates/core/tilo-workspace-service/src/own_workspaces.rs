@@ -228,7 +228,7 @@ mod tests {
                 provider: tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
                 address: tilo_actions::remote::workspace_governance_address(
                     created.workspace.as_str(),
-                    tilo_action_policy::roles::governance::INVITE,
+                    tilo_actions::remote::WORKSPACE_INVITE,
                 ),
             },
             arguments,

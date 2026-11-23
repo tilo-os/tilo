@@ -233,9 +233,8 @@ pub const MODERATION_FIELD: &str = "moderation";
 
 /// The workspace's governance actions.
 pub mod governance {
-    /// Invite someone, carrying at most the inviter's role.
-    pub const INVITE: &str = "invite";
-    /// Admit a member directly.
+    /// Let someone in, at most at the role the one letting them in holds: directly, or by an
+    /// invitation, which is letting them in put off until they redeem it.
     pub const ADD_MEMBER: &str = "add-member";
     /// Remove a member. The owner cannot be removed.
     pub const REMOVE_MEMBER: &str = "remove-member";
@@ -281,8 +280,7 @@ pub mod governance {
     /// grant gives, so it is not among [`ALL`].
     pub const TRANSFER_OWNERSHIP: &str = "transfer-ownership";
 
-    pub const ALL: [&str; 16] = [
-        INVITE,
+    pub const ALL: [&str; 15] = [
         ADD_MEMBER,
         REMOVE_MEMBER,
         BAN,

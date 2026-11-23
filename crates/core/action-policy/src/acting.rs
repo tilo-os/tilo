@@ -409,7 +409,7 @@ mod tests {
                 answer(&foreign, &policy, &[], ActionKind::Outside),
                 Answer::Ask
             );
-            let invite = roles::governance_action(WORKSPACE, roles::governance::INVITE);
+            let invite = roles::governance_action(WORKSPACE, roles::governance::ADD_MEMBER);
             let verdict: Verdict<'_> = Authority::of_acting(&foreign, &policy, &[]).decide(
                 &invite,
                 roles::GOVERNANCE_KIND,

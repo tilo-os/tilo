@@ -9,9 +9,9 @@ use tilo_actions::InvocationId;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CatalogueQuery, CatalogueRow, InvokeArgument,
     InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
-    WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_MEMBER_PLACED, WORKSPACE_MEMBER_REMOVED,
-    WORKSPACE_MEMBERS, workspace_governance_child, workspace_governance_operation,
-    workspace_member,
+    WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_INVITE, WORKSPACE_MEMBER_PLACED,
+    WORKSPACE_MEMBER_REMOVED, WORKSPACE_MEMBERS, workspace_governance_child,
+    workspace_governance_operation, workspace_member,
 };
 use tilo_peer_state::join::Role;
 use tilo_server_protocol::workspaces::{JoinReply, WorkspacesReply, WorkspacesRequest};
@@ -367,7 +367,7 @@ async fn invoke(
 /// Inviting and what is part of it: the invitations made, who is in the workspace, and the
 /// addresses left at its entry while it takes people by invitation.
 const INVITE_FAMILY: [&str; 7] = [
-    governance::INVITE,
+    WORKSPACE_INVITE,
     INVITATIONS,
     CANCEL_INVITATION,
     MEMBERS,
@@ -431,13 +431,19 @@ async fn the_catalogue_offers_what_the_workspaces_governance_lets_each_caller_do
         offered_in_catalogue(OWN)
     );
 
-    // Granted invite, Ada is offered inviting, leaving and naming themselves, and
-    // nothing beyond them.
-    grant(workspaces, &workspace, &owner, &ada, governance::INVITE).await;
+    // Granted letting people in, Ada is offered inviting and admitting, leaving and naming
+    // themselves, and nothing beyond them: an invitation is letting someone in put off.
+    grant(workspaces, &workspace, &owner, &ada, governance::ADD_MEMBER).await;
     let granted = offered(&host, workspace_id, &caller(&ada)).await;
     assert_eq!(
         granted,
-        offered_in_catalogue(INVITE_FAMILY.iter().chain(&OWN).copied())
+        offered_in_catalogue(
+            INVITE_FAMILY
+                .iter()
+                .chain(&[super::ADD_MEMBER])
+                .chain(&OWN)
+                .copied()
+        )
     );
 
     // A Moderator is offered removing, banning and unbanning members, as its
@@ -586,7 +592,7 @@ async fn an_invitation_lasts_the_seconds_the_desktop_asked() {
         &caller(&owner),
         request(
             &workspace,
-            governance::INVITE,
+            WORKSPACE_INVITE,
             json!({
                 "role": "viewer",
                 "recipient": hex::encode(guest),
@@ -647,7 +653,7 @@ async fn invitations_run_through_the_workspaces_own_methods() {
     let ada = admit(workspaces, &workspace, &owner, 1).await;
 
     // The owner invites: the workspace records a pending invitation.
-    let invite = request(&workspace, governance::INVITE, json!({ "role": "editor" }));
+    let invite = request(&workspace, WORKSPACE_INVITE, json!({ "role": "editor" }));
     let issued = invoke(&governing, workspace_id, &caller(&owner), invite.clone())
         .await
         .unwrap();
@@ -683,7 +689,7 @@ async fn invitations_run_through_the_workspaces_own_methods() {
         &governing,
         workspace_id,
         &caller(&owner),
-        request(&workspace, governance::INVITE, json!({ "role": "owner" })),
+        request(&workspace, WORKSPACE_INVITE, json!({ "role": "owner" })),
     )
     .await
     .unwrap();
@@ -702,7 +708,7 @@ async fn invitations_run_through_the_workspaces_own_methods() {
         &governing,
         workspace_id,
         &caller(&ada),
-        request(&workspace, governance::INVITE, json!({ "role": "viewer" })),
+        request(&workspace, WORKSPACE_INVITE, json!({ "role": "viewer" })),
     )
     .await;
     assert_eq!(refused, Err(ActionCallError::UnknownAction));
@@ -734,7 +740,7 @@ async fn invitations_run_through_the_workspaces_own_methods() {
         &caller(&owner),
         request(
             "another-workspace",
-            governance::INVITE,
+            WORKSPACE_INVITE,
             json!({ "role": "viewer" }),
         ),
     )
@@ -767,14 +773,14 @@ async fn an_editor_invites_up_to_her_own_role_and_no_further() {
         WorkspacesReply::Refused(_)
     ));
 
-    // Granted invite, Ada invites up to her own role and no further: the
+    // Granted add-member, Ada invites up to her own role and no further: the
     // workspace's own decision, refused with its reason.
-    grant(workspaces, &workspace, &owner, &ada, governance::INVITE).await;
+    grant(workspaces, &workspace, &owner, &ada, governance::ADD_MEMBER).await;
     invoke(
         &host,
         workspace_id,
         &caller(&ada),
-        request(&workspace, governance::INVITE, json!({ "role": "editor" })),
+        request(&workspace, WORKSPACE_INVITE, json!({ "role": "editor" })),
     )
     .await
     .unwrap();
@@ -782,11 +788,7 @@ async fn an_editor_invites_up_to_her_own_role_and_no_further() {
         &host,
         workspace_id,
         &caller(&ada),
-        request(
-            &workspace,
-            governance::INVITE,
-            json!({ "role": "moderator" }),
-        ),
+        request(&workspace, WORKSPACE_INVITE, json!({ "role": "moderator" })),
     )
     .await;
     assert!(
@@ -817,7 +819,7 @@ async fn an_administrator_is_an_editor_the_invitation_also_governs() {
         &caller(&owner),
         request(
             &workspace,
-            governance::INVITE,
+            WORKSPACE_INVITE,
             json!({ "role": "administrator" }),
         ),
     )
@@ -858,16 +860,16 @@ async fn an_administrator_is_an_editor_the_invitation_also_governs() {
     assert_eq!(row["role"], json!("editor"));
     assert_eq!(row["administrator"], json!(true));
 
-    // An Editor granted inviting may not make administrators: the
+    // An Editor granted add-member may not make administrators: the
     // workspace's own governance decides it, with its reason.
-    grant(workspaces, &workspace, &owner, &ada, governance::INVITE).await;
+    grant(workspaces, &workspace, &owner, &ada, governance::ADD_MEMBER).await;
     let refused = invoke(
         &host,
         workspace_id,
         &caller(&ada),
         request(
             &workspace,
-            governance::INVITE,
+            WORKSPACE_INVITE,
             json!({ "role": "administrator" }),
         ),
     )
@@ -894,11 +896,7 @@ async fn an_administrator_is_an_editor_the_invitation_also_governs() {
         &host,
         workspace_id,
         &caller(&ada),
-        request(
-            &workspace,
-            governance::INVITE,
-            json!({ "role": "moderator" }),
-        ),
+        request(&workspace, WORKSPACE_INVITE, json!({ "role": "moderator" })),
     )
     .await
     .unwrap();
@@ -908,7 +906,7 @@ async fn an_administrator_is_an_editor_the_invitation_also_governs() {
         &caller(&ada),
         request(
             &workspace,
-            governance::INVITE,
+            WORKSPACE_INVITE,
             json!({ "role": "administrator" }),
         ),
     )
@@ -934,7 +932,7 @@ async fn an_invitation_at_the_owners_place_makes_its_opener_the_owner() {
         &host,
         workspace_id,
         &caller(&owner),
-        request(&workspace, governance::INVITE, json!({ "role": "owner" })),
+        request(&workspace, WORKSPACE_INVITE, json!({ "role": "owner" })),
     )
     .await
     .unwrap();
@@ -1348,8 +1346,7 @@ async fn a_host_without_apps_answers_only_its_workspaces_governance() {
         apps: None,
     };
     let someone = Caller::authenticated([1; 32], [2; 32]);
-    let governance =
-        RemoteActionMessage::Invoke(request("workspace", governance::INVITE, json!({})));
+    let governance = RemoteActionMessage::Invoke(request("workspace", WORKSPACE_INVITE, json!({})));
     let mut app = request("workspace", "archive", json!({}));
     app.target.provider = "app".into();
     assert!(server.answers(&someone, &governance));
@@ -2621,7 +2618,7 @@ async fn two_devices_redeeming_one_invitation_at_once_admit_exactly_one() {
         &host,
         workspace_id,
         &caller(&owner),
-        request(&workspace, governance::INVITE, json!({ "role": "editor" })),
+        request(&workspace, WORKSPACE_INVITE, json!({ "role": "editor" })),
     )
     .await
     .unwrap();

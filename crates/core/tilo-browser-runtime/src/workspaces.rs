@@ -320,7 +320,7 @@ impl WasmPeer {
             "mayInvite" => {
                 let node = tilo_action_policy::roles::governance_action(
                     &id,
-                    tilo_action_policy::roles::governance::INVITE,
+                    tilo_action_policy::roles::governance::ADD_MEMBER,
                 );
                 Value::Bool(answered(
                     self.workspaces_request(WorkspacesRequest::Permits {

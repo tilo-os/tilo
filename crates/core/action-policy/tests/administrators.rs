@@ -86,11 +86,11 @@ tilo_test_env::scenario! {
         let carol = Authority::person(workspace.party(CAROL));
         for role in [Role::Viewer, Role::Commenter, Role::Editor, Role::Moderator] {
             workspace
-                .check_invite(&carol, role, &cx(), false)
+                .check_admission(&carol, role, &cx(), false)
                 .unwrap();
         }
         assert_eq!(
-            workspace.check_invite(&carol, Role::Owner, &cx(), false),
+            workspace.check_admission(&carol, Role::Owner, &cx(), false),
             Err(Refusal::OwnerRole)
         );
         let set = |person: &str, role| Change::SetRole {
@@ -168,7 +168,7 @@ tilo_test_env::scenario! {
         let carol = Authority::person(restricted.party(CAROL));
         let bob = Authority::person(restricted.party(BOB));
         assert_eq!(
-            restricted.check_action(&carol, governance::INVITE, &cx(), true),
+            restricted.check_action(&carol, governance::ADD_MEMBER, &cx(), true),
             Err(Refusal::Restricted(CAROL.into()))
         );
         assert_eq!(
@@ -177,7 +177,7 @@ tilo_test_env::scenario! {
             "a Moderator's own actions do not outlast a restriction either"
         );
         assert_eq!(
-            restricted.check_action(&carol, governance::INVITE, &Context::at(until), false),
+            restricted.check_action(&carol, governance::ADD_MEMBER, &Context::at(until), false),
             Ok(()),
             "a lapsed restriction holds nobody off"
         );
@@ -188,12 +188,12 @@ tilo_test_env::scenario! {
             .push(roles::block_grant("r", CAROL, Grantee::person(OWNER)));
         let carol = Authority::person(banned.party(CAROL));
         assert_eq!(
-            banned.check_action(&carol, governance::INVITE, &cx(), true),
+            banned.check_action(&carol, governance::ADD_MEMBER, &cx(), true),
             Err(Refusal::Banned(CAROL.into()))
         );
         let owner = Authority::person(banned.party(OWNER));
         assert_eq!(
-            banned.check_action(&owner, governance::INVITE, &cx(), false),
+            banned.check_action(&owner, governance::ADD_MEMBER, &cx(), false),
             Ok(())
         );
     }
@@ -232,7 +232,7 @@ tilo_test_env::scenario! {
         workspace.grants.push(legacy);
         let carol = Authority::person(workspace.party(CAROL));
         assert!(matches!(
-            workspace.check_action(&carol, governance::INVITE, &cx(), false),
+            workspace.check_action(&carol, governance::ADD_MEMBER, &cx(), false),
             Err(Refusal::NotPermitted(_))
         ));
     }
@@ -370,7 +370,7 @@ tilo_test_env::scenario! {
         assert!(!workspace.is_administrator(BOB));
         let bob = Authority::person(workspace.party(BOB));
         assert!(!workspace.may_make_administrators(&bob, &cx()));
-        assert!(workspace.check_action(&bob, governance::INVITE, &cx(), false).is_err());
+        assert!(workspace.check_action(&bob, governance::ADD_MEMBER, &cx(), false).is_err());
         assert!(workspace
             .check_administrator_invite(BOB, &bob, &cx(), false)
             .is_err());
@@ -385,13 +385,13 @@ tilo_test_env::scenario! {
         workspace.grants.push(Grant::new(
             "carol-invites",
             Grantee::person(CAROL),
-            roles::governance_action("r", governance::INVITE),
+            roles::governance_action("r", governance::ADD_MEMBER),
             KindSet::OUTSIDE,
             Answer::Allow,
             Grantee::person(OWNER),
         ));
         let carol = Authority::person(workspace.party(CAROL));
-        workspace.check_invite(&carol, Role::Editor, &cx(), false).unwrap();
+        workspace.check_admission(&carol, Role::Editor, &cx(), false).unwrap();
         assert!(matches!(
             workspace.check_administrator_invite(CAROL, &carol, &cx(), false),
             Err(Refusal::Administrators { unmaking: false, .. })

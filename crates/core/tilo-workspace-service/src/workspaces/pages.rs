@@ -409,7 +409,7 @@ impl Workspaces {
         self.authorize(
             device,
             Some(&workspace),
-            WorkspaceOp::Govern(governance::INVITE),
+            WorkspaceOp::Govern(governance::ADD_MEMBER),
             now,
         )?;
         Ok(WorkspacesReply::Notices(workspace.admissions.notices()))
@@ -704,7 +704,7 @@ impl Workspaces {
             self.authorize(
                 device,
                 Some(&workspace),
-                WorkspaceOp::Invite(grant.role),
+                WorkspaceOp::Admit(grant.role),
                 now,
             )?;
             if grant.owner_user_public_key != workspace.peer().owner() {
@@ -859,7 +859,7 @@ impl Workspaces {
             self.authorize(
                 device,
                 Some(&governed),
-                WorkspaceOp::invite(request.role, administrator),
+                WorkspaceOp::admit(request.role, administrator),
                 now,
             )?;
             if !governed.wait_list.has(entry, now) {
@@ -949,7 +949,7 @@ impl Workspaces {
         self.authorize(
             device,
             Some(&governed),
-            WorkspaceOp::Govern(governance::INVITE),
+            WorkspaceOp::Govern(governance::ADD_MEMBER),
             now,
         )?;
         // Whoever joined by a way that did not take them off already.
@@ -971,7 +971,7 @@ impl Workspaces {
         self.authorize(
             device,
             Some(&governed),
-            WorkspaceOp::Govern(governance::INVITE),
+            WorkspaceOp::Govern(governance::ADD_MEMBER),
             now,
         )?;
         if !governed
@@ -1010,7 +1010,7 @@ impl Workspaces {
         self.authorize(
             device,
             Some(&governed),
-            WorkspaceOp::Govern(governance::INVITE),
+            WorkspaceOp::Govern(governance::ADD_MEMBER),
             now,
         )?;
         let (to, removal) = governed

@@ -90,6 +90,10 @@ airdrop-error-declined = AirDrop transfer was cancelled before sending.
 
 device-agents-not-accepted = This device doesn’t accept agents from your other devices. Turn on “Accept agents from my other devices” in its Settings, under Devices.
 
+admit-not-permitted = You can’t invite people to this workspace. Its owner or an administrator can let you add members.
+admit-above-role = You can invite people at your own role or below, and { $role } is above yours.
+invitation-issuer-admits-no-more = The person who invited you can no longer let people in at this role. Ask them for a new invitation.
+
 task-programs-resource = Task programs
 task-programs-run = Run a program
 task-programs-run-detail = Runs a program as a step of the task, and answers what it read or changed.

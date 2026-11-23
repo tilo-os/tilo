@@ -558,6 +558,6 @@ fn assert_foreign(peer: &StatePeer, source: [u8; 32], now: SystemTime, role: Rol
     let permissions = peer.permissions(source, now).unwrap();
     assert_eq!(peer.role(&source, now).unwrap(), role);
     assert!(permissions.acting.foreign_device);
-    let invite = roles::governance_action(peer.workspace_id(), roles::governance::INVITE);
+    let invite = roles::governance_action(peer.workspace_id(), roles::governance::ADD_MEMBER);
     assert!(!permissions.allows(&invite, ActionKind::Undoable, now));
 }

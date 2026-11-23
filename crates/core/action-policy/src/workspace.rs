@@ -825,9 +825,9 @@ impl WorkspacePolicy {
         self.grants.len() != before
     }
 
-    /// Whether `actor` may let someone in at `role` themselves (`add-member`), as redeeming the
-    /// invitation they issued does: never at more than they hold
-    /// ([`Self::check_role_handout`]), whoever the person is.
+    /// Whether `actor` may let someone in at `role` (`add-member`): directly, by issuing an
+    /// invitation, or when the invitation they issued is redeemed, which all decide the same.
+    /// Never at more than they hold ([`Self::check_role_handout`]), whoever the person is.
     ///
     /// # Errors
     /// The action is not granted, or the role is above what `actor` hands out.
@@ -842,26 +842,13 @@ impl WorkspacePolicy {
         self.check_role_handout(actor, role, cx)
     }
 
-    /// Whether `actor` may invite someone with `role`. An invite never
-    /// carries more than the inviter holds ([`Self::check_role_handout`]).
-    pub fn check_invite(
-        &self,
-        actor: &Authority<'_>,
-        role: Role,
-        cx: &Context<'_>,
-        approved: bool,
-    ) -> Result<(), Refusal> {
-        self.check_action(actor, governance::INVITE, cx, approved)?;
-        self.check_role_handout(actor, role, cx)
-    }
-
     /// Whether `actor_person` (acting through `actor`) may invite someone as
     /// an administrator: an invitation at the Editor role that also makes its
     /// holder an administrator. Only someone who may make administrators
     /// directly ([`Self::may_make_administrators`]) invites one.
     ///
     /// # Errors
-    /// As [`Self::check_invite`], and [`Refusal::Administrators`].
+    /// As [`Self::check_admission`], and [`Refusal::Administrators`].
     pub fn check_administrator_invite(
         &self,
         actor_person: &str,
@@ -869,7 +856,7 @@ impl WorkspacePolicy {
         cx: &Context<'_>,
         approved: bool,
     ) -> Result<(), Refusal> {
-        self.check_invite(actor, Role::Editor, cx, approved)?;
+        self.check_admission(actor, Role::Editor, cx, approved)?;
         self.check_makes_administrators(actor_person, actor, cx, false)
     }
 

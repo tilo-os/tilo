@@ -56,15 +56,13 @@ pub(super) enum WorkspaceOp<'a> {
     /// One of the workspace's governance actions on the workspace itself
     /// ([`roles::governance`]).
     Govern(&'static str),
-    /// Issue an invitation carrying `Role`: the invite action, and never a
-    /// role above the inviter's own.
-    Invite(Role),
-    /// Let the holder of an invitation in at `Role`, as its issuer: `member.add`, decided by the
-    /// issuer's grants when the invitation is redeemed.
+    /// Let someone in at `Role` (`add-member`), never above the role of whoever lets them in:
+    /// issuing an invitation, which is letting its holder in put off, and redeeming it, decided
+    /// then by its issuer's grants.
     Admit(Role),
-    /// Issue an invitation that also makes its holder an administrator: for
-    /// someone who may make administrators themselves.
-    InviteAdministrator,
+    /// Let someone in as an administrator, by an invitation: for someone who may make
+    /// administrators themselves.
+    AdmitAdministrator,
     /// Make a member an administrator: for the owner and its administrators.
     MakeAdministrator,
     /// Hand the workspace to another person as its owner: for its owner.
@@ -81,12 +79,12 @@ pub(super) enum WorkspaceOp<'a> {
 }
 
 impl WorkspaceOp<'_> {
-    /// The invitation an issue asks for: at `role`, or an administrator's.
-    pub(super) const fn invite(role: Role, administrator: bool) -> Self {
+    /// Letting someone in by an invitation: at `role`, or as an administrator.
+    pub(super) const fn admit(role: Role, administrator: bool) -> Self {
         if administrator {
-            Self::InviteAdministrator
+            Self::AdmitAdministrator
         } else {
-            Self::Invite(role)
+            Self::Admit(role)
         }
     }
 
@@ -96,14 +94,42 @@ impl WorkspaceOp<'_> {
             Self::Host(operation) => operation.name(),
             Self::Enter => "workspace.enter",
             Self::Govern(action) => action,
-            Self::Invite(_) | Self::InviteAdministrator => roles::governance::INVITE,
             Self::MakeAdministrator => "make-administrator",
             Self::MakeOwner => "make-owner",
             Self::Change(change) => change.action(),
-            Self::Place(..) | Self::Admit(_) => roles::governance::ADD_MEMBER,
+            Self::Place(..) | Self::Admit(_) | Self::AdmitAdministrator => {
+                roles::governance::ADD_MEMBER
+            }
             Self::Role(..) => roles::governance::SET_ROLE,
         }
     }
+}
+
+/// What someone who tried to let a person in reads when their grants refuse it.
+const ADMIT_NOT_PERMITTED: &str = "admit-not-permitted";
+/// What someone who tried to let a person in above their own role reads.
+const ADMIT_ABOVE_ROLE: &str = "admit-above-role";
+
+/// Why the workspace refused `op`, in the words its asker reads at the moment they try it: one
+/// letting someone in (an invitation's issue among them) learns what to do, everything else is
+/// the workspace's own reason.
+fn refused(op: WorkspaceOp<'_>, refusal: &tilo_action_policy::Refusal) -> CollaborationError {
+    use tilo_action_policy::Refusal;
+    let mut args = tilo_history::FluentArgs::new();
+    let key = match (op, refusal) {
+        (WorkspaceOp::Admit(_) | WorkspaceOp::AdmitAdministrator, Refusal::NotPermitted(_)) => {
+            ADMIT_NOT_PERMITTED
+        }
+        (
+            WorkspaceOp::Admit(role),
+            Refusal::AboveActorRole(_) | Refusal::AboveActorGrant { .. },
+        ) => {
+            args.set("role", role.to_string());
+            ADMIT_ABOVE_ROLE
+        }
+        _ => return CollaborationError::new(refusal.to_string()),
+    };
+    CollaborationError::new(crate::i18n::message(None, key, &args))
 }
 
 /// Why an operation inside a workspace names none here.
@@ -346,9 +372,8 @@ fn decide_by_governance(
             return Err(CollaborationError::new(NO_WORKSPACE));
         }
         WorkspaceOp::Govern(action) => member.policy.check_action(&authority, action, &cx, false),
-        WorkspaceOp::Invite(role) => member.policy.check_invite(&authority, role, &cx, false),
         WorkspaceOp::Admit(role) => member.policy.check_admission(&authority, role, &cx, false),
-        WorkspaceOp::InviteAdministrator => member
+        WorkspaceOp::AdmitAdministrator => member
             .policy
             .check_administrator_invite(person, &authority, &cx, false),
         WorkspaceOp::MakeAdministrator => {
@@ -407,7 +432,7 @@ fn decide_by_governance(
             );
         }
     };
-    decided.map_err(|refusal| CollaborationError::new(refusal.to_string()))?;
+    decided.map_err(|refusal| refused(op, &refusal))?;
     let Some(host) = host else {
         return Ok(person.to_owned());
     };
