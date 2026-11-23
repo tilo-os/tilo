@@ -15,7 +15,7 @@ use crate::component::{Component, Described, Event, Value};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::{EventCtx, TaffyTreeExt, Widget};
+use crate::widget::{DrawChild, EventCtx, TaffyTreeExt, Widget};
 
 use super::emoji_picker::{EmojiPicker, PickerEvent};
 
@@ -147,7 +147,8 @@ impl Widget for EmojiPane {
         // The slot is the card's room: place the card inside it (centred when it has no caret)
         // before painting it.
         self.picker.place_at(None, self.rect, theme);
-        self.picker.draw(scene, transform, text, theme, presence);
+        self.picker
+            .draw_child(scene, transform, text, theme, presence);
         self.take_events();
     }
 
