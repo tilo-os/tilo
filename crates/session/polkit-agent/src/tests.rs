@@ -122,8 +122,10 @@ fn the_session_user_is_asked_first_when_allowed() {
     assert_eq!(initial_identity(&identities, Some("guest")), 0);
 }
 
+/// A right password authorizes, the sheet says what for, and a wrong one
+/// is asked again with PAM's own words until the attempts are spent.
 #[tokio::test]
-async fn a_right_password_authorizes_and_the_prompt_says_what_for() {
+async fn the_password_is_asked_again_with_pams_words_until_it_is_right_or_spent() {
     let helper = FakeHelper {
         passwords: vec![("quinn".into(), "hunter2".into())],
         greeting: Some("Touch the key or type the password".into()),
@@ -151,10 +153,8 @@ async fn a_right_password_authorizes_and_the_prompt_says_what_for() {
         &[("quinn".to_string(), "cookie-1".to_string())],
         "the helper was started for the identity with polkit's cookie"
     );
-}
 
-#[tokio::test]
-async fn a_wrong_password_retries_with_the_reason_then_gives_up() {
+    // A wrong password is asked again, with the reason PAM gave.
     let helper = FakeHelper {
         passwords: vec![("quinn".into(), "hunter2".into())],
         ..FakeHelper::default()
@@ -166,29 +166,29 @@ async fn a_wrong_password_retries_with_the_reason_then_gives_up() {
     assert_eq!(shown.len(), 2);
     assert_eq!(shown[1].notice.as_deref(), Some("Wrong\npassword"));
 
+    // Spend the attempts and it gives up.
     let user = ScriptedUser::new(vec![answer(0, "a"), answer(0, "b"), answer(0, "c")]);
     let outcome = authenticate(&helper, &user, &request(&["quinn"]), 0).await;
     assert!(matches!(outcome, Outcome::Failed(_)));
     assert_eq!(user.shown().len(), MAX_ATTEMPTS);
 }
 
+/// A sheet the person dismisses cancels the request; picking another
+/// identity restarts the helper for it; with nobody to ask nothing starts.
 #[tokio::test]
-async fn dismissing_the_sheet_cancels() {
+async fn the_sheet_cancels_chooses_or_has_nobody_to_ask() {
     let helper = FakeHelper::default();
     let user = ScriptedUser::new(vec![None]);
     assert_eq!(
         authenticate(&helper, &user, &request(&["quinn"]), 0).await,
         Outcome::Cancelled
     );
-}
 
-#[tokio::test]
-async fn picking_another_identity_restarts_the_helper_for_it() {
+    // Shown for "quinn" first; the user picks "root" and types its password.
     let helper = FakeHelper {
         passwords: vec![("root".into(), "toor".into())],
         ..FakeHelper::default()
     };
-    // Shown for "quinn" first; the user picks "root" and types its password.
     let user = ScriptedUser::new(vec![answer(1, "toor")]);
     let outcome = authenticate(&helper, &user, &request(&["quinn", "root"]), 0).await;
     assert_eq!(
@@ -207,10 +207,7 @@ async fn picking_another_identity_restarts_the_helper_for_it() {
         .map(|(user, _)| user.clone())
         .collect();
     assert_eq!(started, vec!["quinn", "root"]);
-}
 
-#[tokio::test]
-async fn nobody_to_ask_fails_without_starting_a_helper() {
     let helper = FakeHelper::default();
     let user = ScriptedUser::default();
     assert!(matches!(
@@ -296,7 +293,13 @@ mod question_sheets {
             assert_eq!(shown.prompt, "Password: ");
             assert!(!shown.echo);
             assert_eq!(shown.notice, None);
-            assert!(questions.answer(&question.handle, typed(None, "hunter2")));
+            assert!(questions.answer(&question.handle, typed(None, "wrong")));
+            let second = next_question(&questions, &mut changes).await;
+            assert_eq!(
+                details(&second).notice,
+                Some(Notice::Verbatim("Wrong\npassword".into()))
+            );
+            assert!(questions.answer(&second.handle, typed(None, "hunter2")));
         };
         let (outcome, ()) = tokio::join!(running, answering);
         assert_eq!(
@@ -306,30 +309,6 @@ mod question_sheets {
             }
         );
         assert!(questions.pending().is_empty());
-    }
-
-    #[tokio::test]
-    async fn a_wrong_password_asks_again_with_pams_words() {
-        let (questions, mut changes) = watched();
-        let helper = FakeHelper {
-            passwords: vec![("quinn".into(), "hunter2".into())],
-            ..FakeHelper::default()
-        };
-        let prompter = prompter(&questions);
-        let request = request(&["quinn"]);
-        let running = authenticate(&helper, &prompter, &request, 0);
-        let answering = async {
-            let first = next_question(&questions, &mut changes).await;
-            assert!(questions.answer(&first.handle, typed(None, "wrong")));
-            let second = next_question(&questions, &mut changes).await;
-            assert_eq!(
-                details(&second).notice,
-                Some(Notice::Verbatim("Wrong\npassword".into()))
-            );
-            assert!(questions.answer(&second.handle, typed(None, "hunter2")));
-        };
-        let (outcome, ()) = tokio::join!(running, answering);
-        assert!(matches!(outcome, Outcome::Authorized { .. }), "{outcome:?}");
     }
 
     #[tokio::test]
