@@ -2768,3 +2768,535 @@ fn a_record_of_a_few_large_writes_opens_compacted_much_faster() {
         "the compacted record opened in {compacted:?}, its writes replayed in {replayed:?}"
     );
 }
+
+/// A receiver holding the seeded record, as a durable host would: it has no
+/// keys, so a sealed write reaches it as ciphertext it keeps, never merges.
+fn sealed_host() -> (StatePeer, SigningKey, SigningKey, SystemTime) {
+    let (mut native, a, b, bc, now) = crate::admission_tests::seeded();
+    let mut receiver = StatePeer::new(
+        native.workspace_id(),
+        native.owner_certificates()[0].clone(),
+        vec![bc],
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    receiver.select_exact_admissions().unwrap();
+    for message in native
+        .publication_mut()
+        .bootstrap_messages(&a, now)
+        .unwrap()
+    {
+        receiver.receive_from(origin(&a), message, now).unwrap();
+    }
+    (receiver, a, b, now)
+}
+
+/// `key`'s sealed write number `seq` to the seeded record, under a ciphertext
+/// the host cannot open.
+fn sealed_write(peer: &StatePeer, key: &SigningKey, seq: u64, ciphertext: &[u8]) -> NeighbourMsg {
+    let author = Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
+    let mut envelope = SignedOp::new_unsigned_with_encryption(
+        ciphertext.to_vec(),
+        collab_types::document_artifact_id(APP, peer.workspace_id(), RECORD),
+        author,
+        collab_types::document_attestation_id(APP, peer.workspace_id(), RECORD),
+        OpKind::Change,
+        peer_time(),
+        seq,
+        collab_types::EncryptionMetadata::mls_application(1),
+    );
+    collab_types::sign_op(&mut envelope, key).unwrap();
+    NeighbourMsg::AppDocument {
+        peer: peer_handle(&key.verifying_key().to_bytes()),
+        app_id: APP.into(),
+        cluster_id: peer.workspace_id().into(),
+        document_id: RECORD.into(),
+        envelope: Box::new(envelope),
+        readers: None,
+    }
+}
+
+/// The seeded fixture's clock.
+fn peer_time() -> SystemTime {
+    crate::admission_tests::seeded().4
+}
+
+fn sealed_restore(peer: &StatePeer, now: SystemTime) -> Result<StatePeer, String> {
+    sealed_restore_bytes(peer, &peer.durable()?, now)
+}
+
+fn sealed_restore_bytes(
+    peer: &StatePeer,
+    bytes: &[u8],
+    now: SystemTime,
+) -> Result<StatePeer, String> {
+    StatePeer::restore(
+        bytes,
+        peer.workspace_id(),
+        peer.owner_certificates()[0].clone(),
+        vec![],
+        RevocationList::new(),
+        now,
+    )
+}
+
+tilo_test_env::scenario! {
+    fn a_sealed_history_admits_only_its_authors_whole_writes_and_restores;
+
+    phase an_admitted_write_is_kept_as_ciphertext_and_survives_restart_with_its_floor;
+    {
+        let (mut host, a, b, now) = sealed_host();
+        let plaintext = host.document(APP, RECORD).unwrap();
+        let write = sealed_write(&host, &b, 1, b"ciphertext the host cannot open");
+        let report = host.receive_from_report(origin(&b), write.clone(), now).unwrap();
+        assert!(
+            matches!(report.primary(), InputDisposition::Accepted(_)),
+            "a sealed write is admitted with an exact receipt, not parked"
+        );
+        assert_eq!(host.incomplete_reason(), None);
+        assert_eq!(
+            host.document(APP, RECORD).unwrap(),
+            plaintext,
+            "ciphertext is never merged into the plaintext document"
+        );
+        let mut restored = sealed_restore(&host, now).unwrap();
+        assert_eq!(held(&restored), held(&host));
+        assert_eq!(
+            held(&restored)[0].payload,
+            b"ciphertext the host cannot open"
+        );
+        assert_eq!(restored.incomplete_reason(), None);
+
+        // A replay is kept once, and the sequence floor survives the restart.
+        let report = restored.receive_from_report(origin(&b), write, now).unwrap();
+        assert!(!matches!(report.primary(), InputDisposition::Accepted(_)));
+        assert_eq!(held(&restored).len(), 1, "a replay is kept once");
+        let mut replayed = sealed_restore(&restored, now).unwrap();
+        let again = sealed_write(&replayed, &b, 1, b"sealed");
+        replayed.receive_from(origin(&b), again, now).ok();
+        assert_eq!(
+            held(&replayed).len(),
+            1,
+            "the sequence floor survives restart"
+        );
+
+        // The record stays encrypted: a plaintext write after a sealed one is a downgrade.
+        assert!(
+            replayed
+                .publication_mut()
+                .publish_incremental(APP, RECORD, Vec::new(), &a, now)
+                .is_err(),
+            "the record stays encrypted"
+        );
+
+        // A device outside the workspace waits for a certificate; a signature that
+        // is not the named author's is refused.
+        let stranger = SigningKey::from_bytes(&[77; 32]);
+        let before = held(&replayed);
+        let report = replayed
+            .receive_from_report(
+                origin(&stranger),
+                sealed_write(&replayed, &stranger, 1, b"sealed"),
+                now,
+            )
+            .unwrap();
+        assert_eq!(
+            report.primary(),
+            &InputDisposition::RetryLater(crate::MissingPrerequisite::Certificate),
+            "a device outside the workspace waits for a certificate, never admitted"
+        );
+        assert_eq!(held(&replayed), before);
+        let mut forged = sealed_write(&replayed, &stranger, 1, b"sealed");
+        if let NeighbourMsg::AppDocument { envelope, peer, .. } = &mut forged {
+            envelope.author = Ed25519PublicKey::from_bytes(b.verifying_key().to_bytes());
+            *peer = peer_handle(&b.verifying_key().to_bytes());
+        }
+        assert!(
+            replayed.receive_from(origin(&b), forged, now).is_err(),
+            "a signature that is not the named author's is refused"
+        );
+        assert_eq!(held(&replayed), before);
+    }
+
+    phase tampered_revoked_or_full_history_is_refused_and_the_record_is_unchanged;
+    {
+        // A changed ciphertext is refused.
+        let (mut host, _, b, now) = sealed_host();
+        let before = host.durable().unwrap();
+        let mut write = sealed_write(&host, &b, 1, b"sealed");
+        if let NeighbourMsg::AppDocument { envelope, .. } = &mut write {
+            envelope.payload[0] ^= 1;
+        }
+        assert!(host.receive_from(origin(&b), write, now).is_err());
+        assert_eq!(host.durable().unwrap(), before);
+
+        // A revoked author's write: known without its cut it waits; with the cut
+        // the held write is let go and a new one refused.
+        use tilo_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
+        let (mut holder, a, b, now) = sealed_host();
+        let mut revocation = RevocationEntry {
+            user_public_key: SigningKey::from_bytes(&[1; 32]).verifying_key().to_bytes(),
+            revoked_device_public_key: b.verifying_key().to_bytes(),
+            revoked_at_ns: 1,
+            reason: RevocationReason::Compromised,
+            signature: [0; 64],
+        };
+        sign_revocation_entry(&mut revocation, &SigningKey::from_bytes(&[1; 32])).unwrap();
+        holder
+            .receive_from(
+                TransportOrigin::UntrustedPresence(a.verifying_key().to_bytes()),
+                NeighbourMsg::IdentityHello {
+                    protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
+                    cert: Box::new(holder.owner_certificates()[0].clone()),
+                    revocations: vec![revocation.clone()],
+                },
+                now,
+            )
+            .unwrap();
+        let before = held(&holder);
+        let report = holder
+            .receive_from_report(origin(&b), sealed_write(&holder, &b, 1, b"sealed"), now)
+            .unwrap();
+        assert_eq!(
+            report.primary(),
+            &InputDisposition::RetryLater(crate::MissingPrerequisite::RemovalCut)
+        );
+        assert_eq!(held(&holder), before);
+        assert!(
+            holder
+                .governance_mut()
+                .publish_governed_revocations(&[revocation], &a, now)
+                .unwrap()
+        );
+        assert_eq!(held(&holder), before);
+        assert!(
+            holder
+                .receive_from(origin(&b), sealed_write(&holder, &b, 1, b"sealed"), now)
+                .unwrap_err()
+                .to_string()
+                .contains("revoked")
+        );
+        assert_eq!(held(&holder), before);
+
+        // A full history refuses rather than evicts.
+        let (mut host, _, b, now) = sealed_host();
+        host.receive_from(origin(&b), sealed_write(&host, &b, 1, b"first"), now)
+            .unwrap();
+        let first = held(&host)[0].clone();
+        host.core.documents.get_mut(&route()).unwrap().sealed = vec![first; MAX_SEALED_OPS].into();
+        assert!(
+            host.receive_from(origin(&b), sealed_write(&host, &b, 2, b"one more"), now)
+                .unwrap_err()
+                .to_string()
+                .contains("full")
+        );
+        assert_eq!(held(&host).len(), MAX_SEALED_OPS);
+    }
+
+    phase a_tampered_stored_history_refuses_to_restore;
+    {
+        let (mut host, _, b, now) = sealed_host();
+        host.receive_from(origin(&b), sealed_write(&host, &b, 1, b"sealed"), now)
+            .unwrap();
+        let bytes = host.durable().unwrap();
+        let rewrite = |change: &dyn Fn(&mut SealedHistory)| {
+            let mut value: Durable<'_> = postcard::from_bytes(&bytes).unwrap();
+            change(&mut value.sealed);
+            postcard::to_allocvec(&value).unwrap()
+        };
+        for (tampered, why) in [
+            (
+                rewrite(&|sealed| sealed[0].1[0].payload[0] ^= 1),
+                "a changed ciphertext",
+            ),
+            (
+                rewrite(&|sealed| sealed[0].1[0].seq = 9),
+                "a write that was never admitted",
+            ),
+            (
+                rewrite(&|sealed| sealed[0].0.record = "tab:2".into()),
+                "history for another record",
+            ),
+        ] {
+            assert!(
+                sealed_restore_bytes(&host, &tampered, now).is_err(),
+                "{why} restores"
+            );
+        }
+        let mut cleartext = host.clone();
+        let mut op = held(&host)[0].clone();
+        op.encryption = None;
+        collab_types::sign_op(&mut op, &b).unwrap();
+        cleartext.core.documents.get_mut(&route()).unwrap().sealed = vec![op].into();
+        assert!(
+            sealed_restore(&cleartext, now).is_err(),
+            "sealed history cannot carry plaintext"
+        );
+    }
+
+    phase a_keyless_owner_keeps_ownership_of_its_own_sealed_write_without_renewing_it;
+    {
+        let (mut member, _, b, now) = sealed_host();
+        let author = b.verifying_key().to_bytes();
+        let write = sealed_write(&member, &b, 1, b"sealed by this member's app");
+        member
+            .admit_new_local_document(APP, RECORD, envelope_of(&write), now)
+            .unwrap();
+        assert!(
+            member
+                .outbox()
+                .lookup_retained_local_document(&write, author)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            !member
+                .outbox()
+                .retained_local_document_retired(&write, author)
+                .unwrap(),
+            "only a durable receipt naming it retires it"
+        );
+    }
+
+    phase the_durable_parts_are_the_whole_encoding_and_restore_the_same;
+    {
+        let (mut host, _, b, now) = sealed_host();
+        for seq in 1..=(3 * 64 + 5) {
+            let write = sealed_write(&host, &b, seq, format!("sealed write {seq}").as_bytes());
+            host.receive_from(origin(&b), write, now).unwrap();
+        }
+        let whole = host.durable_whole().unwrap();
+        assert_eq!(host.durable().unwrap(), whole);
+        let before = host.durable_parts().unwrap();
+        assert_eq!(before.concat(), whole);
+        let again = host.durable_parts().unwrap();
+        assert!(
+            before
+                .iter()
+                .zip(&again)
+                .filter(|(a, b)| std::sync::Arc::ptr_eq(a, b))
+                .count()
+                >= 3,
+            "the record, its sealed history and the settled index are encoded once"
+        );
+        let write = sealed_write(&host, &b, 3 * 64 + 6, b"one more");
+        host.receive_from(origin(&b), write, now).unwrap();
+        assert_eq!(host.durable().unwrap(), host.durable_whole().unwrap());
+        let restored =
+            sealed_restore_bytes(&host, &host.durable_parts().unwrap().concat(), now).unwrap();
+        assert_eq!(held(&restored), held(&host));
+        assert_eq!(held(&restored).len(), 3 * 64 + 6);
+    }
+}
+
+/// A replica that holds three sealed writes of one device, the replica as it stood before any
+/// of them, the writes, and their author's copy of the document.
+fn three_writes(
+    f: &Fixture,
+    keys: &ContentKeys,
+) -> (StatePeer, StatePeer, Vec<NeighbourMsg>, Author) {
+    let before = f.replica.clone();
+    let mut author = Author::new(&before);
+    let mut holder = before.clone();
+    let writes = ["1", "2", "3"]
+        .iter()
+        .map(|value| {
+            let message = write(&holder, &f.other, keys, &author.edit("value", value), f.now);
+            admit(&mut holder, &f.other, message.clone(), f.now);
+            message
+        })
+        .collect();
+    (holder, before, writes, author)
+}
+
+/// `peer`, a key holder, decides `compaction` once more with its keys.
+fn take_behind(
+    peer: &mut StatePeer,
+    keys: &ContentKeys,
+    compaction: &NeighbourMsg,
+    now: SystemTime,
+) -> Result<Option<SignedOp>, String> {
+    peer.publication_mut().take_compaction_behind(
+        (APP, RECORD),
+        envelope_of(compaction),
+        &mut |op| open(keys, op),
+        now,
+    )
+}
+
+tilo_test_env::scenario! {
+    fn a_key_holder_behind_a_compaction_takes_it_only_when_it_holds_all_the_key_holder_holds;
+
+    phase a_replica_that_kept_less_than_a_compaction_covers_takes_it_with_its_keys;
+    {
+        // One device holds every write and folds them; another was ended when it had kept
+        // only the first.
+        let f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let (mut holder, mut behind, writes, mut author) = three_writes(&f, &keys);
+        admit(&mut behind, &f.other, writes[0].clone(), now);
+        let fold = mint(&mut holder, &keys, &f.owner, now).unwrap();
+        // Without the keys it stays refused: nothing tells it from one that left writes out.
+        refused_with(&mut behind, &f.owner, fold.clone(), now, "has not admitted");
+        assert_eq!(
+            take_behind(&mut behind, &keys, &fold, now).unwrap(),
+            Some(envelope_of(&fold))
+        );
+        assert_eq!(
+            held(&behind),
+            held(&holder),
+            "its history is the one a replica that took the compaction first holds"
+        );
+        // What is written next lands, and the whole of it reads.
+        let next = write(&holder, &f.other, &keys, &author.edit("value", "4"), now);
+        admit(&mut holder, &f.other, next.clone(), now);
+        admit(&mut behind, &f.other, next, now);
+        assert_eq!(
+            text(&captured(&f, &behind, &keys).unwrap(), "value").as_deref(),
+            Some("4")
+        );
+        let kept = behind.durable().unwrap();
+        assert_eq!(held(&f.restore(&kept).unwrap()), held(&behind));
+    }
+
+    phase a_replica_that_went_on_without_the_compaction_takes_it_when_it_comes_again;
+    {
+        // A device that refused the compaction took the writes after it all the same, and read
+        // none of them: each builds on changes that are only inside the compaction. That is how
+        // a device stands that stopped hearing a conversation. Its workspace sends the
+        // compaction again when the device next starts.
+        let f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let (mut holder, mut behind, writes, mut author) = three_writes(&f, &keys);
+        admit(&mut behind, &f.other, writes[0].clone(), now);
+        let fold = mint(&mut holder, &keys, &f.owner, now).unwrap();
+        refused_with(&mut behind, &f.owner, fold.clone(), now, "has not admitted");
+        let next = write(&holder, &f.other, &keys, &author.edit("value", "4"), now);
+        admit(&mut holder, &f.other, next.clone(), now);
+        let _ = behind.receive_from_report(origin(&f.other), next.clone(), now);
+        let reads = |peer: &StatePeer| {
+            captured(&f, peer, &keys)
+                .ok()
+                .and_then(|document| text(&document, "value"))
+        };
+        assert_ne!(
+            reads(&behind).as_deref(),
+            Some("4"),
+            "what was written after the compaction does not read without it"
+        );
+        take_behind(&mut behind, &keys, &fold, now).unwrap();
+        // The write after it is sent again with it, and is the same write.
+        let _ = behind.receive_from_report(origin(&f.other), next, now);
+        assert_eq!(held(&behind), held(&holder));
+        assert_eq!(reads(&behind).as_deref(), Some("4"));
+    }
+
+    phase a_compaction_that_lacks_a_change_the_replica_holds_is_refused_with_keys_too;
+    {
+        let f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let (holder, mut behind, writes, _) = three_writes(&f, &keys);
+        let unwritten = behind.clone();
+        admit(&mut behind, &f.other, writes[0].clone(), now);
+        admit(&mut behind, &f.other, writes[1].clone(), now);
+        // It names all three writes as covered and holds none of them: its snapshot is the
+        // document as it stood before any of them. Taken, the two writes this replica holds
+        // would be gone from it.
+        let forgery = forged(
+            &unwritten,
+            &f.owner,
+            &wrapper(&unwritten, &keys, &held(&holder)),
+            now,
+        );
+        let before = behind.durable().unwrap();
+        let refusal = take_behind(&mut behind, &keys, &forgery, now).unwrap_err();
+        assert!(refusal.contains("lacks changes"), "{refusal}");
+        assert_eq!(behind.durable().unwrap(), before, "the replica is unchanged");
+        // Nor without keys.
+        refused_with(&mut behind, &f.owner, forgery, now, "has not admitted");
+    }
+
+    phase a_compaction_signed_by_a_device_the_workspace_does_not_admit_is_refused_with_keys_too;
+    {
+        let f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let (mut holder, mut behind, writes, _) = three_writes(&f, &keys);
+        admit(&mut behind, &f.other, writes[0].clone(), now);
+        // The compaction a member made, signed again by a device of nobody the workspace
+        // knows: what it holds is whole, and whose it is decides.
+        let genuine = envelope_of(&mint(&mut holder, &keys, &f.owner, now).unwrap());
+        let (stranger, _) = device(120, 121);
+        let forgery = forged(
+            &holder,
+            &stranger,
+            &(
+                SealedCompaction::parse(&genuine).unwrap(),
+                genuine.encryption.unwrap(),
+            ),
+            now,
+        );
+        let before = behind.durable().unwrap();
+        assert!(
+            take_behind(&mut behind, &keys, &forgery, now).is_err(),
+            "a compaction nobody of the workspace signed was taken"
+        );
+        assert_eq!(behind.durable().unwrap(), before, "the replica is unchanged");
+    }
+
+    phase a_removed_device_hands_a_device_behind_it_its_history_and_nothing_it_signs_after;
+    {
+        let f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let phone = f.other.clone();
+        let (_, mut governor, _, _) = three_writes(&f, &keys);
+        let mut author = Author::new(&governor);
+        let first = write(&governor, &phone, &keys, &author.edit("first", "written"), now);
+        admit(&mut governor, &phone, first, now);
+        // A device that was ended holds the phone's first write and not its second.
+        let mut behind = governor.clone();
+        let second = write(&governor, &phone, &keys, &author.edit("second", "written"), now);
+        admit(&mut governor, &phone, second, now);
+        let whole = governor.clone();
+        // The phone folds both into a compaction the workspace takes, and is removed: the
+        // removal's cut keeps that compaction as the phone's history.
+        let taken = mint(&mut governor, &keys, &phone, now).unwrap();
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let mut removal = tilo_user_identity::RevocationEntry {
+            user_public_key: root.verifying_key().to_bytes(),
+            revoked_device_public_key: phone.verifying_key().to_bytes(),
+            revoked_at_ns: now_ns(now),
+            reason: tilo_user_identity::RevocationReason::Stolen,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_revocation_entry(&mut removal, &root).unwrap();
+        assert!(
+            governor
+                .governance_mut()
+                .publish_governed_revocations(std::slice::from_ref(&removal), &f.owner, now)
+                .unwrap()
+        );
+        behind
+            .receive_from(origin(&f.owner), governor.workspace_message(), now)
+            .unwrap();
+        // Removed, the phone signs another compaction of the same two writes, under the
+        // number it used: a device behind it takes nothing of it, with its keys or without.
+        let forgery = forged(&whole, &phone, &wrapper(&whole, &keys, &held(&whole)), now);
+        let before = behind.durable().unwrap();
+        let refusal = take_behind(&mut behind, &keys, &forgery, now).unwrap_err();
+        assert!(refusal.contains("revoked"), "{refusal}");
+        assert_eq!(behind.durable().unwrap(), before, "the replica is unchanged");
+        // The one the workspace had taken is history: the device behind it takes it.
+        take_behind(&mut behind, &keys, &taken, now).unwrap();
+        assert_eq!(held(&behind), held(&governor));
+        assert_eq!(
+            text(&captured(&f, &behind, &keys).unwrap(), "second").as_deref(),
+            Some("written")
+        );
+    }
+}

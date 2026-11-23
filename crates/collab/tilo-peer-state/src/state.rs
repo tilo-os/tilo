@@ -570,8 +570,6 @@ mod administrators_tests;
 #[path = "state/admitting_tests.rs"]
 mod admitting_tests;
 #[cfg(test)]
-#[path = "state/compaction_behind_tests.rs"]
-mod compaction_behind_tests;
 #[cfg(test)]
 #[path = "state/durable_tests.rs"]
 mod durable_tests;
@@ -616,8 +614,6 @@ mod sealed_before_reader_sets_tests;
 #[path = "state/sealed_compaction_tests.rs"]
 mod sealed_compaction_tests;
 #[cfg(test)]
-#[path = "state/sealed_tests.rs"]
-mod sealed_tests;
 #[cfg(test)]
 #[path = "state/sharing_tests.rs"]
 mod sharing_tests;
