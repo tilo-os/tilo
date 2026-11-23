@@ -47,6 +47,7 @@ package-store = { path = "../../crates/packaging/package-store" }
 # Flathub's cached AppStream metadata, shared with desktop search. The block
 # list comes through `ui::registry`.
 app-catalogue = { path = "../../crates/packaging/app-catalogue" }
+tilo-app-id.workspace = true
 blake3.workspace = true
 getrandom.workspace = true
 automerge.workspace = true

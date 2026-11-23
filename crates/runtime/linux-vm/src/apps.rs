@@ -82,14 +82,18 @@ impl Registry {
 }
 
 /// Reverse-DNS-ish ids only: they become file names and command words.
+///
+/// Differs from [`tilo_app_id::AppId::parse`] by allowing a single segment
+/// without a dot (Linux desktop-file names such as `firefox`, `ush` command
+/// words such as `code`, and Flatpak ref parts such as `x86_64` may have no
+/// dot) and forbidding a leading `-` so an id cannot be parsed as a flag when
+/// placed in `Exec=tilo-linux-vm launch {id}` or exposed as a command word.
 #[must_use]
 pub fn valid_app_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 255
-        && !id.starts_with('.')
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+    const GRAMMAR: tilo_app_id::Grammar = tilo_app_id::Grammar::CANONICAL
+        .allow_single_segment()
+        .forbid_leading_hyphen();
+    GRAMMAR.matches(id)
 }
 
 #[must_use]
@@ -262,6 +266,34 @@ mod tests {
                     "unrelated.desktop",
                 ]
             );
+        }
+    }
+
+    #[test]
+    fn app_ids_allow_single_segments_and_refuse_leading_hyphen_and_empty_segments() {
+        let longest = "a".repeat(255);
+        let too_long = "a".repeat(256);
+        for (id, expected) in [
+            ("org.gnome.Calculator", true),
+            ("com.visualstudio.code", true),
+            ("firefox", true),
+            ("my_app-2", true),
+            (longest.as_str(), true),
+            (too_long.as_str(), false),
+            ("", false),
+            ("-rf", false),
+            ("-org.gnome.Calculator", false),
+            (".firefox", false),
+            ("firefox.", false),
+            ("a..b", false),
+            ("..", false),
+            (".", false),
+            ("../evil", false),
+            ("org.example app", false),
+        ] {
+            assert_eq!(valid_app_id(id), expected, "{id:?}");
+            let registry = Registry::from_guest(GuestOs::Linux, &[installed(id, "App", None)], &[]);
+            assert_eq!(registry.apps.len(), usize::from(expected), "{id:?}");
         }
     }
 }

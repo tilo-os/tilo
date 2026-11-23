@@ -661,7 +661,7 @@ impl StoreState {
     }
 
     fn change_person_block(&mut self, app: &str, block: bool) -> Result<(), String> {
-        if !crate::reports::valid_app_id(app) {
+        if block && !crate::reports::valid_app_id(app) {
             return Err("invalid app identity".into());
         }
         let path = ui::registry::block::person_list_path()
@@ -5973,5 +5973,103 @@ mod tests {
                 "a remote is credential-free HTTPS"
             );
         }
+    }
+
+    #[test]
+    fn store_entry_points_share_app_id_grammar() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_PERSON_DIR", dir.path());
+
+        let mut app = seeded_app();
+        for valid in ["notes", "org.example.My_App", "-org.example.App"] {
+            assert!(
+                app.admit(StoreEffect::ShowDetails { app: valid.into() })
+                    .is_ok(),
+                "details should accept {valid:?}"
+            );
+            // `inspect_app` validates the id first and only then checks the catalogue.
+            assert_eq!(
+                app.inspect_app(valid).unwrap_err(),
+                "App is not in the current catalogue.",
+                "inspect should accept valid id {valid:?}"
+            );
+            assert!(
+                app.admit(StoreEffect::BlockApp { app: valid.into() })
+                    .is_ok(),
+                "block should accept {valid:?}"
+            );
+            assert!(
+                app.admit(StoreEffect::UnblockApp { app: valid.into() })
+                    .is_ok(),
+                "unblock should accept {valid:?}"
+            );
+        }
+        for invalid in ["so..tilo", ".so.tilo", "so.tilo.", "..", ""] {
+            assert_eq!(
+                app.admit(StoreEffect::ShowDetails {
+                    app: invalid.into()
+                })
+                .err()
+                .as_deref(),
+                Some("invalid app identity"),
+                "details should refuse {invalid:?}"
+            );
+            assert_eq!(
+                app.inspect_app(invalid).err().as_deref(),
+                Some("invalid app identity"),
+                "inspect should refuse {invalid:?}"
+            );
+            assert_eq!(
+                app.admit(StoreEffect::BlockApp {
+                    app: invalid.into()
+                })
+                .err()
+                .as_deref(),
+                Some("invalid app identity"),
+                "block should refuse {invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn stored_block_can_be_lifted_while_reblocking_invalid_id_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_PERSON_DIR", dir.path());
+
+        let path = ui::registry::block::person_list_path().unwrap();
+        let mut stored = BlockList::empty();
+        stored.block("foo.");
+        stored.save_person(&path).unwrap();
+        assert!(BlockList::load().is_blocked("foo."));
+
+        let mut app = seeded_app();
+        app.set_blocks(BlockList::load());
+        assert!(
+            app.admit(StoreEffect::UnblockApp { app: "foo.".into() })
+                .is_ok(),
+            "a stored block under `foo.` can be lifted"
+        );
+        assert!(!BlockList::load().is_blocked("foo."));
+
+        // Lifting an entry that is no longer blocked reports not-blocked from the list itself.
+        assert_eq!(
+            app.admit(StoreEffect::UnblockApp { app: "foo.".into() })
+                .err()
+                .as_deref(),
+            Some(CATALOG.t("store-unblock-not-blocked").as_str()),
+            "lifting an absent `foo.` should report not blocked, not invalid app identity"
+        );
+
+        // Blocking `foo.` anew is still refused.
+        assert_eq!(
+            app.admit(StoreEffect::BlockApp { app: "foo.".into() })
+                .err()
+                .as_deref(),
+            Some("invalid app identity"),
+            "blocking `foo.` anew must still be refused"
+        );
+        assert!(!BlockList::load().is_blocked("foo."));
     }
 }

@@ -760,19 +760,33 @@ mod tests {
 
         phase store_links_name_only_a_stable_app_identity;
         {
-            // An identity is at most 255 characters.
+            // An identity is at most 255 bytes of non-empty `.`-separated
+            // segments (single segments and underscores for Flathub ids
+            // allowed; empty segments and leading or trailing dots refused).
             let longest = "a".repeat(255);
             let longest_link = format!("tilo-store:app/{longest}");
             let too_long_link = format!("tilo-store:app/{longest}a");
             for (link, app) in [
                 ("tilo-store:app/so.tilo.notes", Some("so.tilo.notes")),
-                ("tilo-store:app/a", Some("a")),
                 (
                     "tilo-store:app/org.gnome.Chess-2",
                     Some("org.gnome.Chess-2"),
                 ),
+                (
+                    "tilo-store:app/org.example.My_App",
+                    Some("org.example.My_App"),
+                ),
+                (
+                    "tilo-store:app/-org.example.App",
+                    Some("-org.example.App"),
+                ),
+                ("tilo-store:app/a", Some("a")),
                 (longest_link.as_str(), Some(longest.as_str())),
                 (too_long_link.as_str(), None),
+                ("tilo-store:app/.so.tilo", None),
+                ("tilo-store:app/so.tilo.", None),
+                ("tilo-store:app/so..tilo", None),
+                ("tilo-store:app/..", None),
                 ("tilo-store:app/", None),
                 ("tilo-store:app/so.tilo.notes?install=true", None),
                 ("tilo-store:remote/so.tilo.notes", None),

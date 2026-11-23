@@ -51,6 +51,7 @@ serde_bytes.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-app-id.workspace = true
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-libvirt-domain = { path = "../../system/libvirt-domain" }
