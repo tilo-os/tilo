@@ -499,10 +499,11 @@ impl Button {
             self.rect.center().y - icon / 2.0,
         );
         let count = Rect::from_center_size(corner, self.count_size);
-        let left = count.x0.clamp(
-            self.rect.x0,
-            (self.rect.x1 - count.width()).max(self.rect.x0),
-        );
+        // Across, the count overhangs the face's corner as far as it must to sit on the icon's
+        // corner rather than over the icon: a face barely wider than its icon (a bar's bell)
+        // would otherwise push it back over the glyph. Down, it stays inside the face, so the
+        // edge of a bar the face fills never cuts it.
+        let left = count.x0.max(self.rect.x0);
         let top = count.y0.clamp(
             self.rect.y0,
             (self.rect.y1 - count.height()).max(self.rect.y0),
@@ -2534,6 +2535,11 @@ impl Widget for Button {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn paint_bounds(&self) -> Rect {
+        self.count_rect()
+            .map_or(self.rect, |count| self.rect.union(count))
     }
 
     fn test_rects(&self) -> Vec<(String, Rect)> {

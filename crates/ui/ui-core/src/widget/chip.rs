@@ -373,9 +373,6 @@ pub(crate) struct PillPaint<'a> {
     pub role: TextRole,
     /// Centre the content (a badge) instead of starting it at the inset.
     pub centred: bool,
-    /// Fill a tinted pill with its tone outright rather than a wash of it: a count standing on an
-    /// icon, small enough that a wash would not read against whatever ground the icon is on.
-    pub solid: bool,
 }
 
 impl<'a> PillPaint<'a> {
@@ -398,7 +395,6 @@ impl<'a> PillPaint<'a> {
             opacity: 1.0,
             role: TextRole::Label,
             centred: false,
-            solid: false,
         }
     }
 }
@@ -440,23 +436,9 @@ pub(crate) fn paint_pill(
                 lead: if level < 0.5 { off.lead } else { on.lead },
             }
         }
-        None => match pill.style {
-            ChipStyle::Tinted(tone) if pill.solid => {
-                let fill = tone.colour(theme);
-                let ink = theme
-                    .tokens
-                    .colors
-                    .on_surface_at(fill, ON_FILL_MIN_CONTRAST)
-                    .ink;
-                ChipColors {
-                    fill,
-                    edge: None,
-                    ink,
-                    lead: ink,
-                }
-            }
-            style => style.colors(theme, ground, pill.selected, pill.hovered),
-        },
+        None => pill
+            .style
+            .colors(theme, ground, pill.selected, pill.hovered),
     };
     let radius = f64::from(theme.tokens.radii.full).min(rect.height() / 2.0);
     if !pill.bare {

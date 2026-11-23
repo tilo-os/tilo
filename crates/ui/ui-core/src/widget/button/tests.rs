@@ -1836,7 +1836,7 @@ tilo_test_env::scenario! {
     // A node's margins are its parent's (a layout puts its gaps there), and a count stands
     // inside the button's face: a button with a count leaves its parent's margins as they are,
     // and a second layout pass finds nothing to change, so the layout settles. The count itself
-    // never leaves the face, so the bar's top edge cannot cut it.
+    // never leaves the face downward, so the bar's top edge cannot cut it; across it overhangs.
     {
         let theme = Theme::light();
         let mut text = TextRenderer::new();
@@ -1881,10 +1881,16 @@ tilo_test_env::scenario! {
         button.adjust_layout_style(&mut tree, node, &mut text);
         button.apply_layout_external(Rect::new(100.0, 0.0, 128.0, 28.0));
         let badge = button.count_rect().expect("a count where there is unread");
+        let icon = button.metrics.icon.min(button.rect.height());
         assert!(
-            badge.x0 >= button.rect.x0 && badge.x1 <= button.rect.x1,
-            "inside the face across: {badge:?} in {:?}",
+            (badge.center().x - (button.rect.center().x + icon / 2.0)).abs() < 0.5,
+            "across, on the icon's corner even past the face's edge: {badge:?} in {:?}",
             button.rect
+        );
+        assert_eq!(
+            Widget::paint_bounds(&button),
+            button.rect.union(badge),
+            "a count past the face is painted, not culled"
         );
         assert!(
             badge.y0 >= button.rect.y0 && badge.y1 <= button.rect.y1,

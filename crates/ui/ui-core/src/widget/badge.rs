@@ -112,8 +112,6 @@ pub struct BadgeFace<'a> {
     /// A dot rather than a pill.
     dot: bool,
     modified: bool,
-    /// A tinted face filled with its tone outright ([`PillPaint::solid`]).
-    solid: bool,
 }
 
 impl<'a> BadgeFace<'a> {
@@ -124,7 +122,6 @@ impl<'a> BadgeFace<'a> {
             style: ChipStyle::Neutral,
             dot: false,
             modified: false,
-            solid: false,
         }
     }
 
@@ -136,7 +133,6 @@ impl<'a> BadgeFace<'a> {
             style: ChipStyle::Live,
             dot: true,
             modified: false,
-            solid: false,
         }
     }
 
@@ -154,12 +150,6 @@ impl<'a> BadgeFace<'a> {
         self
     }
 
-    /// Fill a tinted face with its tone rather than a wash of it, as a count on an icon needs.
-    #[must_use]
-    pub(crate) const fn solid(mut self) -> Self {
-        self.solid = true;
-        self
-    }
     pub fn height(theme: &Theme) -> f64 {
         BadgeMetrics::of(theme).height
     }
@@ -198,10 +188,7 @@ impl<'a> BadgeFace<'a> {
             cy + height / 2.0,
         );
         paint_pill(
-            &PillPaint {
-                solid: self.solid,
-                ..badge_pill(rect, self.label, self.style, false, 1.0)
-            },
+            &badge_pill(rect, self.label, self.style, false, 1.0),
             scene,
             transform,
             text_renderer,
@@ -488,15 +475,59 @@ pub(crate) struct CountBadge {
     pub(crate) metrics: Option<BadgeMetrics>,
 }
 
+/// A count on an icon is this share of a row badge's height: small enough that most of it stands
+/// past the glyph's corner, with its digits set to fit.
+const ON_ICON_SHARE: f64 = 0.6;
+
+/// The lightness a count on an icon is filled at, in every theme: one amber, one blue, whatever
+/// ground the icon is on, lettered in whichever ink reads on it.
+const ON_ICON_FILL_LIGHTNESS: f32 = 0.78;
+
 impl CountBadge {
+    fn height(metrics: &BadgeMetrics) -> f64 {
+        (metrics.height * ON_ICON_SHARE).round()
+    }
+
+    fn label_style(metrics: &BadgeMetrics) -> crate::text_render::TextStyle {
+        let height = Self::height(metrics);
+        let mut style = metrics
+            .caption
+            .clone()
+            .with_weight(crate::text_render::TextWeight::Semibold);
+        style.size = crate::num::f32_of_f64((height * 0.8).round());
+        style.line_height = 1.0;
+        style.letter_spacing = 0.0;
+        style
+    }
+
     pub(crate) fn size(&self, text: &mut TextRenderer) -> vello::kurbo::Size {
         let Some(metrics) = &self.metrics else {
             return vello::kurbo::Size::ZERO;
         };
+        let height = Self::height(metrics);
         match label_of(&self.content) {
-            Some(label) => vello::kurbo::Size::new(metrics.width(&label, text), metrics.height),
+            Some(label) if label.chars().count() > 1 => {
+                let (w, _) = text.measure_style(&label, None, &Self::label_style(metrics));
+                vello::kurbo::Size::new((f64::from(w) + height * 0.6).ceil().max(height), height)
+            }
+            Some(_) => vello::kurbo::Size::new(height, height),
             None => vello::kurbo::Size::new(metrics.dot, metrics.dot),
         }
+    }
+
+    /// The count's fill and its ink: its tone filled outright at one lightness in every theme.
+    fn colors(&self, theme: &Theme) -> (vello::peniko::Color, vello::peniko::Color) {
+        let colors = &theme.tokens.colors;
+        let tone = match self.style {
+            ChipStyle::Tinted(tone) => tone.colour(theme),
+            _ => colors.intent.you,
+        };
+        let tone = crate::color::Oklch::from_color(tone);
+        let fill = crate::color::oklch(ON_ICON_FILL_LIGHTNESS, tone.c, tone.h);
+        let ink = colors
+            .on_surface_at(fill, crate::tokens::colors::ON_FILL_MIN_CONTRAST)
+            .ink;
+        (fill, ink)
     }
 
     pub(crate) fn paint(
@@ -507,15 +538,34 @@ impl CountBadge {
         text: &mut TextRenderer,
         theme: &Theme,
     ) {
-        match label_of(&self.content) {
-            Some(label) => BadgeFace::new(rect, &label)
+        let Some(label) = label_of(&self.content) else {
+            BadgeFace::dot(rect)
                 .style(self.style)
-                .solid()
-                .paint(scene, transform, text, theme),
-            None => BadgeFace::dot(rect)
-                .style(self.style)
-                .paint(scene, transform, text, theme),
-        }
+                .paint(scene, transform, text, theme);
+            return;
+        };
+        let Some(metrics) = &self.metrics else {
+            return;
+        };
+        let (fill, ink) = self.colors(theme);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            fill,
+            None,
+            &vello::kurbo::RoundedRect::from_rect(rect, rect.height() / 2.0),
+        );
+        let style = Self::label_style(metrics);
+        let (w, h) = text.measure_style(&label, None, &style);
+        let at = rect.center() - vello::kurbo::Vec2::new(f64::from(w) / 2.0, f64::from(h) / 2.0);
+        text.draw_style(
+            scene,
+            &label,
+            ink,
+            transform.pre_translate(at.to_vec2()),
+            None,
+            &style,
+        );
     }
 }
 
@@ -914,36 +964,44 @@ mod tests {
             }
         }
 
-        phase a_count_on_an_icon_is_round_and_filled_with_its_tone;
-        // One character stands in a circle, so a "3" on an icon covers no more of it than it must;
-        // an alert's count is filled with its tone, since a wash of it on a dark dock reads as mud.
+        phase a_count_on_an_icon_is_small_round_and_one_colour_in_every_theme;
+        // A count on an icon is a small circle, so most of it stands past the glyph's corner; an
+        // alert's count is the same amber in light and dark, lettered in whichever ink reads on it.
         {
-            let theme = Theme::dark();
             let mut text = TextRenderer::new();
-            let metrics = BadgeMetrics::of(&theme);
-            assert_eq!(metrics.width("3", &mut text), metrics.height);
-            assert!(metrics.width("12", &mut text) > metrics.height);
-            let rect = Rect::new(0.0, 0.0, metrics.height, metrics.height);
-            let alert = ChipStyle::Tinted(Tone::Warning);
-            let mut on_icon = Scene::new();
-            CountBadge {
-                content: BadgeContent::Count(3),
-                style: alert,
-                metrics: Some(metrics),
+            let count = |theme: &Theme, n: u32| CountBadge {
+                content: BadgeContent::Count(n),
+                style: ChipStyle::Tinted(Tone::Warning),
+                metrics: Some(BadgeMetrics::of(theme)),
+            };
+            let (light, dark) = (Theme::light(), Theme::dark());
+            let row = BadgeMetrics::of(&dark).height;
+            let one = count(&dark, 3).size(&mut text);
+            assert_eq!(one.width, one.height, "one digit is a circle");
+            assert!(
+                one.height <= (row * 0.65).ceil(),
+                "smaller than a row's badge: {one:?} vs {row}"
+            );
+            assert!(count(&dark, 12).size(&mut text).width > one.width);
+            let (light_fill, light_ink) = count(&light, 3).colors(&light);
+            let (dark_fill, dark_ink) = count(&dark, 3).colors(&dark);
+            let close = |a: vello::peniko::Color, b: vello::peniko::Color| {
+                let (a, b) = (
+                    crate::color::Oklch::from_color(a),
+                    crate::color::Oklch::from_color(b),
+                );
+                (a.l - b.l).abs() < 0.01 && (a.h - b.h).abs() < 6.0 && (a.c - b.c).abs() < 0.03
+            };
+            assert!(
+                close(light_fill, dark_fill),
+                "one amber: {light_fill:?} vs {dark_fill:?}"
+            );
+            for (fill, ink) in [(light_fill, light_ink), (dark_fill, dark_ink)] {
+                assert!(
+                    crate::a11y::contrast_ratio(ink, fill) >= crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+                    "its digit reads: {ink:?} on {fill:?}"
+                );
             }
-            .paint(&mut on_icon, Affine::IDENTITY, rect, &mut text, &theme);
-            let mut washed = Scene::new();
-            BadgeFace::new(rect, "3").style(alert).paint(
-                &mut washed,
-                Affine::IDENTITY,
-                &mut text,
-                &theme,
-            );
-            assert_ne!(
-                on_icon.encoding().draw_data,
-                washed.encoding().draw_data,
-                "a count on an icon is filled, not washed"
-            );
         }
 
         phase accessibility_reports_static_text_role_and_value;
