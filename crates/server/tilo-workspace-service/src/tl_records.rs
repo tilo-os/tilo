@@ -34,6 +34,8 @@
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 
+pub mod provided;
+
 use tilo_lock::MutexRecover as _;
 
 use serde_json::{Map, Value as Json};
@@ -190,19 +192,38 @@ const BUILT_IN: &[&[(&str, &str)]] = &[
 /// # Errors
 /// A built-in package does not compile, which is a bug of this build.
 pub fn built_in(app: &str) -> Result<Option<Packages>, String> {
-    static COMPILED: OnceLock<Result<Vec<Packages>, String>> = OnceLock::new();
-    let compiled = COMPILED.get_or_init(|| {
-        BUILT_IN
-            .iter()
-            .map(|sources| Packages::compile(sources))
-            .collect()
-    });
-    Ok(compiled
+    Ok(compiled()
         .as_ref()
         .map_err(Clone::clone)?
         .iter()
         .find(|packages| packages.app() == app)
         .cloned())
+}
+
+/// The apps whose records this build runs from its own packages: each group's own app, after
+/// those it uses.
+///
+/// # Panics
+/// A built-in package does not compile, which is a bug of this build.
+#[must_use]
+pub fn built_in_apps() -> Vec<String> {
+    compiled()
+        .as_ref()
+        .expect("the packages built into this build compile")
+        .iter()
+        .map(|packages| packages.app().to_owned())
+        .collect()
+}
+
+/// The packages built into this build, compiled once.
+fn compiled() -> &'static Result<Vec<Packages>, String> {
+    static COMPILED: OnceLock<Result<Vec<Packages>, String>> = OnceLock::new();
+    COMPILED.get_or_init(|| {
+        BUILT_IN
+            .iter()
+            .map(|sources| Packages::compile(sources))
+            .collect()
+    })
 }
 
 /// Why a program over the app `app`, which this build does not carry, does not run here.

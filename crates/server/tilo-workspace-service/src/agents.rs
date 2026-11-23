@@ -632,6 +632,9 @@ pub async fn run_on_device(workspaces: Workspaces, actions: Arc<dyn ActionProvid
     workspaces.on_a_computer();
     workspaces.follow_this_computer();
     telling::start(&workspaces);
+    // The records of the tilolang apps built in (tl Chat, Tasks) answer here where no window of
+    // their app is open: what an agent's reply and its tools write through.
+    crate::tl_records::provided::register(&workspaces);
     // Each agent signs its calls with a key of its own, made here from its person's root.
     let keys = match agent_keys::FleetAgentKeys::from_env() {
         Ok(keys) => Arc::new(keys),
