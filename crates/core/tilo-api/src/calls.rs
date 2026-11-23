@@ -1119,15 +1119,10 @@ async fn founded(provider: &Provider) -> Result<Value> {
     }
 }
 
-/// The agent surface over `provider` in `workspace`, as `person`.
+/// The agent surface over `provider` in `workspace`, as `person`. It starts no task's host of
+/// its own: the daemon is where this device runs programs, and this is one of its clients.
 fn served(provider: Provider, workspace: &str, person: &str) -> McpServer<Provider> {
-    let catalogue = tilo_mcp::task_hosts::WorkspaceCatalogue::new(
-        Arc::clone(&provider),
-        tilo_actions::remote::Caller::local_person(person),
-    );
-    McpServer::for_person(provider, workspace.to_owned(), person).with_task_hosts(Some(Arc::new(
-        tilo_mcp::task_hosts::TaskHosts::new(Some(person), Arc::new(catalogue)),
-    )))
+    McpServer::for_person(provider, workspace.to_owned(), person)
 }
 
 /// A group of its own for one call, titled `title`: History names it so.
