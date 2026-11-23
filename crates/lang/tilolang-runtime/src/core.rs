@@ -493,10 +493,6 @@ impl Core {
 }
 
 impl Core {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the table of which handler takes each import: one arm per group"
-    )]
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::Delivery;
         match imp {

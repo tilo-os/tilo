@@ -661,6 +661,33 @@ impl ViewInstance {
         )
     }
 
+    /// A key pressed on an item: the action its menu binds to that key runs, unless it does
+    /// not apply to the item.
+    fn platform_shortcut(
+        &self,
+        aref: &ActionRef,
+        gesture: Option<&str>,
+    ) -> Result<InvokeOutcome, RuntimeError> {
+        let [Value::List(keys), Value::Text(pressed)] = aref.args.as_slice() else {
+            return Err(RuntimeError::BadArgs("a malformed shortcut".into()));
+        };
+        let run = keys.iter().find_map(|key| match key {
+            Value::Tuple(fields) => match fields.as_slice() {
+                [Value::Text(key), Value::Action(run)] if key == pressed => Some(run),
+                _ => None,
+            },
+            _ => None,
+        });
+        match run {
+            // A key of an action that does not apply to the item does what its menu
+            // does, which leaves the action out: nothing.
+            Some(run) if !matches!(self.core.inapplicable(run, &self.live.viewer), Ok(Some(_))) => {
+                self.run_in(run, gesture)
+            }
+            _ => Ok(InvokeOutcome::Done(Value::Unit)),
+        }
+    }
+
     /// Run an action reference a control applies: a platform action, an action of a package,
     /// or `a.then(b)`, which runs `b` once `a` is done.
     fn run(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
@@ -734,31 +761,7 @@ impl ViewInstance {
                     other => Ok(other),
                 }
             }
-            SHORTCUT_ACTION => {
-                let [Value::List(keys), Value::Text(pressed)] = aref.args.as_slice() else {
-                    return Err(RuntimeError::BadArgs("a malformed shortcut".into()));
-                };
-                let run = keys.iter().find_map(|key| match key {
-                    Value::Tuple(fields) => match fields.as_slice() {
-                        [Value::Text(key), Value::Action(run)] if key == pressed => Some(run),
-                        _ => None,
-                    },
-                    _ => None,
-                });
-                match run {
-                    // A key of an action that does not apply to the item does what its menu
-                    // does, which leaves the action out: nothing.
-                    Some(run)
-                        if !matches!(
-                            self.core.inapplicable(run, &self.live.viewer),
-                            Ok(Some(_))
-                        ) =>
-                    {
-                        self.run_in(run, gesture)
-                    }
-                    _ => Ok(InvokeOutcome::Done(Value::Unit)),
-                }
-            }
+            SHORTCUT_ACTION => self.platform_shortcut(aref, gesture),
             CHOOSE_ACTION => self.platform_choose(aref),
             SAVE_ACTION => self.platform_save(aref),
             CALL_ACTION => {
