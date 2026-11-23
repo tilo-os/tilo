@@ -590,7 +590,7 @@ async fn asked(
         let mut value = tilo_net::HeaderValue::from_str(header.value.as_str())
             .map_err(|_| ListingProblem::KeyRefused)?;
         value.set_sensitive(header.secret);
-        request = request.header(header.name, value);
+        request = request.header(header.name.as_ref(), value);
     }
     let unreachable = |error: &dyn std::fmt::Display| {
         tracing::info!(provider = %profile.id, %error, "a model provider did not list its models");
@@ -801,6 +801,7 @@ mod tests {
                 name: "Fake provider".into(),
                 protocol,
                 endpoint: endpoint.into(),
+                headers: Vec::new(),
             },
             destinations,
         )
@@ -980,6 +981,63 @@ mod tests {
         let asked = fake.next_request();
         assert_eq!(asked.header("x-api-key"), Some(KEY));
         assert!(asked.header("anthropic-version").is_some());
+    }
+
+    /// A header the person gives a provider (an account or workspace id the
+    /// provider asks for beside its key) goes with the host's requests to it.
+    #[tokio::test]
+    async fn a_providers_own_header_goes_with_the_hosts_requests() {
+        let root = temp_root();
+        let fake = provider("/v1/models", "x-api-key", KEY.to_owned());
+        let id = add_provider(
+            root.path(),
+            &person_models::AddProvider {
+                name: "Fake provider".into(),
+                protocol: Protocol::Anthropic,
+                endpoint: fake.url(),
+                headers: vec![person_models::RequestHeader {
+                    name: " account-id ".into(),
+                    value: "acct_1".into(),
+                }],
+            },
+            Destinations::Any,
+        )
+        .expect("the provider is added")
+        .id;
+        assert_eq!(
+            providers(root.path()).providers[0].headers[0].name,
+            "account-id"
+        );
+        keep_key(root.path(), &id, KEY).await;
+        let listed = refresh_models(at(root.path()), &id, &any()).await.unwrap();
+        assert_eq!(listed.problem, None);
+        let asked = fake.next_request();
+        assert_eq!(asked.header("account-id"), Some("acct_1"));
+        assert_eq!(asked.header("x-api-key"), Some(KEY));
+    }
+
+    /// A header that would stand for the key, or that is not a header at
+    /// all, is refused when the provider is added.
+    #[test]
+    fn a_header_that_stands_for_the_key_is_refused() {
+        let root = temp_root();
+        for name in ["x-api-key", "Authorization", "two words"] {
+            let refused = add_provider(
+                root.path(),
+                &person_models::AddProvider {
+                    name: "Fake provider".into(),
+                    protocol: Protocol::Anthropic,
+                    endpoint: "https://api.example.com".into(),
+                    headers: vec![person_models::RequestHeader {
+                        name: name.into(),
+                        value: "x".into(),
+                    }],
+                },
+                Destinations::Any,
+            );
+            assert!(refused.is_err(), "{name}");
+        }
+        assert!(providers(root.path()).providers.is_empty());
     }
 
     /// A list that cannot be read says why, in a word the page puts its own
@@ -1202,6 +1260,7 @@ mod tests {
                     name: "Inside".into(),
                     protocol: Protocol::OpenAiCompatible,
                     endpoint: endpoint.into(),
+                    headers: Vec::new(),
                 },
                 Destinations::Public,
             );

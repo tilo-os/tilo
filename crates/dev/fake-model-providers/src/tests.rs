@@ -254,10 +254,10 @@ async fn an_expired_or_unknown_access_token_is_refused_by_the_backend() {
     })
     .to_string();
     let profile = chatgpt(fake);
-    let headers: Vec<(&str, String)> = transform::profile_headers(&profile, Some(&signed.access))
-        .expect("headers")
-        .into_iter()
-        .map(|header| (header.name, header.value.to_string()))
+    let made = transform::profile_headers(&profile, Some(&signed.access)).expect("headers");
+    let headers: Vec<(&str, String)> = made
+        .iter()
+        .map(|header| (&*header.name, header.value.to_string()))
         .collect();
     let (status, text) = call(
         fake,
@@ -410,10 +410,10 @@ async fn ask(
     .expect("a request body");
     let url = wire::url(profile);
     let path = url.strip_prefix(&fake.base_url()).unwrap_or(&url);
-    let headers: Vec<(&str, String)> = transform::profile_headers(profile, Some(secret))
-        .expect("headers")
-        .into_iter()
-        .map(|header| (header.name, header.value.to_string()))
+    let made = transform::profile_headers(profile, Some(secret)).expect("headers");
+    let headers: Vec<(&str, String)> = made
+        .iter()
+        .map(|header| (&*header.name, header.value.to_string()))
         .collect();
     let (status, text) = call(
         fake,

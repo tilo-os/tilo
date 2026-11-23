@@ -142,6 +142,17 @@ pub struct ProviderView {
     /// nothing and its own default holds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
+    /// Headers sent with every request to it beside its key ([`AddProvider::headers`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<RequestHeader>,
+}
+
+/// A header a provider is sent with every request: a setting, never its key.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RequestHeader {
+    pub name: String,
+    pub value: String,
 }
 
 /// The providers the workspace's host keeps, and what runs where.
@@ -176,6 +187,12 @@ pub struct AddProvider {
     pub protocol: Protocol,
     /// The base URL every request goes to.
     pub endpoint: String,
+    /// Headers sent with every request beside the key, which the provider
+    /// asks of each call: the workspace or organisation a key with access to
+    /// several bills (`anthropic-workspace-id`, `openai-organization`). The
+    /// headers the key and the protocol travel in are refused.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<RequestHeader>,
 }
 
 /// A provider's API key to keep. The key travels in and is never read back.
@@ -388,6 +405,7 @@ mod tests {
             default_model: None,
             reasoning: None,
             signs_in: false,
+            headers: Vec::new(),
         };
         let json = serde_json::to_string(&view).unwrap();
         assert!(!json.contains("sk-live-secret"));

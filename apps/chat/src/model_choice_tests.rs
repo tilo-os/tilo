@@ -21,6 +21,7 @@ fn provider(id: &str, name: &str, configured: bool, models: &[(&str, &str)]) -> 
             .collect(),
         default_model: models.first().map(|(id, _)| (*id).to_owned()),
         reasoning: None,
+        headers: Vec::new(),
     }
 }
 

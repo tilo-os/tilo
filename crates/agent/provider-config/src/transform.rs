@@ -81,7 +81,9 @@ pub fn url(protocol: ProviderProtocol, endpoint: &str) -> String {
 /// One request header. `secret` marks a value carrying the credential, which
 /// HTTP clients should keep out of debug output.
 pub struct Header {
-    pub name: &'static str,
+    /// Static for the headers a protocol and a key send; a profile's own
+    /// ([`crate::ProviderProfile::headers`]) are named in its settings.
+    pub name: std::borrow::Cow<'static, str>,
     pub value: Zeroizing<String>,
     pub secret: bool,
 }
@@ -110,7 +112,7 @@ pub fn keyed_headers(
     secret: Option<&str>,
 ) -> Result<Vec<Header>, String> {
     let key = |secret: &str| Header {
-        name: key_header.name(),
+        name: key_header.name().into(),
         value: Zeroizing::new(match key_header {
             KeyHeader::Bearer => format!("Bearer {secret}"),
             KeyHeader::XApiKey | KeyHeader::ApiKey => secret.into(),
@@ -135,7 +137,7 @@ pub fn keyed_headers(
 fn dialect_headers(protocol: ProviderProtocol) -> Vec<Header> {
     match protocol {
         ProviderProtocol::Anthropic => vec![Header {
-            name: "anthropic-version",
+            name: "anthropic-version".into(),
             value: Zeroizing::new(ANTHROPIC_VERSION.into()),
             secret: false,
         }],
@@ -486,7 +488,7 @@ pub fn profile_headers(
         None => keyed_headers(profile.protocol, key_header, None)?,
     };
     let constant = |name: &'static str, value: &str| Header {
-        name,
+        name: name.into(),
         value: Zeroizing::new(value.into()),
         secret: false,
     };
@@ -497,7 +499,7 @@ pub fn profile_headers(
             // token names; a token naming none is refused there, not here.
             if let Some(account) = secret.and_then(chatgpt_account_id) {
                 all.push(Header {
-                    name: "chatgpt-account-id",
+                    name: "chatgpt-account-id".into(),
                     value: Zeroizing::new(account),
                     secret: false,
                 });
@@ -517,8 +519,19 @@ pub fn profile_headers(
             .and_then(|sign_in| sign_in.billing_project.as_deref())
     {
         all.push(Header {
-            name: "x-goog-user-project",
+            name: "x-goog-user-project".into(),
             value: Zeroizing::new(project.to_string()),
+            secret: false,
+        });
+    }
+    // The provider's own headers, which settings refuse to name a key or the
+    // protocol's: checked again here, so settings written by hand send none of
+    // those either.
+    for header in &profile.headers {
+        header.check()?;
+        all.push(Header {
+            name: header.name.trim().to_owned().into(),
+            value: Zeroizing::new(header.value.clone()),
             secret: false,
         });
     }
@@ -672,7 +685,7 @@ mod tests {
         let anthropic = headers(Anthropic, Some("k")).unwrap();
         let pairs: Vec<_> = anthropic
             .iter()
-            .map(|header| (header.name, header.value.as_str(), header.secret))
+            .map(|header| (&*header.name, header.value.as_str(), header.secret))
             .collect();
         assert_eq!(
             pairs,
@@ -695,10 +708,10 @@ mod tests {
             profile.protocol = protocol;
             profile.endpoint = "http://127.0.0.1:8787".into();
             assert!(crate::is_unauthenticated_local(&profile));
-            let sent: Vec<_> = profile_headers(&profile, None)
-                .unwrap()
+            let made = profile_headers(&profile, None).unwrap();
+            let sent: Vec<_> = made
                 .iter()
-                .map(|header| (header.name, header.value.to_string(), header.secret))
+                .map(|header| (&*header.name, header.value.to_string(), header.secret))
                 .collect();
             let expected: &[(&str, &str, bool)] = match protocol {
                 ProviderProtocol::Anthropic => &[("anthropic-version", ANTHROPIC_VERSION, false)],
@@ -745,10 +758,10 @@ mod tests {
             url(vertex.protocol, &vertex.endpoint),
             "https://aiplatform.googleapis.com/v1/projects/tilo-509618/locations/global/endpoints/openapi/chat/completions"
         );
-        let sent: Vec<_> = profile_headers(&vertex, Some("ya29.token"))
-            .unwrap()
+        let made = profile_headers(&vertex, Some("ya29.token")).unwrap();
+        let sent: Vec<_> = made
             .iter()
-            .map(|header| (header.name, header.value.to_string(), header.secret))
+            .map(|header| (&*header.name, header.value.to_string(), header.secret))
             .collect();
         assert_eq!(
             sent,
@@ -789,10 +802,10 @@ mod tests {
         let token = jwt(&json!({
             "https://api.openai.com/auth": {"chatgpt_account_id": "acct-1_x"}
         }));
-        let sent: Vec<_> = profile_headers(&chatgpt, Some(&token))
-            .unwrap()
+        let made = profile_headers(&chatgpt, Some(&token)).unwrap();
+        let sent: Vec<_> = made
             .iter()
-            .map(|header| (header.name, header.value.to_string()))
+            .map(|header| (&*header.name, header.value.to_string()))
             .collect();
         assert_eq!(sent[0], ("authorization", format!("Bearer {token}")));
         assert!(sent.contains(&("chatgpt-account-id", "acct-1_x".to_string())));
@@ -899,11 +912,8 @@ mod tests {
     fn a_copilot_sign_in_names_the_editor_its_api_requires() {
         let copilot = crate::presets::Preset::COPILOT.profile();
         assert!(!speaks_responses(&copilot));
-        let names: Vec<_> = profile_headers(&copilot, Some("tid"))
-            .unwrap()
-            .iter()
-            .map(|header| header.name)
-            .collect();
+        let made = profile_headers(&copilot, Some("tid")).unwrap();
+        let names: Vec<_> = made.iter().map(|header| &*header.name).collect();
         assert!(names.contains(&"copilot-integration-id") && names.contains(&"editor-version"));
         assert_eq!(
             wire::url(&copilot),
@@ -946,5 +956,47 @@ mod tests {
         assert_eq!(parse_models(chatgpt).unwrap()[0].id, "gpt-5-codex");
         assert!(parse_models(r#"{"error":"nope"}"#).is_err());
         assert!(parse_models("<html>").is_err());
+    }
+
+    #[test]
+    fn a_providers_own_headers_go_with_every_request_and_never_stand_for_its_key() {
+        use crate::ProviderHeader;
+        let header = |name: &str, value: &str| ProviderHeader {
+            name: name.into(),
+            value: value.into(),
+        };
+        let mut profile = ProviderProfile {
+            protocol: ProviderProtocol::Anthropic,
+            endpoint: "https://api.anthropic.com".into(),
+            headers: vec![header("anthropic-workspace-id", "wrkspc_1")],
+            ..ProviderProfile::default()
+        };
+        let made = profile_headers(&profile, Some("k")).unwrap();
+        let sent: Vec<_> = made
+            .iter()
+            .map(|header| (&*header.name, header.value.as_str(), header.secret))
+            .collect();
+        assert_eq!(
+            sent,
+            [
+                ("anthropic-version", ANTHROPIC_VERSION, false),
+                ("x-api-key", "k", true),
+                ("anthropic-workspace-id", "wrkspc_1", false),
+            ]
+        );
+        for refused in [
+            header("X-Api-Key", "another key"),
+            header("Authorization", "Bearer other"),
+            header("anthropic-version", "1999-01-01"),
+            header("bad name", "v"),
+            header("x-ok", "line\r\nInjected: yes"),
+        ] {
+            assert!(refused.check().is_err(), "{refused:?} is refused");
+            profile.headers = vec![refused];
+            assert!(
+                profile_headers(&profile, Some("k")).is_err(),
+                "settings written by hand send no refused header"
+            );
+        }
     }
 }

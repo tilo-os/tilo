@@ -157,7 +157,7 @@ impl AnthropicJudge {
         for header in transform::headers(ProviderProtocol::Anthropic, Some(self.key.as_str()))
             .map_err(JudgeError::Provider)?
         {
-            request = request.header(header.name, header.value.as_str());
+            request = request.header(header.name.as_ref(), header.value.as_str());
         }
         let response = request
             .send()

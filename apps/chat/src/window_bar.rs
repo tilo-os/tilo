@@ -467,6 +467,7 @@ mod tests {
                 .collect(),
             default_model: default.map(str::to_owned),
             reasoning: None,
+            headers: Vec::new(),
         }
     }
 
