@@ -17,11 +17,7 @@ pub const TILO_ROOT_GUID: &str = staging_handoff_model::gpt::TILO_ROOT;
 /// competes with the Tilo root installed beside it.
 pub const TILO_STAGING_ROOT_GUID: &str = staging_handoff_model::gpt::TILO_STAGING_ROOT;
 pub const EFI_SYSTEM_GUID: &str = staging_handoff_model::gpt::EFI_SYSTEM;
-pub const MIN_ALONGSIDE_BYTES: u64 = 32 * 1024 * 1024 * 1024;
-/// Tilo keeps several signed UKIs for rollback and repair, which a 100--512 MiB ESP cannot hold.
-pub const MIN_ALONGSIDE_ESP_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-/// One 1 GiB boot partition, large enough for the kernel and initramfs of several entries.
-pub const BOOT_BYTES: u64 = 1 << 30;
+pub use crate::{BOOT_BYTES, MIN_ALONGSIDE_BYTES, MIN_ALONGSIDE_ESP_BYTES};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PartitionExtent {
