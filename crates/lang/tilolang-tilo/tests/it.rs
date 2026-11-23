@@ -50,6 +50,7 @@ mod notes;
 mod notes_checklist;
 mod notices;
 mod opened;
+mod opens_page;
 mod outbox;
 mod outcomes;
 mod policy;

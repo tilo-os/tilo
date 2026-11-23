@@ -1452,6 +1452,10 @@ impl Instance {
                 }
             }
         }
+        // Showing an item runs the view's answer for it (`on show`), which may itself open a
+        // page (`open(x)`): that ask is taken in this same step, so the page a primary action
+        // made opens in the frame that ran it.
+        self.follow_opens();
         true
     }
 
