@@ -29,6 +29,12 @@ d-gfk6rqxp = Angeheftet
 
 d-xcpasjg7 = Schlagwörter
 
+d-ddxl7oum = Reaktionen
+    .doc = Wer auf die Notiz reagiert hat, nach Emoji: die Person und der Agent, für die jeder Chip in ihrer Kopfzeile steht, und wessen eigene Reaktion ein Druck auf ihn zurücknimmt.
+
+d-t6igvr56 = Reagiert
+    .doc = Die Reaktionen, die sie in der nativen Notizen-App hatte, jedes Emoji mit der Zahl derer, die damit reagiert haben: wer dort reagiert hat, wird nicht übernommen, da diese App Personen nur als ihre eigenen Mitglieder nennt.
+
 d-mavvhka7-filter-pinned = Angeheftet
 
 d-mavvhka7-filter-tags = Schlagwörter
@@ -38,6 +44,8 @@ d-qymo5lg2 = Neue Notiz
 
 d-37dxigeq = Untergeordnete Notiz
     .doc = Beginnt eine Notiz in der von `n`, nach den Notizen, die sie schon hält.
+
+d-37dxigeq-words = Wörter
 
 d-7jhaq3a5 = Verschieben nach
     .doc = Verschiebt eine Notiz an eine Stelle im Baum: unter das Ende von `parent` (oder ganz oben ohne), oder dorthin, wo `before` steht.
@@ -78,6 +86,11 @@ d-7ow26bju = Verschlagworten
 d-3u3bevec = Schlagwort entfernen
     .doc = Nimmt ein Schlagwort von einer Notiz.
 
+d-jkqp27g7 = Reagieren
+    .doc = Fügt deine Reaktion mit einem Emoji zu einer Notiz hinzu oder nimmt sie zurück, wenn du damit reagiert hattest: ein Druck auf einen ihrer Chips oder die Wahl aus dem, den ihr Hinzufügen-Knopf geöffnet hat.
+
+d-jkqp27g7-emoji = Emoji
+
 d-4s5iqnfo = Bild einfügen
     .doc = Setzt ein Bild in eine Notiz, dort wo ihre Worte enden: die Person wählt die Datei, und die Notiz behält die Adresse ihres Inhalts statt des Bildes, und den Namen, unter dem es aufgenommen wurde.
     .did = fügte ein Bild hinzu
@@ -90,6 +103,9 @@ d-2e5dloct = Notiz exportieren
 
 d-cdjz7d5y = Notizbuch exportieren
     .doc = Das Notizbuch als Zip, eine Markdown-Datei für jede Notiz: die einer Notiz unter dem Ordner der Notiz, in der sie steht, und die Bilder, die sie zeigt, in ihrem eigenen Ordner `images` daneben.
+
+d-hjwb45bx = Notizbuch als Markdown exportieren
+    .doc = Das Notizbuch als ein Markdown-Dokument: jede Notiz eine Überschrift eine Ebene tiefer als die Notiz, unter der sie steht (sechs auf der tiefsten), ihr Text darunter und danach die Notizen unter ihr: das Notizbuch als ein Text gelesen, in der Reihenfolge, die der Baum hält.
 
 d-t4nxxtng = Markdown importieren
     .doc = Importiert eine Markdown-Datei als Notiz oder öffnet die Notiz, die diese Datei schon angelegt hat: eine Notiz behält die Adresse der Datei, aus der sie kam, dieselbe Datei zweimal zu importieren ergibt also eine Notiz. Die Notiz steht unter der Notiz des Ordners, den der Pfad ihrer Datei nennt (`Q3 plan/Ideas.md` unter `Q3 plan.md`).
@@ -123,7 +139,10 @@ d-tmqqtkeb = Notizen
 
 d-akcqjax3 = Notizbuch
     .w-outline = Gliederung
+    .w-reacted-in-the-native-notes = In der nativen Notizen-App reagiert: { $reacted }
     .w-write-something = Etwas schreiben
+    .w-image = Bild
+    .w-page = Seite
 
 d-x4im3xs5 = Notizbuchkopf
 
@@ -132,6 +151,7 @@ d-qrsfr4a5 = Notizbuchmenü
     .w-import-markdown = Markdown importieren…
     .w-import-a-notion-export-or-a = Ein Notion-Export oder ein Zip aus Markdown importieren…
     .w-export-the-notebook = Das Notizbuch exportieren…
+    .w-export-the-notebook-as-one-markdown = Das Notizbuch als ein Markdown-Dokument exportieren…
     .w-insert-an-image = Ein Bild einfügen…
     .w-export-this-note = Diese Notiz exportieren…
     .w-new-sub-note = Neue Unternotiz
@@ -142,9 +162,14 @@ d-kdl43aw7 = Notizen
 d-xqxkoqbj = Notizzeile
 
 d-6wqou47w = Notizeditor
+    .w-reacted-in-the-native-notes = In der nativen Notizen-App reagiert: { $reacted }
     .w-write-something = Etwas schreiben
+    .w-image = Bild
+    .w-page = Seite
 
 d-nki6assy = Notizangaben
+    .w-created = Erstellt
+    .w-moved-here = Hierher verschoben
     .w-from = Von { $service }
     .w-from-by = Von { $service }, von { $by }
     .w-edited = Bearbeitet
@@ -263,6 +288,18 @@ d-l23y3cjf-page = Seite
 d-l23y3cjf-created = Erstellt
 
 d-l23y3cjf-updated = Geändert
+
+d-fxhtpbwf = Eine Notiz als Text importieren
+    .doc = Importiert eine Notiz als Wörter statt als Datei: ihren Titel, ihren Text als Markdown, die Bilder, die sie zeigt, und die Notizen, zu denen ihre Links führen.
+    .did = hat eine Notiz importiert
+
+d-fxhtpbwf-title = Titel
+
+d-fxhtpbwf-markdown = Markdown
+
+d-fxhtpbwf-pictures = Bilder
+
+d-fxhtpbwf-links = Links
 
 d-hy2uefpy = Dateien importieren
     .doc = Auf das Notizbuch abgelegte Dateien kommen nacheinander herein. Eine Markdown-Datei wird zu einer Notiz. Ein Archiv wird zu den Seiten, die es enthält, ob das eigene ausgegebene Notizbuch oder der Export einer anderen App.

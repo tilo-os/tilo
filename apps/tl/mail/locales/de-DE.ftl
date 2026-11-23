@@ -50,9 +50,14 @@ d-dtd4czyv = Ungelesen
 
 d-rxoe5vzb = Gesamt
 
+d-xgjbfrkl = Mehr
+    .doc = Ob der Server des Kontos Nachrichten hält, die älter sind als die, die dieser Arbeitsbereich hält: das, wofür „Ältere Nachrichten anzeigen“ die Seite davor liest.
+
 d-ecbhcqdr-filter-unread = Ungelesen
 
 d-ecbhcqdr-filter-total = Gesamt
+
+d-ecbhcqdr-filter-more = Mehr
 
 d-xnczt27x = Unterhaltung
     .doc = Eine Unterhaltung: Nachrichten, die einander antworten, die neueste zuletzt.
@@ -243,6 +248,9 @@ d-546ahgq6-seconds = Sekunden
 
 d-arnkrvgw = Jetzt abrufen
     .doc = Fragt jetzt den Server des Kontos nach seiner Mail: was eine Person drückt, wenn das Fenster sagt, der Server sei nicht erreichbar gewesen oder was es geholt hat, habe sich nicht sichern lassen.
+
+d-cu55z6kf = Ältere Nachrichten anzeigen
+    .doc = Bittet den Server des Kontos um die Nachrichten, die älter sind als die älteste, die dieser Arbeitsbereich im Postfach hält, damit sich ein Ordner, der länger als eine Seite ist, bis zu seiner ersten Nachricht zurücklesen lässt.
 
 d-eon6gbrn = Neue Nachricht
     .doc = Beginnt eine Nachricht von dem Konto.
@@ -521,14 +529,19 @@ d-3k7hkyhl = Übernommene Mail
 
 d-m5y6nl2m = Alle Posteingänge
     .w-add-a-mail-account-in-settings = Füge in den Einstellungen ein Mailkonto hinzu
+    .w-is-inbox = is:inbox
+
+d-2wbh3b3o = Unterhaltungen der Konten
 
 d-tfom3oeo = Unterhaltungen des Kontos
+    .w-show-older-messages = Ältere Nachrichten anzeigen
 
 d-gka45our = Postfächer
     .w-all-mail = Alle Mails
     .w-labels = Labels
 
 d-zp2cy2sc = Posteingang
+    .w-is = is:{ $key }
     .w-nothing-here = Nichts hier
 
 d-jgdzx3la = Unterhaltungsliste

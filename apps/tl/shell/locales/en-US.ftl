@@ -1027,6 +1027,7 @@ d-ytz24ncc = Undo band
 d-wud3t5ro = Notice group
 
 d-t3ywtwqj = Notice row
+    .w-hand-to-agent = Hand to agent
     .w-dismiss = Dismiss
 
 d-yyk2izra = Banner
