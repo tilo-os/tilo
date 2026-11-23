@@ -12524,37 +12524,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "photos"
-version = "0.1.0"
-dependencies = [
- "agent-provider-config",
- "image",
- "kamadak-exif",
- "photos",
- "runtime-dylib",
- "serde",
- "serde_json",
- "taffy",
- "tempfile",
- "tilo-actions",
- "tilo-app",
- "tilo-automerge-fork",
- "tilo-content",
- "tilo-files",
- "tilo-ocr",
- "tilo-paths",
- "tilo-reference",
- "tilo-test-env",
- "tilo-thumbnail",
- "tilo-vello",
- "tilo-vello-encoding",
- "tilo-vision",
- "tilo-winit",
- "tracing",
- "workspace-hack",
-]
-
-[[package]]
 name = "pic-scale"
 version = "0.7.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -17460,7 +17429,6 @@ dependencies = [
  "neighbour-wire",
  "passwords",
  "pdf-viewer",
- "photos",
  "poker",
  "postcard",
  "rustls",
@@ -21790,7 +21758,6 @@ dependencies = [
  "linux-vm",
  "neighbour-wire",
  "package-store",
- "photos",
  "postcard",
  "rand 0.10.3",
  "rcgen",
@@ -28767,7 +28734,6 @@ dependencies = [
  "phf_shared 0.12.1",
  "phf_shared 0.13.1",
  "phf_shared 0.14.0",
- "photos",
  "pic-scale",
  "pico-args",
  "pim-lines",

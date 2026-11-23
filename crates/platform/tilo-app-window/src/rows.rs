@@ -374,6 +374,8 @@ pub fn lists_under(tree: &UiNode, under: Option<&str>) -> Vec<(String, String, O
         if tilo_render_protocol::patch::is_virtual_list(&node.kind) {
             let item = if node.kind == "ui.TreeView" {
                 crate::adapter::kind("TreeViewNode")
+            } else if node.kind == "ui.MediaGrid" {
+                crate::adapter::kind("MediaCard")
             } else {
                 crate::adapter::kind("ListItem")
             };

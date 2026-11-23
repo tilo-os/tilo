@@ -2,7 +2,7 @@
 # beside it: `*` is every native app, and a package joins the collection in the
 # change that retires the native app it replaces.
 [collections.default]
-include = ["*", "tl-notes", "tl-tube"]
+include = ["*", "tl-notes", "tl-tube", "tl-photos"]
 
 [collections.desktop]
 extends = ["default"]

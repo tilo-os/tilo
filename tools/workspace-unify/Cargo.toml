@@ -803,7 +803,6 @@ doc = false
 "phf_shared-0_12_1" = { package = "phf_shared", version = "^0.12.1", default-features = false, features = [] }
 "phf_shared-0_13_1" = { package = "phf_shared", version = "^0.13.1", default-features = false, features = ["std"] }
 "phf_shared-0_14_0" = { package = "phf_shared", version = "^0.14.0", default-features = false, features = ["std"] }
-"photos" = { path = "../../apps/photos", default-features = false, features = ["samples"] }
 "pic-scale-0_7_12" = { package = "pic-scale", version = "^0.7.12", default-features = false, features = ["avx", "neon", "rdm", "sse"] }
 "pico-args-0_5_0" = { package = "pico-args", version = "^0.5.0", default-features = false, features = ["default", "eq-separator"] }
 "pim-lines" = { path = "../../crates/text/pim-lines", default-features = false, features = [] }
@@ -3458,7 +3457,6 @@ doc = false
 "phf_shared-0_12_1" = { package = "phf_shared", version = "^0.12.1", default-features = false, features = [] }
 "phf_shared-0_13_1" = { package = "phf_shared", version = "^0.13.1", default-features = false, features = ["std"] }
 "phf_shared-0_14_0" = { package = "phf_shared", version = "^0.14.0", default-features = false, features = ["std"] }
-"photos" = { path = "../../apps/photos", default-features = false, features = ["samples"] }
 "pic-scale-0_7_12" = { package = "pic-scale", version = "^0.7.12", default-features = false, features = ["avx", "neon", "rdm", "sse"] }
 "pico-args-0_5_0" = { package = "pico-args", version = "^0.5.0", default-features = false, features = ["default", "eq-separator"] }
 "pim-lines" = { path = "../../crates/text/pim-lines", default-features = false, features = [] }

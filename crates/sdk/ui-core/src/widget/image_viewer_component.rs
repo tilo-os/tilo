@@ -24,6 +24,10 @@ pub struct ImageViewerProps {
     /// The box's shape: its width over its height, which it stands at before the picture is
     /// here.
     pub aspect: Option<f64>,
+    /// How far the picture is zoomed, 1 being the whole picture: what a view's own zoom controls
+    /// set. The person's scroll and drag change it too, within the picture, and the view keeps
+    /// the value it shows.
+    pub zoom: Option<f64>,
 }
 
 /// The picture a viewer shows, by its address, until its bytes arrive: the box it will
@@ -35,6 +39,9 @@ pub struct ZoomableImage {
     /// The width over the height the box stands at before the picture's shape is known: the
     /// picture's own once it is here.
     aspect: Option<f64>,
+    /// The zoom the view last set, so a person's scroll and drag inside the picture are not
+    /// undone by the next update carrying the same value: only a changed value is applied.
+    zoom: Option<f64>,
     rect: crate::kurbo::Rect,
 }
 
@@ -48,7 +55,23 @@ impl ZoomableImage {
             shown,
             viewer: None,
             aspect: None,
+            zoom: None,
             rect: crate::kurbo::Rect::ZERO,
+        }
+    }
+
+    /// The picture shown at `zoom`, from its first frame.
+    #[must_use]
+    pub fn with_zoom(mut self, zoom: f64) -> Self {
+        self.zoom = Some(zoom);
+        self.apply_zoom();
+        self
+    }
+
+    /// Put the view's zoom on the viewer, once the picture is here.
+    fn apply_zoom(&mut self) {
+        if let (Some(viewer), Some(zoom)) = (&mut self.viewer, self.zoom) {
+            viewer.set_zoom(crate::num::f32_of_f64(zoom));
         }
     }
 
@@ -68,6 +91,7 @@ impl ZoomableImage {
             return false;
         };
         self.viewer = Some(ImageViewer::new(image.clone()));
+        self.apply_zoom();
         true
     }
 
@@ -209,11 +233,15 @@ impl Described for ZoomableImage {
             alt: _,
             pictures,
             aspect,
+            zoom,
         } = props;
         let pictures = pictures.unwrap_or_else(Pictures::window);
         let mut zoomable = Self::of(pictures, image);
         if let Some(aspect) = aspect {
             zoomable = zoomable.with_aspect(aspect);
+        }
+        if let Some(zoom) = zoom {
+            zoomable = zoomable.with_zoom(zoom);
         }
         zoomable
     }
@@ -224,12 +252,46 @@ impl Described for ZoomableImage {
             alt: _,
             pictures,
             aspect,
+            zoom,
         } = props;
         let pictures = pictures.unwrap_or_else(Pictures::window);
         self.aspect = aspect;
         if self.shown.set(pictures, image) {
             self.viewer = None;
         }
+        // The view's controls set the zoom; a value it did not change leaves the person's own
+        // scroll and drag alone.
+        if zoom != self.zoom {
+            self.zoom = zoom;
+            self.apply_zoom();
+        }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The view's zoom controls reach the picture: a viewer opens at the zoom its view set, not
+    /// at the whole picture, so a view that keeps a zoom shows it from the first frame.
+    #[test]
+    fn a_view_opens_the_picture_at_the_zoom_it_set() {
+        let png =
+            crate::png::encode_rgba8(4, 4, &[40, 80, 160, 255].repeat(16)).expect("a picture");
+        let fetch: crate::image_store::Fetcher = std::sync::Arc::new(move |_| Some(png.clone()));
+        let pictures = Pictures::new(crate::ImageStore::new(&fetch));
+        let props = ImageViewerProps {
+            image: PictureSource {
+                src: "data:image/png;base64,x".to_owned(),
+            },
+            alt: None,
+            pictures: Some(pictures),
+            aspect: None,
+            zoom: Some(2.0),
+        };
+        let mut zoomable = ZoomableImage::from_props("viewer", props);
+        let _ = zoomable.take_picture();
+        assert_eq!(zoomable.viewer().map(ImageViewer::zoom), Some(2.0));
     }
 }

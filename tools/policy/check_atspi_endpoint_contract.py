@@ -182,7 +182,6 @@ def audit(root: Path = ROOT) -> list[str]:
     # state rather than merely a successful in-process callback.
     for app, expected in {
         "file-explorer": {"root": "Files activity", "action": "View options"},
-        "photos": {"root": "Photos", "action": "Favorites"},
         "settings": {"root": "Settings", "action": "Accessibility"},
     }.items():
         manifest = root / "apps" / app / "tilo-app.toml"

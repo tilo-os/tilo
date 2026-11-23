@@ -1,6 +1,8 @@
 //! `MediaCard` and `MediaGrid`: albums, videos, books, photos, apps.
 
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Style, TaffyTree};
@@ -1620,6 +1622,15 @@ pub struct MediaGrid {
     /// in the flow is as tall as the rows, so the grid is too.
     rows_height: Option<NodeId>,
 
+    /// The list that builds a host-rendered grid's cards as it shows them, in place of `cards`:
+    /// a grid of ten thousand photographs costs the cards on screen. Every method of this widget
+    /// is the list's, so the list stands where the grid would.
+    inner: Option<Box<dyn Widget>>,
+
+    /// The columns a host-rendered grid shows, written where the grid is laid out: the list's
+    /// rows are bands of this many cards.
+    columns: Option<Rc<Cell<usize>>>,
+
     dirty: bool,
 }
 
@@ -1646,7 +1657,31 @@ impl MediaGrid {
             rect: Rect::ZERO,
             window: FIRST_WINDOW,
             rows_height: None,
+            inner: None,
+            columns: None,
         }
+    }
+
+    /// A grid whose cards are built as they are shown by `inner`, the shared list over the
+    /// host-rendered cards: the list stands for the grid in the tree, the grid's own layout and
+    /// scrolling being the list's.
+    pub(crate) fn hosting(inner: Box<dyn Widget>) -> Self {
+        Self {
+            inner: Some(inner),
+            ..Self::new(Vec::new())
+        }
+    }
+
+    /// The cell the host-rendered grid keeps its column count in, so its list builds a row of
+    /// that many cards as it shows it.
+    pub(crate) fn set_columns(&mut self, columns: Rc<Cell<usize>>) {
+        self.columns = Some(columns);
+    }
+
+    /// Whether the grid builds its cards as a host renders them, rather than holding them whole.
+    #[cfg(test)]
+    pub(crate) fn hosted(&self) -> bool {
+        self.inner.is_some()
     }
 
     /// Justified rows at each card's own [`MediaAspect`] (a photo library): rows of equal
@@ -1876,6 +1911,10 @@ impl MediaGrid {
 impl Widget for MediaGrid {
     /// Its cards in a grid.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        if let Some(inner) = &self.inner {
+            inner.html(cx);
+            return;
+        }
         cx.element("div");
         cx.children();
     }
@@ -1888,6 +1927,18 @@ impl Widget for MediaGrid {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        if self.inner.is_some() {
+            let rhythm = &theme.tokens.spacing.rhythm;
+            self.extent = self.size.extent(theme);
+            self.column_gap = f64::from(rhythm.section);
+            self.row_gap = f64::from(rhythm.group);
+            let node = {
+                let inner = self.inner.as_mut().expect("the host-rendered grid's list");
+                inner.build_layout(taffy, theme, node_map)
+            };
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            return node;
+        }
         let rhythm = &theme.tokens.spacing.rhythm;
         self.extent = self.size.extent(theme);
         let (column_gap, row_gap) = match self.mode {
@@ -1969,6 +2020,17 @@ impl Widget for MediaGrid {
         width: taffy::AvailableSpace,
         text: &mut TextRenderer,
     ) {
+        if self.inner.is_some() {
+            if let taffy::AvailableSpace::Definite(width) = width {
+                let count = card_columns(f64::from(width), self.extent, self.column_gap).max(1);
+                if let Some(cell) = &self.columns {
+                    cell.set(count);
+                }
+            }
+            let inner = self.inner.as_mut().expect("the host-rendered grid's list");
+            inner.style_for_width(styles, width, text);
+            return;
+        }
         let taffy::AvailableSpace::Definite(width) = width else {
             return;
         };
@@ -1980,6 +2042,10 @@ impl Widget for MediaGrid {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        if let Some(inner) = self.inner.as_mut() {
+            inner.apply_layout(taffy, node, origin);
+            return;
+        }
         self.rect = crate::widget::layout_rect(taffy, node, origin);
         let origin = self.rect.origin();
         for (card, &child) in self.cards.iter_mut().zip(&self.nodes) {
@@ -1995,6 +2061,10 @@ impl Widget for MediaGrid {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        if let Some(inner) = self.inner.as_mut() {
+            inner.draw(scene, transform, text_renderer, theme, presence);
+            return;
+        }
         if matches!(self.mode, GridMode::Columns) {
             let top = self.rect.y0;
             self.window = presence
@@ -2014,6 +2084,10 @@ impl Widget for MediaGrid {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if let Some(inner) = self.inner.as_mut() {
+            inner.handle_event(event, ctx);
+            return;
+        }
         self.dirty = true;
         for (card, &node) in self.cards.iter_mut().zip(&self.nodes) {
             card.handle_event(event, &mut ctx.reborrow(ctx.path, node));
@@ -2024,16 +2098,26 @@ impl Widget for MediaGrid {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
+        if let Some(inner) = &self.inner {
+            return inner.children();
+        }
         self.cards.iter().map(AsRef::as_ref).collect()
     }
 
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        if let Some(inner) = &self.inner {
+            inner.for_each_child(visitor);
+            return;
+        }
         for card in &self.cards {
             visitor(card.as_ref());
         }
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        if let Some(inner) = self.inner.as_mut() {
+            return inner.children_mut();
+        }
         self.cards
             .iter_mut()
             .map(|c| c.as_mut() as &mut (dyn Widget + '_))
@@ -2041,6 +2125,10 @@ impl Widget for MediaGrid {
     }
 
     fn mark_drawn(&mut self) {
+        if let Some(inner) = self.inner.as_mut() {
+            inner.mark_drawn();
+            return;
+        }
         self.dirty = false;
         for card in &mut self.cards {
             card.mark_drawn();
@@ -2048,10 +2136,16 @@ impl Widget for MediaGrid {
     }
 
     fn get_rect(&self) -> Rect {
+        if let Some(inner) = &self.inner {
+            return inner.get_rect();
+        }
         self.rect
     }
 
     fn needs_redraw(&self) -> bool {
+        if let Some(inner) = &self.inner {
+            return inner.needs_redraw();
+        }
         crate::widget::redraw_or_children(self.dirty, self)
     }
 

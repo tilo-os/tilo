@@ -2596,6 +2596,9 @@ pub mod image_viewer;
 mod image_viewer_component;
 pub use image_viewer::ImageViewer;
 pub use image_viewer_component::{ImageViewerProps, ZoomableImage};
+mod slideshow_component;
+
+pub use slideshow_component::{Slideshow, SlideshowProps};
 mod tree_component;
 #[cfg(test)]
 pub(crate) use tree_component::items_tree;
@@ -2645,7 +2648,7 @@ pub use media_card::{
     ArtPainter, MediaArt, MediaAspect, MediaBadge, MediaCard, MediaCardFace, MediaGrid, MediaSize,
     MediaSource, OwnedBadge, justified_rows,
 };
-pub use media_grid_component::{MediaCardProps, MediaGridProps};
+pub use media_grid_component::{DescribedCards, MediaCardProps, MediaGridProps};
 pub mod capture_button;
 pub use capture_button::{CaptureButtonFace, CaptureKind};
 pub mod transport;

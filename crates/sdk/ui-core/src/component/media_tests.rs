@@ -13,8 +13,9 @@ use crate::component::{Component, Described, PropType};
 use crate::headless::FrameHarness;
 use crate::theme::Theme;
 use crate::widget::{
-    CodeEditor, CodeEditorProps, DropZone, DropZoneProps, Image, ImageProps, MediaCardProps,
-    MediaGrid, MediaGridProps, PagePreview, PagePreviewProps, QrProps, QrWidget, Widget,
+    CodeEditor, CodeEditorProps, DescribedCards, DropZone, DropZoneProps, Image, ImageProps,
+    MediaCardProps, MediaGrid, MediaGridProps, PagePreview, PagePreviewProps, QrProps, QrWidget,
+    Widget,
 };
 use std::sync::Arc;
 
@@ -35,7 +36,7 @@ fn card_of(props: MediaCardProps) -> crate::widget::MediaCard {
         MediaGridProps {
             size: None,
             justified: false,
-            items: vec![props],
+            items: DescribedCards::given(vec![props]),
         },
     );
     grid.take_card(0).expect("one card")
@@ -104,8 +105,8 @@ tilo_test_env::scenario! {
             .on("activate");
         let mut grid = Node::new("MediaGrid", "library", &queue).holding("items", card);
         let props = MediaGridProps::from_source(&mut grid).expect("reads");
-        assert_eq!(props.items.len(), 1);
-        assert_eq!(props.items[0].title.as_deref(), Some("Blue"));
+        assert_eq!(props.items.held().len(), 1);
+        assert_eq!(props.items.held()[0].title.as_deref(), Some("Blue"));
     }
 
     phase a_pressed_card_opens_what_it_stands_for;
