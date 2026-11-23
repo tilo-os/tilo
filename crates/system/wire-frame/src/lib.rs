@@ -41,6 +41,7 @@ use std::io::{self, Read, Write};
 mod async_io;
 mod line;
 mod reader;
+pub mod sse;
 #[cfg(feature = "postcard")]
 mod value;
 
