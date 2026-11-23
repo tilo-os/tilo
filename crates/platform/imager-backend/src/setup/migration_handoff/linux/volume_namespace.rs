@@ -222,7 +222,7 @@ impl VolumeNamespace {
         if entry.volume() != &self.volume {
             return Err(refusal("Volume entry belongs to another volume"));
         }
-        let path = entry.home.relative.decode().map_err(refusal)?;
+        let path = entry.home.relative().decode().map_err(refusal)?;
         let mut directory = self.root.clone();
         let mut names = path.components().peekable();
         let file = loop {
@@ -257,13 +257,13 @@ impl VolumeNamespace {
             metadata.uid(),
             metadata.gid(),
             metadata.mode(),
-        ) != (entry.home.inode, entry.owner(), entry.group, entry.mode)
+        ) != (entry.home.inode(), entry.owner(), entry.group, entry.mode)
             || metadata.file_type().is_symlink()
             || fs_native::snapshot_lease::mount_id(&file)? != self.mount
         {
             return Err(refusal("Protected volume source replaced"));
         }
-        if let Some(expected) = &entry.home.subvolume {
+        if let Some(expected) = entry.home.subvolume() {
             let query = fs::File::open(format!("/proc/self/fd/{}", file.as_raw_fd()))?;
             if super::super::super::migration_durability::identity(&query)? != *expected {
                 return Err(refusal("Volume Btrfs inode identity changed"));
@@ -288,7 +288,7 @@ mod tests {
         fs::write(&second, b"unselected bytes remain").unwrap();
         let sample = super::super::super::tests::sample();
         let binding = EntryBinding {
-            home: sample.home,
+            home: sample.0.home,
             kind: super::super::super::EntryKind::File,
             group: 1002,
             mode: libc::S_IFREG | 0o640,

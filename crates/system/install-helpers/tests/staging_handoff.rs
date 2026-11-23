@@ -873,6 +873,59 @@ fn the_staging_record_binds_and_publishes() {
         assert!(!seed.exists());
         assert_eq!(fs::read(&reclaim).unwrap(), recorded);
     }
+
+    // Valid home_exclusions survive publication verbatim; invalid exclusions are refused.
+    {
+        let temporary = tempfile::tempdir().unwrap();
+        let handoff = temporary.path().join("handoff.json");
+        let target_var = temporary.path().join("var");
+        fs::create_dir(&target_var).unwrap();
+        let root_start = TARGET.0 * 512;
+        let root_size = (TARGET.1 - TARGET.0 + 1) * 512;
+        let invoke = || {
+            Command::new(tilo_test_env::package_binary!("tilo-staging-handoff"))
+                .args(["write-reclaim-record", "--handoff"])
+                .arg(&handoff)
+                .arg("--target-var")
+                .arg(&target_var)
+                .args([
+                    "--target-root-partuuid",
+                    "EEEEEEEE-0000-4000-8000-000000000005",
+                    "--target-esp-partuuid",
+                    TARGET_ESP_UUID,
+                    "--target-root-start-bytes",
+                    &root_start.to_string(),
+                    "--target-root-size-bytes",
+                    &root_size.to_string(),
+                    "--sector-size",
+                    "512",
+                ])
+                .output_locked()
+                .unwrap()
+        };
+
+        let mut bad = candidate["normalized"].clone();
+        bad["migration"]["home_exclusions"] = json!([
+            {"platform": "Unix", "units": b"../escape"}
+        ]);
+        fs::write(&handoff, serde_json::to_vec(&bad).unwrap()).unwrap();
+        let refused = invoke();
+        assert_eq!(refused.status.code(), Some(1), "{refused:?}");
+        assert!(!target_var.join("lib/tilo/migration-plan.json").exists());
+
+        let mut good = candidate["normalized"].clone();
+        good["migration"]["home_exclusions"] = json!([
+            {"platform": "Unix", "units": b"Documents/Private"}
+        ]);
+        fs::write(&handoff, serde_json::to_vec(&good).unwrap()).unwrap();
+        let accepted = invoke();
+        assert!(accepted.status.success(), "{accepted:?}");
+        let seed = target_var.join("lib/tilo/migration-plan.json");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&fs::read(&seed).unwrap()).unwrap(),
+            good["migration"]
+        );
+    }
 }
 
 #[test]

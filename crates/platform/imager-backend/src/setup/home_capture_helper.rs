@@ -503,7 +503,7 @@ fn execute_retained(request: RetainedRequest, caller: u32, directory: &Path) -> 
         cancel.clone(),
     )?;
     let mut status = Status {
-        operation: request.plan.operation_id,
+        operation: request.plan.0.operation_id,
         state: super::home_capture::State::Intended,
         expires_unix: None,
     };
@@ -563,7 +563,7 @@ fn execute_original(request: OriginalRequest, caller: u32, directory: &Path) -> 
         )?;
     // Intended is not capture Ready. This path creates no snapshot/worker.
     let mut status = Status {
-        operation: request.plan.operation_id,
+        operation: request.plan.0.operation_id,
         state: super::home_capture::State::Intended,
         expires_unix: None,
     };
@@ -778,7 +778,7 @@ mod retained_request_tests {
                 "first_lba":2048,"last_lba":1048575,
                 "filesystem_uuid":"33333333-3333-4333-8333-333333333333","filesystem":"ext4"},
                 "relative":super::super::migration_store::NativePath::encode(Path::new("home/person")),
-                "inode":1234,"original_uid":1000,"subvolume":null},"flatpak_inventory":null
+                "inode":1234,"original_uid":1000,"subvolume":null}
         });
         let mut plan: super::super::migration_handoff::Plan =
             serde_json::from_value(value).unwrap();

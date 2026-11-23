@@ -738,8 +738,13 @@ tilo_test_env::scenario! {
             parsed.home_exclusion_paths().unwrap(),
             vec![std::path::PathBuf::from("Documents/Private")]
         );
-        for escape in ["/absolute", "../up", "a/../b", ""] {
-            plan.home_exclusions = vec![NativePath::encode(std::path::Path::new(escape))];
+        for escape in ["/absolute", "../up", "a/../b", "a//b", "a/./b", ""] {
+            let entry = vec![NativePath::encode(std::path::Path::new(escape))];
+            assert!(
+                crate::setup::source_tree::exclusion_paths(&entry).is_err(),
+                "{escape}"
+            );
+            plan.home_exclusions = entry;
             assert!(plan.validate().is_err(), "{escape}");
         }
         plan.home_exclusions = Vec::new();

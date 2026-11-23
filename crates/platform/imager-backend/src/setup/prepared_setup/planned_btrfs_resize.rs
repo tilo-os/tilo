@@ -273,7 +273,7 @@ mod tests {
                 .unwrap();
             assert_eq!(original.bytes().unwrap(), bytes);
             assert_eq!(physical.home.volume.last_lba, resize.new_last_lba);
-            let mut unchanged_home = physical.home;
+            let mut unchanged_home = physical.0.home;
             unchanged_home.volume = original.home.volume.clone();
             assert_eq!(unchanged_home, original.home);
             assert!(

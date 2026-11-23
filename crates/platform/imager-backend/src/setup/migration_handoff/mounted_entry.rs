@@ -10,8 +10,8 @@ pub struct EntryBinding {
 }
 impl EntryBinding {
     pub fn validate(&self) -> io::Result<()> {
-        self.home.validate_identity()?;
-        let path = self.home.relative.decode().map_err(refusal)?;
+        self.home.validate_identity().map_err(refusal)?;
+        let path = self.home.relative().decode().map_err(refusal)?;
         // A separately approved directory can be the top-level filesystem.
         // A regular file always has an actual nonempty relative locator.
         if path.as_os_str().is_empty() {
@@ -36,7 +36,7 @@ impl EntryBinding {
         };
         if self.mode & libc::S_IFMT != expected
             || self.group == u32::MAX
-            || self.home.original_uid == u32::MAX
+            || self.home.original_uid() == u32::MAX
         {
             return Err(refusal("Mounted entry kind or ownership is invalid"));
         }
@@ -46,7 +46,7 @@ impl EntryBinding {
         &self.home.volume
     }
     pub fn owner(&self) -> u32 {
-        self.home.original_uid
+        self.home.original_uid()
     }
     pub fn kind(&self) -> EntryKind {
         self.kind
@@ -59,10 +59,10 @@ mod tests {
     #[test]
     fn mounted_entry_shape_allows_only_directory_filesystem_root_without_changing_home_contract() {
         let mut plan = super::super::tests::sample();
-        plan.home.relative = NativePath::encode(Path::new(""));
+        set_home_relative(&mut plan.home, NativePath::encode(Path::new("")));
         assert!(plan.validate().is_err());
         let mut binding = EntryBinding {
-            home: plan.home,
+            home: plan.0.home,
             kind: EntryKind::Directory,
             group: 1002,
             mode: libc::S_IFDIR | 0o750,
@@ -71,7 +71,7 @@ mod tests {
         binding.kind = EntryKind::File;
         binding.mode = libc::S_IFREG | 0o640;
         assert!(binding.validate().is_err());
-        binding.home.relative = NativePath::encode(Path::new("data"));
+        set_home_relative(&mut binding.home, NativePath::encode(Path::new("data")));
         binding.validate().unwrap();
         for bad in [
             "/data",
@@ -80,10 +80,10 @@ mod tests {
             "data//file",
             "data/./file",
         ] {
-            binding.home.relative = NativePath::encode(Path::new(bad));
+            set_home_relative(&mut binding.home, NativePath::encode(Path::new(bad)));
             assert!(binding.validate().is_err(), "{bad}");
         }
-        binding.home.relative = NativePath::encode(Path::new("data"));
+        set_home_relative(&mut binding.home, NativePath::encode(Path::new("data")));
         binding.home.volume.partition_guid = "caller-selected-device".into();
         assert!(binding.validate().is_err());
     }

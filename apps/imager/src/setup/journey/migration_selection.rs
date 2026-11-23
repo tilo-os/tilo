@@ -151,9 +151,12 @@ impl Selection {
     }
     pub fn projection(&self) -> serde_json::Value {
         serde_json::json!({"state": if self.state.is_empty() {"idle"} else {self.state},
-            "prepared": self.intent.is_some(),
-            "private_plans": self.intent.as_ref().map(|intent| imager_backend::migration_store::NativePath::encode(intent.directory())),
-            "operation": self.intent.as_ref().map(|intent| intent.source_plan().operation_id)})
+        "prepared": self.intent.is_some(),
+        "private_plans": self.intent.as_ref().map(|intent| imager_backend::migration_store::NativePath::encode(intent.directory())),
+        "operation": self.intent.as_ref().map(|intent| {
+            imager_backend::setup::migration_handoff::Migration::from(intent.source_plan())
+                .operation_id
+        })})
     }
     /// Retire permission only; an active review worker must finish before navigation.
     pub fn cancel_permission(&mut self) {

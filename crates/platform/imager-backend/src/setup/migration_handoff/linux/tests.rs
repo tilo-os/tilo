@@ -26,7 +26,7 @@ tilo_test_env::scenario! {
         )
         .unwrap();
         assert_eq!(
-            plan.home.relative.decode().unwrap(),
+            plan.home.relative().decode().unwrap(),
             Path::new("home/person")
         );
         let source = resolve_with(&plan, &base, &facts, false).unwrap();

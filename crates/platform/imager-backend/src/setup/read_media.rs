@@ -424,7 +424,7 @@ pub fn admit(
     let grant = admit_request(
         target,
         ReadMediaPurpose::OriginalRegistration,
-        plan.operation_id,
+        plan.0.operation_id,
         source_plans,
         cancel,
     )?;

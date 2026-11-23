@@ -273,6 +273,43 @@ mod tests {
 
         assert_eq!(parse_live(&bytes).unwrap(), decoded);
 
+        // A plan carrying both home_exclusions and pending_computer_applications_scope
+        // crosses Plan, staging_handoff_model, Handoff, and parse_live without field loss.
+        let mut rich = handoff.clone();
+        let mut rich_migration = migration;
+        rich_migration["home_policy"] = serde_json::json!("access-read-write");
+        rich_migration["home_exclusions"] = serde_json::json!([
+            {"platform": "Unix", "units": b"Documents/Private"}
+        ]);
+        rich_migration["pending_computer_applications_scope"] = serde_json::json!({
+            "schema": 1,
+            "source_operation": handoff.operation_id,
+            "applications_operation": "44444444-4444-4444-8444-444444444444",
+            "staging_operation": "55555555-5555-4555-8555-555555555555",
+            "staging_plan_sha256": "a".repeat(64),
+            "setup_binding": "owned setup fixture",
+            "identity_public_key": vec![7u8; 32]
+        });
+        let rich_plan = imager_backend::setup::migration_handoff::Plan::parse(
+            &serde_json::to_vec(&rich_migration).unwrap(),
+        )
+        .unwrap();
+        rich.migration = Some(rich_plan.clone().into());
+        let rich_bytes = rich.to_padded(16384).unwrap();
+        let rich_shared = staging_handoff_model::Handoff::parse(&rich_bytes).unwrap();
+        assert_eq!(rich_shared, rich.staging);
+        assert_eq!(Handoff::parse(&rich_bytes).unwrap(), rich);
+        let rich_decoded = serde_json::to_value(&rich_shared).unwrap();
+        assert_eq!(rich_decoded["migration"], rich_migration);
+        assert_eq!(parse_live(&rich_bytes).unwrap(), rich_decoded);
+        assert_eq!(
+            imager_backend::setup::migration_handoff::Plan::parse(
+                &serde_json::to_vec(&rich_decoded["migration"]).unwrap()
+            )
+            .unwrap(),
+            rich_plan
+        );
+
         for pointer in [
             "/unexpected",
             "/migration/unexpected",

@@ -58,137 +58,58 @@ pub use linux::capture_fixture;
 #[cfg(all(target_os = "linux", feature = "native-capture-qualification"))]
 pub use linux::resolve;
 
-pub const SCHEMA: u32 = 1;
-pub const MAX_BYTES: usize = 64 * 1024;
-pub const DEFERRED_ORIGINAL_UID: u32 = 1000;
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Categories {
-    pub home: bool,
-    pub flatpak: bool,
-    pub accounts: bool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Filesystem {
-    Ext4,
-    Xfs,
-    Btrfs,
-}
+pub use staging_handoff_model::migration::{
+    Categories, ComputerApplicationsScope, DEFERRED_ORIGINAL_UID, DeferredHandoff, Filesystem,
+    Home, HomePolicy, MAX_BYTES, Migration, SCHEMA, SourceVolume,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SourceVolume {
-    pub disk_guid: String,
-    pub disk_bytes: u64,
-    pub sector_bytes: u64,
-    pub partition_guid: String,
-    pub first_lba: u64,
-    pub last_lba: u64,
-    pub filesystem_uuid: String,
-    pub filesystem: Filesystem,
-}
+#[serde(transparent)]
+pub struct Plan(pub(crate) Migration);
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Home {
-    pub volume: SourceVolume,
-    /// Relative to the top-level filesystem, including any Btrfs subvolume root from mountinfo;
-    /// native byte names round-trip without UTF-8 loss.
-    relative: NativePath,
-    inode: u64,
-    original_uid: u32,
-    /// Btrfs subvolume UUID/tree ID distinguish reused inode numbers; the native durability service
-    /// supplies this binding.
-    subvolume: Option<super::migration_durability::Identity>,
-}
+impl std::ops::Deref for Plan {
+    type Target = Migration;
 
-impl Home {
-    fn validate_identity(&self) -> io::Result<()> {
-        let volume = &self.volume;
-        if !uuid(&volume.disk_guid)
-            || !uuid(&volume.partition_guid)
-            || !uuid(&volume.filesystem_uuid)
-            || volume.disk_bytes == 0
-            || !matches!(volume.sector_bytes, 512 | 4096)
-            || volume.first_lba == 0
-            || volume.last_lba < volume.first_lba
-            || volume
-                .last_lba
-                .checked_add(1)
-                .and_then(|last| last.checked_mul(volume.sector_bytes))
-                .is_none_or(|end| end > volume.disk_bytes)
-            || self.inode == 0
-            || (volume.filesystem == Filesystem::Btrfs) != self.subvolume.is_some()
-        {
-            return Err(refusal(
-                "Migration source volume or home identity is incomplete.",
-            ));
-        }
-        if self
-            .subvolume
-            .as_ref()
-            .is_some_and(|identity| !identity.binds_btrfs(&volume.filesystem_uuid, self.inode))
-        {
-            return Err(refusal(
-                "Migration Btrfs identity does not match its filesystem or home.",
-            ));
-        }
-        Ok(())
-    }
-    pub fn original_uid(&self) -> u32 {
-        self.original_uid
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum HomePolicy {
-    #[default]
-    Copy,
-    AccessReadOnly,
-    AccessReadWrite,
-}
-fn is_default<T: Default + PartialEq>(value: &T) -> bool {
-    value == &T::default()
-}
-/// Names an exact operation and journal digest, never a path, profile name, credential or content
-/// key, so installation media can carry it without private source data.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DeferredHandoff {
-    pub schema: u32,
-    pub original_uid: u32,
-    pub journal_sha256: [u8; 32],
+impl std::ops::DerefMut for Plan {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Plan {
-    pub schema: u32,
-    pub operation_id: String,
-    pub categories: Categories,
-    #[serde(default, skip_serializing_if = "is_default")]
-    pub home_policy: HomePolicy,
-    pub home: Home,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub flatpak_inventory: Option<serde_json::Value>,
-    /// Consent metadata, not a path grant: the receiving producer revalidates each path under its
-    /// own pinned source.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub home_exclusions: Vec<NativePath>,
-    /// Absent on every earlier plan, so released forms keep parsing with their original meaning.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub deferred_handoff: Option<DeferredHandoff>,
+impl TryFrom<Migration> for Plan {
+    type Error = io::Error;
+
+    fn try_from(migration: Migration) -> io::Result<Self> {
+        let plan = Self(migration);
+        plan.validate()?;
+        Ok(plan)
+    }
+}
+
+impl From<Plan> for Migration {
+    fn from(plan: Plan) -> Self {
+        plan.0
+    }
+}
+
+#[cfg(test)]
+pub(super) fn set_home_relative(home: &mut Home, relative: NativePath) {
+    *home = Home::new(
+        home.volume.clone(),
+        relative,
+        home.inode(),
+        home.original_uid(),
+        home.subvolume().cloned(),
+    );
 }
 
 fn refusal(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
-}
-fn uuid(value: &str) -> bool {
-    uuid::Uuid::parse_str(value).is_ok_and(|id| !id.is_nil())
 }
 fn operation_id(value: &str) -> bool {
     !value.is_empty()
@@ -202,9 +123,7 @@ impl Plan {
     /// Decodes the reviewed Home exclusions as normalized relative paths. Refuses unrepresentable
     /// bytes, non-relative components and exclusions without selected Home data.
     pub fn home_exclusion_paths(&self) -> io::Result<Vec<std::path::PathBuf>> {
-        if !self.categories.home && !self.home_exclusions.is_empty() {
-            return Err(refusal("Home exclusions require selected Home data"));
-        }
+        self.0.validate_home_exclusions().map_err(refusal)?;
         crate::setup::source_tree::exclusion_paths(&self.home_exclusions)
     }
 
@@ -220,11 +139,14 @@ impl Plan {
         {
             return Err(refusal("Invalid Linux migration plan or empty selection."));
         }
-        self.home.validate_identity()?;
+        self.home.validate_identity().map_err(refusal)?;
         self.home_exclusion_paths()?;
+        if let Some(scope) = &self.pending_computer_applications_scope {
+            scope.validate_for_migration(&self.0).map_err(refusal)?;
+        }
         if let Some(handoff) = &self.deferred_handoff
-            && (handoff.schema != 1
-                || handoff.original_uid != self.home.original_uid
+            && (handoff.schema != SCHEMA
+                || handoff.original_uid != self.home.original_uid()
                 || handoff.original_uid != DEFERRED_ORIGINAL_UID
                 || handoff.journal_sha256 == [0; 32])
         {
@@ -252,21 +174,19 @@ impl Plan {
                     .map_err(refusal)?;
             }
         }
-        let path = self.home.relative.decode().map_err(refusal)?;
-        #[cfg(unix)]
+        let NativePath::Unix(bytes) = self.home.relative() else {
+            return Err(refusal("Migration home locator is not a Unix native path."));
+        };
+        if bytes.contains(&0)
+            || bytes
+                .split(|byte| *byte == b'/')
+                .any(|part| part.is_empty() || part == b"." || part == b"..")
         {
-            use std::os::unix::ffi::OsStrExt;
-            let bytes = path.as_os_str().as_bytes();
-            if bytes.contains(&0)
-                || bytes
-                    .split(|byte| *byte == b'/')
-                    .any(|part| part.is_empty() || part == b"." || part == b"..")
-            {
-                return Err(refusal(
-                    "Migration home locator is not a normalized native path.",
-                ));
-            }
+            return Err(refusal(
+                "Migration home locator is not a normalized native path.",
+            ));
         }
+        let path = self.home.relative().decode().map_err(refusal)?;
         relative(&path)
     }
 
@@ -309,7 +229,13 @@ impl Plan {
     /// Fixtures run as the build account; production plans take this value from the source Home.
     #[cfg(any(test, feature = "test-support"))]
     pub fn set_fixture_original_uid(&mut self, uid: u32) {
-        self.home.original_uid = uid;
+        self.0.home = Home::new(
+            self.home.volume.clone(),
+            self.home.relative().clone(),
+            self.home.inode(),
+            uid,
+            self.home.subvolume().cloned(),
+        );
     }
 
     #[cfg(target_os = "linux")]
@@ -446,9 +372,9 @@ impl Plan {
 
 impl Plan {
     pub fn home_inode(&self) -> u64 {
-        self.home.inode
+        self.home.inode()
     }
     pub fn home_uid(&self) -> u32 {
-        self.home.original_uid
+        self.home.original_uid()
     }
 }

@@ -217,7 +217,7 @@ impl OfflineReadAdmission {
         for bytes in self.output_source_plans(cancel)? {
             let plan = migration_handoff::Plan::parse(&bytes)?;
             if !disks.contains(&plan.home.volume.disk_guid) {
-                disks.push(plan.home.volume.disk_guid);
+                disks.push(plan.0.home.volume.disk_guid);
             }
         }
         disks.sort();

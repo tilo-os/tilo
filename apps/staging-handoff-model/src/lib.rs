@@ -3,9 +3,12 @@
 
 use serde::{Deserialize, Serialize};
 
-mod migration;
-pub use migration::Migration;
 pub mod gpt;
+pub mod migration;
+pub use migration::{
+    Categories, ComputerApplicationsScope, DEFERRED_ORIGINAL_UID, DeferredHandoff, Filesystem,
+    Home, HomePolicy, MAX_EXCLUSIONS, Migration, NativePath, SourceVolume,
+};
 pub mod prepared;
 
 pub const HANDOFF_FILE: &str = "handoff.json";
@@ -688,5 +691,118 @@ mod tests {
         let mut lowercase = handoff();
         lowercase.owned_boot_entry = "00ab".into();
         assert!(lowercase.validate().unwrap_err().contains("firmware"));
+    }
+
+    #[test]
+    fn home_exclusions_round_trip_and_validate_strictly() {
+        let h = handoff();
+        let mut with_exclusions = migration(&h);
+        with_exclusions["home_exclusions"] = serde_json::json!([
+            {"platform": "Unix", "units": b"Documents/Private"}
+        ]);
+        let parsed: Migration = serde_json::from_value(with_exclusions.clone()).unwrap();
+        parsed.validate_standalone().unwrap();
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), with_exclusions);
+
+        let mut carried = h.clone();
+        carried.migration = Some(parsed);
+        let bytes = carried.to_padded(4096).unwrap();
+        assert_eq!(Handoff::parse(&bytes).unwrap(), carried);
+
+        for bad_exclusion in [
+            serde_json::json!({"platform": "Unix", "units": b""}),
+            serde_json::json!({"platform": "Unix", "units": b"/abs"}),
+            serde_json::json!({"platform": "Unix", "units": b"../escape"}),
+            serde_json::json!({"platform": "Unix", "units": b"a/../b"}),
+            serde_json::json!({"platform": "Unix", "units": b"a//b"}),
+            serde_json::json!({"platform": "Unix", "units": b"a/./b"}),
+            serde_json::json!({"platform": "Unix", "units": b"a\0b"}),
+            serde_json::json!({"platform": "Unix", "units": vec![b'a'; 4097]}),
+            serde_json::json!({"platform": "Windows", "units": [104, 111, 109, 101]}),
+        ] {
+            let mut bad = migration(&h);
+            bad["home_exclusions"] = serde_json::json!([bad_exclusion]);
+            let bad: Migration = serde_json::from_value(bad).unwrap();
+            assert!(bad.validate_standalone().is_err());
+        }
+
+        let mut no_home = with_exclusions;
+        no_home["categories"]["home"] = false.into();
+        no_home["categories"]["accounts"] = true.into();
+        assert!(
+            serde_json::from_value::<Migration>(no_home)
+                .unwrap()
+                .validate_standalone()
+                .is_err()
+        );
+
+        let mut too_many = migration(&h);
+        too_many["home_exclusions"] = serde_json::Value::Array(
+            (0..=MAX_EXCLUSIONS)
+                .map(|i| serde_json::json!({"platform": "Unix", "units": format!("d{i}").into_bytes()}))
+                .collect(),
+        );
+        assert!(
+            serde_json::from_value::<Migration>(too_many)
+                .unwrap()
+                .validate_standalone()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn flatpak_inventory_refuses_repeated_keys_and_unknown_fields_at_parse() {
+        let mut h = handoff();
+        let mut flatpak = migration(&h);
+        flatpak["categories"]["flatpak"] = true.into();
+        flatpak["flatpak_inventory"] = serde_json::json!({
+            "schema": 1,
+            "inventory": {"refs": [], "remotes": []},
+            "selected": [],
+            "installations": []
+        });
+        let json = serde_json::to_string(&flatpak).unwrap();
+        let repeated_inline = json.replacen(
+            "\"flatpak_inventory\":{\"schema\":1",
+            "\"flatpak_inventory\":{\"schema\":1,\"schema\":2",
+            1,
+        );
+        assert_ne!(json, repeated_inline);
+        assert!(serde_json::from_str::<Migration>(&repeated_inline).is_err());
+
+        // Also check when carried inside a full Handoff.
+        h.migration = Some(serde_json::from_str(&json).unwrap());
+        let encoded = serde_json::to_string(&h).unwrap();
+        let repeated_encoded = encoded.replacen(
+            "\"flatpak_inventory\":{\"schema\":1",
+            "\"flatpak_inventory\":{\"schema\":1,\"schema\":2",
+            1,
+        );
+        assert_ne!(encoded, repeated_encoded);
+        assert!(Handoff::parse(repeated_encoded.as_bytes()).is_err());
+
+        // Protected inventory form with repeated schema key is also refused at parse.
+        let mut protected = migration(&h);
+        protected["categories"]["flatpak"] = true.into();
+        protected["flatpak_inventory"] = serde_json::json!({
+            "kind": "protected-original-flatpak",
+            "schema": 1,
+            "operation": h.operation_id,
+            "len": 64,
+            "sha256": vec![7u8; 32]
+        });
+        let protected_json = serde_json::to_string(&protected).unwrap();
+        let repeated_protected = protected_json.replacen(
+            "\"kind\":\"protected-original-flatpak\",\"schema\":1",
+            "\"kind\":\"protected-original-flatpak\",\"schema\":1,\"schema\":1",
+            1,
+        );
+        assert_ne!(protected_json, repeated_protected);
+        assert!(serde_json::from_str::<Migration>(&repeated_protected).is_err());
+
+        // Unknown fields inside flatpak_inventory are refused at parse time too.
+        let mut unknown = flatpak;
+        unknown["flatpak_inventory"]["unexpected"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<Migration>(unknown).is_err());
     }
 }

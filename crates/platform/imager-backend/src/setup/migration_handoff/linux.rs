@@ -240,22 +240,23 @@ fn capture_with(
     } else {
         None
     };
-    let plan = Plan {
+    let plan = Plan(Migration {
         schema: SCHEMA,
-        flatpak_inventory: None,
         operation_id: operation.into(),
         categories,
         home_policy: HomePolicy::Copy,
+        home: Home::new(
+            volume,
+            NativePath::encode(&relative),
+            metadata.ino(),
+            metadata.uid(),
+            subvolume,
+        ),
+        pending_computer_applications_scope: None,
+        flatpak_inventory: None,
         home_exclusions: Vec::new(),
         deferred_handoff: None,
-        home: Home {
-            volume,
-            relative: NativePath::encode(&relative),
-            inode: metadata.ino(),
-            original_uid: metadata.uid(),
-            subvolume,
-        },
-    };
+    });
     plan.validate()?;
     pin.validate()?;
     Ok(plan)
@@ -808,7 +809,7 @@ fn resolve_mode_with_retained(
     if check_kernel {
         kernel_access(&mount_root, mode)?;
     }
-    let relative = plan.home.relative.decode().map_err(refusal)?;
+    let relative = plan.home.relative().decode().map_err(refusal)?;
     let root = mount
         .root
         .strip_prefix("/")
@@ -819,20 +820,20 @@ fn resolve_mode_with_retained(
     let home = mountpoint.join(suffix);
     let pin = PinnedDirectory::open_absolute(&home)?;
     let metadata = cap_primitives::fs::Metadata::from_file(&pin.file)?;
-    if metadata.ino() != plan.home.inode || metadata.uid() != plan.home.original_uid {
+    if metadata.ino() != plan.home.inode() || metadata.uid() != plan.home.original_uid() {
         return Err(refusal(
             "Source home was replaced or needs an explicit user-ID mapping grant.",
         ));
     }
     if mode == AccessMode::ReadWrite {
         // SAFETY: reads current process credentials only; no ownership changes.
-        if plan.home.original_uid != rustix::process::geteuid().as_raw() && permit.is_none() {
+        if plan.home.original_uid() != rustix::process::geteuid().as_raw() && permit.is_none() {
             return Err(refusal(
                 "Shared writable files require matching original user ownership; an explicit UID mapping service is needed",
             ));
         }
     }
-    if let Some(expected) = &plan.home.subvolume {
+    if let Some(expected) = plan.home.subvolume() {
         let actual = super::super::migration_durability::identity(
             &super::super::migration_durability::readable_directory(&pin.file)?,
         )?;

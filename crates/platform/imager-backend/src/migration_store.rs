@@ -1,6 +1,6 @@
 //! Private device-local index for migration operations.
 
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, BufRead, Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
@@ -39,58 +39,7 @@ fn report_identity() -> String {
     )
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "platform", content = "units", deny_unknown_fields)]
-pub enum NativePath {
-    Unix(Vec<u8>),
-    Windows(Vec<u16>),
-}
-
-impl NativePath {
-    pub fn encode(path: &Path) -> Self {
-        #[cfg(unix)]
-        {
-            use std::os::unix::ffi::OsStrExt;
-            Self::Unix(path.as_os_str().as_bytes().to_vec())
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::ffi::OsStrExt;
-            Self::Windows(path.as_os_str().encode_wide().collect())
-        }
-    }
-
-    /// The number of native units the path occupies.
-    pub fn len(&self) -> usize {
-        match self {
-            Self::Unix(units) => units.len(),
-            Self::Windows(units) => units.len(),
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    pub fn decode(&self) -> Result<PathBuf, String> {
-        if self.len() > 4096 {
-            return Err("persisted migration path exceeds bounds".into());
-        }
-        match self {
-            #[cfg(unix)]
-            Self::Unix(bytes) if !bytes.contains(&0) => {
-                use std::os::unix::ffi::OsStringExt;
-                Ok(PathBuf::from(OsString::from_vec(bytes.clone())))
-            }
-            #[cfg(windows)]
-            Self::Windows(units) if !units.contains(&0) => {
-                use std::os::windows::ffi::OsStringExt;
-                Ok(PathBuf::from(OsString::from_wide(units)))
-            }
-            _ => Err("persisted migration path has a platform mismatch or NUL".into()),
-        }
-    }
-}
+pub use staging_handoff_model::NativePath;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -28,7 +28,7 @@ use std::{
 const MAX_NODES: usize = 4096;
 const MAX_CHILDREN: usize = 128;
 const MAX_DEPTH: usize = 4;
-const MAX_EXCLUSIONS: usize = 1024;
+const MAX_EXCLUSIONS: usize = staging_handoff_model::MAX_EXCLUSIONS;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -880,8 +880,7 @@ pub fn exclusion_paths(values: &[NativePath]) -> std::io::Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
     for value in values {
         let path = value.decode().map_err(std::io::Error::other)?;
-        if path.as_os_str().is_empty()
-            || path.as_os_str().len() > 4096
+        if !value.is_normalized_relative()
             || path
                 .components()
                 .any(|component| !matches!(component, std::path::Component::Normal(_)))

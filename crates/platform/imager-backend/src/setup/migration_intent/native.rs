@@ -112,6 +112,7 @@ impl MigrationIntent {
             .ok_or_else(|| error("Missing selected computer applications"))?;
         let inventory = apps
             .for_media()?
+            .0
             .flatpak_inventory
             .ok_or_else(|| error("Missing selected application inventory"))?;
         let inventory =
