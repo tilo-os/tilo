@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.settings@bd655c6a607642e6";
+export const SURFACE = "so.tilo.settings@283626c109ae7b8d";
 
 /** One of "none", "grayscale", "inverted", "grayscale_inverted". */
 export type ColorFilter = "none" | "grayscale" | "inverted" | "grayscale_inverted";
@@ -506,16 +506,6 @@ export interface ResetDataUsedArgs {
 /** The arguments of `forget-data-used`. */
 export interface ForgetDataUsedArgs {
   connection?: string;
-}
-
-/** The arguments of `set-accept-own-devices`. */
-export interface SetAcceptOwnDevicesArgs {
-  on: boolean;
-}
-
-/** The arguments of `set-act-without-asking`. */
-export interface SetActWithoutAskingArgs {
-  on: boolean;
 }
 
 /** The arguments of `publish-browser-identity`. */
@@ -1495,31 +1485,6 @@ export const NETWORKUSAGE_ACTIONS = ["countDataUsed", "countDataUsedMany", "rese
 /** The `settings.network-usage` kind at `path`. */
 export function networkUsage(ws: tilo.Workspace, path: string): NetworkUsage {
   return resourceProxy(ws, path, SURFACE, NETWORKUSAGE_ACTIONS) as unknown as NetworkUsage;
-}
-
-/** Agents from your other devices — `settings.mcp-server`. */
-export interface McpServer extends tilo.Resource {
-  readonly accept_own_devices: boolean;
-  readonly act_without_asking: boolean;
-  setAcceptOwnDevices(args: {
-    on: boolean;
-  }): Promise<void>;
-  /** Runs `set-accept-own-devices` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  setAcceptOwnDevicesMany(items: SetAcceptOwnDevicesArgs[]): Promise<tilo.ActionAnswer[]>;
-  setActWithoutAsking(args: {
-    on: boolean;
-  }): Promise<void>;
-  /** Runs `set-act-without-asking` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  setActWithoutAskingMany(items: SetActWithoutAskingArgs[]): Promise<tilo.ActionAnswer[]>;
-}
-
-/** The actions `McpServer` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const MCPSERVER_ACTIONS = ["setAcceptOwnDevices", "setAcceptOwnDevicesMany", "setActWithoutAsking", "setActWithoutAskingMany"] as const;
-
-/** The `settings.mcp-server` kind at `path`. */
-export function mcpServer(ws: tilo.Workspace, path: string): McpServer {
-  return resourceProxy(ws, path, SURFACE, MCPSERVER_ACTIONS) as unknown as McpServer;
 }
 
 /** Accounts — `tilo.accounts`. */
