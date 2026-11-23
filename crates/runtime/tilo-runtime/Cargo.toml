@@ -181,6 +181,8 @@ tilo-capture = { path = "../../platform/tilo-capture", features = ["camera", "mi
 # The relays the replica tests start.
 tilo-server = { path = "../../server/tilo-server" }
 tilo-mcp = { path = "../tilo-mcp", features = ["test-support"] }
+# The action provider the workspace tests answer with.
+tilo-actions = { path = "../../collab/actions", features = ["test-support"] }
 # The channel fixtures owner tests seal writes with.
 tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["apps", "device-keys", "files", "test-support"] }
 # The join protocol a runtime joins workspaces over.
