@@ -325,3 +325,67 @@ fn every_settings_section_is_edited_by_path() {
             < f64::EPSILON
     );
 }
+
+/// The read Settings publishes answers the device's settings document, so an
+/// agent, a script or a walk sees the values the settings' actions keep, whole
+/// and section by section, and again when the window opens a second time.
+#[test]
+fn the_settings_read_answers_the_values_its_actions_keep() {
+    let _settled = ui::motion::testing::settled();
+    let directory = tempfile::tempdir().expect("a profile of the test's own");
+    let mut app = TestApp::<SettingsShell>::open_data_dir(directory.path())
+        .expect("settings opens on its profile");
+    let document = app
+        .settings::<settings::prefs::PowerPrefs>()
+        .document()
+        .clone();
+    let ui::storage::SettingsDocument::Profile(root) = document else {
+        panic!("a window on its own profile keeps its settings there");
+    };
+    // The document the panes edit, as the process the app runs in reads it: a
+    // launched app is installed this same source by its host.
+    let source = settings_store::scoped_source(Some(settings_store::profile(&root)));
+
+    app.call_on(
+        "settings:settings.power",
+        "set-suspend-plugged-in",
+        serde_json::json!({ "minutes": 30 }),
+    )
+    .expect("the power section takes the timer");
+    app.call_on(
+        "settings:settings.power",
+        "set-suspend-on-battery",
+        serde_json::json!({ "minutes": 45 }),
+    )
+    .expect("the power section takes the timer");
+    app.settle();
+
+    let whole = app
+        .call("read", serde_json::json!({}))
+        .expect("the read answers")
+        .expect("the document is there");
+    assert_eq!(whole["power"]["suspend_minutes"], 30);
+    assert_eq!(whole["power"]["battery_suspend_minutes"], 45);
+    for item in ["settings.power", "power"] {
+        let section = app
+            .call("read", serde_json::json!({ "item": item }))
+            .unwrap_or_else(|error| panic!("the read takes {item:?}: {error:?}"))
+            .unwrap_or_else(|| panic!("{item:?} is a section of the document"));
+        assert_eq!(section["suspend_minutes"], 30, "read by {item:?}");
+        assert_eq!(section["battery_suspend_minutes"], 45, "read by {item:?}");
+    }
+
+    // The window opens again on the profile it kept: the choices are there,
+    // read back through the same published action.
+    drop(app);
+    drop(source);
+    let mut app = TestApp::<SettingsShell>::open_data_dir(directory.path())
+        .expect("settings opens again on its profile");
+    let _source = settings_store::scoped_source(Some(settings_store::profile(&root)));
+    let kept = app
+        .call("read", serde_json::json!({ "item": "power" }))
+        .expect("the read answers")
+        .expect("the section is there");
+    assert_eq!(kept["suspend_minutes"], 30);
+    assert_eq!(kept["battery_suspend_minutes"], 45);
+}

@@ -131,6 +131,10 @@
             "operation": "read",
             "args": {
               "item": "settings.power"
+            },
+            "is": {
+              "suspend_minutes": 30,
+              "battery_suspend_minutes": 45
             }
           }
         },
@@ -140,6 +144,10 @@
             "operation": "read",
             "args": {
               "item": "power"
+            },
+            "is": {
+              "suspend_minutes": 30,
+              "battery_suspend_minutes": 45
             }
           }
         }
@@ -172,6 +180,10 @@
             "operation": "read",
             "args": {
               "item": "settings.power"
+            },
+            "is": {
+              "suspend_minutes": 30,
+              "battery_suspend_minutes": 45
             }
           }
         }
