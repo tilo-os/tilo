@@ -109,7 +109,7 @@ async fn accept_loop(tcp: tokio::net::TcpListener, http: Arc<Routes>) {
         connections.spawn(async move {
             let service = hyper::service::service_fn(move |request: Request<Incoming>| {
                 let http = Arc::clone(&http);
-                async move { Ok::<_, std::convert::Infallible>(handle(&http, request).await) }
+                async move { Ok::<_, std::convert::Infallible>(handle(&http, request)) }
             });
             let _ =
                 hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
@@ -119,7 +119,7 @@ async fn accept_loop(tcp: tokio::net::TcpListener, http: Arc<Routes>) {
     }
 }
 
-async fn handle<B>(routes: &Routes, request: Request<B>) -> Response<Full<Bytes>> {
+fn handle<B>(routes: &Routes, request: Request<B>) -> Response<Full<Bytes>> {
     if request.method() != Method::GET {
         return error(StatusCode::METHOD_NOT_ALLOWED, "method not allowed");
     }
@@ -246,7 +246,7 @@ mod tests {
                 .body(Full::new(Bytes::new()))
                 .unwrap()
         };
-        let response = handle(&http, probe()).await;
+        let response = handle(&http, probe());
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         let body = response.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(
@@ -263,7 +263,7 @@ mod tests {
                 .body(Full::new(Bytes::new()))
                 .unwrap();
             assert_eq!(
-                handle(&http, request).await.status(),
+                handle(&http, request).status(),
                 StatusCode::METHOD_NOT_ALLOWED,
                 "{method}"
             );
@@ -272,7 +272,7 @@ mod tests {
             .uri("/mode")
             .body(Full::new(Bytes::new()))
             .unwrap();
-        let response = handle(&http, request).await;
+        let response = handle(&http, request);
         assert_eq!(response.status(), StatusCode::OK);
         let body = response.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(
@@ -296,7 +296,7 @@ mod tests {
             ("normal", "normal"),
         ] {
             std::fs::write(state.path().join("mode"), written).unwrap();
-            let response = handle(&http, up()).await;
+            let response = handle(&http, up());
             let body = response.into_body().collect().await.unwrap().to_bytes();
             let body = String::from_utf8(body.to_vec()).unwrap();
             assert!(
@@ -316,7 +316,7 @@ mod tests {
                 .body(Full::new(Bytes::new()))
                 .unwrap();
             assert_eq!(
-                handle(&http, request).await.status(),
+                handle(&http, request).status(),
                 StatusCode::NOT_FOUND,
                 "{path}"
             );

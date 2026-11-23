@@ -97,7 +97,7 @@ async fn waiting(
     state: std::path::PathBuf,
 ) -> ProgramRunner {
     let mut program = carried_out_for(
-        program_runner(workspaces, workspace, cert, before_board_entries(), state).await,
+        program_runner(workspaces, workspace, cert, before_board_entries(), state),
         hex::encode(cert.user_public_key),
         assistant,
     );

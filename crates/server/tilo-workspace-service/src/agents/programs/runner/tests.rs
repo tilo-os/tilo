@@ -96,7 +96,7 @@ pub(super) async fn member(
 }
 
 /// `program`'s runner in `workspace`, its progress kept in `state`.
-async fn program_runner(
+fn program_runner(
     workspaces: &Workspaces,
     workspace: &str,
     cert: &DeviceCert,
@@ -252,8 +252,7 @@ async fn an_event_answers_a_post_in_the_workspace_once() {
         &cert,
         greeter(),
         scratch.path().join("greeter.json"),
-    )
-    .await;
+    );
     // Set up now: what happened before is not answered.
     assert!(runner.step().await.unwrap().is_empty());
     let members = runner.workspace_input().await.unwrap()["members"].clone();
@@ -309,7 +308,7 @@ async fn a_restarted_runner_answers_what_was_posted_while_it_was_down() {
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
     let state = scratch.path().join("greeter.json");
     let start = || program_runner(&workspaces, &workspace, &cert, greeter(), state.clone());
-    let mut runner = start().await;
+    let mut runner = start();
     assert!(runner.step().await.unwrap().is_empty());
     drop(runner);
 
@@ -323,7 +322,7 @@ async fn a_restarted_runner_answers_what_was_posted_while_it_was_down() {
     .await;
     ada_says(&workspaces, &workspace, &cert, general.as_str(), "hello?").await;
 
-    let mut runner = start().await;
+    let mut runner = start();
     let reports = runner.step().await.unwrap();
     assert_eq!(
         reports.len(),
@@ -333,7 +332,7 @@ async fn a_restarted_runner_answers_what_was_posted_while_it_was_down() {
     assert!(runner.step().await.unwrap().is_empty());
     drop(runner);
     // Restarting again repeats nothing.
-    assert!(start().await.step().await.unwrap().is_empty());
+    assert!(start().step().await.unwrap().is_empty());
 }
 
 /// A time just past an hourly fire time, so a minute-long schedule's next
@@ -358,8 +357,7 @@ async fn a_scheduled_event_runs_at_its_time_once_and_again_at_the_next() {
         &cert,
         ticker(60, tilo_automation::CatchUp::Skip),
         scratch.path().join("ticker.json"),
-    )
-    .await;
+    );
     runner.use_clock(manual.clone());
     assert!(
         runner.step().await.unwrap().is_empty(),
@@ -417,8 +415,7 @@ async fn a_restarted_host_fires_what_it_missed_once_whether_a_schedule_or_a_mome
         &cert,
         ticker(60, tilo_automation::CatchUp::RunOnce),
         state.clone(),
-    )
-    .await;
+    );
     runner.use_clock(manual.clone());
     assert!(runner.step().await.unwrap().is_empty());
     drop(runner);
@@ -430,8 +427,7 @@ async fn a_restarted_host_fires_what_it_missed_once_whether_a_schedule_or_a_mome
         &cert,
         ticker(60, tilo_automation::CatchUp::RunOnce),
         state,
-    )
-    .await;
+    );
     runner.use_clock(manual.clone());
     let reports = runner.step().await.unwrap();
     assert_eq!(
@@ -460,8 +456,7 @@ async fn a_restarted_host_fires_what_it_missed_once_whether_a_schedule_or_a_mome
         &cert,
         reminder(at_ms),
         state.clone(),
-    )
-    .await;
+    );
     runner.use_clock(manual.clone());
     assert!(runner.step().await.unwrap().is_empty());
     drop(runner);
@@ -473,8 +468,7 @@ async fn a_restarted_host_fires_what_it_missed_once_whether_a_schedule_or_a_mome
         &cert,
         reminder(at_ms),
         state.clone(),
-    )
-    .await;
+    );
     runner.use_clock(manual.clone());
     let reports = runner.step().await.unwrap();
     assert_eq!(
@@ -490,7 +484,7 @@ async fn a_restarted_host_fires_what_it_missed_once_whether_a_schedule_or_a_mome
     );
     assert!(runner.step().await.unwrap().is_empty());
     drop(runner);
-    let mut runner = program_runner(&workspaces, &workspace, &cert, reminder(at_ms), state).await;
+    let mut runner = program_runner(&workspaces, &workspace, &cert, reminder(at_ms), state);
     runner.use_clock(manual.clone());
     assert!(
         runner.step().await.unwrap().is_empty(),
@@ -505,8 +499,7 @@ async fn a_restarted_host_fires_what_it_missed_once_whether_a_schedule_or_a_mome
         &cert,
         reminder(at_ms + 1_000),
         scratch.path().join("set-up-late.json"),
-    )
-    .await;
+    );
     runner.use_clock(manual.clone());
     assert_eq!(
         runner.step().await.unwrap().len(),
@@ -532,8 +525,7 @@ async fn a_restarted_host_skips_the_times_it_missed() {
         &cert,
         ticker(60, tilo_automation::CatchUp::Skip),
         state.clone(),
-    )
-    .await;
+    );
     runner.use_clock(manual.clone());
     assert!(runner.step().await.unwrap().is_empty());
     drop(runner);
@@ -546,8 +538,7 @@ async fn a_restarted_host_skips_the_times_it_missed() {
         &cert,
         ticker(60, tilo_automation::CatchUp::Skip),
         state,
-    )
-    .await;
+    );
     runner.use_clock(manual.clone());
     assert!(
         runner.step().await.unwrap().is_empty(),
@@ -577,8 +568,7 @@ async fn a_moment_fires_once_at_its_time_and_never_again() {
         &cert,
         reminder(at_ms),
         state.clone(),
-    )
-    .await;
+    );
     runner.use_clock(manual.clone());
     assert!(
         runner.step().await.unwrap().is_empty(),
@@ -614,7 +604,7 @@ async fn a_moment_fires_once_at_its_time_and_never_again() {
     drop(runner);
 
     // A restarted host reads that it answered the moment.
-    let mut runner = program_runner(&workspaces, &workspace, &cert, reminder(at_ms), state).await;
+    let mut runner = program_runner(&workspaces, &workspace, &cert, reminder(at_ms), state);
     runner.use_clock(manual.clone());
     assert!(
         runner.step().await.unwrap().is_empty(),
@@ -842,7 +832,6 @@ async fn a_program_acts_on_every_tenth_firing_and_its_count_survives_a_restart()
         )
     };
     let mut runner = program_runner(&workspaces, &workspace, &cert, program(), state.clone())
-        .await
         .runs_for(ada.clone(), assistant.clone());
     runner.use_clock(manual.clone());
     assert!(runner.step().await.unwrap().is_empty());
@@ -851,7 +840,6 @@ async fn a_program_acts_on_every_tenth_firing_and_its_count_survives_a_restart()
             // The host restarts between two firings: the count stands
             // where it stood.
             runner = program_runner(&workspaces, &workspace, &cert, program(), state.clone())
-                .await
                 .runs_for(ada.clone(), assistant.clone());
             runner.use_clock(manual.clone());
         }
@@ -917,7 +905,6 @@ async fn a_programs_note_is_read_by_every_run_and_changed_by_one_typed_change() 
         )
     };
     let mut runner = program_runner(&workspaces, &workspace, &cert, program(), state.clone())
-        .await
         .runs_for(ada.clone(), assistant.clone());
     runner.use_clock(manual.clone());
     assert!(runner.step().await.unwrap().is_empty());
@@ -963,7 +950,6 @@ async fn a_programs_note_is_read_by_every_run_and_changed_by_one_typed_change() 
     // After a restart the next run reads all of it, and its instruction
     // carries the note.
     let mut runner = program_runner(&workspaces, &workspace, &cert, program(), state)
-        .await
         .runs_for(ada, assistant.clone());
     runner.use_clock(manual.clone());
     manual.set(tick_ms(2));
@@ -1004,7 +990,6 @@ async fn a_paused_program_fires_nothing_until_its_person_lets_it_go_on() {
     let manual = std::sync::Arc::new(tilo_clock::ManualClock::new(AFTER_THE_HOUR_MS));
     let program = || own_program(every_minute(), vec![tell("Say what is new.")]);
     let mut runner = program_runner(&workspaces, &workspace, &cert, program(), state.clone())
-        .await
         .runs_for(ada.clone(), assistant.clone());
     runner.use_clock(manual.clone());
     assert!(runner.step().await.unwrap().is_empty());
@@ -1023,7 +1008,6 @@ async fn a_paused_program_fires_nothing_until_its_person_lets_it_go_on() {
     drop(runner);
     // It stays paused across a restart.
     let mut runner = program_runner(&workspaces, &workspace, &cert, program(), state)
-        .await
         .runs_for(ada, assistant.clone());
     runner.use_clock(manual.clone());
     manual.set(tick_ms(4));
@@ -1069,7 +1053,6 @@ async fn a_programs_work_may_send_unasked_only_what_its_person_permitted() {
         Answer::Allow,
     );
     let mut runner = program_runner(&workspaces, &workspace, &cert, program(), state.clone())
-        .await
         .runs_for(ada.clone(), assistant.clone());
     runner.use_clock(manual.clone());
     assert!(runner.step().await.unwrap().is_empty());
@@ -1094,7 +1077,6 @@ async fn a_programs_work_may_send_unasked_only_what_its_person_permitted() {
     ));
     drop(runner);
     let mut runner = program_runner(&workspaces, &workspace, &cert, program(), state)
-        .await
         .runs_for(ada, assistant.clone());
     runner.use_clock(manual.clone());
     manual.set(tick_ms(2));
@@ -1140,7 +1122,6 @@ async fn a_program_asks_its_persons_model_and_acts_only_on_a_yes() {
         judging(at_ms, question, "Say that the report is due."),
         scratch.path().join("yes.json"),
     )
-    .await
     .runs_for(ada.clone(), assistant.clone());
     runner.use_clock(manual.clone());
     let reports = runner.step().await.unwrap();
@@ -1184,7 +1165,6 @@ async fn a_program_asks_its_persons_model_and_acts_only_on_a_yes() {
         judging(at_ms + 60_000, question, "Say that the report is due."),
         scratch.path().join("no.json"),
     )
-    .await
     .runs_for(ada.clone(), assistant.clone());
     runner.use_clock(manual.clone());
     let reports = runner.step().await.unwrap();
@@ -1207,7 +1187,6 @@ async fn a_program_asks_its_persons_model_and_acts_only_on_a_yes() {
         judging(at_ms + 120_000, question, "Say that the report is due."),
         scratch.path().join("no-model.json"),
     )
-    .await
     .runs_for(ada, assistant.clone());
     runner.use_clock(manual.clone());
     runner.step().await.unwrap();
@@ -1237,7 +1216,6 @@ async fn a_reminder_hands_its_instruction_to_its_persons_assistant_once() {
         reminding(at_ms, "Say that it is time to call home."),
         state.clone(),
     )
-    .await
     .runs_for(ada.clone(), assistant.clone());
     runner.use_clock(manual.clone());
     assert!(runner.step().await.unwrap().is_empty());
@@ -1282,7 +1260,6 @@ async fn a_reminder_hands_its_instruction_to_its_persons_assistant_once() {
         reminding(at_ms, "Say that it is time to call home."),
         state,
     )
-    .await
     .runs_for(ada, assistant.clone());
     runner.use_clock(manual.clone());
     assert!(runner.step().await.unwrap().is_empty());
@@ -1327,7 +1304,6 @@ async fn an_instruction_nothing_takes_is_handed_over_again_or_kept_as_a_dead_let
         reminding(at_ms, "Say that it is time to call home."),
         scratch.path().join("reminder.json"),
     )
-    .await
     .runs_for(ada.clone(), assistant.clone());
     runner.use_clock(manual.clone());
     let reports = runner.step().await.unwrap();
@@ -1362,7 +1338,6 @@ async fn an_instruction_nothing_takes_is_handed_over_again_or_kept_as_a_dead_let
         reminding(at_ms + 60_000, "Say it again."),
         scratch.path().join("refused.json"),
     )
-    .await
     .runs_for(ada, assistant.clone());
     runner.use_clock(manual.clone());
     let reports = runner.step().await.unwrap();
@@ -1384,8 +1359,7 @@ async fn an_instruction_nothing_takes_is_handed_over_again_or_kept_as_a_dead_let
         &cert,
         reminding(at_ms + 120_000, "Say hello."),
         scratch.path().join("nobody.json"),
-    )
-    .await;
+    );
     runner.use_clock(manual.clone());
     let reports = runner.step().await.unwrap();
     assert!(failed(&reports), "{reports:?}");
@@ -1421,7 +1395,7 @@ async fn a_run_that_fails_for_good_is_kept_as_a_dead_letter() {
         )
     };
     let start = || program_runner(&workspaces, &workspace, &cert, answering(), state.clone());
-    let mut runner = start().await;
+    let mut runner = start();
     assert!(runner.step().await.unwrap().is_empty());
     ada_says(&workspaces, &workspace, &cert, general.as_str(), "hello").await;
     let reports = runner.step().await.unwrap();
@@ -1431,7 +1405,7 @@ async fn a_run_that_fails_for_good_is_kept_as_a_dead_letter() {
     );
     drop(runner);
 
-    let runner = start().await;
+    let runner = start();
     let dead: Vec<_> = runner.dead_letters().collect();
     assert_eq!(dead.len(), 1, "kept across a restart");
     assert_eq!(dead[0].step.as_deref(), Some("remind"));
@@ -1494,8 +1468,7 @@ async fn a_run_that_changes_a_record_is_refused_and_lands_nothing() {
         &cert,
         program_of(GREETER, &shortcut),
         scratch.path().join("poster.json"),
-    )
-    .await;
+    );
     assert!(runner.step().await.unwrap().is_empty());
     ada_says(&workspaces, &workspace, &cert, general.as_str(), "hello").await;
     assert!(
@@ -1569,8 +1542,7 @@ async fn an_event_step_reads_the_records_it_follows_through_the_record_api() {
         &cert,
         program_of("3c9a7e10-5b2d-4f8e-a1c6-0d4e2b7f9a35", &shortcut),
         scratch.path().join("reader.json"),
-    )
-    .await;
+    );
     assert!(runner.step().await.unwrap().is_empty());
     ada_says(&workspaces, &workspace, &cert, &general, "what is here?").await;
     let reports = runner.step().await.unwrap();

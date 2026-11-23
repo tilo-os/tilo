@@ -136,7 +136,6 @@ async fn judged_once(
         keeping_what_was_judged(at_ms),
         state,
     )
-    .await
     .runs_for(person.to_owned(), assistant::host_steps(workspaces.clone()));
     runner.use_clock(std::sync::Arc::new(tilo_clock::ManualClock::new(
         u64::try_from(at_ms).unwrap(),
