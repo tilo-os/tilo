@@ -263,6 +263,23 @@ pub fn decode(request: &str) -> Result<Ask, String> {
             command: integer(&value, "command").unwrap_or_default(),
         }),
         "asks" => Ask::Asks,
+        // What the page downloads: the engine's own transfers, which the app starts, answers,
+        // stops and resumes by the id the engine gave them.
+        "start_download" => Ask::Command(WebViewCommand::StartDownload {
+            uri: text(&value, "url").unwrap_or_default(),
+        }),
+        "answer_download" => Ask::Command(WebViewCommand::DownloadDecision {
+            id: integer(&value, "id").unwrap_or_default(),
+            allow: flag(&value, "allow"),
+            by: tilo_webview::AnsweredBy::Person,
+        }),
+        "cancel_download" => Ask::Command(WebViewCommand::CancelNativeDownload {
+            id: integer(&value, "id").unwrap_or_default(),
+        }),
+        "retry_download" => Ask::Command(WebViewCommand::RetryDownload {
+            id: integer(&value, "id").unwrap_or_default(),
+        }),
+        "cancel_all_downloads" => Ask::Command(WebViewCommand::CancelAllDownloads),
         other => return Err(format!("a page request names no operation {other:?}")),
     })
 }
