@@ -1,6 +1,6 @@
 //! Opening an app for the first time in a workspace a home relay governs, after
 //! the workspace lets the app author: a member's device signs the app's empty
-//! record itself, as every replica admits a member's record, and the app's
+//! record itself, as every copy admits a member's record, and the app's
 //! first state reaches the record as the member's own change.
 use super::*;
 
@@ -96,67 +96,45 @@ async fn an_admitted_member_creates_an_apps_empty_record() {
     members::admit(&server, &host, &member, &hosted.workspace).await;
     admit_viewer(&server, &host, &viewer, &hosted.workspace).await;
 
-    let member_session = session(&server, &member, workspace).await;
-    let roster = vec![
-        host.cert.clone(),
-        laptop.cert.clone(),
-        member.cert.clone(),
-        viewer.cert.clone(),
-    ];
-    let replica = || {
-        let mut peer = StatePeer::new(
-            &hosted.workspace,
-            host.cert.clone(),
-            roster.clone(),
-            RevocationList::new(),
-            SystemTime::now(),
-        )
-        .unwrap();
-        peer.select_exact_admissions().unwrap();
-        peer
-    };
-    let mut member_peer = replica();
-    let mut laptop_peer = replica();
-    receive_until(
-        "the member holds the workspace",
-        &member_session,
-        &mut member_peer,
-        &mut Vec::new(),
-        |peer, _| peer.admitted_workspace().is_some(),
-    )
-    .await;
+    let mut member_link = Linked::open(&server, &member, workspace)
+        .await
+        .expect("the workspace admits the member");
+    let mut laptop_link = Linked::open(&server, &laptop, workspace)
+        .await
+        .expect("the workspace admits the laptop");
+    crate::common::receives(&mut member_link, |peer| peer.admitted_workspace().is_some()).await;
     // An editor's own change of an app's record is theirs: the record's
     // genesis is theirs to start, and it is published only under an
     // application id.
-    let laptop_session = session(&server, &laptop, workspace).await;
     assert!(
-        genesis(&mut member_peer.clone(), "so.tilo.notes\n", &member.sk).is_err(),
+        member_link
+            .read(|peer| genesis(&mut peer.clone(), "so.tilo.notes\n", &member.sk))
+            .is_err(),
         "a malformed application id is refused"
     );
     for malformed in ["", " ", "notes", "so..notes", ".so.tilo", "so.tilo.notes/x"] {
         assert!(
-            genesis(&mut member_peer.clone(), malformed, &member.sk).is_err(),
+            member_link
+                .read(|peer| genesis(&mut peer.clone(), malformed, &member.sk))
+                .is_err(),
             "{malformed:?} is not an application id"
         );
     }
     crate::common::wait_until_subscribed(&server, workspace, &member.device_pubkey()).await;
-    let created = genesis(&mut member_peer, OPENED, &member.sk).unwrap();
-    publish(&member_session, &created);
-    receive_until(
-        "another member's replica holds the member's empty record",
-        &laptop_session,
-        &mut laptop_peer,
-        &mut Vec::new(),
-        |peer, _| peer.document(OPENED, "").is_some(),
-    )
-    .await;
-    let mut held = AutoCommit::load(&laptop_peer.document(OPENED, "").unwrap()).unwrap();
+    member_link
+        .publish(|peer| genesis(peer, OPENED, &member.sk))
+        .expect("the member starts the record");
+    crate::common::receives(&mut laptop_link, |peer| peer.document(OPENED, "").is_some()).await;
+    let mut created =
+        laptop_link.read(|peer| AutoCommit::load(&peer.document(OPENED, "").unwrap()).unwrap());
     assert!(
-        held.get_heads().is_empty(),
+        created.get_heads().is_empty(),
         "a member creates an empty record and nothing else"
     );
     assert!(
-        genesis(&mut member_peer.clone(), OPENED, &member.sk).is_err(),
+        member_link
+            .read(|peer| genesis(&mut peer.clone(), OPENED, &member.sk))
+            .is_err(),
         "a record the workspace holds is never created again"
     );
 
@@ -164,40 +142,32 @@ async fn an_admitted_member_creates_an_apps_empty_record() {
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "title", "First note").unwrap();
     doc.commit_edit("fixture", "title", &member.cert.user_public_key);
-    let bootstrap = member_peer
-        .publication_mut()
-        .publish_incremental(
-            OPENED,
-            "",
-            doc.save_after(&[]),
-            &member.sk,
-            SystemTime::now(),
-        )
-        .unwrap();
-    publish(&member_session, &bootstrap);
-    receive_until(
-        "another member's replica admits the member's first state",
-        &laptop_session,
-        &mut laptop_peer,
-        &mut Vec::new(),
-        |peer, _| first_state(peer).as_deref() == Some("First note"),
-    )
+    member_link
+        .publish(|peer| {
+            peer.publication_mut().publish_incremental(
+                OPENED,
+                "",
+                doc.save_after(&[]),
+                &member.sk,
+                SystemTime::now(),
+            )
+        })
+        .expect("the member's first state goes out on their link");
+    crate::common::receives(&mut laptop_link, |peer| {
+        first_state(peer).as_deref() == Some("First note")
+    })
     .await;
 
-    // A viewer's client that skips its own checks and writes the record
+    // A viewer's device that skips its own checks and writes the record
     // anyway, as a modified page could: the server neither keeps nor
-    // forwards the write. Another member's replica would refuse it loudly
-    // (`receive_until` unwraps every delta it applies), and only the
-    // editor's later write reaches it.
-    let viewer_session = session(&server, &viewer, workspace).await;
-    let mut viewer_peer = replica();
-    receive_until(
-        "the viewer holds the member's first state",
-        &viewer_session,
-        &mut viewer_peer,
-        &mut Vec::new(),
-        |peer, _| first_state(peer).as_deref() == Some("First note"),
-    )
+    // forwards the write. Another member's copy would refuse it loudly
+    // (`receives` would see it land), and only the editor's later write reaches it.
+    let mut viewer_link = Linked::open(&server, &viewer, workspace)
+        .await
+        .expect("the workspace admits the viewer");
+    crate::common::receives(&mut viewer_link, |peer| {
+        first_state(peer).as_deref() == Some("First note")
+    })
     .await;
     let retitle = |peer: &mut StatePeer, title: &str, key: &ed25519_dalek::SigningKey| {
         let mut doc = AutoCommit::load(&peer.document(OPENED, "").unwrap()).unwrap();
@@ -208,31 +178,31 @@ async fn an_admitted_member_creates_an_apps_empty_record() {
             .publish_incremental(OPENED, "", doc.save_after(&heads), key, SystemTime::now())
             .unwrap()
     };
-    // The viewer's own replica refuses to sign the write, so the page
-    // builds it from a member's replica and signs it as the viewer.
-    let mut forged = retitle(&mut member_peer.clone(), "A viewer's note", &member.sk);
+    // The viewer's own copy refuses to sign the write, so the page
+    // builds it from a member's copy and signs it as the viewer.
+    let mut forged = member_link.read(|peer| {
+        let mut copy = peer.clone();
+        retitle(&mut copy, "A viewer's note", &member.sk)
+    });
     if let NeighbourMsg::AppDocument { peer, envelope, .. } = &mut forged {
         *peer = tilo_peer_state::peer_handle(&viewer.device_pubkey());
         envelope.author = collab_types::Ed25519PublicKey::from_bytes(viewer.device_pubkey());
         envelope.seq = 1;
         collab_types::sign_op(envelope, &viewer.sk).unwrap();
     }
-    publish(&viewer_session, &forged);
+    viewer_link
+        .send(forged)
+        .expect("the forged write goes out on the viewer's link");
     // Past the time the server takes a write in, so a forwarded forgery
     // would arrive before the editor's write below.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    let second = retitle(&mut member_peer, "Second note", &member.sk);
-    publish(&member_session, &second);
-    receive_until(
-        "another member's replica takes the editor's write and nothing of the viewer's",
-        &laptop_session,
-        &mut laptop_peer,
-        &mut Vec::new(),
-        |peer, _| first_state(peer).as_deref() == Some("Second note"),
-    )
+    member_link
+        .publish(|peer| Ok(retitle(peer, "Second note", &member.sk)))
+        .expect("the editor's write goes out on their link");
+    crate::common::receives(&mut laptop_link, |peer| {
+        first_state(peer).as_deref() == Some("Second note")
+    })
     .await;
-    viewer_session.close().await;
-    member_session.close().await;
     server.shutdown().await;
 }
 

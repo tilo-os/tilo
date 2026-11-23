@@ -1,5 +1,5 @@
-//! A member seals a write to a record the workspace's governor holds, as every
-//! member of a workspace whose channels a node takes part in does. The governor keeps
+//! A member seals a write to a record the workspace's host holds, as every
+//! member of a workspace whose channels a node takes part in does. The host keeps
 //! the ciphertext as the record's history and goes on governing: the next
 //! person is still let in, and so is one after the server restarts.
 use super::*;
@@ -44,17 +44,24 @@ fn sealed(
     }
 }
 
-/// `person`'s `device` redeems an invitation to `workspace` that `issuer` issues;
-/// its replica, from the bootstrap alone.
-pub(super) async fn join(
+/// `person`'s `device` redeems an editor's invitation to `workspace` that `issuer` issues, and
+/// links to the workspace from what its join alone gave it: the link brings the rest.
+pub(super) async fn joined(
     server: &Server,
     issuer: &TestDevice,
-    workspace: &str,
+    workspace: &WorkspaceListing,
     person: &TestUser,
     device: &TestDevice,
     request_id: [u8; 32],
-) -> Result<StatePeer, String> {
-    let invitation = invite(server, issuer, workspace, Role::Editor, person.user_pk).await;
+) -> Result<Linked, String> {
+    let invitation = invite(
+        server,
+        issuer,
+        &workspace.workspace,
+        Role::Editor,
+        person.user_pk,
+    )
+    .await;
     let verified = decode_and_verify_invitation(
         &invitation.signed_invitation,
         None,
@@ -90,7 +97,9 @@ pub(super) async fn join(
         )
         .map_err(|error| error.to_string())?;
     }
-    Ok(peer)
+    Linked::open_seeded(server, device, workspace.workspace_id, peer)
+        .await
+        .map_err(|refusal| refusal.to_string())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -103,57 +112,40 @@ async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
     let state = tempfile::tempdir().unwrap();
     let server = start(state.path(), &alice, &host).await;
     let workspace = create_and_enter(&server, &laptop, "Lounge").await;
-    let mut bob_peer = join(
-        &server,
-        &laptop,
-        &workspace.workspace,
-        &bob,
-        &phone,
-        [7; 32],
-    )
-    .await
-    .unwrap();
-    let mut alice_peer = StatePeer::new(
-        &workspace.workspace,
-        host.cert.clone(),
-        vec![host.cert.clone()],
-        RevocationList::new(),
-        SystemTime::now(),
-    )
-    .unwrap();
-    let alice_session = session(&server, &laptop, workspace.workspace_id).await;
-    let bob_session = session(&server, &phone, workspace.workspace_id).await;
-    let mut presence = Vec::new();
-    receive_until(
-        "Alice's replica admits Bob",
-        &alice_session,
-        &mut alice_peer,
-        &mut presence,
-        |peer, _| role(peer, phone.device_pubkey()) == Some(collab_types::Role::Editor),
-    )
+    let mut bob_link = joined(&server, &laptop, &workspace, &bob, &phone, [7; 32])
+        .await
+        .expect("the workspace admits Bob's phone");
+    let mut alice_link = Linked::open(&server, &laptop, workspace.workspace_id)
+        .await
+        .expect("the workspace admits Alice's laptop");
+    crate::common::receives(&mut alice_link, |peer| {
+        role(peer, phone.device_pubkey()) == Some(collab_types::Role::Editor)
+    })
     .await;
     crate::common::wait_until_subscribed(&server, workspace.workspace_id, &phone.device_pubkey())
         .await;
 
-    // Alice's first write makes the record, and the governor holds it.
+    // Alice's first write makes the record, and the host holds it.
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "topic", "welcome").unwrap();
     doc.commit_edit("fixture", "topic", &laptop.cert.user_public_key);
-    let message = alice_peer
-        .publication_mut()
-        .publish_incremental(APP, "", doc.save_after(&[]), &laptop.sk, SystemTime::now())
-        .unwrap();
-    publish(&alice_session, &message);
-    receive_until(
-        "the record at Bob",
-        &bob_session,
-        &mut bob_peer,
-        &mut presence,
-        |peer, _| text(peer, "topic").as_deref() == Some("welcome"),
-    )
+    alice_link
+        .publish(|peer| {
+            peer.publication_mut().publish_incremental(
+                APP,
+                "",
+                doc.save_after(&[]),
+                &laptop.sk,
+                SystemTime::now(),
+            )
+        })
+        .expect("Alice's write goes out on her link");
+    crate::common::receives(&mut bob_link, |peer| {
+        text(peer, "topic").as_deref() == Some("welcome")
+    })
     .await;
 
-    // Bob's write leaves his device sealed; the governor takes it in.
+    // Bob's write leaves his device sealed; the host takes it in.
     let workspaces = server.workspaces().unwrap();
     let mut followed = workspaces.document_writes();
     let group = KeyGroup::create(
@@ -161,49 +153,37 @@ async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
         MemberKey::generate("bob").unwrap(),
     )
     .unwrap();
-    let cleartext = write(
-        &mut bob_peer,
-        "reply",
-        "hi",
-        &phone.sk,
-        &phone.cert.user_public_key,
-    );
-    publish(&bob_session, &sealed(cleartext, &group, &phone.sk));
-    tilo_test_env::within("the governor follows Bob's sealed write", async {
+    bob_link
+        .publish(|peer| {
+            Ok(sealed(
+                write(peer, "reply", "hi", &phone.sk, &phone.cert.user_public_key),
+                &group,
+                &phone.sk,
+            ))
+        })
+        .expect("Bob's sealed write goes out on his link");
+    tilo_test_env::within("the host follows Bob's sealed write", async {
         while followed.recv().await.unwrap().app != APP {}
     })
     .await;
 
-    // A page writes its records as commits: the governor follows those too.
-    let bob_client = bob_session.into_client();
-    let message = sealed(
-        write(
-            &mut bob_peer,
-            "reply",
-            "again",
-            &phone.sk,
-            &phone.cert.user_public_key,
-        ),
-        &group,
-        &phone.sk,
-    );
-    let (channel, _) = neighbour_wire::retention(&message, false).unwrap();
-    let delta = tilo_server::CoeditPayload::RetainedDelta {
-        channel,
-        body: postcard::to_stdvec(&message).unwrap(),
-    }
-    .encode()
-    .unwrap();
-    bob_client
-        .send(Envelope::Commit {
-            workspace_id: workspace.workspace_id,
-            op: [5; 16],
-            author_device_public_key: phone.device_pubkey(),
-            authored_at_ns: tilo_clock::unix_now_ns(),
-            delta,
+    // A page's next write is sealed the same way, and the host follows it too.
+    bob_link
+        .publish(|peer| {
+            Ok(sealed(
+                write(
+                    peer,
+                    "reply",
+                    "again",
+                    &phone.sk,
+                    &phone.cert.user_public_key,
+                ),
+                &group,
+                &phone.sk,
+            ))
         })
-        .unwrap();
-    tilo_test_env::within("the governor follows Bob's sealed commit", async {
+        .expect("Bob's next sealed write goes out on his link");
+    tilo_test_env::within("the host follows Bob's sealed write again", async {
         while followed.recv().await.unwrap().app != APP {}
     })
     .await;
@@ -211,16 +191,9 @@ async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
     // The next person is let in, by a governance change published after it.
     let carol = TestUser::fresh("Carol");
     let tablet = carol.enrol("carol-tablet", DeviceCapabilities::member());
-    join(
-        &server,
-        &laptop,
-        &workspace.workspace,
-        &carol,
-        &tablet,
-        [8; 32],
-    )
-    .await
-    .expect("a sealed record write keeps nobody out");
+    let tablet_link = joined(&server, &laptop, &workspace, &carol, &tablet, [8; 32])
+        .await
+        .expect("a sealed record write keeps nobody out");
     let is_member = |members: &[tilo_peer_state::Member], person: [u8; 32]| {
         members
             .iter()
@@ -235,23 +208,17 @@ async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
         carol.user_pk
     ));
 
-    // Reopened, the governor replays the sealed write and still lets people in.
-    alice_session.close().await;
-    drop(bob_client);
+    // Reopened, the host replays the sealed write and still lets people in.
+    drop(tablet_link);
+    drop(bob_link);
+    drop(alice_link);
     server.shutdown().await;
     let server = start(state.path(), &alice, &host).await;
     let dan = TestUser::fresh("Dan");
     let watch = dan.enrol("dan-watch", DeviceCapabilities::member());
-    join(
-        &server,
-        &laptop,
-        &workspace.workspace,
-        &dan,
-        &watch,
-        [9; 32],
-    )
-    .await
-    .expect("a reopened workspace with a sealed record keeps nobody out");
+    let watch_link = joined(&server, &laptop, &workspace, &dan, &watch, [9; 32])
+        .await
+        .expect("a reopened workspace with a sealed record keeps nobody out");
     assert!(is_member(
         &server
             .workspaces()
@@ -262,5 +229,6 @@ async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
             .members,
         dan.user_pk
     ));
+    drop(watch_link);
     server.shutdown().await;
 }

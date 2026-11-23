@@ -1,10 +1,9 @@
-//! A server stopped hard (`podman rm -f`) right after it told a member a
-//! write was committed. The answer waits for the server's own durable copy,
-//! not for the workspace's governor to have written its copy of the record
-//! through to the workspace file, which it does within a second: the next start
-//! replays the server's copy into the governor's, so the write is in the
+//! A server stopped hard (`podman rm -f`) right after it told a member it kept a
+//! write. Its answer names the server's own durable copy, not the workspace's
+//! copy of the record, which it writes through within a second: the next start
+//! replays the server's copy into the workspace's, so the write is in the
 //! record's history all the same.
-use tilo_server::ServerClient;
+use tilo_peer_state::direct::Kept;
 
 use super::*;
 
@@ -33,76 +32,74 @@ async fn a_write_the_server_committed_survives_a_hard_stop_before_the_governor_k
     let state = tempfile::tempdir().unwrap();
     let server = start(state.path(), &alice, &host).await;
     let workspace = create_and_enter(&server, &laptop, "Lounge").await;
-    let mut bob_peer = super::sealed_documents::join(
-        &server,
-        &laptop,
-        &workspace.workspace,
-        &bob,
-        &phone,
-        [7; 32],
-    )
-    .await
-    .unwrap();
-    let mut alice_peer = StatePeer::new(
-        &workspace.workspace,
-        host.cert.clone(),
-        vec![host.cert.clone()],
-        RevocationList::new(),
-        SystemTime::now(),
-    )
-    .unwrap();
-    let alice_session = session(&server, &laptop, workspace.workspace_id).await;
-    let bob_session = session(&server, &phone, workspace.workspace_id).await;
-    let mut presence = Vec::new();
-    receive_until(
-        "Alice's replica admits Bob",
-        &alice_session,
-        &mut alice_peer,
-        &mut presence,
-        |peer, _| role(peer, phone.device_pubkey()) == Some(collab_types::Role::Editor),
-    )
+    let mut bob_link =
+        super::sealed_documents::joined(&server, &laptop, &workspace, &bob, &phone, [7; 32])
+            .await
+            .unwrap();
+    let mut alice_link = Linked::open(&server, &laptop, workspace.workspace_id)
+        .await
+        .expect("the workspace admits Alice's laptop");
+    crate::common::receives(&mut alice_link, |peer| {
+        role(peer, phone.device_pubkey()) == Some(collab_types::Role::Editor)
+    })
     .await;
     crate::common::wait_until_subscribed(&server, workspace.workspace_id, &phone.device_pubkey())
         .await;
 
-    // Alice's first write makes the record, and the governor holds it.
+    // Alice's first write makes the record, and the host holds it.
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "topic", "welcome").unwrap();
     doc.commit_edit("fixture", "topic", &laptop.cert.user_public_key);
-    let message = alice_peer
-        .publication_mut()
-        .publish_incremental(APP, "", doc.save_after(&[]), &laptop.sk, SystemTime::now())
-        .unwrap();
-    publish(&alice_session, &message);
-    receive_until(
-        "the record at Bob",
-        &bob_session,
-        &mut bob_peer,
-        &mut presence,
-        |peer, _| text(peer, "topic").as_deref() == Some("welcome"),
-    )
+    alice_link
+        .publish(|peer| {
+            peer.publication_mut().publish_incremental(
+                APP,
+                "",
+                doc.save_after(&[]),
+                &laptop.sk,
+                SystemTime::now(),
+            )
+        })
+        .expect("Alice's write goes out on her link");
+    crate::common::receives(&mut bob_link, |peer| {
+        text(peer, "topic").as_deref() == Some("welcome")
+    })
     .await;
 
-    // Bob's page commits a write and is told it is committed; the server is
-    // stopped hard at that moment, before the governor's copy is kept.
-    let bob_client: ServerClient = bob_session.into_client();
-    let write = write(
-        &mut bob_peer,
-        "reply",
-        "committed",
-        &phone.sk,
-        &phone.cert.user_public_key,
-    );
-    super::shared_desktop::commit(&bob_client, &phone, workspace.workspace_id, &write)
-        .await
-        .expect("the server commits Bob's write");
+    // Bob's page writes and the server answers that it keeps the write; the server is
+    // stopped hard at that moment, before the workspace's copy is kept.
+    let mut answers = bob_link.answers();
+    bob_link
+        .publish(|peer| {
+            Ok(write(
+                peer,
+                "reply",
+                "committed",
+                &phone.sk,
+                &phone.cert.user_public_key,
+            ))
+        })
+        .expect("Bob's write goes out on his link");
+    tilo_test_env::within("the server keeps Bob's write", async {
+        loop {
+            match answers.recv().await {
+                Ok(answered) => {
+                    if let Kept::Durable = answered.kept {
+                        return;
+                    }
+                }
+                Err(_) => panic!("the link ended before the server kept Bob's write"),
+            }
+        }
+    })
+    .await;
     let stopped = tempfile::tempdir().unwrap();
     copy_dir(state.path(), stopped.path());
 
-    // The next start holds Bob's write in the governor's copy of the record.
+    // The next start holds Bob's write in the workspace's copy of the record.
     let reopened = start(stopped.path(), &alice, &host).await;
     let workspaces = reopened.workspaces().unwrap();
-    tilo_test_env::within("the reopened governor holds Bob's committed write", async {
+    tilo_test_env::within("the reopened host holds Bob's kept write", async {
         loop {
             let held = workspaces
                 .resource_document(&workspace.workspace, APP, "")
@@ -121,7 +118,7 @@ async fn a_write_the_server_committed_survives_a_hard_stop_before_the_governor_k
     })
     .await;
     reopened.shutdown().await;
-    alice_session.close().await;
-    drop(bob_client);
+    drop(bob_link);
+    drop(alice_link);
     server.shutdown().await;
 }

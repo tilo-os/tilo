@@ -99,35 +99,30 @@ async fn a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_
         .await
         .unwrap();
 
-    // Bob's replica, from the workspace's history; he edits with v1.
-    let mut bob_peer = StatePeer::new(
-        &workspace.workspace,
-        host.cert.clone(),
-        vec![host.cert.clone()],
-        RevocationList::new(),
-        SystemTime::now(),
-    )
-    .unwrap();
-    let bob_session = session(&server, &phone, workspace.workspace_id).await;
-    let mut presence = Vec::new();
-    receive_until(
-        "Bob is in the workspace",
-        &bob_session,
-        &mut bob_peer,
-        &mut presence,
-        |peer, _| role(peer, phone.device_pubkey()) == Some(collab_types::Role::Editor),
-    )
+    // Bob's copy, from what the host holds; he edits with v1.
+    let mut bob_link = Linked::open(&server, &phone, workspace.workspace_id)
+        .await
+        .expect("the workspace admits Bob's phone");
+    crate::common::receives(&mut bob_link, |peer| {
+        role(peer, phone.device_pubkey()) == Some(collab_types::Role::Editor)
+    })
     .await;
     crate::common::wait_until_subscribed(&server, workspace.workspace_id, &phone.device_pubkey())
         .await;
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "topic", "v1").unwrap();
     doc.commit_edit("fixture", "topic", &phone.cert.user_public_key);
-    let first = bob_peer
-        .publication_mut()
-        .publish_incremental(APP, "", doc.save_after(&[]), &phone.sk, SystemTime::now())
-        .unwrap();
-    publish(&bob_session, &first);
+    bob_link
+        .publish(|peer| {
+            peer.publication_mut().publish_incremental(
+                APP,
+                "",
+                doc.save_after(&[]),
+                &phone.sk,
+                SystemTime::now(),
+            )
+        })
+        .expect("Bob's v1 edit goes out on his link");
     tilo_test_env::within("Bob's v1 edit in the workspace", async {
         while hosted_topic(workspaces, &workspace.workspace)
             .await
@@ -165,59 +160,52 @@ async fn a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_
         .unwrap();
 
     // Bob, still on v1, edits: the workspace holds it.
-    receive_until(
-        "Bob reads the workspace's version",
-        &bob_session,
-        &mut bob_peer,
-        &mut presence,
-        |peer, _| peer.governance().app_version(APP).is_some(),
-    )
+    crate::common::receives(&mut bob_link, |peer| {
+        peer.governance().app_version(APP).is_some()
+    })
     .await;
     let before = doc.get_heads();
     doc.put(ROOT, "topic", "while behind").unwrap();
     doc.commit_edit("fixture", "topic", &phone.cert.user_public_key);
-    let held = bob_peer
-        .publication_mut()
-        .publish_incremental(
-            APP,
-            "",
-            doc.save_after(&before),
-            &phone.sk,
-            SystemTime::now(),
-        )
-        .unwrap();
-    publish(&bob_session, &held);
+    bob_link
+        .publish(|peer| {
+            peer.publication_mut().publish_incremental(
+                APP,
+                "",
+                doc.save_after(&before),
+                &phone.sk,
+                SystemTime::now(),
+            )
+        })
+        .expect("Bob's edit made behind goes out on his link");
 
     // His device follows: the workspace names a file his install lacks.
-    let release = bob_peer.governance().app_version(APP).unwrap().release;
+    let release = bob_link.read(|peer| peer.governance().app_version(APP).unwrap().release);
     let installed = hex::encode([1_u8 ^ 0xff; 32]);
     let wanted = release
         .file_to_fetch(Some(&installed))
         .expect("Bob's v1 is not the workspace's version")
         .to_owned();
     assert_eq!(wanted, file);
-    bob_session
-        .publish_presence(
-            postcard::to_stdvec(&NeighbourMsg::DocumentContentWant {
-                requester: tilo_peer_state::peer_handle(&phone.device_pubkey()),
-                app_id: APP.into(),
-                cluster_id: workspace.workspace.clone(),
-                hash: wanted.clone(),
-                have: Vec::new(),
-            })
-            .unwrap(),
-        )
-        .unwrap();
+    bob_link
+        .send(NeighbourMsg::DocumentContentWant {
+            requester: tilo_peer_state::peer_handle(&phone.device_pubkey()),
+            app_id: APP.into(),
+            cluster_id: workspace.workspace.clone(),
+            hash: wanted.clone(),
+            have: Vec::new(),
+        })
+        .expect("Bob's ask goes out on his link");
     let mut fetched = Vec::new();
     tilo_test_env::within("the workspace hands Bob the package", async {
         while fetched.len() < package.len() {
-            if let Some(Inbound::DocumentContent { frame, .. }) = bob_session.recv().await
-                && let Ok(NeighbourMsg::DocumentContentPiece {
+            if let Some(heard) = bob_link.next().await
+                && let NeighbourMsg::DocumentContentPiece {
                     offset,
                     bytes,
                     hash,
                     ..
-                }) = postcard::from_bytes(&frame)
+                } = heard.message
                 && hash == wanted
                 && offset == fetched.len() as u64
             {
@@ -240,17 +228,17 @@ async fn a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_
 
     // Installed: his device runs v2, and the same edit goes out again.
     BOB_RUNS.store(2, Ordering::SeqCst);
-    let again = bob_peer
-        .publication_mut()
-        .publish_incremental(
-            APP,
-            "",
-            doc.save_after(&before),
-            &phone.sk,
-            SystemTime::now(),
-        )
-        .unwrap();
-    publish(&bob_session, &again);
+    bob_link
+        .publish(|peer| {
+            peer.publication_mut().publish_incremental(
+                APP,
+                "",
+                doc.save_after(&before),
+                &phone.sk,
+                SystemTime::now(),
+            )
+        })
+        .expect("Bob's edit goes out again on his link");
     tilo_test_env::within("Bob's edit made behind is in the workspace", async {
         while hosted_topic(workspaces, &workspace.workspace)
             .await

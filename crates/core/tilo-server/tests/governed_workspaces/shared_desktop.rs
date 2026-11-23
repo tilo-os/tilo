@@ -1,15 +1,15 @@
 //! A workspace's shared desktop through a real server: its members close and
 //! move any of its windows, whoever opened them, but rename no strip someone
 //! else made, which a moderator the workspace made does. A refused write is
-//! neither kept nor forwarded, and a page committing one is told.
+//! neither kept nor forwarded, and a device sending one is told.
 
 use std::time::Duration;
 
 use tilo_desktop_model::layout::{Strip, Tab, TileContent, WindowGroup};
 use tilo_desktop_model::ownership::{Authors, DESKTOP_APP, DESKTOP_DOCUMENT, SharedDesktop};
 use tilo_desktop_model::{Layout, StripId, WindowWidth, Workspace, WorkspaceId, shared_resource};
+use tilo_peer_state::direct::Kept;
 use tilo_server::workspaces::SetMemberRoleRequest;
-use tilo_server::{CoeditPayload, ServerClient};
 
 use super::*;
 
@@ -73,7 +73,7 @@ fn person(user: &TestUser) -> String {
     hex::encode(user.user_pk)
 }
 
-/// The windows on the workspace's desktop as its governor follows them, as
+/// The windows on the workspace's desktop as its host follows them, as
 /// `(tab, group)` in order; empty while it holds none.
 async fn windows(server: &Server, workspace: &str) -> Vec<(u64, u64)> {
     let Some(bytes) = server
@@ -96,7 +96,7 @@ async fn windows(server: &Server, workspace: &str) -> Vec<(u64, u64)> {
         .collect()
 }
 
-/// The name of the strip on the workspace's desktop as its governor follows it.
+/// The name of the strip on the workspace's desktop as its host follows it.
 async fn strip_name(server: &Server, workspace: &str) -> Option<String> {
     let bytes = server
         .workspaces()
@@ -222,77 +222,50 @@ async fn ada_page_probe(server: &Server, device: &TestDevice, workspace: &str) -
     page.write(server, &desktop(&[])).await
 }
 
-/// `device`'s page session in the workspace: connected, subscribed.
-async fn page_client(
-    server: &Server,
-    device: &TestDevice,
-    workspace_id: WorkspaceId,
-) -> ServerClient {
-    let client = ServerClient::connect_to_pinned_host(
-        device_endpoint(device).await,
-        server.node_addr(),
-        device.cert.clone(),
-        device.sk.clone(),
-        RevocationList::new(),
-    )
-    .await
-    .unwrap();
-    client.send(Envelope::Subscribe { workspace_id }).unwrap();
-    tilo_test_env::within("the page's subscription is ready", async {
-        while !matches!(client.recv().await, Some(Envelope::Ready { .. })) {}
-    })
-    .await;
-    client
+/// `device`'s link to the workspace: a page's way in, its own copy of what the workspace holds
+/// and the link its writes travel on.
+async fn page_link(server: &Server, device: &TestDevice, workspace_id: WorkspaceId) -> Linked {
+    Linked::open(server, device, workspace_id)
+        .await
+        .expect("the workspace admits the page's device")
 }
 
-/// Commit `message` as a page does, and the host's answer: `Ok` with its
-/// order, or why it refused.
-pub(super) async fn commit(
-    client: &ServerClient,
-    device: &TestDevice,
-    workspace_id: WorkspaceId,
-    message: &NeighbourMsg,
-) -> Result<u64, String> {
-    let (channel, _) = neighbour_wire::retention(message, false).unwrap();
-    let delta = CoeditPayload::RetainedDelta {
-        channel,
-        body: postcard::to_stdvec(message).unwrap(),
-    }
-    .encode()
-    .unwrap();
-    let op = *blake3::hash(&delta).as_bytes();
-    let op: [u8; 16] = op[..16].try_into().unwrap();
-    client
-        .send(Envelope::Commit {
-            workspace_id,
-            op,
-            author_device_public_key: device.device_pubkey(),
-            authored_at_ns: tilo_clock::unix_now_ns(),
-            delta,
-        })
-        .unwrap();
-    tilo_test_env::within("the host answers the commit", async {
-        let mut seen = Vec::new();
+/// Send `message` as a page does, over `linked`, and what the host made of it: its order once it
+/// keeps the write whole, why it refused it, or nothing while it waits for the rest of a write
+/// that travels in segments.
+async fn commit(linked: &Linked, message: &NeighbourMsg) -> Result<Option<u64>, String> {
+    /// How long one write is given to be answered: a whole write is answered as it is decided,
+    /// and a segment of a larger one only when the segment completes it.
+    const ANSWERED: Duration = Duration::from_secs(2);
+    let write = *blake3::hash(&postcard::to_stdvec(message).unwrap()).as_bytes();
+    // The write's own sequence number, as its signer gave it: each of a page's writes has one of
+    // its own, so an answer naming it is this write's too.
+    let seq = match message {
+        NeighbourMsg::AppDocument { envelope, .. } => Some(envelope.seq),
+        _ => None,
+    };
+    let mut answers = linked.answers();
+    linked.send(message.clone())?;
+    let answered = tokio::time::timeout(ANSWERED, async {
         loop {
-            let Some(envelope) = client.recv().await else {
-                panic!("the session closed after {seen:?}");
-            };
-            seen.push(
-                format!("{envelope:?}")
-                    .chars()
-                    .take(200)
-                    .collect::<String>(),
-            );
-            match envelope {
-                Envelope::Committed { op: acked, seq, .. } if acked == op => return Ok(seq),
-                Envelope::CommitRefused {
-                    op: acked, refusal, ..
-                } if acked == op => return Err(refusal.to_string()),
-                _ => {}
+            match answers.recv().await {
+                Ok(answered) if answered.write == write || Some(answered.seq) == seq => {
+                    return match answered.kept {
+                        Kept::Durable => Ok(Some(answered.seq)),
+                        Kept::Refused { reason } => Err(reason),
+                    };
+                }
+                Ok(_) => {}
+                Err(_) => panic!("the link ended before the host answered the write"),
             }
         }
     })
-    .await
+    .await;
+    match answered {
+        Ok(outcome) => outcome,
+        // No verdict is no refusal: the write waits for what its segments still lack.
+        Err(_) => Ok(None),
+    }
 }
 
 /// Admit `person`'s `device` to `workspace` as `role`.
@@ -379,9 +352,9 @@ async fn members_close_and_move_any_window_and_only_a_moderator_renames_the_stri
     )
     .await;
     let workspace = hosted.workspace_id;
-    let ada_client = page_client(&server, &ada_browser, workspace).await;
-    let ben_client = page_client(&server, &ben_browser, workspace).await;
-    let mo_client = page_client(&server, &mo_browser, workspace).await;
+    let ada_link = page_link(&server, &ada_browser, workspace).await;
+    let ben_link = page_link(&server, &ben_browser, workspace).await;
+    let mut mo_link = page_link(&server, &mo_browser, workspace).await;
     // Mo is made the workspace's moderator while his page is in it.
     server
         .workspaces()
@@ -399,20 +372,9 @@ async fn members_close_and_move_any_window_and_only_a_moderator_renames_the_stri
         .unwrap();
     // His page goes on taking the workspace's changes, live.
     let probe = ada_page_probe(&server, &ada_browser, &hosted.workspace).await;
-    commit(&ada_client, &ada_browser, workspace, &probe)
-        .await
-        .unwrap();
-    tilo_test_env::within("Mo's page takes a change made after his promotion", async {
-        loop {
-            match mo_client.recv().await {
-                Some(Envelope::Delta {
-                    author_device_public_key,
-                    ..
-                }) if author_device_public_key == ada_browser.device_pubkey() => break,
-                Some(_) => {}
-                None => panic!("Mo's page was disconnected by his promotion"),
-            }
-        }
+    let _ = commit(&ada_link, &probe).await.unwrap();
+    crate::common::next(&mut mo_link, |heard| {
+        heard.author == ada_browser.device_pubkey()
     })
     .await;
     // What each page asks before it offers a close on someone else's window.
@@ -451,22 +413,16 @@ async fn members_close_and_move_any_window_and_only_a_moderator_renames_the_stri
     let opens = ada_page
         .write(&server, &desktop(&[(1, 100, a.clone())]))
         .await;
-    commit(&ada_client, &ada_browser, workspace, &opens)
-        .await
-        .unwrap();
+    let _ = commit(&ada_link, &opens).await.unwrap();
     wait_for_windows(&server, &hosted.workspace, &[(1, 100)]).await;
     let both = desktop(&[(1, 100, a.clone()), (2, 200, b.clone())]);
     let opens = ben_page.write(&server, &both).await;
-    commit(&ben_client, &ben_browser, workspace, &opens)
-        .await
-        .unwrap();
+    let _ = commit(&ben_link, &opens).await.unwrap();
     wait_for_windows(&server, &hosted.workspace, &[(1, 100), (2, 200)]).await;
 
     // The strip is the workspace's, not Ada's: she may not rename it.
     let renames = ada_page.write(&server, &named(both.clone(), "Ada's")).await;
-    let refused = commit(&ada_client, &ada_browser, workspace, &renames)
-        .await
-        .unwrap_err();
+    let refused = commit(&ada_link, &renames).await.unwrap_err();
     assert!(refused.contains("may not rename"), "{refused}");
     // Nor through a write large enough to travel in segments: they go on as
     // they come, and the last one, which completes it, is refused, so none
@@ -482,17 +438,13 @@ async fn members_close_and_move_any_window_and_only_a_moderator_renames_the_stri
     assert!(frames.len() > 1, "{} frames", frames.len());
     let (last, first) = frames.split_last().unwrap();
     for frame in first {
-        commit(&ada_client, &ada_browser, workspace, frame)
-            .await
-            .unwrap();
+        let _ = commit(&ada_link, frame).await.unwrap();
     }
-    let refused = commit(&ada_client, &ada_browser, workspace, last)
-        .await
-        .unwrap_err();
+    let refused = commit(&ada_link, last).await.unwrap_err();
     assert!(refused.contains("may not rename"), "{refused}");
-    // Nor may Cy, through a native session's plain delta: it is dropped,
+    // Nor may Cy, through a plain write over his link: it is dropped,
     // and his next write, which is his to make, lands without it.
-    let cy_session = session(&server, &cy_laptop, workspace).await;
+    let cy_link = page_link(&server, &cy_laptop, workspace).await;
     crate::common::wait_until_subscribed(&server, workspace, &cy_laptop.device_pubkey()).await;
     // Both over the same desktop: had the workspace kept the rename, the
     // strip would be renamed beside Cy's new window.
@@ -503,45 +455,43 @@ async fn members_close_and_move_any_window_and_only_a_moderator_renames_the_stri
     ]);
     let cy_opens = cy_page.write(&server, &three).await;
     let cy_renames = cy_page.write(&server, &named(both.clone(), "Cy's")).await;
-    publish(&cy_session, &cy_renames);
-    publish(&cy_session, &cy_opens);
+    cy_link
+        .send(cy_renames)
+        .expect("Cy's refused rename goes out on his link");
+    cy_link
+        .send(cy_opens)
+        .expect("Cy's write goes out on his link");
     wait_for_windows(&server, &hosted.workspace, &[(1, 100), (2, 200), (3, 300)]).await;
     assert_eq!(
         strip_name(&server, &hosted.workspace).await.as_deref(),
         Some("Lounge")
     );
     let cy_closes_his = cy_page.write(&server, &both).await;
-    publish(&cy_session, &cy_closes_his);
+    cy_link
+        .send(cy_closes_his)
+        .expect("Cy's close goes out on his link");
     wait_for_windows(&server, &hosted.workspace, &[(1, 100), (2, 200)]).await;
 
     // The workspace's windows are every member's: Ada moves Ben's window
     // into hers, and closes it.
     let into_hers = desktop(&[(1, 100, a.clone()), (2, 100, b.clone())]);
     let moves = ada_page.write(&server, &into_hers).await;
-    commit(&ada_client, &ada_browser, workspace, &moves)
-        .await
-        .unwrap();
+    let _ = commit(&ada_link, &moves).await.unwrap();
     wait_for_windows(&server, &hosted.workspace, &[(1, 100), (2, 100)]).await;
     let closes = ada_page
         .write(&server, &desktop(&[(1, 100, a.clone())]))
         .await;
-    commit(&ada_client, &ada_browser, workspace, &closes)
-        .await
-        .unwrap();
+    let _ = commit(&ada_link, &closes).await.unwrap();
     wait_for_windows(&server, &hosted.workspace, &[(1, 100)]).await;
 
     // Ben closes Ada's.
     let closes = ben_page.write(&server, &desktop(&[])).await;
-    commit(&ben_client, &ben_browser, workspace, &closes)
-        .await
-        .unwrap();
+    let _ = commit(&ben_link, &closes).await.unwrap();
     wait_for_windows(&server, &hosted.workspace, &[]).await;
 
     // Mo moderates the workspace: he renames its strip.
     let renames = mo_page.write(&server, &named(desktop(&[]), "Mo's")).await;
-    commit(&mo_client, &mo_browser, workspace, &renames)
-        .await
-        .unwrap();
+    let _ = commit(&mo_link, &renames).await.unwrap();
     wait_for_strip_name(&server, &hosted.workspace, "Mo's").await;
     server.shutdown().await;
 }

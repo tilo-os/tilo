@@ -1,153 +1,77 @@
 //! A governed workspace's administration answers as `tilo.workspace` actions over
-//! the server's own remote-action envelope, by the same decision as its wire
-//! entries: the owner's device invites; a member the workspace grants nothing is not
-//! offered the action. The host's own operations answer the same way as
-//! `tilo.host` actions, to the server's own person only, and a member's own
-//! business as `tilo.member` actions.
+//! the device action service, by the same decision as its wire entries: the owner's
+//! device invites; a member the workspace grants nothing is not offered the action. The
+//! host's own operations answer the same way as `tilo.host` actions, to the server's own
+//! person only, and a member's own business as `tilo.member` actions.
+use std::sync::Arc;
+
 use tilo_actions::remote::{
-    ActionCallError, CatalogueQuery, InvokeArgument, InvokeRequest, ReceiptStatus,
-    RemoteActionFrame, RemoteActionMessage, RemoteActionTarget, WORKSPACE_GOVERNANCE_PROVIDER,
+    ActionCallError, ActionProvider, Caller, CatalogueQuery, InvokeArgument, InvokeRequest,
+    ReceiptStatus, RemoteActionMessage, RemoteActionTarget, WORKSPACE_GOVERNANCE_PROVIDER,
     WORKSPACE_INVITATIONS, workspace_governance_child, workspace_governance_resource,
     workspace_member,
 };
 use tilo_actions::{ActionAddress, InvocationId};
-use tilo_server::transport::REMOTE_ACTION_ENVELOPE_VERSION;
+use tilo_peer_state::actions::{ActionService, NoActions, RemoteDevice};
 use tilo_server::workspaces::{HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, LIST_WORKSPACES};
+use tilo_server_client::ServerAddress;
+use tilo_server_client::link::{Dialer, Purpose};
 
 use super::*;
-use tilo_server::WorkspaceId;
 
-/// A session of `device` with the server, subscribed to nothing.
-pub(super) async fn connected(server: &Server, device: &TestDevice) -> ServerClient {
-    ServerClient::connect_to_pinned_host(
-        device_endpoint(device).await,
-        server.node_addr(),
-        device.cert.clone(),
-        device.sk.clone(),
-        RevocationList::new(),
-    )
-    .await
-    .unwrap()
-}
-
-/// A session of `device` subscribed to `workspace_id`.
+/// `device`'s link to the workspace `workspace_id` on `server`: every member device's way
+/// into a workspace it holds.
 pub(super) async fn subscribed(
     server: &Server,
     device: &TestDevice,
     workspace_id: WorkspaceId,
-) -> ServerClient {
-    let client = connected(server, device).await;
-    client.send(Envelope::Subscribe { workspace_id }).unwrap();
-    tilo_test_env::within("the workspace admits the device", async {
-        while !matches!(
-            client.recv().await.expect("the session stays open"),
-            Envelope::Ready { .. }
-        ) {}
-    })
-    .await;
-    client
+) -> Linked {
+    Linked::open(server, device, workspace_id)
+        .await
+        .expect("the workspace admits its own member")
 }
 
-/// Whether `device` is admitted to `workspace_id`: it connects and its
-/// subscription is ready.
-pub(super) async fn admitted(
-    server: &Server,
-    device: &TestDevice,
-    workspace_id: WorkspaceId,
-) -> bool {
-    let Ok(client) = ServerClient::connect_to_pinned_host(
-        device_endpoint(device).await,
-        server.node_addr(),
-        device.cert.clone(),
-        device.sk.clone(),
-        RevocationList::new(),
-    )
-    .await
-    else {
-        return false;
-    };
-    if client.send(Envelope::Subscribe { workspace_id }).is_err() {
-        return false;
-    }
-    tilo_test_env::within("the server answers the subscription", async {
-        loop {
-            match client.recv().await {
-                Some(Envelope::Ready { .. }) => break true,
-                Some(Envelope::NotAuthorised { .. }) | None => break false,
-                Some(_) => {}
-            }
-        }
-    })
-    .await
+/// The host's actions in `workspace`, asked as `device` over the device action service, from
+/// the device's own endpoint: a device with no copy of the workspace asks its host this way, and
+/// one with a copy asks through its link ([`Linked::asking_in`]).
+pub(super) async fn asking(server: &Server, device: &TestDevice, workspace: &str) -> RemoteDevice {
+    let endpoint = device_endpoint(device).await;
+    let dialer = Dialer::from_endpoint(ServerAddress::at(server.node_addr()), endpoint.clone());
+    let link = dialer
+        .link(Purpose::Actions)
+        .await
+        .expect("the host answers its actions link");
+    let service = ActionService::new(device.sk.clone(), Arc::new(NoActions));
+    service.remote_over(Arc::new(link), host_device(server), workspace)
 }
 
-/// What the server answers `message`, sent by `client` to the server's own
-/// device `host` about `workspace_id`, or why it did not.
+/// The device `server` signs as: what an action addressed to it names.
+fn host_device(server: &Server) -> [u8; 32] {
+    server
+        .workspaces()
+        .expect("the server holds workspaces")
+        .host_device()
+}
+
+/// What the server answers `message`, asked over `actions`, or why it did not.
 pub(super) async fn try_ask(
-    client: &ServerClient,
-    host: &TestDevice,
-    workspace_id: WorkspaceId,
+    actions: &RemoteDevice,
     message: RemoteActionMessage,
 ) -> Result<RemoteActionMessage, String> {
-    client
-        .send(Envelope::RemoteAction {
-            workspace_id,
-            version: REMOTE_ACTION_ENVELOPE_VERSION,
-            to_device_public_key: host.device_pubkey(),
-            from_device_public_key: [0; 32],
-            from_user_public_key: [0; 32],
-            frame: RemoteActionFrame::new(message).encode().unwrap(),
-        })
-        .map_err(|_| "the session closed".to_owned())?;
-    tilo_test_env::within("the server answers the action", async {
-        loop {
-            match client.recv().await {
-                Some(Envelope::RemoteAction { frame, .. }) => {
-                    break Ok(RemoteActionFrame::decode(&frame).unwrap().message);
-                }
-                Some(Envelope::RemoteActionUndeliverable { refusal, .. }) => {
-                    break Err(refusal.to_string());
-                }
-                None => break Err("the session closed".to_owned()),
-                Some(_) => {}
-            }
-        }
-    })
+    tilo_test_env::within(
+        "the server answers the action",
+        actions.ask_message(message),
+    )
     .await
+    .ok_or_else(|| "the server did not answer".to_owned())
 }
 
-/// What the server answers `message`, one of its own operations, asked of it
-/// directly by `client`.
-pub(super) async fn ask_host_of(
-    client: &ServerClient,
-    message: RemoteActionMessage,
-) -> RemoteActionMessage {
-    client
-        .send(Envelope::HostAction {
-            frame: RemoteActionFrame::new(message).encode().unwrap(),
-        })
-        .unwrap();
-    tilo_test_env::within("the server answers its own operation", async {
-        loop {
-            if let Envelope::HostAction { frame } =
-                client.recv().await.expect("the session stays open")
-            {
-                break RemoteActionFrame::decode(&frame).unwrap().message;
-            }
-        }
-    })
-    .await
-}
-
-/// What the server answers `message`, sent by `client` to the server's own
-/// device `host` about `workspace_id`.
+/// What the server answers `message`, sent over `actions`.
 pub(super) async fn ask(
-    client: &ServerClient,
-    host: &TestDevice,
-    workspace_id: WorkspaceId,
+    actions: &RemoteDevice,
     message: RemoteActionMessage,
 ) -> RemoteActionMessage {
-    try_ask(client, host, workspace_id, message)
+    try_ask(actions, message)
         .await
         .unwrap_or_else(|reason| panic!("the server did not answer: {reason}"))
 }
@@ -203,15 +127,43 @@ pub(super) fn outcome(answer: RemoteActionMessage) -> Result<serde_json::Value, 
     }
 }
 
-/// What the server produced for the host operation `action` with
-/// `argument`, asked of it by `client`, read as `T`.
+/// What the server produced for the host operation `action` with `argument`, asked of it by
+/// `device` over `actions`, read as `T`. The host answers an operation that names no workspace
+/// through what the request itself proves, so `device` signs it.
 pub(super) async fn host_action<T: serde::de::DeserializeOwned>(
-    client: &ServerClient,
+    actions: &RemoteDevice,
+    device: &TestDevice,
     action: &str,
     argument: serde_json::Value,
 ) -> T {
-    let answer = ask_host_of(client, host_operation(action, argument)).await;
-    serde_json::from_value(outcome(answer).unwrap()).unwrap()
+    let RemoteActionMessage::Invoke(mut request) = host_operation(action, argument) else {
+        panic!("a host operation is one invocation");
+    };
+    request.signed = None;
+    request.signed = Some(Box::new(
+        tilo_server_protocol::invocation::sign_invocation_now(
+            "",
+            &request,
+            &device.cert,
+            &device.sk,
+            tilo_clock::unix_now_ns(),
+        )
+        .expect("the device signs its own request"),
+    ));
+    let caller = Caller::authenticated(device.cert.user_public_key, device.device_pubkey());
+    let receipt = tilo_test_env::within(
+        "the host answers its own operation",
+        ActionProvider::invoke(actions, &caller, request),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("the host refused its own operation: {error}"));
+    let ReceiptStatus::Completed { output } = receipt.status else {
+        panic!(
+            "the host's own operations complete at once: {:?}",
+            receipt.status
+        );
+    };
+    serde_json::from_value(output.value.unwrap_or_default()).unwrap()
 }
 
 fn invite(workspace: &str) -> RemoteActionMessage {
@@ -251,13 +203,12 @@ async fn the_owner_invites_through_the_workspaces_action_and_an_editor_cannot() 
     // Alice's laptop invites through the action: the workspace records it, as
     // the administration entry would have.
     let owner = subscribed(&server, &laptop, workspace.workspace_id).await;
-    let RemoteActionMessage::Receipt(receipt) = ask(
-        &owner,
-        &host,
-        workspace.workspace_id,
-        invite(&workspace.workspace),
-    )
-    .await
+    let owner_actions = owner
+        .asking_in(&workspace.workspace)
+        .await
+        .expect("the host answers its actions link");
+    let RemoteActionMessage::Receipt(receipt) =
+        ask(&owner_actions, invite(&workspace.workspace)).await
     else {
         panic!("an invocation is answered with a receipt");
     };
@@ -276,9 +227,7 @@ async fn the_owner_invites_through_the_workspaces_action_and_an_editor_cannot() 
 
     // The workspace offers invitations on its invitations resource.
     let RemoteActionMessage::CatalogueResponse { result, .. } = ask(
-        &owner,
-        &host,
-        workspace.workspace_id,
+        &owner_actions,
         RemoteActionMessage::CatalogueRequest {
             correlation: 1,
             query: CatalogueQuery {
@@ -307,13 +256,12 @@ async fn the_owner_invites_through_the_workspaces_action_and_an_editor_cannot() 
 
     // Bob, an Editor the workspace grants nothing, is not offered it.
     let member = subscribed(&server, &phone, workspace.workspace_id).await;
-    let RemoteActionMessage::Receipt(receipt) = ask(
-        &member,
-        &host,
-        workspace.workspace_id,
-        invite(&workspace.workspace),
-    )
-    .await
+    let member_actions = member
+        .asking_in(&workspace.workspace)
+        .await
+        .expect("the host answers its actions link");
+    let RemoteActionMessage::Receipt(receipt) =
+        ask(&member_actions, invite(&workspace.workspace)).await
     else {
         panic!("an invocation is answered with a receipt");
     };
@@ -339,9 +287,10 @@ async fn the_servers_person_shares_through_its_host_actions_and_a_member_cannot(
     // Before it holds any workspace, Alice's laptop asks her server directly: it
     // creates the workspace with Bob's invitation, finds it listed and enters it,
     // answered the invitation it redeems itself.
-    let home = connected(&server, &laptop).await;
+    let home = asking(&server, &laptop, "").await;
     let created: CreatedWorkspace = host_action(
         &home,
+        &laptop,
         CREATE_WORKSPACE,
         serde_json::json!({
             "name": "Design review",
@@ -352,7 +301,7 @@ async fn the_servers_person_shares_through_its_host_actions_and_a_member_cannot(
     .await;
     assert_eq!(created.workspace.name, "Design review");
     let listed: Vec<WorkspaceListing> =
-        host_action(&home, LIST_WORKSPACES, serde_json::json!({})).await;
+        host_action(&home, &laptop, LIST_WORKSPACES, serde_json::json!({})).await;
     assert!(
         listed
             .iter()
@@ -360,6 +309,7 @@ async fn the_servers_person_shares_through_its_host_actions_and_a_member_cannot(
     );
     let entered: EnteredWorkspace = host_action(
         &home,
+        &laptop,
         ENTER_WORKSPACE,
         serde_json::json!({ "workspace": created.workspace.workspace }),
     )
@@ -397,6 +347,10 @@ async fn the_servers_person_shares_through_its_host_actions_and_a_member_cannot(
         .unwrap();
     let workspace = created.workspace.workspace_id;
     let member = subscribed(&server, &phone, workspace).await;
+    let member_actions = member
+        .asking_in(&created.workspace.workspace)
+        .await
+        .expect("the host answers its actions link");
     for (action, argument) in [
         (LIST_WORKSPACES, serde_json::json!({})),
         (CREATE_WORKSPACE, serde_json::json!({ "name": "Bob's" })),
@@ -405,14 +359,13 @@ async fn the_servers_person_shares_through_its_host_actions_and_a_member_cannot(
             serde_json::json!({ "workspace": created.workspace.workspace }),
         ),
     ] {
-        assert_eq!(
-            outcome(ask_host_of(&member, host_operation(action, argument)).await),
-            Err(ActionCallError::UnknownAction),
-            "{action}"
+        assert!(
+            outcome(ask(&member_actions, host_operation(action, argument)).await).is_err(),
+            "{action} ran for a member"
         );
     }
-    let RemoteActionMessage::CatalogueResponse { result, .. } = ask_host_of(
-        &member,
+    let RemoteActionMessage::CatalogueResponse { result, .. } = ask(
+        &member_actions,
         RemoteActionMessage::CatalogueRequest {
             correlation: 2,
             query: CatalogueQuery {
@@ -427,6 +380,7 @@ async fn the_servers_person_shares_through_its_host_actions_and_a_member_cannot(
     };
     assert!(result.unwrap().rows.is_empty());
     assert_eq!(server.workspaces().unwrap().list().await.len(), 1);
+    drop(member);
     server.shutdown().await;
 }
 
@@ -446,16 +400,18 @@ async fn the_owner_removes_a_member_whose_next_session_is_refused() {
         .await
         .unwrap();
     super::members::admit(&server, &host, &phone, &workspace.workspace).await;
-    assert!(admitted(&server, &phone, workspace.workspace_id).await);
+    let phone_link = subscribed(&server, &phone, workspace.workspace_id).await;
 
     // Removing is published on the person it removes, and answers the people left.
     let owner = subscribed(&server, &laptop, workspace.workspace_id).await;
+    let owner_actions = owner
+        .asking_in(&workspace.workspace)
+        .await
+        .expect("the host answers its actions link");
     let bob_hex = hex::encode(bob.user_pk);
     let removed = outcome(
         ask(
-            &owner,
-            &host,
-            workspace.workspace_id,
+            &owner_actions,
             invocation(
                 WORKSPACE_GOVERNANCE_PROVIDER,
                 workspace_member(&workspace.workspace, &bob_hex),
@@ -472,7 +428,13 @@ async fn the_owner_removes_a_member_whose_next_session_is_refused() {
             .is_some_and(|people| people.iter().all(|row| row["member"]["person"] != bob_hex)),
         "{removed}"
     );
-    assert!(!admitted(&server, &phone, workspace.workspace_id).await);
+    assert!(
+        phone_link
+            .reopen(&server, workspace.workspace_id)
+            .await
+            .is_err(),
+        "a removed member's next link is refused"
+    );
     drop(owner);
     server.shutdown().await;
 }

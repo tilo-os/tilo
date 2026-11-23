@@ -1,10 +1,12 @@
 //! A device revoked by its person's root, announced in a governed workspace by
 //! another device of that person, stops at the server: it is admitted to no
 //! workspace the server governs, administers none of them, and every member's
-//! replica refuses it from the workspace's governance.
+//! copy refuses it from the workspace's governance.
 use ed25519_dalek::SigningKey;
-use governance_actions::{admitted, connected, host_action};
+use governance_actions::{asking, host_action};
 use tilo_server::workspaces::ENTER_WORKSPACE;
+use tilo_server_client::ServerAddress;
+use tilo_server_client::link::{Dialer, Purpose};
 use tilo_user_identity::{
     CERTIFICATION_SCHEMA_VERSION, CertificationRequest, RevocationEntry, RevocationReason,
     issue_device_cert_as_stand_in, sign_revocation_entry,
@@ -34,9 +36,10 @@ fn hello(device: &TestDevice, revocations: Vec<RevocationEntry>) -> NeighbourMsg
 }
 
 async fn enter(server: &Server, device: &TestDevice, workspace: &str) {
-    let home = connected(server, device).await;
+    let home = asking(server, device, "").await;
     let _: EnteredWorkspace = host_action(
         &home,
+        device,
         ENTER_WORKSPACE,
         serde_json::json!({ "workspace": workspace }),
     )
@@ -44,7 +47,7 @@ async fn enter(server: &Server, device: &TestDevice, workspace: &str) {
 }
 
 /// `device` of `person` redeems an editor's invitation to `workspace` that
-/// `issuer` issues, and builds its replica from the bootstrap.
+/// `issuer` issues, and holds what its join alone gave it.
 async fn join(
     server: &Server,
     issuer: &TestDevice,
@@ -91,18 +94,33 @@ async fn join(
     peer
 }
 
-async fn until_refused(
-    what: &str,
-    server: &Server,
-    device: &TestDevice,
-    workspace_id: WorkspaceId,
-) {
+/// Whether `linked`'s device is admitted to `workspace_id`: a link opens from its own
+/// device's endpoint, or the host refuses it.
+async fn admitted(linked: &Linked, server: &Server, workspace_id: WorkspaceId) -> bool {
+    linked.reopen(server, workspace_id).await.is_ok()
+}
+
+/// Wait until `linked`'s device is refused `workspace_id`.
+async fn until_refused(what: &str, link: &Linked, server: &Server, workspace_id: WorkspaceId) {
     tilo_test_env::within(what, async {
-        while admitted(server, device, workspace_id).await {
-            tokio::task::yield_now().await;
+        while admitted(link, server, workspace_id).await {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     })
     .await;
+}
+
+/// Whether `device` reaches its server at all: the member handshake every link starts with,
+/// which the server's own revocation log decides before any workspace's roster.
+async fn reaches(server: &Server, device: &TestDevice, host: &TestDevice) -> bool {
+    let endpoint = device_endpoint(device).await;
+    let dialer = Dialer::from_endpoint(ServerAddress::at(server.node_addr()), endpoint);
+    let Ok(link) = dialer.link(Purpose::Records).await else {
+        return false;
+    };
+    link.prove_member(&device.cert, &device.sk, &host.cert)
+        .await
+        .is_ok()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -123,31 +141,49 @@ async fn a_revocation_announced_in_one_workspace_reaches_the_server_and_every_wo
     let plans = create_and_enter(&server, &laptop, "Plans").await;
     let other = create_and_enter(&server, &laptop, "Other").await;
     enter(&server, &phone, &plans.workspace).await;
-    let mut tablet_peer = join(&server, &laptop, &plans.workspace, &bob, &tablet).await;
-    join(&server, &laptop, &plans.workspace, &bob, &bob_laptop).await;
-    for workspace in [plans.workspace_id, other.workspace_id] {
-        assert!(admitted(&server, &laptop, workspace).await);
+    let tablet_copy = join(&server, &laptop, &plans.workspace, &bob, &tablet).await;
+    let bob_laptop_copy = join(&server, &laptop, &plans.workspace, &bob, &bob_laptop).await;
+    let mut tablet_link = Linked::open_seeded(&server, &tablet, plans.workspace_id, tablet_copy)
+        .await
+        .expect("Plans admits Bob's tablet");
+    let bob_laptop_link =
+        Linked::open_seeded(&server, &bob_laptop, plans.workspace_id, bob_laptop_copy)
+            .await
+            .expect("Plans admits Bob's laptop");
+    let phone_link = Linked::open(&server, &phone, plans.workspace_id)
+        .await
+        .expect("Plans admits Alice's phone");
+    let laptop_plans = Linked::open(&server, &laptop, plans.workspace_id)
+        .await
+        .expect("Plans admits Alice's laptop");
+    let laptop_other = laptop_plans
+        .reopen(&server, other.workspace_id)
+        .await
+        .expect("Other admits Alice's laptop");
+    for (link, workspace_id) in [
+        (&laptop_plans, plans.workspace_id),
+        (&laptop_other, other.workspace_id),
+    ] {
+        assert!(admitted(link, &server, workspace_id).await);
     }
-    assert!(admitted(&server, &bob_laptop, plans.workspace_id).await);
+    assert!(admitted(&bob_laptop_link, &server, plans.workspace_id).await);
 
     // Alice's laptop is stolen. Her root revokes it, and her phone says so in
     // the workspace it shares with the server.
-    let phone_session = session(&server, &phone, plans.workspace_id).await;
-    publish(
-        &phone_session,
-        &hello(&phone, vec![revoke(&alice, &laptop)]),
-    );
+    phone_link
+        .send(hello(&phone, vec![revoke(&alice, &laptop)]))
+        .expect("the phone's revocation goes out on its link");
 
     // The server admits the laptop to none of its workspaces and lets it
     // administer none of them.
     until_refused(
         "the server stops admitting the revoked laptop",
+        &laptop_plans,
         &server,
-        &laptop,
         plans.workspace_id,
     )
     .await;
-    assert!(!admitted(&server, &laptop, other.workspace_id).await);
+    assert!(!admitted(&laptop_other, &server, other.workspace_id).await);
     assert!(
         server
             .workspaces()
@@ -169,47 +205,53 @@ async fn a_revocation_announced_in_one_workspace_reaches_the_server_and_every_wo
         "a revoked device administers no workspace"
     );
 
-    // Bob's replica refuses the laptop from the workspace's own governance.
-    let tablet_session = session(&server, &tablet, plans.workspace_id).await;
-    let mut seen = Vec::new();
-    receive_until(
-        "Bob's replica refuses the revoked laptop",
-        &tablet_session,
-        &mut tablet_peer,
-        &mut seen,
-        |peer, _| {
-            peer.permissions(laptop.device_pubkey(), SystemTime::now())
-                .is_err()
-        },
-    )
+    // Bob's copy refuses the laptop from the workspace's own governance.
+    crate::common::receives(&mut tablet_link, |peer| {
+        peer.permissions(laptop.device_pubkey(), SystemTime::now())
+            .is_err()
+    })
     .await;
 
     // A member's own root revokes one of its devices the same way.
-    publish(
-        &tablet_session,
-        &hello(&tablet, vec![revoke(&bob, &bob_laptop)]),
-    );
+    tablet_link
+        .send(hello(&tablet, vec![revoke(&bob, &bob_laptop)]))
+        .expect("Bob's revocation goes out on his tablet's link");
     until_refused(
         "the server stops admitting Bob's revoked laptop",
+        &bob_laptop_link,
         &server,
-        &bob_laptop,
         plans.workspace_id,
     )
     .await;
-    assert!(admitted(&server, &tablet, plans.workspace_id).await);
+    assert!(admitted(&tablet_link, &server, plans.workspace_id).await);
 
     // The revocations survive a restart of the server.
-    phone_session.close().await;
-    tablet_session.close().await;
+    drop(phone_link);
+    drop(tablet_link);
+    drop(bob_laptop_link);
+    drop(laptop_plans);
+    drop(laptop_other);
     server.shutdown().await;
     let server = start(state.path(), &alice, &host).await;
-    assert!(!admitted(&server, &laptop, other.workspace_id).await);
-    assert!(!admitted(&server, &bob_laptop, plans.workspace_id).await);
-    assert!(admitted(&server, &phone, plans.workspace_id).await);
+    assert!(
+        Linked::open(&server, &laptop, other.workspace_id)
+            .await
+            .is_err()
+    );
+    assert!(
+        Linked::open(&server, &bob_laptop, plans.workspace_id)
+            .await
+            .is_err()
+    );
+    assert!(
+        Linked::open(&server, &phone, plans.workspace_id)
+            .await
+            .is_ok()
+    );
     server.shutdown().await;
 }
 
-/// A revocation written into a workspace reaches a session that is already
+/// A revocation written into a workspace reaches a link that is already
 /// open and ends it, with nothing polling for it: the write itself wakes what
 /// applies it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -223,21 +265,24 @@ async fn a_revocation_announced_in_a_workspace_closes_a_connected_session() {
     let plans = create_and_enter(&server, &laptop, "Plans").await;
     enter(&server, &phone, &plans.workspace).await;
 
-    // The laptop is connected when the revocation is announced.
-    let laptop_session = session(&server, &laptop, plans.workspace_id).await;
-    let phone_session = session(&server, &phone, plans.workspace_id).await;
-    publish(
-        &phone_session,
-        &hello(&phone, vec![revoke(&alice, &laptop)]),
-    );
+    // The laptop is linked when the revocation is announced.
+    let mut laptop_link = Linked::open(&server, &laptop, plans.workspace_id)
+        .await
+        .expect("Plans admits Alice's laptop");
+    let phone_link = Linked::open(&server, &phone, plans.workspace_id)
+        .await
+        .expect("Plans admits Alice's phone");
+    phone_link
+        .send(hello(&phone, vec![revoke(&alice, &laptop)]))
+        .expect("the phone's revocation goes out on its link");
 
-    // Its session ends as the write takes effect; no timer drove it.
-    tilo_test_env::within("the revoked laptop's session to end", async {
-        while laptop_session.recv().await.is_some() {}
+    // Its link ends as the write takes effect; no timer drove it.
+    tilo_test_env::within("the revoked laptop's link to end", async {
+        let _ended = laptop_link.closed().await;
     })
     .await;
 
-    phone_session.close().await;
+    drop(phone_link);
     server.shutdown().await;
 }
 
@@ -313,8 +358,12 @@ async fn a_stand_in_revoked_in_a_workspace_is_refused_by_what_it_signs_after() {
         signature: [0; 64],
     };
     sign_revocation_entry(&mut revocation, &bob.user_sk).unwrap();
-    let tablet_session = session(&server, &tablet, plans.workspace_id).await;
-    publish(&tablet_session, &hello(&tablet, vec![revocation.clone()]));
+    let tablet_link = Linked::open(&server, &tablet, plans.workspace_id)
+        .await
+        .expect("Plans admits Bob's tablet");
+    tablet_link
+        .send(hello(&tablet, vec![revocation.clone()]))
+        .expect("Bob's revocation goes out on his tablet's link");
 
     // The server's revocation log holds it: the list every handshake and every
     // approval this host makes reads, and a restart reads again.
@@ -356,7 +405,7 @@ async fn a_stand_in_revoked_in_a_workspace_is_refused_by_what_it_signs_after() {
         "and so is a device it signs after the revocation"
     );
 
-    tablet_session.close().await;
+    drop(tablet_link);
     server.shutdown().await;
 }
 
@@ -374,22 +423,10 @@ async fn every_revocation_is_refused_after_a_restart() {
     let state = tempfile::tempdir().unwrap();
     let server = start(state.path(), &alice, &host).await;
     let plans = create_and_enter(&server, &laptop, "Plans").await;
-    let connects = |server: &Server| {
-        let server_addr = server.node_addr();
-        let phone = &phone;
-        async move {
-            ServerClient::connect_to_pinned_host(
-                device_endpoint(phone).await,
-                server_addr,
-                phone.cert.clone(),
-                phone.sk.clone(),
-                RevocationList::new(),
-            )
-            .await
-            .is_ok()
-        }
-    };
-    assert!(connects(&server).await, "the phone reaches its server");
+    assert!(
+        reaches(&server, &phone, &host).await,
+        "the phone reaches its server"
+    );
 
     let mut revoked = (0..5000_u32)
         .map(|n| {
@@ -407,8 +444,12 @@ async fn every_revocation_is_refused_after_a_restart() {
         })
         .collect::<Vec<_>>();
     revoked.push(revoke(&alice, &phone));
-    let laptop_session = session(&server, &laptop, plans.workspace_id).await;
-    publish(&laptop_session, &hello(&laptop, revoked.clone()));
+    let laptop_link = Linked::open(&server, &laptop, plans.workspace_id)
+        .await
+        .expect("Plans admits Alice's laptop");
+    laptop_link
+        .send(hello(&laptop, revoked.clone()))
+        .expect("the laptop's revocations go out on its link");
     tilo_test_env::within("the server keeps every revocation", async {
         while tilo_server::workspace_files::load_revocations(state.path())
             .map_or(0, |entries| entries.len())
@@ -418,7 +459,7 @@ async fn every_revocation_is_refused_after_a_restart() {
         }
     })
     .await;
-    laptop_session.close().await;
+    drop(laptop_link);
     server.shutdown().await;
 
     // The daemon starts from the identity its log refuses.
@@ -451,9 +492,13 @@ async fn every_revocation_is_refused_after_a_restart() {
     .await
     .unwrap();
     assert!(
-        !connects(&server).await,
+        !reaches(&server, &phone, &host).await,
         "the phone, revoked past the old log's workspace, is refused after the restart"
     );
-    assert!(admitted(&server, &laptop, plans.workspace_id).await);
+    assert!(
+        Linked::open(&server, &laptop, plans.workspace_id)
+            .await
+            .is_ok()
+    );
     server.shutdown().await;
 }

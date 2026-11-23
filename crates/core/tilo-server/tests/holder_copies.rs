@@ -3,12 +3,32 @@
 //! member's help, and every holder says which of them is short of what
 //! until it has.
 
-use tilo_peer_state::{CopyPolicy, CopyRole, CopyStatus, Missing, Shortfall};
-use tilo_server::Envelope;
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
+
+use std::time::Duration;
+
+use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
+use tilo_actions::InvocationId;
+use tilo_actions::remote::{
+    ActionCallError, CatalogueQuery, InvokeArgument, InvokeRequest, ReceiptStatus,
+    RemoteActionMessage, RemoteActionTarget, WORKSPACE_GOVERNANCE_PROVIDER,
+    workspace_governance_child, workspace_governance_resource,
+};
+use tilo_peer_state::actions::RemoteDevice;
+use tilo_peer_state::{CopyPolicy, CopyRole, CopyStatus, Missing, Shortfall, StatePeer};
+use tilo_server::workspaces::WorkspaceSummary;
 use tilo_server_protocol::WorkSetting;
 use tilo_user_identity::DeviceCapabilities;
 
-use crate::common::{Hosted, TestUser, receives, serve_in, serve_on, session_to};
+use crate::common::{Hosted, Linked, TestDevice, TestUser, receives, serve_in, serve_on};
+use tilo_server::WorkspaceId;
+
+/// The app the tests write records in. Each step writes a record of its own, so a change is read
+/// back as the one that step made.
+const APP: &str = "test.app";
 
 /// Where `holder` says `workspace`'s copies stand, once `done` holds of it.
 async fn copies_once(
@@ -30,6 +50,53 @@ async fn copies_once(
     .await
 }
 
+/// Write `body` into `record` as `device`, through `linked`.
+fn write(linked: &Linked, device: &TestDevice, record: &str, body: &str) -> Result<(), String> {
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "body", body).unwrap();
+    let bytes = doc.save();
+    linked
+        .publish(|peer| {
+            peer.publication_mut().publish_document(
+                APP,
+                record,
+                bytes,
+                &device.sk,
+                std::time::SystemTime::now(),
+            )
+        })
+        .map(|_| ())
+}
+
+/// Whether the record `bytes` carries `body`.
+fn says(bytes: &[u8], body: &str) -> bool {
+    AutoCommit::load(bytes).is_ok_and(|doc| {
+        doc.get(ROOT, "body")
+            .ok()
+            .flatten()
+            .is_some_and(|(said, _)| said.to_str() == Some(body))
+    })
+}
+
+/// Whether `peer`'s copy of `record` carries `body`.
+fn copy_says(peer: &StatePeer, record: &str, body: &str) -> bool {
+    peer.document(APP, record)
+        .is_some_and(|bytes| says(&bytes, body))
+}
+
+/// Wait until `hosted` admits `device` to `workspace`: the link it opens.
+async fn member_at(hosted: &Hosted, device: &TestDevice, workspace: WorkspaceId) -> Linked {
+    tilo_test_env::within("the host admits the member", async {
+        loop {
+            if let Ok(linked) = Linked::open_hosted(hosted, device, workspace).await {
+                return linked;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+}
+
 /// Three holders keep a workspace that wants three key holders. One goes
 /// away while a member writes through another: the others say it lacks what
 /// was written since it went, and that the workspace keeps one key holder
@@ -37,7 +104,7 @@ async fn copies_once(
 /// holders by itself: a member that reaches only it gets what was written
 /// meanwhile, and every holder says nothing falls short any more.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[expect(
+#[allow(
     clippy::too_many_lines,
     reason = "one scenario: the holders, the outage and the return stay together"
 )]
@@ -104,21 +171,8 @@ async fn a_holder_away_during_writes_catches_up_and_the_shortfall_clears() {
 
     let away = server.device_pubkey();
     let state = holders[2].take().unwrap().stop_keeping().await;
-    let on_laptop = session_to(&alice, &phone, holders[0].as_ref().unwrap()).await;
-    on_laptop
-        .send(Envelope::Subscribe {
-            workspace_id: workspace.workspace_id,
-        })
-        .unwrap();
-    on_laptop
-        .send(Envelope::Delta {
-            workspace_id: workspace.workspace_id,
-            author_device_public_key: phone.device_pubkey(),
-            authored_at_ns: 1,
-            delta: b"while the server was away".to_vec(),
-            signature: [0; 64],
-        })
-        .unwrap();
+    let on_laptop = member_at(holders[0].as_ref().unwrap(), &phone, workspace.workspace_id).await;
+    write(&on_laptop, &phone, "note:away", "while the server was away").unwrap();
     for holder in holders.iter().flatten() {
         let status = copies_once(
             holder,
@@ -151,13 +205,16 @@ async fn a_holder_away_during_writes_catches_up_and_the_shortfall_clears() {
     }
 
     holders[2] = Some(serve_in(&alice, &server, settings[2].clone(), state).await);
-    let on_server = session_to(&alice, &tablet, holders[2].as_ref().unwrap()).await;
-    on_server
-        .send(Envelope::Subscribe {
-            workspace_id: workspace.workspace_id,
-        })
-        .unwrap();
-    receives(&on_server, b"while the server was away").await;
+    let mut on_server = member_at(
+        holders[2].as_ref().unwrap(),
+        &tablet,
+        workspace.workspace_id,
+    )
+    .await;
+    receives(&mut on_server, |peer| {
+        copy_says(peer, "note:away", "while the server was away")
+    })
+    .await;
     for holder in holders.iter().flatten() {
         copies_once(
             holder,
@@ -241,57 +298,20 @@ async fn the_server_a_workspace_was_made_on_is_named_among_its_holders() {
     within("the server it was made on stops", made_on.stop()).await;
 }
 
-/// What `host` answers `message` about `workspace` with, asked by `client`.
-async fn ask(
-    client: &tilo_server::ServerClient,
-    host: &crate::common::TestDevice,
-    workspace: &tilo_server_protocol::workspaces::WorkspaceSummary,
-    message: tilo_actions::remote::RemoteActionMessage,
-) -> tilo_actions::remote::RemoteActionMessage {
-    use tilo_actions::remote::RemoteActionFrame;
-    client
-        .send(Envelope::RemoteAction {
-            workspace_id: workspace.workspace_id,
-            version: tilo_server::transport::REMOTE_ACTION_ENVELOPE_VERSION,
-            to_device_public_key: host.device_pubkey(),
-            from_device_public_key: [0; 32],
-            from_user_public_key: [0; 32],
-            frame: RemoteActionFrame::new(message).encode().unwrap(),
-        })
-        .unwrap();
-    tilo_test_env::within("the holder answers", async {
-        loop {
-            match client.recv().await.expect("the session stays open") {
-                Envelope::RemoteAction { frame, .. } => {
-                    break RemoteActionFrame::decode(&frame).unwrap().message;
-                }
-                Envelope::RemoteActionUndeliverable { refusal, .. } => {
-                    panic!("the action was not delivered: {refusal}")
-                }
-                _ => {}
-            }
-        }
-    })
-    .await
+/// What the holder answers `message` on `actions`, the link its asker holds to it.
+async fn ask(actions: &RemoteDevice, message: RemoteActionMessage) -> RemoteActionMessage {
+    tilo_test_env::within("the holder answers", actions.ask_message(message))
+        .await
+        .expect("the holder answers")
+        .expect("the holder answers the request")
 }
 
-/// The ids of the actions `host` offers `client` on `workspace`'s resource
+/// The ids of the actions the holder offers on `workspace`'s resource
 /// `child` of its governance tree: what a path such as `workspace/servers`
 /// is found among.
-async fn offered(
-    client: &tilo_server::ServerClient,
-    host: &crate::common::TestDevice,
-    workspace: &tilo_server_protocol::workspaces::WorkspaceSummary,
-    child: &str,
-) -> Vec<String> {
-    use tilo_actions::remote::{
-        CatalogueQuery, RemoteActionMessage, WORKSPACE_GOVERNANCE_PROVIDER,
-        workspace_governance_child, workspace_governance_resource,
-    };
+async fn offered(actions: &RemoteDevice, workspace: &WorkspaceSummary, child: &str) -> Vec<String> {
     let RemoteActionMessage::CatalogueResponse { result, .. } = ask(
-        client,
-        host,
-        workspace,
+        actions,
         RemoteActionMessage::CatalogueRequest {
             correlation: 1,
             query: CatalogueQuery {
@@ -315,23 +335,18 @@ async fn offered(
         .collect()
 }
 
-/// What `host` answers `action` of `workspace`'s governance with `argument`,
-/// asked by `client`.
+/// What the holder answers `action` of `workspace`'s governance with `argument`.
 async fn govern(
-    client: &tilo_server::ServerClient,
-    host: &crate::common::TestDevice,
-    workspace: &tilo_server_protocol::workspaces::WorkspaceSummary,
+    actions: &RemoteDevice,
+    workspace: &WorkspaceSummary,
     action: &str,
     argument: serde_json::Value,
-) -> Result<serde_json::Value, tilo_actions::remote::ActionCallError> {
-    use tilo_actions::remote::{
-        InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
-    };
+) -> Result<serde_json::Value, ActionCallError> {
     let serde_json::Value::Object(argument) = argument else {
         panic!("arguments are an object");
     };
     let message = RemoteActionMessage::Invoke(InvokeRequest {
-        invocation: tilo_actions::InvocationId::new(),
+        invocation: InvocationId::new(),
         target: RemoteActionTarget::workspace_governance(&workspace.workspace, action),
         argument: InvokeArgument::Json(argument),
         context: None,
@@ -342,7 +357,7 @@ async fn govern(
         appearance: None,
         signed: None,
     });
-    let RemoteActionMessage::Receipt(receipt) = ask(client, host, workspace, message).await else {
+    let RemoteActionMessage::Receipt(receipt) = ask(actions, message).await else {
         panic!("an invocation is answered with a receipt");
     };
     match receipt.status {
@@ -361,7 +376,7 @@ async fn govern(
 /// stopped one out; the second then keeps the workspace alone and makes its
 /// base.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[expect(
+#[allow(
     clippy::too_many_lines,
     reason = "one story: the old build's grant, the hand-over, the stop and the owner's take-out"
 )]
@@ -425,26 +440,11 @@ async fn the_owner_takes_a_stopped_server_out_through_the_one_that_remains() {
     )
     .await
     .unwrap();
-    let client = tilo_server::ServerClient::connect_to_pinned_host(
-        crate::common::device_endpoint(&key).await,
-        remains.host.node_addr(),
-        key.cert.clone(),
-        key.sk.clone(),
-        tilo_user_identity::RevocationList::new(),
-    )
-    .await
-    .unwrap();
-    client
-        .send(Envelope::Subscribe {
-            workspace_id: workspace.workspace_id,
-        })
-        .unwrap();
-    within("the remaining server admits the owner's key", async {
+    let key_link = within("the remaining server admits the owner's key", async {
         loop {
-            match client.recv().await.expect("the session stays open") {
-                Envelope::Ready { .. } => break,
-                Envelope::NotAuthorised { .. } => panic!("the owner's key was not admitted"),
-                _ => {}
+            match Linked::open_hosted(&remains, &key, workspace.workspace_id).await {
+                Ok(linked) => break linked,
+                Err(_) => tokio::time::sleep(Duration::from_millis(20)).await,
             }
         }
     })
@@ -465,7 +465,7 @@ async fn the_owner_takes_a_stopped_server_out_through_the_one_that_remains() {
     // The workspace is still the server's, kept for Alice: its servers are
     // offered to her all the same, at the path she finds them by, or she
     // never reaches the choice that makes it hers.
-    let servers = offered(&client, &main, &workspace, "servers").await;
+    let servers = offered(&key_link.actions, &workspace, "servers").await;
     for action in ["list", "remove"] {
         assert!(
             servers.iter().any(|offered| offered == action),
@@ -473,8 +473,7 @@ async fn the_owner_takes_a_stopped_server_out_through_the_one_that_remains() {
         );
     }
     let listed = govern(
-        &client,
-        &main,
+        &key_link.actions,
         &workspace,
         "server.list",
         serde_json::json!({}),
@@ -489,8 +488,7 @@ async fn the_owner_takes_a_stopped_server_out_through_the_one_that_remains() {
         "choosing its servers, the person it is kept for owns it"
     );
     let removed = govern(
-        &client,
-        &main,
+        &key_link.actions,
         &workspace,
         "server.remove",
         serde_json::json!({ "server": old_key }),
@@ -520,6 +518,6 @@ async fn the_owner_takes_a_stopped_server_out_through_the_one_that_remains() {
         )),
         "and nothing falls short about it: {status:?}"
     );
-    drop(client);
+    drop(key_link);
     remains.stop().await;
 }

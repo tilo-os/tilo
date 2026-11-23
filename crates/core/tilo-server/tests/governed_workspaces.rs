@@ -4,7 +4,7 @@
 #![allow(
     clippy::significant_drop_tightening,
     clippy::too_many_lines,
-    reason = "one end-to-end scenario whose relays and sessions live until it ends"
+    reason = "one end-to-end scenario whose relays and links live until it ends"
 )]
 
 use std::future::Future;
@@ -15,16 +15,15 @@ use collab_types::CommitNamed as _;
 use neighbour_wire::NeighbourMsg;
 use tilo_peer_state::join::{Role, decode_and_verify_invitation};
 use tilo_peer_state::{StatePeer, TransportOrigin};
-use tilo_server::coedit::{Inbound, ServerCoeditSession};
 use tilo_server::workspace_join::WorkspaceJoinClient;
 use tilo_server::workspaces::{
     CREATE_WORKSPACE, CreatedWorkspace, ENTER_WORKSPACE, EnteredWorkspace, IssueInvitationRequest,
     IssuedInvitation, RemoveMemberRequest, WorkspaceListing,
 };
-use tilo_server::{Envelope, Server, ServerClient, ServerConfig};
+use tilo_server::{Server, ServerConfig};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestDevice, TestUser, device_endpoint};
+use crate::common::{Linked, TestDevice, TestUser, device_endpoint};
 use tilo_server::WorkspaceId;
 
 const APP: &str = "so.tilo.chat";
@@ -67,33 +66,23 @@ async fn start_at(
     .unwrap()
 }
 
-async fn session(
-    server: &Server,
-    device: &TestDevice,
-    workspace_id: WorkspaceId,
-) -> ServerCoeditSession {
-    let client = ServerClient::connect_to_pinned_host(
-        device_endpoint(device).await,
-        server.node_addr(),
-        device.cert.clone(),
-        device.sk.clone(),
-        RevocationList::new(),
-    )
-    .await
-    .unwrap();
-    ServerCoeditSession::join(client, workspace_id, device.device_pubkey()).unwrap()
-}
-
 /// Alice's `device` creates a workspace named `name` on her relay and enters it
-/// as its owner, through the server's own host actions asked of it directly.
+/// as its owner, through the server's own host actions asked of it: before it holds any
+/// workspace, the host answers them for a device of its own person.
 async fn create_and_enter(server: &Server, device: &TestDevice, name: &str) -> WorkspaceListing {
-    use governance_actions::{connected, host_action};
-    let home = connected(server, device).await;
-    let created: CreatedWorkspace =
-        host_action(&home, CREATE_WORKSPACE, serde_json::json!({ "name": name })).await;
+    use governance_actions::{asking, host_action};
+    let home = asking(server, device, "").await;
+    let created: CreatedWorkspace = host_action(
+        &home,
+        device,
+        CREATE_WORKSPACE,
+        serde_json::json!({ "name": name }),
+    )
+    .await;
     assert_eq!(created.workspace.name, name);
     let entered: EnteredWorkspace = host_action(
         &home,
+        device,
         ENTER_WORKSPACE,
         serde_json::json!({ "workspace": created.workspace.workspace }),
     )
@@ -135,47 +124,6 @@ async fn invite(
         .unwrap()
 }
 
-/// Apply what `session` receives to `peer` until `done` holds, recording
-/// every presence payload by its author.
-async fn receive_until(
-    what: &str,
-    session: &ServerCoeditSession,
-    peer: &mut StatePeer,
-    presence: &mut Vec<([u8; 32], Vec<u8>)>,
-    mut done: impl FnMut(&StatePeer, &[([u8; 32], Vec<u8>)]) -> bool,
-) {
-    tilo_test_env::within(what, async {
-        while !done(peer, presence) {
-            match session.recv().await.expect("the session stays open") {
-                Inbound::Delta { author, data } => {
-                    let message: NeighbourMsg = postcard::from_bytes(&data).unwrap();
-                    let origin = if author == peer.owner_certificates()[0].device_public_key {
-                        TransportOrigin::RetainedServerDelta(author)
-                    } else {
-                        TransportOrigin::ServerDelta(author)
-                    };
-                    peer.receive_from(origin, message, SystemTime::now())
-                        .unwrap();
-                }
-                Inbound::Presence { author, payload } => presence.push((author, payload)),
-                _ => {}
-            }
-        }
-    })
-    .await;
-}
-
-fn publish(session: &ServerCoeditSession, message: &NeighbourMsg) {
-    let (channel, kind) = neighbour_wire::retention(message, false).unwrap();
-    let body = postcard::to_stdvec(message).unwrap();
-    if kind == neighbour_wire::Retention::Checkpoint {
-        session.publish_checkpoint(channel, body)
-    } else {
-        session.publish_retained_delta(channel, body)
-    }
-    .unwrap();
-}
-
 /// Set `key` to `value` in `peer`'s copy of the record and sign the change,
 /// made by the person whose root key is `person`.
 fn write(
@@ -207,8 +155,8 @@ fn role(peer: &StatePeer, device: [u8; 32]) -> Option<collab_types::Role> {
 }
 
 /// What every scenario here starts from: Alice's server governing a workspace her
-/// laptop owns, Bob's phone admitted through an invitation as `role`, both
-/// replicas converged on the roster, and a session open for each of them.
+/// laptop owns, Bob's phone admitted through an invitation as `role`, and a link open
+/// for each of them, Alice's from what the host holds and Bob's from his join alone.
 struct Governed {
     alice: TestUser,
     host: TestDevice,
@@ -218,12 +166,8 @@ struct Governed {
     state: tempfile::TempDir,
     server: Server,
     workspace: WorkspaceListing,
-    alice_peer: StatePeer,
-    bob_peer: StatePeer,
-    alice_session: ServerCoeditSession,
-    bob_session: ServerCoeditSession,
-    alice_presence: Vec<([u8; 32], Vec<u8>)>,
-    bob_presence: Vec<([u8; 32], Vec<u8>)>,
+    alice_link: Linked,
+    bob_link: Linked,
 }
 
 /// A governed workspace's whole setup. Boxed: the fixture's own future is far larger
@@ -243,7 +187,7 @@ fn governed_workspace(granted: Role) -> std::pin::Pin<Box<dyn Future<Output = Go
         let workspace = create_and_enter(&server, &laptop, "Design review").await;
 
         // Alice invites Bob's person; his device redeems through the signed
-        // address the invitation carries and is admitted by the workspace's governor.
+        // address the invitation carries and is admitted by the workspace's host.
         let invitation = invite(&server, &laptop, &workspace.workspace, granted, bob.user_pk).await;
         let verified = decode_and_verify_invitation(
             &invitation.signed_invitation,
@@ -271,8 +215,8 @@ fn governed_workspace(granted: Role) -> std::pin::Pin<Box<dyn Future<Output = Go
         assert_eq!(bootstrap.workspace_id, workspace.workspace_id);
         assert_eq!(bootstrap.role, granted);
 
-        // Bob's own replica, from the bootstrap alone, makes him an editor.
-        let mut bob_peer = StatePeer::new(
+        // Bob's own copy, from the bootstrap alone, makes him an editor.
+        let mut bob_copy = StatePeer::new(
             &bootstrap.workspace_id.to_string(),
             bootstrap.host.clone(),
             bootstrap.certified_roster.clone(),
@@ -280,9 +224,9 @@ fn governed_workspace(granted: Role) -> std::pin::Pin<Box<dyn Future<Output = Go
             SystemTime::now(),
         )
         .unwrap();
-        bob_peer.select_exact_admissions().unwrap();
+        bob_copy.select_exact_admissions().unwrap();
         for bytes in &bootstrap.governance_messages {
-            bob_peer
+            bob_copy
                 .receive_from(
                     TransportOrigin::RetainedServerDelta(bootstrap.host.device_public_key),
                     postcard::from_bytes(bytes).unwrap(),
@@ -290,31 +234,28 @@ fn governed_workspace(granted: Role) -> std::pin::Pin<Box<dyn Future<Output = Go
                 )
                 .unwrap();
         }
-        assert_eq!(role(&bob_peer, phone.device_pubkey()), Some(granted));
+        assert_eq!(
+            role(&bob_copy, phone.device_pubkey()),
+            Some(granted),
+            "the bootstrap alone makes Bob's phone an editor"
+        );
 
-        // Alice's replica learns governance from the server's retained history.
-        let mut alice_peer = StatePeer::new(
-            &workspace.workspace,
-            host.cert.clone(),
-            vec![host.cert.clone()],
-            RevocationList::new(),
-            SystemTime::now(),
-        )
-        .unwrap();
-        let alice_session = session(&server, &laptop, workspace.workspace_id).await;
-        let bob_session = session(&server, &phone, workspace.workspace_id).await;
-        let mut alice_presence = Vec::new();
-        let bob_presence = Vec::new();
-        receive_until(
-            "Alice's replica admits both people",
-            &alice_session,
-            &mut alice_peer,
-            &mut alice_presence,
-            |peer, _| {
-                role(peer, laptop.device_pubkey()) == Some(collab_types::Role::Owner)
-                    && role(peer, phone.device_pubkey()) == Some(granted)
-            },
-        )
+        // Bob's link starts from that copy and brings the rest; Alice's holds what the
+        // host holds now.
+        let mut bob_link = Linked::open_seeded(&server, &phone, workspace.workspace_id, bob_copy)
+            .await
+            .expect("the workspace admits Bob's phone");
+        let mut alice_link = Linked::open(&server, &laptop, workspace.workspace_id)
+            .await
+            .expect("the workspace admits Alice's laptop");
+        crate::common::receives(&mut bob_link, |peer| {
+            role(peer, phone.device_pubkey()) == Some(granted)
+        })
+        .await;
+        crate::common::receives(&mut alice_link, |peer| {
+            role(peer, laptop.device_pubkey()) == Some(collab_types::Role::Owner)
+                && role(peer, phone.device_pubkey()) == Some(granted)
+        })
         .await;
         crate::common::wait_until_subscribed(
             &server,
@@ -331,12 +272,8 @@ fn governed_workspace(granted: Role) -> std::pin::Pin<Box<dyn Future<Output = Go
             state,
             server,
             workspace,
-            alice_peer,
-            bob_peer,
-            alice_session,
-            bob_session,
-            alice_presence,
-            bob_presence,
+            alice_link,
+            bob_link,
         }
     })
 }
@@ -352,128 +289,127 @@ async fn an_invited_person_joins_a_governed_workspace_edits_sees_presence_and_is
         state,
         server,
         workspace,
-        mut alice_peer,
-        mut bob_peer,
-        alice_session,
-        bob_session,
-        mut alice_presence,
-        mut bob_presence,
+        mut alice_link,
+        mut bob_link,
     } = governed_workspace(Role::Editor).await;
 
-    // Alice writes; Bob's replica verifies and applies it.
+    // Alice writes; Bob's copy verifies and applies it.
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "topic", "from Alice").unwrap();
     doc.commit_edit("fixture", "topic", &laptop.cert.user_public_key);
-    let message = alice_peer
-        .publication_mut()
-        .publish_incremental(APP, "", doc.save_after(&[]), &laptop.sk, SystemTime::now())
-        .unwrap();
-    publish(&alice_session, &message);
-    receive_until(
-        "Alice's write in Bob's replica",
-        &bob_session,
-        &mut bob_peer,
-        &mut bob_presence,
-        |peer, _| text(peer, "topic").as_deref() == Some("from Alice"),
-    )
+    alice_link
+        .publish(|peer| {
+            peer.publication_mut().publish_incremental(
+                APP,
+                "",
+                doc.save_after(&[]),
+                &laptop.sk,
+                SystemTime::now(),
+            )
+        })
+        .expect("Alice's write goes out on her link");
+    crate::common::receives(&mut bob_link, |peer| {
+        text(peer, "topic").as_deref() == Some("from Alice")
+    })
     .await;
 
-    // Bob writes as an editor; Alice's replica verifies and applies it.
-    let mut doc = AutoCommit::load(&bob_peer.document(APP, "").unwrap()).unwrap();
-    let heads = doc.get_heads();
-    doc.put(ROOT, "reply", "from Bob").unwrap();
-    doc.commit_edit("fixture", "reply", &phone.cert.user_public_key);
-    let message = bob_peer
-        .publication_mut()
-        .publish_incremental(
-            APP,
-            "",
-            doc.save_after(&heads),
-            &phone.sk,
-            SystemTime::now(),
-        )
-        .unwrap();
-    publish(&bob_session, &message);
-    receive_until(
-        "Bob's write in Alice's replica",
-        &alice_session,
-        &mut alice_peer,
-        &mut alice_presence,
-        |peer, _| text(peer, "reply").as_deref() == Some("from Bob"),
-    )
+    // Bob writes as an editor; Alice's copy verifies and applies it.
+    bob_link
+        .publish(|peer| {
+            let mut doc = AutoCommit::load(&peer.document(APP, "").unwrap()).unwrap();
+            let heads = doc.get_heads();
+            doc.put(ROOT, "reply", "from Bob").unwrap();
+            doc.commit_edit("fixture", "reply", &phone.cert.user_public_key);
+            peer.publication_mut().publish_incremental(
+                APP,
+                "",
+                doc.save_after(&heads),
+                &phone.sk,
+                SystemTime::now(),
+            )
+        })
+        .expect("Bob's write goes out on his link");
+    crate::common::receives(&mut alice_link, |peer| {
+        text(peer, "reply").as_deref() == Some("from Bob")
+    })
     .await;
 
     // A conversation: each write depends on the other person's last one.
     for turn in 0..3 {
         let said = format!("Alice {turn}");
-        publish(
-            &alice_session,
-            &write(
-                &mut alice_peer,
-                "turn",
-                &said,
-                &laptop.sk,
-                &laptop.cert.user_public_key,
-            ),
-        );
-        receive_until(
-            "Alice's turn at Bob",
-            &bob_session,
-            &mut bob_peer,
-            &mut bob_presence,
-            |peer, _| text(peer, "turn").as_deref() == Some(said.as_str()),
-        )
+        alice_link
+            .publish(|peer| {
+                Ok(write(
+                    peer,
+                    "turn",
+                    &said,
+                    &laptop.sk,
+                    &laptop.cert.user_public_key,
+                ))
+            })
+            .expect("Alice's turn goes out on her link");
+        crate::common::receives(&mut bob_link, |peer| {
+            text(peer, "turn").as_deref() == Some(said.as_str())
+        })
         .await;
         let said = format!("Bob {turn}");
-        publish(
-            &bob_session,
-            &write(
-                &mut bob_peer,
-                "turn",
-                &said,
-                &phone.sk,
-                &phone.cert.user_public_key,
-            ),
-        );
-        receive_until(
-            "Bob's turn at Alice",
-            &alice_session,
-            &mut alice_peer,
-            &mut alice_presence,
-            |peer, _| text(peer, "turn").as_deref() == Some(said.as_str()),
-        )
+        bob_link
+            .publish(|peer| {
+                Ok(write(
+                    peer,
+                    "turn",
+                    &said,
+                    &phone.sk,
+                    &phone.cert.user_public_key,
+                ))
+            })
+            .expect("Bob's turn goes out on his link");
+        crate::common::receives(&mut alice_link, |peer| {
+            text(peer, "turn").as_deref() == Some(said.as_str())
+        })
         .await;
     }
 
-    // Each sees the other's presence.
-    alice_session
-        .publish_presence(b"alice is here".to_vec())
-        .unwrap();
-    bob_session
-        .publish_presence(b"bob is here".to_vec())
-        .unwrap();
-    receive_until(
-        "Alice's presence at Bob",
-        &bob_session,
-        &mut bob_peer,
-        &mut bob_presence,
-        |_, seen| {
-            seen.iter()
-                .any(|(author, _)| *author == laptop.device_pubkey())
-        },
-    )
+    // Each sees the other's presence: the frame the other device sent, under its own
+    // name, on the link the workspace forwards.
+    alice_link
+        .send(NeighbourMsg::LivePresence {
+            peer: tilo_peer_state::peer_handle(&laptop.device_pubkey()),
+            frame: b"alice is here".to_vec(),
+        })
+        .expect("Alice's presence goes out on her link");
+    bob_link
+        .send(NeighbourMsg::LivePresence {
+            peer: tilo_peer_state::peer_handle(&phone.device_pubkey()),
+            frame: b"bob is here".to_vec(),
+        })
+        .expect("Bob's presence goes out on his link");
+    let seen = crate::common::next(&mut bob_link, |heard| {
+        matches!(
+            &heard.message,
+            NeighbourMsg::LivePresence { frame, .. }
+                if frame.as_slice() == b"alice is here".as_slice()
+        )
+    })
     .await;
-    receive_until(
-        "Bob's presence at Alice",
-        &alice_session,
-        &mut alice_peer,
-        &mut alice_presence,
-        |_, seen| {
-            seen.iter()
-                .any(|(author, _)| *author == phone.device_pubkey())
-        },
-    )
+    assert_eq!(
+        seen.author,
+        laptop.device_pubkey(),
+        "Bob hears Alice's own presence"
+    );
+    let seen = crate::common::next(&mut alice_link, |heard| {
+        matches!(
+            &heard.message,
+            NeighbourMsg::LivePresence { frame, .. }
+                if frame.as_slice() == b"bob is here".as_slice()
+        )
+    })
     .await;
+    assert_eq!(
+        seen.author,
+        phone.device_pubkey(),
+        "Alice hears Bob's own presence"
+    );
 
     // Alice removes Bob: the server stops admitting his device.
     let generation = server
@@ -491,34 +427,19 @@ async fn an_invited_person_joins_a_governed_workspace_edits_sees_presence_and_is
         .unwrap()
         .generation;
     assert!(generation > workspace.generation);
-    let refused = async {
-        let client = ServerClient::connect_to_pinned_host(
-            device_endpoint(&phone).await,
-            server.node_addr(),
-            phone.cert.clone(),
-            phone.sk.clone(),
-            RevocationList::new(),
-        )
-        .await
-        .ok()?;
-        client
-            .send(Envelope::Subscribe {
-                workspace_id: workspace.workspace_id,
-            })
-            .ok()?;
-        tilo_test_env::within("the server answers a removed member", client.recv()).await
-    }
-    .await;
     assert!(
-        !matches!(refused, Some(Envelope::Ready { .. })),
-        "a removed member is not admitted: {refused:?}"
+        bob_link
+            .reopen(&server, workspace.workspace_id)
+            .await
+            .is_err(),
+        "a removed member is not admitted"
     );
 
     // The workspace survives a restart of its server, governance and all: every change its people
     // made is still there.
     let iroh_listen = *server.node_addr().ip_addrs().next().unwrap();
-    alice_session.close().await;
-    bob_session.close().await;
+    drop(alice_link);
+    drop(bob_link);
     server.shutdown().await;
     let server = start_at(state.path(), &alice, &host, iroh_listen).await;
     let workspaces = server.workspaces().unwrap().list().await;
@@ -651,17 +572,14 @@ type = "String"
         state: _state,
         laptop,
         server,
-        mut alice_peer,
-        mut bob_peer,
-        alice_session,
-        bob_session,
-        mut bob_presence,
+        mut alice_link,
+        mut bob_link,
         ..
     } = governed_workspace(Role::Editor).await;
 
     // A change claiming a verb the app does not publish: refused by the
-    // server, so it never reaches Bob (whose replica would refuse it loudly).
-    // It goes first on the one connection, so Bob would see it first.
+    // server, so it never reaches Bob (whose copy would refuse it loudly).
+    // It goes first on the one link, so Bob would see it first.
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "smuggled", "from Alice").unwrap();
     let context = tilo_actions::ActionContext {
@@ -676,39 +594,50 @@ type = "String"
             .with_message(context.change_message().unwrap()),
     );
     // Signed by a device that does not check its own changes.
-    let mut unchecked = alice_peer.clone();
-    unchecked.set_surfaces(collab_types::Surfaces::default());
-    let smuggled = unchecked
-        .publication_mut()
-        .publish_incremental(APP, "", doc.save_after(&[]), &laptop.sk, SystemTime::now())
+    let smuggled = alice_link
+        .read(|peer| {
+            let mut unchecked = peer.clone();
+            unchecked.set_surfaces(collab_types::Surfaces::default());
+            unchecked.publication_mut().publish_incremental(
+                APP,
+                "",
+                doc.save_after(&[]),
+                &laptop.sk,
+                SystemTime::now(),
+            )
+        })
         .unwrap();
-    publish(&alice_session, &smuggled);
+    alice_link
+        .send(smuggled)
+        .expect("Alice's unchecked change goes out on her link");
     // An edit of a field the app publishes reaches Bob.
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "topic", "from Alice").unwrap();
     doc.commit_edit("fixture", "topic", &laptop.cert.user_public_key);
-    let message = alice_peer
-        .publication_mut()
-        .publish_incremental(APP, "", doc.save_after(&[]), &laptop.sk, SystemTime::now())
+    alice_link
+        .publish(|peer| {
+            peer.publication_mut().publish_incremental(
+                APP,
+                "",
+                doc.save_after(&[]),
+                &laptop.sk,
+                SystemTime::now(),
+            )
+        })
         .unwrap();
-    publish(&alice_session, &message);
-    receive_until(
-        "Alice's published edit in Bob's replica",
-        &bob_session,
-        &mut bob_peer,
-        &mut bob_presence,
-        |peer, _| text(peer, "topic").is_some() || text(peer, "smuggled").is_some(),
-    )
+    crate::common::receives(&mut bob_link, |peer| {
+        text(peer, "topic").is_some() || text(peer, "smuggled").is_some()
+    })
     .await;
     assert_eq!(
-        text(&bob_peer, "smuggled"),
+        bob_link.read(|peer| text(peer, "smuggled")),
         None,
         "the server forwarded a refused change"
     );
     server.shutdown().await;
 }
 /// The server decides each change against its author's grants, as the workspace's
-/// governor projects them: a commenter's comment reaches the workspace, their
+/// host projects them: a commenter's comment reaches the workspace, their
 /// edit of the record does not.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_server_refuses_an_action_the_author_is_not_granted() {
@@ -757,12 +686,8 @@ params = []
         phone,
         server,
         workspace,
-        mut alice_peer,
-        mut bob_peer,
-        alice_session,
-        bob_session,
-        mut alice_presence,
-        mut bob_presence,
+        mut alice_link,
+        mut bob_link,
         ..
     } = governed_workspace(Role::Commenter).await;
 
@@ -770,20 +695,19 @@ params = []
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "topic", "from Alice").unwrap();
     doc.commit_edit("fixture", "topic", &laptop.cert.user_public_key);
-    let created = alice_peer
-        .publication_mut()
-        .publish_incremental(APP, "", doc.save_after(&[]), &laptop.sk, SystemTime::now())
+    alice_link
+        .publish(|peer| {
+            peer.publication_mut().publish_incremental(
+                APP,
+                "",
+                doc.save_after(&[]),
+                &laptop.sk,
+                SystemTime::now(),
+            )
+        })
         .unwrap();
-    publish(&alice_session, &created);
-    receive_until(
-        "Alice's chat in Bob's replica",
-        &bob_session,
-        &mut bob_peer,
-        &mut bob_presence,
-        |peer, _| text(peer, "topic").is_some(),
-    )
-    .await;
-    // Signed as Bob's device signs, without his own replica checking it.
+    crate::common::receives(&mut bob_link, |peer| text(peer, "topic").is_some()).await;
+    // Signed as Bob's device signs, without his own copy checking it.
     let sign = |doc: &mut AutoCommit, seq: u64| {
         let mutation = collab_types::DocumentMutation::Incremental(doc.save_after(&[]));
         let author = collab_types::Ed25519PublicKey::from_bytes(phone.device_pubkey());
@@ -811,7 +735,9 @@ params = []
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "topic", "from Bob").unwrap();
     doc.commit_edit("fixture", "topic", &phone.cert.user_public_key);
-    publish(&bob_session, &sign(&mut doc, 1_000));
+    bob_link
+        .send(sign(&mut doc, 1_000))
+        .expect("Bob's edit goes out on his link");
     // A comment: theirs to make.
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "comment", "looks good").unwrap();
@@ -826,17 +752,12 @@ params = []
         automerge::transaction::CommitOptions::default()
             .with_message(context.change_message().unwrap()),
     );
-    publish(&bob_session, &sign(&mut doc, 1_001));
-    receive_until(
-        "Bob's comment in Alice's replica",
-        &alice_session,
-        &mut alice_peer,
-        &mut alice_presence,
-        |peer, _| text(peer, "comment").is_some(),
-    )
-    .await;
+    bob_link
+        .send(sign(&mut doc, 1_001))
+        .expect("Bob's comment goes out on his link");
+    crate::common::receives(&mut alice_link, |peer| text(peer, "comment").is_some()).await;
     assert_eq!(
-        text(&alice_peer, "topic").as_deref(),
+        alice_link.read(|peer| text(peer, "topic")).as_deref(),
         Some("from Alice"),
         "the server forwarded an ungranted edit"
     );
@@ -957,10 +878,6 @@ mod hard_stops;
 
 #[path = "governed_workspaces/app_push.rs"]
 mod app_push;
-
-#[cfg(feature = "agents")]
-#[path = "governed_workspaces/member_files.rs"]
-mod member_files;
 
 #[path = "governed_workspaces/record_content.rs"]
 mod record_content;

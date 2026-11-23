@@ -217,7 +217,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
     // The phone announces itself in the workspace, as every device does: the
     // browser vouches only for devices whose certificate the host relayed,
     // and holds a commit adding any other until its certificate arrives.
-    let _phone_session = session(&host, &root, &phone).await;
+    let phone_session = session(&host, &root, &phone).await;
     let mut phone_peer = GroupPeer::waiting(
         None,
         collab_types::WorkspaceId::parse(crate::support::WORKSPACE).unwrap(),

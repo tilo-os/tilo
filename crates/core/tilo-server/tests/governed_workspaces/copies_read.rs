@@ -1,7 +1,7 @@
 //! Who keeps a workspace, as every member of it reads it: the devices the workspace's
 //! governance names as holding it, each with its device key. Choosing how many copies it wants
 //! is its owner's; reading who keeps it is every member's.
-use governance_actions::{ask, connected, outcome};
+use governance_actions::{ask, asking, outcome};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
     ActionCallError, InvokeArgument, InvokeRequest, RemoteActionMessage, RemoteActionTarget,
@@ -33,7 +33,11 @@ fn keeps(workspace: &str) -> RemoteActionMessage {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_member_reads_the_devices_keeping_the_workspace() {
     let fixture = governed_workspace(Role::Editor).await;
-    let client = connected(&fixture.server, &fixture.phone).await;
+    let member = fixture
+        .bob_link
+        .asking_in(&fixture.workspace.workspace)
+        .await
+        .expect("the host answers its actions link");
     let RemoteActionMessage::Invoke(read) = keeps(&fixture.workspace.workspace) else {
         panic!("the read is one invocation");
     };
@@ -51,16 +55,8 @@ async fn a_member_reads_the_devices_keeping_the_workspace() {
         },
         "the tree publishes the read beside the write, at servers#keeps"
     );
-    let read = outcome(
-        ask(
-            &client,
-            &fixture.host,
-            fixture.workspace.workspace_id,
-            keeps(&fixture.workspace.workspace),
-        )
-        .await,
-    )
-    .expect("a member reads the workspace's copies");
+    let read = outcome(ask(&member, keeps(&fixture.workspace.workspace)).await)
+        .expect("a member reads the workspace's copies");
     let server = hex::encode(fixture.host.device_pubkey());
     let named = read["keeps"]
         .as_array()
@@ -79,18 +75,13 @@ async fn a_member_reads_the_devices_keeping_the_workspace() {
 async fn a_stranger_reads_no_copies() {
     let fixture = governed_workspace(Role::Editor).await;
     let stranger = fixture.bob.enrol("stranger", DeviceCapabilities::member());
-    let client = connected(&fixture.server, &stranger).await;
-    let refused = outcome(
-        ask(
-            &client,
-            &fixture.host,
-            fixture.workspace.workspace_id,
-            keeps(&fixture.workspace.workspace),
-        )
-        .await,
-    );
+    let actions = asking(&fixture.server, &stranger, &fixture.workspace.workspace).await;
+    let refused = outcome(ask(&actions, keeps(&fixture.workspace.workspace)).await);
     assert!(
-        matches!(refused, Err(ActionCallError::UnknownAction)),
+        matches!(
+            refused,
+            Err(ActionCallError::NotPermitted | ActionCallError::Refused { .. })
+        ),
         "a device of nobody in the workspace is told nothing of its copies: {refused:?}"
     );
 }

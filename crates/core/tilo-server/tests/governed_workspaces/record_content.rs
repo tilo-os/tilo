@@ -13,27 +13,26 @@ use super::*;
 
 const PHOTOS: &str = "so.tilo.photos";
 
-/// The host's next request for `address` of `PHOTOS`, as `session` hears it.
-async fn asked_for(session: &ServerCoeditSession, address: &str) -> Vec<u8> {
-    asked_for_each(session, &[address]).await.remove(0)
+/// The host's next request for `address` of `PHOTOS`, as `linked` hears it.
+async fn asked_for(linked: &mut Linked, address: &str) -> Vec<u8> {
+    asked_for_each(linked, &[address]).await.remove(0)
 }
 
-/// The host's next request for each of `addresses` of `PHOTOS`, in that order, as `session`
+/// The host's next request for each of `addresses` of `PHOTOS`, in that order, as `linked`
 /// hears them in whatever order they come.
-async fn asked_for_each(session: &ServerCoeditSession, addresses: &[&str]) -> Vec<Vec<u8>> {
+async fn asked_for_each(linked: &mut Linked, addresses: &[&str]) -> Vec<Vec<u8>> {
     tilo_test_env::within("the host asks for the record's content", async {
         let mut asks: Vec<Option<Vec<u8>>> = vec![None; addresses.len()];
         while asks.iter().any(Option::is_none) {
-            let Ok(Some(Inbound::Presence { payload, .. })) =
-                tokio::time::timeout(Duration::from_millis(50), session.recv()).await
+            let Ok(Some(heard)) =
+                tokio::time::timeout(Duration::from_millis(50), linked.next()).await
             else {
                 continue;
             };
-            if let Ok(NeighbourMsg::DocumentContentWant { hash, .. }) =
-                postcard::from_bytes::<NeighbourMsg>(&payload)
+            if let NeighbourMsg::DocumentContentWant { hash, .. } = &heard.message
                 && let Some(at) = addresses.iter().position(|address| *address == hash)
             {
-                asks[at].get_or_insert(payload);
+                asks[at].get_or_insert(postcard::to_stdvec(&heard.message).unwrap());
             }
         }
         asks.into_iter().flatten().collect()
@@ -68,23 +67,24 @@ async fn says_it_lacks(server: &Server, workspace: &str, blobs: u32, what: &str)
     .await;
 }
 
-/// What `server` answers `asking` when it asks how much of `workspace`'s content it keeps
-/// (`workspace/servers#content`), or why it refused.
+/// What the host answers `linked`'s device when it asks how much of `workspace`'s content it
+/// keeps (`workspace/servers#content`), or why it refused.
 async fn content_held(
-    server: &Server,
-    host: &TestDevice,
-    asking: &TestDevice,
+    linked: &Linked,
     workspace: &WorkspaceListing,
 ) -> Result<serde_json::Value, tilo_actions::remote::ActionCallError> {
-    use super::governance_actions::{ask, invocation, outcome, subscribed};
-    let client = subscribed(server, asking, workspace.workspace_id).await;
+    use super::governance_actions::{ask, invocation, outcome};
+    let actions = linked
+        .asking_in(&workspace.workspace)
+        .await
+        .expect("the host answers its actions link");
     let message = invocation(
         tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER,
         format!("workspace.permissions:{}/servers", workspace.workspace),
         "content",
         serde_json::json!({}),
     );
-    outcome(ask(&client, host, workspace.workspace_id, message).await)
+    outcome(ask(&actions, message).await)
 }
 
 /// What the host serves a device asking `workspace` for `address` of `PHOTOS`,
@@ -126,17 +126,13 @@ async fn a_sealed_picture_a_record_names_reaches_the_host_and_outlives_its_write
     let state = tempfile::tempdir().unwrap();
     let server = start(state.path(), &alice, &alice_home).await;
     let workspace = create_and_enter(&server, &laptop, "Photos").await;
-    let mut peer = sealed_documents::join(
-        &server,
-        &laptop,
-        &workspace.workspace,
-        &bob,
-        &phone,
-        [7; 32],
-    )
-    .await
-    .unwrap();
-    let session = session(&server, &phone, workspace.workspace_id).await;
+    let mut bob_link =
+        sealed_documents::joined(&server, &laptop, &workspace, &bob, &phone, [7; 32])
+            .await
+            .unwrap();
+    let laptop_link = Linked::open(&server, &laptop, workspace.workspace_id)
+        .await
+        .expect("the workspace admits Alice's laptop");
     crate::common::wait_until_subscribed(&server, workspace.workspace_id, &phone.device_pubkey())
         .await;
 
@@ -153,17 +149,17 @@ async fn a_sealed_picture_a_record_names_reaches_the_host_and_outlives_its_write
     assert!(tilo_content::is_sealed(&reference));
     let address = tilo_content::content_address(&reference).unwrap();
     let sealed = store.read(&address).unwrap();
-    let created = peer
-        .publication_mut()
-        .publish_document(
-            PHOTOS,
-            "",
-            AutoCommit::new().save(),
-            &phone.sk,
-            SystemTime::now(),
-        )
-        .unwrap();
-    publish(&session, &created);
+    bob_link
+        .publish(|peer| {
+            peer.publication_mut().publish_document(
+                PHOTOS,
+                "",
+                AutoCommit::new().save(),
+                &phone.sk,
+                SystemTime::now(),
+            )
+        })
+        .expect("Bob's page starts the record on his link");
     let mut doc = AutoCommit::new();
     doc.put(
         ROOT,
@@ -176,21 +172,21 @@ async fn a_sealed_picture_a_record_names_reaches_the_host_and_outlives_its_write
     )
     .unwrap();
     doc.commit_edit("fixture", "photo", &phone.cert.user_public_key);
-    let message = peer
-        .publication_mut()
-        .publish_incremental(
-            PHOTOS,
-            "",
-            doc.save_after(&[]),
-            &phone.sk,
-            SystemTime::now(),
-        )
-        .unwrap();
-    publish(&session, &message);
+    bob_link
+        .publish(|peer| {
+            peer.publication_mut().publish_incremental(
+                PHOTOS,
+                "",
+                doc.save_after(&[]),
+                &phone.sk,
+                SystemTime::now(),
+            )
+        })
+        .expect("Bob's reference goes out on his link");
 
     // The host asks for the address the store keys the ciphertext under, and
     // Bob's page answers it as a page does.
-    let ask = asked_for(&session, &address).await;
+    let ask = asked_for(&mut bob_link, &address).await;
     match postcard::from_bytes::<NeighbourMsg>(&ask).unwrap() {
         NeighbourMsg::DocumentContentWant {
             app_id,
@@ -216,7 +212,7 @@ async fn a_sealed_picture_a_record_names_reaches_the_host_and_outlives_its_write
     )
     .await;
     // Its owner asks the host the same: the picture is still only on Bob's device.
-    let held = content_held(&server, &alice_home, &laptop, &workspace)
+    let held = content_held(&laptop_link, &workspace)
         .await
         .expect("the owner asks how much content the host keeps");
     assert_eq!(
@@ -234,9 +230,9 @@ async fn a_sealed_picture_a_record_names_reaches_the_host_and_outlives_its_write
     );
     assert!(!pieces.is_empty(), "the page answers what it keeps");
     for piece in pieces {
-        session
-            .publish_record_content(alice_home.device_pubkey(), piece)
-            .expect("the session carries every piece");
+        bob_link
+            .send(postcard::from_bytes(&piece).unwrap())
+            .expect("Bob's link carries every piece");
     }
     tilo_test_env::wait_for("the host keeps the picture's ciphertext", || {
         server
@@ -253,7 +249,7 @@ async fn a_sealed_picture_a_record_names_reaches_the_host_and_outlives_its_write
         "the host says it lacks nothing once it keeps the picture",
     )
     .await;
-    let held = content_held(&server, &alice_home, &laptop, &workspace)
+    let held = content_held(&laptop_link, &workspace)
         .await
         .expect("the owner asks how much content the host keeps");
     assert_eq!(
@@ -262,33 +258,28 @@ async fn a_sealed_picture_a_record_names_reaches_the_host_and_outlives_its_write
         "the host answers its owner that it keeps all the content its records name: {held}"
     );
 
-    // Bob's page is gone; a page that reloads reads the picture from the host,
-    // as ciphertext, and opens it with the key its record carries.
-    drop(session);
-    // Bob, a member who does not choose the workspace's servers, is not answered.
+    // A member who does not choose the workspace's servers is not answered.
     assert_eq!(
-        content_held(&server, &alice_home, &phone, &workspace).await,
+        content_held(&bob_link, &workspace).await,
         Err(tilo_actions::remote::ActionCallError::UnknownAction),
         "only the workspace's owners ask how much of its content its server keeps"
     );
+    // Bob's page is gone; a page that reloads reads the picture from the host,
+    // as ciphertext, and opens it with the key its record carries.
+    drop(bob_link);
     let carol = TestUser::fresh("Carol");
     let carol_phone = carol.enrol("carol-phone", DeviceCapabilities::member());
-    sealed_documents::join(
-        &server,
-        &laptop,
-        &workspace.workspace,
-        &carol,
-        &carol_phone,
-        [8; 32],
-    )
-    .await
-    .unwrap();
+    let carol_link =
+        sealed_documents::joined(&server, &laptop, &workspace, &carol, &carol_phone, [8; 32])
+            .await
+            .unwrap();
     let delivered = served(&server, &workspace.workspace, &carol_phone, &address);
     assert_eq!(delivered, sealed, "the host serves the ciphertext alone");
     let reloaded = tilo_content::ContentStore::memory().sealing();
     reloaded.put_public(&delivered).unwrap();
     assert_eq!(reloaded.read(&reference).as_deref(), Some(&picture[..]));
 
+    drop(carol_link);
     server.shutdown().await;
 }
 
@@ -327,17 +318,10 @@ async fn an_unanswered_ask_is_asked_again(process: tilo_clock::testing::OwnProce
     let state = tempfile::tempdir().unwrap();
     let server = start(state.path(), &alice, &alice_home).await;
     let workspace = create_and_enter(&server, &laptop, "Photos").await;
-    let mut peer = sealed_documents::join(
-        &server,
-        &laptop,
-        &workspace.workspace,
-        &bob,
-        &phone,
-        [7; 32],
-    )
-    .await
-    .unwrap();
-    let session = session(&server, &phone, workspace.workspace_id).await;
+    let mut bob_link =
+        sealed_documents::joined(&server, &laptop, &workspace, &bob, &phone, [7; 32])
+            .await
+            .unwrap();
     crate::common::wait_until_subscribed(&server, workspace.workspace_id, &phone.device_pubkey())
         .await;
 
@@ -362,31 +346,31 @@ async fn an_unanswered_ask_is_asked_again(process: tilo_clock::testing::OwnProce
         pictures.push((address.clone(), store.read(&address).unwrap()));
     }
     doc.commit_edit("fixture", "pictures", &phone.cert.user_public_key);
-    let created = peer
-        .publication_mut()
-        .publish_document(
-            PHOTOS,
-            "",
-            AutoCommit::new().save(),
-            &phone.sk,
-            SystemTime::now(),
-        )
-        .unwrap();
-    publish(&session, &created);
-    let message = peer
-        .publication_mut()
-        .publish_incremental(
-            PHOTOS,
-            "",
-            doc.save_after(&[]),
-            &phone.sk,
-            SystemTime::now(),
-        )
-        .unwrap();
-    publish(&session, &message);
+    bob_link
+        .publish(|peer| {
+            peer.publication_mut().publish_document(
+                PHOTOS,
+                "",
+                AutoCommit::new().save(),
+                &phone.sk,
+                SystemTime::now(),
+            )
+        })
+        .expect("Bob's page starts the record on his link");
+    bob_link
+        .publish(|peer| {
+            peer.publication_mut().publish_incremental(
+                PHOTOS,
+                "",
+                doc.save_after(&[]),
+                &phone.sk,
+                SystemTime::now(),
+            )
+        })
+        .expect("Bob's references go out on his link");
     let [(answered, answered_bytes), (lost, lost_bytes)] = <[_; 2]>::try_from(pictures).unwrap();
 
-    let answer = |ask: &[u8], address: &str, bytes: &[u8]| {
+    let answer = |linked: &Linked, ask: &[u8], address: &str, bytes: &[u8]| {
         for piece in neighbour_wire::content::answer(
             &phone.device_pubkey(),
             &alice_home.device_pubkey(),
@@ -396,14 +380,14 @@ async fn an_unanswered_ask_is_asked_again(process: tilo_clock::testing::OwnProce
                     .then(|| bytes.to_vec())
             },
         ) {
-            session
-                .publish_record_content(alice_home.device_pubkey(), piece)
-                .expect("the session carries every piece");
+            linked
+                .send(postcard::from_bytes(&piece).unwrap())
+                .expect("Bob's link carries every piece");
         }
     };
     // The host asks for both; the answer to one of them never arrives.
-    let asks = asked_for_each(&session, &[&answered, &lost]).await;
-    answer(&asks[0], &answered, &answered_bytes);
+    let asks = asked_for_each(&mut bob_link, &[&answered, &lost]).await;
+    answer(&bob_link, &asks[0], &answered, &answered_bytes);
     says_it_lacks(
         &server,
         &workspace.workspace,
@@ -421,8 +405,8 @@ async fn an_unanswered_ask_is_asked_again(process: tilo_clock::testing::OwnProce
             ))
             .expect("a time past an ask's lifetime"),
     );
-    let ask = asked_for(&session, &lost).await;
-    answer(&ask, &lost, &lost_bytes);
+    let ask = asked_for(&mut bob_link, &lost).await;
+    answer(&bob_link, &ask, &lost, &lost_bytes);
     says_it_lacks(
         &server,
         &workspace.workspace,
@@ -431,5 +415,6 @@ async fn an_unanswered_ask_is_asked_again(process: tilo_clock::testing::OwnProce
     )
     .await;
 
+    drop(bob_link);
     server.shutdown().await;
 }

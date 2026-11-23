@@ -14,27 +14,33 @@ use std::time::{Duration, Instant};
 
 use tilo_actions::remote::server_account::{NextStepKind, Reason, Refusal};
 use tilo_actions::remote::{
-    ActionCallError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery, Confirmation,
-    ConfirmedInvocation, InvocationReceipt, InvokeArgument, InvokeRequest, ReceiptStatus,
-    RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
+    Confirmation, ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeArgument,
+    InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
 };
 use tilo_actions::{ActionAddress, InvocationId};
+use tilo_peer_state::actions::testing::duplex;
+use tilo_peer_state::actions::{ActionService, RemoteDevice};
+use tilo_peer_state::direct::{Heard, Replica};
 use tilo_server::certify::ConfirmationAnswer;
 use tilo_server::hosted_browser::{
     BrowserMeter, BrowserSessions, HostedBrowsers, Material, Window, no_payment_method,
 };
-use tilo_server::transport::REMOTE_ACTION_ENVELOPE_VERSION;
-use tilo_server::{AppActionServer, Envelope, ServerClient};
+use tilo_server::workspaces::Workspaces;
+use tilo_server::{AppActionServer, Server, WorkspaceId};
 use tilo_server_client::Approver;
 use tilo_user_identity::{
     AgentScope, DeviceCapabilities, DeviceCert, HostApproval, RevocationList,
     prepare_stand_in_cert, sign_device_cert,
 };
 
+use automerge::transaction::Transactable as _;
+use automerge::{AutoCommit, ROOT};
+
 use crate::common::{
-    TestDevice, TestServer, TestUser, client_endpoint, device_endpoint, spawn_server_serving_apps,
+    Linked, TestDevice, TestServer, TestUser, client_endpoint, spawn_server_serving_apps,
 };
-use tilo_server::WorkspaceId;
+use tilo_server::hosted_browser::APP;
 use tilo_workspace_service::agents::windows::PAGE_RESOURCE;
 
 const WS: WorkspaceId = WorkspaceId::from_u128(0x1111_1111_1111_4111_8111_1111_1111_1111);
@@ -45,6 +51,8 @@ const WINDOW: &str = "browser@42";
 const HOST_PROVIDER: &str = "workspace:11111111-1111-4111-8111-111111111111";
 /// The revision the window's own listing answers at.
 const WINDOW_REVISION: &str = "window";
+/// The record the window was opened on.
+const WINDOW_RECORD: &str = "record-1";
 
 /// Places environments in-process: each "environment" is the device the
 /// server certified, which the test's client then joins the workspace as.
@@ -124,7 +132,7 @@ impl AppActionServer for Routing {
         workspace_id: WorkspaceId,
         _caller: &Caller,
         message: RemoteActionMessage,
-    ) -> Option<tilo_actions::remote::Pending<RemoteActionMessage>> {
+    ) -> Option<Pending<RemoteActionMessage>> {
         let RemoteActionMessage::CatalogueRequest { correlation, query } = message else {
             return None;
         };
@@ -139,7 +147,7 @@ impl AppActionServer for Routing {
             }],
             ..CataloguePage::default()
         };
-        Some(tilo_actions::remote::Pending::ready(self.0.listed(
+        Some(Pending::ready(self.0.listed(
             workspace_id,
             &query,
             RemoteActionMessage::CatalogueResponse {
@@ -187,140 +195,119 @@ impl AppActionServer for Routing {
     }
 }
 
-fn frame(message: RemoteActionMessage) -> Vec<u8> {
-    RemoteActionFrame::new(message).encode().unwrap()
+/// `request` signed by `asker`, the device that asks it: what carries the
+/// caller's identity to a window the host hands the action on to, since a
+/// window's own link proves no device of its own.
+fn as_asked(asker: &TestDevice, mut request: InvokeRequest) -> InvokeRequest {
+    request.signed = None;
+    request.signed = Some(Box::new(
+        tilo_server_protocol::invocation::sign_invocation_now(
+            WS_NAME,
+            &request,
+            &asker.cert,
+            &asker.sk,
+            tilo_clock::unix_now_ns(),
+        )
+        .expect("the asking device signs its invocation"),
+    ));
+    request
 }
 
-fn page(invocation: InvocationId, action: &str) -> RemoteActionMessage {
-    RemoteActionMessage::Invoke(InvokeRequest {
-        on_behalf_of: None,
-        invocation,
-        target: RemoteActionTarget {
-            provider: WINDOW.into(),
-            address: ActionAddress::new(PAGE_RESOURCE, action),
+/// The page action `action` of the window, asked by `asker`.
+fn page(asker: &TestDevice, invocation: InvocationId, action: &str) -> InvokeRequest {
+    as_asked(
+        asker,
+        InvokeRequest {
+            on_behalf_of: None,
+            invocation,
+            target: RemoteActionTarget {
+                provider: WINDOW.into(),
+                address: ActionAddress::new(PAGE_RESOURCE, action),
+            },
+            argument: InvokeArgument::None,
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
         },
-        argument: InvokeArgument::None,
-        context: None,
-        confirmation: None,
-        revision: None,
-        wait_ms: None,
-        appearance: None,
-        signed: None,
-    })
+    )
 }
 
 /// A page action with `confirmation` attached.
 fn page_with(
+    asker: &TestDevice,
     invocation: InvocationId,
     action: &str,
     confirmation: Option<Confirmation>,
-) -> RemoteActionMessage {
-    RemoteActionMessage::Invoke(InvokeRequest {
-        on_behalf_of: None,
-        invocation,
-        target: RemoteActionTarget {
-            provider: WINDOW.into(),
-            address: ActionAddress::new(PAGE_RESOURCE, action),
+) -> InvokeRequest {
+    as_asked(
+        asker,
+        InvokeRequest {
+            on_behalf_of: None,
+            invocation,
+            target: RemoteActionTarget {
+                provider: WINDOW.into(),
+                address: ActionAddress::new(PAGE_RESOURCE, action),
+            },
+            argument: InvokeArgument::None,
+            context: None,
+            confirmation,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
         },
-        argument: InvokeArgument::None,
-        context: None,
-        confirmation,
-        revision: None,
-        wait_ms: None,
-        appearance: None,
-        signed: None,
-    })
+    )
 }
 
 /// The submit the agent asks for, as a person's approving device is shown it:
 /// the purpose it acts on, by the words the agent gave it.
-fn submit(invocation: InvocationId) -> RemoteActionMessage {
-    let RemoteActionMessage::Invoke(mut request) = page(invocation, "submit-page") else {
-        unreachable!("a page action is an invocation");
-    };
+fn submit(asker: &TestDevice, invocation: InvocationId) -> InvokeRequest {
+    let mut request = page(asker, invocation, "submit-page");
     request.context = Some(tilo_actions::ActionContext {
         purpose: Some("Submit the application".into()),
         ..tilo_actions::ActionContext::default()
     });
-    RemoteActionMessage::Invoke(request)
+    // The context is what a person reads, so it is signed with the rest.
+    as_asked(asker, request)
 }
 
-/// A caller asking how `invocation` went, waiting until it moves.
-fn observe(invocation: InvocationId) -> RemoteActionMessage {
-    RemoteActionMessage::Observe {
-        correlation: 0,
-        invocation,
-        wait_ms: Some(500),
-        seen: None,
-    }
-}
-
-/// The invocation `envelope` answers.
-fn receipt_of(envelope: Envelope) -> InvocationReceipt {
-    let Envelope::RemoteAction { frame, .. } = envelope else {
-        panic!("the caller is answered: {envelope:?}");
-    };
-    match RemoteActionFrame::decode(&frame).unwrap().message {
+/// The receipt `answer` carries.
+fn receipt_of(answer: Option<RemoteActionMessage>) -> InvocationReceipt {
+    match answer.expect("the caller is answered") {
         RemoteActionMessage::Receipt(receipt) => receipt,
         other => panic!("an invocation is answered with a receipt: {other:?}"),
-    }
-}
-
-/// The receipt answering `invocation` of `caller`'s, past whatever answers an
-/// earlier one of its own arrived first.
-async fn receipt_for(caller: &ServerClient, invocation: InvocationId) -> InvocationReceipt {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        let Envelope::RemoteAction { frame, .. } = next(caller, "caller").await else {
-            panic!("the caller is answered");
-        };
-        match RemoteActionFrame::decode(&frame).unwrap().message {
-            RemoteActionMessage::Receipt(receipt) if receipt.invocation == invocation => {
-                return receipt;
-            }
-            // The state of an invocation that ended before it, which its
-            // caller may already have seen.
-            RemoteActionMessage::Update { .. } => {}
-            other => panic!("{invocation:?} is answered with a receipt: {other:?}"),
-        }
-        assert!(
-            Instant::now() < deadline,
-            "{invocation:?} was never answered"
-        );
-    }
-}
-
-/// The state `envelope` answers a caller asking how an invocation went with.
-fn update_of(envelope: Envelope) -> Option<tilo_actions::remote::InvocationState> {
-    let Envelope::RemoteAction { frame, .. } = envelope else {
-        panic!("the caller is answered: {envelope:?}");
-    };
-    match RemoteActionFrame::decode(&frame).unwrap().message {
-        RemoteActionMessage::Update { state, .. } => state,
-        other => panic!("an observation is answered with a state: {other:?}"),
     }
 }
 
 /// How `invocation` of `caller`'s went, followed until it is over: what a
 /// caller that asked once and waits sees.
 async fn followed(
-    caller: &ServerClient,
-    host: [u8; 32],
+    remote: &RemoteDevice,
+    caller: &Caller,
     invocation: InvocationId,
 ) -> tilo_actions::InvocationUpdate {
     let deadline = tilo_test_env::hang_deadline();
     loop {
-        caller
-            .send(to_server(WS, host, frame(observe(invocation))))
-            .unwrap();
-        let state =
-            update_of(next(caller, "caller").await).expect("the invocation is the caller's");
-        if state.update.is_terminal() {
+        if let Some(state) = ActionProvider::observe(remote, caller, &invocation)
+            && state.update.is_terminal()
+        {
             return state.update;
         }
         assert!(Instant::now() < deadline, "the invocation never ended");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+/// What `caller` is told of `invocation` now, when the host holds it.
+fn observed(
+    remote: &RemoteDevice,
+    caller: &Caller,
+    invocation: InvocationId,
+) -> Option<InvocationState> {
+    ActionProvider::observe(remote, caller, &invocation)
 }
 
 /// The question the person's device sees waiting for them, once it is asked.
@@ -340,72 +327,20 @@ async fn asked(device: &mut Approver) -> tilo_server::certify::PendingConfirmati
     }
 }
 
-fn to_server(workspace_id: WorkspaceId, host: [u8; 32], frame: Vec<u8>) -> Envelope {
-    Envelope::RemoteAction {
-        workspace_id,
-        version: REMOTE_ACTION_ENVELOPE_VERSION,
-        to_device_public_key: host,
-        from_device_public_key: [0xEE; 32],
-        from_user_public_key: [0xEE; 32],
-        frame,
-    }
+/// A device of the workspace, linked to `server`, and the host's actions asked
+/// over the link it holds open.
+async fn member_link(server: &Server, device: &TestDevice) -> Linked {
+    Linked::open(server, device, WS)
+        .await
+        .expect("the workspace admits its device")
 }
 
-async fn subscribe(
-    server: &tilo_server::Server,
-    user: &TestUser,
-    device: &TestDevice,
-) -> ServerClient {
-    subscribe_in(server, user, device, WS).await
-}
-
-async fn subscribe_in(
-    server: &tilo_server::Server,
-    user: &TestUser,
-    device: &TestDevice,
-    workspace_id: WorkspaceId,
-) -> ServerClient {
-    let client = ServerClient::connect(
-        client_endpoint().await,
-        server.node_addr(),
-        user.user_pk,
-        device.cert.clone(),
-        device.sk.clone(),
-        RevocationList::new(),
-    )
-    .await
-    .expect("connect");
-    client.send(Envelope::Subscribe { workspace_id }).unwrap();
-    // A workspace held here hands a subscriber its state before it is ready.
-    loop {
-        match tilo_test_env::within("ready timeout", client.recv()).await {
-            Some(Envelope::Ready { .. }) => return client,
-            // The person's workspace list comes whenever their workspaces change.
-            Some(
-                Envelope::WorkspaceBootstrap { .. }
-                | Envelope::Delta { .. }
-                | Envelope::PersonalList { .. },
-            ) => {}
-            other => panic!("{other:?}"),
-        }
-    }
-}
-
-/// The next envelope `client` is sent past what the workspace sends every
-/// member as its own state changes: a lease its server takes is one.
-async fn next(client: &ServerClient, who: &str) -> Envelope {
-    loop {
-        match tokio::time::timeout(tilo_test_env::hang_bound(), client.recv())
-            .await
-            .unwrap_or_else(|_| panic!("{who} timed out"))
-            .unwrap_or_else(|| panic!("{who} connection closed"))
-        {
-            Envelope::PersonalList { .. }
-            | Envelope::WorkspaceBootstrap { .. }
-            | Envelope::Delta { .. } => {}
-            envelope => return envelope,
-        }
-    }
+/// The host's actions `linked`'s device asks in `workspace`.
+async fn asking(linked: &Linked, workspace: &str) -> RemoteDevice {
+    linked
+        .asking_in(workspace)
+        .await
+        .expect("the host answers its actions link")
 }
 
 /// One page action a window was handed: who sent it, and whether it carried
@@ -474,108 +409,122 @@ impl Asks {
 
 /// The device holding the workspace's Browser window: it answers every
 /// invocation with a receipt and keeps who sent it.
-async fn window_session(
-    server: &tilo_server::Server,
-    user: &TestUser,
+#[derive(Clone)]
+struct WindowActions {
+    seen: Arc<Mutex<Vec<Handed>>>,
+    asks: Asks,
+    /// The host that certified this window's device: the only device whose
+    /// answer for the person a page action of this window carries.
+    certifier: [u8; 32],
+}
+
+impl ActionProvider for WindowActions {
+    /// What the window offers, read from the window.
+    fn query(
+        &self,
+        _caller: &Caller,
+        _query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        Pending::ready(Ok(CataloguePage {
+            revision: WINDOW_REVISION.into(),
+            ..CataloguePage::default()
+        }))
+    }
+
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        // Only the host that certified this window, for this very
+        // invocation and action, answers for the person.
+        let approved = match &request.confirmation {
+            Some(Confirmation::Approved(token)) => {
+                HostApproval::decode(token).is_some_and(|approval| {
+                    approval.host_device_public_key == self.certifier
+                        && approval.invocation == *request.invocation.0.as_bytes()
+                        && approval.provider == request.target.provider
+                        && approval.action == request.target.address.action
+                        && approval.verify(tilo_clock::unix_now_ns()).is_ok()
+                })
+            }
+            _ => false,
+        };
+        self.seen.lock().unwrap().push(Handed {
+            from: *caller
+                .device_public_key()
+                .expect("a page action names the device that asked it"),
+            approved,
+        });
+        let status = if self.asks.asks(&request.target.address.action) && !approved {
+            ReceiptStatus::Rejected {
+                error: ActionCallError::ConfirmationRequired {
+                    departure: self.asks.departure(),
+                },
+            }
+        } else {
+            ReceiptStatus::Completed {
+                output: tilo_actions::ActionOutput::default(),
+            }
+        };
+        Pending::ready(Ok(InvocationReceipt {
+            invocation: request.invocation,
+            status,
+        }))
+    }
+
+    fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
+        None
+    }
+
+    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        Pending::ready(Err(ActionCallError::NotCancellable {
+            reason: "finished".into(),
+        }))
+    }
+}
+
+/// The window's device, serving the page actions the host hands it over the
+/// link it holds open to the host, and the page actions it was handed.
+async fn window_actions(
+    server: &Server,
     material: &Material,
     asks: Asks,
 ) -> Arc<Mutex<Vec<Handed>>> {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let device = DeviceIdentity::of(material);
-    let client = subscribe(server, user, &device).await;
-    let heard = Arc::clone(&seen);
-    let holder = material.device.device_public_key;
     let certifier = material
         .device
         .issuer
         .as_ref()
         .expect("the server certified the environment's device")
         .device_public_key;
-    let person = material.user_public_key;
-    tokio::spawn(async move {
-        while let Some(envelope) = client.recv().await {
-            let Envelope::RemoteAction {
-                workspace_id,
-                from_device_public_key,
-                frame,
-                ..
-            } = envelope
-            else {
-                continue;
-            };
-            let Ok(RemoteActionFrame { message, .. }) = RemoteActionFrame::decode(&frame) else {
-                continue;
-            };
-            let request = match message {
-                RemoteActionMessage::Invoke(request) => request,
-                // What the window offers, read from the window.
-                RemoteActionMessage::CatalogueRequest { correlation, .. } => {
-                    let answer = RemoteActionFrame::new(RemoteActionMessage::CatalogueResponse {
-                        correlation,
-                        result: Ok(CataloguePage {
-                            revision: WINDOW_REVISION.into(),
-                            ..CataloguePage::default()
-                        }),
-                    })
-                    .encode()
-                    .unwrap();
-                    let _ = client.send(Envelope::RemoteAction {
-                        workspace_id,
-                        version: REMOTE_ACTION_ENVELOPE_VERSION,
-                        to_device_public_key: from_device_public_key,
-                        from_device_public_key: holder,
-                        from_user_public_key: person,
-                        frame: answer,
-                    });
-                    continue;
-                }
-                _ => continue,
-            };
-            // Only the host that certified this window, for this very
-            // invocation and action, answers for the person.
-            let approved = match &request.confirmation {
-                Some(Confirmation::Approved(token)) => {
-                    HostApproval::decode(token).is_some_and(|approval| {
-                        approval.host_device_public_key == certifier
-                            && approval.invocation == *request.invocation.0.as_bytes()
-                            && approval.provider == request.target.provider
-                            && approval.action == request.target.address.action
-                            && approval.verify(tilo_clock::unix_now_ns()).is_ok()
-                    })
-                }
-                _ => false,
-            };
-            heard.lock().unwrap().push(Handed {
-                from: from_device_public_key,
-                approved,
-            });
-            let status = if asks.asks(&request.target.address.action) && !approved {
-                ReceiptStatus::Rejected {
-                    error: ActionCallError::ConfirmationRequired {
-                        departure: asks.departure(),
-                    },
-                }
-            } else {
-                ReceiptStatus::Completed {
-                    output: tilo_actions::ActionOutput::default(),
-                }
-            };
-            let answer = RemoteActionFrame::new(RemoteActionMessage::Receipt(InvocationReceipt {
-                invocation: request.invocation,
-                status,
-            }))
-            .encode()
-            .unwrap();
-            let _ = client.send(Envelope::RemoteAction {
-                workspace_id,
-                version: REMOTE_ACTION_ENVELOPE_VERSION,
-                to_device_public_key: from_device_public_key,
-                from_device_public_key: holder,
-                from_user_public_key: person,
-                frame: answer,
-            });
-        }
-    });
+    let actions = ActionService::new(
+        device.sk.clone(),
+        Arc::new(WindowActions {
+            seen: Arc::clone(&seen),
+            asks,
+            certifier,
+        }),
+    );
+    // What a window holds of the workspace, as the host holds it: who asks a
+    // page action, and who may.
+    let state = server
+        .workspaces()
+        .expect("the server holds workspaces")
+        .state(WS_NAME)
+        .await
+        .expect("the server holds the workspace");
+    actions.hold(Replica::new(state));
+    // The link the window holds to the host, recorded with the host's action
+    // service as the way a page action reaches the window.
+    let (host_end, window_end) = duplex(Some(device.device_pubkey()), None);
+    actions.serve_link(window_end);
+    server
+        .workspaces()
+        .expect("the server holds workspaces")
+        .action_service()
+        .reach_device_at(device.device_pubkey(), host_end);
     seen
 }
 
@@ -594,6 +543,8 @@ impl DeviceIdentity {
 
 struct Fixture {
     user: TestUser,
+    /// The device the server serves its workspaces as.
+    host_device: TestDevice,
     home: [u8; 32],
     agent: TestDevice,
     /// The person's own device, which answers what their agents ask them.
@@ -623,6 +574,7 @@ async fn fixture_with(meter: Arc<Counting>, reconnect: Duration, answer_wait: Du
     let agent = user.enrol("agent", DeviceCapabilities::member());
     let home = host.device_pubkey();
     let host_key = host.sk.clone();
+    let host_device = host.clone();
     let server_cert = {
         let now = tilo_clock::unix_now_ns();
         let mut stand_in = prepare_stand_in_cert(
@@ -682,10 +634,11 @@ async fn fixture_with(meter: Arc<Counting>, reconnect: Duration, answer_wait: Du
         hand: server.server.hand(),
     });
     browsers
-        .place(WS_NAME, WS, "record-1")
+        .place(WS_NAME, WS, WINDOW_RECORD)
         .expect("the environment was placed");
     Fixture {
         user,
+        host_device,
         home,
         agent,
         laptop,
@@ -742,7 +695,7 @@ impl Fixture {
     /// A key the person made for an agent to act in their workspaces, which
     /// the workspace lists. It reaches all of them: the server admits a key to
     /// the workspaces its certificate reaches and no other, which is where a
-    /// key for one workspace is held to it.
+    /// key for one workspace is confined to it.
     fn key(&self, browser_pages: bool) -> TestDevice {
         let sk = ed25519_dalek::SigningKey::from_bytes(&[0x4b; 32]);
         let now = tilo_clock::unix_now_ns();
@@ -769,7 +722,7 @@ async fn opening_browser_places_an_environment_whose_session_holds_the_window() 
     assert_eq!(window.provider, WINDOW);
     assert_eq!(fixture.environments.starts(), 1, "one environment opened");
     let material = fixture.environments.material();
-    assert_eq!(material.record, "record-1");
+    assert_eq!(material.record, WINDOW_RECORD);
     assert_eq!(material.workspace, WS_NAME);
     assert_eq!(material.workspace_id, WS);
     assert_eq!(
@@ -795,7 +748,7 @@ async fn opening_browser_places_an_environment_whose_session_holds_the_window() 
         "the window is the device the server certified"
     );
     // A second open attaches to the window already up.
-    let again = fixture.browsers.place(WS_NAME, WS, "record-1").unwrap();
+    let again = fixture.browsers.place(WS_NAME, WS, WINDOW_RECORD).unwrap();
     assert_eq!(again, window);
     assert_eq!(fixture.environments.starts(), 1, "no second environment");
 }
@@ -819,39 +772,25 @@ impl Fixture {
 async fn a_page_action_reaches_the_window_as_the_caller() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     let material = fixture.environments.material();
-    let seen = window_session(
-        &fixture.server.server,
-        &fixture.user,
-        &material,
-        Asks::Never,
-    )
-    .await;
-    let caller = subscribe(&fixture.server.server, &fixture.user, &fixture.agent).await;
+    let seen = window_actions(&fixture.server.server, &material, Asks::Never).await;
+    let linked = member_link(&fixture.server.server, &fixture.agent).await;
+    let remote = asking(&linked, WS_NAME).await;
+    let caller = linked.caller(fixture.user.user_pk);
 
     let id = InvocationId::new();
-    caller
-        .send(to_server(WS, fixture.home, frame(page(id, "read-page"))))
-        .unwrap();
-    let answer = next(&caller, "caller").await;
-    let Envelope::RemoteAction {
-        to_device_public_key,
-        from_device_public_key,
-        frame: answer,
-        ..
-    } = answer
-    else {
-        panic!("the window answered: {answer:?}");
-    };
-    assert_eq!(to_device_public_key, fixture.agent.device_pubkey());
-    assert_eq!(
-        from_device_public_key, fixture.home,
-        "the answer comes from the host the caller asked, which handed it to the window"
-    );
-    let RemoteActionMessage::Receipt(receipt) = RemoteActionFrame::decode(&answer).unwrap().message
-    else {
-        panic!("an invocation is answered with a receipt");
-    };
+    let receipt = tilo_test_env::within(
+        "the window answers the page action",
+        ActionProvider::invoke(&remote, &caller, page(&fixture.agent, id, "read-page")),
+    )
+    .await
+    .expect("the host answers")
+    .expect("the window runs it");
     assert!(matches!(receipt.status, ReceiptStatus::Completed { .. }));
+    assert_eq!(
+        remote.device(),
+        fixture.home,
+        "the request was answered by the host the caller asked, which handed it to the window"
+    );
     assert_eq!(
         seen.lock()
             .unwrap()
@@ -872,61 +811,47 @@ async fn a_page_action_reaches_the_window_as_the_caller() {
 async fn the_host_lists_the_window_and_hands_its_listing_to_it() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     let material = fixture.environments.material();
-    window_session(
-        &fixture.server.server,
-        &fixture.user,
-        &material,
-        Asks::Never,
-    )
-    .await;
-    let caller = subscribe(&fixture.server.server, &fixture.user, &fixture.agent).await;
-    let listing = |correlation, provider: Option<&str>| {
-        frame(RemoteActionMessage::CatalogueRequest {
-            correlation,
-            query: CatalogueQuery {
-                provider: provider.map(str::to_owned),
-                ..CatalogueQuery::default()
-            },
-        })
-    };
-    let answered = |envelope: Envelope| {
-        let Envelope::RemoteAction {
-            from_device_public_key,
-            frame,
-            ..
-        } = envelope
-        else {
-            panic!("a listing is answered: {envelope:?}");
-        };
-        let RemoteActionMessage::CatalogueResponse {
-            result: Ok(page), ..
-        } = RemoteActionFrame::decode(&frame).unwrap().message
-        else {
-            panic!("a listing is answered with a page");
-        };
-        (from_device_public_key, page)
+    window_actions(&fixture.server.server, &material, Asks::Never).await;
+    let linked = member_link(&fixture.server.server, &fixture.agent).await;
+    let remote = asking(&linked, WS_NAME).await;
+    let caller = linked.caller(fixture.user.user_pk);
+    let listing = |provider: Option<&str>| CatalogueQuery {
+        provider: provider.map(str::to_owned),
+        ..CatalogueQuery::default()
     };
 
     // Before the host handed it anything of theirs, a device that asks the
     // window itself hears the window.
-    caller
-        .send(to_server(
-            WS,
-            material.device.device_public_key,
-            listing(3, Some(WINDOW)),
-        ))
-        .unwrap();
-    let (from, _) = answered(next(&caller, "caller").await);
+    let to_window = linked
+        .asking_device_in(WS_NAME, material.device.device_public_key)
+        .await
+        .expect("the host answers its actions link");
+    let page = tilo_test_env::within(
+        "the window answers its own listing",
+        ActionProvider::query(&to_window, &caller, listing(Some(WINDOW))),
+    )
+    .await
+    .expect("the host answers")
+    .expect("the listing is answered");
+    assert_eq!(page.revision, WINDOW_REVISION);
     assert_eq!(
-        from, material.device.device_public_key,
+        to_window.device(),
+        material.device.device_public_key,
         "a device that asked the window hears the window"
     );
 
-    caller
-        .send(to_server(WS, fixture.home, listing(1, None)))
-        .unwrap();
-    let (from, page) = answered(next(&caller, "caller").await);
-    assert_eq!(from, fixture.home);
+    let page = tilo_test_env::within(
+        "the host lists the window",
+        ActionProvider::query(&remote, &caller, listing(None)),
+    )
+    .await
+    .expect("the host answers")
+    .expect("the listing is answered");
+    assert_eq!(
+        remote.device(),
+        fixture.home,
+        "as the host the caller asked"
+    );
     let window = page
         .providers
         .iter()
@@ -934,7 +859,7 @@ async fn the_host_lists_the_window_and_hands_its_listing_to_it() {
         .unwrap_or_else(|| panic!("the window is listed: {:?}", page.providers));
     assert_eq!(window.app_id, "so.tilo.browser");
     assert_eq!(
-        window.document_id, "record-1",
+        window.document_id, WINDOW_RECORD,
         "on the record it was opened on"
     );
     assert_eq!(
@@ -950,15 +875,17 @@ async fn the_host_lists_the_window_and_hands_its_listing_to_it() {
         "beside what the host publishes itself"
     );
 
-    caller
-        .send(to_server(WS, fixture.home, listing(2, Some(WINDOW))))
-        .unwrap();
-    let (from, page) = answered(next(&caller, "caller").await);
+    let page = tilo_test_env::within(
+        "the host hands the listing to the window",
+        ActionProvider::query(&remote, &caller, listing(Some(WINDOW))),
+    )
+    .await
+    .expect("the host answers")
+    .expect("the listing is answered");
     assert_eq!(
         page.revision, WINDOW_REVISION,
         "the window answered its own listing"
     );
-    assert_eq!(from, fixture.home, "as the host the caller asked");
 }
 
 /// A session takes as long to start as its VM takes to wake: meanwhile the
@@ -967,13 +894,7 @@ async fn the_host_lists_the_window_and_hands_its_listing_to_it() {
 async fn a_listing_is_answered_while_another_window_is_placed() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     let material = fixture.environments.material();
-    window_session(
-        &fixture.server.server,
-        &fixture.user,
-        &material,
-        Asks::Never,
-    )
-    .await;
+    window_actions(&fixture.server.server, &material, Asks::Never).await;
     let (wake, waking) = std::sync::mpsc::channel();
     *fixture.environments.waking.lock().unwrap() = Some(waking);
     let browsers = Arc::clone(&fixture.browsers);
@@ -984,37 +905,22 @@ async fn a_listing_is_answered_while_another_window_is_placed() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
-    let caller = subscribe(&fixture.server.server, &fixture.user, &fixture.agent).await;
-    for (correlation, provider) in [(1, None), (2, Some(WINDOW))] {
-        caller
-            .send(to_server(
-                WS,
-                fixture.home,
-                frame(RemoteActionMessage::CatalogueRequest {
-                    correlation,
-                    query: CatalogueQuery {
-                        provider: provider.map(str::to_owned),
-                        ..CatalogueQuery::default()
-                    },
-                }),
-            ))
-            .unwrap();
-    }
-    for _ in 0..2 {
-        // The person's list of workspaces is pushed to every session of theirs as it changes;
-        // it answers nothing asked here.
-        let answer = loop {
-            let answer = tokio::time::timeout(Duration::from_secs(5), caller.recv())
-                .await
-                .expect("the listing is answered while the other window is placed");
-            if !matches!(answer, Some(Envelope::PersonalList { .. })) {
-                break answer;
-            }
+    let linked = member_link(&fixture.server.server, &fixture.agent).await;
+    let remote = asking(&linked, WS_NAME).await;
+    let caller = linked.caller(fixture.user.user_pk);
+    for provider in [None, Some(WINDOW)] {
+        let query = CatalogueQuery {
+            provider: provider.map(str::to_owned),
+            ..CatalogueQuery::default()
         };
-        assert!(
-            matches!(answer, Some(Envelope::RemoteAction { .. })),
-            "{answer:?}"
-        );
+        let answer = tokio::time::timeout(
+            Duration::from_secs(5),
+            ActionProvider::query(&remote, &caller, query),
+        )
+        .await
+        .expect("the listing is answered while the other window is placed")
+        .expect("the host answers");
+        assert!(answer.is_ok(), "the listing is answered: {answer:?}");
     }
 
     wake.send(()).unwrap();
@@ -1030,26 +936,21 @@ async fn a_page_action_past_the_allowance_is_refused_and_says_how_to_continue() 
     *meter.refusal.lock().unwrap() = Some(no_payment_method(3));
     let fixture = fixture(Arc::clone(&meter)).await;
     let material = fixture.environments.material();
-    let seen = window_session(
-        &fixture.server.server,
-        &fixture.user,
-        &material,
-        Asks::Never,
-    )
-    .await;
-    let caller = subscribe(&fixture.server.server, &fixture.user, &fixture.agent).await;
+    let seen = window_actions(&fixture.server.server, &material, Asks::Never).await;
+    let linked = member_link(&fixture.server.server, &fixture.agent).await;
+    let remote = asking(&linked, WS_NAME).await;
 
     let id = InvocationId::new();
-    caller
-        .send(to_server(WS, fixture.home, frame(page(id, "fill-page"))))
-        .unwrap();
-    let Envelope::RemoteAction { frame: answer, .. } = next(&caller, "caller").await else {
-        panic!("the caller is answered");
-    };
-    let RemoteActionMessage::Receipt(receipt) = RemoteActionFrame::decode(&answer).unwrap().message
-    else {
-        panic!("a refusal is a receipt");
-    };
+    let receipt = receipt_of(
+        remote
+            .ask_message(RemoteActionMessage::Invoke(page(
+                &fixture.agent,
+                id,
+                "fill-page",
+            )))
+            .await
+            .expect("the host answers"),
+    );
     assert_eq!(receipt.invocation, id);
     let ReceiptStatus::Rejected {
         error: ActionCallError::Refused { reason },
@@ -1074,33 +975,13 @@ async fn a_page_action_past_the_allowance_is_refused_and_says_how_to_continue() 
 async fn an_environment_serves_the_workspace_it_was_placed_for_and_no_other() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     let material = fixture.environments.material();
-    let seen = window_session(
-        &fixture.server.server,
-        &fixture.user,
-        &material,
-        Asks::Never,
-    )
-    .await;
+    let seen = window_actions(&fixture.server.server, &material, Asks::Never).await;
     let environment = DeviceIdentity::of(&material);
-    let client = ServerClient::connect(
-        client_endpoint().await,
-        fixture.server.server.node_addr(),
-        fixture.user.user_pk,
-        environment.cert.clone(),
-        environment.sk.clone(),
-        RevocationList::new(),
-    )
-    .await
-    .expect("the environment's device dials the host");
-    client
-        .send(Envelope::Subscribe {
-            workspace_id: OTHER_WS,
-        })
-        .unwrap();
-    let answer = next(&client, "environment").await;
+    // A device of one workspace joins no other: the host refuses the link.
+    let elsewhere = Linked::open(&fixture.server.server, &environment, OTHER_WS).await;
     assert!(
-        !matches!(answer, Envelope::Ready { .. }),
-        "a device of one workspace joins no other: {answer:?}"
+        elsewhere.is_err(),
+        "a device of one workspace joins no other"
     );
     assert!(seen.lock().unwrap().is_empty());
 }
@@ -1112,22 +993,18 @@ async fn an_environment_serves_the_workspace_it_was_placed_for_and_no_other() {
 async fn an_agents_reads_and_fills_run_at_once_and_its_submit_is_put_to_the_person() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     let material = fixture.environments.material();
-    let seen = window_session(
-        &fixture.server.server,
-        &fixture.user,
-        &material,
-        Asks::Submit,
-    )
-    .await;
-    let caller = subscribe(&fixture.server.server, &fixture.user, &fixture.agent).await;
+    let seen = window_actions(&fixture.server.server, &material, Asks::Submit).await;
+    let linked = member_link(&fixture.server.server, &fixture.agent).await;
+    let remote = asking(&linked, WS_NAME).await;
+    let caller = linked.caller(fixture.user.user_pk);
     let (_endpoint, mut approver) = fixture.approving_device().await;
 
     for action in ["read-page", "find-page-element", "fill-page", "select-page"] {
         let id = InvocationId::new();
-        caller
-            .send(to_server(WS, fixture.home, frame(page(id, action))))
-            .unwrap();
-        let ran = receipt_of(next(&caller, "caller").await);
+        let ran = ActionProvider::invoke(&remote, &caller, page(&fixture.agent, id, action))
+            .await
+            .expect("the host answers")
+            .expect("the window runs it");
         assert!(
             matches!(ran.status, ReceiptStatus::Completed { .. }),
             "{action} ran without asking: {ran:?}"
@@ -1145,11 +1022,12 @@ async fn an_agents_reads_and_fills_run_at_once_and_its_submit_is_put_to_the_pers
 
     // The submit asks the person, and the caller waits for them.
     let id = InvocationId::new();
-    caller
-        .send(to_server(WS, fixture.home, frame(submit(id))))
-        .unwrap();
+    let receipt = ActionProvider::invoke(&remote, &caller, submit(&fixture.agent, id))
+        .await
+        .expect("the host answers")
+        .expect("the window holds it for the person");
     assert_eq!(
-        receipt_of(next(&caller, "caller").await).status,
+        receipt.status,
         ReceiptStatus::Accepted,
         "the submit waits for the person rather than refused"
     );
@@ -1176,22 +1054,19 @@ async fn an_agents_reads_and_fills_run_at_once_and_its_submit_is_put_to_the_pers
 async fn a_submission_a_page_action_reached_is_asked_about_by_what_leaves() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     let material = fixture.environments.material();
-    window_session(
-        &fixture.server.server,
-        &fixture.user,
-        &material,
-        Asks::Departing,
-    )
-    .await;
-    let caller = subscribe(&fixture.server.server, &fixture.user, &fixture.agent).await;
+    window_actions(&fixture.server.server, &material, Asks::Departing).await;
+    let linked = member_link(&fixture.server.server, &fixture.agent).await;
+    let remote = asking(&linked, WS_NAME).await;
+    let caller = linked.caller(fixture.user.user_pk);
     let (_endpoint, mut approver) = fixture.approving_device().await;
 
     let id = InvocationId::new();
-    caller
-        .send(to_server(WS, fixture.home, frame(submit(id))))
-        .unwrap();
+    let receipt = ActionProvider::invoke(&remote, &caller, submit(&fixture.agent, id))
+        .await
+        .expect("the host answers")
+        .expect("the window holds it for the person");
     assert_eq!(
-        receipt_of(next(&caller, "caller").await).status,
+        receipt.status,
         ReceiptStatus::Accepted,
         "the submission waits for the person rather than refused"
     );
@@ -1210,22 +1085,19 @@ async fn a_submission_a_page_action_reached_is_asked_about_by_what_leaves() {
 async fn a_click_on_a_submit_button_is_asked_about_by_what_leaves() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     let material = fixture.environments.material();
-    window_session(
-        &fixture.server.server,
-        &fixture.user,
-        &material,
-        Asks::Departing,
-    )
-    .await;
-    let caller = subscribe(&fixture.server.server, &fixture.user, &fixture.agent).await;
+    window_actions(&fixture.server.server, &material, Asks::Departing).await;
+    let linked = member_link(&fixture.server.server, &fixture.agent).await;
+    let remote = asking(&linked, WS_NAME).await;
+    let caller = linked.caller(fixture.user.user_pk);
     let (_endpoint, mut approver) = fixture.approving_device().await;
 
     let id = InvocationId::new();
-    caller
-        .send(to_server(WS, fixture.home, frame(page(id, "click-page"))))
-        .unwrap();
+    let receipt = ActionProvider::invoke(&remote, &caller, page(&fixture.agent, id, "click-page"))
+        .await
+        .expect("the host answers")
+        .expect("the window holds it for the person");
     assert_eq!(
-        receipt_of(next(&caller, "caller").await).status,
+        receipt.status,
         ReceiptStatus::Accepted,
         "the click waits for the person rather than refused"
     );
@@ -1277,22 +1149,18 @@ async fn a_keys_page_actions_run_at_once_where_its_person_let_it_operate_them() 
     let key = fixture.key(true);
     fixture.list_environment_and(&key).await;
     let material = fixture.environments.material();
-    let seen = window_session(
-        &fixture.server.server,
-        &fixture.user,
-        &material,
-        Asks::Acting,
-    )
-    .await;
-    let caller = subscribe(&fixture.server.server, &fixture.user, &key).await;
+    let seen = window_actions(&fixture.server.server, &material, Asks::Acting).await;
+    let linked = member_link(&fixture.server.server, &key).await;
+    let remote = asking(&linked, WS_NAME).await;
+    let caller = linked.caller(fixture.user.user_pk);
     let (_endpoint, mut approver) = fixture.approving_device().await;
 
     for action in ["navigate", "fill-page", "select-page", "click-page"] {
         let id = InvocationId::new();
-        caller
-            .send(to_server(WS, fixture.home, frame(page(id, action))))
-            .unwrap();
-        let ran = receipt_for(&caller, id).await;
+        let ran = ActionProvider::invoke(&remote, &caller, page(&key, id, action))
+            .await
+            .expect("the host answers")
+            .expect("the window runs it");
         assert!(
             matches!(ran.status, ReceiptStatus::Completed { .. }),
             "{action} ran without asking: the page action was still a question ({ran:?})"
@@ -1322,11 +1190,12 @@ async fn a_keys_page_actions_run_at_once_where_its_person_let_it_operate_them() 
 
     // Submitting is not operating a page: it asks, whoever holds the key.
     let id = InvocationId::new();
-    caller
-        .send(to_server(WS, fixture.home, frame(submit(id))))
-        .unwrap();
+    let receipt = ActionProvider::invoke(&remote, &caller, submit(&key, id))
+        .await
+        .expect("the host answers")
+        .expect("the window holds it for the person");
     assert_eq!(
-        receipt_of(next(&caller, "caller").await).status,
+        receipt.status,
         ReceiptStatus::Accepted,
         "the submit waits for the person"
     );
@@ -1343,7 +1212,7 @@ async fn a_keys_page_actions_run_at_once_where_its_person_let_it_operate_them() 
         .expect("the person answers");
     assert!(
         matches!(
-            followed(&caller, fixture.home, id).await,
+            followed(&remote, &caller, id).await,
             tilo_actions::InvocationUpdate::Succeeded { .. }
         ),
         "their answer runs the submit they were asked about"
@@ -1363,23 +1232,20 @@ async fn a_keys_page_actions_ask_first_where_it_may_not_operate_them() {
     let key = fixture.key(false);
     fixture.list_environment_and(&key).await;
     let material = fixture.environments.material();
-    let seen = window_session(
-        &fixture.server.server,
-        &fixture.user,
-        &material,
-        Asks::Acting,
-    )
-    .await;
-    let caller = subscribe(&fixture.server.server, &fixture.user, &key).await;
+    let seen = window_actions(&fixture.server.server, &material, Asks::Acting).await;
+    let linked = member_link(&fixture.server.server, &key).await;
+    let remote = asking(&linked, WS_NAME).await;
+    let caller = linked.caller(fixture.user.user_pk);
     let (_endpoint, mut approver) = fixture.approving_device().await;
 
     for action in ["fill-page", "select-page", "click-page"] {
         let id = InvocationId::new();
-        caller
-            .send(to_server(WS, fixture.home, frame(page(id, action))))
-            .unwrap();
+        let receipt = ActionProvider::invoke(&remote, &caller, page(&key, id, action))
+            .await
+            .expect("the host answers")
+            .expect("the window holds it for the person");
         assert_eq!(
-            receipt_for(&caller, id).await.status,
+            receipt.status,
             ReceiptStatus::Accepted,
             "{action} waits for the person"
         );
@@ -1394,7 +1260,7 @@ async fn a_keys_page_actions_ask_first_where_it_may_not_operate_them() {
             .expect("the person answers");
         assert!(
             matches!(
-                followed(&caller, fixture.home, id).await,
+                followed(&remote, &caller, id).await,
                 tilo_actions::InvocationUpdate::Succeeded { .. }
             ),
             "{action} ran once they allowed it"
@@ -1413,13 +1279,11 @@ async fn a_keys_page_actions_ask_first_where_it_may_not_operate_them() {
         "the window ran them as the key's agent"
     );
     let id = InvocationId::new();
-    caller
-        .send(to_server(WS, fixture.home, frame(submit(id))))
-        .unwrap();
-    assert_eq!(
-        receipt_for(&caller, id).await.status,
-        ReceiptStatus::Accepted
-    );
+    let receipt = ActionProvider::invoke(&remote, &caller, submit(&key, id))
+        .await
+        .expect("the host answers")
+        .expect("the window holds it for the person");
+    assert_eq!(receipt.status, ReceiptStatus::Accepted);
     assert_eq!(
         asked(&mut approver).await.action_label,
         "Submit the application"
@@ -1433,30 +1297,21 @@ async fn a_keys_page_actions_ask_first_where_it_may_not_operate_them() {
 async fn a_page_action_the_person_allows_runs_once_and_the_page_answers_it() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     let material = fixture.environments.material();
-    let seen = window_session(
-        &fixture.server.server,
-        &fixture.user,
-        &material,
-        Asks::Submit,
-    )
-    .await;
-    let caller = subscribe(&fixture.server.server, &fixture.user, &fixture.agent).await;
+    let seen = window_actions(&fixture.server.server, &material, Asks::Submit).await;
+    let linked = member_link(&fixture.server.server, &fixture.agent).await;
+    let remote = asking(&linked, WS_NAME).await;
+    let caller = linked.caller(fixture.user.user_pk);
     let (_endpoint, mut approver) = fixture.approving_device().await;
 
     let id = InvocationId::new();
-    caller
-        .send(to_server(WS, fixture.home, frame(submit(id))))
-        .unwrap();
-    assert_eq!(
-        receipt_of(next(&caller, "caller").await).status,
-        ReceiptStatus::Accepted
-    );
+    let receipt = ActionProvider::invoke(&remote, &caller, submit(&fixture.agent, id))
+        .await
+        .expect("the host answers")
+        .expect("the window holds it for the person");
+    assert_eq!(receipt.status, ReceiptStatus::Accepted);
     let question = asked(&mut approver).await;
     // While the person is asked, a caller following it is told so.
-    caller
-        .send(to_server(WS, fixture.home, frame(observe(id))))
-        .unwrap();
-    let waiting = update_of(next(&caller, "caller").await).expect("the caller's invocation");
+    let waiting = observed(&remote, &caller, id).expect("the caller's invocation");
     assert!(
         matches!(
             &waiting.update,
@@ -1471,7 +1326,7 @@ async fn a_page_action_the_person_allows_runs_once_and_the_page_answers_it() {
         .await
         .expect("the person answers");
 
-    let ended = followed(&caller, fixture.home, id).await;
+    let ended = followed(&remote, &caller, id).await;
     assert!(
         matches!(ended, tilo_actions::InvocationUpdate::Succeeded { .. }),
         "the page's own answer comes back to the invocation that asked: {ended:?}"
@@ -1499,30 +1354,24 @@ async fn a_page_action_the_person_allows_runs_once_and_the_page_answers_it() {
 async fn the_persons_denial_ends_a_page_action_refused_and_counts_nothing() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     let material = fixture.environments.material();
-    let seen = window_session(
-        &fixture.server.server,
-        &fixture.user,
-        &material,
-        Asks::Submit,
-    )
-    .await;
-    let caller = subscribe(&fixture.server.server, &fixture.user, &fixture.agent).await;
+    let seen = window_actions(&fixture.server.server, &material, Asks::Submit).await;
+    let linked = member_link(&fixture.server.server, &fixture.agent).await;
+    let remote = asking(&linked, WS_NAME).await;
+    let caller = linked.caller(fixture.user.user_pk);
     let (_endpoint, mut approver) = fixture.approving_device().await;
 
     let id = InvocationId::new();
-    caller
-        .send(to_server(WS, fixture.home, frame(submit(id))))
-        .unwrap();
-    assert_eq!(
-        receipt_of(next(&caller, "caller").await).status,
-        ReceiptStatus::Accepted
-    );
+    let receipt = ActionProvider::invoke(&remote, &caller, submit(&fixture.agent, id))
+        .await
+        .expect("the host answers")
+        .expect("the window holds it for the person");
+    assert_eq!(receipt.status, ReceiptStatus::Accepted);
     let question = asked(&mut approver).await;
     approver
         .answer(question.id, ConfirmationAnswer::Deny)
         .await
         .expect("the person answers");
-    let ended = followed(&caller, fixture.home, id).await;
+    let ended = followed(&remote, &caller, id).await;
     assert_eq!(
         ended,
         tilo_actions::InvocationUpdate::Failed {
@@ -1550,24 +1399,18 @@ async fn a_question_nobody_answers_ends_a_page_action_refused() {
     )
     .await;
     let material = fixture.environments.material();
-    let seen = window_session(
-        &fixture.server.server,
-        &fixture.user,
-        &material,
-        Asks::Submit,
-    )
-    .await;
-    let caller = subscribe(&fixture.server.server, &fixture.user, &fixture.agent).await;
+    let seen = window_actions(&fixture.server.server, &material, Asks::Submit).await;
+    let linked = member_link(&fixture.server.server, &fixture.agent).await;
+    let remote = asking(&linked, WS_NAME).await;
+    let caller = linked.caller(fixture.user.user_pk);
 
     let id = InvocationId::new();
-    caller
-        .send(to_server(WS, fixture.home, frame(submit(id))))
-        .unwrap();
-    assert_eq!(
-        receipt_of(next(&caller, "caller").await).status,
-        ReceiptStatus::Accepted
-    );
-    let ended = followed(&caller, fixture.home, id).await;
+    let receipt = ActionProvider::invoke(&remote, &caller, submit(&fixture.agent, id))
+        .await
+        .expect("the host answers")
+        .expect("the window holds it for the person");
+    assert_eq!(receipt.status, ReceiptStatus::Accepted);
+    let ended = followed(&remote, &caller, id).await;
     let tilo_actions::InvocationUpdate::Failed { error, .. } = ended else {
         panic!("a question nobody answers ends it failed: {ended:?}");
     };
@@ -1589,14 +1432,10 @@ async fn a_question_nobody_answers_ends_a_page_action_refused() {
 async fn only_this_hosts_answer_for_this_invocation_runs_a_page_action() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     let material = fixture.environments.material();
-    let seen = window_session(
-        &fixture.server.server,
-        &fixture.user,
-        &material,
-        Asks::Submit,
-    )
-    .await;
-    let caller = subscribe(&fixture.server.server, &fixture.user, &fixture.agent).await;
+    let seen = window_actions(&fixture.server.server, &material, Asks::Submit).await;
+    let linked = member_link(&fixture.server.server, &fixture.agent).await;
+    let remote = asking(&linked, WS_NAME).await;
+    let caller = linked.caller(fixture.user.user_pk);
 
     let id = InvocationId::new();
     let elsewhere = ed25519_dalek::SigningKey::from_bytes(&[0x11; 32]);
@@ -1620,22 +1459,21 @@ async fn only_this_hosts_answer_for_this_invocation_runs_a_page_action() {
         ),
     );
     approval.sign(&elsewhere).expect("the other host signs it");
-    caller
-        .send(to_server(
-            WS,
-            fixture.home,
-            frame(page_with(
-                id,
-                "submit-page",
-                Some(Confirmation::Approved(approval.encode())),
-            )),
-        ))
-        .unwrap();
+    let fixed = ActionProvider::invoke(
+        &remote,
+        &caller,
+        page_with(
+            &fixture.agent,
+            id,
+            "submit-page",
+            Some(Confirmation::Approved(approval.encode())),
+        ),
+    )
+    .await
+    .expect("the host answers");
     assert_eq!(
-        receipt_of(next(&caller, "caller").await).status,
-        ReceiptStatus::Rejected {
-            error: ActionCallError::NotPermitted
-        },
+        fixed.expect_err("another host's word is no answer here"),
+        ActionCallError::NotPermitted,
         "another host's word is no answer here"
     );
     assert!(seen.lock().unwrap().is_empty(), "it reached no window");
@@ -1649,57 +1487,120 @@ const NOTES_RECORD: &str = "notes-1";
 /// The channel the window's own record lives on, and the one a customer's
 /// document lives on: what every protocol of the workspace tells a record by.
 fn window_channel() -> [u8; 32] {
-    tilo_server::environment::document_channel(tilo_server::hosted_browser::APP, "record-1")
+    tilo_server::environment::document_channel(APP, WINDOW_RECORD)
 }
 
 fn notes_channel() -> [u8; 32] {
     tilo_server::environment::document_channel(NOTES, NOTES_RECORD)
 }
 
-/// One change of `channel`'s record, as a device writes it.
-fn change(channel: [u8; 32], marker: &[u8]) -> Vec<u8> {
-    tilo_server::coedit::CoeditPayload::RetainedDelta {
-        channel,
-        body: marker.to_vec(),
-    }
-    .encode()
-    .unwrap()
-}
-
-/// Every envelope a session hears in `within`, the ones it already holds first.
-async fn heard(client: &ServerClient, within: std::time::Duration) -> Vec<Envelope> {
-    let mut out = Vec::new();
-    while let Ok(Some(envelope)) = tokio::time::timeout(within, client.recv()).await {
-        out.push(envelope);
-    }
-    out
-}
-
-/// The record channel each change a session heard belongs to.
-fn changed(envelopes: &[Envelope]) -> Vec<[u8; 32]> {
-    envelopes
+/// The channel each record frame a link brought belongs to.
+fn changed(frames: &[Heard]) -> Vec<[u8; 32]> {
+    frames
         .iter()
-        .filter_map(|envelope| {
-            let Envelope::Delta { delta, .. } = envelope else {
+        .filter_map(|heard| {
+            let neighbour_wire::NeighbourMsg::AppDocument {
+                app_id,
+                document_id,
+                ..
+            } = &heard.message
+            else {
                 return None;
             };
-            match tilo_server::coedit::CoeditPayload::decode(delta)? {
-                tilo_server::coedit::CoeditPayload::Checkpoint { channel, .. }
-                | tilo_server::coedit::CoeditPayload::RetainedDelta { channel, .. } => {
-                    Some(channel)
-                }
-            }
+            Some(neighbour_wire::app_document_group(app_id, document_id))
         })
         .collect()
 }
 
+/// Every frame `linked` hears within `within`.
+async fn heard(linked: &mut Linked, within: std::time::Duration) -> Vec<Heard> {
+    let mut out = Vec::new();
+    while let Ok(Some(frame)) = tokio::time::timeout(within, linked.next()).await {
+        out.push(frame);
+    }
+    out
+}
+
+/// `linked`'s device writes `marker` into `record` of `app`, through the link.
+fn publish_record(linked: &Linked, device: &TestDevice, app: &str, record: &str, marker: &str) {
+    let mut document = AutoCommit::new();
+    document.put(ROOT, "marker", marker).unwrap();
+    let bytes = document.save();
+    linked
+        .publish(move |peer| {
+            peer.publication_mut().publish_document(
+                app,
+                record,
+                bytes,
+                &device.sk,
+                std::time::SystemTime::now(),
+            )
+        })
+        .unwrap();
+}
+
+/// What the host made of `linked`'s next own write.
+async fn next_answer(
+    answers: &mut tokio::sync::broadcast::Receiver<tilo_peer_state::direct::Answered>,
+) -> tilo_peer_state::direct::Answered {
+    tilo_test_env::within("the host answers the write", answers.recv())
+        .await
+        .expect("the link stays open")
+}
+
+/// A device's copy of the workspace as the host holds it, without any of its
+/// records: what a device links with when it holds none of the workspace yet.
+async fn workspace_seed(fixture: &Fixture, device: &TestDevice) -> tilo_peer_state::StatePeer {
+    let workspaces = fixture
+        .server
+        .server
+        .workspaces()
+        .expect("the server holds workspaces");
+    let authority = workspaces.device_cert().clone();
+    let state = workspaces
+        .state(WS_NAME)
+        .await
+        .expect("the server holds the workspace");
+    let mut roster = state.certificates();
+    if !roster
+        .iter()
+        .any(|cert| cert.device_public_key == device.device_pubkey())
+    {
+        roster.push(device.cert.clone());
+    }
+    let now = tilo_clock::wall();
+    let mut peer = tilo_peer_state::StatePeer::new(
+        WS_NAME,
+        authority.clone(),
+        roster.clone(),
+        RevocationList::new(),
+        now,
+    )
+    .expect("the workspace opens");
+    peer.select_exact_admissions()
+        .expect("its admissions stand");
+    peer.install_seed(
+        tilo_peer_state::SeedState {
+            workspace_changes: tilo_peer_state::seed_workspace(WS_NAME, &authority, &roster)
+                .expect("the workspace seeds"),
+            documents: Vec::new(),
+        },
+        &fixture.host_device.sk,
+        now,
+    )
+    .expect("the seed lands");
+    peer
+}
+
 impl Fixture {
-    /// The environment's own session: the device the server certified, joining
+    /// The environment's own link: the device the server certified, joining
     /// the one workspace it was placed in.
-    async fn environment_session(&self) -> ServerClient {
+    async fn environment_session(&self) -> Linked {
         let material = self.environments.material();
         let environment = DeviceIdentity::of(&material);
-        subscribe(&self.server.server, &self.user, &environment).await
+        Linked::open(&self.server.server, &environment, WS)
+            .await
+            .expect("the workspace admits the device it placed")
     }
 }
 
@@ -1710,11 +1611,7 @@ async fn the_server_confines_an_environments_device_to_the_record_it_placed() {
     assert_eq!(
         tilo_server::environment::environment_of(&fixture.server.server.environments(), &device),
         Some(tilo_server::environment::Environment::Placed(
-            tilo_server::environment::EnvironmentScope::for_resource(
-                WS,
-                tilo_server::hosted_browser::APP,
-                "record-1"
-            )
+            tilo_server::environment::EnvironmentScope::for_resource(WS, APP, WINDOW_RECORD)
         )),
         "the placement names the one record its device reaches"
     );
@@ -1732,11 +1629,7 @@ async fn a_server_that_restarts_still_confines_the_environment_it_placed() {
     assert_eq!(
         tilo_server::environment::environment_of(&restarted, &device),
         Some(tilo_server::environment::Environment::Placed(
-            tilo_server::environment::EnvironmentScope::for_resource(
-                WS,
-                tilo_server::hosted_browser::APP,
-                "record-1"
-            )
+            tilo_server::environment::EnvironmentScope::for_resource(WS, APP, WINDOW_RECORD)
         )),
         "a placed environment is written down before its device is listed, so a \
          restart confines it rather than leaving it a member"
@@ -1746,27 +1639,31 @@ async fn a_server_that_restarts_still_confines_the_environment_it_placed() {
 #[tokio::test]
 async fn an_environment_hears_its_own_record_and_no_other() {
     let fixture = fixture(Arc::new(Counting::default())).await;
-    let environment = fixture.environment_session().await;
-    let writer = subscribe(&fixture.server.server, &fixture.user, &fixture.agent).await;
-    for (channel, marker) in [
-        (notes_channel(), b"a customer's document".as_slice()),
-        (window_channel(), b"the window's own state".as_slice()),
-    ] {
-        writer
-            .send(Envelope::Delta {
-                workspace_id: WS,
-                author_device_public_key: fixture.agent.device_pubkey(),
-                authored_at_ns: tilo_clock::unix_now_ns(),
-                delta: change(channel, marker),
-                signature: [0; 64],
-            })
-            .unwrap();
-    }
-    let heard = heard(&environment, std::time::Duration::from_millis(500)).await;
+    let mut environment = fixture.environment_session().await;
+    let writer = member_link(&fixture.server.server, &fixture.agent).await;
+    publish_record(
+        &writer,
+        &fixture.agent,
+        NOTES,
+        NOTES_RECORD,
+        "a customer's document",
+    );
+    publish_record(
+        &writer,
+        &fixture.agent,
+        APP,
+        WINDOW_RECORD,
+        "the window's own state",
+    );
+    let heard = heard(&mut environment, std::time::Duration::from_millis(500)).await;
     assert_eq!(
         changed(&heard),
         [window_channel()],
-        "a page that escapes Chromium reads no other record of the workspace: {heard:?}"
+        "a page that escapes Chromium reads no other record of the workspace"
+    );
+    assert!(
+        environment.read(|peer| peer.document(NOTES, NOTES_RECORD).is_none()),
+        "no other record of the workspace is its to read"
     );
 }
 
@@ -1792,46 +1689,37 @@ async fn written_by(server: &tilo_server::Server, device: [u8; 32]) -> Vec<([u8;
 #[tokio::test]
 async fn an_environment_writes_its_record_and_no_other() {
     let fixture = fixture(Arc::new(Counting::default())).await;
-    let environment = fixture.environment_session().await;
-    let device = fixture.environments.material().device.device_public_key;
-    environment
-        .send(Envelope::Delta {
-            workspace_id: WS,
-            author_device_public_key: device,
-            authored_at_ns: tilo_clock::unix_now_ns(),
-            delta: change(notes_channel(), b"overwritten by a page"),
-            signature: [0; 64],
-        })
-        .unwrap();
-    let refusal = next(&environment, "environment").await;
-    let Envelope::NotAuthorised {
-        workspace_id,
-        refusal,
-    } = refusal
-    else {
+    let mut environment = fixture.environment_session().await;
+    let environment_device = DeviceIdentity::of(&fixture.environments.material());
+    let device = environment_device.device_pubkey();
+    let mut answers = environment.answers();
+    publish_record(
+        &environment,
+        &environment_device,
+        NOTES,
+        NOTES_RECORD,
+        "overwritten by a page",
+    );
+    let refusal = next_answer(&mut answers).await;
+    let tilo_peer_state::direct::Kept::Refused { reason } = &refusal.kept else {
         panic!("a write to another record is refused: {refusal:?}");
     };
-    assert_eq!(workspace_id, WS);
     assert!(
-        matches!(&refusal, tilo_server_protocol::refusal::Refusal::NotAllowed(rule) if rule.contains("environment")),
-        "the refusal names the rule: {refusal}"
+        reason.contains("environment"),
+        "the refusal names the rule: {reason}"
     );
 
-    environment
-        .send(Envelope::Delta {
-            workspace_id: WS,
-            author_device_public_key: device,
-            authored_at_ns: tilo_clock::unix_now_ns(),
-            delta: change(window_channel(), b"the page clicked"),
-            signature: [0; 64],
-        })
-        .unwrap();
-    let tolerance = heard(&environment, std::time::Duration::from_millis(300)).await;
-    assert!(
-        !tolerance
-            .iter()
-            .any(|envelope| matches!(envelope, Envelope::NotAuthorised { .. })),
-        "its own record is its to write: {tolerance:?}"
+    publish_record(
+        &environment,
+        &environment_device,
+        APP,
+        WINDOW_RECORD,
+        "the page clicked",
+    );
+    assert_eq!(
+        next_answer(&mut answers).await.kept,
+        tilo_peer_state::direct::Kept::Durable,
+        "its own record is its to write"
     );
     // The server keeps a write as it takes it in, and says nothing back to its writer: the
     // store is read until the write is there, however long a loaded server takes.
@@ -1860,77 +1748,58 @@ async fn an_environment_opens_its_own_record_and_no_other() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     let environment = fixture.environment_session().await;
     environment
-        .send(Envelope::OpenDocument {
-            workspace_id: WS,
-            channel: notes_channel(),
-        })
-        .unwrap();
-    let refusal = next(&environment, "environment").await;
+        .sync
+        .open_record(notes_channel())
+        .await
+        .expect("the link answers an open it keeps nothing of");
     assert!(
-        matches!(&refusal, Envelope::NotAuthorised { refusal, .. } if refusal.to_string().contains("environment")),
-        "another record does not open for it: {refusal:?}"
+        environment.read(|peer| peer.document(NOTES, NOTES_RECORD).is_none()),
+        "another record does not open for it"
     );
     environment
-        .send(Envelope::OpenDocument {
-            workspace_id: WS,
-            channel: window_channel(),
-        })
-        .unwrap();
-    let answer = next(&environment, "environment").await;
-    assert!(
-        matches!(answer, Envelope::DocumentOpened { channel, .. } if channel == window_channel()),
-        "its own record opens: {answer:?}"
-    );
+        .sync
+        .open_record(window_channel())
+        .await
+        .expect("its own record opens");
 }
 
 #[tokio::test]
 async fn an_environments_replay_is_its_own_record_and_no_other() {
     let fixture = fixture(Arc::new(Counting::default())).await;
-    let writer = subscribe(&fixture.server.server, &fixture.user, &fixture.agent).await;
-    for (channel, marker) in [
-        (notes_channel(), b"a customer's document".as_slice()),
-        (window_channel(), b"the window's own state".as_slice()),
-    ] {
-        writer
-            .send(Envelope::Delta {
-                workspace_id: WS,
-                author_device_public_key: fixture.agent.device_pubkey(),
-                authored_at_ns: tilo_clock::unix_now_ns(),
-                delta: change(channel, marker),
-                signature: [0; 64],
-            })
-            .unwrap();
-    }
-    // It joins after both records were written: what reaches it — queued
-    // before its subscription, then replayed behind it — is its own record.
+    let writer = member_link(&fixture.server.server, &fixture.agent).await;
+    publish_record(
+        &writer,
+        &fixture.agent,
+        NOTES,
+        NOTES_RECORD,
+        "a customer's document",
+    );
+    publish_record(
+        &writer,
+        &fixture.agent,
+        APP,
+        WINDOW_RECORD,
+        "the window's own state",
+    );
+    // It joins after both records were written: what its link is sent — the
+    // replay before its copy, then what is written behind it — is its own
+    // record.
     let material = fixture.environments.material();
-    let environment = DeviceIdentity::of(&material);
-    let client = ServerClient::connect(
-        client_endpoint().await,
-        fixture.server.server.node_addr(),
-        fixture.user.user_pk,
-        environment.cert.clone(),
-        environment.sk.clone(),
-        RevocationList::new(),
-    )
-    .await
-    .expect("connect");
-    client
-        .send(Envelope::Subscribe { workspace_id: WS })
-        .unwrap();
-    let mut heard = Vec::new();
-    let mut ready = false;
-    while let Ok(Some(envelope)) =
-        tokio::time::timeout(std::time::Duration::from_millis(700), client.recv()).await
-    {
-        ready |= matches!(envelope, Envelope::Ready { .. });
-        heard.push(envelope);
-    }
-    assert!(ready, "the environment's subscription is answered");
+    let environment_device = DeviceIdentity::of(&material);
+    let seed = workspace_seed(&fixture, &environment_device).await;
+    let mut environment =
+        Linked::open_seeded(&fixture.server.server, &environment_device, WS, seed)
+            .await
+            .expect("the environment's link opens");
+    let heard = heard(&mut environment, std::time::Duration::from_millis(700)).await;
     assert_eq!(
         changed(&heard),
         [window_channel()],
-        "the replay of another record stays out: {heard:?}"
+        "the replay of another record stays out"
+    );
+    assert!(
+        environment.read(|peer| peer.document(NOTES, NOTES_RECORD).is_none()),
+        "no other record of the workspace reaches it"
     );
 }
 
@@ -1938,27 +1807,22 @@ async fn an_environments_replay_is_its_own_record_and_no_other() {
 async fn an_environment_answers_a_page_action_and_never_calls_one() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     let material = fixture.environments.material();
-    let seen = window_session(
-        &fixture.server.server,
-        &fixture.user,
-        &material,
-        Asks::Never,
-    )
-    .await;
-    let environment = fixture.environment_session().await;
+    let seen = window_actions(&fixture.server.server, &material, Asks::Never).await;
+    let environment_device = DeviceIdentity::of(&material);
+    let environment = member_link(&fixture.server.server, &environment_device).await;
+    let remote = asking(&environment, WS_NAME).await;
+    let caller = environment.caller(fixture.user.user_pk);
     // The window's device calls the workspace's entry itself: not its to do.
-    environment
-        .send(Envelope::RemoteAction {
-            workspace_id: WS,
-            version: REMOTE_ACTION_ENVELOPE_VERSION,
-            to_device_public_key: fixture.home,
-            from_device_public_key: material.device.device_public_key,
-            from_user_public_key: material.user_public_key,
-            frame: frame(RemoteActionMessage::Invoke(InvokeRequest {
+    let refused = ActionProvider::invoke(
+        &remote,
+        &caller,
+        as_asked(
+            &environment_device,
+            InvokeRequest {
                 on_behalf_of: None,
                 invocation: InvocationId::new(),
                 target: RemoteActionTarget {
-                    provider: "so.tilo.notes".into(),
+                    provider: NOTES.into(),
                     address: ActionAddress::new("notes", "delete"),
                 },
                 argument: InvokeArgument::None,
@@ -1968,13 +1832,15 @@ async fn an_environment_answers_a_page_action_and_never_calls_one() {
                 wait_ms: None,
                 appearance: None,
                 signed: None,
-            })),
-        })
-        .unwrap();
-    let answer = next(&environment, "environment").await;
+            },
+        ),
+    )
+    .await
+    .expect("the host answers")
+    .expect_err("a window's device calls no entry of the workspace");
     assert!(
-        matches!(answer, Envelope::RemoteActionUndeliverable { .. }),
-        "a window's device calls no entry of the workspace: {answer:?}"
+        matches!(refused, ActionCallError::Unavailable { .. }),
+        "a window's device calls no entry of the workspace: {refused:?}"
     );
     assert!(seen.lock().unwrap().is_empty());
 }
@@ -1984,9 +1850,8 @@ async fn a_stopped_environment_reaches_nothing() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     let material = fixture.environments.material();
     let device = material.device.device_public_key;
-    // The session that holds the window is here, and stays connected over the
-    // stop.
-    let environment = fixture.environment_session().await;
+    // The link that holds the window is here, and stays up over the stop.
+    let mut environment = fixture.environment_session().await;
     fixture.browsers.stopped(WS);
     assert_eq!(
         tilo_server::environment::environment_of(&fixture.server.server.environments(), &device),
@@ -2000,35 +1865,22 @@ async fn a_stopped_environment_reaches_nothing() {
         1,
         "the session in the VM was ended"
     );
-    // Its connection here is cut: the protocols it carried refuse it.
+    // Its link here is cut: the protocols it carried refuse it.
+    let closed = tokio::time::timeout(tilo_test_env::hang_bound(), environment.closed()).await;
     assert!(
-        tokio::time::timeout(tilo_test_env::hang_bound(), async {
-            while environment.recv().await.is_some() {}
-        })
-        .await
-        .is_ok(),
-        "a stopped environment's device has no connection left"
+        closed.is_ok(),
+        "a stopped environment's device has no link left"
+    );
+    assert!(
+        closed.unwrap().is_err(),
+        "the host's refusal ends it: the device is no device of the workspace"
     );
     // It dials again: refused, not open.
     let environment = DeviceIdentity::of(&material);
-    let refused = ServerClient::connect(
-        client_endpoint().await,
-        fixture.server.server.node_addr(),
-        fixture.user.user_pk,
-        environment.cert.clone(),
-        environment.sk.clone(),
-        RevocationList::new(),
-    )
-    .await
-    .expect("the environment's device dials the host");
-    refused
-        .send(Envelope::Subscribe { workspace_id: WS })
-        .unwrap();
-    // Refused at the handshake or at its subscribe, or closed: never ready.
-    let answer = tokio::time::timeout(tilo_test_env::hang_bound(), refused.recv()).await;
+    let refused = Linked::open(&fixture.server.server, &environment, WS).await;
     assert!(
-        !matches!(answer, Ok(Some(Envelope::Ready { .. }))),
-        "a stopped environment's device is no device of the workspace: {answer:?}"
+        refused.is_err(),
+        "a stopped environment's device is no device of the workspace"
     );
 }
 
@@ -2042,10 +1894,12 @@ async fn an_environment_stops_when_the_session_that_held_it_ends() {
     .await;
     let material = fixture.environments.material();
     let device = material.device.device_public_key;
-    let environment = fixture.environment_session().await;
-    drop(environment);
-    // The server hears that the device's session ended and stops its
-    // environment: one signal, and no protocol admits it after.
+    // The session that holds the window here, and ends: the server hears its
+    // last connection go and stops its environment.
+    let (endpoint, live) = live_session(&fixture.server.server, &material).await;
+    endpoint.close().await;
+    drop(live);
+    // One signal, and no protocol admits it after.
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if fixture
@@ -2072,18 +1926,21 @@ async fn an_environment_stops_when_the_session_that_held_it_ends() {
     );
 }
 
-/// The device holding the workspace's window, connected: what the session in
-/// the VM is, reporting the departures its page holds to the server.
-async fn window_device(fixture: &Fixture, material: &Material) -> ServerClient {
+/// The device holding the workspace's window, linked: what the session in
+/// the VM is, reporting the departures its page holds to the server. Its
+/// actions are asked over its link, as every device asks its host's.
+async fn window_device(fixture: &Fixture, material: &Material) -> (Linked, RemoteDevice) {
     let device = DeviceIdentity::of(material);
-    subscribe(&fixture.server.server, &fixture.user, &device).await
+    let linked = member_link(&fixture.server.server, &device).await;
+    let remote = asking(&linked, WS_NAME).await;
+    (linked, remote)
 }
 
 /// A departure the window holds, reported as the session in the VM reports
 /// one: the invocation that would answer it, named by the id the window
 /// published it with, and the departure itself in its context — the page it
 /// leaves from, what it sends and where — as the window states it.
-fn held(correlation: u64, id: u32) -> RemoteActionMessage {
+fn reported_departure(correlation: u64, id: u32) -> RemoteActionMessage {
     RemoteActionMessage::Confirm {
         correlation,
         request: Box::new(InvokeRequest {
@@ -2120,25 +1977,17 @@ fn held(correlation: u64, id: u32) -> RemoteActionMessage {
     }
 }
 
-/// What the server answered the report `correlation` names, once it did.
-async fn hold_answer(
-    window: &ServerClient,
+/// What the server answered the report `correlation` names.
+fn departure_answer(
+    answer: Option<RemoteActionMessage>,
     correlation: u64,
 ) -> Result<Box<ConfirmedInvocation>, ActionCallError> {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        let envelope = next(window, "window").await;
-        let Envelope::RemoteAction { frame, .. } = envelope else {
-            panic!("the window is answered: {envelope:?}");
-        };
-        match RemoteActionFrame::decode(&frame).unwrap().message {
-            RemoteActionMessage::ConfirmResponse {
-                correlation: answered,
-                result,
-            } if answered == correlation => return result,
-            _ => {}
-        }
-        assert!(Instant::now() < deadline, "the hold was never answered");
+    match answer.expect("the window is answered") {
+        RemoteActionMessage::ConfirmResponse {
+            correlation: answered,
+            result,
+        } if answered == correlation => result,
+        other => panic!("the hold is answered: {other:?}"),
     }
 }
 
@@ -2149,12 +1998,10 @@ async fn hold_answer(
 async fn a_departure_nothing_asked_for_is_put_to_the_person_and_their_allow_names_it() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     let material = fixture.environments.material();
-    let window = window_device(&fixture, &material).await;
+    let (_window, remote) = window_device(&fixture, &material).await;
     let (_endpoint, mut approver) = fixture.approving_device().await;
 
-    window
-        .send(to_server(WS, fixture.home, frame(held(1, 2))))
-        .unwrap();
+    let first = remote.ask_message(reported_departure(1, 2));
     let question = asked(&mut approver).await;
     assert_eq!(
         question.action_label, "send the form to https://orders.example",
@@ -2177,11 +2024,15 @@ async fn a_departure_nothing_asked_for_is_put_to_the_person_and_their_allow_name
     );
 
     // The same departure reported again is not put to them twice.
-    window
-        .send(to_server(WS, fixture.home, frame(held(2, 2))))
-        .unwrap();
+    let second = departure_answer(
+        remote
+            .ask_message(reported_departure(2, 2))
+            .await
+            .expect("the window is answered"),
+        2,
+    );
     assert!(
-        hold_answer(&window, 2).await.is_err(),
+        second.is_err(),
         "the second report is told it is already asked"
     );
     assert_eq!(
@@ -2194,7 +2045,7 @@ async fn a_departure_nothing_asked_for_is_put_to_the_person_and_their_allow_name
         .answer(question.id, ConfirmationAnswer::AllowOnce)
         .await
         .expect("the person answers");
-    let confirmed = hold_answer(&window, 1)
+    let confirmed = departure_answer(first.await.expect("the window is answered"), 1)
         .await
         .expect("their answer is the confirmation the request runs with");
     let Some(Confirmation::Approved(token)) = Some(confirmed.confirmation) else {
@@ -2227,21 +2078,19 @@ async fn a_departure_nothing_asked_for_is_put_to_the_person_and_their_allow_name
 async fn a_departure_the_person_does_not_allow_is_answered_kept() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     let material = fixture.environments.material();
-    let window = window_device(&fixture, &material).await;
+    let (_window, remote) = window_device(&fixture, &material).await;
     let (_endpoint, mut approver) = fixture.approving_device().await;
 
-    window
-        .send(to_server(WS, fixture.home, frame(held(1, 3))))
-        .unwrap();
+    let reported = remote.ask_message(reported_departure(1, 3));
     let question = asked(&mut approver).await;
     approver
         .answer(question.id, ConfirmationAnswer::Deny)
         .await
         .expect("the person answers");
     assert_eq!(
-        hold_answer(&window, 1).await,
+        departure_answer(reported.await.expect("the window is answered"), 1).await,
         Err(ActionCallError::NotPermitted),
-        "kept: the session drops the held request and nothing leaves"
+        "kept: the session drops the request it reported and nothing leaves"
     );
     assert_eq!(*fixture.meter.recorded.lock().unwrap(), 0);
 }
@@ -2252,20 +2101,20 @@ async fn a_departure_the_person_does_not_allow_is_answered_kept() {
 #[tokio::test]
 async fn only_the_windows_own_device_reports_what_it_holds() {
     let fixture = fixture(Arc::new(Counting::default())).await;
-    let caller = subscribe(&fixture.server.server, &fixture.user, &fixture.agent).await;
+    let linked = member_link(&fixture.server.server, &fixture.agent).await;
+    let remote = asking(&linked, WS_NAME).await;
     let (_endpoint, mut approver) = fixture.approving_device().await;
 
-    caller
-        .send(to_server(WS, fixture.home, frame(held(1, 4))))
-        .unwrap();
-    let answer = next(&caller, "caller").await;
-    if let Envelope::RemoteAction { frame, .. } = answer
-        && let Ok(frame) = RemoteActionFrame::decode(&frame)
-    {
-        assert!(
-            !matches!(frame.message, RemoteActionMessage::ConfirmResponse { .. }),
+    let answer = remote
+        .ask_message(reported_departure(1, 4))
+        .await
+        .expect("the host answers");
+    match answer.expect("the host answers") {
+        RemoteActionMessage::ConfirmResponse { result, .. } => assert!(
+            result.is_err(),
             "another device does not answer for the window's page"
-        );
+        ),
+        other => panic!("the host answers: {other:?}"),
     }
     assert!(
         approver.list_confirmations().await.unwrap().is_empty(),
@@ -2276,22 +2125,26 @@ async fn only_the_windows_own_device_reports_what_it_holds() {
 /// What an environment's device asks of the host about itself
 /// ([`tilo_actions::remote::environment_device`]): `action` with `argument`.
 fn asks_about_itself(
+    asker: &TestDevice,
     invocation: InvocationId,
     action: &str,
     argument: InvokeArgument,
-) -> RemoteActionMessage {
-    RemoteActionMessage::Invoke(InvokeRequest {
-        on_behalf_of: None,
-        invocation,
-        target: tilo_actions::remote::environment_device::target(action),
-        argument,
-        context: None,
-        confirmation: None,
-        revision: None,
-        wait_ms: None,
-        appearance: None,
-        signed: None,
-    })
+) -> InvokeRequest {
+    as_asked(
+        asker,
+        InvokeRequest {
+            on_behalf_of: None,
+            invocation,
+            target: tilo_actions::remote::environment_device::target(action),
+            argument,
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        },
+    )
 }
 
 /// The window `tab` of `app`, as [`asks_about_itself`] names it.
@@ -2311,21 +2164,26 @@ fn window_named(app: &str, tab: u64) -> InvokeArgument {
 #[tokio::test]
 async fn an_environment_asks_the_host_for_its_own_media_keys_and_nobody_else_may() {
     let fixture = fixture(Arc::new(Counting::default())).await;
-    let environment = fixture.environment_session().await;
+    let material = fixture.environments.material();
+    let environment_device = DeviceIdentity::of(&material);
+    let environment = member_link(&fixture.server.server, &environment_device).await;
+    let remote = asking(&environment, WS_NAME).await;
+    let caller = environment.caller(fixture.user.user_pk);
     let id = InvocationId::new();
-    environment
-        .send(to_server(
-            WS,
-            fixture.home,
-            frame(asks_about_itself(
-                id,
-                tilo_actions::remote::environment_device::MEDIA_KEYS,
-                InvokeArgument::None,
-            )),
-        ))
-        .unwrap();
-    let receipt = receipt_for(&environment, id).await;
-    // The workspace is held here, so this server answers with its keys sealed
+    let receipt = ActionProvider::invoke(
+        &remote,
+        &caller,
+        asks_about_itself(
+            &environment_device,
+            id,
+            tilo_actions::remote::environment_device::MEDIA_KEYS,
+            InvokeArgument::None,
+        ),
+    )
+    .await
+    .expect("the host answers")
+    .expect("the host answers its environment");
+    // This server keeps the workspace here, so it answers with its keys sealed
     // to the environment: the ask reached it, where every other action an
     // environment starts is refused.
     assert!(
@@ -2337,35 +2195,38 @@ async fn an_environment_asks_the_host_for_its_own_media_keys_and_nobody_else_may
         "the environment's own ask is the host's to answer: {receipt:?}"
     );
 
-    let agent = subscribe(&fixture.server.server, &fixture.user, &fixture.agent).await;
+    let agent = member_link(&fixture.server.server, &fixture.agent).await;
+    let agent_remote = asking(&agent, WS_NAME).await;
+    let agent_caller = agent.caller(fixture.user.user_pk);
     let id = InvocationId::new();
-    agent
-        .send(to_server(
-            WS,
-            fixture.home,
-            frame(asks_about_itself(
-                id,
-                tilo_actions::remote::environment_device::MEDIA_KEYS,
-                InvokeArgument::None,
-            )),
-        ))
-        .unwrap();
-    let receipt = receipt_for(&agent, id).await;
-    assert!(
-        matches!(
-            receipt.status,
-            ReceiptStatus::Rejected {
-                error: ActionCallError::NotPermitted
-            }
+    let refused = ActionProvider::invoke(
+        &agent_remote,
+        &agent_caller,
+        asks_about_itself(
+            &fixture.agent,
+            id,
+            tilo_actions::remote::environment_device::MEDIA_KEYS,
+            InvokeArgument::None,
         ),
-        "a member that is no environment of the workspace is lent nothing: {receipt:?}"
+    )
+    .await
+    .expect("the host answers")
+    .expect_err("a member that is no environment is lent nothing");
+    assert_eq!(
+        refused,
+        ActionCallError::NotPermitted,
+        "a member that is no environment of the workspace is lent nothing"
     );
 }
 
 #[tokio::test]
 async fn an_environment_shares_no_window_it_did_not_mint() {
     let fixture = fixture(Arc::new(Counting::default())).await;
-    let environment = fixture.environment_session().await;
+    let material = fixture.environments.material();
+    let environment_device = DeviceIdentity::of(&material);
+    let environment = member_link(&fixture.server.server, &environment_device).await;
+    let remote = asking(&environment, WS_NAME).await;
+    let caller = environment.caller(fixture.user.user_pk);
     // A window the agent's device minted: its id carries that device's salt.
     let foreign = tilo_desktop_model::ids::IdMinter::new(
         tilo_desktop_model::ids::device_salt_of_key(&fixture.agent.device_pubkey()),
@@ -2376,26 +2237,23 @@ async fn an_environment_shares_no_window_it_did_not_mint() {
         tilo_actions::remote::environment_device::END_WINDOW_SHARE,
     ] {
         let id = InvocationId::new();
-        environment
-            .send(to_server(
-                WS,
-                fixture.home,
-                frame(asks_about_itself(
-                    id,
-                    action,
-                    window_named("so.tilo.notes", foreign),
-                )),
-            ))
-            .unwrap();
-        let receipt = receipt_for(&environment, id).await;
-        assert!(
-            matches!(
-                receipt.status,
-                ReceiptStatus::Rejected {
-                    error: ActionCallError::NotPermitted
-                }
+        let refused = ActionProvider::invoke(
+            &remote,
+            &caller,
+            asks_about_itself(
+                &environment_device,
+                id,
+                action,
+                window_named(NOTES, foreign),
             ),
-            "{action} of another device's window is refused: {receipt:?}"
+        )
+        .await
+        .expect("the host answers")
+        .expect_err("another device's window is refused");
+        assert_eq!(
+            refused,
+            ActionCallError::NotPermitted,
+            "{action} of another device's window is refused"
         );
     }
 }
@@ -2403,35 +2261,42 @@ async fn an_environment_shares_no_window_it_did_not_mint() {
 #[tokio::test]
 async fn an_environment_writes_nothing_of_the_workspaces_own_document_and_stays() {
     let fixture = fixture(Arc::new(Counting::default())).await;
-    let environment = fixture.environment_session().await;
-    let device = fixture.environments.material().device.device_public_key;
+    let mut environment = fixture.environment_session().await;
+    let environment_device = DeviceIdentity::of(&fixture.environments.material());
+    let device = environment_device.device_pubkey();
     environment
-        .send(Envelope::Delta {
-            workspace_id: WS,
-            author_device_public_key: device,
-            authored_at_ns: tilo_clock::unix_now_ns(),
-            delta: b"a shell layout and a grant of its own making".to_vec(),
-            signature: [0; 64],
+        .send(neighbour_wire::NeighbourMsg::SyncResp {
+            workspace: WS_NAME.into(),
+            changes: vec![b"a shell layout and a grant of its own making".to_vec()],
         })
         .unwrap();
-    // Neither refused nor kept: the session stays, and writes its own record.
-    environment
-        .send(Envelope::Delta {
-            workspace_id: WS,
-            author_device_public_key: device,
-            authored_at_ns: tilo_clock::unix_now_ns(),
-            delta: change(window_channel(), b"the page clicked"),
-            signature: [0; 64],
-        })
-        .unwrap();
-    let after = heard(&environment, std::time::Duration::from_millis(300)).await;
-    assert!(
-        !after
-            .iter()
-            .any(|envelope| matches!(envelope, Envelope::NotAuthorised { .. })),
-        "a session that writes its shell as any session does is not cut for it: {after:?}"
+    // What the host makes of that frame is between it and the frame: let it
+    // reach this device before the write that follows is asked about.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let mut answers = environment.answers();
+    // Neither refused nor kept: the link stays, and writes its own record.
+    publish_record(
+        &environment,
+        &environment_device,
+        APP,
+        WINDOW_RECORD,
+        "the page clicked",
     );
-    let retained = written_by(&fixture.server.server, device).await;
+    assert_eq!(
+        next_answer(&mut answers).await.kept,
+        tilo_peer_state::direct::Kept::Durable,
+        "a session that writes its shell as any session does is not cut for it"
+    );
+    let retained = tilo_test_env::within("the window's write is kept", async {
+        loop {
+            let kept = written_by(&fixture.server.server, device).await;
+            if !kept.is_empty() {
+                return kept;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
     assert!(
         !retained.iter().any(|(_, body)| body
             .windows(b"a shell layout".len())
@@ -2467,18 +2332,13 @@ async fn a_live_session_keeps_the_window_running_past_the_reconnect_wait() {
 
     // The join: the session's device enters the workspace, and that
     // connection ends at once, as the invitation connection in the VM does.
-    let joined = subscribe(
-        &fixture.server.server,
-        &fixture.user,
-        &DeviceIdentity::of(&material),
-    )
-    .await;
+    let joined = member_link(&fixture.server.server, &DeviceIdentity::of(&material)).await;
     // The lasting connection the session keeps: the live session it publishes
     // its window on.
     let (endpoint, live) = live_session(&fixture.server.server, &material).await;
     // The join connection ends the way the session's own does: its endpoint
     // closes, having told the server it is going.
-    joined.close().await;
+    drop(joined);
 
     tokio::time::sleep(reconnect * 4).await;
     assert_eq!(
@@ -2506,12 +2366,12 @@ async fn a_live_session_keeps_the_window_running_past_the_reconnect_wait() {
 /// The environment's device joins the workspace's live session as the session
 /// in the VM does: over its own endpoint key, admitted by the certificate the
 /// server issued it. The session stays open while the returned endpoint and
-/// [`Connected`](tilo_live::admit::Connected) are held.
+/// [`Connected`](tilo_live::admit::Connected) are kept alive.
 async fn live_session(
     server: &tilo_server::Server,
     material: &Material,
 ) -> (iroh::endpoint::Endpoint, tilo_live::admit::Connected) {
-    let endpoint = device_endpoint(&DeviceIdentity::of(material)).await;
+    let endpoint = crate::common::device_endpoint(&DeviceIdentity::of(material)).await;
     let scope = tilo_live::scope::Scope::workspace(&material.workspace);
     let grant = tilo_live::grant::Native::new(
         *material.workspace_id.as_uuid().as_bytes(),
@@ -2595,22 +2455,18 @@ async fn an_open_that_answers_with_its_run_places_the_window_when_the_record_exi
     assert_eq!(window.provider, WINDOW);
 }
 
-/// Who holds `lease` in `workspaces`' copy of [`WS`], waiting until it is
-/// `holder`.
-async fn lease_held_by(
-    workspaces: &tilo_server::workspaces::Workspaces,
-    lease: &str,
-    holder: Option<[u8; 32]>,
-) {
-    tilo_test_env::within("the holders agree who took the submission", async {
+/// Who took `lease` in `workspaces`' copy of [`WS`], waiting until it is
+/// `taker`.
+async fn lease_taken_by(workspaces: &Workspaces, lease: &str, taker: Option<[u8; 32]>) {
+    tilo_test_env::within("the servers agree who took the submission", async {
         loop {
-            let held = workspaces.state(&WS.to_string()).await.and_then(|state| {
+            let taken = workspaces.state(&WS.to_string()).await.and_then(|state| {
                 state
                     .workspace()
                     .lease(lease, std::time::SystemTime::now())
                     .holder
             });
-            if held.map(|claim| claim.device) == holder {
+            if taken.map(|claim| claim.device) == taker {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -2621,11 +2477,7 @@ async fn lease_held_by(
 
 /// Whether `device`, the server holding `workspaces`, takes the submission
 /// `lease` names in [`WS`]: `None` while it cannot write there yet.
-async fn takes(
-    workspaces: &tilo_server::workspaces::Workspaces,
-    device: &TestDevice,
-    lease: &str,
-) -> Option<bool> {
+async fn takes(workspaces: &Workspaces, device: &TestDevice, lease: &str) -> Option<bool> {
     workspaces
         .author_own_workspace_state(&WS.to_string(), &device.cert, |peer| {
             peer.workspace_mut().take_lease(
@@ -2641,22 +2493,20 @@ async fn takes(
         .map(|taken| taken.is_some())
 }
 
-/// A workspace held by two of the person's servers has an approved page
-/// submission carried out once: the holder that took it — whichever one took it
+/// A workspace two of the person's servers serve has an approved page
+/// submission carried out once: the server that took it — whichever one took it
 /// first, or won it once a partition healed — asks the person and hands
 /// their answer to the window, and the other asks nothing and hands nothing
-/// and cannot take it while it is held.
+/// and cannot take it while the first has it.
 #[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one workspace two servers serve, and the submission it carries out once"
+)]
 async fn an_approved_submission_is_performed_once_by_one_of_the_workspaces_holders() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     let material = fixture.environments.material();
-    let seen = window_session(
-        &fixture.server.server,
-        &fixture.user,
-        &material,
-        Asks::Submit,
-    )
-    .await;
+    let seen = window_actions(&fixture.server.server, &material, Asks::Submit).await;
     let here = fixture.server.server.workspaces().unwrap().clone();
     let other = fixture
         .user
@@ -2680,75 +2530,75 @@ async fn an_approved_submission_is_performed_once_by_one_of_the_workspaces_holde
     .await
     .expect("the person's other server holds the workspace too");
 
-    // The other holder took the submission first.
+    // The other server took the submission first.
     let id = InvocationId::new();
     let lease = format!("browser-hold/{}", id.0);
     let there = second.server.workspaces().unwrap().clone();
-    tilo_test_env::within("the other holder takes the submission", async {
+    tilo_test_env::within("the other server takes the submission", async {
         while takes(&there, &other, &lease).await != Some(true) {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await;
-    lease_held_by(&here, &lease, Some(other.device_pubkey())).await;
+    lease_taken_by(&here, &lease, Some(other.device_pubkey())).await;
 
-    let caller = subscribe(&fixture.server.server, &fixture.user, &fixture.agent).await;
+    let linked = member_link(&fixture.server.server, &fixture.agent).await;
+    let remote = asking(&linked, WS_NAME).await;
+    let caller = linked.caller(fixture.user.user_pk);
     let (_endpoint, mut approver) = fixture.approving_device().await;
-    caller
-        .send(to_server(WS, fixture.home, frame(submit(id))))
-        .unwrap();
-    assert_eq!(
-        receipt_of(next(&caller, "caller").await).status,
-        ReceiptStatus::Accepted
-    );
-    let ended = followed(&caller, fixture.home, id).await;
+    let receipt = ActionProvider::invoke(&remote, &caller, submit(&fixture.agent, id))
+        .await
+        .expect("the host answers")
+        .expect("the window holds it for the person");
+    assert_eq!(receipt.status, ReceiptStatus::Accepted);
+    let ended = followed(&remote, &caller, id).await;
     let tilo_actions::InvocationUpdate::Failed { error, .. } = ended else {
-        panic!("a submission another holder took ends here unrun: {ended:?}");
+        panic!("a submission another server took ends here unrun: {ended:?}");
     };
     assert!(
         error
             .message
             .contains(tilo_server::hosted_browser::ANOTHER_HOLDER_ASKS),
-        "the caller is told another holder asks: {error:?}"
+        "the caller is told another server asks: {error:?}"
     );
     assert_eq!(*fixture.meter.recorded.lock().unwrap(), 0, "nothing ran");
 
-    // The next submission is this holder's: it takes it, asks the person,
-    // and the other holder cannot take it while it is held. Allowed, the
-    // page does it once, and the submission is let go.
+    // The next submission is this server's: it takes it, asks the person,
+    // and the other server cannot take it while the first has it. Allowed,
+    // the page does it once, and the submission is let go.
     let id = InvocationId::new();
     let lease = format!("browser-hold/{}", id.0);
-    caller
-        .send(to_server(WS, fixture.home, frame(submit(id))))
-        .unwrap();
-    assert_eq!(
-        receipt_of(next(&caller, "caller").await).status,
-        ReceiptStatus::Accepted
-    );
+    let receipt = ActionProvider::invoke(&remote, &caller, submit(&fixture.agent, id))
+        .await
+        .expect("the host answers")
+        .expect("the window holds it for the person");
+    assert_eq!(receipt.status, ReceiptStatus::Accepted);
     let question = asked(&mut approver).await;
-    lease_held_by(&there, &lease, Some(fixture.home)).await;
+    lease_taken_by(&there, &lease, Some(fixture.home)).await;
     assert_eq!(
         takes(&there, &other, &lease).await,
         Some(false),
-        "a submission one holder holds is no other's to take"
+        "a submission one server took is no other's to take"
     );
     approver
         .answer(question.id, ConfirmationAnswer::AllowOnce)
         .await
         .expect("the person answers");
-    let ended = followed(&caller, fixture.home, id).await;
+    let ended = followed(&remote, &caller, id).await;
     assert!(
         matches!(ended, tilo_actions::InvocationUpdate::Succeeded { .. }),
-        "the holder that took it hands it over: {ended:?}"
+        "the server that took it hands it over: {ended:?}"
     );
     assert_eq!(*fixture.meter.recorded.lock().unwrap(), 1, "it ran once");
     let handed = seen.lock().unwrap().iter().filter(|h| h.approved).count();
     assert_eq!(handed, 1, "the window was handed the person's answer once");
-    lease_held_by(&there, &lease, None).await;
+    lease_taken_by(&there, &lease, None).await;
     answers_are_kept(
         &fixture,
         (&here, &there, &other),
         &lease,
+        &fixture.agent,
+        &remote,
         &caller,
         &mut approver,
     )
@@ -2756,29 +2606,31 @@ async fn an_approved_submission_is_performed_once_by_one_of_the_workspaces_holde
 }
 
 /// The person's answer to the submission `allowed` is kept in the
-/// workspace, so the other holder (`keeping`, the server `other`) answers it
+/// workspace, so the other server (`keeping`, the server `other`) answers it
 /// rather than asking again; and a submission the person refused when that
-/// holder asked them arrives at `asking` later: it is answered from what was
+/// server asked them arrives at `asking` later: it is answered from what was
 /// kept, and the person is not asked again.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one server's kept answer, the other's refusals, and the caller that asks again"
+)]
 async fn answers_are_kept(
     fixture: &Fixture,
-    (asking, keeping, other): (
-        &tilo_server::workspaces::Workspaces,
-        &tilo_server::workspaces::Workspaces,
-        &TestDevice,
-    ),
+    (asking, keeping, other): (&Workspaces, &Workspaces, &TestDevice),
     allowed: &str,
-    caller: &ServerClient,
+    asker: &TestDevice,
+    remote: &RemoteDevice,
+    caller: &Caller,
     approver: &mut Approver,
 ) {
-    tilo_test_env::within("the other holder reads the person's answer", async {
+    tilo_test_env::within("the other server reads the person's answer", async {
         loop {
             let kept = keeping
                 .state(&WS.to_string())
                 .await
                 .and_then(|state| state.workspace().done(allowed));
             if let Some(kept) = kept {
-                assert_eq!(kept.device, fixture.home, "kept by the holder that asked");
+                assert_eq!(kept.device, fixture.home, "kept by the server that asked");
                 assert!(kept.answer.get("Ok").is_some(), "an approval: {kept:?}");
                 return;
             }
@@ -2800,8 +2652,8 @@ async fn answers_are_kept(
             )
         })
         .await
-        .expect("the other holder keeps the person's refusal");
-    tilo_test_env::within("this holder reads the refusal", async {
+        .expect("the other server keeps the person's refusal");
+    tilo_test_env::within("this server reads the refusal", async {
         while asking
             .state(&WS.to_string())
             .await
@@ -2812,14 +2664,12 @@ async fn answers_are_kept(
         }
     })
     .await;
-    caller
-        .send(to_server(WS, fixture.home, frame(submit(id))))
-        .unwrap();
-    assert_eq!(
-        receipt_for(caller, id).await.status,
-        ReceiptStatus::Accepted
-    );
-    let ended = followed(caller, fixture.home, id).await;
+    let receipt = ActionProvider::invoke(remote, caller, submit(asker, id))
+        .await
+        .expect("the host answers")
+        .expect("the window holds it for the person");
+    assert_eq!(receipt.status, ReceiptStatus::Accepted);
+    let ended = followed(remote, caller, id).await;
     let tilo_actions::InvocationUpdate::Failed { error, .. } = ended else {
         panic!("a refused submission ends unrun: {ended:?}");
     };
@@ -2833,5 +2683,5 @@ async fn answers_are_kept(
         1,
         "nothing more ran"
     );
-    lease_held_by(asking, &lease, None).await;
+    lease_taken_by(asking, &lease, None).await;
 }

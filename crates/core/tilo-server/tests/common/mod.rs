@@ -934,6 +934,14 @@ impl Linked {
     }
 }
 
+impl std::fmt::Debug for Linked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Linked")
+            .field("device", &hex::encode(self.device()))
+            .finish_non_exhaustive()
+    }
+}
+
 impl Drop for Linked {
     fn drop(&mut self) {
         if let Some(running) = self.running.take() {
