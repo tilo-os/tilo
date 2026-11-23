@@ -67,6 +67,14 @@ fn retire(agent: &str) -> tilo_resource::Invoke<WorkspaceAgents> {
     WorkspaceAgents::RETIRE_AGENT.with(workspace_agents::RetireAgent { agent: id(agent) })
 }
 
+fn pause(agent: &str) -> tilo_resource::Invoke<WorkspaceAgents> {
+    WorkspaceAgents::PAUSE_AGENT.with(workspace_agents::PauseAgent { agent: id(agent) })
+}
+
+fn resume(agent: &str) -> tilo_resource::Invoke<WorkspaceAgents> {
+    WorkspaceAgents::RESUME_AGENT.with(workspace_agents::ResumeAgent { agent: id(agent) })
+}
+
 fn as_person(person: &str) -> Replica<WorkspaceAgents> {
     Replica::<WorkspaceAgents>::new().as_author(person)
 }
@@ -227,6 +235,37 @@ fn a_bound_allows_an_outside_effect_unasked_only_within_the_persons_account_or_f
         None,
         "an empty bound follows the default"
     );
+}
+
+/// Pausing holds an agent back until it is resumed: it takes no work, stays listed with its name,
+/// and is neither paused twice nor resumed when it works already. A retired agent is neither.
+#[test]
+fn pausing_holds_an_agent_until_it_is_resumed() {
+    let mut record = as_person(ADA);
+    record.apply(make("Claude")).unwrap();
+    let agent = record.state().unwrap().agents[0].id.0.clone();
+    record.apply(pause(&agent)).unwrap();
+    let state = record.state().unwrap();
+    assert_eq!(state.agents[0].state, AgentState::Paused);
+    assert_eq!(state.active().count(), 0, "it takes no work");
+    assert!(
+        state.made_by_people().any(|kept| kept.id.0 == agent),
+        "it stays among the agents the workspace lists"
+    );
+    assert_eq!(state.names(), ["Claude"], "its name stays");
+    let refused = record.apply(pause(&agent)).unwrap_err();
+    assert!(refused.to_string().contains("paused"), "{refused}");
+
+    record.apply(resume(&agent)).unwrap();
+    assert_eq!(record.state().unwrap().agents[0].state, AgentState::Active);
+    let refused = record.apply(resume(&agent)).unwrap_err();
+    assert!(refused.to_string().contains("works"), "{refused}");
+
+    // A retired agent is not resumed.
+    record.apply(pause(&agent)).unwrap();
+    record.apply(retire(&agent)).unwrap();
+    let refused = record.apply(resume(&agent)).unwrap_err();
+    assert!(refused.to_string().contains("retired"), "{refused}");
 }
 
 #[test]

@@ -115,7 +115,7 @@ impl McpServer {
         }
     }
 
-    /// Whether `device` runs an agent.
+    /// Whether `device` runs an agent of the person's: a device that does keeps no server.
     pub(crate) fn is_agent(&self, device: &[u8; 32]) -> bool {
         self.agents.lock_recover().contains_key(device)
     }
@@ -204,12 +204,6 @@ impl McpServer {
 }
 
 impl super::Workspaces {
-    /// Whether `device` still runs the person's agent: a stop that leaves it so is the person
-    /// stopping a run, and one that does not is the device being revoked.
-    pub(crate) fn runs_agent(&self, device: &[u8; 32]) -> bool {
-        self.inner.mcp_server.is_agent(device)
-    }
-
     /// The session of `device` that `stop` ends has ended.
     pub(crate) fn agent_session_ended(&self, device: &[u8; 32], stop: &Arc<tokio::sync::Notify>) {
         self.inner.mcp_server.ended(device, stop);

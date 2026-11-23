@@ -1535,6 +1535,16 @@ impl<R: Resource> ActionDecl<R> {
         }
     }
 
+    /// This action with `arguments` as a caller sent them over a call that names the action by
+    /// its id: what a dispatch hands the record, which binds them as it binds any.
+    #[must_use]
+    pub fn with_arguments(
+        &self,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> crate::Invoke<R> {
+        crate::Invoke::bound(self.decl.id, Ok(arguments))
+    }
+
     /// The declaration, of whichever resource.
     #[must_use]
     pub fn into_declaration(self) -> Declaration {

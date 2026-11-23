@@ -2194,7 +2194,7 @@ impl<R> Invoke<R> {
     /// that refuses with why it did not bind. Kept out of line: its body is
     /// the same for every resource, so the copies merge into one.
     #[inline(never)]
-    fn bound(
+    pub(crate) fn bound(
         id: &'static str,
         bound: Result<serde_json::Map<String, serde_json::Value>, String>,
     ) -> Self {

@@ -711,6 +711,83 @@ mod tests {
         assert!(asked.signed.is_none());
     }
 
+    /// A grant the person's fleet holds that is about to run out is certified again, under the
+    /// same key, with a fresh lifetime; one that still has time left is kept as it is. This is
+    /// how an agent keeps acting across a lifetime that passes, the way a member's device
+    /// certificate is renewed.
+    #[test]
+    fn a_grant_nearing_its_expiry_is_certified_again_for_the_same_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let (fleets, identity) = holding_a_root(dir.path());
+        let person: [u8; 32] = hex::decode(&identity).unwrap().try_into().unwrap();
+        let workspace = WorkspaceId::new();
+        let key = FleetAgentKeys::of(fleets)
+            .grant(workspace, "scribe", "Scribe", person)
+            .unwrap();
+
+        // The fleet keeps a certificate for that key with a day left, as a fleet does when a
+        // lifetime passes.
+        let (fleets, _) = holding_a_root(dir.path());
+        let now = tilo_clock::unix_now_ns();
+        let near = fleets
+            .certify_agent_grant(
+                &identity,
+                key,
+                AgentScope::agent_in(*workspace.as_uuid().as_bytes(), "scribe"),
+                "Scribe",
+                now,
+                now.saturating_add(DAY_NS),
+            )
+            .unwrap();
+        assert!(near.expires_at_ns.unwrap().saturating_sub(now) < RENEW_WITHIN_NS);
+
+        // Granted again, the agent keeps its key and its person's root certifies it anew.
+        let keys = FleetAgentKeys::of(fleets);
+        assert_eq!(
+            keys.grant(workspace, "scribe", "Scribe", person).unwrap(),
+            key,
+            "renewal keeps the key the agent signs with"
+        );
+        let (fleets, _) = holding_a_root(dir.path());
+        let cert = fleets
+            .load(&identity)
+            .unwrap()
+            .certificates
+            .iter()
+            .find(|cert| cert.device_public_key == key)
+            .cloned()
+            .expect("the person's devices list the agent's key");
+        assert_ne!(cert, near, "the certificate the fleet keeps is a new one");
+        assert!(
+            cert.expires_at_ns > near.expires_at_ns,
+            "the certificate's lifetime starts over"
+        );
+        assert!(
+            cert.expires_at_ns.unwrap().saturating_sub(now) > RENEW_WITHIN_NS,
+            "it has time left again"
+        );
+
+        // With time left, the same grant is kept: no certificate is written again.
+        let issued = cert.issued_at_ns;
+        assert_eq!(
+            keys.grant(workspace, "scribe", "Scribe", person).unwrap(),
+            key
+        );
+        let (fleets, _) = holding_a_root(dir.path());
+        let kept = fleets
+            .load(&identity)
+            .unwrap()
+            .certificates
+            .iter()
+            .find(|cert| cert.device_public_key == key)
+            .cloned()
+            .expect("the person's devices list the agent's key");
+        assert_eq!(
+            kept.issued_at_ns, issued,
+            "a grant with time left is used as it is"
+        );
+    }
+
     #[test]
     fn a_key_its_person_revoked_is_never_certified_again() {
         let dir = tempfile::tempdir().unwrap();

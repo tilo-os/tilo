@@ -186,6 +186,44 @@ impl EngineRecords {
         self.0.read_documents(None);
     }
 
+    /// Ask `workspace` for `change` of its record of its agents, as this device's person, over
+    /// the daemon's dispatch (`tilo-actions/1`), off the loop: the answer is the agent's id for a
+    /// made one. The session's copy of the record takes the change in once the service wrote it
+    /// ([`Self::took_agents`]).
+    pub(crate) fn change_agents(
+        &self,
+        workspace: &str,
+        change: AgentsChange,
+    ) -> tilo_actions::remote::Pending<Result<String, String>> {
+        let (operation, arguments) = change.call();
+        let asked = self.0.engine.borrow().clone().and_then(|engine| {
+            let workspace = tilo_desktop_model::WorkspaceId::parse(workspace)?;
+            engine.ask_holder(workspace, operation, arguments)
+        });
+        let Some(asked) = asked else {
+            let (done, answer) = tilo_actions::remote::pending();
+            done.complete(Err(
+                "this device reaches no workspace service that keeps this workspace".to_owned(),
+            ));
+            return answer;
+        };
+        crate::landing::off_loop(async move {
+            let answer = asked.await?;
+            Ok(answer
+                .get("agent")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned())
+        })
+    }
+
+    /// Take in what the service holds of `workspace`'s record of its agents now: what a change
+    /// the session asked for wrote, before any later pass reads it.
+    pub(crate) fn took_agents(&self, workspace: &str) {
+        self.0
+            .read(workspace, tilo_app::tilo_workspace_agent::OWNER);
+    }
+
     /// Whether the workspaces' copy is here and holds `workspace`: where a record kept in it is
     /// written and read.
     pub(crate) fn holds(&self, workspace: &str) -> bool {

@@ -10,6 +10,7 @@ mod page;
 #[cfg(target_os = "linux")]
 mod shell;
 
+pub(crate) use agents::AgentsChange;
 pub use agents::Host as AgentsSource;
 pub use page::PageAgents;
 #[cfg(target_os = "linux")]

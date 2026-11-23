@@ -269,7 +269,18 @@ pub const WORKSPACE_PERMISSION: &str = "permissions/*";
 /// `workspace/permissions/<grant>#revoke`: by the person who gave it, or by whoever the
 /// workspace's policy lets revoke grants.
 pub const WORKSPACE_GRANT_REVOKE: &str = "grant.revoke";
-
+/// The workspace's record of its agents, under its governance root (`workspace/agents`): who
+/// works in the workspace, changed only by the three actions published there.
+pub const WORKSPACE_AGENTS: &str = "agents";
+/// Make an agent of the workspace (`workspace/agents#create`): the record's `create_agent`, its
+/// arguments as that action takes them. Answers `{agent}`, the agent's id.
+pub const WORKSPACE_AGENT_CREATE: &str = "agent.create";
+/// Change one of the workspace's agents (`workspace/agents#update`): `{action, arguments}`, any
+/// action of the record but making and retiring one, by its id and with its arguments.
+pub const WORKSPACE_AGENT_UPDATE: &str = "agent.update";
+/// Retire one of the workspace's agents (`workspace/agents#delete`): `{agent}`, its id. What it
+/// did stays readable under its name.
+pub const WORKSPACE_AGENT_DELETE: &str = "agent.delete";
 /// Where a workspace's governance tree publishes the actions it grants by
 /// another name: the operation a grant and a policy name it by, the resource
 /// under the root it is on (none for the root itself) and its id there, as a
@@ -278,7 +289,7 @@ pub const WORKSPACE_GRANT_REVOKE: &str = "grant.revoke";
 /// is its `person`, and one listed on [`WORKSPACE_APP`] on each app the workspace runs, which
 /// is its `app`. One listed on [`WORKSPACE_PERMISSION`] is published on each of the
 /// workspace's grants.
-pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 38] = [
+pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 41] = [
     ("member.list", Some(WORKSPACE_MEMBERS), "list"),
     (
         "member.add",
@@ -329,6 +340,9 @@ pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 38] = [
     ("uninstall-app", Some(WORKSPACE_APP), "uninstall"),
     ("app.earlier", Some(WORKSPACE_APP), "earlier"),
     (WORKSPACE_GRANT_REVOKE, Some(WORKSPACE_PERMISSION), "revoke"),
+    (WORKSPACE_AGENT_CREATE, Some(WORKSPACE_AGENTS), "create"),
+    (WORKSPACE_AGENT_UPDATE, Some(WORKSPACE_AGENTS), "update"),
+    (WORKSPACE_AGENT_DELETE, Some(WORKSPACE_AGENTS), "delete"),
 ];
 
 /// The resource `child` of `workspace`'s governance tree: the root for `None`.

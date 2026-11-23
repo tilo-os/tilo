@@ -216,6 +216,9 @@ pub(super) async fn offered(
                 |(_, granted)| granted.to_owned(),
             )
         })
+        // The workspace's agents are offered by the record's grants, not its governance's:
+        // `agent_record_tests` reads those.
+        .filter(|verb| !super::agent_record::is_agents_operation(verb))
         .collect::<Vec<_>>();
     offered.sort_by_key(|verb| VERBS.iter().position(|row| row.id == verb));
     offered.dedup();

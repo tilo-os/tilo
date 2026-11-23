@@ -1,11 +1,11 @@
 //! The Agents tab: who works in the workspace, held in Chat's list of the workspace's agents.
 //! An agent is a workspace record of its own kind ([`tilo_app::tilo_workspace_agent::KIND`]), kept
 //! by Chat ([`tilo_app::tilo_workspace_agent::OWNER`]) and opened here the way every app of the
-//! workspace opens it ([`WorkspaceResource`]): in the store this device's apps keep, as the person
-//! sitting here. Naming, bounding and retiring an agent are the record's own actions, decided by
-//! the workspace's grants on Chat's node — the decision the app windows and the action broker take
-//! — so the tab, the apps and the person's other devices hold the one record, and the tab decides
-//! nothing of its own.
+//! workspace opens it ([`WorkspaceResource`]), to read, as the person sitting here. Making,
+//! naming, bounding and retiring an agent are the record's own actions, which only the workspace's
+//! service carries out ([`Host::change`]), decided there by the workspace's grants on the record's
+//! node — so the tab, the CLI, agents and the person's other devices change the one record the
+//! same way, and the tab neither decides nor writes anything of its own.
 //! What an agent may do, app by app, is still the workspace's grants: the tab reads them beside the
 //! record. An agent a person admitted to the workspace before records were is made one of the
 //! record's when a member's tab opens it ([`Agents::settle`]), under the id its grants name, so
@@ -37,6 +37,51 @@ const SETTINGS_APP: (&str, &str) = ("tilo-session", "Workspace settings");
 /// choose for an agent.
 const ON_A_PAGE: bool = cfg!(target_arch = "wasm32");
 
+/// How long a change the tab asks of the workspace's service may take before the tab says it did
+/// not happen.
+const CHANGE_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// One change of a workspace's record of its agents, as the tab and the session ask the
+/// workspace for it: the actions its governance tree publishes under `workspace/agents`, the only
+/// way the record changes.
+pub enum AgentsChange {
+    /// Make an agent.
+    Create(actions::CreateAgent),
+    /// Change one: any of the record's actions but making and retiring.
+    Update(tilo_resource::Invoke<Record>),
+    /// Retire one, by its id.
+    Retire(String),
+}
+
+impl AgentsChange {
+    /// The workspace's action this change is, and its arguments.
+    pub(crate) fn call(self) -> (&'static str, serde_json::Map<String, serde_json::Value>) {
+        use tilo_actions::remote::{
+            WORKSPACE_AGENT_CREATE, WORKSPACE_AGENT_DELETE, WORKSPACE_AGENT_UPDATE,
+        };
+        match self {
+            Self::Create(create) => (
+                WORKSPACE_AGENT_CREATE,
+                Record::CREATE_AGENT.with(create).arguments,
+            ),
+            Self::Update(update) => (
+                WORKSPACE_AGENT_UPDATE,
+                serde_json::Map::from_iter([
+                    ("action".to_owned(), update.id.into()),
+                    (
+                        "arguments".to_owned(),
+                        serde_json::Value::Object(update.arguments),
+                    ),
+                ]),
+            ),
+            Self::Retire(agent) => (
+                WORKSPACE_AGENT_DELETE,
+                serde_json::Map::from_iter([("agent".to_owned(), agent.into())]),
+            ),
+        }
+    }
+}
+
 /// Where the tab opens the workspace's records, and what it knows of the person there: a
 /// computer's copy of its workspaces, or a page's.
 pub trait Host {
@@ -56,6 +101,18 @@ pub trait Host {
     fn models(&self, _workspace: &Workspace) -> agent_provider_config::ProviderConfig {
         agent_provider_config::ProviderConfig::default()
     }
+
+    /// Ask the workspace for `change` of its record of its agents, as the person this device is:
+    /// the one way the tab changes the record, admitted there by the workspace's grants. Answers
+    /// the agent's id for one made.
+    fn change(
+        &self,
+        workspace: &Workspace,
+        change: AgentsChange,
+    ) -> tilo_actions::remote::Pending<Result<String, String>>;
+
+    /// Take in what the workspace's service holds of the record now, once a change was made.
+    fn took(&self, workspace: &Workspace);
 }
 
 /// A computer's copy of its workspaces: their records, decided by the grants the workspace's
@@ -94,6 +151,18 @@ impl Host for crate::engine_records::EngineRecords {
                 &workspace.id().to_string(),
             )
         })
+    }
+
+    fn change(
+        &self,
+        workspace: &Workspace,
+        change: AgentsChange,
+    ) -> tilo_actions::remote::Pending<Result<String, String>> {
+        self.change_agents(&workspace.id().to_string(), change)
+    }
+
+    fn took(&self, workspace: &Workspace) {
+        self.took_agents(&workspace.id().to_string());
     }
 }
 
@@ -530,7 +599,7 @@ impl Agents {
             return;
         }
         let config = agent_provider_config::ProviderConfig::load();
-        Self::record_admitted(workspace, &record, &config);
+        self.record_admitted(workspace, &record, &config);
         *self.settled.borrow_mut() = Some((workspace_id, record.revision()));
     }
 
@@ -545,6 +614,7 @@ impl Agents {
     /// record with it.
     #[cfg(target_os = "linux")]
     fn record_admitted(
+        &self,
         workspace: &Workspace,
         record: &WorkspaceResource<Record>,
         config: &agent_provider_config::ProviderConfig,
@@ -583,20 +653,18 @@ impl Agents {
             taken.push(name.as_str().to_owned());
             let model = agent_access::agent_models(config, &agent)
                 .and_then(|models| models.chosen.map(|chosen| chosen.key()));
-            let made = record.invoke(&Record::CREATE_AGENT.with(actions::CreateAgent {
-                name,
-                id: Some(agent.clone()),
-                model,
-                mcp_client: None,
-            }));
-            if let Err(refusal) = made {
-                // The tab still lists the agent from its grants until Chat's
-                // grants let the person make the record.
-                tilo_failure::ignored!(
-                    "the tab lists the agent from its grants until Chat's grants let the record be made",
-                    tracing::debug!(%agent, %refusal, "an admitted agent has no record here yet")
-                );
-            }
+            // Asked of the workspace's service off the loop: the next pass reads what it wrote.
+            // Until it does, or where the workspace's grants refuse the person, the tab still
+            // lists the agent from its grants.
+            drop(self.host.change(
+                workspace,
+                AgentsChange::Create(actions::CreateAgent {
+                    name,
+                    id: Some(agent.clone()),
+                    model,
+                    mcp_client: None,
+                }),
+            ));
         }
     }
 
@@ -624,9 +692,9 @@ impl Agents {
                 }
             }
             // The review was of an agent the workspace no longer lists.
-            Ask::RemoveAgent { agent } => shown(self.retire(workspace, person, agent), None),
+            Ask::RemoveAgent { agent } => shown(self.retire(workspace, agent), None),
             Ask::SetAgentModel { agent, model } => {
-                shown(self.set_model(workspace, person, agent, model), Some(agent))
+                shown(self.set_model(workspace, agent, model), Some(agent))
             }
             Ask::SetAgentSpendLimit { agent, dollars } => {
                 // What its field held, in dollars, or no limit at all where it held nothing.
@@ -640,10 +708,7 @@ impl Agents {
                     };
                     Some(micros)
                 };
-                shown(
-                    self.set_limit(workspace, person, agent, limit_micros),
-                    Some(agent),
-                )
+                shown(self.set_limit(workspace, agent, limit_micros), Some(agent))
             }
             Ask::SetAgentAnswer {
                 agent,
@@ -702,20 +767,22 @@ impl Agents {
         (name, mcp_client): (&str, Option<&str>),
         model: &str,
     ) -> Result<(String, String), String> {
-        let record = self
-            .record(workspace, person)
-            .ok_or_else(|| t("workspace-settings-agents-unavailable"))?;
         let name = tilo_resource::NonBlank::parse(name.trim())
             .ok_or_else(|| t("workspace-settings-agent-name-needed"))?;
-        let id = record.get().free_id(name.as_str());
-        record
-            .invoke(&Record::CREATE_AGENT.with(actions::CreateAgent {
+        // The id the record frees for the name, as this device reads it; the service picks one
+        // itself where this device holds no record yet.
+        let id = self
+            .record(workspace, person)
+            .map(|record| record.get().free_id(name.as_str()));
+        let id = self.ask(
+            workspace,
+            AgentsChange::Create(actions::CreateAgent {
                 name: name.clone(),
-                id: Some(id.clone()),
+                id,
                 model: (!model.is_empty()).then(|| model.to_owned()),
                 mcp_client: mcp_client.map(str::to_owned),
-            }))
-            .map_err(|error| error.to_string())?;
+            }),
+        )?;
         Ok((id, name.as_str().to_owned()))
     }
 
@@ -742,20 +809,9 @@ impl Agents {
     /// # Errors
     /// The workspace's agents could not be opened here, or Chat's grants
     /// refuse the change.
-    pub(crate) fn retire(
-        &self,
-        workspace: Option<&Workspace>,
-        person: &UserId,
-        agent: &str,
-    ) -> Result<(), String> {
-        let record = self
-            .record(workspace, person)
-            .ok_or_else(|| t("workspace-settings-agents-unavailable"))?;
-        record
-            .invoke(&Record::RETIRE_AGENT.with(actions::RetireAgent {
-                agent: Id::from_raw(agent.to_owned()),
-            }))
-            .map_err(|error| error.to_string())
+    pub(crate) fn retire(&self, workspace: Option<&Workspace>, agent: &str) -> Result<(), String> {
+        self.ask(workspace, AgentsChange::Retire(agent.to_owned()))
+            .map(drop)
     }
 
     /// Set what the agent `agent` may do in `workspace`, each answer for a kind of action at a scope
@@ -787,9 +843,13 @@ impl Agents {
             .iter()
             .map(Bound::of)
             .collect();
-        agents
-            .invoke(&Record::SET_AGENT_BOUND.with(actions::SetAgentBound { agent: id, bound }))
-            .map_err(|error| error.to_string())
+        self.ask(
+            workspace,
+            AgentsChange::Update(
+                Record::SET_AGENT_BOUND.with(actions::SetAgentBound { agent: id, bound }),
+            ),
+        )
+        .map(drop)
     }
 
     /// Choose the model the agent `agent` plans with.
@@ -800,19 +860,17 @@ impl Agents {
     pub(crate) fn set_model(
         &self,
         workspace: Option<&Workspace>,
-        person: &UserId,
         agent: &str,
         model: &str,
     ) -> Result<(), String> {
-        let record = self
-            .record(workspace, person)
-            .ok_or_else(|| t("workspace-settings-agents-unavailable"))?;
-        record
-            .invoke(&Record::SET_AGENT_MODEL.with(actions::SetAgentModel {
+        self.ask(
+            workspace,
+            AgentsChange::Update(Record::SET_AGENT_MODEL.with(actions::SetAgentModel {
                 agent: Id::from_raw(agent.to_owned()),
                 model: (!model.is_empty()).then(|| model.to_owned()),
-            }))
-            .map_err(|error| error.to_string())
+            })),
+        )
+        .map(drop)
     }
 
     /// Set what the agent `agent` may spend a day: `None` spends unmetered.
@@ -823,21 +881,38 @@ impl Agents {
     pub(crate) fn set_limit(
         &self,
         workspace: Option<&Workspace>,
-        person: &UserId,
         agent: &str,
         limit_micros: Option<u64>,
     ) -> Result<(), String> {
-        let record = self
-            .record(workspace, person)
-            .ok_or_else(|| t("workspace-settings-agents-unavailable"))?;
-        record
-            .invoke(
-                &Record::SET_AGENT_SPEND_LIMIT.with(actions::SetAgentSpendLimit {
+        self.ask(
+            workspace,
+            AgentsChange::Update(
+                Record::SET_AGENT_SPEND_LIMIT.with(actions::SetAgentSpendLimit {
                     agent: Id::from_raw(agent.to_owned()),
                     limit_micros,
                 }),
-            )
-            .map_err(|error| error.to_string())
+            ),
+        )
+        .map(drop)
+    }
+
+    /// Ask the workspace for `change` and wait for its answer, then take in what it wrote: the
+    /// agent's id for one made.
+    ///
+    /// # Errors
+    /// No workspace is in front, the workspace's grants or the record refuse the change, or the
+    /// service did not answer in time.
+    fn ask(&self, workspace: Option<&Workspace>, change: AgentsChange) -> Result<String, String> {
+        let workspace = workspace.ok_or_else(|| t("workspace-settings-agents-unavailable"))?;
+        let answer = self
+            .host
+            .change(workspace, change)
+            .wait_timeout(CHANGE_WAIT)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| Err(t("workspace-settings-agents-unavailable")))?;
+        self.host.took(workspace);
+        Ok(answer)
     }
 }
 

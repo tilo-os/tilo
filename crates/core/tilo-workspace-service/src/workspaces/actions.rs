@@ -73,6 +73,8 @@ use tilo_server_protocol::workspaces::{
 use tilo_user_identity::DeviceCert;
 use tokio::sync::Mutex as AsyncMutex;
 
+#[cfg(not(target_arch = "wasm32"))]
+mod agent_record;
 pub(super) mod agents;
 #[cfg(all(feature = "agents", not(target_arch = "wasm32")))]
 mod calendars;
@@ -1058,6 +1060,7 @@ impl Verb {
             Some(WORKSPACE_MEMBERS) => "People",
             Some(WORKSPACE_INVITATIONS) => "Invitations",
             Some(WORKSPACE_WAITING) => "Waiting to be invited",
+            Some(tilo_actions::remote::WORKSPACE_AGENTS) => "Agents",
             Some(other) => other,
             None => name,
         };
@@ -1790,6 +1793,9 @@ impl Workspaces {
                 let id = workspace.workspace().to_owned();
                 let name = workspace.name();
                 drop(workspace);
+                // The workspace's agents, as far as the record's grants let the caller change them.
+                #[cfg(not(target_arch = "wasm32"))]
+                rows.extend(self.agents_rows(&id, &name, caller.acting()).await);
                 // The workspace's mail accounts, as its policy on its mail
                 // lets the caller ask them.
                 #[cfg(not(target_arch = "wasm32"))]
@@ -1949,8 +1955,7 @@ impl Workspaces {
         clippy::too_many_lines,
         reason = "one request answered by the provider it names: each provider has its own \
                   dispatch"
-    )]
-    async fn invoke(
+    )]    async fn invoke(
         &self,
         workspace_id: Option<WorkspaceId>,
         caller: &Caller,
@@ -1993,6 +1998,10 @@ impl Workspaces {
                 let (workspace, operation) =
                     workspace_governance_operation(&request.target.address)
                         .ok_or(ActionCallError::UnknownAction)?;
+                #[cfg(not(target_arch = "wasm32"))]
+                if agent_record::is_agents_operation(operation) {
+                    return self.agents_invoke(workspace_id, caller, request).await;
+                }
                 let asked = governance_request(request, workspace, operation);
                 if operation == tilo_server_protocol::workspaces::RUN_UNATTENDED {
                     self.unattended_invoke(workspace_id, caller, certificate, &asked)

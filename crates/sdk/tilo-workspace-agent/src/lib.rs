@@ -186,6 +186,9 @@ pub enum AgentState {
     Active,
     /// Was told to stop: it takes no new work.
     Retired,
+    /// Was told to wait: it takes no new work until it is resumed, and keeps its
+    /// place, name and triggers.
+    Paused,
 }
 
 #[derive(Model, Default, Clone, Debug, PartialEq)]
@@ -246,6 +249,18 @@ impl Agent {
     #[must_use]
     pub fn is_active(&self) -> bool {
         self.state == AgentState::Active
+    }
+
+    /// Whether it waits: it works again when it is resumed, and keeps its place.
+    #[must_use]
+    pub fn is_paused(&self) -> bool {
+        self.state == AgentState::Paused
+    }
+
+    /// Whether it was retired: it takes no new work again.
+    #[must_use]
+    pub fn is_retired(&self) -> bool {
+        self.state == AgentState::Retired
     }
 
     /// What the workspace told it about how to work, when it was told anything.
@@ -549,6 +564,51 @@ impl WorkspaceAgents {
         Ok(())
     }
 
+    /// Pause an agent: it takes no new work and keeps its place, name and triggers until it is
+    /// resumed.
+    #[action(item = agents)]
+    pub fn pause_agent(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The agent")] agent: Id,
+    ) -> Result<(), Refusal> {
+        self.not_by_sub_agent(cx)?;
+        // A member's, in person: an agent pauses no agent, itself included.
+        in_person(cx)?;
+        let found = self
+            .agents
+            .find_mut(&agent)
+            .ok_or_else(|| no_such(&agent))?;
+        match found.state {
+            AgentState::Active => found.state = AgentState::Paused,
+            AgentState::Paused => return Err(Refusal::new("that agent is paused already")),
+            AgentState::Retired => return Err(Refusal::new("that agent is retired")),
+        }
+        Ok(())
+    }
+
+    /// Resume an agent: it takes new work again.
+    #[action(item = agents)]
+    pub fn resume_agent(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The agent")] agent: Id,
+    ) -> Result<(), Refusal> {
+        self.not_by_sub_agent(cx)?;
+        // A member's, in person: an agent resumes no agent, itself included.
+        in_person(cx)?;
+        let found = self
+            .agents
+            .find_mut(&agent)
+            .ok_or_else(|| no_such(&agent))?;
+        match found.state {
+            AgentState::Paused => found.state = AgentState::Active,
+            AgentState::Active => return Err(Refusal::new("that agent works already")),
+            AgentState::Retired => return Err(Refusal::new("that agent is retired")),
+        }
+        Ok(())
+    }
+
     /// Retire an agent: it takes no new work, and its name and conversations stay
     /// readable.
     #[action(item = agents)]
@@ -767,11 +827,13 @@ impl WorkspaceAgents {
         self.agents.iter().filter(|agent| agent.is_active())
     }
 
-    /// The agents people made that work here: every active agent that is no sub-agent. What
-    /// lists a workspace's agents lists these, and a person's own agent is one of them; the
+    /// The agents people made that the workspace keeps: every agent that is not retired and is
+    /// no sub-agent. What lists a workspace's agents lists these, paused ones included; the
     /// sub-agents one of them started are that agent's own to list ([`sub`]).
     pub fn made_by_people(&self) -> impl Iterator<Item = &Agent> {
-        self.active().filter(|agent| !agent.is_sub())
+        self.agents
+            .iter()
+            .filter(|agent| !agent.is_retired() && !agent.is_sub())
     }
 
     /// An id for a new agent called `name` that no agent here holds: its name in
@@ -822,6 +884,7 @@ impl fmt::Display for AgentState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Active => "active",
+            Self::Paused => "paused",
             Self::Retired => "retired",
         })
     }

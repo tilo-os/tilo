@@ -125,6 +125,51 @@ mod tests {
         fn manages(&self, _: &Workspace, _: &UserId) -> bool {
             true
         }
+
+        /// The page's workspace service, standing in: the record's own action, applied to the
+        /// records the page keeps.
+        fn change(
+            &self,
+            _: &Workspace,
+            change: super::super::AgentsChange,
+        ) -> tilo_actions::remote::Pending<Result<String, String>> {
+            use tilo_app::framework::WorkspaceResource;
+            use tilo_app::tilo_workspace_agent::{OWNER, WorkspaceAgents, workspace_agents};
+            let record = WorkspaceResource::<WorkspaceAgents>::open(
+                &self.0,
+                OWNER,
+                ("tilo-session", "Workspace settings"),
+                None,
+                None,
+            )
+            .expect("the page's agents record opens");
+            let (invoke, id) = match change {
+                super::super::AgentsChange::Create(mut create) => {
+                    let id = create
+                        .id
+                        .get_or_insert_with(|| record.get().free_id(create.name.as_str()))
+                        .clone();
+                    (WorkspaceAgents::CREATE_AGENT.with(create), id)
+                }
+                super::super::AgentsChange::Update(update) => (update, String::new()),
+                super::super::AgentsChange::Retire(agent) => (
+                    WorkspaceAgents::RETIRE_AGENT.with(workspace_agents::RetireAgent {
+                        agent: tilo_resource::Id::from_raw(agent),
+                    }),
+                    String::new(),
+                ),
+            };
+            let (done, answer) = tilo_actions::remote::pending();
+            done.complete(
+                record
+                    .invoke(&invoke)
+                    .map(|()| id)
+                    .map_err(|error| error.to_string()),
+            );
+            answer
+        }
+
+        fn took(&self, _: &Workspace) {}
     }
 
     /// The names the tab lists.

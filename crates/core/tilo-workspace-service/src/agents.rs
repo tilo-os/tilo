@@ -827,6 +827,10 @@ impl crate::work::AgentEngine for EngineKeys {
             let Some(agent) = agents.agents.iter().find(|its| its.id.0 == agent) else {
                 return false;
             };
+            // A paused agent's key takes no turn of it until it is resumed.
+            if !agent.is_active() {
+                return false;
+            }
             agent_caller(&self.roster, id, agent, [0; 32]).await.is_ok()
         })
     }
@@ -1110,9 +1114,9 @@ impl ServerAgents {
 
     /// Read again which agents the workspaces here keep: each one's answer is what a trigger
     /// reaches ([`EngineKeys::answering`]). `known` holds the agents each workspace kept at the
-    /// last read, `None` before the first: an agent this device's person made since comes with
-    /// its triggers, saved as theirs ([`triggered::triggers`]), and one retired or removed
-    /// since takes its triggers with it.
+    /// last read, `None` before the first: an agent a person made since comes with its triggers
+    /// ([`triggered::triggers`]) unless the action that made it saved them, and one retired or
+    /// removed since takes its triggers with it.
     async fn read_answering(&self, known: &mut Option<BTreeMap<String, BTreeSet<String>>>) {
         let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
         let me = self.workspaces.serving_certificate().user_public_key;
@@ -1132,10 +1136,15 @@ impl ServerAgents {
                 agent.state == tilo_workspace_agent::AgentState::Active
                     && agent.mcp_client.is_none()
             };
-            let working: BTreeSet<String> = agents
+            // An agent that was paused keeps its triggers while it waits: the turn it would
+            // start is refused until it is resumed, and no shortcut need be saved again.
+            let kept = |agent: &&Agent| {
+                !agent.is_retired() && agent.mcp_client.is_none() && agent.sub.is_none()
+            };
+            let answering: BTreeSet<String> = agents
                 .agents
                 .iter()
-                .filter(answers)
+                .filter(kept)
                 .map(|agent| agent.id.0.clone())
                 .collect();
             if let Some(before) = known.as_ref().and_then(|known| known.get(&id)) {
@@ -1144,11 +1153,13 @@ impl ServerAgents {
                     .iter()
                     .map(|saved| saved.id().to_owned())
                     .collect();
+                // The typed create action saves a made agent's triggers itself; an agent made
+                // by an app's own change or a sub-agent is saved here, once, as this person's.
                 let mine = |agent: &Agent| {
                     tilo_action_policy::PersonId::parse(&agent.acts_for)
                         .is_ok_and(|person| person.root() == Some(me))
                 };
-                for agent in agents.agents.iter().filter(answers) {
+                for agent in agents.agents.iter().filter(kept) {
                     let shortcut = triggered::shortcut_id(&agent.id.0);
                     if before.contains(&agent.id.0) || !mine(agent) || saved.contains(&shortcut) {
                         continue;
@@ -1160,7 +1171,7 @@ impl ServerAgents {
                         tracing::warn!(workspace = %id, agent = %agent.id.0, %error, "a new agent's triggers were not saved");
                     }
                 }
-                for gone in before.difference(&working) {
+                for gone in before.difference(&answering) {
                     let shortcut = triggered::shortcut_id(gone);
                     if !saved.contains(&shortcut) {
                         continue;
@@ -1178,7 +1189,7 @@ impl ServerAgents {
                     .filter(answers)
                     .map(|agent| (agent.id.0.clone(), agent.name.clone())),
             );
-            now.insert(id, working);
+            now.insert(id, holding);
         }
         *known = Some(now);
         answering.sort();
@@ -1221,6 +1232,11 @@ impl ServerAgents {
             .find(|its| its.id.0 == agent)
             .cloned()
             .ok_or_else(|| format!("the workspace has no agent `{agent}`"))?;
+        // A paused agent answers nothing: the turn its trigger would start is refused here, so
+        // resuming it makes the same trigger start one again.
+        if !agent.is_active() {
+            return Err(format!("the agent `{}` does not work now", agent.id.0));
+        }
         // A task is worked on over many agent sessions: the turn is told the task, and its
         // session is begun, placed and counted around it.
         let task = task_work::Task::of(&self.workspaces, workspace, &event).await;
@@ -1273,7 +1289,9 @@ impl ServerAgents {
                     }
                     going.ended().await;
                 }
-                going::Entered::Closed => return Err("this device's agents are stopping".to_owned()),
+                going::Entered::Closed => {
+                    return Err("this device's agents are stopping".to_owned());
+                }
             }
         };
         let (ended, used) = Box::pin(self.answer_going(workspace, &turn, &going, claim)).await;
@@ -1417,6 +1435,12 @@ impl ServerAgents {
         };
         let mut turn = turn.clone();
         turn.history = scope.recall(&turn).await;
+        // The person's stop of this run reaches the turn at its next step, and ends a model call
+        // under way.
+        {
+            let stop = going.stop_flag();
+            claim.on_stop(move || stop.store(true, std::sync::atomic::Ordering::SeqCst));
+        }
         let mut reply = scope.reply(&turn);
         reply.claim = Some((claim, going.stop_flag()));
         Box::pin(self.answer_by_model(workspace, (scope, turn, reply), going)).await
@@ -1885,10 +1909,7 @@ fn recalled(read: &Value, asked: &str, agent: &str) -> Vec<Recalled> {
             .filter_map(|key| message.get(*key).and_then(Value::as_str))
             .any(|id| id == asked || id.ends_with(&format!(":{asked}")))
     };
-    let before = messages
-        .iter()
-        .position(named)
-        .unwrap_or(messages.len());
+    let before = messages.iter().position(named).unwrap_or(messages.len());
     let from = before.saturating_sub(RECALLED);
     for message in messages.get(from..before).unwrap_or_default() {
         let mut words = Vec::new();
@@ -1899,9 +1920,12 @@ fn recalled(read: &Value, asked: &str, agent: &str) -> Vec<Recalled> {
         if text.is_empty() {
             continue;
         }
-        let who = message.pointer("/created/who").cloned().unwrap_or(Value::Null);
-        let by_agent = who.get("agent").and_then(Value::as_str) == Some(agent)
-            || who.as_str() == Some(agent);
+        let who = message
+            .pointer("/created/who")
+            .cloned()
+            .unwrap_or(Value::Null);
+        let by_agent =
+            who.get("agent").and_then(Value::as_str) == Some(agent) || who.as_str() == Some(agent);
         let by = who
             .get("name")
             .and_then(Value::as_str)
@@ -1987,7 +2011,10 @@ impl Reply {
         };
         let mut arguments = Map::new();
         arguments.insert("body".into(), json!(words));
-        arguments.insert("reply_to".into(), json!(triggered::published(CHAT, &place.item)));
+        arguments.insert(
+            "reply_to".into(),
+            json!(triggered::published(CHAT, &place.item)),
+        );
         if !self.turn.is_empty() {
             arguments.insert("turn".into(), json!(self.turn));
         }
@@ -2039,9 +2066,7 @@ impl Reply {
         let words = {
             let mut said = self.said.lock_recover();
             said.0.push_str(piece);
-            let due = said
-                .1
-                .is_none_or(|last| last.elapsed() >= STREAM_EVERY);
+            let due = said.1.is_none_or(|last| last.elapsed() >= STREAM_EVERY);
             if !due || said.0.trim().is_empty() {
                 return;
             }
@@ -2097,8 +2122,7 @@ impl Reply {
             return self.say(words).await;
         }
         self.kept().await?;
-        triggered::write_answer(&self.provider, &self.caller, &self.workspace, place, words)
-            .await
+        triggered::write_answer(&self.provider, &self.caller, &self.workspace, place, words).await
     }
 
     /// Send the view `source`, called `title`, into the reply's conversation through Chat's own
@@ -2139,10 +2163,14 @@ impl Reply {
         self.kept().await?;
         let mut body = RichValue::default();
         body.push_reference(label, to);
-        let body = tilolang_tilo::runtime::value::to_json(&tilolang_tilo::runtime::Value::Rich(body))?;
+        let body =
+            tilolang_tilo::runtime::value::to_json(&tilolang_tilo::runtime::Value::Rich(body))?;
         let mut arguments = Map::new();
         arguments.insert("body".into(), body);
-        arguments.insert("reply_to".into(), json!(triggered::published(CHAT, &place.item)));
+        arguments.insert(
+            "reply_to".into(),
+            json!(triggered::published(CHAT, &place.item)),
+        );
         invoke_named(
             &self.provider,
             &self.caller,
@@ -2252,14 +2280,15 @@ async fn list_agent(
         )
         .await
         .ok_or("this host serves no apps")?;
-    let answer = |status| match status {
-        tilo_actions::remote::ReceiptStatus::Completed { .. }
-        | tilo_actions::remote::ReceiptStatus::Accepted => Ok(()),
-        tilo_actions::remote::ReceiptStatus::Rejected { error } => Err(error.to_string()),
-        tilo_actions::remote::ReceiptStatus::Failed { error } => Err(error.message),
-        tilo_actions::remote::ReceiptStatus::Cancelled { message } => Err(message
-            .unwrap_or_else(|| "the action was cancelled before it was taken".to_owned())),
-    };
+    let answer =
+        |status| match status {
+            tilo_actions::remote::ReceiptStatus::Completed { .. }
+            | tilo_actions::remote::ReceiptStatus::Accepted => Ok(()),
+            tilo_actions::remote::ReceiptStatus::Rejected { error } => Err(error.to_string()),
+            tilo_actions::remote::ReceiptStatus::Failed { error } => Err(error.message),
+            tilo_actions::remote::ReceiptStatus::Cancelled { message } => Err(message
+                .unwrap_or_else(|| "the action was cancelled before it was taken".to_owned())),
+        };
     match reply {
         tilo_actions::remote::RemoteActionMessage::Receipt(receipt)
             if receipt.invocation == requested =>
