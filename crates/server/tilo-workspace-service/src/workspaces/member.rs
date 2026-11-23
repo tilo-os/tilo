@@ -482,6 +482,38 @@ impl Workspaces {
         self.inner.member.set_device(device);
     }
 
+    /// Save `change` to the shortcuts of `workspace` as this device's person: a shortcut it
+    /// saves is signed by the device this service signs its own writes as
+    /// ([`Self::signing_device`]), so its triggers fire for that person as one they saved.
+    ///
+    /// # Errors
+    /// The shortcut could not be signed, or the workspace did not take the change.
+    pub async fn change_own_shortcuts(
+        &self,
+        workspace: &str,
+        mut change: tilo_automation::ShortcutChange,
+    ) -> Result<(), String> {
+        if let tilo_automation::ShortcutChange::Save(shortcut) = &mut change {
+            let device = self.signing_device();
+            tilo_peer_state::workspace::sign_saved_shortcut(
+                workspace,
+                shortcut,
+                &device.cert,
+                device.signer.as_ref(),
+            )?;
+        }
+        self.commit_own_membership(
+            workspace,
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Settings(
+                tilo_peer_state::workspace_membership::SettingsChange::Shortcuts(change),
+            ),
+            None,
+        )
+        .await
+        .map(drop)
+        .map_err(|error| error.to_string())
+    }
+
     /// The device a member copy acts as, when this service serves one.
     pub(super) fn member_identity(&self) -> Result<Arc<MemberDevice>, String> {
         self.inner
