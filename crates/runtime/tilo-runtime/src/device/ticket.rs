@@ -502,7 +502,9 @@ impl Tickets {
             return Pending::ready(Ok(state.receipt()));
         }
         let InvokeArgument::Json(argument) = &request.argument else {
-            return Pending::ready(Err(refused("a device action asks with its arguments")));
+            return Pending::ready(Err(ActionCallError::refused(
+                "a device action asks with its arguments",
+            )));
         };
         let args = Value::Object(argument.clone());
         let action = request.target.address.action.clone();
@@ -898,12 +900,6 @@ pub(crate) fn device_info(place: &Place, key: &SigningKey) -> Value {
         "label": tilo_paths::session::host_name(),
         "people": people,
     })
-}
-
-fn refused(reason: impl Into<String>) -> ActionCallError {
-    ActionCallError::Refused {
-        reason: reason.into(),
-    }
 }
 
 pub(crate) fn succeeded(invocation: InvocationId, value: Value) -> InvocationUpdate {
