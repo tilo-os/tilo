@@ -30998,15 +30998,15 @@
           "title": {
             "type": "string"
           },
-          "name": {
+          "tag": {
             "type": "string"
           }
         },
         "required": [
           "title",
-          "name"
+          "tag"
         ],
-        "description": "Files a note titled `title` and carrying the tag `name` in one step: what another app writes\ndown of what it did (Today's morning) without waiting on the note it made to name it."
+        "description": "Files a note titled `title` and tagged `tag` in one step: what another app writes\ndown of what it did (Today's morning) without waiting on the note it made to name it."
       },
       "tl.so.tilo.notes.Notebook.new_tag.Arguments": {
         "type": "object",
