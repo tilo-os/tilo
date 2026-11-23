@@ -54,6 +54,7 @@ mod policy;
 mod publication;
 mod reflection;
 mod relatives;
+mod removed;
 mod resource_service;
 mod resource_store;
 mod rich_text;
