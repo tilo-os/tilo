@@ -59,7 +59,7 @@ impl Kept {
             .providers
             .iter_mut()
             .find(|provider| provider.id == id)
-            .ok_or_else(|| refused("That provider is not kept here"))
+            .ok_or_else(|| ActionCallError::refused("That provider is not kept here"))
     }
 
     /// Answer `action` as the host does, over what is kept.
@@ -173,7 +173,7 @@ impl Kept {
         match action {
             person_models::ADD_PRESET => {
                 let preset = Preset::from_slug(&text("preset")).ok_or_else(|| {
-                    refused("That provider is not one this provider adds by name")
+                    ActionCallError::refused("That provider is not one this provider adds by name")
                 })?;
                 let added = ProviderView {
                     id: preset.slug().to_owned(),
@@ -186,7 +186,7 @@ impl Kept {
             }
             person_models::ADD_PROVIDER => {
                 if text("name").trim().is_empty() {
-                    return Err(refused("A provider needs a name"));
+                    return Err(ActionCallError::refused("A provider needs a name"));
                 }
                 let added = ProviderView {
                     id: "other".into(),
@@ -202,7 +202,9 @@ impl Kept {
                 let key = text("key");
                 if ![GOOD_KEY, LISTLESS_KEY].contains(&key.as_str()) {
                     let name = self.provider(&id)?.name.clone();
-                    return Err(refused(&format!("{name} did not accept this key.")));
+                    return Err(ActionCallError::refused(format!(
+                        "{name} did not accept this key."
+                    )));
                 }
                 self.keys.insert(id.clone(), key);
                 let provider = self.provider(&id)?;
@@ -249,12 +251,6 @@ impl Kept {
             }
             _ => Err(ActionCallError::UnknownAction),
         }
-    }
-}
-
-fn refused(reason: &str) -> ActionCallError {
-    ActionCallError::Refused {
-        reason: reason.to_owned(),
     }
 }
 
