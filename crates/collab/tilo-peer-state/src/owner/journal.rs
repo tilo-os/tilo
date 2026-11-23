@@ -23,7 +23,7 @@
 use crate::ordered::Ordered;
 use crate::owner::answers::AnswerSignature;
 use crate::owner::publication::{Answer, Journaled, StoredOutgoing};
-use crate::owner::stored::{DurablePeer, StoredWorkspace};
+use crate::owner::stored::{DurablePeer, StoredWorkspace, WORKSPACE_VERSION};
 use crate::state::{DocumentParts, DurableParts, Route};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -121,6 +121,11 @@ impl Written {
 
 /// Length and digest ahead of each entry.
 const FRAME_HEAD: usize = 4 + 32;
+
+/// The entry version whose journal this build reads: an entry is a delta of the snapshot it was
+/// appended beside, so a journal of another layout is refused. Version 9 changed no stored byte, so
+/// the journal a version 8 build appended reads here.
+pub(crate) const LAYOUT_VERSION: u32 = 8;
 
 /// The workspace's own fields as JSON, as the snapshot holds them, without its replica and what
 /// [`Journaled`] carries apart: those as well.
@@ -327,6 +332,9 @@ fn replay_entries(
     }
     let mut replayed: StoredWorkspace = serde_json::from_slice(&fields.to_vec())
         .map_err(|error| format!("the record's journal does not parse: {error}"))?;
+    // A journal of an earlier layout is refused, so the fields it applies are this build's; the
+    // version they name is the one this build writes, whatever the entry's ranges carried.
+    replayed.version = WORKSPACE_VERSION;
     if let Some(publication) = replayed.publication.as_mut() {
         publication.set_journaled(journaled);
     }

@@ -220,17 +220,18 @@ fn read_index(
         let snapshot = bytes.len();
         let mut log = read_whole(&log_of(&parts, workspace, revision))?;
         // The layout the file names: one this build writes reads as it is,
-        // and an earlier one is brought up, with a journal beside it of that
-        // version refused. The next publication then writes a snapshot of this
-        // build's version: a journal is a delta of the snapshot beside it, as
-        // that version's bytes.
+        // and an earlier one is brought up, with a journal beside it refused
+        // unless its layout is this build's. The next publication then writes
+        // a snapshot of this build's version: a journal is a delta of the
+        // snapshot beside it, as that version's bytes.
         let version = format::stored_version(&bytes)?;
         let earlier = version < WORKSPACE_VERSION;
         let mut whole = !earlier;
-        if earlier && log.take().is_some() {
+        if version < journal::LAYOUT_VERSION && log.take().is_some() {
             return Err(format!(
                 "{workspace}'s journal is a version {version} one, and this build reads a \
-                 version {WORKSPACE_VERSION} one"
+                 version {} one",
+                journal::LAYOUT_VERSION
             ));
         }
         let bytes = format::FORMAT

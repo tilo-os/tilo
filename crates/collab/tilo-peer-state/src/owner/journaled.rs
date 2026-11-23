@@ -117,30 +117,39 @@ impl Journaled {
                 appended: 0,
             };
             let log = journal_name(*workspace, *snapshot_revision);
+            let snapshot_version = stored.version;
+            let entries = parts.read_part(&log)?;
+            // A journal entry is a delta of the snapshot beside it, so a journal
+            // of another layout is refused. Version 9 changed no stored byte, so
+            // the journal a version 8 build appended reads here.
+            if snapshot_version < journal::LAYOUT_VERSION && entries.is_some() {
+                return Err(format!(
+                    "{workspace}'s journal is a version {snapshot_version} one, and this build \
+                     reads a version {} one",
+                    journal::LAYOUT_VERSION
+                ));
+            }
             let mut whole = true;
-            // A snapshot of an earlier version comes up, and a journal beside it
-            // of that version is refused: this build reads only the journal it
-            // appends, and the next publication writes a snapshot rather than
-            // append to one of another layout.
-            if stored.version < WORKSPACE_VERSION {
-                if parts.read_part(&log)?.is_some() {
-                    return Err(format!(
-                        "{workspace}'s journal is a version {} one, and this build reads a \
-                         version {WORKSPACE_VERSION} one",
-                        stored.version
-                    ));
-                }
-                stored.version = WORKSPACE_VERSION;
-                whole = false;
-            } else if let Some(entries) = parts.read_part(&log)? {
+            if let Some(entries) = entries {
                 written.insert(log);
                 whole = journal::read_whole(&entries);
                 let (replayed, last) = journal::replay(stored, &entries)
                     .map_err(|error| format!("{workspace}'s journal does not read: {error}"))?;
                 stored = replayed;
                 revision = revision.max(last.unwrap_or(0));
-                journal_kept.written = journal::first_of(&stored)?;
-                journal_kept.appended = entries.len();
+                if snapshot_version < WORKSPACE_VERSION {
+                    // The snapshot stays as the version it was written at: the
+                    // next publication writes one of this build's rather than
+                    // append to another layout.
+                    stored.version = WORKSPACE_VERSION;
+                    whole = false;
+                } else {
+                    journal_kept.written = journal::first_of(&stored)?;
+                    journal_kept.appended = entries.len();
+                }
+            } else if snapshot_version < WORKSPACE_VERSION {
+                stored.version = WORKSPACE_VERSION;
+                whole = false;
             }
             if stored.workspace != *workspace {
                 return Err(format!("{workspace}'s record holds another workspace"));

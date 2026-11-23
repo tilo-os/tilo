@@ -142,3 +142,21 @@ what = """the frames a store device keeps for its workspaces: one postcard Neigh
 types = [
   "crates/collab/neighbour-wire/src/lib.rs:NeighbourMsg",
 ]
+
+[[layout]]
+format = "owner workspace document"
+version = 9
+digest = "dc9eb3f508b074a4"
+what = """the journal appended beside each workspace's entry in a device's owner state: one postcard entry per publication, each a delta of what the entry before left (version 9 is version 8's layout, whose write binding and target moved to the publication module under new names, with no stored byte changed)"""
+types = [
+  "crates/collab/tilo-peer-state/src/owner/journal.rs:Entry",
+  "crates/collab/tilo-peer-state/src/owner/journal.rs:Stretch",
+  "crates/collab/tilo-peer-state/src/owner/journal.rs:DocumentOps",
+  "crates/collab/tilo-peer-state/src/owner/journal.rs:Op",
+  "crates/collab/tilo-peer-state/src/owner/journal.rs:JournalAnswer",
+  "crates/collab/tilo-peer-state/src/owner/publication.rs:StoredOutgoing",
+  "crates/collab/tilo-peer-state/src/owner/answers.rs:AnswerSignature",
+  "crates/collab/tilo-peer-state/src/state.rs:Route",
+  "crates/collab/tilo-peer-state/src/owner/publication.rs:RecordBinding",
+  "crates/collab/tilo-peer-state/src/owner/publication.rs:RecordTarget",
+]
