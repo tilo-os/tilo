@@ -1,5 +1,6 @@
 //! The platform's apps a tilolang view reads but this runtime does not run: the device (its
-//! sound, network, Bluetooth, battery, power and displays), Settings (the person's appearance
+//! sound, network, Bluetooth, modem, VPN, tethering, battery, power and displays), Settings
+//! (the person's appearance
 //! and notification settings), Contacts (the workspace's contact directory) and the image
 //! model (the device's vision actions and the library analysis run).
 //!
@@ -91,7 +92,9 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("displays", "Displays", "session:displays"),
     ("notifications", "Notifications", "session:notifications"),
     ("osd", "Osd", "session:osd"),
+    ("modem", "Modem", "modem"),
     ("vpn", "Vpn", "vpn"),
+    ("tethering", "Tethering", "tethering"),
     ("night_light", "NightLight", "session:night-light"),
     ("banners", "Banners", "session:banners"),
     ("time", "Time", "session:time"),

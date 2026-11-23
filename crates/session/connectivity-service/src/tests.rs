@@ -8,10 +8,11 @@ use os_actions::{EnterpriseEapMethod, EnterpriseWifiConfiguration};
 
 use crate::device::{Change, Device, Readings};
 use crate::model::{
-    Accessory, Band, Bluetooth, Client, Link, LinkKind, Metered, Mobile, MobileProfile, Nearby,
-    Network, SavedKind, SavedNetwork, Tethering, Vpn, VpnProfile, Wifi, WifiNetwork, Wired,
+    Accessory, Band, Bluetooth, Client, Link, LinkKind, Metered, Mobile, MobileProfile, Modem,
+    ModemUnit, Nearby, Network, SavedKind, SavedNetwork, Tethering, Vpn, VpnProfile, Wifi,
+    WifiNetwork, Wired,
 };
-use crate::{BLUETOOTH, Connectivity, NETWORK, TETHERING, VPN};
+use crate::{BLUETOOTH, Connectivity, MODEM, NETWORK, TETHERING, VPN};
 
 /// A device in memory: changes recorded and applied to what it reads.
 #[derive(Default)]
@@ -71,6 +72,7 @@ impl Fake {
                 id: "uuid-work".into(),
                 kind: "wireguard".into(),
                 connected: false,
+                ..VpnProfile::default()
             }];
             readings.tethering.available = true;
             readings.tethering.clients = vec![Client {
@@ -81,7 +83,7 @@ impl Fake {
         Arc::new(fake)
     }
 
-    /// A device with a modem instead of a wired link.
+    /// A device with a modem: mobile data, and a SIM asking for its PIN.
     fn phone() -> Arc<Self> {
         let fake = Self::default();
         {
@@ -108,6 +110,30 @@ impl Fake {
                 ..Network::default()
             };
             readings.tethering.available = true;
+            readings.modem = Modem {
+                available: true,
+                modems: vec![ModemUnit {
+                    path: "/mm/modem0".into(),
+                    name: "Phone modem".into(),
+                    lock: crate::model::SimLock::Pin,
+                    retries: crate::model::Retries {
+                        pin: Some(2),
+                        puk: None,
+                    },
+                    network_types: vec!["5g-4g-3g".into(), "4g-3g".into()],
+                    network_type: Some("5g-4g-3g".into()),
+                    sims: vec![crate::model::ModemSim {
+                        path: "/mm/sim0".into(),
+                        slot: Some(1),
+                        active: true,
+                        operator: Some("Tilo Mobile".into()),
+                        label: "Tilo Mobile".into(),
+                        kind: crate::model::SimKind::Physical,
+                    }],
+                    ..ModemUnit::default()
+                }],
+                ..Modem::default()
+            };
         }
         Arc::new(fake)
     }
@@ -155,6 +181,7 @@ impl Device for Fake {
             apply_bluetooth(&mut readings.bluetooth, change);
             apply_vpn(&mut readings.vpn, change);
             apply_tethering(&mut readings.tethering, change);
+            apply_modem(&mut readings.modem, change);
         }
         Ok(())
     }
@@ -280,6 +307,81 @@ fn apply_vpn(vpn: &mut Vpn, change: &Change) {
         }
         Change::ForgetVpn { profile } => {
             vpn.profiles.retain(|saved| saved.id != *profile);
+        }
+        Change::VpnPatch { profile, patch } => {
+            for saved in &mut vpn.profiles {
+                if saved.id != *profile {
+                    continue;
+                }
+                if let Some(name) = &patch.name {
+                    saved.name.clone_from(name);
+                }
+                if let Some(on) = patch.autoconnect {
+                    saved.autoconnect = on;
+                }
+                if let Some(on) = patch.all_traffic {
+                    saved.all_traffic = on;
+                }
+                if let Some(dns) = &patch.dns {
+                    saved.dns.clone_from(dns);
+                }
+                if let Some(mtu) = patch.mtu {
+                    saved.mtu = mtu;
+                }
+                if let Some(endpoint) = &patch.endpoint {
+                    saved.endpoint = Some(endpoint.clone());
+                }
+                if let Some(routes) = &patch.allowed_ips {
+                    saved.allowed_ips.clone_from(routes);
+                }
+                if let Some(keepalive) = patch.keepalive {
+                    saved.keepalive = keepalive;
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `change` to the modems as the device then reads them.
+fn apply_modem(modem: &mut Modem, change: &Change) {
+    match change {
+        Change::ModemPin { sim, .. } => {
+            for held in modem.modems.iter_mut() {
+                if held.sims.iter().any(|held| held.path == *sim) {
+                    held.lock = crate::model::SimLock::None;
+                }
+            }
+        }
+        Change::ModemPuk { sim, .. } => {
+            for held in modem.modems.iter_mut() {
+                if held.sims.iter().any(|held| held.path == *sim) {
+                    held.lock = crate::model::SimLock::None;
+                }
+            }
+        }
+        Change::ModemPinLock { sim, on, .. } => {
+            for held in modem.modems.iter_mut() {
+                if held.sims.iter().any(|held| held.path == *sim) {
+                    held.pin_enabled = Some(*on);
+                }
+            }
+        }
+        Change::ModemModes { modem: path, modes } => {
+            for held in modem.modems.iter_mut() {
+                if held.path == *path {
+                    held.network_type = Some(modes.key());
+                }
+            }
+        }
+        Change::ModemUseSlot { modem: path, slot } => {
+            for held in modem.modems.iter_mut() {
+                if held.path == *path {
+                    for sim in &mut held.sims {
+                        sim.active = sim.slot == Some(*slot);
+                    }
+                }
+            }
         }
         _ => {}
     }
@@ -972,4 +1074,114 @@ fn what_the_device_lacks_is_unavailable() {
         service.invoke(NETWORK, "set-wifi", &arguments(json!({}))),
         Err(ApiError::Unavailable { .. } | ApiError::InvalidArguments(_))
     ));
+}
+
+/// A locked SIM is unlocked with its PIN: the code is what the change
+/// carries, and the reading says the lock is gone.
+#[test]
+fn a_locked_sim_unlocks_with_its_pin() {
+    let fake = Fake::phone();
+    let mut service = service(&fake);
+    assert_eq!(read(&service, MODEM)["modems"][0]["lock"], json!("pin"));
+    service
+        .invoke(MODEM, "unlock-sim", &arguments(json!({"pin": "1234"})))
+        .expect("taken");
+    service.settle();
+    assert_eq!(
+        fake.changes().last(),
+        Some(&Change::ModemPin {
+            sim: "/mm/sim0".into(),
+            pin: "1234".into(),
+        })
+    );
+    assert_eq!(read(&service, MODEM)["modems"][0]["lock"], json!("none"));
+    assert!(!read(&service, MODEM).to_string().contains("1234"));
+}
+
+/// A modem's network types are chosen by the key it lists, and a key it does
+/// not list is refused.
+#[test]
+fn a_modem_takes_the_network_types_it_lists() {
+    let fake = Fake::phone();
+    let mut service = service(&fake);
+    assert_eq!(
+        read(&service, MODEM)["modems"][0]["network-types"],
+        json!(["5g-4g-3g", "4g-3g"])
+    );
+    service
+        .invoke(
+            MODEM,
+            "set-preferred-network",
+            &arguments(json!({"network": "4g-3g"})),
+        )
+        .expect("taken");
+    service.settle();
+    assert_eq!(
+        fake.changes().last(),
+        Some(&Change::ModemModes {
+            modem: "/mm/modem0".into(),
+            modes: os_actions::NetworkModes {
+                allowed: 1 << 3 | 1 << 2,
+                preferred: 0,
+            },
+        })
+    );
+    let refused = service.invoke(
+        MODEM,
+        "set-preferred-network",
+        &arguments(json!({"network": "2g"})),
+    );
+    assert!(matches!(refused, Err(ApiError::Unavailable { .. })));
+}
+
+/// A VPN profile's own page changes its settings one field at a time, over
+/// the settings the reading holds.
+#[test]
+fn a_vpn_profile_changes_its_settings() {
+    let fake = Fake::laptop();
+    let mut service = service(&fake);
+    service
+        .invoke(
+            VPN,
+            "set-vpn-name",
+            &arguments(json!({"profile": "uuid-work", "name": "Office"})),
+        )
+        .expect("taken");
+    service
+        .invoke(
+            VPN,
+            "add-vpn-dns",
+            &arguments(json!({"profile": "uuid-work", "server": "10.0.0.1"})),
+        )
+        .expect("taken");
+    service.settle();
+    let vpn = read(&service, VPN);
+    assert_eq!(vpn["profiles"][0]["name"], json!("Office"));
+    assert_eq!(vpn["profiles"][0]["dns"], json!(["10.0.0.1"]));
+
+    service
+        .invoke(
+            VPN,
+            "remove-vpn-dns",
+            &arguments(json!({"profile": "uuid-work", "server": "10.0.0.1"})),
+        )
+        .expect("taken");
+    service.settle();
+    assert_eq!(read(&service, VPN)["profiles"][0]["dns"], json!([]));
+}
+
+/// Every connectivity resource is published as a surface a view compiles
+/// against, the modem and the VPN included.
+#[test]
+fn the_connectivity_resources_are_surfaces() {
+    for (surface, kind, label) in [
+        (crate::network_surface(), "network", "Network"),
+        (crate::bluetooth_surface(), "bluetooth", "Bluetooth"),
+        (crate::modem_surface(), "modem", "Modem"),
+        (crate::vpn_surface(), "vpn", "VPN"),
+        (crate::tethering_surface(), "tethering", "Tethering"),
+    ] {
+        assert_eq!(surface.kind.as_str(), kind);
+        assert_eq!(surface.label, label);
+    }
 }

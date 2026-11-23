@@ -40,19 +40,21 @@ use tilo_resource::Effect as _;
 use tilo_service::{Jobs, Service, Started, Wake, Worker, decode, offer, reading, unavailable};
 
 use device::{Change, Device, Readings};
-use effects::{BluetoothAction, NetworkAction, TetheringAction, VpnAction};
-use model::{Bluetooth, Network, Tethering, Vpn};
+use effects::{BluetoothAction, ModemAction, NetworkAction, TetheringAction, VpnAction};
+use model::{Bluetooth, Modem, Network, Tethering, Vpn};
 
 /// The resources' ids.
 pub const NETWORK: &str = "network";
 pub const BLUETOOTH: &str = "bluetooth";
 pub const VPN: &str = "vpn";
 pub const TETHERING: &str = "tethering";
+pub const MODEM: &str = "modem";
 
 /// Which resource a change belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Part {
     Network,
+    Modem,
     Bluetooth,
     Vpn,
     Tethering,
@@ -107,9 +109,15 @@ impl Connectivity {
         let network = os_actions::network::follow_network_changes(move || refresh(&jobs))?;
         let jobs = self.worker.jobs();
         let bluetooth = os_actions::bluez::follow_changes(move || refresh(&jobs))?;
+        let jobs = self.worker.jobs();
+        let modem = os_actions::bus_follow::follow_system_services(
+            &["org.freedesktop.ModemManager1"],
+            move || refresh(&jobs),
+        )?;
         Ok(Follow {
             _network: network,
             _bluetooth: bluetooth,
+            _modem: modem,
         })
     }
 
@@ -146,6 +154,8 @@ impl Connectivity {
         readings.network.problem = old.network.problem.take();
         readings.bluetooth.pending = std::mem::take(&mut old.bluetooth.pending);
         readings.bluetooth.problem = old.bluetooth.problem.take();
+        readings.modem.pending = std::mem::take(&mut old.modem.pending);
+        readings.modem.problem = old.modem.problem.take();
         readings.vpn.pending = std::mem::take(&mut old.vpn.pending);
         readings.vpn.problem = old.vpn.problem.take();
         readings.tethering.pending = std::mem::take(&mut old.tethering.pending);
@@ -161,6 +171,7 @@ impl Connectivity {
                 &mut readings.bluetooth.pending,
                 &mut readings.bluetooth.problem,
             ),
+            Part::Modem => (&mut readings.modem.pending, &mut readings.modem.problem),
             Part::Vpn => (&mut readings.vpn.pending, &mut readings.vpn.problem),
             Part::Tethering => (
                 &mut readings.tethering.pending,
@@ -262,6 +273,9 @@ impl Connectivity {
             NetworkAction::SetNetworkProxy { profile, server } => Change::Proxy {
                 profile,
                 server: proxy(server)?,
+            },
+            NetworkAction::SetMobileMetered { metered } => Change::MobileMetered {
+                metered: metered_from_key(&metered)?,
             },
             NetworkAction::SetWired { on } => Change::Wired(on),
             NetworkAction::SetMobileData { on } => Change::MobileData(on),
@@ -419,6 +433,7 @@ impl Connectivity {
 pub struct Follow {
     _network: os_actions::network::NetworkFollow,
     _bluetooth: os_actions::bluez::BluetoothFollow,
+    _modem: os_actions::bus_follow::ServiceFollow,
 }
 
 fn refresh(jobs: &Jobs<dyn Device, Landed>) {
@@ -585,6 +600,18 @@ pub fn vpn_surface() -> tilo_resource::surface::Surface {
     tilo_resource::surface::reading_surface::<Vpn, VpnAction>("vpn", "VPN")
 }
 
+/// The tethering resource as a view of another language reads and changes it.
+#[must_use]
+pub fn tethering_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<Tethering, TetheringAction>("tethering", "Tethering")
+}
+
+/// The modem resource as a view of another language reads and changes it.
+#[must_use]
+pub fn modem_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<Modem, ModemAction>("modem", "Modem")
+}
+
 /// The `network` resource's declared type.
 #[derive(tilo_resource::Row)]
 #[row(kind = "so.tilo.connectivity.network", label = "Network")]
@@ -594,6 +621,11 @@ pub struct NetworkReading;
 #[derive(tilo_resource::Row)]
 #[row(kind = "so.tilo.connectivity.bluetooth", label = "Bluetooth")]
 pub struct BluetoothReading;
+
+/// The `modem` resource's declared type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "so.tilo.connectivity.modem", label = "Modem")]
+pub struct ModemReading;
 
 /// The `vpn` resource's declared type.
 #[derive(tilo_resource::Row)]
@@ -922,6 +954,7 @@ impl Service for Connectivity {
         vec![
             network_resource(&readings.network),
             bluetooth_resource(&readings.bluetooth),
+            modem_resource(&readings.modem),
             vpn_resource(&readings.vpn),
             tethering_resource(&readings.tethering),
         ]
@@ -932,6 +965,7 @@ impl Service for Connectivity {
         match resource {
             NETWORK => Some(reading(&readings.network)),
             BLUETOOTH => Some(reading(&readings.bluetooth)),
+            MODEM => Some(reading(&readings.modem)),
             VPN => Some(reading(&readings.vpn)),
             TETHERING => Some(reading(&readings.tethering)),
             _ => None,
@@ -951,6 +985,10 @@ impl Service for Connectivity {
             NETWORK | "wifi-network" | "saved-network" => {
                 let action = decode::<NetworkAction>(&published, resource, action, arguments)?;
                 self.network(action)
+            }
+            MODEM => {
+                let action = decode::<ModemAction>(&published, resource, action, arguments)?;
+                self.modem(action)
             }
             BLUETOOTH | "bluetooth-accessory" | "bluetooth-nearby" => {
                 let action = decode::<BluetoothAction>(&published, resource, action, arguments)?;
@@ -988,3 +1026,233 @@ impl Service for Connectivity {
 
 #[cfg(test)]
 mod tests;
+
+/// The `modem` resource reading `modem`.
+#[must_use]
+pub fn modem_resource(modem: &Modem) -> ResourceSpec {
+    let mut resource = offer::<ModemAction>(tilo_resource::typed_resource::<ModemReading>(
+        MODEM,
+        crate::i18n::name("so.tilo.connectivity.modem", "Modem"),
+    ));
+    if !modem.available {
+        for action in [
+            "unlock-sim",
+            "unblock-sim",
+            "set-sim-pin-lock",
+            "change-sim-pin",
+            "use-sim",
+            "set-preferred-network",
+        ] {
+            unavailable(
+                &mut resource,
+                action,
+                "no_modem",
+                "This device has no mobile modem",
+            );
+        }
+    }
+    resource
+}
+
+/// The metering `metered` names: `automatic`, `metered` or `unmetered`.
+fn metered_from_key(metered: &str) -> Result<model::Metered, ApiError> {
+    match metered.trim().to_ascii_lowercase().as_str() {
+        "automatic" | "auto" | "" => Ok(model::Metered::Automatic),
+        "metered" => Ok(model::Metered::Metered),
+        "unmetered" => Ok(model::Metered::Unmetered),
+        other => Err(ApiError::InvalidArguments(format!(
+            "{other} is not a metering: automatic, metered or unmetered"
+        ))),
+    }
+}
+
+/// The entries `text` lists: comma-separated, trimmed, none empty.
+fn list(text: Option<String>) -> Vec<String> {
+    text.map(|text| {
+        text.split(',')
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(str::to_owned)
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// The entry `field` demands, else a refusal naming it.
+fn named(value: Option<String>, field: &str) -> Result<String, ApiError> {
+    given(value).ok_or_else(|| ApiError::InvalidArguments(format!("no {field} was given")))
+}
+
+/// The given entry as it is used: trimmed, and nothing when it is empty.
+fn given(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+/// The network types `key` names (`5g-4g-3g`, optionally `-prefer-4g`) as
+/// `ModemManager` bits.
+fn network_modes(key: &str) -> Result<os_actions::NetworkModes, String> {
+    let generation_bit = |generation: u8| match generation {
+        5 => Some(1 << 4),
+        4 => Some(1 << 3),
+        3 => Some(1 << 2),
+        2 => Some(1 << 1),
+        _ => None,
+    };
+    let (allowed, preferred) = key
+        .trim()
+        .split_once("-prefer-")
+        .map_or((key.trim(), None), |(allowed, preferred)| {
+            (allowed, Some(preferred))
+        });
+    let mut allowed_bits = 0_u32;
+    for part in allowed.split('-').filter(|part| !part.is_empty()) {
+        let generation = part
+            .trim_end_matches('g')
+            .parse::<u8>()
+            .map_err(|_| format!("{part} is not a network generation"))?;
+        allowed_bits |= generation_bit(generation)
+            .ok_or_else(|| format!("{part} is not a network generation: 5g, 4g, 3g or 2g"))?;
+    }
+    if allowed_bits == 0 {
+        return Err("no network generation is named".into());
+    }
+    let preferred_bits = match preferred {
+        Some(preferred) => {
+            let generation = preferred
+                .trim_end_matches('g')
+                .parse::<u8>()
+                .map_err(|_| format!("{preferred} is not a network generation"))?;
+            generation_bit(generation)
+                .filter(|bit| allowed_bits & bit != 0)
+                .ok_or_else(|| format!("{preferred} is not one of the listed generations"))?
+        }
+        None => 0,
+    };
+    Ok(os_actions::NetworkModes {
+        allowed: allowed_bits,
+        preferred: preferred_bits,
+    })
+}
+
+impl Connectivity {
+    fn modem(&mut self, action: ModemAction) -> Result<Started, ApiError> {
+        let id = action.id();
+        let change = match action {
+            ModemAction::RefreshModems => {
+                refresh(&self.worker.jobs());
+                return Ok(Started::Accepted);
+            }
+            ModemAction::UnlockSim { sim, pin } => {
+                let pin = named(pin, "PIN")?;
+                let sim =
+                    self.sim_path(sim.as_deref(), |modem| modem.lock == model::SimLock::Pin)?;
+                Change::ModemPin { sim, pin }
+            }
+            ModemAction::UnblockSim { sim, puk, pin } => {
+                let puk = named(puk, "PUK")?;
+                let new_pin = named(pin, "new PIN")?;
+                let sim =
+                    self.sim_path(sim.as_deref(), |modem| modem.lock == model::SimLock::Puk)?;
+                Change::ModemPuk { sim, puk, new_pin }
+            }
+            ModemAction::SetSimPinLock { sim, on, pin } => {
+                let pin = named(pin, "PIN")?;
+                let sim = self.sim_path(sim.as_deref(), model::ModemUnit::usable)?;
+                Change::ModemPinLock { sim, pin, on }
+            }
+            ModemAction::ChangeSimPin {
+                sim,
+                old_pin,
+                new_pin,
+            } => {
+                let old_pin = named(old_pin, "current PIN")?;
+                let new_pin = named(new_pin, "new PIN")?;
+                let sim = self.sim_path(sim.as_deref(), model::ModemUnit::usable)?;
+                Change::ModemChangePin {
+                    sim,
+                    old_pin,
+                    new_pin,
+                }
+            }
+            ModemAction::UseSim { sim } => {
+                let (modem, slot) = self.sim_slot(&sim)?;
+                Change::ModemUseSlot { modem, slot }
+            }
+            ModemAction::SetPreferredNetwork { modem, network } => {
+                let modes = network_modes(&network).map_err(ApiError::InvalidArguments)?;
+                let modem = self.modem_path(modem.as_deref(), &network)?;
+                Change::ModemModes { modem, modes }
+            }
+        };
+        Ok(self.start(Part::Modem, id, change))
+    }
+
+    fn sim_path(
+        &self,
+        wanted: Option<&str>,
+        fallback: impl Fn(&model::ModemUnit) -> bool,
+    ) -> Result<String, ApiError> {
+        let modems = &self.readings.modem.modems;
+        if let Some(wanted) = wanted {
+            return modems
+                .iter()
+                .flat_map(|modem| &modem.sims)
+                .find(|sim| sim.path == wanted || sim.label == wanted)
+                .map(|sim| sim.path.clone())
+                .ok_or_else(|| ApiError::Unavailable {
+                    code: "no_such_sim".into(),
+                    reason: format!("{wanted} is not a SIM of this device"),
+                });
+        }
+        modems
+            .iter()
+            .filter(|modem| fallback(modem))
+            .find_map(|modem| modem.active_sim().map(|sim| sim.path.clone()))
+            .ok_or_else(|| ApiError::Unavailable {
+                code: "no_sim".into(),
+                reason: "no SIM of this device takes the change".into(),
+            })
+    }
+
+    fn sim_slot(&self, sim: &str) -> Result<(String, u32), ApiError> {
+        for modem in &self.readings.modem.modems {
+            let Some(held) = modem
+                .sims
+                .iter()
+                .find(|held| held.path == sim || held.label == sim)
+            else {
+                continue;
+            };
+            return held.slot.map_or_else(
+                || {
+                    Err(ApiError::Unavailable {
+                        code: "no_slot".into(),
+                        reason: "this SIM is not in a slot that can be chosen".into(),
+                    })
+                },
+                |slot| Ok((modem.path.clone(), slot)),
+            );
+        }
+        Err(ApiError::Unavailable {
+            code: "no_such_sim".into(),
+            reason: format!("{sim} is not a SIM of this device"),
+        })
+    }
+
+    fn modem_path(&self, wanted: Option<&str>, network: &str) -> Result<String, ApiError> {
+        let modems = &self.readings.modem.modems;
+        let offers =
+            |modem: &model::ModemUnit| modem.network_types.iter().any(|key| key == network);
+        modems
+            .iter()
+            .filter(|modem| wanted.is_none_or(|wanted| modem.path == wanted))
+            .find(|modem| offers(modem))
+            .map(|modem| modem.path.clone())
+            .ok_or_else(|| ApiError::Unavailable {
+                code: "no_such_network_type".into(),
+                reason: format!("no modem offers {network}"),
+            })
+    }
+}

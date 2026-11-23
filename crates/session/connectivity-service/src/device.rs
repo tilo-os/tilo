@@ -3,8 +3,9 @@
 //! `os-actions`); a test lends one of its own.
 
 use crate::model::{
-    Accessory, Band, Bluetooth, Client, Connectivity, Link, Metered, Mobile, MobileProfile, Nearby,
-    Network, SavedNetwork, Tethering, Vpn, VpnProfile, Wifi, WifiNetwork, Wired, ordered,
+    Accessory, Band, Bluetooth, Client, Connectivity, Link, Metered, Mobile, MobileProfile, Modem,
+    ModemUnit, Nearby, Network, SavedNetwork, Tethering, Vpn, VpnPluginKind, VpnProfile, Wifi,
+    WifiNetwork, Wired, ordered,
 };
 
 /// A change to make on the device.
@@ -60,6 +61,10 @@ pub enum Change {
     },
     /// Let mobile data connect on another operator's network, or stop.
     MobileRoaming(bool),
+    /// Count mobile data against a limit, or let the network say.
+    MobileMetered {
+        metered: Metered,
+    },
     Bluetooth(bool),
     Connect {
         address: String,
@@ -124,6 +129,44 @@ pub enum Change {
     WifiPassword {
         profile: String,
         password: String,
+    /// Make a profile of an installed plugin's type.
+    CreatePluginVpn {
+        service: String,
+        name: String,
+        server: String,
+    },
+    /// Unlock a SIM with its PIN.
+    ModemPin {
+        sim: String,
+        pin: String,
+    },
+    /// Unblock a SIM with its PUK, choosing a new PIN.
+    ModemPuk {
+        sim: String,
+        puk: String,
+        new_pin: String,
+    },
+    /// Ask for a SIM's PIN when the device starts, or stop asking.
+    ModemPinLock {
+        sim: String,
+        pin: String,
+        on: bool,
+    },
+    /// Change a SIM's PIN.
+    ModemChangePin {
+        sim: String,
+        old_pin: String,
+        new_pin: String,
+    },
+    /// Use a modem's SIM slot for mobile data.
+    ModemUseSlot {
+        modem: String,
+        slot: u32,
+    },
+    /// The network types a modem may use.
+    ModemModes {
+        modem: String,
+        modes: os_actions::NetworkModes,
     },
 }
 
@@ -132,6 +175,7 @@ pub enum Change {
 pub struct Readings {
     pub network: Network,
     pub bluetooth: Bluetooth,
+    pub modem: Modem,
     pub vpn: Vpn,
     pub tethering: Tethering,
 }
@@ -158,6 +202,27 @@ fn read_or_log<T>(what: &str, result: Result<T, String>) -> Option<T> {
     result
         .map_err(|error| tracing::debug!(%error, what, "a connectivity reading failed"))
         .ok()
+}
+
+/// `profile` with the settings its own page reads and changes.
+fn with_vpn_settings(mut profile: VpnProfile) -> VpnProfile {
+    let Some(settings) = read_or_log(
+        "vpn settings",
+        os_actions::network_settings::vpn_profile_settings(&profile.id),
+    ) else {
+        return profile;
+    };
+    profile.service = settings.service;
+    profile.autoconnect = settings.autoconnect;
+    profile.all_traffic = settings.all_traffic;
+    profile.addresses = settings.addresses;
+    profile.dns = settings.dns;
+    profile.mtu = settings.mtu;
+    profile.endpoint = settings.endpoint;
+    profile.allowed_ips = settings.allowed_ips;
+    profile.peer_public_key = settings.peer_public_key;
+    profile.keepalive = settings.keepalive;
+    profile
 }
 
 /// The networks this device keeps, each with the settings a person changes.
@@ -248,6 +313,7 @@ impl Device for OsDevice {
             .unwrap_or_default()
             .iter()
             .map(VpnProfile::from)
+            .map(with_vpn_settings)
             .collect();
         let adapter = os_actions::bluez::has_adapter();
         let bluetooth_on =
@@ -294,8 +360,22 @@ impl Device for OsDevice {
                 discovering,
                 ..Bluetooth::default()
             },
+            modem: Modem {
+                available: radios.wwan_available,
+                modems: read_or_log("modems", os_actions::read_mobile())
+                    .unwrap_or_default()
+                    .modems
+                    .iter()
+                    .map(ModemUnit::from)
+                    .collect(),
+                ..Modem::default()
+            },
             vpn: Vpn {
                 profiles,
+                plugins: os_actions::network_settings::installed_vpn_plugins()
+                    .iter()
+                    .map(VpnPluginKind::from)
+                    .collect(),
                 ..Vpn::default()
             },
             tethering: tethering(radios.wifi_available, radios.hotspot_active),
@@ -358,6 +438,17 @@ impl Device for OsDevice {
                 let profile = os_actions::modem::mobile_profile_uuid()?;
                 os_actions::set_mobile_roaming(&profile, *on)
             }
+            Change::MobileMetered { metered } => {
+                let profile = os_actions::modem::mobile_profile_uuid()?;
+                os_actions::configure_connection_policy_patch(
+                    &profile,
+                    &os_actions::ConnectionPolicyPatch {
+                        metered: Some((*metered).into()),
+                        ..os_actions::ConnectionPolicyPatch::default()
+                    },
+                )
+            }
+            Change::Bluetooth(on) => RealDispatcher.set_bluetooth(*on),
             Change::Bluetooth(on) => os_actions::bluez::set_powered(*on),
             Change::Connect { address } => os_actions::bluez::connect_address(address),
             Change::Disconnect { address } => os_actions::bluez::disconnect_address(address),
@@ -388,6 +479,57 @@ impl Device for OsDevice {
             }
             Change::WifiPassword { profile, password } => {
                 os_actions::network_settings::set_wifi_profile_password(profile, password)
+            Change::CreatePluginVpn {
+                service,
+                name,
+                server,
+            } => os_actions::network_settings::create_plugin_vpn(service, name, server).map(|_| ()),
+            Change::ModemPin { sim, pin } => {
+                os_actions::apply_modem_change(&os_actions::ModemChange::SendPin {
+                    sim: sim.clone(),
+                    pin: zeroize::Zeroizing::new(pin.clone()),
+                })
+                .map_err(String::from)
+            }
+            Change::ModemPuk { sim, puk, new_pin } => {
+                os_actions::apply_modem_change(&os_actions::ModemChange::SendPuk {
+                    sim: sim.clone(),
+                    puk: zeroize::Zeroizing::new(puk.clone()),
+                    new_pin: zeroize::Zeroizing::new(new_pin.clone()),
+                })
+                .map_err(String::from)
+            }
+            Change::ModemPinLock { sim, pin, on } => {
+                os_actions::apply_modem_change(&os_actions::ModemChange::SetPinLock {
+                    sim: sim.clone(),
+                    pin: zeroize::Zeroizing::new(pin.clone()),
+                    enabled: *on,
+                })
+                .map_err(String::from)
+            }
+            Change::ModemChangePin {
+                sim,
+                old_pin,
+                new_pin,
+            } => os_actions::apply_modem_change(&os_actions::ModemChange::ChangePin {
+                sim: sim.clone(),
+                old_pin: zeroize::Zeroizing::new(old_pin.clone()),
+                new_pin: zeroize::Zeroizing::new(new_pin.clone()),
+            })
+            .map_err(String::from),
+            Change::ModemUseSlot { modem, slot } => {
+                os_actions::apply_modem_change(&os_actions::ModemChange::UseSlot {
+                    modem: modem.clone(),
+                    slot: *slot,
+                })
+                .map_err(String::from)
+            }
+            Change::ModemModes { modem, modes } => {
+                os_actions::apply_modem_change(&os_actions::ModemChange::SetModes {
+                    modem: modem.clone(),
+                    modes: *modes,
+                })
+                .map_err(String::from)
             }
         }
     }

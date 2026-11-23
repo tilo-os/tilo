@@ -145,7 +145,7 @@ fn until(session: &mut Session, resource: &str, done: impl Fn(&Value) -> bool) -
 fn turning_wifi_on_is_an_action_of_the_published_network() {
     let mut session = session();
     let resources = session.resources();
-    for resource in ["network", "bluetooth", "vpn", "tethering", "sound"] {
+    for resource in ["network", "bluetooth", "modem", "vpn", "tethering", "sound"] {
         assert!(
             resources.iter().any(|spec| spec.id.as_str() == resource),
             "{resource} is published beside the desktop"

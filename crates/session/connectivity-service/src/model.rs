@@ -299,18 +299,36 @@ pub struct Nearby {
     pub signal: Option<i16>,
 }
 
-/// The `vpn` resource: the VPN profiles this device has.
+/// The `vpn` resource: the VPN profiles this device has, and the kinds it
+/// can set up besides `WireGuard`.
 #[derive(
     Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
 )]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Vpn {
     pub profiles: Vec<VpnProfile>,
+    /// The VPN kinds installed as plugins, besides `WireGuard`.
+    pub plugins: Vec<VpnPluginKind>,
+    /// The public key a key pair made here stands by, to be given to a
+    /// server before a tunnel is set up; the private one never leaves the
+    /// device.
+    pub generated_key: Option<String>,
     pub pending: Vec<String>,
     pub problem: Option<String>,
 }
 
-/// One VPN profile.
+/// One kind of VPN this device can set up.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct VpnPluginKind {
+    /// The plugin's service type.
+    pub service: String,
+    pub name: String,
+}
+
+/// One VPN profile, with the settings its own page changes.
 #[derive(
     Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
 )]
@@ -321,7 +339,26 @@ pub struct VpnProfile {
     pub id: String,
     /// What kind of tunnel (`wireguard`, `vpn`).
     pub kind: String,
+    /// The plugin's service type, for a kind that is a plugin.
+    pub service: Option<String>,
     pub connected: bool,
+    /// It comes up by itself when the device starts.
+    pub autoconnect: bool,
+    /// Every connection goes through the tunnel, not only what it routes.
+    pub all_traffic: bool,
+    /// This device's addresses in the tunnel.
+    pub addresses: Vec<String>,
+    /// The name servers the tunnel asks.
+    pub dns: Vec<String>,
+    pub mtu: Option<u32>,
+    /// The server's address, as the tunnel dials it.
+    pub endpoint: Option<String>,
+    /// What the tunnel routes.
+    pub allowed_ips: Vec<String>,
+    /// The server's public key, for `WireGuard`.
+    pub peer_public_key: Option<String>,
+    /// Seconds between keepalives; `None` sends none.
+    pub keepalive: Option<u32>,
 }
 
 /// The `tethering` resource: sharing this device's connection.
@@ -503,12 +540,343 @@ impl From<&os_actions::VpnConnectionInfo> for VpnProfile {
             id: vpn.uuid.clone(),
             kind: vpn.kind.clone(),
             connected: vpn.active,
+            ..Self::default()
         }
     }
 }
 
-/// `networks` ordered as they are shown: the connected one first, then by
-/// signal, strongest first, then by name; one entry per name.
+impl From<&os_actions::network_settings::VpnPlugin> for VpnPluginKind {
+    fn from(plugin: &os_actions::network_settings::VpnPlugin) -> Self {
+        Self {
+            service: plugin.service.clone(),
+            name: plugin.name.clone(),
+        }
+    }
+}
+
+/// The `modem` resource: the modems this device has and their SIMs, with
+/// what each reports of the network it stands on. The mobile data connection
+/// itself — on or off, its access point, roaming and metering — is the
+/// `network` resource's.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct Modem {
+    /// The device has a modem.
+    pub available: bool,
+    /// The modems, each with its SIMs.
+    pub modems: Vec<ModemUnit>,
+    pub pending: Vec<String>,
+    pub problem: Option<String>,
+}
+
+/// One modem and its SIM slots.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct ModemUnit {
+    /// `ModemManager`'s path of it.
+    pub path: String,
+    pub name: String,
+    pub state: ModemState,
+    /// Why the modem cannot be used, when it cannot.
+    pub failure: Option<ModemFailure>,
+    pub lock: SimLock,
+    pub retries: Retries,
+    /// Whether a SIM asks for its PIN when the device starts; `None` when
+    /// the modem does not say.
+    pub pin_enabled: Option<bool>,
+    /// Signal strength in percent; `None` while the modem reports none.
+    pub signal: Option<u8>,
+    pub technology: Option<Technology>,
+    pub operator: Option<String>,
+    pub registration: Registration,
+    /// The network types it may use now, as a key (`5g-4g-3g`).
+    pub network_type: Option<String>,
+    /// The network types it can be set to, each a key.
+    pub network_types: Vec<String>,
+    pub sims: Vec<ModemSim>,
+    /// The numbers the SIMs are known by.
+    pub numbers: Vec<String>,
+    /// Bytes since `ModemManager` started counting.
+    pub received: Option<u64>,
+    pub sent: Option<u64>,
+}
+
+impl ModemUnit {
+    /// No SIM lock and not failed: the modem can connect.
+    #[must_use]
+    pub fn usable(&self) -> bool {
+        self.failure.is_none() && self.lock == SimLock::None
+    }
+
+    /// The SIM mobile data uses: the active one, else the first.
+    #[must_use]
+    pub fn active_sim(&self) -> Option<&ModemSim> {
+        self.sims
+            .iter()
+            .find(|sim| sim.active)
+            .or_else(|| self.sims.first())
+    }
+}
+
+/// One SIM a modem holds.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct ModemSim {
+    /// `ModemManager`'s path of the SIM.
+    pub path: String,
+    pub slot: Option<u32>,
+    /// The SIM mobile data uses now.
+    pub active: bool,
+    pub operator: Option<String>,
+    /// What it is called: its operator's name, or its slot.
+    pub label: String,
+    pub kind: SimKind,
+}
+
+/// How many tries a locked SIM has left.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct Retries {
+    pub pin: Option<u32>,
+    pub puk: Option<u32>,
+}
+
+/// What a modem is doing (`MMModemState`).
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum ModemState {
+    Failed,
+    #[default]
+    Unknown,
+    Initializing,
+    /// A SIM lock holds it.
+    Locked,
+    Disabled,
+    Enabled,
+    Searching,
+    Registered,
+    Connected,
+    Disconnecting,
+    Connecting,
+}
+
+/// Why a modem cannot be used.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum ModemFailure {
+    SimMissing,
+    SimError,
+    /// An eSIM with no profile installed.
+    EsimWithoutProfiles,
+    Other,
+}
+
+/// What a SIM asks for before the modem can be used.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum SimLock {
+    #[default]
+    None,
+    Pin,
+    /// Blocked after too many wrong PINs; only its PUK lifts it.
+    Puk,
+    /// A lock this device cannot lift (a network or carrier lock).
+    Other,
+}
+
+/// How the modem reaches the network.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum Technology {
+    Gsm,
+    Gprs,
+    Edge,
+    Cdma,
+    Umts,
+    Hspa,
+    HspaPlus,
+    EvDo,
+    Lte,
+    Nr5g,
+}
+
+/// Which network the modem stands on.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum Registration {
+    #[default]
+    Idle,
+    Home,
+    Roaming,
+    Searching,
+    Denied,
+    EmergencyOnly,
+    Unknown,
+}
+
+/// What kind of SIM it is.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum SimKind {
+    Physical,
+    /// An eSIM; `available` says whether one of its profiles is installed.
+    Esim,
+    EsimWithoutProfile,
+    #[default]
+    Unknown,
+}
+
+impl From<&os_actions::modem::SimKind> for SimKind {
+    fn from(kind: &os_actions::modem::SimKind) -> Self {
+        match kind {
+            os_actions::modem::SimKind::Physical => Self::Physical,
+            os_actions::modem::SimKind::Esim {
+                profiles: Some(false),
+            } => Self::EsimWithoutProfile,
+            os_actions::modem::SimKind::Esim { .. } => Self::Esim,
+            os_actions::modem::SimKind::Unknown => Self::Unknown,
+        }
+    }
+}
+
+impl From<os_actions::modem::ModemState> for ModemState {
+    fn from(state: os_actions::modem::ModemState) -> Self {
+        use os_actions::modem::ModemState as Mm;
+        match state {
+            Mm::Failed => Self::Failed,
+            Mm::Unknown => Self::Unknown,
+            Mm::Initializing => Self::Initializing,
+            Mm::Locked => Self::Locked,
+            Mm::Disabled | Mm::Disabling => Self::Disabled,
+            Mm::Enabling => Self::Enabled,
+            Mm::Enabled => Self::Enabled,
+            Mm::Searching => Self::Searching,
+            Mm::Registered => Self::Registered,
+            Mm::Disconnecting => Self::Disconnecting,
+            Mm::Connecting => Self::Connecting,
+            Mm::Connected => Self::Connected,
+        }
+    }
+}
+
+impl From<os_actions::modem::ModemFailure> for ModemFailure {
+    fn from(failure: os_actions::modem::ModemFailure) -> Self {
+        use os_actions::modem::ModemFailure as Mm;
+        match failure {
+            Mm::SimMissing => Self::SimMissing,
+            Mm::SimError => Self::SimError,
+            Mm::EsimWithoutProfiles => Self::EsimWithoutProfiles,
+            Mm::Other => Self::Other,
+        }
+    }
+}
+
+impl From<os_actions::modem::SimLock> for SimLock {
+    fn from(lock: os_actions::modem::SimLock) -> Self {
+        use os_actions::modem::SimLock as Mm;
+        match lock {
+            Mm::None => Self::None,
+            Mm::Pin => Self::Pin,
+            Mm::Puk => Self::Puk,
+            Mm::Other => Self::Other,
+        }
+    }
+}
+
+impl From<os_actions::modem::Technology> for Technology {
+    fn from(technology: os_actions::modem::Technology) -> Self {
+        use os_actions::modem::Technology as Mm;
+        match technology {
+            Mm::Gsm => Self::Gsm,
+            Mm::Gprs => Self::Gprs,
+            Mm::Edge => Self::Edge,
+            Mm::Cdma => Self::Cdma,
+            Mm::Umts => Self::Umts,
+            Mm::Hspa => Self::Hspa,
+            Mm::HspaPlus => Self::HspaPlus,
+            Mm::EvDo => Self::EvDo,
+            Mm::Lte => Self::Lte,
+            Mm::Nr5g => Self::Nr5g,
+        }
+    }
+}
+
+impl From<os_actions::modem::Registration> for Registration {
+    fn from(registration: os_actions::modem::Registration) -> Self {
+        use os_actions::modem::Registration as Mm;
+        match registration {
+            Mm::Idle => Self::Idle,
+            Mm::Home => Self::Home,
+            Mm::Roaming => Self::Roaming,
+            Mm::Searching => Self::Searching,
+            Mm::Denied => Self::Denied,
+            Mm::EmergencyOnly => Self::EmergencyOnly,
+            Mm::Unknown => Self::Unknown,
+        }
+    }
+}
+
+impl From<&os_actions::modem::SimCard> for ModemSim {
+    fn from(sim: &os_actions::modem::SimCard) -> Self {
+        Self {
+            path: sim.path.clone(),
+            slot: sim.slot,
+            active: sim.active,
+            operator: sim.operator.clone(),
+            label: sim.label(),
+            kind: SimKind::from(&sim.kind),
+        }
+    }
+}
+
+impl From<&os_actions::modem::ModemInfo> for ModemUnit {
+    fn from(modem: &os_actions::modem::ModemInfo) -> Self {
+        Self {
+            path: modem.path.clone(),
+            name: modem.name.clone(),
+            state: ModemState::from(modem.state),
+            failure: modem.failure.map(ModemFailure::from),
+            lock: SimLock::from(modem.lock),
+            retries: Retries {
+                pin: modem.retries.pin,
+                puk: modem.retries.puk,
+            },
+            pin_enabled: modem.pin_enabled,
+            signal: modem.signal,
+            technology: modem.technology.map(Technology::from),
+            operator: modem.operator.clone(),
+            registration: Registration::from(modem.registration),
+            network_type: modem.modes.map(os_actions::NetworkModes::key),
+            network_types: modem
+                .supported_modes
+                .iter()
+                .copied()
+                .map(os_actions::NetworkModes::key)
+                .collect(),
+            sims: modem.sims.iter().map(ModemSim::from).collect(),
+            numbers: modem.numbers.clone(),
+            received: modem.traffic.map(|traffic| traffic.received),
+            sent: modem.traffic.map(|traffic| traffic.sent),
+        }
+    }
+}
+
 #[must_use]
 pub fn ordered(mut networks: Vec<WifiNetwork>) -> Vec<WifiNetwork> {
     networks.sort_by(|a, b| {

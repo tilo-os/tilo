@@ -54,7 +54,8 @@ pub fn shell_packages() -> Result<(Vec<tilolang_tilo::tilolang::Compiled>, bool)
 }
 
 /// The device's resources the session publishes, as their surfaces: the sound, the network,
-/// Bluetooth, the battery and the displays, each its reading and the actions it offers. The
+/// Bluetooth, the modem, VPN, tethering, the battery and the displays, each its reading and
+/// the actions it offers. The
 /// shell's views read them as `so.tilo.device` (`device-surface.json` beside this crate, which
 /// the shell compiles against and a test holds to this).
 #[must_use]
@@ -63,7 +64,9 @@ pub fn device_surfaces() -> Vec<tilo_actions::surface::Surface> {
         tilo_audio_service::sound::surface(),
         tilo_connectivity_service::network_surface(),
         tilo_connectivity_service::bluetooth_surface(),
+        tilo_connectivity_service::modem_surface(),
         tilo_connectivity_service::vpn_surface(),
+        tilo_connectivity_service::tethering_surface(),
         tilo_session_power::battery_surface(),
         tilo_system_service::power_surface(),
         tilo_system_service::printers_surface(),

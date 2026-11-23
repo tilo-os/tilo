@@ -183,6 +183,18 @@ pub enum NetworkAction {
     #[effect(kind = "outside")]
     #[effect(own_device, icon = "plane", keywords = "airplane mode, flight mode")]
     ToggleAirplaneMode,
+    /// Count mobile data against a limit, or let the network say.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "signal",
+        keywords = "metered, data limit, data usage, datenlimit"
+    )]
+    SetMobileMetered {
+        #[param("automatic, metered or unmetered")]
+        metered: String,
+    },
     /// Set how a saved network gets its IPv4 address: automatically, or the
     /// addresses, gateway and name servers given.
     #[effect(kind = "outside")]
@@ -489,5 +501,78 @@ pub enum TetheringAction {
         password: String,
         #[param("The band: automatic, two-point-four or five")]
         band: String,
+    },
+}
+
+/// The `modem` resource's actions: what the modems and their SIMs offer.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "so.tilo.connectivity.modem")]
+pub enum ModemAction {
+    /// Read the modems and their SIMs again.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "refresh-cw",
+        keywords = "modem, sim, mobile network"
+    )]
+    RefreshModems,
+    /// Unlock a SIM with its PIN.
+    #[effect(kind = "outside")]
+    #[effect(own_device, icon = "lock", keywords = "sim pin, unlock sim")]
+    UnlockSim {
+        #[param("The SIM, as listed; the locked one when omitted")]
+        sim: Option<String>,
+        #[param(secret, "The SIM's PIN")]
+        pin: Option<String>,
+    },
+    /// Unblock a SIM with its PUK, choosing a new PIN.
+    #[effect(kind = "outside")]
+    #[effect(own_device, icon = "unlock", keywords = "sim puk, unblock sim")]
+    UnblockSim {
+        #[param("The SIM, as listed; the blocked one when omitted")]
+        sim: Option<String>,
+        #[param(secret, "The PUK from the SIM card's package")]
+        puk: Option<String>,
+        #[param(secret, "The new PIN")]
+        pin: Option<String>,
+    },
+    /// Ask for the SIM's PIN when the device starts, or stop asking.
+    #[effect(kind = "outside")]
+    #[effect(own_device, idempotent, icon = "lock", keywords = "sim pin lock")]
+    SetSimPinLock {
+        #[param("The SIM, as listed; the one in use when omitted")]
+        sim: Option<String>,
+        #[param("Whether the PIN is asked for at startup")]
+        on: bool,
+        #[param(secret, "The SIM's PIN")]
+        pin: Option<String>,
+    },
+    /// Change the SIM's PIN.
+    #[effect(kind = "outside")]
+    #[effect(own_device, icon = "lock", keywords = "change sim pin")]
+    ChangeSimPin {
+        #[param("The SIM, as listed; the one in use when omitted")]
+        sim: Option<String>,
+        #[param(secret, "The current PIN")]
+        old_pin: Option<String>,
+        #[param(secret, "The new PIN")]
+        new_pin: Option<String>,
+    },
+    /// Use a SIM for mobile data, on a modem with several.
+    #[effect(kind = "outside")]
+    #[effect(own_device, icon = "signal", keywords = "sim slot, switch sim")]
+    UseSim {
+        #[param("The SIM, as listed")]
+        sim: String,
+    },
+    /// Choose the network types the modem may use.
+    #[effect(kind = "outside")]
+    #[effect(own_device, idempotent, icon = "signal", keywords = "network type, 5g, 4g")]
+    SetPreferredNetwork {
+        #[param("The modem, as listed; the first when omitted")]
+        modem: Option<String>,
+        #[param("One of the keys the modem lists: 5g-4g-3g, 4g-3g-2g, …")]
+        network: String,
     },
 }
