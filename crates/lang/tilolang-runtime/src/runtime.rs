@@ -218,7 +218,7 @@ impl Runtime {
         self.add_catalogues(&compiled.wasm, crate::words::WordsRole::Used);
         self.check_exports(&hash, &compiled.meta)?;
         let lines = tilolang::meta::lines_from_wasm(&compiled.wasm);
-        let pkg = crate::registry::Package::with_lines(hash, compiled.meta.clone(), &lines)
+        let pkg = crate::registry::Package::library(hash, compiled.meta.clone(), &lines)
             .map_err(RuntimeError::Package)?;
         self.core
             .registry
@@ -1073,10 +1073,16 @@ impl Runtime {
             })
     }
 
-    /// Signatures of every loaded package, for discovery ([`catalogue`](mod@crate::catalogue)).
+    /// Signatures of every loaded app, for discovery ([`catalogue`](mod@crate::catalogue)).
+    /// The standard library is loaded beside them and is no app: what it declares is the code
+    /// an app calls, never something a program names an app for.
     pub fn catalogue(&self) -> Vec<Signature> {
         let pkgs = self.core.registry.borrow().packages();
-        let metas: Vec<&Meta> = pkgs.iter().map(|p| &p.meta).collect();
+        let metas: Vec<&Meta> = pkgs
+            .iter()
+            .filter(|p| !p.library)
+            .map(|p| &p.meta)
+            .collect();
         catalogue(&metas)
     }
 

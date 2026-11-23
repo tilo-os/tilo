@@ -102,6 +102,10 @@ pub struct Package {
     /// Whether its module is loaded: its views run here. Only a description of another app
     /// (`Runtime::load_foreign`) has none.
     pub code: bool,
+    /// Whether it is the standard library, loaded beside a package for the code it calls
+    /// (`Runtime::load_library`): a library, not an app. It holds no resources and declares no
+    /// actions, and what lists apps (find, grep, the catalogue) leaves it out.
+    pub library: bool,
 }
 
 impl Package {
@@ -136,6 +140,24 @@ impl Package {
             units,
             foreign: false,
             code: true,
+            library: false,
+        })
+    }
+
+    /// The standard library, loaded beside a package: its `fn`s run where the package calls
+    /// them, and it is no app of its own.
+    ///
+    /// # Errors
+    ///
+    /// As [`Package::new`].
+    pub fn library(
+        hash: ModuleHash,
+        meta: Meta,
+        lines: &[tilolang::meta::Line],
+    ) -> Result<Self, String> {
+        Ok(Self {
+            library: true,
+            ..Self::with_lines(hash, meta, lines)?
         })
     }
 
