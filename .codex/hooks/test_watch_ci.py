@@ -76,7 +76,7 @@ class WatchCiTests(unittest.TestCase):
             branch="topic",
             runs=[
                 {"workflow_id": "build-image.yml", "index_in_repo": 42, "status": "success"},
-                {"workflow_id": "release-imager.yml", "index_in_repo": 43, "status": "success"},
+                {"workflow_id": "checks.yml", "index_in_repo": 43, "status": "success"},
             ],
         )
         self.assertIn("is green", message)

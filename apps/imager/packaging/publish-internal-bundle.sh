@@ -2,13 +2,11 @@
 # Publish one architecture's internal installer bundle to the Forgejo generic
 # package registry on code.tilo.so, then prove it is publicly served there.
 #
-#   CREDENTIAL_BROKER=/abs/broker GITHUB_REF_NAME=imager-vX.Y.Z \
+#   FORGEJO_TOKEN=<write:package token> GITHUB_REF_NAME=imager-vX.Y.Z \
 #     apps/imager/packaging/publish-internal-bundle.sh BUNDLE_DIR
 #
-# The write:package token comes from the OIDC credential broker
-# (acquire-release-token.sh internal-bundle), lives in RUNNER_TEMP only for
-# this run, and is sent to code.tilo.so only. FORGEJO_TOKEN may be given
-# instead for a manual run.
+# The write:package token is a t secret for this check, sent to code.tilo.so
+# only.
 #
 # BUNDLE_DIR is os/dev/export-internal-bundle.sh's OUTDIR/bundle: exactly one
 # manifest and its two component images. They land next to each other at
@@ -60,19 +58,9 @@ PY
   || { printf 'bundle directory holds files the manifest does not name\n' >&2; exit 1; }
 names+=("$(basename "$manifest")")
 
+: "${FORGEJO_TOKEN:?FORGEJO_TOKEN is not set: the check needs secrets = [\"TILO_PACKAGES_TOKEN\"] and passes it here}"
 work="$(mktemp -d /var/tmp/tilo-internal-publish.XXXXXX)"
-token_file=""
-trap 'find "$work" -depth -delete; [ -z "$token_file" ] || rm -f "$token_file"' EXIT
-if [ -z "${FORGEJO_TOKEN:-}" ]; then
-  [ -n "${CREDENTIAL_BROKER:-}" ] || {
-    printf 'configure IMAGER_INTERNAL_BUNDLE_CREDENTIAL_BROKER for internal bundle publication\n' >&2
-    exit 1
-  }
-  : "${RUNNER_TEMP:?RUNNER_TEMP is required to hold the brokered token}"
-  token_file="$RUNNER_TEMP/tilo-internal-bundle-token"
-  "$(dirname "${BASH_SOURCE[0]}")/acquire-release-token.sh" internal-bundle "$CREDENTIAL_BROKER" "$token_file"
-  FORGEJO_TOKEN="$(cat "$token_file")"
-fi
+trap 'find "$work" -depth -delete' EXIT
 base="$server/api/packages/$owner/generic/$package/$GITHUB_REF_NAME"
 
 public_sha256() {
