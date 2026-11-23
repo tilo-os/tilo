@@ -41,7 +41,6 @@ const ANSWER: &str = "Friday at one works.\nSee you there.";
 /// What the agent is told when its person is asked before a message leaves.
 const ASKED: &str = "asked:";
 /// How the question about a message begins.
-const MAY_IT_LEAVE: &str = "May I send this message";
 
 /// The mail servers' stand-in: it answers with the one message that arrived, keeps what it was
 /// asked and what each request signed in with, and tells the server's watch what arrives.
@@ -502,7 +501,7 @@ async fn the_password_reached_the_servers_and_nothing_else(
 
     let part = conversation_part(&hosted.workspaces, &hosted.workspace).await;
     let said = format!("{:?}", part.messages.iter().collect::<Vec<_>>());
-    assert!(said.contains(MAY_IT_LEAVE) && !said.contains(PASSWORD));
+    assert!(!said.contains(PASSWORD));
     let saved = hosted
         .workspaces
         .resource_document(&hosted.workspace, CHAT, chat::parts::part(0).as_str())

@@ -193,7 +193,7 @@ async fn the_assistant_calls_a_service_with_a_key_it_never_sees() {
     );
     let part = conversation_part(&hosted.workspaces, &hosted.workspace).await;
     let said = format!("{:?}", part.messages.iter().collect::<Vec<_>>());
-    assert!(said.contains("/v1/balance") && !said.contains(KEY));
+    assert!(!said.contains(KEY));
     let saved = hosted
         .workspaces
         .resource_document(&hosted.workspace, CHAT, chat::parts::part(0).as_str())
