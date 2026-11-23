@@ -307,6 +307,9 @@ struct Inner {
     /// What answers requests naming no workspace, the host's own operations
     /// ([`ActionService::admit_host_operations`]).
     host_operations: Mutex<Option<Arc<dyn ActionProvider + Send + Sync>>>,
+    /// Where the approves its people gave are kept: a request carrying one admits only where
+    /// this store handed it back ([`ActionService::admit_approvals_from`]).
+    asked: std::sync::OnceLock<Arc<tilo_actions::remote::asked::AskedStore>>,
     replay: Mutex<ActionReplayWindow>,
     /// The calls visitors made, per client address ([`visitors`]).
     visitors: Mutex<visitors::VisitorWindows>,
@@ -337,6 +340,12 @@ impl std::fmt::Debug for ActionService {
 }
 
 impl ActionService {
+    /// Admit the approves `store` hands back from now on: until it is named, a request carrying
+    /// an approve is refused. The first store named stays.
+    pub fn admit_approvals_from(&self, store: Arc<tilo_actions::remote::asked::AskedStore>) {
+        let _ = self.0.asked.set(store);
+    }
+
     /// An action service for the device whose signing key is `device` (and whose iroh
     /// endpoint's secret key it is), handing every request it answers to
     /// `dispatcher`.
@@ -370,6 +379,7 @@ impl ActionService {
             providers: Mutex::default(),
             uncertified: Mutex::default(),
             host_operations: Mutex::default(),
+            asked: std::sync::OnceLock::new(),
             replay: Mutex::default(),
             visitors: Mutex::new(visitors::VisitorWindows::new(rand_key())),
             content_puts: tilo_actions::remote::HostedContentPuts::default(),
@@ -402,6 +412,7 @@ impl ActionService {
             providers: Mutex::default(),
             uncertified: Mutex::default(),
             host_operations: Mutex::default(),
+            asked: std::sync::OnceLock::new(),
             replay: Mutex::default(),
             visitors: Mutex::new(visitors::VisitorWindows::new(rand_key())),
             content_puts: tilo_actions::remote::HostedContentPuts::default(),
@@ -782,6 +793,15 @@ impl ActionService {
     ) -> Option<RemoteActionMessage> {
         let action = signed.action();
         let request = &action.message;
+        // A person's approve of an asked record is set only by the dispatch their resolve hands
+        // the call back to: a request carrying one nobody resolved is refused whole, whether it
+        // is for this device or for a device it reaches.
+        if let RemoteActionMessage::Invoke(invoke) = request
+            && let Err(error) =
+                tilo_actions::remote::asked::admit_frame(self.0.asked.get().map(Arc::as_ref), invoke)
+        {
+            return tilo_actions::remote::refuse(request, error);
+        }
         match self.decide(remote, execution, &signed).await {
             Ok(Decided::Serve(admitted)) => {
                 self.dispatch(&admitted.dispatcher, &admitted.caller, client, request)

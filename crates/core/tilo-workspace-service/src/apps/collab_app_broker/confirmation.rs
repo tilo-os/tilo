@@ -83,6 +83,9 @@ impl AppBrokerState {
         // Only a person acting themselves confirms by their own word; anyone
         // acting for them carries the answer the person gave on their device.
         let approved = match evidence {
+            // Their approve of the asked record this call was kept as: only the dispatch sets it,
+            // admitting this same call again on their answer.
+            Some(Confirmation::Asked(_)) => binding.actor == *actor.member(),
             Some(Confirmation::Approved(token)) => {
                 binding.actor == *actor.member()
                     && binding.resource == offered.resource

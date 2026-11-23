@@ -275,8 +275,8 @@ pub enum NetCmd {
     Connect {
         addr: EndpointAddr,
     },
-    /// Connect to an always-on Tilo host, which adds persistence and offline
-    /// delivery while the person's devices are away.
+    /// Where an always-on Tilo host is reached, which adds persistence and
+    /// offline delivery while the person's devices are away.
     ConnectHost {
         addr: EndpointAddr,
     },
@@ -904,12 +904,8 @@ struct ActorState {
     sibling_hello_sent: Option<[u8; 32]>,
     /// Where the person's devices are heard ([`NetCmd::WatchSiblings`]).
     sibling_events: Option<mpsc::Sender<NetEvent>>,
-    hosts: HashMap<EndpointId, EndpointAddr>,
     /// Each joined workspace's link, on the direct connection.
     native_links: HashMap<WorkspaceId, native_ingress::NativeLink>,
-    /// Approver sessions that put this person's agents' questions on the
-    /// sheet, one per connected host.
-    agent_questions: Box<dyn services::Approvers>,
     next_membership_epoch: u64,
     /// Each workspace's admitted roster ([`NetCmd::SetWorkspaceRoster`]), and the
     /// window-stream connections peers opened to this device, bound to it.
@@ -1182,30 +1178,11 @@ impl ActorState {
                 self.dial_siblings();
             }
             Some(NetCmd::ConnectHost { addr }) => {
-                let id = addr.id;
-                let changed = self.hosts.get(&id).is_some_and(|known| *known != addr);
-                if changed {
-                    self.teardown_host(id);
-                }
-                self.lookup.add_endpoint_info(addr.clone());
-                self.hosts.insert(id, addr.clone());
-                let Some(identity) = self.host_identity.as_ref() else {
-                    tracing::warn!(peer = %id, "cannot connect workspace host without a device certificate");
-                    return true;
-                };
-                // This host answers the person's agents' questions on the sheet; a workspace's
-                // records travel its device link, not a session of its own.
-                self.agent_questions.start(&self.endpoint, addr, identity);
+                self.lookup.add_endpoint_info(addr);
             }
             None => return false,
         }
         true
-    }
-
-    /// Stop what one host answered: the person's agents' questions.
-    fn teardown_host(&mut self, id: EndpointId) {
-        self.agent_questions.stop(id);
-        self.hosts.remove(&id);
     }
 
     /// Open the direct route to `peer` unless it is up, being opened, or
@@ -2252,9 +2229,7 @@ async fn run(
         sibling_waiting: HashMap::new(),
         sibling_hello_sent: None,
         sibling_events: None,
-        hosts: HashMap::new(),
         native_links: HashMap::new(),
-        agent_questions: services::approvers(),
         next_membership_epoch: 0,
         workspace_members: workspace_members::WorkspaceMembers::default(),
         recent: HashSet::new(),

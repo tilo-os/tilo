@@ -11,10 +11,6 @@
 
 const CLIENT_TAG = new TextEncoder().encode('tilo-server-auth-v2/client\0');
 const MAX_FRAME = 8 * 1024 * 1024;
-// The element number the question sheet a host asks this person stands under:
-// an app numbers its own elements from one, and the sheet is no app's
-// (`tilo_server_protocol::page::QUESTION_PATCH_ID`).
-const QUESTION_PATCH = '4294967295';
 
 // ---- BLAKE3 (the handshake's digests and an act's signed call) ----
 
@@ -650,15 +646,6 @@ function start() {
     style.textContent = css;
     delete page.dataset.state;
     page.innerHTML = body;
-    // Where a question the host asks this person stands over the app: the
-    // sheet is patched in here, and empty until one comes.
-    if (!page.querySelector(`[data-p="${QUESTION_PATCH}"]`)) {
-      const holder = document.createElement('div');
-      holder.dataset.p = QUESTION_PATCH;
-      holder.className = 'tilo-question-sheet';
-      holder.hidden = true;
-      page.append(holder);
-    }
     editable(page);
     focusAsked();
     typingBack(held);

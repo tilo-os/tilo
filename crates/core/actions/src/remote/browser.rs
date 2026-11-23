@@ -84,16 +84,17 @@ pub fn departure_facts(context: Option<&crate::ActionContext>) -> Vec<(String, S
     context.map_or_else(Vec::new, |context| stated_facts(&context.facets))
 }
 
-/// The departure facets a failed page action states in its `details`, when it
-/// states them: the same facts the window publishes a hold it started itself
-/// with, so a host asked about one a caller's action reached reads them the
-/// one way.
+/// What a person is shown about a departure, from the facts it states
+/// ([`stated_facts`]): each by the name it is stated under.
 #[must_use]
-pub fn departure_stated(details: Option<&serde_json::Value>) -> Vec<crate::ActionFacet> {
-    details
-        .cloned()
-        .and_then(|details| serde_json::from_value(details).ok())
-        .unwrap_or_default()
+pub fn departure_asked(facts: Vec<(String, String)>) -> super::asked::AskedFacts {
+    super::asked::AskedFacts {
+        facts: facts
+            .into_iter()
+            .map(|(label, value)| super::asked::Fact { label, value })
+            .collect(),
+        ..super::asked::AskedFacts::default()
+    }
 }
 
 /// Set in the session's own environment: it serves a browser

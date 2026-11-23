@@ -534,6 +534,12 @@ impl Shell {
         self.link.publish_layout(reading);
     }
 
+    /// Hand the shell what waits for the person's yes, which its asking view draws, whenever it
+    /// changed.
+    pub(crate) fn publish_asking(&self, questions: Vec<tilolang_tilo::shell::AskedReading>) {
+        self.link.publish_asking(questions);
+    }
+
     /// Read the styles every installed package offers, when the person's package store
     /// moved: a style the person or their agent installed is offered by the switch without a
     /// restart (`shell.md` §6). The shell's own package's styles — the four that ship — always

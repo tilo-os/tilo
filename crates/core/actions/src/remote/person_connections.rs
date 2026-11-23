@@ -15,13 +15,11 @@
 //! address, reads a connection's commands again, calls a command and
 //! proposes a connection to its person; no call of an agent's adds reach or
 //! signs in anywhere. A command the service marks as only reading is called
-//! unasked; any other asks the person first ([`Command::asks`]): a question
-//! in their conversation with the agent that shows the call as it will be
-//! sent ([`AskedCall`]), and waits for their answer. An answer of always
-//! lets that one command of that one connection go ahead unasked for that
-//! agent, as the service defined it then ([`always_call`]). A connection an
-//! agent proposes is a question too, and shows the card of the service
-//! ([`Card`]); only the person's own yes adds it.
+//! unasked; any other waits for the person's yes ([`Command::asks`]), shown
+//! the call as it will be sent, unless a grant of theirs lets that agent
+//! call that command as the service defines it ([`command_resource`]). A
+//! connection an agent proposes waits for their yes too, shown the card of
+//! the service ([`Card`]); only their own yes adds it.
 //!
 //! What a service says of itself is data from outside: its name, a
 //! command's title and its description are the service's own words, shown as
@@ -31,7 +29,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use super::person_asking::{ActionName, Asked, Thing, Words};
 use super::{ActionAddress, RemoteActionTarget};
 
 /// The provider the server answers a person's connections under.
@@ -74,16 +71,9 @@ pub const BEGIN_SIGN_IN: &str = "begin-sign-in";
 /// [`Connection`]. The person's alone.
 pub const FINISH_SIGN_IN: &str = "finish-sign-in";
 /// Ask the person whether to connect the service at an address
-/// ([`AtAddress`]), answering what they are asked about as a [`Proposed`].
-/// Nothing is added before they say yes.
+/// ([`AtAddress`]): it waits for their yes, shown the service's [`Card`], and
+/// answers the [`Connection`] their yes added.
 pub const PROPOSE: &str = "propose";
-
-/// The word the questions about a person's connections are kept under on
-/// their server: what carries their answer out.
-pub const CARRIER: &str = "connection";
-/// The failure code of a call that was not made because its person is asked
-/// first.
-pub const ASKED_FIRST: &str = "asked_person_first";
 
 /// The target of action `action` of [`RESOURCE`].
 #[must_use]
@@ -108,67 +98,6 @@ pub fn connection_resource(id: &str) -> String {
 #[must_use]
 pub fn command_resource(name: &str, digest: &str) -> String {
     format!("commands/{name}@{digest}")
-}
-
-/// What an answer of always to a question about the command `name` of the
-/// connection `connection` lets stand: `agent` calling that command in
-/// `workspace`, as the service defined it when its person was asked
-/// (`digest`). The same command defined anew is another thing, and asks.
-#[must_use]
-pub fn always_call(
-    workspace: &str,
-    agent: &str,
-    connection: &str,
-    (name, digest): (&str, &str),
-) -> Asked {
-    Asked {
-        workspace: workspace.to_owned(),
-        agent: agent.to_owned(),
-        action: ActionName {
-            provider: PROVIDER.to_owned(),
-            kind: COMMAND_KIND.to_owned(),
-            action: CALL.to_owned(),
-        },
-        on: Some(Thing {
-            document: connection.to_owned(),
-            resource: command_resource(name, digest),
-        }),
-    }
-}
-
-/// How the server's own entry answered what a turn it carries out itself
-/// asked of its person's connections. Nothing a client is sent: whoever
-/// carries the turn out reads it, and puts the question where one is asked.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Taken {
-    /// It was carried out: what its action answers.
-    Done(Value),
-    /// Its person is asked first. Nothing was called and nothing was added.
-    Asks(Box<Asks>),
-}
-
-/// What a person is asked before something is done with their connections
-/// for an agent of theirs, as their server hands it to whoever puts the
-/// question.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Asks {
-    /// The person asked: their root key.
-    pub person: [u8; 32],
-    /// What is asked, in the server's own words: the service by the site its
-    /// address names, and what would be sent there, whole.
-    pub words: String,
-    /// What the server does on their answer, and what the question shows
-    /// beside its words ([`AskedCall`] or [`Card`]). No secret.
-    pub kept: Value,
-    /// What an answer of always lets stand ([`always_call`]); `None` offers
-    /// no such answer.
-    pub always: Option<Asked>,
-    /// The system's own words for what always covers.
-    pub named: Words,
-    /// What whoever asked is answered once the question waits, where asking
-    /// is all it asked for (a [`Proposed`]). `None` where it asked for
-    /// something that was not done: it is told that its person is asked.
-    pub answers: Option<Value>,
 }
 
 /// How a connection stands.
@@ -454,41 +383,6 @@ pub struct Card {
     pub commands: Option<u32>,
 }
 
-/// What a proposal asked the person about: the question waits in their
-/// conversation with the agent, and nothing is added before they say yes.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Proposed {
-    /// The service the person is asked about.
-    pub connection: Card,
-    /// What the agent that proposed it is told: its person is asked, and
-    /// nothing is connected before they say yes.
-    pub told: String,
-}
-
-/// The connection a call that asks first would go to.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CalledAt {
-    pub id: String,
-    pub address: String,
-    /// The name the service gives itself. The service's own word.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub name: String,
-}
-
-/// A call its person is asked about: what the question keeps under `call`
-/// in its detail, exactly as the server kept it and will send it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct AskedCall {
-    pub connection: CalledAt,
-    /// The command's name ([`Command::name`]).
-    pub command: String,
-    /// Its arguments, whole.
-    pub arguments: Map<String, Value>,
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(
@@ -656,79 +550,5 @@ mod tests {
         );
         assert_eq!(target(LIST).provider, PROVIDER);
         assert_eq!(target(LIST).address, ActionAddress::new(RESOURCE, LIST));
-    }
-
-    /// What a question about a connection keeps reads as a client binds it,
-    /// and an answer of always names one command of one connection as it
-    /// was defined, for one agent in one workspace.
-    #[test]
-    fn a_card_and_an_asked_call_read_as_a_client_binds_them() {
-        let card = Card {
-            address: "https://orchard.example/mcp".into(),
-            name: "Orchard Tools".into(),
-            needs_sign_in: true,
-            sign_in_at: Some("accounts.orchard.example".into()),
-            commands: None,
-        };
-        let proposed = Proposed {
-            connection: card,
-            told: "Your person is asked.".into(),
-        };
-        assert_eq!(
-            serde_json::to_value(proposed).unwrap(),
-            json!({
-                "connection": {
-                    "address": "https://orchard.example/mcp",
-                    "name": "Orchard Tools",
-                    "needsSignIn": true,
-                    "signInAt": "accounts.orchard.example",
-                },
-                "told": "Your person is asked.",
-            })
-        );
-        let Value::Object(arguments) = json!({"kind": "apple"}) else {
-            panic!("an object");
-        };
-        let asked = AskedCall {
-            connection: CalledAt {
-                id: "c1".into(),
-                address: "https://orchard.example/mcp".into(),
-                name: "Orchard Tools".into(),
-            },
-            command: "plant_tree".into(),
-            arguments,
-        };
-        assert_eq!(
-            serde_json::to_value(&asked).unwrap(),
-            json!({
-                "connection": {
-                    "id": "c1", "address": "https://orchard.example/mcp", "name": "Orchard Tools",
-                },
-                "command": "plant_tree",
-                "arguments": {"kind": "apple"},
-            })
-        );
-
-        let always = always_call("w", "scout", "c1", ("plant_tree", "ab12"));
-        assert!(always.is_named());
-        assert_eq!(always.action.provider, PROVIDER);
-        assert_eq!(always.action.kind, COMMAND_KIND);
-        assert_eq!(always.action.action, CALL);
-        let on = always.on.clone().unwrap();
-        assert_eq!(
-            (on.document.as_str(), on.resource.as_str()),
-            ("c1", "commands/plant_tree@ab12")
-        );
-        // The same command defined anew, another command, another
-        // connection and another agent are not covered.
-        for other in [
-            always_call("w", "scout", "c1", ("plant_tree", "cd34")),
-            always_call("w", "scout", "c1", ("fell_all", "ab12")),
-            always_call("w", "scout", "c2", ("plant_tree", "ab12")),
-            always_call("w", "other", "c1", ("plant_tree", "ab12")),
-            always_call("v", "scout", "c1", ("plant_tree", "ab12")),
-        ] {
-            assert!(!always.covers(&other), "{other:?}");
-        }
     }
 }

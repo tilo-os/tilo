@@ -8,25 +8,18 @@
 //! There is no argument for a password, none for a vault item and none that
 //! says how the account is connected: an unknown argument is refused.
 //!
-//! The password is its person's to type where no agent reads it. So this
-//! entry keeps what was asked ([`ConnectAsk`]) and answers that the person
-//! must be asked ([`TurnConnect::Asks`]): whoever carries out the turn puts
-//! a question of the kind that shows a protected field into the person's
-//! own conversation with the agent, in the words this server says
-//! ([`ConnectAsk::words`]). What they type goes from their device to their
-//! vault, and the question is answered with the item's reference. Reading
-//! that answer, the server carries out what it kept
-//! ([`Workspaces::carry_out_connect`]), never what a conversation says was
-//! asked: it signs in to the calendar server with what the vault item keeps,
-//! keeps the account for reading only ([`super::add_with_item`]; nothing
-//! here can ask for anything else) in the workspace's store, which is what
-//! its person was told their typing does. An answer
-//! is carried out at most once ([`Workspaces::claim_connect`]).
+//! The password is its person's to type where no agent reads it. So the call
+//! waits for its person's yes, showing them what is asked for in this
+//! server's words and naming the vault's own add as what they answer it with
+//! ([`tilo_actions::remote::asked::AskedFacts::takes`]): what they type goes
+//! from their device to their vault, and never through the record. Their
+//! approve admits the same call again, which signs in to the calendar server
+//! with the login they kept for it and keeps the account for reading only
+//! ([`super::add_with_item`]; nothing here can ask for anything else) in the
+//! workspace's store, which is what its person was told their typing does.
 //!
 //! A calendar server that does not take the sign-in keeps nothing here: no
-//! account, and the item the person typed for this question is taken out of
-//! the workspace's vault again: a login for that server alone that the vault
-//! did not keep when it was asked. An item kept before the question stays.
+//! account; the login they typed stays in their vault, theirs to remove.
 //!
 //! The address comes from a model's tool call, so it is held to what a
 //! key's web call is held to ([`crate::workspaces::hosted_use`]) before
@@ -41,15 +34,15 @@
 //! reaches nothing, and an agent that anything narrows
 //! holds a rule that names this very action ([`HostedTurn::may_take`]). The
 //! same account told twice adds nothing: connected already, it is refused in
-//! words; asked for and not yet answered, the one question stands.
+//! words.
 
 use std::path::Path;
 
-use accounts::vault_items::{ItemId, ItemKind, Place};
+use accounts::vault_items::Place;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use tilo_actions::remote::asked::{AskedFacts, Fact};
 use tilo_actions::remote::person_accounts;
-use tilo_actions::remote::person_vault::ItemRef;
+use tilo_actions::remote::person_vault::{self, AskForItem, ItemKind};
 use tilo_actions::remote::{
     ActionCallError as ActionError, CatalogueRow, InvokeRequest, RemoteActionTarget,
 };
@@ -61,15 +54,8 @@ use crate::connections::wire::{
 };
 use crate::workspaces::Workspaces;
 use crate::workspaces::hosted_use::{AskedTurn, HostedTurn};
-use crate::workspaces::person_asking::kept_asks::{KeptAskKind, hashed_ask_id};
 use crate::workspaces::workspace_stores::Store;
 
-/// Where a workspace's connections that wait for a person's password are
-/// kept, under its store.
-const ASKS_DIR: &str = "calendar-asks";
-/// The most that wait for one person at a time: an agent that goes on
-/// asking is told so instead of filling their conversation.
-const MAX_OPEN: usize = 8;
 /// The longest user name and account name taken, in bytes.
 const MAX_NAME_BYTES: usize = 320;
 /// The longest name of a calendar told on, in characters, and how many
@@ -90,9 +76,8 @@ const NOT_PUBLIC: &str = "That address is not on the public internet. A calendar
 const NO_SUCH_SERVER: &str = "No server was found under that name";
 const NOT_A_NAME: &str = "A calendar account has a user name, and a name of a few words";
 const ALREADY: &str = "That calendar account is connected already. Nothing was added";
-const TOO_MANY: &str = "Too many calendars already wait for this person's password";
-const NO_ITEM: &str = "the answer names no item of the vault";
-const NOT_THEIRS: &str = "the agent that asked no longer acts for this person here";
+const NO_ITEM: &str =
+    "Your vault keeps no login for that calendar server, so nothing was connected";
 
 /// What a turn hands over to connect a calendar: what its person said, and
 /// nothing that is a secret or that makes the account writable.
@@ -105,136 +90,15 @@ struct Connect {
     name: Option<String>,
 }
 
-/// A calendar a turn asked to connect, kept while its person is asked for
-/// the password. Nothing in it is a secret.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ConnectAsk {
-    /// The ask's own id.
-    pub ask: String,
-    /// The workspace it was asked in.
-    pub workspace: String,
-    /// The person asked: their root key, hex.
-    pub person: String,
-    /// The agent that asked, by its id.
-    pub agent: String,
-    /// The name its person knows that agent under.
-    pub name: String,
-    /// The calendar server's address, as it was held to its bounds.
-    pub server_url: String,
-    /// Where the password belongs: the calendar server's own origin.
-    pub place: String,
-    /// The name the account signs in with there.
-    pub username: String,
-    /// What its person calls the account.
-    pub account: String,
-    /// The id the account is kept under once it is connected.
-    pub account_id: String,
-    /// Where whoever carries out the turn put the question: theirs to read,
-    /// kept here so it is found again after a restart.
-    pub asked_in: Value,
-    /// Whether an answer is being carried out: said before it starts, so an
-    /// answer is carried out at most once whatever interrupts this server.
-    pub started: bool,
-    /// Whether this server stopped while an answer was being carried out:
-    /// the ask was read back started from its disk, and nobody carries it
-    /// out now.
-    #[serde(skip)]
-    pub interrupted: bool,
-    /// When it was asked, in milliseconds since the Unix epoch.
-    pub asked_at_ms: u64,
-    /// The items their vault kept when it was asked, by their ids: what
-    /// is typed for this question is none of them.
-    #[serde(default)]
-    pub known: Vec<String>,
-}
-
-impl ConnectAsk {
-    /// What the question says, in this server's own words: what is asked
-    /// for and what typing it does.
-    #[must_use]
-    pub fn words(&self) -> String {
-        format!(
-            "Connect {} at {} for reading only. {} never sees what you type: your vault keeps \
-             it for that server alone.",
-            self.username, self.place, self.name
-        )
+/// What the vault keeps a calendar's password as: a login at the calendar server's own
+/// origin `place`, under `username`.
+fn login(place: &str, username: &str) -> AskForItem {
+    AskForItem {
+        kind: ItemKind::Login,
+        belongs_to: vec![place.to_owned()],
+        username: username.to_owned(),
+        sent_in: String::new(),
     }
-
-    /// What the vault keeps the password as: a login at the calendar
-    /// server's own origin, under the user name.
-    #[must_use]
-    pub fn login(&self) -> tilo_actions::remote::person_vault::AskForItem {
-        tilo_actions::remote::person_vault::AskForItem {
-            kind: tilo_actions::remote::person_vault::ItemKind::Login,
-            belongs_to: vec![self.place.clone()],
-            username: self.username.clone(),
-            sent_in: String::new(),
-        }
-    }
-
-    /// What was asked for, in a few words of this server's own.
-    #[must_use]
-    pub fn named(&self) -> String {
-        format!(
-            "Connect the calendar account {} at {} for reading only",
-            self.account, self.place
-        )
-    }
-}
-
-impl KeptAskKind for ConnectAsk {
-    type Error = ActionError;
-    const DIR: &'static str = ASKS_DIR;
-    const READ_FAILED: &'static str = "a kept ask to connect a calendar does not read";
-    const MAX_OPEN: Option<(usize, &'static str)> = Some((MAX_OPEN, TOO_MANY));
-
-    fn id(&self) -> &str {
-        &self.ask
-    }
-
-    fn workspace(&self) -> &str {
-        &self.workspace
-    }
-
-    fn person(&self) -> &str {
-        &self.person
-    }
-
-    fn started(&self) -> bool {
-        self.started
-    }
-
-    fn set_started(&mut self, started: bool) {
-        self.started = started;
-    }
-
-    fn interrupted(&self) -> bool {
-        self.interrupted
-    }
-
-    fn set_interrupted(&mut self, interrupted: bool) {
-        self.interrupted = interrupted;
-    }
-
-    fn asked_at(&self) -> u64 {
-        self.asked_at_ms
-    }
-
-    fn refused(reason: impl Into<String>) -> Self::Error {
-        refused(reason)
-    }
-}
-
-/// How a turn's asking to connect a calendar went.
-#[derive(Clone, Debug, PartialEq)]
-pub enum TurnConnect {
-    /// Its person is asked for the password first, and this server keeps
-    /// what was asked.
-    Asks(Box<ConnectAsk>),
-    /// Its person was asked for this account's password before and has not
-    /// answered yet.
-    Waits,
 }
 
 /// A calendar account as it was connected: what the agent that asked is
@@ -338,51 +202,7 @@ fn told_name(name: &str) -> String {
     line.chars().take(MAX_CALENDAR_CHARS).collect()
 }
 
-/// The item `item` names in the workspace's vault, when it is the one the
-/// protected field of `ask`'s question made: a login that belongs to the
-/// calendar server's origin and to nothing else, which their vault did not
-/// keep when it was asked. Such an item is taken out again when nothing is
-/// connected with it; any other stays.
-async fn typed_for(workspaces: &Workspaces, item: &ItemRef, ask: &ConnectAsk) -> Option<ItemId> {
-    let id = ItemId::parse(item.id())?;
-    let facts = workspaces
-        .open_vault(&ask.workspace)
-        .await
-        .ok()?
-        .items()
-        .facts()
-        .into_iter()
-        .find(|facts| facts.id == id)?;
-    let own = facts.kind == ItemKind::Login
-        && facts.places.len() == 1
-        && facts
-            .places
-            .first()
-            .is_some_and(|place| place.as_str() == ask.place)
-        && !ask.known.iter().any(|known| known == id.as_str());
-    own.then_some(id)
-}
-
-/// Take the item `id` out of the workspace's vault again.
-async fn take_out(workspaces: &Workspaces, workspace: &str, id: &ItemId) {
-    let taken = workspaces
-        .changing_vault(workspace, None, |items| Ok(items.remove(id)))
-        .await;
-    if let Err(error) = taken {
-        tracing::warn!(%error, "an item typed for a calendar that was not connected stays in the workspace's vault");
-    }
-}
-
 impl Workspaces {
-    /// Forget the ask `ask` of `workspace`: nothing is connected for it any
-    /// more.
-    fn forget_connect(&self, workspace: &str, ask: &str) {
-        self.inner
-            .vault_uses
-            .connects
-            .forget(&self.inner.dir, workspace, ask);
-    }
-
     /// Whose turn `turn` is, where it may ask `target`, the connecting of a
     /// calendar: one this server carries out, whose agent the workspace's policy lets change
     /// its calendars, and for an agent that anything narrows one a rule of
@@ -435,13 +255,9 @@ impl Workspaces {
         }
     }
 
-    /// Take what `request` says of a calendar to connect, for `turn`.
-    ///
-    /// Nothing is connected and no calendar server is asked anything: the
-    /// server keeps what was asked, with `asked_in` (where the caller will
-    /// put the question, its own to read), and answers
-    /// [`TurnConnect::Asks`] with what to ask the person. A caller that
-    /// cannot put the question says so ([`Self::connect_not_asked`]).
+    /// Connect the calendar `request` names for `turn`, once its person typed its password
+    /// into their vault and approved this very call; until then it waits for their yes, and no
+    /// calendar server is asked anything.
     ///
     /// # Errors
     /// The turn is none this server carries out
@@ -449,13 +265,13 @@ impl Workspaces {
     /// rule for this ([`ActionError::NotPermitted`]); the arguments are not
     /// an address, a user name and a name alone; the address is not https,
     /// carries a sign-in or is not on the public internet; the account is
-    /// connected already; or too many such asks wait for the person.
+    /// connected already; it waits for the person; their vault keeps no login for it; or the
+    /// calendar server did not take the sign-in, in its own words.
     pub async fn connect_calendar_for_turn(
         &self,
         turn: &HostedTurn<'_>,
         request: &InvokeRequest,
-        asked_in: Value,
-    ) -> Result<TurnConnect, ActionError> {
+    ) -> Result<Connected, ActionError> {
         let using = self.connecting(turn, &request.target).await?;
         let asked: Connect = argument(request, WHAT)?;
         let username = a_name(&asked.username).ok_or_else(|| refused(NOT_A_NAME))?;
@@ -482,172 +298,47 @@ impl Workspaces {
         if accounts_in(&held).iter().any(|kept| kept.id == id) {
             return Err(refused(ALREADY));
         }
-        // What the vault keeps now stays whatever comes of this.
-        let known = self
-            .open_vault(&using.workspace)
+        let wanted = login(place.as_str(), &username);
+        crate::workspaces::asking::approved_or_asks(request, || AskedFacts {
+            words: format!(
+                "Connect {username} at {} for reading only. {} never sees what you type: your \
+                 vault keeps it for that server alone.",
+                place.as_str(),
+                using.name
+            ),
+            on: Some(account.clone()),
+            facts: vec![
+                Fact::new("kind", "login"),
+                Fact::new("belongsTo", place.as_str()),
+                Fact::new("username", username.clone()),
+            ],
+            verb: "connect".to_owned(),
+            takes: Some(format!(
+                "{}/{}#{}",
+                person_vault::PROVIDER,
+                person_vault::RESOURCE,
+                person_vault::ADD
+            )),
+            ..AskedFacts::by(crate::workspaces::asking::asked_by(turn.caller))
+        })?;
+        let password = self
+            .asked_item(&using.workspace, &wanted)
             .await
             .map_err(refused)?
-            .items()
-            .facts()
-            .into_iter()
-            .map(|facts| facts.id.as_str().to_owned())
-            .collect();
-        let person = hex::encode(using.person);
-        // Told of the same account again while its person has not answered:
-        // the one question stands.
-        let kept = self.inner.vault_uses.connects.keep(
-            &self.inner.dir,
-            &person,
-            (using, id),
-            |waits, (using, id)| {
-                waits.person == person
-                    && waits.workspace == using.workspace
-                    && waits.account_id == *id
-            },
-            |(using, id)| {
-                let asked_at_ms = tilo_clock::unix_now_ms();
-                let ask = hashed_ask_id(
-                    &person,
-                    &using.agent,
-                    &format!("{:?}", request.invocation),
-                    asked_at_ms,
-                );
-                Ok(ConnectAsk {
-                    ask,
-                    workspace: using.workspace,
-                    person: person.clone(),
-                    agent: using.agent,
-                    name: using.name,
-                    server_url: server.to_string(),
-                    place: place.as_str().to_owned(),
-                    username,
-                    account,
-                    account_id: id,
-                    asked_in,
-                    started: false,
-                    interrupted: false,
-                    asked_at_ms,
-                    known,
-                })
-            },
-        )?;
-        Ok(match kept {
-            Some(kept) => TurnConnect::Asks(Box::new(kept)),
-            None => TurnConnect::Waits,
-        })
-    }
-
-    /// The question about `ask` could not be put to its person, or it is
-    /// over without an answer: nothing waits any more, and the calendar is
-    /// asked for again when it is wanted.
-    pub fn connect_not_asked(&self, ask: &ConnectAsk) {
-        self.forget_connect(&ask.workspace, &ask.ask);
-    }
-
-    /// The asks to connect a calendar kept for `workspace`, oldest first:
-    /// what whoever carries out its agents reads answers for. Cheap where
-    /// none waits.
-    #[must_use]
-    pub fn open_connects(&self, workspace: &str) -> Vec<ConnectAsk> {
-        self.inner
-            .vault_uses
-            .connects
-            .open(&self.inner.dir, workspace)
-    }
-
-    /// Claim the ask `ask` for the one reader of its answer that carries it
-    /// out. It is said in this server's memory and on its disk before
-    /// anything else is said or done, so two readers of one answer carry it
-    /// out once, and a server that stops finds it started. Whoever claimed
-    /// it carries it out ([`Self::carry_out_connect`]).
-    ///
-    /// # Errors
-    /// Nothing is kept under that ask ([`crate::workspaces::hosted_use::NOTHING_WAITS`]), another
-    /// reader claimed it ([`crate::workspaces::hosted_use::CARRIED_OUT`]), or the claim could not
-    /// be written down.
-    pub fn claim_connect(&self, ask: &str) -> Result<ConnectAsk, ActionError> {
-        self.inner.vault_uses.connects.claim(&self.inner.dir, ask)
-    }
-
-    /// Carry out what the person answered where they were asked for the
-    /// password of the calendar `claimed` keeps ([`Self::claim_connect`]).
-    /// `typed` is the reference their device answered with, `None` where
-    /// they declined. `turn` is the asking agent's turn as this server
-    /// reads it now.
-    ///
-    /// What the person typed is in their vault already, under `typed`;
-    /// this server decides what comes of it. What is connected is the
-    /// account kept under the ask, for reading only, signed in with what
-    /// the vault item keeps.
-    /// Answers the account and the names of its calendars, `None` where
-    /// they declined. Where nothing is connected the item typed for this
-    /// question is taken out of their vault again. Whatever comes of it,
-    /// the ask is spent.
-    ///
-    /// # Errors
-    /// The turn is not the asker's or is refused now, the answer names no item the vault
-    /// hands to this calendar server, or the calendar server did not take
-    /// the sign-in: in its own words.
-    pub async fn carry_out_connect(
-        &self,
-        turn: &HostedTurn<'_>,
-        claimed: &ConnectAsk,
-        typed: Option<&str>,
-    ) -> Result<Option<Connected>, String> {
-        let root = self.workspace_root(&claimed.workspace);
-        let item = typed.and_then(ItemRef::parse);
-        let own = match &item {
-            Some(item) => typed_for(self, item, claimed).await,
-            None => None,
-        };
-        let carried = match typed {
-            None => Ok(None),
-            Some(_) => self.connect(turn, claimed, &root, item).await.map(Some),
-        };
-        if !matches!(carried, Ok(Some(_)))
-            && let Some(id) = &own
-        {
-            take_out(self, &claimed.workspace, id).await;
-        }
-        self.forget_connect(&claimed.workspace, &claimed.ask);
-        carried
-    }
-
-    /// Connect the account `kept` names with the sign-in `item` keeps in the
-    /// vault under `root`, for reading only.
-    async fn connect(
-        &self,
-        turn: &HostedTurn<'_>,
-        kept: &ConnectAsk,
-        root: &Path,
-        item: Option<ItemRef>,
-    ) -> Result<Connected, String> {
-        let target = RemoteActionTarget {
-            provider: person_accounts::PROVIDER.to_owned(),
-            address: tilo_actions::ActionAddress::new(RESOURCE, CONNECT),
-        };
-        let using = self
-            .connecting(turn, &target)
-            .await
-            .map_err(|_| NOT_THEIRS.to_owned())?;
-        if hex::encode(using.person) != kept.person
-            || using.agent != kept.agent
-            || using.workspace != kept.workspace
-        {
-            return Err(NOT_THEIRS.to_owned());
-        }
-        let password = item.ok_or_else(|| NO_ITEM.to_owned())?;
+            .ok_or_else(|| refused(NO_ITEM))?;
+        let root = self.workspace_root(&using.workspace);
         let adding = AddWithItem {
-            server_url: kept.server_url.clone(),
-            username: Some(kept.username.clone()),
+            server_url: server.to_string(),
+            username: Some(username),
             password,
-            name: Some(kept.account.clone()),
+            name: Some(account),
             // Always: nothing a turn hands over says otherwise.
             read_only: true,
         };
         let view = self
-            .calendar_with_item((&kept.workspace, root), adding, &using.name)
-            .await?;
+            .calendar_with_item((&using.workspace, &root), adding, &using.name)
+            .await
+            .map_err(refused)?;
         self.person_settings_changed();
         Ok(Connected {
             account: view.id,

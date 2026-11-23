@@ -27,6 +27,9 @@ use tilo_workspace_service::apps::app_actions::{
 /// The kind the session's sheet reads an agent session's or an app's question as.
 pub(crate) const KIND: &str = "session.step-question";
 
+/// The kind the session's sheet reads an agent's question in its own words as.
+pub(crate) const AGENT_QUESTION: &str = "network.agent-question";
+
 /// An agent session's or an app's question, as the sheet shows it.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct StepQuestion {
@@ -101,7 +104,7 @@ impl Sheet {
             .unwrap_or_else(|| request.app_id.clone());
         let asked = self.questions.ask(Question {
             handle: request.handle.clone(),
-            kind: crate::network::AGENT_QUESTION.to_owned(),
+            kind: AGENT_QUESTION.to_owned(),
             app_id: None,
             label: agent.clone(),
             details: serde_json::to_value(AgentQuestion {
@@ -154,7 +157,7 @@ impl AppActionConsentPrompter for Sheet {
         request: AppActionConsentRequest,
     ) -> Option<tokio::sync::oneshot::Receiver<AppActionAnswer>> {
         // An agent's question in its own words: the same sheet a workspace host
-        // asks it on ([`crate::network::AGENT_QUESTION`]), with the answers it offers.
+        // asks it on ([`AGENT_QUESTION`]), with the answers it offers.
         if let Some(ask) = request.ask.clone() {
             return self.ask_in_words(&request, ask);
         }
@@ -361,7 +364,7 @@ mod tests {
             let answered = sheet.ask(question).expect("asked");
             let pending = questions.pending();
             assert_eq!(pending.len(), 1, "the sheet is up");
-            assert_eq!(pending[0].kind, crate::network::AGENT_QUESTION);
+            assert_eq!(pending[0].kind, AGENT_QUESTION);
             let shown: AgentQuestion = serde_json::from_value(pending[0].details.clone()).unwrap();
             assert_eq!(shown.agent, "Claude Code");
             assert_eq!(

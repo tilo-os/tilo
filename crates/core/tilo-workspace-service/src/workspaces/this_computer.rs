@@ -359,7 +359,7 @@ pub fn link_this_computer_at(
 /// Where the workspace service keeping its state under `service_root` keeps `workspace`'s
 /// settings.
 fn workspace_root_at(service_root: &Path, workspace: &str) -> std::path::PathBuf {
-    super::person_asking::workspace_store_dir(&service_root.join("workspaces"), workspace)
+    super::workspace_stores::workspace_store_dir(&service_root.join("workspaces"), workspace)
 }
 
 #[cfg(test)]

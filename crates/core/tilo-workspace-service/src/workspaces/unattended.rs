@@ -13,53 +13,17 @@
 //! is ([`super::own`]), not in any record of it: a key that writes the
 //! workspace's records cannot turn it on for itself. A branch starts with the
 //! source's setting, copied when the host makes it. Only the person turns it
-//! on, by answering a question on their approving devices ([`AsksPeople`]);
-//! any key of theirs reaching the workspace may ask, and turning it off asks
-//! nobody.
-
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
+//! on: any key of theirs reaching the workspace may ask, and the call waits
+//! for their yes; turning it off asks nobody.
 
 use serde_json::{Value, json};
+use tilo_actions::remote::asked::{AskedFacts, Fact};
 use tilo_actions::remote::{ActionCallError, Caller, InvokeArgument, InvokeRequest};
-use tilo_lock::RwLockRecover as _;
 use tilo_server_protocol::WorkspaceId;
-use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_server_protocol::workspaces::AdminRefusal;
 use tilo_user_identity::DeviceCert;
 
 use super::Workspaces;
-
-/// How long the person has to answer whether a workspace runs commands
-/// unattended: as long as a question about one action waits.
-const QUESTION_WAIT_NS: u64 = 2 * 60 * 1_000_000_000;
-
-/// How long a request that may wait for the person is held before it is
-/// answered accepted and followed instead: turning running commands
-/// unattended off is answered within it, and the person takes longer.
-const ANSWERED_WITHIN: std::time::Duration = std::time::Duration::from_millis(500);
-
-/// How long the host holds `request` for its answer when the caller named no
-/// wait: [`ANSWERED_WITHIN`] for a turn of running commands unattended, which
-/// may wait minutes for the person, so the caller follows it rather than
-/// holding its answer open; `None` for anything else.
-pub(super) fn asks_first(request: &InvokeRequest) -> Option<std::time::Duration> {
-    (request.target.provider == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
-        && request.target.address.action == tilo_server_protocol::workspaces::RUN_UNATTENDED)
-        .then_some(ANSWERED_WITHIN)
-}
-
-/// The person's answer to a question, once they gave it or it lapsed.
-pub type Answer = Pin<Box<dyn Future<Output = Result<ConfirmationAnswer, String>> + Send>>;
-
-/// What puts a question to a person on their approving devices: the server's
-/// confirmations, which only devices of that person's root answer.
-pub trait AsksPeople: Send + Sync {
-    /// Ask `person` `question` and wait for their answer; `Err` when nobody
-    /// answered before it expired, or it could not be asked.
-    fn ask(&self, person: [u8; 32], question: PendingConfirmation) -> Answer;
-}
 
 /// Unknown and forbidden are the same answer.
 const fn unknown() -> ActionCallError {
@@ -67,12 +31,6 @@ const fn unknown() -> ActionCallError {
 }
 
 impl Workspaces {
-    /// Put the questions about running commands unattended to people through
-    /// `asker`. A host with none refuses to turn it on.
-    pub fn ask_people(&self, asker: Arc<dyn AsksPeople>) {
-        *self.inner.asks_people.write_recover() = Some(asker);
-    }
-
     /// A branch `branch` of `source` holds what its source holds: running
     /// commands unattended too, when the source does.
     pub(super) fn branch_unattended(&self, source: &str, branch: &str) -> Result<(), String> {
@@ -128,7 +86,7 @@ impl Workspaces {
         let person = certificate.user_public_key;
         let own = self
             .own()
-            .ok_or_else(|| refused(AdminRefusal::NotYourOwn.to_reason()))?;
+            .ok_or_else(|| ActionCallError::refused(AdminRefusal::NotYourOwn.to_reason()))?;
         let workspace = self
             .workspace_identity(workspace_id)
             .await
@@ -143,7 +101,7 @@ impl Workspaces {
             .agent
             .is_none_or(|scope| scope.reaches(&workspace));
         if !reaches || own.owner_of(&workspace) != Some(person) {
-            return Err(refused(AdminRefusal::NotYourOwn.to_reason()));
+            return Err(ActionCallError::refused(AdminRefusal::NotYourOwn.to_reason()));
         }
         let answer = |on: bool| json!({"workspace": workspace, "unattended": on});
         if !on || self.runs_unattended(&workspace) {
@@ -155,8 +113,14 @@ impl Workspaces {
             .workspace_name(workspace_id)
             .await
             .unwrap_or_else(|| workspace.clone());
-        self.ask_person(person, question(caller, certificate, &name))
-            .await?;
+        super::asking::approved_or_asks(request, || AskedFacts {
+            on: Some(name.clone()),
+            facts: vec![Fact::new("Also", "the branches made from it")],
+            verb: "let keys made for this workspace alone run commands in its Linux machine \
+                   without asking you each time"
+                .into(),
+            ..AskedFacts::by(super::asking::asked_by(caller))
+        })?;
         self.set_unattended(&workspace, true)
             .map_err(ActionCallError::refused)?;
         tracing::info!(%workspace, "a workspace runs commands unattended");
@@ -164,27 +128,3 @@ impl Workspaces {
     }
 }
 
-/// What the person is asked: who asks, that the keys made for this workspace
-/// alone would run commands in its machine without asking them each time, and
-/// that it holds for the branches made from it too.
-fn question(caller: &Caller, certificate: &DeviceCert, workspace: &str) -> PendingConfirmation {
-    PendingConfirmation {
-        id: super::actions::agents::question_id(),
-        agent_id: caller.acting().agent_id().unwrap_or_default().to_owned(),
-        agent_label: certificate.device_label.clone(),
-        title: String::new(),
-        action_label: "let keys made for this workspace alone run commands in its Linux machine \
-                       without asking you each time"
-            .into(),
-        resource_label: format!("{workspace}, and the branches made from it"),
-        arguments: Vec::new(),
-        risk: "privileged".into(),
-        kind: "outside".into(),
-        undoable: false,
-        workspace: workspace.to_owned(),
-        expires_at_ns: tilo_clock::unix_now_ns().saturating_add(QUESTION_WAIT_NS),
-        page: None,
-        ask: None,
-        allow_always: false,
-    }
-}

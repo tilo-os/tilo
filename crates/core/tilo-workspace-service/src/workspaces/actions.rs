@@ -53,10 +53,10 @@ use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueResource, CatalogueRow, InvocationLog, InvocationReceipt, InvocationState,
     InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, WORKSPACE_APPS,
-    WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_INVITATIONS,
-    WORKSPACE_MEMBER_ADDED, WORKSPACE_MEMBER_ADMIT, WORKSPACE_MEMBER_PLACED,
+    WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_GRANT_REVOKE,
+    WORKSPACE_INVITATIONS, WORKSPACE_MEMBER_ADDED, WORKSPACE_MEMBER_ADMIT, WORKSPACE_MEMBER_PLACED,
     WORKSPACE_MEMBER_REMOVED, WORKSPACE_MEMBERS, WORKSPACE_REGISTRIES, WORKSPACE_SERVERS,
-    WORKSPACE_TRUST, WORKSPACE_WAITING, formats, mcp_server, person_accounts, person_asking,
+    WORKSPACE_TRUST, WORKSPACE_WAITING, asked, formats, mcp_server, person_accounts,
     person_connections, person_models, person_telling, person_vault, server_account, workspace_app,
     workspace_app_named, workspace_governance_address, workspace_governance_child,
     workspace_governance_operation, workspace_governance_resource, workspace_member,
@@ -247,7 +247,7 @@ struct Verb {
 }
 
 /// What the workspaces serve, in catalogue order.
-const VERBS: [Verb; 44] = [
+const VERBS: [Verb; 45] = [
     Verb {
         id: governance::INVITE,
         label: "Invite",
@@ -576,6 +576,15 @@ const VERBS: [Verb; 44] = [
         kind: ActionKind::Read,
         params: Vec::new,
     },
+    Verb {
+        id: WORKSPACE_GRANT_REVOKE,
+        label: "Revoke a grant",
+        // The person who gave the grant takes it back, or whoever the workspace's policy lets
+        // revoke grants: the handler checks which.
+        check: "",
+        kind: roles::GOVERNANCE_KIND,
+        params: grant_params,
+    },
 ];
 
 fn person_param() -> ActionParam {
@@ -874,6 +883,14 @@ fn registry_channel_params() -> Vec<ActionParam> {
     params
 }
 
+fn grant_params() -> Vec<ActionParam> {
+    vec![ActionParam::required(
+        "grant",
+        ParamType::Text,
+        "The grant, by its id: what `workspace/permissions/<grant>` names.",
+    )]
+}
+
 fn key_params() -> Vec<ActionParam> {
     vec![ActionParam::required(
         "grant",
@@ -1143,7 +1160,11 @@ fn governance_request(request: &InvokeRequest, workspace: &str, operation: &str)
     asked.target.address = ActionAddress::new(workspace_governance_resource(workspace), operation);
     let named = workspace_person(&request.target.address)
         .map(|person| ("person", person))
-        .or_else(|| workspace_app_named(&request.target.address).map(|app| ("app", app)));
+        .or_else(|| workspace_app_named(&request.target.address).map(|app| ("app", app)))
+        .or_else(|| {
+            tilo_actions::remote::workspace_grant(&request.target.address)
+                .map(|grant| ("grant", grant))
+        });
     if let Some((name, value)) = named {
         let mut arguments = match asked.argument {
             InvokeArgument::Json(arguments) => arguments,
@@ -2022,14 +2043,14 @@ impl Workspaces {
             }
             // What the person keeps to sign in with, in that same vault:
             // nothing of it is read back, and no agent asks.
-            // The same holds for what their agents no longer ask them, in
-            // the same store: read and taken back by the person alone, and
-            // written by no request.
             #[cfg(not(target_arch = "wasm32"))]
-            (person_vault::PROVIDER | person_asking::PROVIDER, _) => {
-                self.person_alone_invoke(workspace_id, caller, certificate, request)
+            (person_vault::PROVIDER, _) => {
+                self.person_vault_invoke(workspace_id, caller, certificate, request)
                     .await
             }
+            // The calls that wait for the person's yes, read from their asked records.
+            #[cfg(not(target_arch = "wasm32"))]
+            (asked::PROVIDER, _) => self.asking_invoke(workspace_id, caller, certificate, request),
             // The formats and zone the person reads dates in: theirs alone,
             // kept in their own workspace on their own devices.
             #[cfg(not(target_arch = "wasm32"))]
@@ -2201,7 +2222,7 @@ impl Workspaces {
                 caller,
                 &device,
                 &verb.operation(GOVERNANCE),
-                &arguments_of(request),
+                (&arguments_of(request), request.approval().is_some()),
             )
             .await?;
         }
@@ -2301,6 +2322,7 @@ impl Workspaces {
             EARLIER_APP_VERSIONS => self.earlier_app_versions(call).await,
             KEYS => self.governance_keys(call).await,
             REVOKE_KEY => self.governance_revoke_key(call).await,
+            WORKSPACE_GRANT_REVOKE => self.revoke_policy_grant(call).await,
             _ => self.governance_members(action, call).await,
         }
     }
@@ -2375,6 +2397,57 @@ impl Workspaces {
             });
         }
         Ok(json!({"revoked": id}))
+    }
+
+    /// Take back one grant of the workspace's policy (`workspace/permissions/<grant>#revoke`):
+    /// the person who gave it may, from a device of their own, and so may whoever the
+    /// workspace's policy lets revoke grants. The host writes the revocation as its change to
+    /// the workspace, and every member's device decides by the policy without it from then on.
+    async fn revoke_policy_grant(
+        &self,
+        call: GovernanceCall<'_>,
+    ) -> Result<Value, ActionCallError> {
+        let id = call.args.required_text("grant")?.to_owned();
+        let governed = self
+            .workspace(call.workspace)
+            .await
+            .map_err(|error| ActionCallError::refused(error.to_string()))?;
+        let mut workspace = governed.lock().await;
+        let grant = workspace
+            .peer()
+            .permissions(self.inner.host.cert.device_public_key, tilo_clock::wall())
+            .map_err(|_| ActionCallError::UnknownAction)?
+            .policy
+            .grants
+            .iter()
+            .find(|grant| grant.id.0 == id)
+            .cloned()
+            .ok_or_else(|| ActionCallError::Refused {
+                reason: "This workspace has no grant by that id".into(),
+            })?;
+        let in_person =
+            call.device.capabilities.agent.is_none() || call.device.capabilities.server_key;
+        let gave_it = in_person
+            && grant.granted_by
+                == tilo_action_policy::Grantee::person(hex::encode(call.device.user_public_key));
+        let may_revoke = gave_it
+            || self.permits(
+                call.device,
+                Some(&workspace),
+                WorkspaceOp::Govern(governance::REVOKE),
+                tilo_clock::unix_now_ns(),
+            );
+        if !may_revoke {
+            return Err(ActionCallError::Refused {
+                reason: "Only the person who gave this grant, or someone this workspace lets \
+                         revoke grants, can take it back"
+                    .into(),
+            });
+        }
+        self.revoke_grants(&mut workspace, tilo_clock::wall(), &[grant.id])
+            .await
+            .map_err(ActionCallError::refused)?;
+        Ok(json!({ "revoked": id }))
     }
 
     /// Making the workspace a public workspace, taking it back, and what it is
@@ -3255,6 +3328,10 @@ pub(crate) struct Shared {
     /// The running asks of people's models, each with the signal that moves
     /// whenever it wrote more or ended.
     model_asks: Mutex<std::collections::HashMap<InvocationId, tokio::sync::watch::Receiver<u64>>>,
+    /// The calls that wait in their asked records, each with the workspace and the device
+    /// certificate it was asked under: what a person's approve admits it again with.
+    pub(super) asked_calls:
+        Mutex<std::collections::HashMap<InvocationId, (Option<WorkspaceId>, Option<DeviceCert>)>>,
 }
 
 impl ServiceWorkspaceActions {
@@ -3270,6 +3347,7 @@ impl ServiceWorkspaceActions {
                 mcp_follows: Mutex::default(),
                 account_follows: Mutex::default(),
                 model_asks: Mutex::default(),
+                asked_calls: Mutex::default(),
             }),
         }
     }
@@ -3278,6 +3356,7 @@ impl ServiceWorkspaceActions {
     /// ask this governance on the device action service too.
     pub(crate) fn attach(&self, workspaces: Workspaces) {
         workspaces.govern_device_actions_with(Arc::downgrade(&self.shared));
+        workspaces.answer_asked_with(Arc::new(HostAsked(Arc::downgrade(&self.shared))));
         let _ = self.shared.workspaces.set(workspaces);
     }
 
@@ -3521,13 +3600,10 @@ struct InWorkspace {
 /// workspaces at once) is answered as each finishes, never left unanswered past the caller's
 /// deadline while it still runs.
 fn caller_wait(request: &InvokeRequest) -> Option<std::time::Duration> {
-    request
-        .wait_ms
-        .map(|wait_ms| {
-            std::time::Duration::from_millis(u64::from(wait_ms))
-                .min(tilo_actions::remote::MAX_REMOTE_WAIT)
-        })
-        .or_else(|| super::unattended::asks_first(request))
+    request.wait_ms.map(|wait_ms| {
+        std::time::Duration::from_millis(u64::from(wait_ms))
+            .min(tilo_actions::remote::MAX_REMOTE_WAIT)
+    })
 }
 
 impl ActionProvider for InWorkspace {
@@ -3622,6 +3698,7 @@ impl ActionProvider for InWorkspace {
                         Store::MAIL,
                         person_accounts::WATCH,
                         tilo_action_policy::ActionKind::Read,
+                        &request,
                     )
                     .await?;
                 host.follow_accounts(&workspaces, &caller, reach.workspace.to_string(), &request)
@@ -3632,10 +3709,32 @@ impl ActionProvider for InWorkspace {
         if model_asks::is_model_ask(&request) {
             return self.ask_model(workspaces, caller, request);
         }
-        let invocation = request.invocation;
-        // The log's guard must not outlive the reservation: a retry reads
-        // it again below.
+        // A person's approve is set only where their answer admits the call again
+        // ([`HostAsked::readmit`]): a frame carrying one no resolve handed back is refused whole.
+        if let Err(error) =
+            tilo_actions::remote::asked::admit_frame(workspaces.asked_store().as_deref(), &request)
+        {
+            return Pending::ready(Err(error));
+        }
+        // A person's answer to an asked record.
+        if tilo_actions::remote::asked::is_resolve(&request.target) {
+            return workspaces.resolve_asked(caller, &request);
+        }
         let reservation = self.server.log().reserve(caller, &request);
+        self.run(workspaces, caller, request, reservation)
+    }
+}
+
+impl InWorkspace {
+    /// Run `request` for `caller` as `reservation` admitted it, answering its receipt.
+    fn run(
+        &self,
+        workspaces: Workspaces,
+        caller: &Caller,
+        request: InvokeRequest,
+        reservation: Result<tilo_actions::remote::Reservation, ActionCallError>,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let invocation = request.invocation;
         match reservation {
             Err(error) => return Pending::ready(Err(error)),
             Ok(tilo_actions::remote::Reservation::Admitted) => {
@@ -3649,36 +3748,31 @@ impl ActionProvider for InWorkspace {
             }
             Ok(tilo_actions::remote::Reservation::Reserved) => {}
         }
-        let (host, caller, workspace_id, certificate) = (
-            self.server.clone(),
-            caller.clone(),
-            self.workspace_id,
-            self.certificate.clone(),
-        );
-        let wait = caller_wait(&request);
+        let call = invocation_states::Call {
+            workspaces,
+            workspace_id: self.workspace_id,
+            certificate: self.certificate.clone(),
+            caller: caller.clone(),
+            request,
+        };
+        let (host, certificate) = (self.server.clone(), self.certificate.clone());
+        let wait = caller_wait(&call.request);
         let runtime = self.server.shared.runtime.clone();
         self.server.spawn(async move {
-            // An invocation that puts a question to its person answers its caller at once that
-            // it waits for their approval, rather than at the end of the wait.
-            let asking = std::sync::Arc::new(tokio::sync::Notify::new());
-            let told = std::sync::Arc::clone(&asking);
-            let mut work = runtime.spawn(agents::ASKING.scope(told, async move {
+            let (workspaces, workspace_id, caller, request) = (
+                call.workspaces.clone(),
+                call.workspace_id,
+                call.caller.clone(),
+                call.request.clone(),
+            );
+            let mut work = runtime.spawn(async move {
                 Box::pin(workspaces.invoke(workspace_id, &caller, certificate.as_ref(), &request))
                     .await
-            }));
-            let (ran, asked) = match answered_within(&mut work, wait, &asking).await {
-                Ok(ran) => ran,
-                Err(asked) => {
-                    let receipt = still_running(&host, invocation, work, asked);
-                    if asked {
-                        return Err(ActionCallError::Refused {
-                            reason: tilo_actions::remote::AWAITING_APPROVAL_REASON.to_owned(),
-                        });
-                    }
-                    return Ok(receipt);
-                }
-            };
-            ended(&host, invocation, ran, asked)
+            });
+            match answered_within(&mut work, wait).await {
+                Some(ran) => ended(&host, &call, ran).await,
+                None => Ok(still_running(&host, call, work)),
+            }
         })
     }
 
@@ -3796,8 +3890,8 @@ const PROVIDERS: [&str; 11] = [
     person_vault::PROVIDER,
     // What the person calls important, and what may interrupt them.
     person_telling::PROVIDER,
-    // What the person's agents no longer ask them, in the same store.
-    person_asking::PROVIDER,
+    // The calls that wait for the person's yes.
+    asked::PROVIDER,
     // The services the person connected by their address.
     person_connections::PROVIDER,
     // What the agents on this server learned about the person.
@@ -4069,6 +4163,150 @@ mod person_model_tests;
 mod share_tests;
 #[cfg(test)]
 pub(crate) mod tests;
+
+/// This host's dispatch, as an asked record's store hands it back the call it keeps.
+struct HostAsked(std::sync::Weak<Shared>);
+
+impl HostAsked {
+    fn server(&self) -> Result<ServiceWorkspaceActions, ActionCallError> {
+        self.0
+            .upgrade()
+            .map(|shared| ServiceWorkspaceActions { shared })
+            .ok_or_else(|| ActionCallError::Unavailable {
+                reason: "the host's actions are not running".into(),
+            })
+    }
+}
+
+/// What a call that no longer waits in its record is refused another answer with.
+fn not_waiting() -> ActionCallError {
+    ActionCallError::Refused {
+        reason: "The call no longer waits for this answer".into(),
+    }
+}
+
+/// The name the store knows this host's dispatch by, across its restarts.
+pub(super) const HOST_DISPATCH: &str = "host";
+
+/// What this host keeps beside a call that waits for its person's yes, to admit it again
+/// after a restart: the workspace it acts in and the device certificate it was asked under.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct AskedContext {
+    workspace: Option<String>,
+    certificate: Option<DeviceCert>,
+}
+
+impl tilo_actions::remote::asked::AskedDispatch for HostAsked {
+    fn context(&self, invocation: InvocationId) -> Value {
+        let Ok(server) = self.server() else {
+            return Value::Null;
+        };
+        let asked = server
+            .shared
+            .asked_calls
+            .lock_recover()
+            .get(&invocation)
+            .cloned();
+        asked
+            .and_then(|(workspace_id, certificate)| {
+                serde_json::to_value(AskedContext {
+                    workspace: workspace_id.map(|id| id.to_string()),
+                    certificate,
+                })
+                .ok()
+            })
+            .unwrap_or(Value::Null)
+    }
+
+    fn readmit(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        context: &Value,
+    ) -> Result<(), ActionCallError> {
+        let server = self.server()?;
+        let workspaces = server
+            .shared
+            .workspaces
+            .get()
+            .cloned()
+            .ok_or_else(not_waiting)?;
+        let remembered = server
+            .shared
+            .asked_calls
+            .lock_recover()
+            .remove(&request.invocation);
+        let Some((workspace_id, certificate)) = remembered else {
+            // Kept from before this host started again: admitted as a call of its own under
+            // its id, which the record's approve admits once.
+            let kept = serde_json::from_value::<AskedContext>(context.clone())
+                .map_err(|_| not_waiting())?;
+            let workspace_id = match kept.workspace {
+                Some(workspace) => Some(WorkspaceId::parse(&workspace).ok_or_else(not_waiting)?),
+                None => None,
+            };
+            let here = InWorkspace {
+                server,
+                workspace_id,
+                certificate: kept.certificate,
+            };
+            here.invoke(caller, request).then(|_| {});
+            return Ok(());
+        };
+        if !server
+            .log()
+            .readmit(caller, &request, invocation_states::waits_asked)
+        {
+            return Err(not_waiting());
+        }
+        let here = InWorkspace {
+            server,
+            workspace_id,
+            certificate,
+        };
+        // It runs for its caller, who follows it under its id: the receipt is theirs to read.
+        here.run(
+            workspaces,
+            caller,
+            request,
+            Ok(tilo_actions::remote::Reservation::Reserved),
+        )
+        .then(|_| {});
+        Ok(())
+    }
+
+    fn declined(&self, caller: &Caller, invocation: InvocationId) -> Result<(), ActionCallError> {
+        let server = self.server()?;
+        if server
+            .shared
+            .asked_calls
+            .lock_recover()
+            .remove(&invocation)
+            .is_none()
+        {
+            // Kept from before this host started again: it ended with it.
+            return Ok(());
+        }
+        let mut log = server.log();
+        if !log
+            .get(caller, &invocation)
+            .is_some_and(invocation_states::waits_asked)
+        {
+            return Err(not_waiting());
+        }
+        log.complete(
+            &invocation,
+            InvocationState::new(
+                invocation,
+                tilo_actions::InvocationUpdate::Cancelled {
+                    invocation,
+                    message: Some(tilo_actions::remote::asked::DECLINED.to_owned()),
+                },
+            ),
+        );
+        Ok(())
+    }
+}
 
 /// The workspace's own actions as the file beside this crate holds them, written from what the
 /// tree publishes and what each action takes.

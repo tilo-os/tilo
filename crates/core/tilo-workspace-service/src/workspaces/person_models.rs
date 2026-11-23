@@ -154,6 +154,7 @@ impl Workspaces {
                 Store::MODELS,
                 action,
                 effect,
+                request,
             )
             .await?;
         if action == person_models::ASK {
@@ -269,6 +270,7 @@ impl Workspaces {
                 Store::MODELS,
                 person_models::ASK,
                 tilo_action_policy::ActionKind::Read,
+                request,
             )
             .await?;
         let asked: ModelRequest = argument(request, "a model request")?;

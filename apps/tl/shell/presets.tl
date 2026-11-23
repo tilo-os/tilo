@@ -10,7 +10,6 @@ scenario "the default shell" {
     d.person = "Ada Lovelace"
     d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
     stage(device.time, device.Time(clock: "4:28 PM"))
-    stage(device.notifications, waiting())
     stage(device.overlays, device.Overlays(here: "none"))
     d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
     d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
@@ -38,7 +37,6 @@ scenario "a full dock" {
     d.person = "Ada Lovelace"
     d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
     stage(device.time, device.Time(clock: "4:28 PM"))
-    stage(device.notifications, waiting())
     stage(device.overlays, device.Overlays(here: "none"))
     d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
     d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
@@ -84,7 +82,6 @@ scenario "the dock on the left" {
     d.person = "Ada Lovelace"
     d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
     stage(device.time, device.Time(clock: "4:28 PM"))
-    stage(device.notifications, waiting())
     stage(device.overlays, device.Overlays(here: "none"))
     d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
     d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
@@ -105,7 +102,6 @@ scenario "the dock on the right" {
     d.person = "Ada Lovelace"
     d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
     stage(device.time, device.Time(clock: "4:28 PM"))
-    stage(device.notifications, waiting())
     stage(device.overlays, device.Overlays(here: "none"))
     d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
     d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
@@ -125,7 +121,6 @@ scenario "moving an item on the dock" {
     d.person = "Ada Lovelace"
     d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
     stage(device.time, device.Time(clock: "4:28 PM"))
-    stage(device.notifications, waiting())
     stage(device.overlays, device.Overlays(here: "none"))
     d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
     d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
@@ -144,7 +139,6 @@ scenario "a rearranged bar" {
     d.person = "Ada Lovelace"
     d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
     stage(device.time, device.Time(clock: "4:28 PM"))
-    stage(device.notifications, waiting())
     stage(device.overlays, device.Overlays(here: "none"))
     d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
     d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
@@ -165,7 +159,6 @@ scenario "the Tilo preset" {
     d.person = "Ada Lovelace"
     d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
     stage(device.time, device.Time(clock: "4:28 PM"))
-    stage(device.notifications, waiting())
     stage(device.overlays, device.Overlays(here: "none"))
     d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
     d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
@@ -183,7 +176,6 @@ scenario "the macos preset" {
     d.person = "Ada Lovelace"
     d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
     stage(device.time, device.Time(clock: "4:28 PM"))
-    stage(device.notifications, waiting())
     stage(device.overlays, device.Overlays(here: "none"))
     d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
     d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
@@ -201,7 +193,6 @@ scenario "the windows preset" {
     d.person = "Ada Lovelace"
     d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
     stage(device.time, device.Time(clock: "4:28 PM"))
-    stage(device.notifications, waiting())
     stage(device.overlays, device.Overlays(here: "none"))
     d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
     d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
@@ -219,7 +210,6 @@ scenario "the gnome preset" {
     d.person = "Ada Lovelace"
     d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
     stage(device.time, device.Time(clock: "4:28 PM"))
-    stage(device.notifications, waiting())
     stage(device.overlays, device.Overlays(here: "none"))
     d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
     d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
@@ -232,7 +222,6 @@ scenario "the minimal preset" {
     d.person = "Ada Lovelace"
     d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
     stage(device.time, device.Time(clock: "4:28 PM"))
-    stage(device.notifications, waiting())
     stage(device.overlays, device.Overlays(here: "none"))
     d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
     d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))

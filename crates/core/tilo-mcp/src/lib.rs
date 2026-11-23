@@ -2886,13 +2886,13 @@ const OPENED_NO_ACTION: &str = "the app offers no open action taking a path, so 
 const DEFAULT_WAIT_MS: u64 = 5_000;
 const MAX_WAIT_MS: u64 = 60_000;
 /// Whether `update` says that its invocation's person is asked to allow it: nothing of it
-/// happened yet, and nothing will for as long as they take to answer. Its provider says so
-/// by a progress whose phase is the protocol's own word for a confirmation that is required.
+/// happened yet, and nothing will for as long as they take to answer. The call waits in its
+/// asked record, which a progress of the asked phase names.
 fn person_asked(update: &tilo_actions::InvocationUpdate) -> bool {
     matches!(
         update,
         tilo_actions::InvocationUpdate::Progress { phase, .. }
-            if phase == tilo_actions::remote::CONFIRMATION_REQUIRED_CODE
+            if phase == tilo_actions::remote::asked::ASKED_PHASE
     )
 }
 /// How long a call is held for its action.

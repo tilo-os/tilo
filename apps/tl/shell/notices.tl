@@ -40,8 +40,11 @@ view notices() {
                 if device.notifications.undo {
                     undo_band()
                 }
+                asking_list(root Asking)
                 if all.is_empty() {
-                    ui.EmptyState("Nothing to catch up on", icon: .bell)
+                    if asked_count() == 0 {
+                        ui.EmptyState("Nothing to catch up on", icon: .bell)
+                    }
                 } else {
                     ui.TextInput(bind: query, placeholder: "Search notifications")
                     if shown.is_empty() {
@@ -80,40 +83,6 @@ view undo_band() {
 /// the centre's header both read.
 fn unread() -> Int {
     return device.notifications.notices.count(n -> not n.seen)
-}
-
-/// Two notices a sender left and the person has not seen: what a screen shows before the
-/// person has caught up, so the bar's bell has something to count.
-fn waiting() -> device.Notifications {
-    return device.Notifications(notices: [mia_mention(), threads_filed()])
-}
-
-/// A notice: Mia asking about the launch date.
-fn mia_mention() -> device.Notice {
-    return device.Notice(
-        number: 1,
-        title: "Mia mentioned you in Release planning",
-        body: "Can you check the launch date?",
-        from: "Notes",
-        kind: "info",
-        seen: false,
-        actions: [
-            device.NoticeAction(key: "open", label: "Reply"),
-            device.NoticeAction(key: "later", label: "Later"),
-        ],
-    )
-}
-
-/// A notice: Fieldwork done filing.
-fn threads_filed() -> device.Notice {
-    return device.Notice(
-        number: 2,
-        title: "Three threads filed",
-        body: "Fieldwork filed 3 threads into Receipts.",
-        from: "Fieldwork",
-        kind: "success",
-        seen: false,
-    )
 }
 
 /// What the centre says of them: how many are waiting, or that none is.
@@ -182,6 +151,7 @@ view notice_row(n: device.Notice) {
 /// silenced.
 view banner() {
     let centre = device.notifications
+    asked_banners()
     if (centre.quiet ?? "") == "" {
         let ids = standing_banners(centre)
         if not ids.is_empty() {

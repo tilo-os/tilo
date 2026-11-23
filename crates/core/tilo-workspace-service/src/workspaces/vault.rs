@@ -598,9 +598,7 @@ impl VaultAt<'_> {
     pub(crate) async fn keep_account(&self, account: &accounts::Account) -> Result<(), String> {
         match self {
             Self::Workspace(workspaces, workspace, _) => {
-                workspaces
-                    .keep_workspace_account(workspace, account)
-                    .await
+                workspaces.keep_workspace_account(workspace, account).await
             }
             #[cfg(test)]
             Self::Held(held) => held

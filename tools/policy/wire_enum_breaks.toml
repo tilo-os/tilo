@@ -714,3 +714,13 @@ reason = "a run's journal waits on a call it made through the dispatch, a person
 file = "crates/core/tilo-server-protocol/src/transport.rs"
 enum = "Envelope"
 reason = "the page's workspace administration request and its answer leave the session for the host's own action: `WorkspacesRequest` and `WorkspacesReply` are asked and answered as `workspace.administer`, one of the host's own operations on the actions transport, so no session frame carries them. Envelopes are live frames of a session and kept nowhere, and the peer protocol version is bumped from 65 to 66 with the removal and `previous-peer-frames.txt` moves to the version before it, so a device at another version admits nothing from this one"
+
+[[break]]
+file = "crates/server/tilo-server-protocol/src/certify.rs"
+enum = "ApproverRequest"
+reason = "spoken only on a live certification connection, never stored, and its ALPN moved to tilo-device-certify/2 when the questions left it: a peer of the old protocol is not answered, so no bytes of another layout are read"
+
+[[break]]
+file = "crates/server/tilo-server-protocol/src/certify.rs"
+enum = "ApproverReply"
+reason = "spoken only on a live certification connection, never stored, and its ALPN moved to tilo-device-certify/2 when the questions left it: a peer of the old protocol is not answered, so no bytes of another layout are read"

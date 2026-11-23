@@ -1133,7 +1133,7 @@ impl Workspaces {
             caller,
             device,
             &verb.operation(ACCOUNT),
-            &arguments,
+            (&arguments, request.approval().is_some()),
         )
         .await
     }

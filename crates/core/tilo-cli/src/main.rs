@@ -29,7 +29,6 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 mod agent;
 mod aliases;
-mod approving;
 use tilo_api::calls as api;
 mod cleanup;
 mod desktop;
@@ -319,10 +318,6 @@ enum Cmd {
     /// Every command as a page of documentation, for tilo.sh/docs.
     #[command(hide = true)]
     HelpMarkdown,
-    /// Answer what this computer's agent asks the person whose root it holds,
-    /// beside a command acting as it.
-    #[command(hide = true)]
-    ApproveHere,
     /// Log this computer in as one of your devices, with the ticket one of
     /// your devices gave you.
     #[command(after_help = "Example:\n  tilo login tilo1…\n\n\
@@ -1131,9 +1126,6 @@ fn run_hosted(
             .flatten()
             .is_some()
         && acts_as_the_login(&cmd, workspace.is_some());
-    // What the command, as the computer's agent, asks its person is answered here until it
-    // ends, when this computer holds their root.
-    let _approving = as_device.then(approving::start).flatten();
     Ok(match cmd {
         Cmd::Do {
             in_person,
@@ -1400,7 +1392,6 @@ fn run(mut cli: Cli) -> Result<ExitCode> {
         Cmd::Completions { shell } => completions(shell),
         Cmd::Device { cmd } => run_system_command(cmd),
         Cmd::HelpMarkdown => help_markdown(),
-        Cmd::ApproveHere => approving::serve(),
         Cmd::Agent { cmd } => agent::run(cmd),
         Cmd::Migrate { json, cmd } => migrate::run(cmd, json),
         Cmd::Login {

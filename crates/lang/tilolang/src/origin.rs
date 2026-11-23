@@ -709,6 +709,111 @@ pub const KINDS: &[OriginKind] = &[
         ],
     },
     OriginKind {
+        name: "session.asking",
+        doc: "What waits for the person's yes: every call that needs it, read from its own \
+              asked `tilo.invocations` record, on every device of theirs and on the web alike. \
+              Its answer is the record's own `resolve`, so nothing writes it.",
+        derived: true,
+        fields: &[
+            field(
+                "questions",
+                "Collection<session.asked>",
+                "The questions that wait.",
+            ),
+            field(
+                "facts",
+                "Collection<session.asked_fact>",
+                "What each question shows before it is answered, each naming its question.",
+            ),
+            field(
+                "choices",
+                "Collection<session.asked_choice>",
+                "The choices a question answers with instead of yes or no.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "session.asked",
+        doc: "One question: a call that waits for the person's yes.",
+        derived: true,
+        fields: &[
+            field(
+                "key",
+                "Text",
+                "The asked record's address, `<workspace>/<record>`.",
+            ),
+            field("workspace_name", "Text", "The workspace the call acts in."),
+            field("name", "Text", "The action, by its label."),
+            field(
+                "words",
+                "Text",
+                "What the asker says of its own; empty where the action's label says it.",
+            ),
+            field("on", "Text", "What the call acts on, by its name."),
+            field(
+                "destructive",
+                "Bool",
+                "Whether it takes away what Undo does not bring back.",
+            ),
+            field("verb", "Text", "The action's verb, as always words it."),
+            field(
+                "plural",
+                "Text",
+                "The plural of the resources it acts on, as always words it.",
+            ),
+            field("can_always", "Bool", "Whether always is offered."),
+            field("by", "Text", "Who asks: `agent`, `app` or `device`."),
+            field(
+                "by_name",
+                "Text",
+                "The agent's or the device's name, or the app's title.",
+            ),
+            field(
+                "author",
+                "Text",
+                "Who wrote the app that asks; empty for none.",
+            ),
+            field("asked_at_ms", "Int", "Since when it waits."),
+            field(
+                "pressed_device",
+                "Text",
+                "The device the press that asked it was made on; empty for none.",
+            ),
+            field(
+                "pressed_window",
+                "Text",
+                "The window's tab the press was made in; empty for none.",
+            ),
+            field(
+                "conversation",
+                "Text",
+                "The conversation an agent's question stands in; empty for none.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "session.asked_fact",
+        doc: "A fact a question shows before it is answered.",
+        derived: true,
+        fields: &[
+            field("key", "Text", "Its id, as `<question>/<number>`."),
+            field("question", "Text", "The question it is of, by its key."),
+            field("label", "Text", "What it is."),
+            field("value", "Text", "Its value."),
+        ],
+    },
+    OriginKind {
+        name: "session.asked_choice",
+        doc: "One of a question's choices.",
+        derived: true,
+        fields: &[
+            field("key", "Text", "Its id, as `<question>/<number>`."),
+            field("question", "Text", "The question it is of, by its key."),
+            field("index", "Int", "Its place among the question's choices."),
+            field("label", "Text", "What it says."),
+        ],
+    },
+    OriginKind {
         name: "imap.account",
         doc: "What the IMAP server of one of the workspace's mail accounts holds. The account itself \
               (its address, servers and signature) is the settings', and its credentials stay in \

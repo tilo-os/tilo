@@ -16,6 +16,9 @@ use crate::runtime::origin::OriginWrite;
 use crate::runtime::{ResourceRef, Value};
 use crate::tilolang::Compiled;
 
+mod asking;
+pub use asking::{AskedReading, AskingOrigin, AskingWriter};
+
 /// The shell's package id.
 pub const SHELL_APP: &str = "so.tilo.shell";
 
@@ -31,6 +34,10 @@ pub const ORIGIN: &str = "session";
 /// no other app's package to do so.
 pub const SHELL_FILES: &[(&str, &str)] = &[
     ("app.tl", include_str!("../../../../apps/tl/shell/app.tl")),
+    (
+        "asking.tl",
+        include_str!("../../../../apps/tl/shell/asking.tl"),
+    ),
     (
         "canvas.tl",
         include_str!("../../../../apps/tl/shell/canvas.tl"),
@@ -259,6 +266,58 @@ impl Mirror {
 }
 
 impl Mirror {
+    /// Apply `writes` as the origin's one change, keeping what became of them. Whether it was
+    /// written; `what` names it where it could not be.
+    pub fn apply(&mut self, cx: &OriginCx<'_>, writes: Vec<OriginWrite>, what: &str) -> bool {
+        match cx
+            .host
+            .runtime()
+            .apply_origin(ORIGIN, writes, Some(cx.now.clone()))
+        {
+            Ok(made) => {
+                self.made(Some(made));
+                true
+            }
+            Err(error) => {
+                self.made(None);
+                tracing::error!(%error, "{what} could not be written");
+                false
+            }
+        }
+    }
+}
+
+/// The root the shell's type of the origin's kind `kind` (`layout`) is, `root-<type id>`, made
+/// the first time it is wanted as the shell's `root` declaration reads it, with the shell's
+/// types of the origin's kinds; `None` where the shell declares no such type.
+fn origin_root(cx: &OriginCx<'_>, kind: &str) -> Option<(ResourceRef, Vec<OriginType>)> {
+    let Some(types) = cx.host.find_in_packages(|package| {
+        (package.meta.app == cx.app).then(|| origin_types(&package.meta, ORIGIN))
+    }) else {
+        tracing::error!(app = cx.app, "the shell's package is not loaded");
+        return None;
+    };
+    let ty = types
+        .iter()
+        .find(|ty| ty.kind == format!("{ORIGIN}.{kind}"))?
+        .ty
+        .clone();
+    let made = ResourceRef::root(format!("root-{ty}"), ty.clone());
+    let root = if cx.host.store().contains(&made) {
+        made
+    } else {
+        match cx.host.runtime().create_root(&ty) {
+            Ok(root) => root,
+            Err(error) => {
+                tracing::error!(%error, kind, "the shell has no root to write");
+                return None;
+            }
+        }
+    };
+    Some((root, types))
+}
+
+impl Mirror {
     /// The writes that bring the items of `collection` on `root` from what was written to `now`,
     /// by key: new ones inserted (where, [`Self::made`] keeps), gone ones removed, changed ones
     /// set. A collection holds its items in the order they were inserted and has no move, so
@@ -366,49 +425,12 @@ impl LayoutWriter {
     /// Write `reading` into the shell's `Layout` root: only what changed since the last write.
     /// Whether anything was written.
     pub fn write(&mut self, cx: &OriginCx<'_>, reading: &LayoutReading) -> bool {
-        let Some(types) = cx.host.find_in_packages(|package| {
-            (package.meta.app == cx.app).then(|| origin_types(&package.meta, ORIGIN))
-        }) else {
-            tracing::error!(app = cx.app, "the shell's package is not loaded");
+        // A shell without a layout view keeps its bar alone: nothing to write.
+        let Some((root, types)) = origin_root(cx, "layout") else {
             return false;
-        };
-        // The root the `Layout` type is: `root-<type id>`, made the first time it is
-        // wanted, as `root layout` reads it.
-        let Some(kind) = types
-            .iter()
-            .find(|ty| ty.kind == format!("{ORIGIN}.layout"))
-        else {
-            // A shell without a layout view keeps its bar alone: nothing to write.
-            return false;
-        };
-        let made = ResourceRef::root(format!("root-{}", kind.ty), kind.ty.clone());
-        let root = if cx.host.store().contains(&made) {
-            made
-        } else {
-            match cx.host.runtime().create_root(&kind.ty) {
-                Ok(root) => root,
-                Err(error) => {
-                    tracing::error!(%error, "the shell has no layout to write");
-                    return false;
-                }
-            }
         };
         let writes = self.layout_writes(reading, &root, &types);
-        match cx
-            .host
-            .runtime()
-            .apply_origin(ORIGIN, writes, Some(cx.now.clone()))
-        {
-            Ok(made) => {
-                self.mirror.made(Some(made));
-                true
-            }
-            Err(error) => {
-                self.mirror.made(None);
-                tracing::error!(%error, "the person's layout could not be written");
-                false
-            }
-        }
+        self.mirror.apply(cx, writes, "the person's layout")
     }
 
     /// The writes that bring the shell's layout root from what was written to `reading`.

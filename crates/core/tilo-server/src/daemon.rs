@@ -165,10 +165,6 @@ pub struct Server {
     workspace_keys: tilo_workspace_keys::KeyProvider,
     /// That key service, when this server opened its workspace service itself.
     key_service: Option<tilo_workspace_service::own_device::KeyService>,
-    /// What puts its workspaces' questions about running commands unattended
-    /// to people: the server's confirmations, held here so that its workspaces
-    /// hold them only weakly and nothing of the server outlives it.
-    _asks_people: Arc<crate::certification::CertificationProtocol>,
     /// The packet relay this host runs for the pages it serves, when it runs
     /// one ([`ServerConfig::packet_relay`]).
     iroh_packet_relay: Option<iroh_relay::server::Server>,
@@ -649,14 +645,9 @@ impl Server {
             live.clone(),
             Some(workspaces.clone()),
         );
-        let asks_people = Arc::new(certification.clone());
-        certification.keep_issued_in(governed.clone());
-        // Whether a workspace of theirs runs commands unattended is the
-        // person's to answer, on their approving devices. The workspaces
-        // hold the confirmations weakly: they hold the workspaces.
-        governed.ask_people(Arc::new(crate::certification::AsksThroughConfirmations(
-            Arc::downgrade(&asks_people),
-        )));
+        if let Some(governed) = &governed {
+            certification.keep_issued_in(governed.clone());
+        }
         let web = Box::new(WebContext {
             server: handler.clone(),
             #[cfg(feature = "web")]
@@ -795,7 +786,6 @@ impl Server {
                 content_links: Arc::default(),
                 workspace_keys: keys,
                 key_service: None,
-                _asks_people: asks_people,
                 iroh_packet_relay: None,
             },
             protocols,

@@ -11,11 +11,12 @@
 //!   or `open` the workspace admitted for that session ([`MachineAgentsServer::started`]). Nobody
 //!   else is asked and nothing is admitted on the host's own authority; a connection from a
 //!   session nobody is known to have started is refused before anyone is asked.
-//! - **The question.** It is put to the person's approving devices as any question of this
-//!   server's is ([`CertificationProtocol::confirm_for`]), naming the agent the connection would
-//!   be (`reviewer@dev#1`), the environment and the program. "Always allow" is remembered for
-//!   that person per environment, executable and client name, so allowing Reviewer once in
-//!   *dev* covers its later sessions there, and only there.
+//! - **The question.** The connection waits for the person's yes as every call that needs it
+//!   does: kept as its asked `tilo.invocations` record in the workspace, naming the agent the
+//!   connection would be (`reviewer@dev#1`), the environment and the program. Their approve of
+//!   the record lets it in, their decline refuses it. An "always" kept before is remembered for
+//!   that person per environment, executable and client name, so it covers Reviewer's later
+//!   sessions in *dev*, and only there.
 //! - **An agent per connection.** Each connection admitted is an agent of its own: the client's
 //!   name, the environment's record key and an instance number counting from one in each
 //!   workspace since this server started (`reviewer@dev#2`). It acts as that agent for the
@@ -30,19 +31,21 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tilo_actions::remote::Caller;
+use tilo_actions::ActionAddress;
+use tilo_actions::remote::asked::{AskedBy, AskedDispatch, AskedFacts, Fact, Named};
+use tilo_actions::remote::{
+    ActionCallError, Caller, InvocationId, InvokeArgument, InvokeRequest, RemoteActionTarget,
+};
 use tilo_lock::MutexRecover as _;
 use tilo_mcp::McpServer;
 use tilo_mcp::session_api::{Hello, proposed_agent_id};
-use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 pub use ush::hosted_vm::{AgentConnection, MachineAgents};
 
 use crate::WorkspaceId;
-use crate::certification::CertificationProtocol;
 use crate::workspaces::Workspaces;
 use tilo_workspace_service::agents::{EngineActions, WorkspaceActionProvider};
 
@@ -53,8 +56,14 @@ const LEFT_EVERY: Duration = Duration::from_millis(250);
 /// Where the answers the person said to keep are kept, under the server's state.
 const REMEMBERED: &str = "machine-agents.json";
 
-/// What the person's devices are asked: the agent asks to work in the workspace.
+/// What the person is asked: the agent asks to work in the workspace.
 const WORKS_HERE: &str = "work in this workspace as an agent of its own";
+
+/// The provider a connection's question is the call of, and the dispatch name its record is
+/// kept under: its approve comes back here.
+const PROVIDER: &str = "tilo.machine-agents";
+/// The action a connection asks for: to work in the workspace.
+const WORK: &str = "work";
 
 /// Who serves the connections the workspaces' programs make to their machine's agent socket.
 pub struct MachineAgentsServer {
@@ -70,13 +79,48 @@ pub struct MachineAgentsServer {
     remembered: Mutex<BTreeSet<Remembered>>,
     /// Where those are kept; nowhere for a server that keeps no state.
     path: Option<PathBuf>,
+    /// The questions waiting for their person's answer, by the invocation each is the call of.
+    answers: Arc<Answers>,
+}
+
+/// The connections whose question waits, each handed whether its person let it in.
+#[derive(Default)]
+struct Answers(Mutex<HashMap<InvocationId, mpsc::SyncSender<bool>>>);
+
+impl Answers {
+    fn answer(&self, invocation: InvocationId, allowed: bool) -> Result<(), ActionCallError> {
+        let waiting = self.0.lock_recover().remove(&invocation);
+        let waiting = waiting.ok_or_else(|| ActionCallError::Refused {
+            reason: "the program no longer waits for this answer".into(),
+        })?;
+        let _ = waiting.send(allowed);
+        Ok(())
+    }
+}
+
+impl AskedDispatch for Answers {
+    fn context(&self, _: InvocationId) -> serde_json::Value {
+        serde_json::Value::Null
+    }
+
+    fn readmit(
+        &self,
+        _: &Caller,
+        request: InvokeRequest,
+        _: &serde_json::Value,
+    ) -> Result<(), ActionCallError> {
+        self.answer(request.invocation, true)
+    }
+
+    fn declined(&self, _: &Caller, invocation: InvocationId) -> Result<(), ActionCallError> {
+        self.answer(invocation, false)
+    }
 }
 
 /// What a connection is served through: the server's own services.
 struct Bound {
     workspaces: Workspaces,
     actions: EngineActions,
-    certification: CertificationProtocol,
     runtime: tokio::runtime::Handle,
 }
 
@@ -144,22 +188,21 @@ impl MachineAgentsServer {
             running: Mutex::default(),
             remembered: Mutex::new(remembered),
             path,
+            answers: Arc::default(),
         }
     }
 
-    /// Serve through the server's own workspaces, their actions and its questions to people,
-    /// waiting on `runtime`. Bound once; a later call keeps the first.
+    /// Serve through the server's own workspaces and their actions, waiting on `runtime`.
+    /// Bound once; a later call keeps the first.
     pub fn bind(
         &self,
         workspaces: Workspaces,
         actions: EngineActions,
-        certification: CertificationProtocol,
         runtime: tokio::runtime::Handle,
     ) {
         let _ = self.bound.set(Bound {
             workspaces,
             actions,
-            certification,
             runtime,
         });
     }
@@ -263,19 +306,10 @@ impl MachineAgentsServer {
             .clone()
             .unwrap_or_else(|| format!("{client} in {} #{number}", from.environment));
         let kept = self.remembered.lock_recover().contains(&remembered);
-        if !kept {
-            let answer = Self::ask(bound, starter.person, (&agent, &name), from, connected)?;
-            match answer {
-                ConfirmationAnswer::AllowAlways => self.remember(remembered),
-                ConfirmationAnswer::AllowOnce => {}
-                ConfirmationAnswer::Deny
-                | ConfirmationAnswer::Reply(_)
-                | ConfirmationAnswer::Secret(_) => {
-                    return Err(format!(
-                        "the person did not let {name} work in the workspace"
-                    ));
-                }
-            }
+        if !kept && !self.ask(bound, starter, (&agent, &name), from, connected)? {
+            return Err(format!(
+                "the person did not let {name} work in the workspace"
+            ));
         }
         let device = match starter.device {
             Some(device) => device,
@@ -310,68 +344,84 @@ impl MachineAgentsServer {
         Ok(server)
     }
 
-    /// Put to `person`'s approving devices whether `agent` may work in the workspace `from`
-    /// names, withdrawn when its client leaves first.
+    /// Ask `starter`'s person whether `agent` may work in the workspace `from` names: the
+    /// connection waits as its asked record until they answer, or until its client leaves.
     fn ask(
+        &self,
         bound: &Bound,
-        person: [u8; 32],
+        starter: Starter,
         (agent, name): (&str, &str),
         from: &AgentConnection,
         connected: &dyn Fn() -> bool,
-    ) -> Result<ConfirmationAnswer, String> {
-        let mut id = [0_u8; 32];
-        getrandom::fill(&mut id).map_err(|error| error.to_string())?;
-        let workspace = bound
-            .runtime
-            .block_on(bound.workspaces.summary(&from.workspace))
-            .map_or_else(|_| from.workspace.clone(), |summary| summary.name);
-        let question = PendingConfirmation {
-            id,
-            agent_id: agent.to_owned(),
-            agent_label: name.to_owned(),
-            action_label: WORKS_HERE.to_owned(),
-            resource_label: workspace.clone(),
-            arguments: vec![
-                ("Environment".to_owned(), from.environment.clone()),
-                ("Program".to_owned(), from.program.clone()),
+    ) -> Result<bool, String> {
+        let store = bound
+            .workspaces
+            .asked_store()
+            .ok_or("this server keeps no questions for its people")?;
+        let dispatch: std::sync::Weak<dyn AskedDispatch> =
+            Arc::downgrade(&(Arc::clone(&self.answers) as Arc<dyn AskedDispatch>));
+        let records = bound
+            .workspaces
+            .told(store.for_dispatch(PROVIDER, dispatch));
+        let device = starter.device.unwrap_or(starter.person);
+        let caller =
+            Caller::authenticated(starter.person, device).in_workspace(from.workspace.clone());
+        let request = InvokeRequest {
+            invocation: InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: PROVIDER.to_owned(),
+                address: ActionAddress {
+                    resource: from.environment.clone(),
+                    action: WORK.to_owned(),
+                },
+            },
+            argument: InvokeArgument::None,
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        let facts = AskedFacts {
+            words: format!("{name} asks to {WORKS_HERE}."),
+            on: Some(from.environment.clone()),
+            facts: vec![
+                Fact::new("Environment", from.environment.clone()),
+                Fact::new("Program", from.program.clone()),
             ],
-            risk: "privileged".to_owned(),
-            workspace,
-            expires_at_ns: tilo_clock::unix_now_ns()
-                .saturating_add(u64::try_from(ANSWER_WAIT.as_nanos()).unwrap_or(u64::MAX)),
-            allow_always: true,
-            ..PendingConfirmation::default()
+            verb: "let in".to_owned(),
+            ..AskedFacts::by(AskedBy::Agent(Named {
+                id: agent.to_owned(),
+                name: name.to_owned(),
+            }))
         };
-        bound.runtime.block_on(async {
-            let left = async {
-                while connected() {
-                    tokio::time::sleep(LEFT_EVERY).await;
+        let (answered, answer) = mpsc::sync_channel(1);
+        self.answers
+            .0
+            .lock_recover()
+            .insert(request.invocation, answered);
+        if let Err(error) = records.write_asked(&from.workspace, &caller, &request, &facts) {
+            self.answers.0.lock_recover().remove(&request.invocation);
+            return Err(error);
+        }
+        let waited_until = std::time::Instant::now() + ANSWER_WAIT;
+        loop {
+            match answer.recv_timeout(LEFT_EVERY) {
+                Ok(allowed) => return Ok(allowed),
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(false),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if !connected() {
+                        self.answers.0.lock_recover().remove(&request.invocation);
+                        return Err("the program left before the person answered".to_owned());
+                    }
+                    if std::time::Instant::now() >= waited_until {
+                        self.answers.0.lock_recover().remove(&request.invocation);
+                        return Err("the person did not answer in time".to_owned());
+                    }
                 }
-            };
-            tokio::select! {
-                answer = bound.certification.confirm_for(person, question) => answer,
-                () = left => Err("the program left before the person answered".to_owned()),
             }
-        })
-    }
-
-    /// Keep `remembered` for the person's later sessions there.
-    fn remember(&self, remembered: Remembered) {
-        let kept = {
-            let mut held = self.remembered.lock_recover();
-            held.insert(remembered);
-            Kept {
-                allowed: held.iter().cloned().collect(),
-            }
-        };
-        let Some(path) = &self.path else {
-            return;
-        };
-        let written = serde_json::to_vec_pretty(&kept)
-            .map_err(std::io::Error::other)
-            .and_then(|bytes| tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600));
-        if let Err(error) = written {
-            tracing::warn!(%error, path = %path.display(), "what a person let into their machine is kept until this server restarts");
         }
     }
 }

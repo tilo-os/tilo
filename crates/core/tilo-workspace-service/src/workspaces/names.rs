@@ -105,7 +105,7 @@ impl Workspaces {
     }
 
     /// The workspaces this server's person administers.
-    async fn governed_ids(&self) -> Vec<String> {
+    pub(super) async fn governed_ids(&self) -> Vec<String> {
         let held: Vec<_> = self
             .inner
             .workspaces

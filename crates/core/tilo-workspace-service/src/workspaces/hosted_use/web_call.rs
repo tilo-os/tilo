@@ -32,21 +32,18 @@
 //! its answer (a new key, a session) hands it to the agent, and a service
 //! that returns its own key in some other form is not stopped. So nobody's
 //! "Always" stands for a call. Each one is shown to its person first, with
-//! its method, its address and what it sends, and their allow lets that very
-//! call through once ([`AllowedOnce`]): what it answers goes to the agent
-//! that made it, so it is sent when that agent makes the same call again.
+//! its method, its address and what it sends, and their approve admits that
+//! very call again, which is then sent once.
 
-use std::sync::Mutex;
 use std::time::Duration;
 
 use accounts::vault_items::{self, ItemId, KeyIn, Place, UsedFor, VaultItems};
 use serde_json::{Map, Value, json};
-use tilo_lock::MutexRecover as _;
 use tilo_net::{HeaderMap, HeaderName, HeaderValue, Method, Url};
 
 pub(super) use tilo_actions::remote::person_vault::WebCall;
 
-use super::{AskedTurn, Workspaces};
+use super::Workspaces;
 // The guard's own names, from the one place this crate takes them.
 use crate::connections::wire::{
     Destinations, Lookup, check_destination, guarded_client, is_non_public_literal,
@@ -69,10 +66,6 @@ const MAX_ANSWER_HEADERS: usize = 64;
 const MAX_ANSWER_HEADER_BYTES: usize = 2 * 1024;
 /// What stands in an answer where the key stood.
 const WITHHELD: &str = "[withheld]";
-/// How long a person's allow of one call is good.
-const ALLOWED_NS: u64 = 15 * 60 * 1_000_000_000;
-/// The most such allows this server keeps at a time: the newest of them.
-const MAX_ALLOWED: usize = 16;
 
 const NOT_AN_ADDRESS: &str = "A web call names the web address it calls";
 const UNREACHED: &str = "The service could not be reached";
@@ -585,64 +578,6 @@ impl Struck {
             }
         }
         String::from_utf8_lossy(&out).into_owned()
-    }
-}
-
-/// One call its person allowed once.
-struct Allowed {
-    person: [u8; 32],
-    workspace: String,
-    agent: String,
-    arguments: Map<String, Value>,
-    until_ns: u64,
-}
-
-impl Allowed {
-    fn is(&self, using: &AskedTurn, arguments: &Map<String, Value>) -> bool {
-        self.person == using.person
-            && self.workspace == using.workspace
-            && self.agent == using.agent
-            && self.arguments == *arguments
-    }
-}
-
-/// The calls people allowed once and that were not made yet: each for one
-/// agent of theirs in one workspace and for the very arguments they were
-/// shown. Kept in memory alone, for a quarter of an hour: after that, or
-/// after a restart, the call asks again.
-#[derive(Default)]
-pub(super) struct AllowedOnce(Mutex<Vec<Allowed>>);
-
-impl AllowedOnce {
-    /// Keep its person's allow of the call `using` asked for with
-    /// `arguments`.
-    pub(super) fn allow(&self, using: &AskedTurn, arguments: &Map<String, Value>) {
-        let now = tilo_clock::unix_now_ns();
-        let mut allowed = self.0.lock_recover();
-        allowed.retain(|kept| kept.until_ns > now && !kept.is(using, arguments));
-        if allowed.len() >= MAX_ALLOWED {
-            allowed.remove(0);
-        }
-        allowed.push(Allowed {
-            person: using.person,
-            workspace: using.workspace.clone(),
-            agent: using.agent.clone(),
-            arguments: arguments.clone(),
-            until_ns: now.saturating_add(ALLOWED_NS),
-        });
-    }
-
-    /// Whether `using` holds its person's allow of the call with
-    /// `arguments`: it is spent by being found.
-    pub(super) fn spend(&self, using: &AskedTurn, arguments: &Map<String, Value>) -> bool {
-        let now = tilo_clock::unix_now_ns();
-        let mut allowed = self.0.lock_recover();
-        allowed.retain(|kept| kept.until_ns > now);
-        let Some(found) = allowed.iter().position(|kept| kept.is(using, arguments)) else {
-            return false;
-        };
-        allowed.remove(found);
-        true
     }
 }
 

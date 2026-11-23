@@ -76,7 +76,6 @@ pub mod triggered;
 
 mod across;
 mod asking;
-mod asks;
 mod calendar_connect;
 mod calendars;
 mod carried;
@@ -87,7 +86,6 @@ mod going;
 mod instructions;
 mod learned;
 mod mail;
-mod mail_connect;
 mod shares;
 mod steps;
 mod sub_agents;
@@ -106,7 +104,6 @@ mod turn_pages;
 // The Browser windows a host places, as a turn reaches them.
 pub mod windows;
 
-pub use asks::{Answered, Carried, Carries, ServerAsk};
 pub use engine_actions::EngineActions;
 pub use sub_agents::Line;
 /// The engines, and a server on this machine that answers as they and the pages do, for a
@@ -883,8 +880,6 @@ pub struct ServerAgents {
     going: Arc<going::Turns>,
     /// The events this host runs for its people, which a turn's tools reach for its person.
     events: Option<WorkspaceEvents>,
-    /// What carries out the answers to what code of this server asked.
-    carriers: asks::Carriers,
     /// What the people's assistants find to do on their own, which a turn's tools reach too.
     initiative: Option<Initiative>,
     /// The agents whose answer the engine takes, as it last read its workspaces' records
@@ -937,7 +932,7 @@ impl ServerAgents {
             answering: Arc::clone(&answering),
             answers,
         }));
-        let agents = Self {
+        Self {
             workspaces,
             actions,
             roster,
@@ -945,7 +940,6 @@ impl ServerAgents {
             language: None,
             going: Arc::default(),
             events: None,
-            carriers: Arc::default(),
             initiative: None,
             answering,
             answers: Arc::new(Mutex::new(Some(asked))),
@@ -953,16 +947,7 @@ impl ServerAgents {
             placed: None,
             #[cfg(any(test, feature = "fixture-servers"))]
             web_routes: None,
-        };
-        // What a person answers about a connection of theirs is carried out from the start.
-        agents.carries(
-            connections::WORD,
-            connections::answers(&agents.workspaces, &agents.roster),
-        );
-        // What a turn asks its person is put to them in its conversation.
-        agents.ask_in_conversations();
-        agents.carry_sends();
-        agents
+        }
     }
 
     /// Say the agents' own words (why no model answered, what a provider's failure was) in the
@@ -1100,11 +1085,6 @@ impl ServerAgents {
         let mut writes = self.workspaces.document_writes();
         let mut known = None;
         self.read_answering(&mut known).await;
-        // What the agents asked their people before this server last stopped, and nobody
-        // answered, is asked again.
-        for workspace in self.workspaces.described().await {
-            Box::pin(self.settle_asks(&workspace.id().to_string())).await;
-        }
         loop {
             tokio::select! {
                 answer = asked.recv() => {
@@ -1382,7 +1362,13 @@ impl ServerAgents {
         // What the turn's tools reach beside the workspace's resources, each a provider of the
         // turn's own ([`TurnProvider`]): what its person's vault lets it use by reference.
         // Beside that, the services its person connected, by this server's own entry for a turn.
-        let own = connections::of(self.as_asker(), turn, &scope.reply(turn), workspace_id).await;
+        let own = connections::of(
+            self.workspaces.clone(),
+            turn,
+            &scope.reply(turn),
+            workspace_id,
+        )
+        .await;
         scope.provider = scope.provider.answering(own);
         let uses = vault_uses::TurnUses::for_turn(self, turn, &scope.reply(turn)).await;
         let mail = mail::TurnMail::for_turn(self, turn, &scope.reply(turn)).await;
@@ -1394,15 +1380,11 @@ impl ServerAgents {
             .answering(uses)
             .answering(mail)
             .answering(calendars);
-        // What connects a calendar its person tells it of: they are asked for its password
-        // where no agent reads it.
+        // What connects a calendar or a mail account its person tells it of: they are asked
+        // for its password where no agent reads it.
         let connects =
             calendar_connect::TurnConnects::for_turn(self, turn, &scope.reply(turn)).await;
         scope.provider = scope.provider.answering(connects);
-        // What signs a mail account in from its address alone: the same asking, for mail.
-        let signs_in =
-            mail_connect::TurnMailConnects::for_turn(self, turn, &scope.reply(turn)).await;
-        scope.provider = scope.provider.answering(signs_in);
         // Its open of Browser, whose window this server places where it has a machine for one.
         let browser =
             turn_browser::TurnBrowser::for_turn(self.browsers.clone(), &scope.reply(turn));

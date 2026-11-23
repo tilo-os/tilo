@@ -21,6 +21,11 @@ impl std::hash::Hash for Within {
 
 impl Within {
     pub(super) const NONE: Self = Self(None);
+
+    /// The reach `reach` bounds a caller to, as it was kept.
+    pub(super) const fn of(reach: Option<tilo_action_policy::Reach>) -> Self {
+        Self(reach)
+    }
 }
 
 impl Caller {

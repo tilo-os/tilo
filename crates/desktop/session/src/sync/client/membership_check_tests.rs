@@ -316,7 +316,6 @@ impl Restore {
         let hosting = crate::hosted_workspaces::HostedWorkspaces::service(
             Some(&restored.engine),
             Some(restored.network.endpoint_handle()),
-            Some(restored.network.answering()),
             runtime.handle().clone(),
         )
         .expect("a session holding workspaces reaches their hosts");
@@ -691,65 +690,5 @@ fn a_workspace_its_host_drops_from_the_persons_list_leaves_the_device() {
         dropped,
         std::collections::BTreeSet::from([restore.notes]),
         "only the workspace the person was taken out of goes; the site's home stays"
-    );
-}
-
-/// A question the host of a workspace placed away from this device puts to its person — as it does
-/// before it opens a Terminal there that their access leaves to them — reaches this device's
-/// question sheet, though the peer network was pointed at no host: the device answers the host of
-/// each workspace it holds there on the endpoint it reaches it from. The person's Allow on the sheet
-/// is the host's answer.
-#[test]
-fn a_question_from_a_hosted_workspaces_host_reaches_the_sheet_and_its_answer_reaches_the_host() {
-    let restore = Restore::new(0x54);
-    let (changed, change) = std::sync::mpsc::channel();
-    restore.restored.questions.on_change(move || {
-        let _ = changed.send(());
-    });
-    restore.follow();
-
-    let id = [0x54; 32];
-    let answer = restore.host.ask(
-        restore.restored.person(),
-        tilo_server::certify::PendingConfirmation {
-            id,
-            agent_label: "Terminal".into(),
-            title: "Open a terminal in Lounge".into(),
-            action_label: "open a terminal".into(),
-            workspace: "Lounge".into(),
-            expires_at_ns: tilo_clock::unix_now_ns().saturating_add(60_000_000_000),
-            ..tilo_server::certify::PendingConfirmation::default()
-        },
-    );
-
-    let handle = format!("agent-question:{}", hex::encode(id));
-    let deadline = tilo_test_env::hang_deadline();
-    let asked = loop {
-        if let Some(asked) = restore.restored.questions.question(&handle) {
-            break asked;
-        }
-        let left = deadline.saturating_duration_since(std::time::Instant::now());
-        assert!(
-            change.recv_timeout(left).is_ok(),
-            "the host's question reaches the session's sheet"
-        );
-    };
-    assert_eq!(asked.kind, crate::network::AGENT_QUESTION);
-    assert_eq!(asked.label, "Terminal");
-
-    assert!(restore.restored.questions.answer(
-        &handle,
-        tilo_service::Answer {
-            choice: Some(0),
-            ..tilo_service::Answer::default()
-        },
-    ));
-    let left = deadline.saturating_duration_since(std::time::Instant::now());
-    assert_eq!(
-        answer
-            .recv_timeout(left)
-            .expect("the host hears the answer"),
-        Ok(tilo_server::certify::ConfirmationAnswer::AllowOnce),
-        "the person's Allow is the host's answer"
     );
 }

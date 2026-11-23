@@ -992,9 +992,7 @@ impl Account {
             Outcome::Held(actions) => {
                 hand_on(actions);
                 ReceiptStatus::Rejected {
-                    error: ActionCallError::ConfirmationRequired {
-                        departure: Vec::new(),
-                    },
+                    error: ActionCallError::confirmation_required(),
                 }
             }
             Outcome::Failed {

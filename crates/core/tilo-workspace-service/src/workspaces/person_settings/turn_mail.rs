@@ -20,38 +20,32 @@
 //! message and keep it as a draft. The account's sign-in is used inside the
 //! mail session and never answered.
 //!
-//! A send is never carried out by the call that asks for it. The message is
-//! read once, as it would leave; one that cannot be shown whole is refused
-//! before anybody is asked. What its person is shown is answered
-//! ([`AskedSend`]) and the message is set apart, where no action of the
-//! agent reaches it any more. Whoever carries out the turn puts the question
-//! into the person's conversation, where it waits for as long as they take,
-//! over a restart of this server. On their own answer
-//! ([`Workspaces::send_asked`]) the message that waited is read again, and
-//! it leaves only when it still shows exactly what they were shown and its
-//! person still reaches the workspace's mail. Whatever comes of the answer, what
-//! waited is gone, so nothing leaves twice. No answer lets mail leave
-//! unasked from then on.
+//! A send waits for its person's yes. The message is read once, as it would
+//! leave; one that cannot be shown whole is refused before anybody is asked.
+//! What its person is shown ([`AskedSend`]) is kept beside the message, which
+//! is set apart where no action of the agent reaches it any more, and the call
+//! is refused for want of their yes: the dispatch keeps it as its asked
+//! record, where it waits for as long as they take. Their approve admits the
+//! same call again; the message that waited is read again, and it leaves only
+//! when it still shows exactly what they were shown and its person still
+//! reaches the workspace's mail. What waited is gone after it, so nothing
+//! leaves twice. Nothing lets mail leave unasked: no grant is offered.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use tilo_actions::remote::asked::{AskedBy, AskedFacts, Fact};
 use tilo_actions::remote::person_accounts::{self, BeginSend, SendId, SentMail};
 use tilo_actions::remote::{ActionCallError, CatalogueRow, InvokeRequest, RemoteActionTarget};
 
 use super::kept_sign_ins::Signing;
 use super::{Staged, argument, begun_for, send_staged, sends_root};
 use crate::workspaces::hosted_use::{AskedTurn, HostedTurn};
-use crate::workspaces::person_asking::kept_asks::KeptAsk;
 use crate::workspaces::workspace_stores::Store;
 use crate::workspaces::{WorkspaceId, Workspaces};
 use tilo_action_policy::ActionKind;
-
-/// The word the answers to the questions about messages are carried out
-/// under.
-pub const SEND_CARRIER: &str = "mail-send";
 
 /// Where the messages their person is asked about wait, under that person's
 /// own root: apart from the begun ones, which are forgotten after an hour.
@@ -59,25 +53,14 @@ const ASKED_DIR: &str = "asked-sends";
 /// What a message set apart keeps beside what was begun: what its person is
 /// shown, written when it is set apart.
 const ASKED_FILE: &str = "asked.json";
-/// How long a message set apart is kept when no question names it: the
-/// server stopped between setting it apart and asking, or its question was
-/// taken back.
-const UNASKED_FOR: Duration = Duration::from_secs(10 * 60);
+/// How long a message set apart is kept for its person's answer: past it, its
+/// question was declined or long forgotten.
+const UNANSWERED_FOR: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 /// What a line break of a message is shown as, so that every row of a
 /// question is one line.
 const LINE_BREAK: &str = " \u{23ce} ";
 /// What an answer is told when nothing waits under its question.
 const NO_LONGER_WAITS: &str = "That message no longer waits to be sent";
-
-/// How a mail request of a turn this server carries out went.
-#[derive(Clone, Debug, PartialEq)]
-pub enum TurnMail {
-    /// It was answered: what its action answers, never a sign-in.
-    Done(serde_json::Value),
-    /// A message would leave. Nothing left: it is set apart, and its person
-    /// is to be asked what this shows.
-    Asks(Box<AskedSend>),
-}
 
 /// A message set apart while its person is asked whether it may leave: what
 /// the question shows, and how the message is found again. Nothing in it is
@@ -99,22 +82,21 @@ pub struct AskedSend {
 }
 
 impl AskedSend {
-    /// The question's words: what is asked, then every row on a line of its
-    /// own. A line break inside a row is shown as a mark, so nothing a
-    /// message says reads as a row of the question.
+    /// What its person is shown, asked by `by`: the account it leaves from, and every row on
+    /// one line of its own. A line break inside a row is shown as a mark, so nothing a message
+    /// says reads as a row of the question.
     #[must_use]
-    pub fn words(&self) -> String {
-        let mut words = format!(
-            "May I send this message from {}? It leaves only when you allow it here.\n",
-            on_one_line(&self.account)
-        );
-        for (label, value) in &self.rows {
-            words.push('\n');
-            words.push_str(label);
-            words.push_str(": ");
-            words.push_str(&on_one_line(value));
+    pub fn facts(&self, by: AskedBy) -> AskedFacts {
+        AskedFacts {
+            on: Some(self.account.clone()),
+            facts: self
+                .rows
+                .iter()
+                .map(|(label, value)| Fact::new(label.clone(), on_one_line(value)))
+                .collect(),
+            verb: "send".to_owned(),
+            ..AskedFacts::by(by)
         }
-        words
     }
 }
 
@@ -229,10 +211,10 @@ impl Workspaces {
     /// Answer the mail request `request` of `turn`.
     ///
     /// Everything but a send is answered as an agent is answered
-    /// behind a device of its person. A send is not carried out: the
-    /// message is set apart and [`TurnMail::Asks`] answers what its person
-    /// is to be shown. The caller puts that question to them, or says that
-    /// it could not ([`Self::send_not_asked`]).
+    /// behind a device of its person. A send waits for its person's yes: the
+    /// message is set apart and the call refused for want of it, showing them
+    /// [`AskedSend::facts`]. Admitted again on their approve, the message that
+    /// waited leaves ([`Self::send_approved`]).
     ///
     /// # Errors
     /// The turn is none this server carries out for the account's person or
@@ -245,7 +227,7 @@ impl Workspaces {
         &self,
         turn: &HostedTurn<'_>,
         request: &InvokeRequest,
-    ) -> Result<TurnMail, ActionCallError> {
+    ) -> Result<serde_json::Value, ActionCallError> {
         let target = &request.target;
         if target.provider != person_accounts::PROVIDER
             || target.address.resource != person_accounts::RESOURCE
@@ -269,10 +251,17 @@ impl Workspaces {
                     request,
                     true,
                 )
-                .await
-                .map(TurnMail::Done);
+                .await;
         }
         let sending: SendId = argument(request, "a message to send")?;
+        if request.approval().is_some() {
+            let sent = self
+                .send_approved(&root, &workspace, &using.person, &sending.send)
+                .await
+                .map_err(ActionCallError::refused)?;
+            return serde_json::to_value(sent)
+                .map_err(|error| ActionCallError::refused(error.to_string()));
+        }
         let (dir, beginning) = begun_for(&root, &sending.send)?;
         if !kept.contains(&beginning.message.account) {
             return Err(ActionCallError::UnknownAction);
@@ -291,72 +280,48 @@ impl Workspaces {
             workspace,
             rows,
         };
-        self.forget_unasked_sends(&root, &using.workspace, &asked.workspace);
+        forget_unanswered_sends(&root, &asked.workspace);
         set_apart(&root, &dir, &asked).map_err(ActionCallError::refused)?;
-        Ok(TurnMail::Asks(Box::new(asked)))
+        Err(ActionCallError::asks(
+            asked.facts(super::super::asking::asked_by(turn.caller)),
+        ))
     }
 
-    /// The question about `asked` could not be put to its person: the
-    /// message is a begun one again, for its agent to ask once more or to
-    /// keep as a draft.
-    pub fn send_not_asked(&self, asked: &AskedSend) {
-        let root = self.workspace_root(&asked.workspace);
-        let Ok(waits) = asked_dir(&root, &asked.workspace, &asked.send) else {
-            return;
-        };
-        let begun = std::fs::remove_file(waits.join(ASKED_FILE))
-            .and_then(|()| std::fs::rename(&waits, sends_root(&root).join(&asked.send)));
-        if let Err(error) = begun {
-            tracing::warn!(%error, "mail: a message nobody was asked about is not begun again");
-        }
-    }
-
-    /// Carry out its person's answer to the question about the message
-    /// `ask` keeps: `allowed` when they allowed it. Whoever calls read the
-    /// answer from what the person wrote themselves, and claimed the ask.
-    ///
-    /// Allowed, the message that waited is read again and leaves as it was
-    /// shown: answered what became of its copy in the account's Sent folder.
-    /// Not allowed, nothing leaves: `None`. Whatever comes of the answer,
-    /// what waited is gone, and a second reader of the same answer finds
-    /// nothing.
+    /// Send the message begun as `send` in `workspace` (its id), which waited set apart under
+    /// `root` for `person`'s yes and which they approved: what became of its copy in the
+    /// account's Sent folder. Whatever comes of it, what waited is gone, and a second approve
+    /// of the same call finds nothing.
     ///
     /// # Errors
-    /// Why nothing left, in words its person reads: nothing waits under
-    /// that question, its person no longer reaches the workspace's mail, what
-    /// waited no longer shows what they were shown, or the mail server
-    /// refused.
-    pub async fn send_asked(
+    /// Why nothing left, in words its person reads: nothing waits under that message, its
+    /// person no longer reaches the workspace's mail, what waited no longer shows what they
+    /// were shown, or the mail server refused.
+    async fn send_approved(
         &self,
-        ask: &KeptAsk,
-        allowed: bool,
-    ) -> Result<Option<SentMail>, String> {
-        let gone = || NO_LONGER_WAITS.to_owned();
-        let asked: AskedSend = serde_json::from_value(ask.kept.clone()).map_err(|_| gone())?;
-        let here = WorkspaceId::parse(&ask.workspace).map(|id| id.to_string());
-        if ask.carrier != SEND_CARRIER
-            || asked.person != ask.person
-            || here.as_deref() != Some(asked.workspace.as_str())
-        {
-            return Err(gone());
+        root: &Path,
+        workspace: &str,
+        person: &[u8; 32],
+        send: &str,
+    ) -> Result<SentMail, String> {
+        let gone = |_| NO_LONGER_WAITS.to_owned();
+        let waits = asked_dir(root, workspace, send)?;
+        let asked: AskedSend = std::fs::read(waits.join(ASKED_FILE))
+            .map_err(gone)
+            .and_then(|kept| {
+                serde_json::from_slice(&kept).map_err(|_| NO_LONGER_WAITS.to_owned())
+            })?;
+        if asked.person != hex::encode(person) || asked.workspace != workspace {
+            return Err(NO_LONGER_WAITS.to_owned());
         }
-        let mut person = [0; 32];
-        hex::decode_to_slice(&ask.person, &mut person).map_err(|_| gone())?;
-        let workspace = WorkspaceId::parse(&asked.workspace).ok_or_else(gone)?;
-        let root = self.workspace_root(&asked.workspace);
+        let id = WorkspaceId::parse(workspace).ok_or_else(|| NO_LONGER_WAITS.to_owned())?;
         // Taken from where it waited before anything is done with it.
-        let waits = asked_dir(&root, &asked.workspace, &asked.send)?;
         let taken = waits.with_extension("leaving");
         std::fs::rename(&waits, &taken)
             .and_then(|()| std::fs::remove_file(taken.join(ASKED_FILE)))
-            .map_err(|_| gone())?;
-        let left = if allowed {
-            self.leave_as_shown(&root, &taken, &asked, (workspace, &person))
-                .await
-                .map(Some)
-        } else {
-            Ok(None)
-        };
+            .map_err(gone)?;
+        let left = self
+            .leave_as_shown(root, &taken, &asked, (id, person))
+            .await;
         match std::fs::remove_dir_all(&taken) {
             Ok(()) => {}
             // A message that left took its files with it.
@@ -408,39 +373,24 @@ impl Workspaces {
         };
         send_staged(self.mail_session(), signing, staged).await
     }
+}
 
-    /// Forget the messages set apart under `root` for the workspace whose
-    /// id is `id` that no question waiting in `workspace` names and that
-    /// were set apart a while ago: the server stopped before it asked, or
-    /// the question was taken back.
-    fn forget_unasked_sends(&self, root: &Path, workspace: &str, id: &str) {
-        let Ok(entries) = std::fs::read_dir(root.join(ASKED_DIR).join(id)) else {
-            return;
-        };
-        let asked_about: BTreeSet<String> = self
-            .open_asks(workspace)
-            .into_iter()
-            .filter(|ask| ask.carrier == SEND_CARRIER)
-            .filter_map(|ask| Some(ask.kept.get("send")?.as_str()?.to_owned()))
-            .collect();
-        let now = tilo_clock::wall();
-        for entry in entries.flatten() {
-            let named = entry
-                .file_name()
-                .to_str()
-                .is_some_and(|send| asked_about.contains(send));
-            let old = entry
-                .metadata()
-                .and_then(|metadata| metadata.modified())
-                .ok()
-                .and_then(|set_apart| now.duration_since(set_apart).ok())
-                .is_some_and(|age| age > UNASKED_FOR);
-            if !named
-                && old
-                && let Err(error) = std::fs::remove_dir_all(entry.path())
-            {
-                tracing::warn!(%error, "mail: a message nobody is asked about was not removed");
-            }
+/// Forget the messages set apart under `root` for the workspace whose id is `id` that waited
+/// longer than their person is taken to answer.
+fn forget_unanswered_sends(root: &Path, id: &str) {
+    let Ok(entries) = std::fs::read_dir(root.join(ASKED_DIR).join(id)) else {
+        return;
+    };
+    let now = tilo_clock::wall();
+    for entry in entries.flatten() {
+        let old = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|set_apart| now.duration_since(set_apart).ok())
+            .is_some_and(|age| age > UNANSWERED_FOR);
+        if old && let Err(error) = std::fs::remove_dir_all(entry.path()) {
+            tracing::warn!(%error, "mail: a message nobody answered was not removed");
         }
     }
 }

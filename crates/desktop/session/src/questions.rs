@@ -116,8 +116,7 @@ enum Plan {
     Secrets { remember: Option<bool> },
     /// The sheet asks nothing this can answer: a code on show.
     Nothing,
-    /// An agent's question in its own words: the choice picked
-    /// ([`tilo_sheets::portal::AgentAsk`]).
+    /// An agent's question in its own words: the choice picked.
     Ask { choices: usize },
     /// Taking back the allowance the person just gave.
     Revoke {
@@ -915,7 +914,7 @@ fn compose(question: &Question) -> Option<Composed> {
         CANNOT_JOIN_KIND => cannot_join(&question.handle, details)?,
         tilo_bluetooth_agent::KIND => pairing(&question.handle, details)?,
         crate::mcp_server::KIND => admitted(&question.handle, &who, details)?,
-        crate::network::AGENT_QUESTION => agent_question(&question.handle, details)?,
+        crate::step_questions::AGENT_QUESTION => agent_question(&question.handle, details)?,
         crate::step_questions::KIND => step_question(&question.handle, details)?,
         crate::network::DEVICE_UNLOCK => device_unlock(&question.handle, details)?,
         crate::network::DEVICE_ENROL => device_enrol(&question.handle, details)?,
@@ -2058,7 +2057,7 @@ mod tests {
         phase a_question_whose_risk_the_host_does_not_name_shows_no_risk;
         {
             let shown = sheet(
-                crate::network::AGENT_QUESTION,
+                crate::step_questions::AGENT_QUESTION,
                 serde_json::to_value(tilo_sheets::portal::AgentQuestion {
                     agent: "notes-agent".into(),
                     action: "Read a note".into(),
@@ -2096,7 +2095,7 @@ mod tests {
 
     fn agent_question() -> Composed {
         sheet(
-            crate::network::AGENT_QUESTION,
+            crate::step_questions::AGENT_QUESTION,
             serde_json::to_value(tilo_sheets::portal::AgentQuestion {
                 agent: "notes-agent".into(),
                 action: "Delete three notes".into(),

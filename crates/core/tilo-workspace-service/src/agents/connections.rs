@@ -11,45 +11,27 @@
 //! their calls. So an assistant lists its person's services and calls a command that only
 //! reads, with every device of its person off.
 //!
-//! A command that changes something asks, unless its person let exactly that command of that
-//! connection stand for this agent. The entry answers what the person is to be asked, and this
-//! puts the question to them (`ask` of this server's agents) in the turn's reply. What would be
-//! sent to a service of theirs is told to them alone; the reply names only the command. The
-//! tool call ends at once, told that its person is asked, and nothing waits on a thread. A
-//! connection an agent proposes is asked the same way, and offers no answer of always. When the
-//! person answers, the server carries out what it kept ([`Answers`]): once, only for the agent
-//! that asked acting for that person now, and only while the question stands as the server put
-//! it.
+//! A command that changes something waits for its person's yes, unless a grant of the
+//! workspace's lets this agent call exactly that command of that connection: the entry
+//! refuses it for want of their yes, and the call waits as its asked record until their
+//! approve admits it again. A connection an agent proposes waits the same way, and is added
+//! on their approve.
 
 use std::future::Future;
 use std::sync::Arc;
 
 use serde_json::Value;
-/// The word the answers about connections are carried out under.
-pub(super) use tilo_actions::remote::person_connections::CARRIER as WORD;
-use tilo_actions::remote::person_connections::{self, Asks, Leave, Taken};
+use tilo_actions::remote::person_connections;
 use tilo_actions::remote::{
     Caller, CatalogueProvider, CatalogueQuery, InvokeRequest, RemoteActionTarget,
 };
-use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
-use tilo_workspace_agent::{Agent, WorkspaceAgents};
+use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
+use tilo_workspace_agent::Agent;
 
-use super::asks::{Answered, AskedIn, Asker, Carried, Carries, ServerAsk};
 use super::turn_provider::{Ending, Rows};
 use super::{Reply, Turn, TurnProvider, WorkspaceId};
 use crate::workspaces::Workspaces;
 use crate::workspaces::hosted_use::HostedTurn;
-use crate::workspaces::person_asking::kept_asks::KeptAsk;
-
-/// What an agent is told when its person is asked before a command is called: nothing was
-/// called, and it neither waits nor calls again.
-const ASKED: &str = "Your person is asked in your reply whether this command \
-     may be called. Nothing was called. It is called once when they allow it there: tell them \
-     it waits for their answer, and do not call it again.";
-
-/// What an answer is told when the agent that asked no longer acts for the person asked.
-const NOT_THEIRS: &str =
-    "The agent that asked no longer acts for the person it asked, so nothing was done.";
 
 /// What one turn reaches of its person's connections. A turn's caller changes when its person
 /// writes again while it works, so each request is taken as the caller of the tool call that
@@ -59,8 +41,7 @@ const NOT_THEIRS: &str =
 type Ended = <Ending as Future>::Output;
 
 pub(super) struct TurnConnections {
-    /// The server's workspaces, and its one way of asking a person.
-    asker: Asker,
+    workspaces: Workspaces,
     workspace: String,
     workspace_id: WorkspaceId,
     agent: Agent,
@@ -72,9 +53,9 @@ pub(super) struct TurnConnections {
 }
 
 /// What `turn` reaches of its person's connections in the workspace `workspace_id`, where
-/// `reply` holds what its tools begin as and `asker` puts a question to its person.
+/// `reply` holds what its tools begin as.
 pub(super) async fn of(
-    asker: Asker,
+    workspaces: Workspaces,
     turn: &Turn,
     reply: &Reply,
     workspace_id: WorkspaceId,
@@ -85,9 +66,9 @@ pub(super) async fn of(
         caller: &reply.caller,
         bound: narrowed.as_deref(),
     };
-    let theirs = asker.workspaces.asked_turn(&hosted).await.is_ok();
+    let theirs = workspaces.asked_turn(&hosted).await.is_ok();
     Arc::new(TurnConnections {
-        asker,
+        workspaces,
         workspace: reply.workspace.clone(),
         workspace_id,
         agent: turn.agent.clone(),
@@ -107,39 +88,11 @@ impl TurnConnections {
             caller,
             bound: narrowed.as_deref(),
         };
-        let workspaces = &self.asker.workspaces;
-        let asks = match workspaces.connections_for_turn(&hosted, request).await? {
-            Taken::Done(value) => return Ok(succeeded(invocation, value)),
-            Taken::Asks(asks) => asks,
-        };
-        let put = self.put(caller, &asks).await;
-        Ok(match (put, asks.answers) {
-            // Asking was all that was asked for: a proposal.
-            (Ok(Some(value)), _) | (Ok(None), Some(value)) => succeeded(invocation, value),
-            (Ok(None), None) => asked(invocation, ASKED.to_owned()),
-            (Err(why), _) => asked(
-                invocation,
-                format!("Your person could not be asked ({why}), so nothing was done."),
-            ),
-        })
-    }
-
-    /// Put the question `asks` holds to its person, in the reply of the turn `caller` acts in:
-    /// what it shows of a service of theirs is theirs alone to read, and told to them alone.
-    async fn put(&self, caller: &Caller, asks: &Asks) -> Result<Option<Value>, String> {
-        self.asker
-            .ask(ServerAsk {
-                workspace: self.workspace.clone(),
-                person: asks.person,
-                agent: self.agent.id.0.clone(),
-                asked_in: AskedIn::of(caller),
-                words: asks.words.clone(),
-                carrier: person_connections::CARRIER.to_owned(),
-                kept: asks.kept.clone(),
-                always: asks.always.clone(),
-                named: asks.named.clone(),
-            })
-            .await
+        let value = self
+            .workspaces
+            .connections_for_turn(&hosted, request)
+            .await?;
+        Ok(succeeded(invocation, value))
     }
 }
 
@@ -167,7 +120,7 @@ impl TurnProvider for TurnConnections {
         }
         let workspace = self.workspace_id;
         let (completer, rows) = tilo_actions::remote::pending();
-        let workspaces = self.asker.workspaces.clone();
+        let workspaces = self.workspaces.clone();
         let (caller, agent) = (caller.clone(), self.agent.clone());
         self.runtime.spawn(async move {
             let narrowed = agent.bound_rules();
@@ -190,9 +143,7 @@ impl TurnProvider for TurnConnections {
     /// What a service its person connected says was written by that service: what a command
     /// of it answers, and what it says of itself and of its commands where a turn lists its
     /// person's connections, looks at an address or reads a connection's commands again. The
-    /// turn's tools are told so with the answer. Where a call is not made because its person
-    /// is asked first, what ends it is this server's own words, and the tools label no call
-    /// that was not made.
+    /// turn's tools are told so with the answer.
     fn carries_untrusted(&self, target: &RemoteActionTarget) -> bool {
         matches!(
             target.address.action.as_str(),
@@ -216,95 +167,4 @@ fn succeeded(invocation: InvocationId, value: Value) -> InvocationUpdate {
             resources: Vec::new(),
         },
     }
-}
-
-/// The end of a call that was not made because its person is asked first: `words` tell the
-/// agent so. It is not the code of an action that wants a confirmation, which the agent's
-/// tools word themselves.
-fn asked(invocation: InvocationId, words: String) -> InvocationUpdate {
-    InvocationUpdate::Failed {
-        invocation,
-        error: ActionFailure {
-            code: person_connections::ASKED_FIRST.to_owned(),
-            message: words,
-            details: None,
-            retryable: false,
-        },
-    }
-}
-
-/// What carries out a person's answer to a question about a connection of theirs.
-struct Answers {
-    workspaces: Workspaces,
-    roster: super::Roster,
-}
-
-impl Answers {
-    /// The agent that asked `ask`, as the workspace's list of its agents holds it now.
-    async fn asker(&self, ask: &KeptAsk) -> Option<Agent> {
-        let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-        let kept = self
-            .workspaces
-            .read_resource::<WorkspaceAgents>(&ask.workspace, (tilo_workspace_agent::OWNER, &list))
-            .await
-            .ok()??;
-        kept.agents
-            .iter()
-            .find(|agent| agent.id.0 == ask.agent && agent.is_active())
-            .cloned()
-    }
-}
-
-impl Carries for Answers {
-    /// Their yes calls the command, or adds the connection, as this server kept it: for the
-    /// agent that asked, acting for the person asked as the workspace admits them now, and
-    /// only while the question stands as the server put it. Their no does nothing.
-    fn carry<'a>(&'a self, ask: &'a KeptAsk, answer: Answered) -> Carried<'a> {
-        Box::pin(async move {
-            let leave = match answer {
-                Answered::Once => Some(Leave::Once),
-                Answered::Always => Some(Leave::Always),
-                Answered::No => None,
-            };
-            let gone = || NOT_THEIRS.to_owned();
-            let workspace = WorkspaceId::parse(&ask.workspace).ok_or_else(gone)?;
-            let mut person = [0; 32];
-            hex::decode_to_slice(&ask.person, &mut person).map_err(|_| gone())?;
-            if self
-                .workspaces
-                .person_device(workspace, person)
-                .await
-                .is_none()
-            {
-                return Err(gone());
-            }
-            let agent = self.asker(ask).await.ok_or_else(gone)?;
-            // The agent acting for its person now, on a turn of its own: what the entry
-            // decides the answer by.
-            let caller = super::agent_caller(&self.roster, workspace, &agent, person)
-                .await?
-                .on_roster_turn(tilo_action_policy::turn::Turn::new(
-                    String::new(),
-                    ask.ask.clone(),
-                ));
-            let narrowed = agent.bound_rules();
-            let hosted = HostedTurn {
-                workspace,
-                caller: &caller,
-                bound: narrowed.as_deref(),
-            };
-            self.workspaces
-                .connection_answered(&hosted, ask, leave)
-                .await
-        })
-    }
-}
-
-/// What carries out the answers to the questions about connections. It is named when this
-/// server's agents start, because a person who answers after a restart starts no turn.
-pub(super) fn answers(workspaces: &Workspaces, roster: &super::Roster) -> Arc<dyn Carries> {
-    Arc::new(Answers {
-        workspaces: workspaces.clone(),
-        roster: roster.clone(),
-    })
 }

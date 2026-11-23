@@ -416,9 +416,6 @@ pub struct Hosted {
     /// is served through ([`crate::device_tickets`]).
     pub device_actions:
         Option<std::sync::Arc<std::sync::OnceLock<crate::device_actions::DeviceActions>>>,
-    /// The approver sessions this device keeps with the hosts it reaches: where the person is asked
-    /// what a host of their workspaces puts to them. `None` when the session runs no peer network.
-    pub answering: Option<crate::network::Answering>,
     /// This device's own workspace service, where it holds the workspaces an app's window writes:
     /// the write is committed by the service, into the copy the session's own writes reach and its
     /// reads answer from, and the owner keeps only a workspace the service holds none of.
@@ -1048,7 +1045,6 @@ fn host_services_with_hosts(
         crate::hosted_workspaces::HostedWorkspaces::service(
             Some(engine),
             hosted.endpoint.clone(),
-            hosted.answering.clone(),
             tilo_rt::app().handle().clone(),
         )
     });
@@ -1104,7 +1100,6 @@ fn broker_services(
         engine,
         view,
         endpoint: hosted_endpoint,
-        answering: _,
         service,
         device_actions: hosted_device_actions,
         daemon,
@@ -1800,7 +1795,6 @@ mod tests {
             fanout: std::sync::Arc::new(FanoutState::new()),
             endpoint: None,
             device_actions: None,
-            answering: None,
             service: tilo_workspace_service::service::ServiceSlot::default(),
             daemon: Err("a test's session has no daemon".to_owned()),
             daemon_writes: tilo_session_client::daemon_documents::DaemonWritesFeed::start(

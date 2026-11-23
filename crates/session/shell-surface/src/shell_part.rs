@@ -50,7 +50,7 @@ pub use tilo_session_core::shell::{
 mod settings;
 mod surface;
 
-use tilolang_tilo::shell::LayoutWriter;
+use tilolang_tilo::shell::{AskedReading, AskingWriter, LayoutWriter};
 /// The shell's package, as every host compiles it.
 pub use tilolang_tilo::shell::{
     catalogues as shell_catalogues, compile as compile_shell, sources as shell_sources,
@@ -152,6 +152,10 @@ pub struct SessionLink {
     /// it in.
     layout: RefCell<Option<LayoutReading>>,
     layout_fresh: Cell<bool>,
+    /// What waits for the person's yes, as the session last read it, and whether the origin has
+    /// taken it in.
+    asking: RefCell<Vec<AskedReading>>,
+    asking_fresh: Cell<bool>,
     /// The readings of the resources the places name, by their session id: each with its type
     /// as the shell's runtime names another app's (`<app>#<Type>`) and its JSON.
     readings: RefCell<BTreeMap<String, (String, serde_json::Value)>>,
@@ -202,6 +206,17 @@ impl SessionLink {
         }
         *self.layout.borrow_mut() = Some(reading);
         self.layout_fresh.set(true);
+        true
+    }
+
+    /// The session read `questions`, what waits for the person's yes now: the shell writes them
+    /// on its next frame when they differ from the last. Whether they did.
+    pub fn publish_asking(&self, questions: Vec<AskedReading>) -> bool {
+        if *self.asking.borrow() == questions {
+            return false;
+        }
+        *self.asking.borrow_mut() = questions;
+        self.asking_fresh.set(true);
         true
     }
 
@@ -258,6 +273,8 @@ pub struct SessionOrigin {
     link: Rc<SessionLink>,
     /// What it wrote of the person's layout into the shell's `Layout` root.
     layout: LayoutWriter,
+    /// What it wrote of the questions into the shell's `Asking` root.
+    asking: AskingWriter,
     /// The packages of other apps loaded into the shell's runtime, by app id: each the module
     /// the session handed for it.
     loaded: BTreeMap<String, std::sync::Arc<[u8]>>,
@@ -270,6 +287,7 @@ impl SessionOrigin {
             loaded: BTreeMap::new(),
             link,
             layout: LayoutWriter::default(),
+            asking: AskingWriter::default(),
         }
     }
 }
@@ -286,6 +304,15 @@ impl SessionOrigin {
         };
         self.layout.write(cx, &reading)
     }
+
+    /// Write what waits for the person's yes into the shell's `Asking` root, when the session
+    /// read questions the origin has not written yet. Whether anything was written.
+    fn poll_asking(&mut self, cx: &OriginCx<'_>) -> bool {
+        if !self.link.asking_fresh.replace(false) {
+            return false;
+        }
+        self.asking.write(cx, &self.link.asking.borrow())
+    }
 }
 
 impl Origin for SessionOrigin {
@@ -301,6 +328,7 @@ impl Origin for SessionOrigin {
 
     fn due(&self) -> bool {
         self.link.layout_fresh.get()
+            || self.link.asking_fresh.get()
             || self.link.packages_fresh.get()
             || self.link.published_fresh.get()
             || !self.link.readings_fresh.borrow().is_empty()
@@ -313,6 +341,7 @@ impl Origin for SessionOrigin {
         };
         let wrote_layout = self.poll_layout(cx);
         polled.wrote |= wrote_layout;
+        polled.wrote |= self.poll_asking(cx);
         // The packages the places need first: a reading of a resource is read as its app's
         // package declares it.
         polled.wrote |= self.poll_packages(cx);

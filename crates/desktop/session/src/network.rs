@@ -2,9 +2,8 @@
 //!
 //! The actor is the transport, and what some of its APIs ask is the
 //! session's business: another of the person's devices asking for its
-//! disk-unlock half or for this device to enrol its own, an agent's question
-//! for its person in a workspace, a member's device at another peer protocol
-//! version. Each is served here by the part of the session that owns it,
+//! disk-unlock half or for this device to enrol its own, a member's device at
+//! another peer protocol version. Each is served here by the part of the session that owns it,
 //! installed once before the actor starts ([`install`]).
 
 use std::collections::HashSet;
@@ -13,15 +12,11 @@ use std::sync::{Arc, Mutex};
 use crate::platform::fabric::DeviceId;
 use crate::platform::fabric::SharedLink;
 use iroh::endpoint::Connection;
-use tilo_network_actor::services::{
-    self, ApproversOf, DeviceEnrol, DeviceUnlock, PeerVersion, Services,
-};
+use tilo_network_actor::services::{self, DeviceEnrol, DeviceUnlock, PeerVersion, Services};
 use tilo_service::Questions;
 
-mod approvers;
 mod unlock;
 
-pub(crate) use approvers::{Answering, KIND as AGENT_QUESTION};
 pub(crate) use unlock::{
     ENROL_KIND as DEVICE_ENROL, EnrolQuestion, KIND as DEVICE_UNLOCK, UnlockQuestion, slot_name,
 };
@@ -47,14 +42,12 @@ impl VersionMismatch {
 }
 
 /// Install the session's services for the actor started from now on: the person's other devices'
-/// disk unlock ([`unlock`]), the questions their agents ask on `answering` 's approver sessions
-/// ([`approvers`]), and the word that a member's device is at another protocol version.
+/// disk unlock ([`unlock`]) and the word that a member's device is at another protocol version.
 /// A session that is no certified device of the person's offers no API: it has no key to answer
 /// as.
 pub(crate) fn install(
     link: Option<&Arc<crate::platform::fabric::SessionFabric>>,
     questions: Option<Questions>,
-    answering: &Answering,
 ) -> std::sync::mpsc::Receiver<VersionMismatch> {
     let (updates, requests) = std::sync::mpsc::channel();
     let Some(link) = link.map(|link| Arc::clone(link) as SharedLink) else {
@@ -71,7 +64,6 @@ pub(crate) fn install(
         peer_version: peer_versions(updates),
         device_unlock: device_unlock(unlocking.clone()),
         device_enrol: device_enrol(unlocking.clone()),
-        approvers: approvers(answering.clone()),
     });
     if installed {
         unlocking.spawn_enrol_socket();
@@ -93,12 +85,6 @@ fn device_enrol(unlocking: Arc<unlock::Unlock>) -> DeviceEnrol {
         let unlocking = Arc::clone(&unlocking);
         tokio::spawn(unlocking.serve_enrol(connection));
     })
-}
-
-/// Every actor's approver sessions are `answering` 's: one session per host, the same one a hosted
-/// workspace's host is answered on.
-fn approvers(answering: Answering) -> ApproversOf {
-    Arc::new(move || Box::new(answering.clone()) as Box<dyn services::Approvers>)
 }
 
 /// Tell the session that a member's device is at another protocol version, once per device

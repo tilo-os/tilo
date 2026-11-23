@@ -559,7 +559,12 @@ view bell() {
     let quiet = (device.notifications.quiet ?? "") != ""
     let name = if quiet { "Notifications silenced" } else { "Notifications" }
     let waiting = unread()
-    let label = if waiting == 0 {
+    let asked = asked_count()
+    let label = if asked == 1 {
+        "{name}, 1 question waiting"
+    } else if asked > 1 {
+        "{name}, {asked} questions waiting"
+    } else if waiting == 0 {
         name
     } else if waiting == 1 { "{name}, 1 unread" } else { "{name}, {waiting} unread" }
     ui.Button(
@@ -567,7 +572,7 @@ view bell() {
         icon: if quiet { .bell_off } else { .bell },
         icon_only: true,
         role: .bar,
-        count: waiting,
+        count: waiting + asked,
     ) {
         on press: device.show_surface(device.overlays, surface: "centre")
     }

@@ -175,8 +175,8 @@ fn named_id(text: &str) -> &str {
 }
 
 /// A turn's call whose person is asked to allow it is answered `asked` at once, without an
-/// error: a person who may not be there is no tool to wait for. The answer says where they
-/// are asked, that nothing happened yet, what to do meanwhile, and the id `tilo_status` takes;
+/// error: a person who may not be there is no tool to wait for. The answer names the record
+/// it waits in, that nothing happened yet, what to do meanwhile, and the id `tilo_status` takes;
 /// `tilo_status` says the same for as long as they have not answered.
 #[test]
 fn a_turns_call_whose_person_is_asked_is_answered_asked_at_once() {
@@ -195,7 +195,8 @@ fn a_turns_call_whose_person_is_asked_is_answered_asked_at_once() {
     assert!(!failed, "its person being asked is no failure: {text}");
     assert!(
         text.starts_with(&format!(
-            "asked: {ASKED_ON_DEVICES} Go on with what does not need it"
+            "asked: Its person is asked to allow this. Nothing happened yet. It waits in \
+             {ASKED_RECORD}. Go on with what does not need it"
         )),
         "{text}"
     );
@@ -211,7 +212,7 @@ fn a_turns_call_whose_person_is_asked_is_answered_asked_at_once() {
     assert!(held < std::time::Duration::from_secs(1), "{held:?}");
 }
 
-/// The typed answer of such a call says that it is pending and what it waits for.
+/// The typed answer of such a call says that it is asked and the record it waits in.
 #[test]
 fn a_turns_typed_call_whose_person_is_asked_says_what_it_waits_for() {
     let notes = Notes::new(true);
@@ -228,8 +229,8 @@ fn a_turns_typed_call_whose_person_is_asked_says_what_it_waits_for() {
         "{held:?}: {typed}"
     );
     assert!(!failed, "{typed}");
-    assert_eq!(typed["status"], "pending", "{typed}");
-    assert_eq!(typed["waiting_for"], ASKED_ON_DEVICES, "{typed}");
+    assert_eq!(typed["status"], "asked", "{typed}");
+    assert_eq!(typed["record"], ASKED_RECORD, "{typed}");
 }
 
 /// A turn's call that names a wait asked to be held for it: it is, also while its person is
@@ -303,81 +304,5 @@ fn a_turn_is_told_that_a_call_its_person_must_allow_answers_asked() {
     assert!(
         told.contains("answers `asked` at once where your person must allow it first"),
         "{told}"
-    );
-}
-
-/// What the test app ends a call with whose person is asked about it in the conversation, as
-/// a workspace's service words it.
-const ASKED_THERE: &str = "Your person is asked about this in the conversation, and it is done \
-     when they allow it there. Nothing ran yet: tell them it waits for their answer, and do not \
-     make this call again.";
-/// What it ends one with where the question could not be put.
-const NOT_ASKED_THERE: &str = "Your person could not be asked about this in the conversation, \
-     so nothing ran.";
-
-impl Notes {
-    /// `update`, or, where the call `id` is of the action whose person is asked about it in
-    /// the conversation, how that call ends: nothing done, under the code of a confirmation
-    /// that is required, with the detail that says a question was put, or without it where
-    /// none could be.
-    pub(super) fn or_asked(
-        &self,
-        id: &tilo_actions::InvocationId,
-        update: InvocationUpdate,
-    ) -> InvocationUpdate {
-        let Some((asked, put)) = *self.asked_there.lock().unwrap() else {
-            return update;
-        };
-        let called = self
-            .invoked
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|request| request.invocation == *id && request.target.address.action == asked);
-        if !called {
-            return update;
-        }
-        InvocationUpdate::Failed {
-            invocation: *id,
-            error: tilo_actions::ActionFailure {
-                code: tilo_actions::remote::CONFIRMATION_REQUIRED_CODE.to_owned(),
-                message: if put { ASKED_THERE } else { NOT_ASKED_THERE }.to_owned(),
-                details: put.then(tilo_actions::remote::person_asking::asked_detail),
-                retryable: false,
-            },
-        }
-    }
-}
-
-/// A turn's call whose person is asked about it in the conversation ends there with nothing
-/// done. It is answered `asked`, without an error, in the service's own sentence and with what
-/// to do meanwhile, and its typed answer says what it waits for. The same end where no
-/// question could be put stays the failure it is.
-#[test]
-fn a_turns_call_whose_person_is_asked_in_the_conversation_is_answered_asked() {
-    let notes = Notes::new(true);
-    let server = turn(&notes);
-    *notes.asked_there.lock().unwrap() = Some(("rename", true));
-    let (text, failed) = waited(tool(&server, "tilo_do", rename(&json!({}))));
-    assert!(!failed, "its person being asked is no failure: {text}");
-    assert!(
-        text.starts_with(&format!(
-            "asked: {ASKED_THERE} Go on with what does not need it."
-        )),
-        "{text}"
-    );
-    let (typed, failed) = waited(answer(&server, "tilo_do", rename(&json!({}))));
-    assert!(!failed, "{typed}");
-    assert_eq!(typed["status"], "pending", "{typed}");
-    assert_eq!(typed["waiting_for"], ASKED_THERE, "{typed}");
-
-    *notes.asked_there.lock().unwrap() = Some(("rename", false));
-    let (text, failed) = waited(tool(&server, "tilo_do", rename(&json!({}))));
-    assert!(failed, "nobody was asked, and nothing follows: {text}");
-    assert!(
-        text.starts_with(&format!(
-            "failed: action_confirmation_required: {NOT_ASKED_THERE}"
-        )),
-        "{text}"
     );
 }

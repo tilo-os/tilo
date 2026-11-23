@@ -10,92 +10,51 @@
 //! lists the uses the turn is offered beside the workspace's resources, and
 //! takes them.
 //!
-//! No device of the person's is on, so the first use of an item somewhere
-//! asks them, on their own devices, through the system's one way of asking
-//! ([`super::asks::confirm`]), and the tool call ends at once: nothing waits on
-//! the turn. When the person answers, the server carries out what it kept for
-//! that question itself: allow once, always with the item's leave written
-//! first, deny not at all. It claims the use before it carries anything out,
-//! so an answer is carried out at most once. A question nobody answered when
-//! this server stopped is asked again when it starts (`settle_asks`).
+//! No device of the person's is on, so a use no grant covers waits for their
+//! yes: the entry refuses it for want of it, and the call waits as its asked
+//! record until their approve admits it again.
 //!
 //! A field of a web page is the one use whose secret leaves this server: the page is in the
 //! workspace's Browser window, and only its engine writes into it. The turn names the field and
 //! the item ([`person_vault::fill_row`]); the window is handed the fill and says which site its
 //! page is at ([`super::windows::Windows::fill_for_turn`]); the entry decides for
-//! that site ([`TurnUses::release`]), asking the person first as for every use. Their allow
-//! fills nothing by itself: it lets that agent's next fill of that item at that site through.
+//! that site ([`TurnUses::release`]), waiting for the person's yes as for every use.
 //!
 //! A secret the agent has no item for yet is asked for through the vault's own ask
-//! ([`person_vault::ASK`]), the one way an agent comes by one: the tool call ends at once, and
-//! this server asks the person on their own devices, in the system's protected password field
-//! and in the system's words ([`person_vault::AskForItem::words`]). What they type goes into
-//! their vault, and the agent is woken once in its conversation with them, told the item's
-//! reference or that they declined. The ask is held by this process alone: a server that stops
-//! while its person is asked asks nobody again, and the agent asks again when it is told to.
+//! ([`person_vault::ASK`]), the one way an agent comes by one: the call waits for the person,
+//! whose asking view opens the vault's own add, in the system's protected password field and in
+//! the system's words ([`person_vault::AskForItem::words`]). What they type goes into their
+//! vault, and the call answers the item's reference.
 //!
 //! Nothing here keeps a secret, and nothing here shows one. The arguments name the item by
-//! its reference, the question shows it withheld, and the entry answers what the person would
-//! be answered: the account, the provider. A text released for a page passes through here
-//! once, on its way to be sealed to the window that fills it, in a type that prints nothing.
+//! its reference, and the entry answers what the person would be answered: the account, the
+//! provider. A text released for a page passes through here once, on its way to be sealed to
+//! the window that fills it, in a type that prints nothing.
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
+use tilo_actions::remote::asked::AskedFacts;
 use tilo_actions::remote::person_vault::{FillField, FillPage};
 use tilo_actions::remote::{
     ActionCallError, Caller, CatalogueProvider, CatalogueQuery, CatalogueRow, InvokeArgument,
     InvokeRequest, Pending, RemoteActionTarget, person_vault,
 };
-use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
+use tilo_actions::{ActionOutput, InvocationUpdate};
+use tilo_lock::MutexRecover as _;
 use tilo_workspace_agent::Agent;
 use zeroize::Zeroizing;
 
-use super::asks::{Answered, asked_in};
-use super::calendar_connect::{PutAsk, Typed, ask_for_password};
 use super::turn_provider::{Ending, Rows};
 use super::windows::{Release, Releasing, TurnFill};
 use super::{Reply, ServerAgents, Turn, TurnProvider, WorkspaceId};
-use crate::workspaces::hosted_use::{HostedTurn, OpenAsk, TurnRelease, TurnUse, UseAnswer};
+use crate::workspaces::hosted_use::HostedTurn;
 
-/// What an agent is told when its person is asked first: nothing ran, and
-/// it neither waits nor asks again.
-const ASKED: &str = "Your person is asked on their own devices whether you may use this vault item \
-     here. Nothing was used yet. It is used when they allow it: tell them it waits for their \
-     answer, and do not make this call again.";
-
-/// The failure code of a use that was not made because its person is asked
-/// first. It is not the code of an action that wants a confirmation: the
-/// agent's tools word that one themselves, and the words here are the ones
-/// the agent must read.
-const ASKED_FIRST: &str = "asked_person_first";
-
-/// What an agent is told when its person is asked first about a web call:
-/// nothing was sent, and the same call goes through once they allowed it.
-const CALL_ASKED: &str = "Your person is asked on their own devices whether you may make this call \
-     with the vault item. Nothing was sent yet. Tell them it waits for their answer. Once they \
-     allowed it, make the same call again with the same arguments: it is sent once.";
-
-/// What the agent that asked for `target` is told when its person is asked
-/// first.
-fn asked_words(target: &RemoteActionTarget) -> &'static str {
-    if *target == person_vault::call_target() {
-        CALL_ASKED
-    } else {
-        ASKED
-    }
-}
-
-/// What the question says when the agent gave no reason of its own.
-const NO_REASON: &str = "May I use this item from your vault here?";
-
-/// What an agent is told when its person is asked first about a field of a page: nothing was
-/// filled, and their allow fills nothing by itself.
-const ASKED_PAGE: &str = "Your person is asked on their own devices whether you may fill this \
-     vault item into this site's page. Nothing was filled yet, and their answer fills nothing by \
-     itself: tell them it waits for their answer, and make this call again once they allowed it.";
+/// What an agent is told of a page fill that waits for its person: nothing was filled yet.
+const ASKED_PAGE: &str = "Your person is asked whether you may fill this vault item into this \
+     site's page. Nothing was filled yet.";
 
 /// What one turn uses of its person's vault. A turn's caller changes when
 /// its person writes again while it works, so each use is taken as the caller
@@ -105,10 +64,19 @@ pub(super) struct TurnUses {
     workspace: String,
     workspace_id: WorkspaceId,
     agent: Agent,
-    /// The person the turn acts for, by their person id.
-    person: String,
     /// The uses this turn is offered: none for a turn the entry refuses.
     offered: Vec<CatalogueRow>,
+}
+
+/// `invocation` succeeded with `value`.
+fn succeeded(invocation: tilo_actions::InvocationId, value: Value) -> InvocationUpdate {
+    InvocationUpdate::Succeeded {
+        invocation,
+        output: ActionOutput {
+            value: Some(value),
+            resources: Vec::new(),
+        },
+    }
 }
 
 impl TurnUses {
@@ -137,9 +105,21 @@ impl TurnUses {
             workspace: reply.workspace.clone(),
             workspace_id,
             agent: turn.agent.clone(),
-            person: turn.person.clone(),
             offered,
         })
+    }
+
+    /// The turn as the entry knows it, for `caller`.
+    fn hosted<'a>(
+        &self,
+        caller: &'a Caller,
+        narrowed: Option<&'a [tilo_action_policy::Rule]>,
+    ) -> HostedTurn<'a> {
+        HostedTurn {
+            workspace: self.workspace_id,
+            caller,
+            bound: narrowed,
+        }
     }
 
     /// Take the use `request` asks for as `caller`: how it ended, or the
@@ -149,49 +129,20 @@ impl TurnUses {
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Result<InvocationUpdate, ActionCallError> {
-        let invocation = request.invocation;
         let narrowed = self.agent.bound_rules();
-        let hosted = HostedTurn {
-            workspace: self.workspace_id,
-            caller,
-            bound: narrowed.as_deref(),
-        };
-        let workspaces = &self.agents.workspaces;
-        let taken = workspaces
-            .use_for_turn(&hosted, request, asked_in(caller))
+        let value = self
+            .agents
+            .workspaces
+            .use_for_turn(&self.hosted(caller, narrowed.as_deref()), request)
             .await?;
-        let words = match taken {
-            TurnUse::Done(value) => {
-                return Ok(InvocationUpdate::Succeeded {
-                    invocation,
-                    output: ActionOutput {
-                        value: Some(value),
-                        resources: Vec::new(),
-                    },
-                });
-            }
-            TurnUse::Waits => asked_words(&request.target).to_owned(),
-            TurnUse::Asks(open) => match self.put(caller, &open).await {
-                Ok(()) => asked_words(&request.target).to_owned(),
-                Err(why) => {
-                    workspaces.use_not_asked(&open);
-                    format!(
-                        "Your person could not be asked whether you may use this vault item \
-                         ({why}), so nothing was used."
-                    )
-                }
-            },
-        };
-        Ok(InvocationUpdate::Failed {
-            invocation,
-            error: asked(words),
-        })
+        Ok(succeeded(request.invocation, value))
     }
 
     /// Have the field `request` names filled, in the page of this workspace's Browser window,
     /// from the vault item it names, as `caller`: how the fill ended, as the window said it,
     /// or the refusal. The window says which site its page is at, and [`Self::release`]
-    /// decides for that site.
+    /// decides for that site; a fill that waits for its person is refused for want of their
+    /// yes, and their approve admits it again.
     async fn fill_page(
         self: &Arc<Self>,
         caller: &Caller,
@@ -220,126 +171,121 @@ impl TurnUses {
         };
         // Refused before any window is asked, as before the vault is opened.
         let narrowed = self.agent.bound_rules();
-        let hosted = HostedTurn {
-            workspace: self.workspace_id,
-            caller,
-            bound: narrowed.as_deref(),
-        };
-        self.agents.workspaces.may_fill_pages(&hosted).await?;
-        let invocation = request.invocation;
+        self.agents
+            .workspaces
+            .may_fill_pages(&self.hosted(caller, narrowed.as_deref()))
+            .await?;
         let fill = TurnFill {
-            invocation,
+            invocation: request.invocation,
             element: wanted.element.clone(),
             item: wanted.item.to_string(),
             reason: wanted.reason.trim().to_owned(),
         };
-        let (this, by) = (Arc::clone(self), caller.clone());
+        let asks: Arc<Mutex<Option<AskedFacts>>> = Arc::default();
+        let (this, by, asked, waits) = (
+            Arc::clone(self),
+            caller.clone(),
+            request.clone(),
+            Arc::clone(&asks),
+        );
         let releasing: Releasing = Box::new(move |origin| {
             let decided: Pin<Box<dyn Future<Output = Release> + Send>> =
-                Box::pin(async move { this.release(&by, invocation, wanted, origin).await });
+                Box::pin(async move { this.release(&by, &asked, wanted, origin, &waits).await });
             decided
         });
-        browsers
+        let filled = browsers
             .fill_for_turn(self.workspace_id, fill, releasing)
-            .await
+            .await;
+        match asks.lock_recover().take() {
+            Some(facts) => Err(ActionCallError::asks(facts)),
+            None => filled,
+        }
     }
 
-    /// Decide the fill `invocation` of what `wanted` names, for the site `origin` its window
-    /// says its page is at, as `caller`: the entry releases the item's text for that site, asks
-    /// its person first, or refuses. A released text is handed on once, to be sealed to the
-    /// window, and nothing else here holds it.
+    /// Decide the fill `request` asked of what `wanted` names, for the site `origin` its
+    /// window says its page is at, as `caller`: the entry releases the item's text for that
+    /// site, or it waits for its person (what they are shown is left in `asks`), or it is
+    /// refused. A released text is handed on once, to be sealed to the window, and nothing
+    /// else here holds it.
     async fn release(
         &self,
         caller: &Caller,
-        invocation: InvocationId,
+        request: &InvokeRequest,
         wanted: FillField,
         origin: String,
+        asks: &Mutex<Option<AskedFacts>>,
     ) -> Release {
         let narrowed = self.agent.bound_rules();
-        let hosted = HostedTurn {
-            workspace: self.workspace_id,
-            caller,
-            bound: narrowed.as_deref(),
-        };
         let fill = FillPage {
             site: origin,
             item: wanted.item,
             reason: wanted.reason.trim().to_owned(),
         };
-        let workspaces = &self.agents.workspaces;
-        let released = workspaces
-            .release_for_turn(&hosted, &fill, invocation, asked_in(caller))
+        let released = self
+            .agents
+            .workspaces
+            .release_for_turn(&self.hosted(caller, narrowed.as_deref()), &fill, request)
             .await;
         match released {
-            Ok(TurnRelease::Released(text)) => Release::Text {
+            Ok(text) => Release::Text {
                 text: Zeroizing::new(text.text().to_owned()),
                 into: text.field().as_str(),
             },
-            Ok(TurnRelease::Waits) => Release::Asked(ASKED_PAGE.to_owned()),
-            Ok(TurnRelease::Asks(open)) => match self.put(caller, &open).await {
-                Ok(()) => Release::Asked(ASKED_PAGE.to_owned()),
-                Err(why) => {
-                    workspaces.use_not_asked(&open);
-                    Release::Refused(format!(
-                        "Your person could not be asked whether you may use this vault item \
-                         ({why}), so nothing was filled."
-                    ))
-                }
-            },
+            Err(ActionCallError::ConfirmationRequired(facts)) => {
+                *asks.lock_recover() = Some(*facts);
+                Release::Asked(ASKED_PAGE.to_owned())
+            }
             Err(ActionCallError::Refused { reason }) => Release::Refused(reason),
             Err(error) => Release::Refused(error.to_string()),
         }
     }
 
-    /// Put the question about `open` to the person on their own devices, through the system's
-    /// one way of asking: the tool call ends at once, and what was kept is carried out when they
-    /// answer.
-    #[allow(
-        clippy::unused_async,
-        reason = "every way a turn asks its person is awaited the same"
-    )]
-    async fn put(&self, _caller: &Caller, open: &OpenAsk) -> Result<(), String> {
-        let mut person = [0; 32];
-        hex::decode_to_slice(&self.person, &mut person)
-            .map_err(|_| "the turn names no person".to_owned())?;
-        tokio::spawn(ask_use(
-            self.agents.clone(),
-            person,
-            self.agent.clone(),
-            open.clone(),
-        ));
-        Ok(())
+    /// Ask the person `caller` acts for for the secret `request` names: it waits for them to
+    /// type it into their vault through the vault's own add, and answers the reference it is
+    /// kept under.
+    async fn ask_for_secret(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<InvocationUpdate, ActionCallError> {
+        let narrowed = self.agent.bound_rules();
+        let using = self
+            .agents
+            .workspaces
+            .secret_ask_for_turn(&self.hosted(caller, narrowed.as_deref()))
+            .await?;
+        let InvokeArgument::Json(arguments) = &request.argument else {
+            return Err(ActionCallError::InvalidRequest {
+                reason: "an ask for a secret names its kind and where it belongs".to_owned(),
+            });
+        };
+        let asked: person_vault::AskForItem =
+            serde_json::from_value(Value::Object(arguments.clone())).map_err(|_| {
+                ActionCallError::InvalidRequest {
+                    reason: "an ask for a secret names its kind (login, key, code-generator, \
+                             ssh-key or value), belongsTo and, when known, username, and \
+                             never the secret"
+                        .to_owned(),
+                }
+            })?;
+        let asked = asked
+            .checked()
+            .map_err(|reason| ActionCallError::InvalidRequest { reason })?;
+        if request.approval().is_none() {
+            return Err(ActionCallError::asks(
+                crate::workspaces::person_vault::secret_asked(caller, &using.name, &asked),
+            ));
+        }
+        let reference = self
+            .agents
+            .workspaces
+            .asked_item(&using.workspace, &asked)
+            .await
+            .map_err(ActionCallError::refused)?;
+        let answered = serde_json::to_value(person_vault::Asked { reference })
+            .map_err(|error| ActionCallError::refused(error.to_string()))?;
+        Ok(succeeded(request.invocation, answered))
     }
-}
-
-/// Ask `person` whether `agent` may make the use `open` keeps, and carry out their answer once
-/// it comes: once, always where the use takes always, or not at all.
-pub(super) async fn ask_use(agents: ServerAgents, person: [u8; 32], agent: Agent, open: OpenAsk) {
-    let words = if open.reason.is_empty() {
-        NO_REASON.to_owned()
-    } else {
-        open.reason.clone()
-    };
-    let answer = super::asks::confirm(
-        &agents.workspaces,
-        person,
-        (&open.workspace, &agent),
-        (&words, &tilo_actions::remote::person_asking::Words::default()),
-        open.takes_always(),
-    )
-    .await;
-    let Some(workspace_id) = WorkspaceId::parse(&open.workspace) else {
-        return;
-    };
-    let answer = match answer {
-        Answered::Once => UseAnswer::Once,
-        Answered::Always => UseAnswer::Always,
-        Answered::No => UseAnswer::No,
-    };
-    let workspace = open.workspace.clone();
-    agents
-        .carry_out_use((&workspace, workspace_id), &agent, open, answer)
-        .await;
 }
 
 impl TurnProvider for TurnUses {
@@ -394,190 +340,5 @@ impl TurnProvider for TurnUses {
             }
             self.take(&caller, &request).await
         })
-    }
-}
-
-/// What an agent is told when its person is asked for a secret: nothing is kept yet, and it
-/// neither waits nor asks again.
-const SECRET_ASKED: &str = "Your person is asked on their own device for this, in a protected \
-     field you cannot read. Nothing is kept yet. Tell them in one line to type it there. Once \
-     they have, you are told here the reference the workspace's vault keeps it under. Do not make this call \
-     again.";
-
-/// What the agent is told its person did with an ask for a secret.
-const SECRET_TYPED: &str = "they typed it where you cannot read it";
-const SECRET_DECLINED: &str = "they declined to type it";
-const SECRET_UNANSWERED: &str = "they were not asked, or did not answer in time";
-
-/// An ask for a secret, held while its person is asked. Nothing in it is a secret.
-struct SecretAsk {
-    id: String,
-    agent: String,
-    name: String,
-    person: String,
-    workspace: String,
-    asked: person_vault::AskForItem,
-    asked_in: Value,
-}
-
-impl PutAsk for SecretAsk {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
-    fn by_agent(&self) -> &str {
-        &self.agent
-    }
-
-    fn agent_name(&self) -> &str {
-        &self.name
-    }
-
-    fn of_person(&self) -> &str {
-        &self.person
-    }
-
-    fn in_workspace(&self) -> &str {
-        &self.workspace
-    }
-
-    fn item(&self) -> person_vault::AskForItem {
-        self.asked.clone()
-    }
-
-    fn said(&self) -> String {
-        self.asked.words(&self.name)
-    }
-
-    fn put_in(&self) -> &Value {
-        &self.asked_in
-    }
-}
-
-impl TurnUses {
-    /// Ask the person `caller` acts for for the secret `request` names, on their own devices:
-    /// the call ends at once, and the agent is woken with how they answered.
-    async fn ask_for_secret(
-        &self,
-        caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Result<InvocationUpdate, ActionCallError> {
-        let narrowed = self.agent.bound_rules();
-        let hosted = HostedTurn {
-            workspace: self.workspace_id,
-            caller,
-            bound: narrowed.as_deref(),
-        };
-        let using = self.agents.workspaces.secret_ask_for_turn(&hosted).await?;
-        let InvokeArgument::Json(arguments) = &request.argument else {
-            return Err(ActionCallError::InvalidRequest {
-                reason: "an ask for a secret names its kind and where it belongs".to_owned(),
-            });
-        };
-        let asked: person_vault::AskForItem =
-            serde_json::from_value(Value::Object(arguments.clone())).map_err(|_| {
-                ActionCallError::InvalidRequest {
-                    reason: "an ask for a secret names its kind (login, key, code-generator, \
-                             ssh-key or value), belongsTo and, when known, username, and \
-                             never the secret"
-                        .to_owned(),
-                }
-            })?;
-        let asked = asked
-            .checked()
-            .map_err(|reason| ActionCallError::InvalidRequest { reason })?;
-        let open = SecretAsk {
-            id: uuid::Uuid::new_v4().simple().to_string(),
-            agent: using.agent,
-            name: using.name,
-            person: hex::encode(using.person),
-            workspace: using.workspace,
-            asked,
-            asked_in: asked_in(caller),
-        };
-        let agents = self.agents.clone();
-        tokio::spawn(async move { agents.ask_and_tell(open).await });
-        Ok(InvocationUpdate::Failed {
-            invocation: request.invocation,
-            error: ActionFailure {
-                code: ASKED_FIRST.to_owned(),
-                message: SECRET_ASKED.to_owned(),
-                details: None,
-                retryable: false,
-            },
-        })
-    }
-}
-
-impl ServerAgents {
-    /// Ask the person `open` names for its secret, and wake the agent that asked once with how
-    /// they answered: the reference the workspace's vault keeps it under, where they typed it.
-    async fn ask_and_tell(&self, open: SecretAsk) {
-        let asked = format!("Ask for {}", open.asked.belongs_to.join(" and "));
-        let (answered, came) = match ask_for_password(&self.workspaces, &open).await {
-            Typed::Kept(reference) => (
-                SECRET_TYPED,
-                format!(
-                    "The workspace's vault keeps it as {reference}. Pass that reference where an action \
-                     takes the secret: it is never the secret itself."
-                ),
-            ),
-            Typed::Declined => (SECRET_DECLINED, "Nothing was kept.".to_owned()),
-            Typed::Unanswered(why) => (
-                SECRET_UNANSWERED,
-                format!("Nothing was kept: {why}. Tell them so; ask again when they want."),
-            ),
-        };
-        self.tell_of_password(&open, &asked, (answered, &came))
-            .await;
-    }
-}
-
-/// The failure of a use that was not made because its person is asked:
-/// `words` tell the agent so.
-fn asked(words: String) -> ActionFailure {
-    ActionFailure {
-        code: ASKED_FIRST.to_owned(),
-        message: words,
-        details: None,
-        retryable: false,
-    }
-}
-
-impl ServerAgents {
-    /// Carry out the person's `answer` to `ask`: the entry carries out what it kept for it.
-    async fn carry_out_use(
-        &self,
-        (workspace, workspace_id): (&str, WorkspaceId),
-        agent: &Agent,
-        ask: OpenAsk,
-        answer: UseAnswer,
-    ) {
-        let Some((_, turn, _)) = self
-            .asker_of(workspace_id, &ask.person, &ask.asked_in, agent)
-            .await
-        else {
-            // Its person is admitted here on no device any more.
-            self.workspaces.use_not_asked(&ask);
-            return;
-        };
-        // Claimed before anything is done, so it is carried out once.
-        let Ok(claimed) = self.workspaces.claim_use(&ask.ask) else {
-            return;
-        };
-        let shown = claimed.detail.clone();
-        let narrowed = agent.bound_rules();
-        let hosted = HostedTurn {
-            workspace: workspace_id,
-            caller: &turn,
-            bound: narrowed.as_deref(),
-        };
-        let carried = self
-            .workspaces
-            .carry_out_use(&hosted, &claimed, &shown, answer)
-            .await;
-        if let Err(error) = carried {
-            tracing::warn!(%workspace, %error, "a vault use its person allowed was not carried out");
-        }
     }
 }

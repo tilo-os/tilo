@@ -40,13 +40,14 @@ pub mod admitted;
 pub use admitted::{Admitted, LiveRead, LiveView, Outcome};
 pub mod agent_tools;
 mod application;
+pub mod asked;
 pub mod browser;
 mod caller;
 pub mod environment_device;
 pub mod invocation_record;
 pub mod linux_apps;
 pub mod mcp_server;
-pub use caller::{Caller, device_agent_id};
+pub use caller::{Caller, KeptCaller, device_agent_id};
 pub mod signed_invocation;
 pub use signed_invocation::{SignedCall, SignedInvocation};
 mod catalogue;
@@ -65,7 +66,6 @@ mod nodes;
 pub mod own_device;
 mod pending;
 pub mod person_accounts;
-pub mod person_asking;
 pub mod person_connections;
 pub mod person_models;
 pub mod person_telling;
@@ -156,7 +156,7 @@ use crate::params::ARGUMENTS_JSON_PREFIX;
 ///
 /// Additive changes keep the version; a change an older peer would misread
 /// bumps it, and [`RemoteActionFrame::decode`] refuses a version it does not know.
-pub const REMOTE_ACTIONS_VERSION: u16 = 3;
+pub const REMOTE_ACTIONS_VERSION: u16 = 4;
 
 /// Upper bound on one encoded frame: a provider pages its catalogue rather than raise this.
 pub const MAX_REMOTE_ACTION_FRAME_BYTES: usize = 1024 * 1024;
@@ -260,6 +260,15 @@ pub const WORKSPACE_INVITATIONS: &str = "invitations";
 /// The addresses left at a workspace's entry while it takes people by
 /// invitation, under its governance root (`workspace/waiting`).
 pub const WORKSPACE_WAITING: &str = "waiting";
+/// The grants of a workspace's policy, under its governance root (`workspace/permissions`).
+pub const WORKSPACE_PERMISSIONS: &str = "permissions";
+/// One grant of a workspace's policy (`workspace/permissions/<grant>`, by its id): what takes
+/// it back is published on it.
+pub const WORKSPACE_PERMISSION: &str = "permissions/*";
+/// The operation a workspace's grant is taken back by, published as
+/// `workspace/permissions/<grant>#revoke`: by the person who gave it, or by whoever the
+/// workspace's policy lets revoke grants.
+pub const WORKSPACE_GRANT_REVOKE: &str = "grant.revoke";
 
 /// Where a workspace's governance tree publishes the actions it grants by
 /// another name: the operation a grant and a policy name it by, the resource
@@ -267,8 +276,9 @@ pub const WORKSPACE_WAITING: &str = "waiting";
 /// person names it. An operation not listed is published on the root under its
 /// own name; one listed on [`WORKSPACE_MEMBER`] is published on each person, who
 /// is its `person`, and one listed on [`WORKSPACE_APP`] on each app the workspace runs, which
-/// is its `app`.
-pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 37] = [
+/// is its `app`. One listed on [`WORKSPACE_PERMISSION`] is published on each of the
+/// workspace's grants.
+pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 38] = [
     ("member.list", Some(WORKSPACE_MEMBERS), "list"),
     (
         "member.add",
@@ -318,6 +328,7 @@ pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 37] = [
     ("app.unpin", Some(WORKSPACE_APP), "unpin"),
     ("uninstall-app", Some(WORKSPACE_APP), "uninstall"),
     ("app.earlier", Some(WORKSPACE_APP), "earlier"),
+    (WORKSPACE_GRANT_REVOKE, Some(WORKSPACE_PERMISSION), "revoke"),
 ];
 
 /// The resource `child` of `workspace`'s governance tree: the root for `None`.
@@ -328,6 +339,15 @@ pub fn workspace_governance_child(workspace: &str, child: Option<&str>) -> Strin
         Some(child) => format!("{root}/{child}"),
         None => root,
     }
+}
+
+/// The resource of the grant `grant` (its id) among `workspace`'s permissions.
+#[must_use]
+pub fn workspace_permission(workspace: &str, grant: &str) -> String {
+    format!(
+        "{}/{grant}",
+        workspace_governance_child(workspace, Some(WORKSPACE_PERMISSIONS))
+    )
 }
 
 /// The resource of the person `person` (their user public key in hex) among `workspace`'s people.
@@ -358,6 +378,7 @@ pub fn workspace_governance_address(workspace: &str, operation: &str) -> ActionA
             *granted == operation
                 && *child != Some(WORKSPACE_MEMBER)
                 && *child != Some(WORKSPACE_APP)
+                && *child != Some(WORKSPACE_PERMISSION)
         }) {
         Some((_, child, action)) => {
             ActionAddress::new(workspace_governance_child(workspace, *child), *action)
@@ -387,6 +408,8 @@ pub fn workspace_governance_operation(address: &ActionAddress) -> Option<(&str, 
         Some(WORKSPACE_MEMBER)
     } else if workspace_app_named(address).is_some() {
         Some(WORKSPACE_APP)
+    } else if workspace_grant(address).is_some() {
+        Some(WORKSPACE_PERMISSION)
     } else {
         child
     };
@@ -434,6 +457,17 @@ pub fn workspace_app_named(address: &ActionAddress) -> Option<&str> {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_')))
     .then_some(app)
+}
+
+/// The grant `address` is on, by its id, when it is one of a workspace's permissions
+/// (`workspace/permissions/<grant>`).
+#[must_use]
+pub fn workspace_grant(address: &ActionAddress) -> Option<&str> {
+    let named = address
+        .resource
+        .strip_prefix(workspace_governance_resource("").as_str())?;
+    let (permissions, grant) = named.split_once('/')?.1.split_once('/')?;
+    (permissions == WORKSPACE_PERMISSIONS && !grant.is_empty()).then_some(grant)
 }
 
 /// Adding a computer to the person's devices with a one-use ticket: the computer's own daemon
@@ -754,6 +788,17 @@ impl InvokeRequest {
         crate::params::MadeFrom::from_json(arguments.get(crate::params::FROM_ARGUMENT)?)
     }
 
+    /// The person's approve of the asked record this call was kept as, when
+    /// the dispatch admitted it again on their answer: what a provider that
+    /// waits for their yes reads instead of asking.
+    #[must_use]
+    pub fn approval(&self) -> Option<&asked::Approval> {
+        match &self.confirmation {
+            Some(Confirmation::Asked(approval)) => Some(approval),
+            _ => None,
+        }
+    }
+
     /// What the agent's harness calls the session this request was sent in ("Release prep"), as
     /// the client's agent-session group says it: display only, the name people see the agent by
     /// ([`Caller::in_named_session`]). `None` when the client named no session.
@@ -954,9 +999,7 @@ impl InvocationState {
             // is a refusal to the caller, not a failure of the action.
             InvocationUpdate::Failed { error, .. } if error.code == CONFIRMATION_REQUIRED_CODE => {
                 ReceiptStatus::Rejected {
-                    error: ActionCallError::ConfirmationRequired {
-                        departure: browser::departure_stated(error.details.as_ref()),
-                    },
+                    error: ActionCallError::asks(asked_facts_of(error.details.as_ref())),
                 }
             }
             InvocationUpdate::Failed { error, .. } => ReceiptStatus::Failed {
@@ -970,6 +1013,28 @@ impl InvocationState {
             invocation: self.invocation(),
             status,
         }
+    }
+}
+
+/// What a run's refusal for want of the person's yes states of itself: the facts it wrote, or —
+/// an app whose run reached something about to leave a page — the departure it stated, as the
+/// page it leaves from and what leaves it ([`browser::stated_facts`]).
+fn asked_facts_of(details: Option<&serde_json::Value>) -> asked::AskedFacts {
+    let facets: Vec<ActionFacet> = details
+        .cloned()
+        .and_then(|details| serde_json::from_value(details).ok())
+        .unwrap_or_default();
+    if facets.is_empty() {
+        return asked::AskedFacts::from_details(details);
+    }
+    let stated = browser::stated_facts(&facets);
+    let page = stated
+        .iter()
+        .find(|(name, _)| name == "page")
+        .map(|(_, value)| value.clone());
+    asked::AskedFacts {
+        on: page,
+        ..browser::departure_asked(stated)
     }
 }
 
@@ -1038,15 +1103,11 @@ pub enum ActionCallError {
     /// The caller's authority does not cover the action.
     #[error("the caller may not invoke this action")]
     NotPermitted,
-    /// The action requires a confirmation step this request did not carry.
-    ///
-    /// `departure` states the page departure the action's own run reached and
-    /// holds for the person, when it reached one ([`browser::DEPARTURE_FACET`]s):
-    /// what is about to leave, where, and the picture of the filled page, so
-    /// the question they are asked names it rather than a label for it. It is
-    /// empty for an action that asks before it runs anything.
+    /// The action waits for a person's yes this request did not carry: what
+    /// they are shown ([`asked::AskedFacts`]). The dispatch keeps the call as
+    /// an asked invocation record, and their approve admits it again.
     #[error("the action requires confirmation")]
-    ConfirmationRequired { departure: Vec<ActionFacet> },
+    ConfirmationRequired(Box<asked::AskedFacts>),
     /// The request is malformed for this action (arguments, input).
     #[error("invalid request: {reason}")]
     InvalidRequest { reason: String },
@@ -1104,13 +1165,17 @@ impl ActionCallError {
         }
     }
 
-    /// The refusal for want of the person's answer, for an action that
-    /// reached no page departure to name.
+    /// The refusal for want of the person's answer, for an action whose
+    /// name says all the person is shown.
     #[must_use]
-    pub const fn confirmation_required() -> Self {
-        Self::ConfirmationRequired {
-            departure: Vec::new(),
-        }
+    pub fn confirmation_required() -> Self {
+        Self::asks(asked::AskedFacts::default())
+    }
+
+    /// The refusal for want of the person's answer, showing them `facts`.
+    #[must_use]
+    pub fn asks(facts: asked::AskedFacts) -> Self {
+        Self::ConfirmationRequired(Box::new(facts))
     }
 
     /// The provider refused for a reason of its own.
@@ -1152,7 +1217,7 @@ impl ActionCallError {
             Self::Unavailable { .. } => "remote_actions_unavailable",
             Self::UnknownAction => "unknown_action",
             Self::NotPermitted => "not_permitted",
-            Self::ConfirmationRequired { .. } => "action_confirmation_required",
+            Self::ConfirmationRequired(_) => "action_confirmation_required",
             Self::InvalidRequest { .. } => "invalid_arguments",
             Self::StaleRevision => "stale_revision",
             Self::UnknownInvocation => "unknown_invocation",
@@ -1229,28 +1294,15 @@ pub const STALE_REVISION_REASON: &str = "the target changed since that revision;
 #[derive(Serialize, Deserialize)]
 #[serde(rename = "ActionCallError")]
 enum WireActionCallError {
-    Unavailable {
-        reason: String,
-    },
+    Unavailable { reason: String },
     UnknownAction,
     NotPermitted,
-    ConfirmationRequired {
-        /// Written even when there is no departure: a refusal is encoded by
-        /// position too, and a part left out is one its reader still expects.
-        #[serde(default)]
-        departure: Vec<ActionFacet>,
-    },
-    InvalidRequest {
-        reason: String,
-    },
+    ConfirmationRequired(Box<asked::AskedFacts>),
+    InvalidRequest { reason: String },
     UnknownInvocation,
     InvocationConflict,
-    NotCancellable {
-        reason: String,
-    },
-    Refused {
-        reason: String,
-    },
+    NotCancellable { reason: String },
+    Refused { reason: String },
     NotReady,
     Unanswered,
 }
@@ -1261,9 +1313,7 @@ impl From<ActionCallError> for WireActionCallError {
             ActionCallError::Unavailable { reason } => Self::Unavailable { reason },
             ActionCallError::UnknownAction => Self::UnknownAction,
             ActionCallError::NotPermitted => Self::NotPermitted,
-            ActionCallError::ConfirmationRequired { departure } => {
-                Self::ConfirmationRequired { departure }
-            }
+            ActionCallError::ConfirmationRequired(facts) => Self::ConfirmationRequired(facts),
             ActionCallError::InvalidRequest { reason } => Self::InvalidRequest { reason },
             ActionCallError::StaleRevision => Self::InvalidRequest {
                 reason: STALE_REVISION_REASON.to_owned(),
@@ -1287,9 +1337,7 @@ impl From<WireActionCallError> for ActionCallError {
             WireActionCallError::Unavailable { reason } => Self::Unavailable { reason },
             WireActionCallError::UnknownAction => Self::UnknownAction,
             WireActionCallError::NotPermitted => Self::NotPermitted,
-            WireActionCallError::ConfirmationRequired { departure } => {
-                Self::ConfirmationRequired { departure }
-            }
+            WireActionCallError::ConfirmationRequired(facts) => Self::ConfirmationRequired(facts),
             WireActionCallError::InvalidRequest { reason } => Self::InvalidRequest { reason },
             WireActionCallError::UnknownInvocation => Self::UnknownInvocation,
             WireActionCallError::InvocationConflict => Self::InvocationConflict,
@@ -2325,6 +2373,35 @@ impl<T> InvocationLog<T> {
         Ok(Reservation::Reserved)
     }
 
+    /// Admit `request` again under its id where its person approved the asked record it waits
+    /// in: the entry `caller` admitted for the same target and arguments, whose handle `waits`
+    /// says is still asked, is reserved again carrying their answer, and the caller completes or
+    /// abandons it as after [`Self::reserve`]. False where nothing of that waits, which a reserve
+    /// then refuses as another invocation.
+    pub fn readmit(
+        &mut self,
+        caller: &Caller,
+        request: &InvokeRequest,
+        waits: impl FnOnce(&T) -> bool,
+    ) -> bool {
+        let Some(entry) = self.entries.get_mut(&request.invocation) else {
+            return false;
+        };
+        let again = request.approval().is_some()
+            && caller.continues(&entry.caller)
+            && asked::same_call(&entry.request, request)
+            && entry.handle.as_ref().is_some_and(waits);
+        if again {
+            entry.request = InvokeRequest {
+                wait_ms: None,
+                appearance: None,
+                ..request.clone()
+            };
+            entry.handle = None;
+        }
+        again
+    }
+
     /// Record the provider's handle for a reserved invocation.
     pub fn complete(&mut self, id: &InvocationId, handle: T) {
         if let Some(entry) = self.entries.get_mut(id) {
@@ -2924,19 +3001,15 @@ mod tests {
             );
         }
 
-        phase a_refusal_for_want_of_the_person_carries_the_departure_the_run_stated;
+        phase a_refusal_for_want_of_the_person_carries_what_they_are_shown;
         // A run that reached something only the person may allow is refused for
         // want of their answer, and that refusal carries what the run stated
-        // about it: the page departure it holds, as it travels to the provider that
-        // asks them.
+        // about it: the page departure it holds, as it travels to whoever asks them.
         {
-            let departure = vec![
-                browser::departure_facet("page", "https://visa.example/apply"),
-                browser::departure_facet("kind", "submit"),
-                browser::departure_facet("method", "POST"),
-                browser::departure_facet("destination", "https://visa.example"),
-                browser::departure_facet("picture", "tilo.content:5f2b"),
-            ];
+            let facts = asked::AskedFacts::default()
+                .with_fact("kind", "submit")
+                .with_fact("destination", "https://visa.example")
+                .with_fact("picture", "tilo.content:5f2b");
             let invocation = InvocationId::new();
             let state = InvocationState::new(
                 invocation,
@@ -2945,29 +3018,29 @@ mod tests {
                     error: ActionFailure {
                         code: CONFIRMATION_REQUIRED_CODE.into(),
                         message: "the person has to allow this".into(),
-                        details: serde_json::to_value(&departure).ok(),
+                        details: Some(facts.to_details()),
                         retryable: false,
                     },
                 },
             );
             let receipt = state.receipt();
             let ReceiptStatus::Rejected {
-                error: ActionCallError::ConfirmationRequired { departure: stated },
+                error: ActionCallError::ConfirmationRequired(stated),
             } = &receipt.status
             else {
                 panic!("a run waiting on the person is a refusal: {receipt:?}");
             };
-            assert_eq!(*stated, departure);
-            // The refusal travels with it, so a provider in another process asks the
-            // person about what leaves and not about a name for it.
-            let error = ActionCallError::ConfirmationRequired {
-                departure: stated.clone(),
-            };
+            assert_eq!(**stated, facts);
+            // The refusal travels with it, so whoever asks the person in another process
+            // shows what leaves and not a name for it.
+            let error = ActionCallError::asks(facts);
             let wire = serde_json::to_value(&error).unwrap();
             assert_eq!(
                 serde_json::from_value::<ActionCallError>(wire).unwrap(),
                 error
             );
+            let wire = postcard::to_allocvec(&error).unwrap();
+            assert_eq!(postcard::from_bytes::<ActionCallError>(&wire).unwrap(), error);
         }
 
         phase the_remote_wire_is_versioned_and_explicit;

@@ -164,8 +164,7 @@ impl Workspaces {
             )
             .await?;
         accounts::email::set_password_item(&mut account.config, Some(&reference.to_string()));
-        self.keep_workspace_account(workspace, &account)
-            .await?;
+        self.keep_workspace_account(workspace, &account).await?;
         self.person_settings_changed();
         Ok(())
     }
@@ -338,7 +337,7 @@ impl Workspaces {
         let reach = if action == person_accounts::SEND {
             self.reaching(asked, Store::MAIL, action, effect).await?
         } else {
-            self.reaching_allowed(asked, Store::MAIL, action, effect)
+            self.reaching_allowed(asked, Store::MAIL, action, effect, request)
                 .await?
         };
         let here = reach.workspace.to_string();
@@ -380,12 +379,34 @@ impl Workspaces {
                     if let Some(sent) = self.recorded_mail_send(Some(&here), &staged).await {
                         return answer(&Ok::<_, String>(sent));
                     }
-                    let agent = caller
+                    caller
                         .acting()
                         .agent_id()
                         .ok_or(ActionCallError::NotPermitted)?;
-                    self.ask_person(reach.person, shown.question(agent, caller))
-                        .await?;
+                    // What leaves on their yes is what they were shown: the rows are kept
+                    // apart from the message, which its agent may still change.
+                    let kept = root.join(SHOWN_DIR).join(&sending.send);
+                    if request.approval().is_some() {
+                        let as_shown = std::fs::read(&kept)
+                            .ok()
+                            .and_then(|kept| {
+                                serde_json::from_slice::<Vec<(String, String)>>(&kept).ok()
+                            })
+                            .is_some_and(|rows| rows == shown.rows());
+                        let _ = std::fs::remove_file(&kept);
+                        if !as_shown {
+                            return Err(ActionCallError::refused(
+                                "What waited is not what you were shown, so nothing was sent.",
+                            ));
+                        }
+                    } else {
+                        let rows = serde_json::to_vec(shown.rows())
+                            .map_err(|error| ActionCallError::refused(error.to_string()))?;
+                        std::fs::create_dir_all(root.join(SHOWN_DIR))
+                            .and_then(|()| std::fs::write(&kept, rows))
+                            .map_err(|error| ActionCallError::refused(error.to_string()))?;
+                        return Err(ActionCallError::asks(shown.facts(caller)));
+                    }
                 }
                 answer(
                     &self
@@ -772,6 +793,10 @@ async fn account_with_secret(
 fn sends_root(root: &Path) -> PathBuf {
     root.join("sends")
 }
+
+/// Where what a person is shown of a message their agent's send waits on is kept, by the
+/// message's id, until their approve lets it leave.
+const SHOWN_DIR: &str = "shown-sends";
 
 /// How long a begun message waits for its pieces before it is forgotten: a
 /// send is a page's errand of a minute, and a page that went away leaves

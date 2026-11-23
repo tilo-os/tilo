@@ -567,6 +567,12 @@ view place_view(p: LayoutPlace) {
             layers(fill) {
                 place_body(p, fill)
                 hung_card(w)
+                asked_over(w)
+            }
+        } else if not asked_in(w).is_empty() {
+            layers(fill) {
+                place_body(p, fill)
+                asked_over(w)
             }
         } else {
             place_body(p)

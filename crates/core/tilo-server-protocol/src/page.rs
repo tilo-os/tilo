@@ -73,35 +73,6 @@ pub struct WaitingAddress {
     pub invited: bool,
 }
 
-/// The element number a page's question sheet is numbered and patched by. An
-/// app numbers its own elements from one, so the sheet stands in the page
-/// beside them without taking a number of theirs.
-pub const QUESTION_PATCH_ID: u32 = u32::MAX;
-
-/// The prefix of a question sheet's semantic targets: what `target` names when
-/// the person answers the question, as `tilo-question:<id>:<answer>`.
-pub const QUESTION_TARGET: &str = "tilo-question:";
-
-/// The target a question `id` (hex) is answered by: `allow-once`, `allow-always`
-/// or `deny`.
-#[must_use]
-pub fn question_target(id: [u8; 32], answer: &str) -> String {
-    format!("{QUESTION_TARGET}{}:{answer}", hex::encode(id))
-}
-
-/// The question id and answer a target names (`question_target`), or `None` for
-/// a target that names no question.
-#[must_use]
-pub fn parse_question_target(target: &str) -> Option<([u8; 32], &str)> {
-    let rest = target.strip_prefix(QUESTION_TARGET)?;
-    let (id, answer) = rest.rsplit_once(':')?;
-    if id.len() != 64 || answer.is_empty() {
-        return None;
-    }
-    let bytes = hex::decode(id).ok()?;
-    Some((<[u8; 32]>::try_from(bytes).ok()?, answer))
-}
-
 /// What a page's address names: the workspace (its id), the app (the last
 /// part of its id, `notes` for `so.tilo.notes`) and what it shows first. An
 /// address naming no app is the workspace's front page, which lists them.
@@ -348,17 +319,6 @@ mod tests {
             );
         }
         assert_eq!(encode_part("a/b c"), "a%2Fb%20c");
-    }
-
-    #[test]
-    fn a_question_sheets_target_names_it_and_its_answer() {
-        let target = question_target([7; 32], "allow-once");
-        assert_eq!(
-            parse_question_target(&target),
-            Some(([7; 32], "allow-once"))
-        );
-        assert_eq!(parse_question_target("tilo-question:no:deny"), None);
-        assert_eq!(parse_question_target("notes.block-text:b1"), None);
     }
 
     #[test]

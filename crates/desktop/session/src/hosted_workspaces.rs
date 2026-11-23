@@ -54,10 +54,6 @@ struct Inner {
     /// Where the endpoint this device runs under its key lands once bound: every host is dialled
     /// from it. `None` for a session that binds none.
     endpoint: Option<Arc<std::sync::OnceLock<iroh::Endpoint>>>,
-    /// The approver sessions this device keeps, one per host: each host of a workspace here puts
-    /// the person's questions to them on one, beside the peer network's hosts. `None` for a session
-    /// that answers none.
-    answering: Option<crate::network::Answering>,
     runtime: tokio::runtime::Handle,
     /// Each host's session, by the host's device key.
     hosts: Mutex<HashMap<[u8; 32], Arc<ServerAddress>>>,
@@ -135,9 +131,8 @@ struct Placed {
 }
 
 impl HostedWorkspaces {
-    /// The hosts of `engine`'s workspaces, reached from this device's `endpoint` on `runtime`, each
-    /// one's questions for the person answered on `answering` ; `None` for a session that holds no
-    /// workspaces. The session's own runtime reaches them: this
+    /// The hosts of `engine`'s workspaces, reached from this device's `endpoint` on `runtime`;
+    /// `None` for a session that holds no workspaces. The session's own runtime reaches them: this
     /// is built where the session starts, which is no task of any runtime's.
     ///
     /// `endpoint` is where this session's own endpoint lands once it bound, and `None` for a
@@ -147,7 +142,6 @@ impl HostedWorkspaces {
     pub(crate) fn service(
         engine: Option<&Arc<Engine>>,
         endpoint: Option<Arc<std::sync::OnceLock<iroh::Endpoint>>>,
-        answering: Option<crate::network::Answering>,
         runtime: tokio::runtime::Handle,
     ) -> Option<Self> {
         let engine = Arc::clone(engine?);
@@ -155,7 +149,6 @@ impl HostedWorkspaces {
             held_at_start: engine.workspaces().into_iter().collect(),
             engine,
             endpoint,
-            answering,
             runtime,
             hosts: Mutex::default(),
             inbound: Mutex::default(),
@@ -169,13 +162,8 @@ impl HostedWorkspaces {
     /// holds no copy of is kept for [`Self::take_listed`], with the host's signed address for it,
     /// and `wake` runs the session's pass to take it. A host whose session ended is followed again
     /// on the next.
-    ///
-    /// Each such host's questions for the person are answered here from then on, on the
-    /// endpoint it is reached from: the host asks the person's devices before it runs an action
-    /// their access leaves to them, such as opening a Terminal there.
     pub(crate) fn follow_lists(&self, wake: &tilo_service::Wake) {
         for OnHosts { workspace, host } in hosts_of(&self.0.engine) {
-            self.answer(&host);
             let placed = Placed {
                 workspace,
                 workspace_id: host.workspace_id,
@@ -197,23 +185,6 @@ impl HostedWorkspaces {
                 .on_event(host.personal.sent(), Arc::new(move || again.read()));
             reading.read();
         }
-    }
-
-    /// Answer the person's questions `host` puts to this device, once this device's endpoint is
-    /// bound: on the one approver session per host the peer network's hosts are answered on too.
-    fn answer(&self, host: &WorkspaceDeviceHintV1) {
-        let (Some(answering), Some(endpoint)) = (
-            self.0.answering.as_ref(),
-            self.0.endpoint.as_ref().and_then(|endpoint| endpoint.get()),
-        ) else {
-            return;
-        };
-        let _inside = self.0.runtime.enter();
-        answering.answer(
-            endpoint,
-            host.endpoint_addr.clone(),
-            self.0.engine.identity(),
-        );
     }
 
     /// The person's workspaces their hosts listed since the last call that this device holds no

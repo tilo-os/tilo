@@ -1565,7 +1565,6 @@ scenario "the bar's status" {
     d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.overlays, device.Overlays(here: "none"))
-    stage(device.notifications, waiting())
     d.people.insert(LayoutPerson(key: "mia", name: "Mia Clayton"))
     d.people.insert(LayoutPerson(key: "sam", name: "Sam Okafor"))
 }
@@ -2244,7 +2243,6 @@ scenario "the traditional desktop" {
     let d = root Layout
     d.person = "Ada Lovelace"
     stage(device.time, device.Time(clock: "4:28 PM"))
-    stage(device.notifications, waiting())
     stage(device.overlays, device.Overlays(here: "none"))
     d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
     d.people.insert(LayoutPerson(key: "mia", name: "Mia Clayton"))
@@ -2494,6 +2492,34 @@ fn release_moved() -> device.Notice {
         from: "Tasks",
         kind: "info",
         seen: true,
+    )
+}
+
+/// A notice: Mia asking about the launch date.
+fn mia_mention() -> device.Notice {
+    return device.Notice(
+        number: 1,
+        title: "Mia mentioned you in Release planning",
+        body: "Can you check the launch date?",
+        from: "Notes",
+        kind: "info",
+        seen: false,
+        actions: [
+            device.NoticeAction(key: "open", label: "Reply"),
+            device.NoticeAction(key: "later", label: "Later"),
+        ],
+    )
+}
+
+/// A notice: Fieldwork done filing.
+fn threads_filed() -> device.Notice {
+    return device.Notice(
+        number: 2,
+        title: "Three threads filed",
+        body: "Fieldwork filed 3 threads into Receipts.",
+        from: "Fieldwork",
+        kind: "success",
+        seen: false,
     )
 }
 
@@ -2876,4 +2902,151 @@ scenario "the problem report's picker" -> Layout {
     let sh = root Shell
     sh.reporting = true
     d
+}
+
+/// A press that needs the person's yes: Notes' Share asked before it gives Mia the note, and the
+/// question stands over the window it was pressed in, with what it would share and with whom.
+scenario "a press that needs a yes" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
+    d.strips.insert(
+        LayoutStrip(
+            key: "s-notes",
+            workspace: "studio",
+            row: "r-drafts",
+            width: 1000,
+            active: "p1",
+            placed: false,
+            shell: "so.tilo.shell",
+        ),
+    )
+    d.places.insert(
+        LayoutPlace(
+            key: "p1",
+            strip: "s-notes",
+            shows: "so.tilo.notes",
+            title: "Release planning",
+            name: "Release planning — Notes",
+            shell: "so.tilo.shell",
+        ),
+    )
+    stage(
+        device.windows,
+        device.Windows(
+            all: [
+                device.Window(
+                    key: "p1",
+                    title: "Release planning",
+                    origin_app: "Notes",
+                    app_key: "so.tilo.notes",
+                    icon: "notebook",
+                    strip: "Drafts",
+                    workspace: "Studio",
+                    local: true,
+                    device: "laptop",
+                    recency: 1,
+                    focused: true,
+                    preview: "live",
+                ),
+            ],
+        ),
+    )
+    stage(device.overlays, device.Overlays(here: "none"))
+    let a = root Asking
+    a.questions.insert(
+        Asked(
+            key: "studio/invocations/share-1",
+            workspace_name: "Studio",
+            name: "Share",
+            on: "Release planning",
+            verb: "share",
+            plural: "notes",
+            can_always: true,
+            by: "app",
+            by_name: "Notes",
+            author: "Tilo",
+            asked_at_ms: 2,
+            pressed_device: "laptop",
+            pressed_window: "p1",
+        ),
+    )
+    a.facts.insert(
+        AskedFact(
+            key: "studio/invocations/share-1/0",
+            question: "studio/invocations/share-1",
+            label: "With",
+            value: "Mia Clayton",
+        ),
+    )
+    a.facts.insert(
+        AskedFact(
+            key: "studio/invocations/share-1/1",
+            question: "studio/invocations/share-1",
+            label: "Access",
+            value: "Can edit",
+        ),
+    )
+}
+
+/// What waits for the person in the notification centre: an agent's question with choices, a
+/// device's confirmation that takes away what Undo does not bring back, and a press made on
+/// another computer, each under who asks and where, long names and all.
+scenario "questions waiting" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    stage(device.overlays, device.Overlays(here: "centre"))
+    let a = root Asking
+    a.questions.insert(
+        Asked(
+            key: "studio/invocations/ask-1",
+            workspace_name: "Studio",
+            name: "Answer",
+            words: "Which calendar should the launch review go on?",
+            by: "agent",
+            by_name: "Scout",
+            asked_at_ms: 3,
+            conversation: "studio/chat/launch",
+        ),
+    )
+    a.choices.insert(
+        AskedChoice(key: "studio/invocations/ask-1/0", question: "studio/invocations/ask-1", index: 0, label: "Team"),
+    )
+    a.choices.insert(
+        AskedChoice(key: "studio/invocations/ask-1/1", question: "studio/invocations/ask-1", index: 1, label: "Launch reviews and retrospectives"),
+    )
+    a.questions.insert(
+        Asked(
+            key: "home/invocations/forget-1",
+            workspace_name: "The Clayton–Lovelace household and everything we keep together",
+            name: "Forget this device",
+            on: "Ada's old ThinkPad X1 Carbon (6th generation)",
+            destructive: true,
+            by: "device",
+            by_name: "Ada's phone",
+            asked_at_ms: 2,
+        ),
+    )
+    a.questions.insert(
+        Asked(
+            key: "studio/invocations/alarm-1",
+            workspace_name: "Studio",
+            name: "Set alarm",
+            on: "Stand-up",
+            verb: "set",
+            plural: "alarms",
+            can_always: true,
+            by: "app",
+            by_name: "Clocks",
+            author: "Mia Clayton",
+            asked_at_ms: 1,
+            pressed_device: "desktop",
+            pressed_window: "w9",
+        ),
+    )
+    a.facts.insert(
+        AskedFact(key: "studio/invocations/alarm-1/0", question: "studio/invocations/alarm-1", label: "At", value: "09:30 every weekday"),
+    )
 }

@@ -19,6 +19,10 @@ pub enum Confirmation {
     /// that answer. Only a person acting themselves confirms by their own
     /// word; anyone acting for them carries the person's answer.
     Approved(String),
+    /// The person approved the asked invocation record this call was kept as
+    /// ([`super::asked`]). Only the dispatch sets it, when it admits the call
+    /// again on their answer; admission drops it from anything a caller sent.
+    Asked(super::asked::Approval),
 }
 
 /// What a confirmation is bound to of an invocation's arguments: their

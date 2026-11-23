@@ -138,38 +138,7 @@ impl AgentAsk {
     }
 }
 
-/// What the agent asks in its own words, as the sheet asks it.
-fn ask_of(ask: &tilo_server_protocol::certify::AgentAsk) -> AgentAsk {
-    AgentAsk {
-        question: ask.question.clone(),
-        choices: ask.choices.clone(),
-        secret: ask.secret,
-    }
-}
-
 impl AgentQuestion {
-    /// The question a host puts to the person, as the sheet shows it: the same
-    /// mapping a native session and a page make, so both draw one sheet in one
-    /// set of words.
-    #[must_use]
-    pub fn of(question: &tilo_server_protocol::certify::PendingConfirmation) -> Self {
-        Self {
-            agent: question.agent_label.clone(),
-            title: question.title.clone(),
-            action: question.action_label.clone(),
-            resource: question.resource_label.clone(),
-            arguments: question.arguments.clone(),
-            risk: question.risk.clone(),
-            kind: question.kind.clone(),
-            undoable: question.undoable,
-            workspace: question.workspace.clone(),
-            page: question.page_origin(),
-            picture: question.page.as_ref().and_then(|page| page.picture.clone()),
-            ask: question.ask.as_ref().map(ask_of),
-            allow_always: question.allow_always,
-        }
-    }
-
     /// The sheet asking it, as request `handle`. The
     /// title says who wants to do what; the group, the record, the arguments
     /// and what it risks follow, and the picture of the page it leaves from.
