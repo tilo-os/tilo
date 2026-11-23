@@ -16,11 +16,8 @@ use iroh::protocol::{DynProtocolHandler, Router};
 use iroh_base::EndpointAddr;
 use tokio::task::JoinHandle;
 
-use tilo_user_identity::RevocationList;
-
 use crate::config::ServerConfig;
 
-use crate::handshake::LiveIdentity;
 use crate::metrics::Metrics;
 use crate::policy::TrustPolicy;
 use crate::service::ServerProtocol;
@@ -129,8 +126,11 @@ impl Servers {
 /// notice by timeout.
 pub struct Server {
     pub endpoint: Endpoint,
-    /// Iroh router that wires the ALPN → protocol handler.
-    router: Router,
+    /// The router over the endpoint, when this server bound the endpoint itself: a device's
+    /// daemon keeping more registers what it answers on the daemon's own router.
+    router: Option<Router>,
+    /// The device's workspace service this server keeps more on.
+    service: Arc<crate::service::WorkspaceService>,
     /// The workspace host this server is: its workspaces, the handshake that
     /// admits their members and every member's session.
     sessions: crate::service::ServiceSessions,
@@ -140,6 +140,10 @@ pub struct Server {
     /// The server's live session, which its browsers serve and its devices dial.
     #[cfg(feature = "web")]
     pub(crate) live_origin: Option<crate::web::live::LiveOrigin>,
+    /// Whether this device serves its own web UI, and how to serve it again: the
+    /// setting `web.serve` switches, on by default.
+    #[cfg(feature = "web")]
+    pub(crate) web_ui: Arc<crate::web::control::Control>,
     /// Background tasks (revocation refresh, metrics persistence). Aborted
     /// (per-handle) when the `Server` drops.
     background_tasks: Arc<std::sync::Mutex<Vec<AbortOnDrop>>>,
@@ -156,10 +160,11 @@ pub struct Server {
     /// The links to its workspaces' files its web origin serves.
     #[cfg(feature = "web")]
     content_links: Arc<crate::content_links::ContentLinks>,
-    /// This device's part in the channels of the workspaces it governs:
-    /// absent when its certificate does not let it own workspaces, and so it
-    /// holds no channel keys.
-    workspace_keys: Option<Arc<tilo_workspace_service::own_device::KeyService>>,
+    /// This device's keys in the channels of the workspaces it holds, from the key service
+    /// beside its workspace service.
+    workspace_keys: tilo_workspace_keys::KeyProvider,
+    /// That key service, when this server opened its workspace service itself.
+    key_service: Option<tilo_workspace_service::own_device::KeyService>,
     /// What puts its workspaces' questions about running commands unattended
     /// to people: the server's confirmations, held here so that its workspaces
     /// hold them only weakly and nothing of the server outlives it.
@@ -167,9 +172,29 @@ pub struct Server {
     /// The packet relay this host runs for the pages it serves, when it runs
     /// one ([`ServerConfig::packet_relay`]).
     iroh_packet_relay: Option<iroh_relay::server::Server>,
-    /// The shells whose terminal streams this host's devices dial it for, once they run.
-    #[cfg(feature = "agents")]
-    terminal_shells: crate::agents::TerminalShells,
+}
+
+/// ALPN handlers to register on a router, each with its ALPN.
+pub type Protocols = Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>;
+
+/// What a device's daemon keeps more on: its workspace service, opened with
+/// [`Server::keeping`], and what that service runs with.
+pub struct OnDevice {
+    /// What the device keeps, and where.
+    pub cfg: ServerConfig,
+    /// The device: its key and the certificate its person gave it.
+    pub identity: ServerIdentity,
+    /// The device's one workspace service.
+    pub service: Arc<crate::service::WorkspaceService>,
+    /// The device's keys in its workspaces' channels.
+    pub keys: tilo_workspace_keys::KeyProvider,
+    /// The device's one endpoint.
+    pub endpoint: Endpoint,
+    /// Whether a ticket signed the device in, rather than its person founding it: only such a
+    /// machine installs from the plan its person's Servers workspace has for it.
+    pub joined: bool,
+    /// What answers the apps' actions addressed to this device, when it serves apps.
+    pub app_serving: Option<Arc<dyn crate::app_serving::AppActionServer>>,
 }
 
 /// The server state the page's pre-session routes answer with.
@@ -249,8 +274,11 @@ impl Drop for Server {
             tasks.clear();
         }
         // `Server` is normally dropped inside Tokio, but Drop must remain safe
-        // in synchronous teardown and after a runtime has already stopped.
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        // in synchronous teardown and after a runtime has already stopped. A server
+        // composed on a device's daemon leaves the daemon's endpoint to it.
+        if self.router.is_some()
+            && let Ok(runtime) = tokio::runtime::Handle::try_current()
+        {
             let endpoint = self.endpoint.clone();
             runtime.spawn(async move {
                 endpoint.close().await;
@@ -435,15 +463,12 @@ impl Server {
         .await
     }
 
-    /// The shared startup transaction. Its future is large (endpoint binding,
-    /// workspace loading, router wiring), so every public constructor awaits
-    /// it boxed rather than embedding it in the caller's future.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "ordered startup preserves native identity, policy and task ownership"
-    )]
+    /// The shared startup transaction: the endpoint, the device's workspace service opened in
+    /// the device's own layout ([`tilo_workspace_service::own_device::open_in`]), what a server
+    /// keeps on it ([`Self::on_device`]), and the router over all of it. Its future is large, so
+    /// every public constructor awaits it boxed rather than embedding it in the caller's future.
     async fn start_inner(
-        mut cfg: ServerConfig,
+        cfg: ServerConfig,
         identity: ServerIdentity,
         relay_mode: Option<iroh::RelayMode>,
         endpoint: Option<Endpoint>,
@@ -455,6 +480,129 @@ impl Server {
             app_serving,
             shell_payloads,
         } = servers;
+        validate_additional_protocols(&additional_protocols)?;
+        validate_server_identity(&identity)?;
+        std::fs::create_dir_all(&cfg.state_root)?;
+        let relay = PacketRelay::start(&cfg, endpoint.is_some() || relay_mode.is_some()).await?;
+        let relay_mode = relay_mode.or_else(|| relay.mode());
+        let endpoint = match endpoint {
+            Some(endpoint) => endpoint,
+            None => bind_endpoint(&cfg, &identity.device_signing_key, relay_mode).await?,
+        };
+        reaching.awaited(&endpoint).await;
+        relay.reached(&endpoint)?;
+        let signer: Arc<dyn collab_types::signer::DeviceSigner> =
+            Arc::new(identity.device_signing_key.clone());
+        let opened = tilo_workspace_service::own_device::open_in(
+            &cfg.state_root,
+            tilo_workspace_service::own_device::Device {
+                cert: &identity.device_cert,
+                signer: &signer,
+                // A server's people's devices address the workspaces it keeps to its device key.
+                itself: Some(identity.clone()),
+            },
+            tilo_workspace_service::own_device::vault_key(&identity.device_signing_key),
+            endpoint.clone(),
+            Self::governs(&cfg, &identity.device_cert),
+            Arc::new(tilo_workspace_keys::NoSealChecks),
+            |config| {
+                let config = Self::keeping(&cfg, config, app_serving.clone());
+                crate::service::ServiceConfig {
+                    shell_payloads,
+                    reaching,
+                    ..config
+                }
+            },
+        )
+        .await?;
+        let tilo_workspace_service::own_device::Opened { service, keys } = opened;
+        let service = Arc::new(service);
+        let joined = crate::servers::first_install::joined(&cfg.identity_root);
+        let (mut server, protocols) = Self::on_device(OnDevice {
+            cfg,
+            identity,
+            service: Arc::clone(&service),
+            keys: keys.keys(),
+            endpoint: endpoint.clone(),
+            joined,
+            app_serving,
+        })
+        .await?;
+        let mut router = Router::builder(endpoint);
+        for (alpn, handler) in service.protocols() {
+            router = router.accept(alpn, handler);
+        }
+        for (alpn, handler) in protocols.into_iter().chain(additional_protocols) {
+            router = router.accept(alpn, handler);
+        }
+        server.router = Some(router.spawn());
+        server.key_service = Some(keys);
+        server.iroh_packet_relay = relay.server;
+        Ok(server)
+    }
+
+    /// Whether a server governs the workspaces placed on it: only one that admits no one by
+    /// default, on a device that may hold workspace keys, since governing one is holding its keys.
+    #[must_use]
+    pub fn governs(cfg: &ServerConfig, cert: &tilo_user_identity::DeviceCert) -> bool {
+        !matches!(cfg.trust_policy, TrustPolicy::AllowAny)
+            && cert.capabilities.holds_workspace_keys()
+    }
+
+    /// `config`, a device's workspace service's, as a device keeping what `cfg` says opens it:
+    /// the work it takes, who its handshake admits, the name it goes by among the holders of
+    /// the workspaces it serves, whether its machine is rented, and the apps it answers for.
+    #[must_use]
+    pub fn keeping(
+        cfg: &ServerConfig,
+        config: crate::service::ServiceConfig,
+        apps: Option<Arc<dyn crate::app_serving::AppActionServer>>,
+    ) -> crate::service::ServiceConfig {
+        crate::service::ServiceConfig {
+            work: cfg.work.clone(),
+            // A keeper that serves pages is a site, and goes by its site's name among the
+            // holders of the workspaces it serves; a server of someone's own goes by the name
+            // their admin workspace gives it, applied once it is open.
+            label: cfg.web_entry.as_deref().map_or_else(String::new, site_name),
+            rented: cfg.rented,
+            trust_policy: cfg.trust_policy.clone(),
+            max_workspace_grants: cfg.max_workspace_grants,
+            apps,
+            // A server serves other people's workspaces; it joins none as a member.
+            member: None,
+            ..config
+        }
+    }
+
+    /// What a device keeps beyond its own on `parts.service`, its workspace service as
+    /// [`Self::keeping`] configured it: the certification and live session its people's devices
+    /// and pages reach it through, the content it keeps for its workspaces, its place among its
+    /// person's servers and their rollout, and its workspaces' terminals. The device's daemon
+    /// registers the protocols it answers with on its own router, beside the service's.
+    ///
+    /// # Errors
+    ///
+    /// The device does not take the work a server takes, or its place among its person's
+    /// servers cannot be kept.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "ordered startup preserves native identity, policy and task ownership"
+    )]
+    pub async fn on_device(parts: OnDevice) -> Result<(Self, Protocols), ServerError> {
+        let OnDevice {
+            mut cfg,
+            identity,
+            service,
+            keys,
+            endpoint,
+            joined,
+            app_serving,
+        } = parts;
+        if cfg.work.takes_nothing() {
+            return Err(ServerError::Identity(
+                "a device that takes no work serves no workspace".into(),
+            ));
+        }
         // The host's one content store per workspace: the app action server's
         // when it brings one (its uploads and app workers keep there), so
         // everything this host keeps for a workspace is in one place.
@@ -462,132 +610,23 @@ impl Server {
             .as_ref()
             .and_then(|server| server.content())
             .unwrap_or_else(|| crate::content::stores(&cfg.state_root));
-        validate_additional_protocols(&additional_protocols)?;
-        validate_server_identity(&identity)?;
-        if cfg.work.takes_nothing() {
-            return Err(ServerError::Identity(
-                "a device that takes no work serves no workspace".into(),
-            ));
-        }
         // Live workspace control uses server's non-retained presence track, and app
         // serving needs an app action server supplied by an embedding process.
         let mut available_services = crate::mesh::ServiceCapabilities::relay_only();
         available_services.app_serving = app_serving.is_some();
         cfg.services = cfg.services.limited_to(&available_services);
         let app_serving = app_serving.filter(|_| cfg.services.app_serving);
-        // Reject unavailable local backends before binding endpoints, publishing
-        // capabilities or starting background tasks.
         let mesh_profile = Arc::new(crate::mesh::DeviceMeshProfile {
             device: identity.device_cert.device_public_key,
             services: cfg.services.clone(),
             filesystem_endpoints: Vec::new(),
         });
-        std::fs::create_dir_all(&cfg.state_root)?;
-        // The packet relay this server is reached through when it starts none of its own: one it
-        // cannot reach leaves it reachable by nobody, which its start says rather than serving.
-        let mut reached_through = None;
-        let (packet_relay, relay_mode) = match cfg.packet_relay {
-            Some(addr) if endpoint.is_none() && relay_mode.is_none() => {
-                let (server, url) = spawn_packet_relay(addr).await?;
-                let url = match &cfg.packet_relay_url {
-                    Some(published) => published.parse().map_err(|error| {
-                        ServerError::Iroh(format!("packet relay URL {published}: {error}"))
-                    })?,
-                    None => url,
-                };
-                tracing::info!(%addr, %url, "running this host's own packet relay");
-                (Some(server), Some(iroh::RelayMode::Custom(url.into())))
-            }
-            Some(_) => {
-                return Err(ServerError::Iroh(
-                    "a host runs its own packet relay or is given one, not both".into(),
-                ));
-            }
-            // Given a packet relay's URL and none of its own, the server is
-            // reached through that one: a packet relay on the public internet
-            // when the server sits behind a router nobody can dial into.
-            None => match (&cfg.packet_relay_url, relay_mode) {
-                (Some(published), None) if endpoint.is_none() => {
-                    let url: iroh::RelayUrl = published.parse().map_err(|error| {
-                        ServerError::Iroh(format!("packet relay URL {published}: {error}"))
-                    })?;
-                    tracing::info!(%url, "reached through another packet relay");
-                    reached_through = Some(url.clone());
-                    (None, Some(iroh::RelayMode::Custom(url.into())))
-                }
-                (_, relay_mode) => (None, relay_mode),
-            },
-        };
-        let endpoint = match endpoint {
-            Some(endpoint) => endpoint,
-            None => bind_endpoint(&cfg, &identity.device_signing_key, relay_mode).await?,
-        };
-        // A certified host keeps workspaces only when its device may hold their
-        // keys, and then takes part in every channel of them, as one key holder
-        // beside their members.
-        let keeps_workspaces = !matches!(cfg.trust_policy, TrustPolicy::AllowAny)
-            && identity.device_cert.capabilities.holds_workspace_keys();
-        let workspace_keys = keeps_workspaces
-            .then(|| {
-                crate::workspace_keys::open(&cfg.state_root, identity.device_signing_key.clone())
-            })
-            .transpose()?
-            .map(Arc::new);
-        // Where this host is dialled — what each workspace's governance names of
-        // it, and what a link it hands out carries — is the relay, which the
-        // endpoint knows only once it has connected to one. The workspaces opened
-        // below name it straight away, and a host that has none yet names it when
-        // it makes its first, so wait for the relay before serving either.
-        reaching.awaited(&endpoint).await;
-        if let Some(url) = &reached_through
-            && endpoint.addr().relay_urls().next().is_none()
-        {
-            return Err(ServerError::Iroh(format!(
-                "the packet relay at {url}, which this server is to be reached through, did \
-                 not answer: no one could reach the server. Check that the URL names a packet \
-                 relay this computer reaches (tilo.sh's is https://live-eu1.tilo.sh)"
-            )));
-        }
-        let (sessions, governed) = crate::service::ServiceSessions::open(
-            crate::service::ServiceConfig {
-                state_root: cfg.state_root.clone(),
-                work: cfg.work.clone(),
-                // A keeper that serves pages is a site, and goes by its
-                // site's name among the holders of the workspaces it serves;
-                // a server of someone's own goes by the name their admin
-                // workspace gives it, applied below once it is open.
-                label: cfg.web_entry.as_deref().map_or_else(String::new, site_name),
-                rented: cfg.rented,
-                origin: cfg.web_entry.as_deref().and_then(site_origin),
-                trust_policy: cfg.trust_policy.clone(),
-                max_workspace_grants: cfg.max_workspace_grants,
-                reaching,
-                // A server's endpoint keeps its relays from the start, so nothing is held back for
-                // an invitation to wake.
-                reachability: tilo_endpoint_reachability::Reachability::default(),
-                apps: app_serving.clone(),
-                shell_payloads,
-                // A server serves other people's workspaces; it joins none as
-                // a member.
-                member: None,
-                surfaces: std::sync::Arc::clone(collab_types::app_surface::Surfaces::process()),
-            },
-            identity.clone(),
-            endpoint.clone(),
-            workspace_keys
-                .as_ref()
-                .map(|workspace_keys| workspace_keys.groups()),
-            |_workspaces, rest| rest,
-        )
-        .await?;
-        let governed = governed.map(|governed| governed.workspaces);
-        if let (Some(workspace_keys), Some(governed)) = (&workspace_keys, &governed) {
-            workspace_keys.attach(governed);
-        }
+        let sessions = service.sessions().clone();
+        let governed = service.workspaces().clone();
         // The links its invitations hand over open the server's web entry. A stack on this
         // machine alone (`TILO_WORKSPACES_LOCAL`) keeps its own site: its addresses are
         // loopback, which no public page dials.
-        if let (Some(entry), Some(governed)) = (&cfg.web_entry, &governed) {
+        if let Some(entry) = &cfg.web_entry {
             let local = std::env::var_os("TILO_WORKSPACES_LOCAL").is_some();
             let _ = governed.invite_at(entry, local);
         }
@@ -596,7 +635,7 @@ impl Server {
         let live = sessions.identity.clone();
         let handler = sessions.handler.clone();
         // The live session belongs to the server: every key holder, a page
-        // included, reaches it over the relay's own iroh endpoint, and all
+        // included, reaches it over the device's own iroh endpoint, and all
         // land in one origin whether or not browsers are served.
         #[cfg(feature = "web")]
         let mut live_origin = Some(crate::web::live::LiveOrigin::start(handler.clone()));
@@ -607,15 +646,13 @@ impl Server {
             Some(workspaces.clone()),
         );
         let asks_people = Arc::new(certification.clone());
-        if let Some(governed) = &governed {
-            certification.keep_issued_in(governed.clone());
-            // Whether a workspace of theirs runs commands unattended is the
-            // person's to answer, on their approving devices. The workspaces
-            // hold the confirmations weakly: they hold the workspaces.
-            governed.ask_people(Arc::new(crate::certification::AsksThroughConfirmations(
-                Arc::downgrade(&asks_people),
-            )));
-        }
+        certification.keep_issued_in(governed.clone());
+        // Whether a workspace of theirs runs commands unattended is the
+        // person's to answer, on their approving devices. The workspaces
+        // hold the confirmations weakly: they hold the workspaces.
+        governed.ask_people(Arc::new(crate::certification::AsksThroughConfirmations(
+            Arc::downgrade(&asks_people),
+        )));
         let web = Box::new(WebContext {
             server: handler.clone(),
             #[cfg(feature = "web")]
@@ -624,138 +661,160 @@ impl Server {
             #[cfg(feature = "agents")]
             closed_apps: Arc::default(),
         });
-        let mut router = Router::builder(endpoint.clone())
-            .accept(ALPN, handler)
-            .accept(crate::certify::CERTIFY_ALPN, certification);
-        if let Some(governed) = &governed {
-            for (alpn, handler) in crate::service::workspaces_protocols(&sessions, governed) {
-                router = router.accept(alpn, handler);
-            }
-        }
-        for (alpn, handler) in additional_protocols {
-            router = router.accept(alpn, handler);
-        }
+        let protocols: Protocols = vec![(
+            crate::certify::CERTIFY_ALPN.to_vec(),
+            Box::new(certification) as Box<dyn DynProtocolHandler>,
+        )];
         // A person's device takes the terminal of a hosted workspace's session here, once
         // the host's shells are told where they run.
         #[cfg(feature = "agents")]
         let terminal_shells = crate::agents::TerminalShells::default();
         #[cfg(feature = "agents")]
-        {
-            router = router.accept(ush::environment_terminals::ALPN, terminal_shells.route());
-        }
+        let protocols = {
+            let mut protocols = protocols;
+            protocols.push((
+                ush::environment_terminals::ALPN.to_vec(),
+                Box::new(terminal_shells.route()),
+            ));
+            protocols
+        };
         #[cfg(feature = "web")]
-        if let Some(origin) = live_origin.as_ref() {
-            let (alpn, handler) = origin.protocol();
-            router = router.accept(alpn, handler);
-        }
-        let router = router.spawn();
-
-        let background_tasks = spawn_background_tasks(&cfg, &identity, &metrics, &live);
+        let protocols = {
+            let mut protocols = protocols;
+            if let Some(origin) = live_origin.as_ref() {
+                protocols.push(origin.protocol());
+            }
+            protocols
+        };
+        let background_tasks = spawn_background_tasks(&cfg, &metrics);
         #[cfg(feature = "web")]
         if let Some(origin) = live_origin.as_mut() {
             let mut tasks = lock_background_tasks(&background_tasks);
             tasks.extend(origin.tasks().into_iter().map(AbortOnDrop));
         }
+        // A server of the person's own takes part in their Servers
+        // workspace, whose record of their servers says what it should be.
+        if enrolled_server {
+            // One that has the workspace keeps its entry's address current.
+            // One that has it not yet is handed it by a device that has it,
+            // once the ticket it came in with entered it in the document.
+            if crate::servers::holds_person_workspace(&governed).await {
+                // Its entry names the packet relay it is reached through, beside the address
+                // it is dialled at, as its endpoint advertises it: a page has no UDP socket
+                // and reaches it only through one.
+                let relay = endpoint.addr().relay_urls().next().map(ToString::to_string);
+                crate::servers::enroll(&governed, &endpoint.addr(), relay.as_deref())
+                    .await
+                    .map_err(|error| {
+                        ServerError::Identity(format!("Servers workspace: {error}"))
+                    })?;
+            }
+            // Its OS updates wait their turn among the person's servers.
+            let rollout = crate::rollout::serve(crate::rollout::ServerMachine::new(
+                governed.clone(),
+                cfg.state_root.clone(),
+            ))?;
+            push_background_task(&background_tasks, rollout);
+        }
+        // What this device is, and what the person's servers are told to
+        // be, is its record in the Servers workspace's document: from the
+        // moment it has the workspace it applies the document, after each
+        // change to it, and finishes the installation its plan describes if
+        // it came in from one.
+        push_background_task(
+            &background_tasks,
+            tokio::spawn(install_and_follow(
+                governed.clone(),
+                endpoint.clone(),
+                cfg.state_root.clone(),
+                joined,
+                identity.device_cert.clone(),
+            )),
+        );
+        // A server's name is its entry's in its person's admin workspace:
+        // the workspaces it holds show it by that name from now on.
+        if let Some(label) =
+            crate::servers::name(&governed, &identity.device_cert.device_public_key).await
+        {
+            governed.name_holder(&label).await;
+        }
         // Members read what this host keeps for their workspace from its
-        // content, and the files of the workspaces it governs are kept there
+        // content, and the files of the workspaces it holds are kept there
         // so a member that comes up after the one that wrote them left reads
         // the same bytes from this host alone. What no record of a workspace
         // names any more is let go of, so replaced files do not pile up.
-        if let Some(governed) = &governed {
-            // A server of the person's own takes part in their Servers
-            // workspace, whose record of their servers says what it should be.
-            if enrolled_server {
-                // One that has the workspace keeps its entry's address current.
-                // One that has it not yet is handed it by a device that has it,
-                // once the ticket it came in with entered it in the document.
-                if crate::servers::holds_person_workspace(governed).await {
-                    crate::servers::enroll(governed, &endpoint.addr())
-                        .await
-                        .map_err(|error| {
-                            ServerError::Identity(format!("Servers workspace: {error}"))
-                        })?;
-                }
-                // Its OS updates wait their turn among the person's servers.
-                let rollout = crate::rollout::serve(crate::rollout::ServerMachine::new(
-                    governed.clone(),
-                    cfg.state_root.clone(),
-                ))?;
-                push_background_task(&background_tasks, rollout);
-            }
-            // What this device is, and what the person's servers are told to
-            // be, is its record in the Servers workspace's document: from the
-            // moment it has the workspace it applies the document, after each
-            // change to it, and finishes the installation its plan describes if
-            // it came in from one.
-            push_background_task(
-                &background_tasks,
-                tokio::spawn(install_and_follow(
-                    governed.clone(),
-                    endpoint.clone(),
-                    cfg.state_root.clone(),
-                    cfg.identity_root.clone(),
-                    identity.device_cert.clone(),
-                )),
-            );
-            // A server's name is its entry's in its person's admin workspace:
-            // the workspaces it holds show it by that name from now on.
-            if let Some(label) =
-                crate::servers::name(governed, &identity.device_cert.device_public_key).await
-            {
-                governed.name_holder(&label).await;
-            }
-            governed.serve_content(Arc::new(crate::content::StoresContent(Arc::clone(
-                &content,
-            ))));
-            // A branch of a workspace takes the content its records name.
-            governed.branch_content(Arc::new(crate::content::branch::StoresBranches(
-                Arc::clone(&content),
-            )));
-            let kept = crate::kept_content::KeptContent::new(
+        governed.serve_content(Arc::new(crate::content::StoresContent(Arc::clone(
+            &content,
+        ))));
+        // A branch of a workspace takes the content its records name.
+        governed.branch_content(Arc::new(crate::content::branch::StoresBranches(
+            Arc::clone(&content),
+        )));
+        let kept = crate::kept_content::KeptContent::new(
+            governed.clone(),
+            identity.device_cert.device_public_key,
+            Arc::clone(&content),
+        );
+        push_background_task(&background_tasks, tokio::spawn(kept.keep_content()));
+        push_background_task(
+            &background_tasks,
+            tokio::spawn(crate::content::collection::run(
                 governed.clone(),
-                identity.device_cert.device_public_key,
                 Arc::clone(&content),
-            );
-            push_background_task(&background_tasks, tokio::spawn(kept.keep_content()));
-            push_background_task(
-                &background_tasks,
-                tokio::spawn(crate::content::collection::run(
-                    governed.clone(),
-                    Arc::clone(&content),
-                )),
-            );
-            // A workspace its owner deleted takes its content and its app
-            // workers with it.
-            push_background_task(
-                &background_tasks,
-                tokio::spawn(crate::content::forget_deleted(
-                    governed.clone(),
-                    Arc::clone(&content),
-                    app_serving,
-                )),
-            );
+            )),
+        );
+        // A workspace its owner deleted takes its content and its app
+        // workers with it.
+        push_background_task(
+            &background_tasks,
+            tokio::spawn(crate::content::forget_deleted(
+                governed.clone(),
+                Arc::clone(&content),
+                app_serving,
+            )),
+        );
+        // The host is a member of every workspace it holds: its own device is on
+        // those rosters, so it reads and serves them as any key holder does.
+        for workspace in workspaces.lock().await.values() {
+            workspace
+                .lock()
+                .await
+                .admit_device(identity.device_cert.device_public_key)?;
         }
-        Ok(Self {
-            endpoint,
-            router,
-            sessions,
-            #[cfg(feature = "web")]
-            browser_origin: Arc::new(std::sync::RwLock::new(None)),
-            #[cfg(feature = "web")]
-            live_origin,
-            background_tasks,
-            mesh_profile,
-            web,
-            workspaces: governed,
-            content,
-            #[cfg(feature = "web")]
-            content_links: Arc::default(),
-            workspace_keys,
-            _asks_people: asks_people,
-            iroh_packet_relay: packet_relay,
-            #[cfg(feature = "agents")]
-            terminal_shells,
-        })
+        // This device's own web UI, on until its person turns it off: the host operation
+        // `web.serve` reaches it through the workspaces it governs.
+        #[cfg(feature = "web")]
+        let web_ui = {
+            let control = Arc::new(crate::web::control::Control::default());
+            governed.serve_web_with(Arc::new(crate::web::control::Serving(Arc::clone(&control))));
+            control
+        };
+        Ok((
+            Self {
+                endpoint,
+                router: None,
+                service,
+                sessions,
+                #[cfg(feature = "web")]
+                browser_origin: Arc::new(std::sync::RwLock::new(None)),
+                #[cfg(feature = "web")]
+                live_origin,
+                #[cfg(feature = "web")]
+                web_ui,
+                background_tasks,
+                mesh_profile,
+                web,
+                workspaces: Some(governed),
+                content,
+                #[cfg(feature = "web")]
+                content_links: Arc::default(),
+                workspace_keys: keys,
+                key_service: None,
+                _asks_people: asks_people,
+                iroh_packet_relay: None,
+            },
+            protocols,
+        ))
     }
 
     /// The relay this server's live session runs on: what a part of the host
@@ -766,12 +825,6 @@ impl Server {
         self.live_origin
             .as_ref()
             .map(crate::web::live::LiveOrigin::origin)
-    }
-
-    /// The shells whose terminal streams this host serves, once they run.
-    #[cfg(feature = "agents")]
-    pub(crate) const fn terminal_shells(&self) -> &crate::agents::TerminalShells {
-        &self.terminal_shells
     }
 
     /// Whether this server currently counts `device` as subscribed to
@@ -807,13 +860,14 @@ impl Server {
         // Stop reconnecting first: the dial loop would otherwise open a
         // fresh connection while the endpoint is closing.
         lock_background_tasks(&self.background_tasks).clear();
-        if let Some(workspaces) = &self.workspaces {
-            workspaces.keep_what_was_followed().await;
+        // A server composed on a device's daemon leaves the service, the router and the
+        // endpoint to the daemon.
+        if let Some(router) = &self.router {
+            self.service.shutdown().await;
+            if let Err(error) = router.shutdown().await {
+                tracing::debug!(%error, "server router shutdown task failed");
+            }
         }
-        if let Err(error) = self.router.shutdown().await {
-            tracing::debug!(%error, "server router shutdown task failed");
-        }
-        self.sessions.shutdown();
         if let Some(packet_relay) = std::mem::take(&mut self.iroh_packet_relay)
             && let Err(error) = packet_relay.shutdown().await
         {
@@ -870,7 +924,7 @@ impl Server {
     /// its certificate does not let it own workspaces.
     #[must_use]
     pub fn workspace_keys(&self) -> Option<tilo_workspace_keys::SharedKeys> {
-        self.workspace_keys.as_ref()?.keys().get()
+        self.workspace_keys.get()
     }
 
     /// The iroh endpoint address (node id + reachable addresses) —
@@ -970,14 +1024,6 @@ impl Server {
 /// The site name a keeper's web entry names: `tilo.sh` for
 /// `https://tilo.sh/app/`. One without a web entry is no site and goes by its
 /// server's name alone.
-/// The https origin of the site `web_entry` names (`https://eu1.tilo.sh`), which the address
-/// this keeper signs carries: `None` for an entry that is no https address.
-fn site_origin(web_entry: &str) -> Option<String> {
-    let rest = web_entry.strip_prefix("https://")?;
-    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    (!host.is_empty()).then(|| format!("https://{host}"))
-}
-
 fn site_name(web_entry: &str) -> String {
     let rest = web_entry
         .split_once("://")
@@ -996,7 +1042,7 @@ async fn install_and_follow(
     workspaces: crate::workspaces::Workspaces,
     endpoint: Endpoint,
     state_root: PathBuf,
-    identity_root: PathBuf,
+    joined: bool,
     cert: tilo_user_identity::DeviceCert,
 ) {
     use tokio::sync::broadcast::error::RecvError;
@@ -1020,7 +1066,7 @@ async fn install_and_follow(
         Some(endpoint),
         state_root,
     );
-    if crate::servers::first_install::joined(&identity_root) {
+    if joined {
         match crate::servers::first_install::install(
             &workspaces,
             &cert,
@@ -1050,12 +1096,105 @@ impl ServerHandle {
     }
 }
 
-/// Derive the server transport key from the enrolled device secret. The server
-/// application handshake still proves possession of the certified device key;
-/// this domain-separated transport key prevents the server and filesystem
-/// processes from publishing competing address records for one Iroh `NodeId`.
-pub fn server_node_id(device_key: &ed25519_dalek::SigningKey) -> [u8; 32] {
-    tilo_server_protocol::server_node_id(&device_key.to_bytes())
+/// The packet relay a server is reached through, as its config names it: one it runs itself
+/// ([`ServerConfig::packet_relay`]), one it is given ([`ServerConfig::packet_relay_url`]), or
+/// none, leaving its endpoint on the public relays. A page has no UDP socket, so it reaches a
+/// server only through a relay, and the server advertises its relay in its signed address.
+pub struct PacketRelay {
+    /// The relay this server runs, while it runs.
+    pub server: Option<iroh_relay::server::Server>,
+    /// The URL its endpoint is reached through, when the config names one.
+    url: Option<iroh::RelayUrl>,
+    /// Whether that URL is another's relay rather than this server's own.
+    given: bool,
+}
+
+impl PacketRelay {
+    /// Start the relay `cfg` names, if it names one. `bound` says the endpoint is bound
+    /// elsewhere, or its relays are chosen elsewhere: such a server runs no relay of its own.
+    ///
+    /// # Errors
+    ///
+    /// The relay does not start, its URL does not parse, or `bound` and a relay of its own are
+    /// asked for together.
+    pub async fn start(cfg: &ServerConfig, bound: bool) -> Result<Self, ServerError> {
+        let published = cfg
+            .packet_relay_url
+            .as_deref()
+            .map(|published| {
+                published.parse::<iroh::RelayUrl>().map_err(|error| {
+                    ServerError::Iroh(format!("packet relay URL {published}: {error}"))
+                })
+            })
+            .transpose()?;
+        match cfg.packet_relay {
+            Some(_) if bound => Err(ServerError::Iroh(
+                "a host runs its own packet relay or is given one, not both".into(),
+            )),
+            Some(addr) => {
+                let (server, url) = spawn_packet_relay(addr).await?;
+                let url = published.unwrap_or(url);
+                tracing::info!(%addr, %url, "running this host's own packet relay");
+                Ok(Self {
+                    server: Some(server),
+                    url: Some(url),
+                    given: false,
+                })
+            }
+            // Given a packet relay's URL and none of its own, the server is
+            // reached through that one: a packet relay on the public internet
+            // when the server sits behind a router nobody can dial into.
+            None if !bound && published.is_some() => {
+                tracing::info!(url = ?published, "reached through another packet relay");
+                Ok(Self {
+                    server: None,
+                    url: published,
+                    given: true,
+                })
+            }
+            None => Ok(Self {
+                server: None,
+                url: None,
+                given: false,
+            }),
+        }
+    }
+
+    /// The relay mode an endpoint reached through this relay binds with, when there is one.
+    #[must_use]
+    pub fn mode(&self) -> Option<iroh::RelayMode> {
+        self.url
+            .clone()
+            .map(|url| iroh::RelayMode::Custom(url.into()))
+    }
+
+    /// Whether `endpoint` is reached through the relay it was given: one it cannot reach leaves
+    /// it reachable by nobody, which its start says rather than serving.
+    ///
+    /// # Errors
+    ///
+    /// The endpoint reached no relay through the one it was given.
+    pub fn reached(&self, endpoint: &Endpoint) -> Result<(), ServerError> {
+        match &self.url {
+            Some(url) if self.given && endpoint.addr().relay_urls().next().is_none() => {
+                Err(ServerError::Iroh(format!(
+                    "the packet relay at {url}, which this server is to be reached through, did \
+                     not answer: no one could reach the server. Check that the URL names a packet \
+                     relay this computer reaches (tilo.sh's is https://live-eu1.tilo.sh)"
+                )))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Stop the relay this server runs, if it runs one.
+    pub async fn shutdown(self) {
+        if let Some(server) = self.server
+            && let Err(error) = server.shutdown().await
+        {
+            tracing::debug!(%error, "packet relay shutdown task failed");
+        }
+    }
 }
 
 /// Run this host's own iroh packet relay on `addr`: the relay, and the URL
@@ -1072,10 +1211,30 @@ async fn spawn_packet_relay(
     let serving = server
         .http_addr()
         .ok_or_else(|| ServerError::Iroh("the packet relay serves no address".into()))?;
-    let url: iroh_base::RelayUrl = format!("http://{serving}")
+    let url: iroh_base::RelayUrl = format!("http://{}", dialled_at(serving))
         .parse()
         .map_err(|error| ServerError::Iroh(format!("packet relay URL: {error}")))?;
     Ok((server, url))
+}
+
+/// `serving` as a device elsewhere dials it: an address bound on every interface is this
+/// machine's own address on the network it routes to, learned without a packet being sent,
+/// and loopback when it routes nowhere.
+fn dialled_at(serving: std::net::SocketAddr) -> std::net::SocketAddr {
+    if !serving.ip().is_unspecified() {
+        return serving;
+    }
+    let ip = std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, 0))
+        .and_then(|socket| {
+            // Connecting a UDP socket picks the route and sends nothing.
+            socket.connect((std::net::Ipv4Addr::new(192, 0, 2, 1), 9))?;
+            socket.local_addr()
+        })
+        .map_or(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            |local| local.ip(),
+        );
+    std::net::SocketAddr::new(ip, serving.port())
 }
 
 /// Whether an endpoint bound with `relay_mode` names where it is reached: one
@@ -1088,17 +1247,32 @@ fn reaching_of(relay_mode: &iroh::RelayMode) -> Reaching {
     }
 }
 
-/// Bind the server protocol with a domain-separated transport key. This is one
-/// physical certified device, not a second user identity: protocol auth uses
-/// `device_key` and its device certificate after QUIC connects.
+/// Bind the one endpoint of a device that keeps what `cfg` names: on the address it names,
+/// reached through the packet relay it runs or is given, else the public relays. The relay runs
+/// for as long as the returned [`PacketRelay`] is kept.
+///
+/// # Errors
+///
+/// The relay does not start, or the endpoint does not bind or reaches no relay it was given.
+pub async fn bind_keeping(
+    cfg: &ServerConfig,
+    device_key: &ed25519_dalek::SigningKey,
+) -> Result<(Endpoint, PacketRelay), ServerError> {
+    let relay = PacketRelay::start(cfg, false).await?;
+    let endpoint = bind_endpoint(cfg, device_key, relay.mode()).await?;
+    Reaching::ByRelay.awaited(&endpoint).await;
+    relay.reached(&endpoint)?;
+    Ok((endpoint, relay))
+}
+
+/// Bind the device's one endpoint, keyed by its device key as every device's is: the key its
+/// certificate names is the node its people's devices dial.
 async fn bind_endpoint(
     cfg: &ServerConfig,
     device_key: &ed25519_dalek::SigningKey,
     relay_mode: Option<iroh::RelayMode>,
 ) -> Result<Endpoint, ServerError> {
-    let secret = iroh::SecretKey::from_bytes(&tilo_server_protocol::server_node_secret(
-        &device_key.to_bytes(),
-    ));
+    let secret = iroh::SecretKey::from_bytes(&device_key.to_bytes());
     let builder = match relay_mode {
         Some(mode) => Endpoint::builder(presets::Minimal).relay_mode(mode),
         None => Endpoint::builder(presets::N0),
@@ -1156,115 +1330,18 @@ fn validate_additional_alpns<'a>(
     Ok(())
 }
 
-/// Spawn the revocation-refresh loop and the metrics-persist loop,
-/// returning the abort-on-drop handle list `Server` owns.
+/// Spawn the metrics-persist loop, returning the abort-on-drop handle list
+/// `Server` owns.
 fn spawn_background_tasks(
     cfg: &ServerConfig,
-    identity: &ServerIdentity,
     metrics: &Arc<Metrics>,
-    live: &LiveIdentity,
 ) -> Arc<std::sync::Mutex<Vec<AbortOnDrop>>> {
     let background_tasks: Arc<std::sync::Mutex<Vec<AbortOnDrop>>> =
         Arc::new(std::sync::Mutex::new(Vec::new()));
 
-    let revocation_task = spawn_revocation_refresh_task(
-        cfg.state_root.clone(),
-        identity.revocations.clone(),
-        live.revocations.clone(),
-    );
-    push_background_task(&background_tasks, revocation_task);
-
     let metrics_task = spawn_metrics_persist_task(cfg.state_root.clone(), metrics.clone());
     push_background_task(&background_tasks, metrics_task);
     background_tasks
-}
-
-/// How often the revocation log is re-read while its directory cannot be
-/// watched: the cadence `tilo-server-admin` promises ("within one second").
-const REVOCATION_POLL: Duration = Duration::from_secs(1);
-
-/// The revocation-refresh task: re-read the on-disk revocation log whenever
-/// it changes and, if every entry still applies cleanly against the
-/// identity's own base list, swap it in and wake every admitted session to
-/// re-check. A malformed entry leaves the previously-live list untouched
-/// rather than partially applying.
-///
-/// The log is followed through a watch on the state root's own entries. When
-/// that watch cannot be installed the task says so and falls back to reading
-/// the log every [`REVOCATION_POLL`], as before the watch existed.
-fn spawn_revocation_refresh_task(
-    state_root: PathBuf,
-    base_revocations: RevocationList,
-    live_revocations: Arc<std::sync::RwLock<RevocationList>>,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut refresh = RevocationRefresh {
-            state_root,
-            base: base_revocations,
-            live: live_revocations,
-            applied: None,
-        };
-        let watch = match tilo_files::native::watch_entries(&refresh.state_root) {
-            Ok(watch) => Some(watch),
-            Err(error) => {
-                tracing::warn!(
-                    path = %refresh.state_root.display(),
-                    %error,
-                    "the revocation log cannot be watched; reading it every second"
-                );
-                None
-            }
-        };
-        // Read once the watch exists, so an edit made before it began is seen.
-        refresh.reload();
-        let Some(watch) = watch else {
-            let mut interval = tokio::time::interval(REVOCATION_POLL);
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            loop {
-                interval.tick().await;
-                refresh.reload();
-            }
-        };
-        loop {
-            let change = watch.next().await;
-            if change.kind == tilo_files::ChangeKind::Rescan
-                || change.path.as_str() == crate::workspace_files::REVOCATIONS_FILE
-            {
-                refresh.reload();
-            }
-        }
-    })
-}
-
-/// The live revocation list and the log entries last applied to it.
-struct RevocationRefresh {
-    state_root: PathBuf,
-    base: RevocationList,
-    live: Arc<std::sync::RwLock<RevocationList>>,
-    applied: Option<Vec<tilo_user_identity::RevocationEntry>>,
-}
-
-impl RevocationRefresh {
-    fn reload(&mut self) {
-        let Ok(entries) = crate::workspace_files::load_revocations(&self.state_root) else {
-            return;
-        };
-        if self.applied.as_ref() == Some(&entries) {
-            return;
-        }
-        let mut next = self.base.clone();
-        for entry in &entries {
-            if next.insert(entry.clone()).is_err() {
-                return;
-            }
-        }
-        if let Ok(mut current) = self.live.write() {
-            *current = next;
-            drop(current);
-            self.applied = Some(entries);
-            crate::authority_epoch::bump();
-        }
-    }
 }
 
 /// The metrics-persist loop: snapshot + save to disk every second.
@@ -1320,7 +1397,8 @@ pub use crate::frame::{read_frame, write_frame};
 mod tests {
     use super::*;
     use tilo_user_identity::{
-        DeviceCapabilities, DeviceCert, DeviceIdentity, UserIdentity, sign_device_cert,
+        DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, UserIdentity,
+        sign_device_cert,
     };
 
     fn identity(capabilities: DeviceCapabilities) -> ServerIdentity {
@@ -1542,7 +1620,16 @@ mod tests {
             crate::servers::admit(primary_workspaces, &server_cert, &server.node_addr())
                 .await
                 .unwrap();
-            crate::servers::take_in(primary_workspaces, &server_cert, &server.node_addr())
+            let person_workspace = crate::servers::person_workspace_id(&user.public_key);
+            // The entry names where the server is reached, and the workspace's
+            // holders hand it the workspace once it does.
+            primary_workspaces
+                .attach_server(
+                    &person_workspace,
+                    server_cert.device_public_key,
+                    server.node_addr(),
+                    tilo_peer_state::CopyRole::KeyHolder,
+                )
                 .await
                 .unwrap();
             tilo_test_env::within(
@@ -1689,6 +1776,153 @@ mod tests {
             );
             server.shutdown().await;
         }
+    }
+
+    /// A server runs the packet relay its pages are reached through, and its entry among
+    /// its person's servers names that relay beside the address it is dialled at, so every
+    /// device of theirs knows where to reach it through one. A server that starts holding
+    /// the Servers workspace writes it on that start; one handed it later writes it the
+    /// next time it starts.
+    #[tokio::test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the whole hand-over, from the admitting device to the restarted server's entry"
+    )]
+    async fn a_server_serves_its_packet_relay_and_its_entry_names_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let (root, user) = UserIdentity::generate("owner", 1);
+        let (host_key, host) = DeviceIdentity::generate("home", 2);
+        let (admin_key, admin) = DeviceIdentity::generate("primary", 5);
+        let mut server_cert = DeviceCert {
+            user_public_key: user.public_key,
+            device_public_key: host.public_key,
+            device_label: host.label.clone(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 4,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        let mut admin_cert = DeviceCert {
+            user_public_key: user.public_key,
+            device_public_key: admin.public_key,
+            device_label: admin.label,
+            capabilities: DeviceCapabilities::primary(),
+            issued_at_ns: 4,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        sign_device_cert(&mut server_cert, &root).unwrap();
+        sign_device_cert(&mut admin_cert, &root).unwrap();
+        let primary_state = tempfile::tempdir().unwrap();
+        let primary = Server::start(
+            ServerConfig {
+                state_root: primary_state.path().to_path_buf(),
+                services: crate::mesh::ServiceCapabilities::personal_server(),
+                ..ServerConfig::default()
+            }
+            .on_loopback(),
+            ServerIdentity {
+                user_public_key: user.public_key,
+                device_signing_key: admin_key,
+                device_cert: admin_cert,
+                revocations: RevocationList::new(),
+            },
+        )
+        .await
+        .unwrap();
+        let primary_workspaces = primary.workspaces().expect("the device holds workspaces");
+        crate::servers::found(primary_workspaces).await.unwrap();
+        // The server runs the packet relay this machine's loopback is reached through:
+        // nothing here asks number 0 for one.
+        let config = ServerConfig {
+            state_root: temp.path().join("server"),
+            trust_policy: TrustPolicy::AllowMatchingUser,
+            services: crate::mesh::ServiceCapabilities::relay_only(),
+            packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
+            ..ServerConfig::default()
+        }
+        .on_loopback();
+        let identity = ServerIdentity {
+            user_public_key: user.public_key,
+            device_signing_key: host_key,
+            device_cert: server_cert.clone(),
+            revocations: RevocationList::new(),
+        };
+        let server = Server::start(config.clone(), identity.clone())
+            .await
+            .unwrap();
+        let relay = server
+            .node_addr()
+            .relay_urls()
+            .next()
+            .expect("the server names its packet relay")
+            .to_string();
+        // It serves it: something answers on the address the URL names.
+        let listening = relay
+            .strip_prefix("http://")
+            .expect("a plain URL")
+            .trim_end_matches('/');
+        let front = tokio::net::TcpStream::connect(
+            listening
+                .parse::<std::net::SocketAddr>()
+                .expect("a relay URL's address"),
+        )
+        .await
+        .expect("the packet relay answers");
+        drop(front);
+        let person_workspace = crate::servers::person_workspace_id(&user.public_key);
+        crate::servers::admit(primary_workspaces, &server_cert, &server.node_addr())
+            .await
+            .unwrap();
+        primary_workspaces
+            .attach_server(
+                &person_workspace,
+                server_cert.device_public_key,
+                server.node_addr(),
+                tilo_peer_state::CopyRole::KeyHolder,
+            )
+            .await
+            .unwrap();
+        let governed = server.workspaces().expect("the server holds workspaces");
+        tilo_test_env::within("the server to hold the Servers workspace", async {
+            while !crate::servers::holds_person_workspace(governed).await {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        // Started again, it keeps the workspace from its own state and writes its entry
+        // from where it is reached: its address, and the relay beside it.
+        server.shutdown().await;
+        let restarted = Server::start(config, identity).await.unwrap();
+        let governed = restarted.workspaces().expect("the server holds workspaces");
+        let endpoint = serde_json::to_string(&restarted.node_addr()).unwrap();
+        let named = tilo_test_env::within("the entry to name the relay", async {
+            loop {
+                if let Ok(servers) = crate::servers::read(governed).await
+                    && let Some(entry) = servers.active(&host.public_key)
+                    && entry.endpoint == endpoint
+                    && !entry.relay.is_empty()
+                {
+                    break entry.relay.clone();
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        let reached_by = restarted
+            .node_addr()
+            .relay_urls()
+            .next()
+            .expect("the restarted server names its packet relay")
+            .to_string();
+        assert_eq!(
+            named, reached_by,
+            "the entry names the packet relay the server is reached through"
+        );
+        restarted.shutdown().await;
+        primary.shutdown().await;
     }
 
     #[test]

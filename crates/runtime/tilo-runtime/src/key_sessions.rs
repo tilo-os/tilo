@@ -26,6 +26,9 @@ use tilo_workspace_service::app_serving::AppActionServer;
 use crate::personal_devices::{PersonalDevices, Refusal};
 use collab_types::WorkspaceId;
 
+mod pages;
+pub use pages::{PageViews, Pages};
+
 /// The most sessions one device keeps for its person's keys at once.
 const MAX_SESSIONS: usize = 256;
 
@@ -46,6 +49,10 @@ pub trait Sessions: Send + Sync {
     /// # Errors
     /// The broker does not admit a session for the key.
     fn open(&self, workspace: &str, key: &DeviceCert) -> Result<(SessionHost, Caller), String>;
+
+    /// The device's dispatch itself, which admits each call as the caller it carries: what a
+    /// web page of the workspace asks as its person ([`Pages`]).
+    fn dispatch(&self) -> SessionHost;
 }
 
 /// The record actions of the workspaces a device hosts, answered for its
@@ -56,6 +63,8 @@ pub struct KeySessions {
     /// before the store and the broker it serves.
     serving: OnceLock<Serving>,
     open: std::sync::Mutex<HashMap<(WorkspaceId, [u8; 32]), Session>>,
+    /// The workspaces' apps as web pages, served from the same dispatch.
+    pages: Pages,
 }
 
 struct Serving {
@@ -77,13 +86,23 @@ impl KeySessions {
         Arc::new(Self {
             serving: OnceLock::new(),
             open: std::sync::Mutex::default(),
+            pages: Pages::default(),
         })
     }
 
     /// Answer the keys `devices` says are the person's through `sessions` from
     /// now on. A second call is ignored.
     pub fn serve(&self, devices: Arc<PersonalDevices>, sessions: Arc<dyn Sessions>) {
+        self.pages
+            .serve(Arc::clone(&sessions), Arc::clone(&devices));
         let _ = self.serving.set(Serving { devices, sessions });
+    }
+
+    /// The workspaces' apps as web pages, which show apps' views through what
+    /// [`Pages::show_through`] is handed.
+    #[must_use]
+    pub const fn pages_served(&self) -> &Pages {
+        &self.pages
     }
 
     /// The session `key` works in on `workspace_id`, opened now if it has none,
@@ -159,6 +178,10 @@ impl KeySessions {
 }
 
 impl AppActionServer for KeySessions {
+    fn pages(&self) -> Option<&dyn tilo_workspace_service::app_serving::AppPages> {
+        Some(&self.pages)
+    }
+
     /// Only a key's certified session reaches a run: without the certificate
     /// there is no key to hold to its scope.
     fn serve(

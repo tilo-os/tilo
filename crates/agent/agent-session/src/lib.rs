@@ -18,9 +18,8 @@
 //!   keys; the host admits what a worker returns before it signs it
 //!   ([`worker`]).
 //! - **Work.** The workspace's own agents (its `tilo.workspace.agent` roster) take
-//!   their turns on the host that governs it, through the host's actions
-//!   ([`workspace_actions`]); each signs its changes with its own key, through a
-//!   signing session the host opens for its approved grant ([`grants`]).
+//!   their turns through the device's dispatch; each signs its changes with its own key,
+//!   through a signing session opened for its approved grant ([`grants`]).
 //! - **Grants.** [`AgentService`] keeps each roster agent's grant under a state
 //!   directory, opens its signing session again when the service restarts and
 //!   settles expired grants.
@@ -41,11 +40,10 @@ pub mod record_actions;
 pub mod render;
 pub mod search;
 pub mod service;
+pub mod shell;
 pub mod transform;
 mod web_apps;
 pub mod worker;
-pub mod workspace_actions;
-mod workspace_documents;
 
 pub use apps::{
     AppCatalogue, AppError, PlacedApp, PlacedArgument, Replica, ReplicaActor, Seed, component_apps,
@@ -56,8 +54,7 @@ pub use grants::{
 };
 pub use record_actions::{RESOURCE_PROVIDER, resource_provider};
 pub use service::{AgentService, CatalogueFactory, ServerEndpoint};
-pub use worker::{ConfinedReplica, PageAction};
-pub use workspace_actions::{FeedbackReviewer, WorkspaceActions, WorkspaceDocumentsLink};
+pub use worker::ConfinedReplica;
 
 // Unit tests admit peer bytes through the Automerge isolate, whose workers
 // are this test binary started again.

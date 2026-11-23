@@ -74,7 +74,6 @@ const FILES: &str = "state/take-work/files";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Server {
     device: [u8; 32],
-    endpoint: [u8; 32],
 }
 
 impl Server {
@@ -86,33 +85,16 @@ impl Server {
     /// `device` is not a device key.
     pub fn new(device: &str) -> Result<Self, String> {
         let key = key(device).ok_or_else(|| format!("{device} is not a device key"))?;
-        Ok(Self {
-            device: key,
-            endpoint: key,
-        })
-    }
-
-    /// This server with its endpoint keyed `endpoint` (hex), apart from its
-    /// device key, as a Tilo server's is.
-    ///
-    /// # Errors
-    ///
-    /// `endpoint` is not a key.
-    pub fn with_endpoint(mut self, endpoint: &str) -> Result<Self, String> {
-        self.endpoint = key(endpoint).ok_or_else(|| format!("{endpoint} is not an endpoint id"))?;
-        Ok(self)
+        Ok(Self { device: key })
     }
 
     /// The server this computer's login names, for a member whose profile was joined with a
-    /// ticket: the device whose certificate the login carries, reached at the endpoint the
-    /// ticket's entry named. `None` without a login or an address.
+    /// ticket: the device whose certificate the login carries, where the ticket's entry named
+    /// an address it is reached at. `None` without a login or an address.
     #[must_use]
     pub fn from_login(login: Option<&tilo_device_identity::login::Device>) -> Option<Self> {
-        let address = login?.server_address.as_ref()?;
-        let server = Self::new(&hex::encode(login?.server_cert.device_public_key)).ok()?;
-        server
-            .with_endpoint(&hex::encode(address.endpoint_addr.id.as_bytes()))
-            .ok()
+        login?.server_address.as_ref()?;
+        Self::new(&hex::encode(login?.server_cert.device_public_key)).ok()
     }
 
     /// The server's device key.
@@ -223,7 +205,6 @@ pub(crate) fn action_service(
         )
     })?;
     workspaces.take_work();
-    let (device, endpoint) = (server.device, server.endpoint);
     let entering = Arc::new(Entering::new(Arc::clone(workspaces), server));
     let reads = Arc::new(super::workspaces::Reads {
         service: Arc::clone(workspaces.service()),
@@ -238,9 +219,6 @@ pub(crate) fn action_service(
             reads,
         )
     };
-    // The server asks from its endpoint, which a Tilo server keys apart from
-    // the device it signs its runs as.
-    action_service.reach_device_at(device, endpoint);
     Ok(TakesWork {
         terminals: (shells.terminals)(action_service.clone()),
         actions: action_service,
@@ -499,6 +477,7 @@ fn open_member_service(
             tilo_workspace_service::own_device::Device {
                 cert: &cert,
                 signer: &signer,
+                itself: None,
             },
             bound,
             groups,

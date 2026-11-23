@@ -204,8 +204,6 @@ install -Dpm 0755 bin/tilo                   %{buildroot}%{_bindir}/tilo
 install -Dpm 0755 bin/tilo-runtime            %{buildroot}%{_bindir}/tilo-runtime
 install -Dpm 0755 bin/tilolang-process          %{buildroot}%{_bindir}/tilolang-process
 install -Dpm 0755 bin/fs %{buildroot}%{_bindir}/fs
-install -Dpm 0755 bin/tilo-server-admin %{buildroot}%{_libexecdir}/tilo/tilo-server-admin
-ln -s ../libexec/tilo/tilo-server-admin %{buildroot}%{_bindir}/tilo-server-admin
 install -Dpm 0644 systemd-user/tilo-files-workspace.service %{buildroot}%{_userunitdir}/tilo-files-workspace.service
 install -Dpm 0755 bin/tilo-launcher          %{buildroot}%{_libexecdir}/tilo/tilo-launcher
 ln -s ../libexec/tilo/tilo-launcher %{buildroot}%{_bindir}/tilo-launcher
@@ -283,7 +281,7 @@ install -Dpm 0644 wayland-sessions/tilo-app.desktop \
 # Files readiness and normal same-person enrollment are first-party tools.
 # Keep automatic ELF requirements enabled for these host executables; only the
 # separately signed private app/runtime stores are excluded above.
-for program in fs tilo-server-admin; do
+for program in fs; do
     test -x %{buildroot}%{_bindir}/$program
 done
 test -x %{buildroot}%{_bindir}/tilo-import-folders
@@ -359,8 +357,6 @@ done
 %{_bindir}/tilo-runtime
 %{_bindir}/tilolang-process
 %{_bindir}/fs
-%{_bindir}/tilo-server-admin
-%{_libexecdir}/tilo/tilo-server-admin
 %{_userunitdir}/tilo-files-workspace.service
 %{_bindir}/tilo-launcher
 %{_libexecdir}/tilo/tilo-launcher

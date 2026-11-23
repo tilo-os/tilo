@@ -34,6 +34,10 @@ pub const PROVIDER: &str = "tilo.invocations";
 pub const RESOURCE: &str = "workspace";
 /// List the workspace's invocations, newest first.
 pub const LIST: &str = "list";
+/// How one invocation stands: an action of the invocation, by its id.
+pub const GET: &str = "get";
+/// Stop one invocation.
+pub const CANCEL: &str = "cancel";
 
 /// How many invocations a page holds when the query asks for no number.
 pub const PAGE: usize = 50;

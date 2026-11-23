@@ -19,6 +19,13 @@ pub fn workspacetest_payload() -> &'static Path {
     built_once(&PAYLOAD, "workspacetest", "2021")
 }
 
+/// A payload root holding `bin/hostprobe`, which stands in for a tilolang host and answers on
+/// its link what each read and write it is asked to make answered.
+pub fn hostprobe_payload() -> &'static Path {
+    static PAYLOAD: OnceLock<PathBuf> = OnceLock::new();
+    built_once(&PAYLOAD, "hostprobe", "2024")
+}
+
 /// Actual finite headless worker for signed capture-pipeline qualification.
 pub fn capture_worker_payload() -> &'static Path {
     static PAYLOAD: OnceLock<PathBuf> = OnceLock::new();
@@ -178,4 +185,27 @@ fn rustc() -> std::path::PathBuf {
         .map(|cargo| cargo.with_file_name("rustc"))
         .filter(|rustc| rustc.is_file())
         .unwrap_or_else(|| "rustc".into())
+}
+
+/// The shared objects `executables` load, as this machine's loader resolves them: what a runtime
+/// bundle built here carries so they run inside a sandbox.
+pub fn native_closure(executables: &[&Path]) -> Vec<PathBuf> {
+    use tilo_test_env::SpawnUnderEnvLock as _;
+    let mut libraries = std::collections::BTreeSet::new();
+    for executable in executables {
+        let report = std::process::Command::new("ldd")
+            .arg(executable)
+            .output_locked()
+            .unwrap();
+        assert!(report.status.success());
+        let report = String::from_utf8(report.stdout).unwrap();
+        assert!(!report.contains("not found"), "{report}");
+        libraries.extend(
+            report
+                .split_whitespace()
+                .filter(|word| word.starts_with('/') && !word.ends_with(':'))
+                .map(PathBuf::from),
+        );
+    }
+    libraries.into_iter().collect()
 }

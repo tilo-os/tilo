@@ -1,7 +1,7 @@
 # Read by os/dev/test-nearby-pairing.sh on the paired machine as `sh -s`:
 # exits 1 and lists every process that would mean pairing involved an
-# administrator (a pkexec, a polkit agent's authentication helper, the
-# home-peer control helper), exits 0 when there is none, and exits 2 when it
+# administrator (a pkexec or a polkit agent's authentication helper), exits 0
+# when there is none, and exits 2 when it
 # cannot look.
 #
 # A process is identified by its own name (its comm, which the kernel cuts to
@@ -20,7 +20,7 @@ set -u
 
 privileged() {
   case $1 in
-    pkexec | polkit-agent-helper-1 | polkit-agent-he | tilo-home-peer-control | tilo-home-peer-) return 0 ;;
+    pkexec | polkit-agent-helper-1 | polkit-agent-he) return 0 ;;
   esac
   return 1
 }

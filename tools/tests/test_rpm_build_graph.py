@@ -79,7 +79,6 @@ class RpmBuildGraphTest(unittest.TestCase):
         expected = {
             "imager",
             "fs",
-            "tilo-server-admin",
             "tilo-linux-vm",
         }
         workspace = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]

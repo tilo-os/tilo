@@ -65,13 +65,10 @@ pub(crate) mod region;
 mod replica;
 mod serve;
 
-pub(crate) use process::Lease;
 pub use process::{affinity, pool_size, running, set_affinity};
-pub use proto::{PageAction, ProbeReport};
-pub(crate) use read::{ConfinedRead, ConfinedTitles, ConfinedViews};
-pub use region::PersonRegion;
+pub use proto::ProbeReport;
+pub use read::ViewReadPolicy;
 pub use replica::ConfinedReplica;
-pub(crate) use replica::{Invoked, Operation};
 
 /// The first argument of a worker. It is also the name of the test
 /// [`app_worker!`](crate::app_worker) defines, so libtest runs exactly that

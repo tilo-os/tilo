@@ -47,6 +47,8 @@ mod mcp_server;
 pub use machines::WorkspaceMachines;
 mod names;
 pub use names::PersonNames;
+mod web_ui;
+pub use web_ui::WebUi;
 mod surfaces;
 pub use content::{ContentKeeper, WholeDocuments, WorkspaceContent};
 mod device_actions;
@@ -947,6 +949,9 @@ pub(crate) struct WorkspaceServices {
     pub(crate) work: tilo_server_protocol::WorkSetting,
     /// The relays this device holds back until something needs it reachable.
     pub(crate) reachability: tilo_endpoint_reachability::Reachability,
+    /// Whether the endpoint had named where it is reached when the service opened, or names it
+    /// only later ([`crate::service::ServiceConfig::reaching`]).
+    pub(crate) reaching: tilo_endpoint_reachability::Reaching,
     /// What this keeper says of itself among the holders of the workspaces it serves, which
     /// its signed address carries.
     pub(crate) holder: Arc<std::sync::RwLock<HolderClaim>>,
@@ -1073,6 +1078,9 @@ struct WorkspacesInner {
     machines: std::sync::RwLock<Option<Arc<dyn WorkspaceMachines>>>,
     /// Where the name each person gave themselves is kept ([`Workspaces::person_names`]).
     person_names: std::sync::RwLock<Option<Arc<dyn PersonNames>>>,
+    /// What starts and stops this device's own web UI
+    /// ([`Workspaces::serve_web_with`]).
+    web_ui: std::sync::RwLock<Option<Arc<dyn WebUi>>>,
     /// Each record write of a member the governor's copy took in.
     document_writes: tokio::sync::broadcast::Sender<ResourceWrite>,
     /// The records sessions opened, and where a write of one goes
@@ -1411,6 +1419,7 @@ impl Workspaces {
                 asks_people: std::sync::RwLock::default(),
                 machines: std::sync::RwLock::default(),
                 person_names: std::sync::RwLock::default(),
+                web_ui: std::sync::RwLock::default(),
                 document_writes: tokio::sync::broadcast::channel(256).0,
                 opened_records: opened_records::OpenedRecords::default(),
                 person_settings_moved: tokio::sync::watch::channel(0).0,
@@ -2206,7 +2215,7 @@ impl Workspaces {
             return;
         };
         let workspace_id = state.lock().await.workspace_id();
-        let retained = match self.inner.records.retained_settled(workspace_id) {
+        let retained = match self.inner.records.retained_settled(workspace_id).await {
             Ok(retained) => retained,
             Err(error) => {
                 tracing::warn!(%workspace, %error, "governed workspace did not replay what its members wrote");

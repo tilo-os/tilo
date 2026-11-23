@@ -22,7 +22,7 @@ use linux_vm::hosted::size::VmSize;
 use tilo_actions::InvocationId;
 use tilo_actions::remote::environment_commands::{self, CommandOutput, CommandRequest};
 use tilo_actions::remote::{ActionProvider as _, Caller, InvokeArgument, InvokeRequest};
-use tilo_agent_session::workspace_actions::{ShellRan, Watching};
+use tilo_agent_session::shell::{ShellRan, Watching};
 use tilo_peer_state::actions::{ActionService, NoActions};
 use tilo_runtime::device::take_work;
 use tilo_server::linux_devices::{LinuxDevices, Timing, WAITING};

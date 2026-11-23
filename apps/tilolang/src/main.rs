@@ -39,6 +39,17 @@ fn main() -> std::process::ExitCode {
             }
         };
     }
+    // A window a device shows on a web page draws nothing: it answers the device on its page
+    // link, and needs no package of its own, since its instance runs in the app's process.
+    if let Ok(named) = std::env::var(runtime_portal::process_link::PAGE_ENV) {
+        return match tilolang_app::shown_on_page::serve_from_env(&named) {
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("tilolang: the page's window: {error}");
+                std::process::ExitCode::from(2)
+            }
+        };
+    }
     if let Err(error) = tilolang_app::install_from_env() {
         eprintln!("tilolang: {error}");
         return std::process::ExitCode::from(2);

@@ -10,6 +10,8 @@
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
+use tilo_user_identity::RevocationEntry;
+
 /// Why a host turned a change, a subscription or an action away.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Refusal {
@@ -43,6 +45,14 @@ pub enum Refusal {
     Conflict,
     /// Anything else: the host's own words, for the log.
     Other(String),
+    /// The root of the person whose workspace this is retired the dialling
+    /// device's key: the root-signed entry that says so. A device it is sent to
+    /// keeps the entry as an announced revocation, which its root signed, so it
+    /// refuses its own key everywhere it is due rather than only at the link
+    /// that said it. A key lost, stolen or compromised is not told this: the
+    /// entry names why, and the reason is the person's. Kept last: a refusal's
+    /// variant index is its wire form.
+    Revoked(Box<RevocationEntry>),
 }
 
 /// A person's own workspace keeps as much as the host keeps for them, so the
@@ -78,7 +88,7 @@ impl Refusal {
             Self::Full => "storage_full",
             Self::NotGranted(_) => "not_granted",
             Self::NotAllowed(_) => "not_allowed",
-            Self::NotAMember(_) => "not_a_member",
+            Self::NotAMember(_) | Self::Revoked(_) => "not_a_member",
             Self::NotAdmitted => "not_admitted",
             Self::WorkspaceDeleted => "workspace_deleted",
             Self::Offline => "offline",
@@ -95,7 +105,7 @@ impl Refusal {
             Self::Full => PLAIN_FULL.into(),
             Self::NotGranted(_) => PLAIN_NOT_GRANTED.into(),
             Self::NotAllowed(_) => PLAIN_NOT_ALLOWED.into(),
-            Self::NotAMember(_) | Self::NotAdmitted => PLAIN_NOT_A_MEMBER.into(),
+            Self::NotAMember(_) | Self::Revoked(_) | Self::NotAdmitted => PLAIN_NOT_A_MEMBER.into(),
             Self::WorkspaceDeleted => PLAIN_DELETED.into(),
             Self::NotReady | Self::Offline | Self::Invalid(_) | Self::Conflict | Self::Other(_) => {
                 PLAIN_REFUSED.into()
@@ -112,6 +122,11 @@ impl std::fmt::Display for Refusal {
             Self::NotGranted(detail) => write!(f, "not granted: {detail}"),
             Self::NotAllowed(detail) => write!(f, "not allowed: {detail}"),
             Self::NotAMember(detail) => write!(f, "not a member: {detail}"),
+            Self::Revoked(entry) => write!(
+                f,
+                "the device was retired by its person's root at {}",
+                entry.revoked_at_ns
+            ),
             Self::NotAdmitted => f.write_str("not a member here"),
             Self::WorkspaceDeleted => f.write_str("workspace deleted"),
             Self::Offline => f.write_str("the device is not connected to the workspace"),

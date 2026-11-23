@@ -59,7 +59,11 @@ async fn readiness(
 
 /// Serve a WebTransport session at [`LINK_PAGE_PATH`]: its first stream proves
 /// which device opened it, as every session's does, then carries its pages.
-pub(crate) async fn serve_web(protocol: &ServerProtocol, session: tilo_net::webtransport::Session) {
+pub(crate) async fn serve_web(
+    protocol: &ServerProtocol,
+    questions: Option<&dyn Questions>,
+    session: tilo_net::webtransport::Session,
+) {
     let link = tilo_server_client::link::Link::web(session);
     let Ok((mut send, mut recv)) = link.accept_bi().await else {
         return;
@@ -81,7 +85,7 @@ pub(crate) async fn serve_web(protocol: &ServerProtocol, session: tilo_net::webt
     serve_pages(
         pages,
         &person,
-        answers,
+        questions.filter(|_| answers),
         |workspace_id, app| readiness(workspaces.as_deref(), workspace_id, app),
         recv,
         send,
@@ -90,10 +94,21 @@ pub(crate) async fn serve_web(protocol: &ServerProtocol, session: tilo_net::webt
     link.close("the page closed");
 }
 
+/// The questions a person's hosts ask them, which a page holding their identity draws over
+/// its app as a sheet ([`QUESTION_PATCH_ID`]), in the words a native session's sheet uses.
+pub(crate) trait Questions: Sync {
+    /// The sheet `person`'s waiting questions draw: HTML, or the empty sheet while none waits.
+    fn sheet(&self, person: &[u8; 32]) -> String;
+
+    /// Answer the question `target` names for `person`: the sheet after it, or why it was not
+    /// taken. `None` when the target names no question.
+    fn answer(&self, person: &[u8; 32], target: &str) -> Option<Result<String, String>>;
+}
+
 /// Answer what a page asks on its stream until it closes: the person of
 /// `person` opens pages and acts on the one open, and an open page hears what
-/// others changed on it. `answers` says whether this device answers their
-/// questions on the page; `ready` says whether a workspace's documents are
+/// others changed on it. `questions` are theirs to answer on the page, where
+/// this device answers them; `ready` says whether a workspace's documents are
 /// readable here ([`readiness`]).
 #[allow(
     clippy::too_many_lines,
@@ -102,7 +117,7 @@ pub(crate) async fn serve_web(protocol: &ServerProtocol, session: tilo_net::webt
 pub(crate) async fn serve_pages<R, W, F, Fut>(
     pages: &dyn AppPages,
     person: &Caller,
-    answers: bool,
+    questions: Option<&dyn Questions>,
     ready: F,
     mut recv: R,
     mut send: W,
@@ -122,6 +137,9 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
             }
         }
     });
+    // The questions drawn over the page are their person's.
+    let questions = questions.zip(person.user_public_key().copied());
+    let sheet_of = |(questions, person): (&dyn Questions, [u8; 32])| questions.sheet(&person);
     let mut open: Option<(WorkspaceId, u64)> = None;
     // The question sheet the open page draws, as last sent: a question that
     // comes or goes patches it in place.
@@ -142,16 +160,13 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
                         let opened = open_page(pages, person, &ready, address, &mut send).await;
                         if let Ok((workspace_id, page, _)) = &opened {
                             open = Some((*workspace_id, *page));
-                            pages.opened(*workspace_id, *page, person);
-                            sheet = answers.then(|| pages.question_sheet(*workspace_id, *page));
+                            sheet = questions.map(sheet_of);
                         }
                         match opened {
                             // A device of the person has the questions their
                             // hosts ask them drawn over the app's page.
-                            Ok((workspace_id, page, PageAnswer::Shown { title, css, mut body }))
-                                if answers =>
-                            {
-                                body.push_str(&pages.question_sheet(workspace_id, page));
+                            Ok((_, _, PageAnswer::Shown { title, css, mut body })) if sheet.is_some() => {
+                                body.push_str(sheet.as_deref().unwrap_or_default());
                                 PageAnswer::Shown { title, css, body }
                             }
                             Ok((_, _, answer)) => answer,
@@ -161,23 +176,26 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
                             }
                         }
                     }
-                    PageAsk::Act { id, target, action } => match open {
-                        Some((workspace_id, page)) if id == QUESTION_PATCH_ID && answers => {
+                    PageAsk::Act {
+                        id,
+                        target,
+                        action,
+                        signed,
+                    } => match open {
+                        Some(_) if id == QUESTION_PATCH_ID && questions.is_some() => {
                             // The person answered the question the page draws
                             // over the app: their answer runs the held call,
                             // and the sheet shows what waits next.
                             let asked = target.as_deref().unwrap_or_default();
-                            match pages.answer_question(workspace_id, page, asked) {
-                                Some(pending) => match pending.await {
-                                    Some(Ok(patches)) => {
-                                        sheet = Some(pages.question_sheet(workspace_id, page));
-                                        PageAnswer::Patched(patches)
-                                    }
-                                    Some(Err(refusal)) => PageAnswer::Refused(refusal),
-                                    None => PageAnswer::Refused(PageRefusal::Unavailable(
-                                        "the question was dropped".to_owned(),
-                                    )),
-                                },
+                            match questions.and_then(|(questions, person)| questions.answer(&person, asked)) {
+                                Some(Ok(drawn)) => {
+                                    sheet = Some(drawn.clone());
+                                    PageAnswer::Patched(vec![PagePatch {
+                                        id: QUESTION_PATCH_ID,
+                                        html: drawn,
+                                    }])
+                                }
+                                Some(Err(reason)) => PageAnswer::Refused(PageRefusal::Unavailable(reason)),
                                 None => PageAnswer::Refused(PageRefusal::Unavailable(
                                     "no question is waiting".to_owned(),
                                 )),
@@ -189,7 +207,18 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
                             ),
                         ),
                         Some((workspace_id, page)) => patched(
-                            pages.act(workspace_id, page, Some((id, target, action))).await,
+                            pages
+                                .act(
+                                    workspace_id,
+                                    page,
+                                    Some(crate::app_serving::PageAct {
+                                        id,
+                                        target,
+                                        action,
+                                        signed,
+                                    }),
+                                )
+                                .await,
                         ),
                         None => PageAnswer::Refused(PageRefusal::Unavailable(
                             "no page is open".to_owned(),
@@ -199,7 +228,7 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
             }
             _ = follow.tick(), if open.is_some() => {
                 let Some((workspace_id, page)) = open else { continue };
-                let drawn = answers.then(|| pages.question_sheet(workspace_id, page));
+                let drawn = questions.map(sheet_of);
                 match drawn {
                     // A question came or went: the sheet is patched where it
                     // stands over the app.

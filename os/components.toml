@@ -629,15 +629,12 @@ scope = "vm"
 packages = ["tilo-server"]
 # As the image builds it: the server serves browsers (`run --web`, a node).
 features = ["tilo-server/web"]
-bins = ["tilo-server", "tilo-server-admin", "tilo-home-peer-control"]
+bins = ["tilo-server"]
 units = ["tilo-server.service"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-server", to = "/usr/libexec/tilo/tilo-server", mode = "0755" },
   { link = "tilo", to = "/usr/bin/tilo-server" },
-  { from = "tilo-server-admin", to = "/usr/libexec/tilo/tilo-server-admin", mode = "0755" },
-  { link = "tilo", to = "/usr/bin/tilo-server-admin" },
-  { from = "tilo-home-peer-control", to = "/usr/libexec/tilo-home-peer-control", mode = "0755" },
   # A node.
   { from = "@manifest/usr/lib/tilo/node-server.toml", to = "/usr/lib/tilo/node-server.toml", mode = "0644", layer = "desktop-files" },
   { from = "@manifest/usr/lib/sysusers.d/tilo-server.conf", to = "/usr/lib/sysusers.d/tilo-server.conf", mode = "0644", layer = "desktop-files" },
@@ -647,9 +644,8 @@ files = [
   { from = "@manifest/usr/lib/systemd/system/tilo-node-session@.path", to = "/usr/lib/systemd/system/tilo-node-session@.path", mode = "0644", layer = "desktop-files" },
 ]
 
-# The server image's own server: the daemon and its admin program, built
-# without the browser listener a node serves (`web`). Their old names in /usr/bin
-# resolve through the image's own tilo (host-tilo-cli), as a desktop's do.
+# The server image's own server: the device's one daemon, which keeps what a
+# server keeps as its server configuration says (tilo-server.service).
 # tools/ci/publish/server-binaries.sh builds it and host-build.sh lays it out
 # from this entry, as a swap into a server does.
 [[component]]
@@ -657,15 +653,12 @@ name = "host-server"
 kind = "userspace"
 scope = "vm"
 images = ["host"]
-packages = ["tilo-server"]
-bins = ["tilo-server", "tilo-server-admin"]
+packages = ["tilo-runtime"]
+bins = ["tilo-runtime"]
 units = ["tilo-server.service"]
 layer = "host-binaries"
 files = [
-  { from = "tilo-server", to = "/usr/libexec/tilo/tilo-server", mode = "0755" },
-  { link = "tilo", to = "/usr/bin/tilo-server" },
-  { from = "tilo-server-admin", to = "/usr/libexec/tilo/tilo-server-admin", mode = "0755" },
-  { link = "tilo", to = "/usr/bin/tilo-server-admin" },
+  { from = "tilo-runtime", to = "/usr/libexec/tilo/tilo-runtime", mode = "0755" },
 ]
 
 # The command line a server logs in with at first boot, spending the ticket left on its

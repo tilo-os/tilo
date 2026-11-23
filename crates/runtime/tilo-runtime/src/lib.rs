@@ -17,6 +17,7 @@ use std::{
 
 #[cfg(unix)]
 mod apps;
+#[cfg(unix)]
 pub mod cli;
 #[cfg(unix)]
 pub mod daemon;

@@ -214,7 +214,7 @@ impl Process {
     }
 
     /// Send `request` to `slot` without waiting for an answer. The views it renders are in the
-    /// region of the person this thread renders for ([`super::region`]).
+    /// device's region ([`super::region`]).
     fn send(&self, slot: Slot, mode: Mode, request: &Request) -> Result<(), String> {
         let region = super::region::wire();
         FRAMING

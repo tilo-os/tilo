@@ -201,6 +201,9 @@ pub struct Server {
     /// The Tilo desktop this server is part of, when it is: it answers every
     /// workspace itself, and no call is forwarded anywhere.
     here: Option<Arc<dyn session::Here>>,
+    /// The device's record of the invocations it was asked for: where a call the account hands on
+    /// to a workspace's host is followed.
+    invocations: Arc<tilo_actions::remote::invocation_record::Invocations>,
 }
 
 /// How long a site seen serving its sign-in page is trusted to keep serving it.
@@ -282,6 +285,10 @@ impl Server {
             approved_keys: Mutex::default(),
             sign_in_served: Mutex::default(),
             v1: v1::State::default(),
+            invocations: here
+                .as_ref()
+                .and_then(|here| here.invocations())
+                .unwrap_or_default(),
             here,
         }))
     }
@@ -1453,7 +1460,7 @@ impl Server {
     ) -> Result<Session, String> {
         let key = grant.key().ok_or("this key cannot act now")?;
         let reach = if let Some(here) = &self.here {
-            session::Reach::Here(Arc::clone(here))
+            session::Reach::Here(Arc::clone(here), Box::new(key.clone()))
         } else {
             let connection = self
                 .connection(&grant.id, &key)

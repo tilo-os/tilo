@@ -186,17 +186,6 @@ async fn title(workspaces: &Workspaces, workspace: &str, id: &str) -> Option<Val
         .map(|held| held.scalar("title"))
 }
 
-/// Whether the store of this device's copy of `workspace` holds the issue `id`, whoever reads it.
-async fn holds(workspaces: &Workspaces, workspace: &str, id: &str) -> bool {
-    let governed = workspaces.workspace(workspace).await.unwrap();
-    let governed = governed.lock().await;
-    governed
-        .resources
-        .store()
-        .get(KIND, id, &|_| true)
-        .is_some()
-}
-
 /// The title of the issue `id` of `workspace`, as an app reads it through the service.
 async fn title_through_service(
     workspaces: &Workspaces,
@@ -410,6 +399,193 @@ async fn a_device_writes_its_resources_through_the_service_and_reads_them_back()
         title_through_service(&workspaces, &context, "denied")
             .await
             .is_none()
+    );
+    drop(workspaces);
+    server.shutdown().await;
+}
+
+/// A write of issue `id` titled `title` in `app`'s resource type `kind`, as the verb `verb`, made
+/// by the app outside any invocation: what a view's own press writes.
+fn viewed_put(kind: &str, id: &str, title: &str, verb: &str) -> Command {
+    Command::Put {
+        kind: kind.to_owned(),
+        id: id.to_owned(),
+        resource: Resource {
+            readers: "*".into(),
+            parent: None,
+            order: None,
+            fields: BTreeMap::from([("title".to_owned(), Cell::One(Value::Text(title.into())))]),
+        },
+        stamp: Stamp {
+            verb: verb.to_owned(),
+            // What the app claims is replaced by who the view was opened for.
+            invoker: "the app's own claim".to_owned(),
+            invocation: uuid::Uuid::new_v4().to_string(),
+            ..Stamp::default()
+        },
+    }
+}
+
+/// Who made each version of `id` of `kind` in `app`, oldest first, as the device reads them.
+async fn made_by(
+    workspaces: &Workspaces,
+    device: &ResourceRequestContext,
+    (app, kind, id): (&str, &str, &str),
+) -> Vec<Option<tilo_actions::Actor>> {
+    let device =
+        ResourceRequestContext::authenticated(app, device.workspace_id(), device.caller().clone());
+    let Reply::Versions(versions) = workspaces
+        .resource_command(
+            &device,
+            Command::Versions {
+                kind: kind.into(),
+                id: id.into(),
+            },
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("a resource's versions");
+    };
+    versions
+        .iter()
+        .map(|version| version.stamp.as_ref().and_then(Stamp::invoked_by))
+        .collect()
+}
+
+/// A view the device opened for a caller of its dispatch writes as that caller and reads as
+/// them, whatever the app claims and although the connection is the device's own: an editor's
+/// write is the editor's, a visitor's is the visitor's where the workspace's entry opens that verb
+/// to any key, and a write the caller may not make (a viewer's, a visitor's other verb) is
+/// refused before the store keeps anything of it. A visitor reads none of the members'
+/// resources through the view.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one flow through an editor, a viewer and a visitor at the same view, which is what it proves"
+)]
+async fn a_views_writes_are_its_callers_and_limited_to_what_they_may_do() {
+    use tilo_actions::remote::Caller;
+    use tilo_server_protocol::workspaces::Role;
+    const ENTRY: &str = tilo_action_policy::VISITOR_ENTRY_APP;
+    const REQUEST: &str = "entry.request";
+    let dir = tempfile::tempdir().unwrap();
+    let keys = Arc::new(TestGroupKeys::default());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
+    let server = test_host_holding(dir.path(), &key, &cert, Arc::clone(&keys)).await;
+    let workspaces = server.workspaces().clone();
+    workspaces.set_member_device(Arc::new(super::super::MemberDevice {
+        cert: cert.clone(),
+        signer: Arc::new(key.clone()),
+    }));
+    let workspace = workspaces.create("Tasks").await.unwrap().workspace;
+    for app in [APP, ENTRY] {
+        let route = tilo_peer_state::document_frame::DocumentRoute {
+            app_id: app.into(),
+            cluster_id: workspace.clone(),
+            document: String::new(),
+        };
+        let _ = workspaces.own_route_keys(&route, true).await.unwrap();
+    }
+    let (editor_key, editor) = super::super::tests::guest_device();
+    let (viewer_key, viewer) = super::super::tests::guest_device();
+    for (seed, (device_key, device), role) in [
+        (61, (&editor_key, &editor), Role::Editor),
+        (62, (&viewer_key, &viewer), Role::Viewer),
+    ] {
+        super::super::fixtures::entry_join_as(
+            &workspaces,
+            &cert,
+            &workspace,
+            (device_key, device),
+            seed,
+            role,
+        )
+        .await;
+    }
+    // The entry keeps requests: it opens leaving one to any key.
+    workspaces
+        .list_invitation_only(&workspace, &cert, true)
+        .await
+        .unwrap();
+    workspaces
+        .list_wait_list_max(&workspace, &cert, 8)
+        .await
+        .unwrap();
+    let device = context(&workspace, &cert);
+    let view = |app: &str, caller: Caller| {
+        ResourceRequestContext::authenticated(app, &workspace, device.caller().clone())
+            .opened_for(Some(caller.in_workspace(&workspace)))
+    };
+    let member = |cert: &tilo_user_identity::DeviceCert| {
+        Caller::authenticated(cert.user_public_key, cert.device_public_key)
+    };
+
+    // An editor's press in the view is the editor's.
+    workspaces
+        .resource_command(
+            &view(APP, member(&editor)),
+            viewed_put(KIND, "i-1", "Edited", "add"),
+        )
+        .await
+        .unwrap();
+    let editor_is = tilo_actions::Actor::Member(tilo_actions::MemberId::person(hex::encode(
+        editor.user_public_key,
+    )));
+    assert_eq!(
+        made_by(&workspaces, &device, (APP, KIND, "i-1")).await,
+        vec![Some(editor_is)],
+        "the editor made it, not the device whose connection carried it"
+    );
+
+    // A viewer may change nothing: the write is refused and nothing of it is kept.
+    let refused = workspaces
+        .resource_command(
+            &view(APP, member(&viewer)),
+            viewed_put(KIND, "i-2", "Viewed", "add"),
+        )
+        .await
+        .unwrap_err();
+    assert!(refused.contains("may not add"), "{refused}");
+    assert!(
+        title_through_service(&workspaces, &device, "i-2")
+            .await
+            .is_none()
+    );
+
+    // A visitor leaves a request at the entry: theirs, and only what the entry opens to them.
+    let visitor = [9; 32];
+    workspaces
+        .resource_command(
+            &view(ENTRY, Caller::visitor(visitor)),
+            viewed_put(REQUEST, "r-1", "ada@example.com", "join"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        made_by(&workspaces, &device, (ENTRY, REQUEST, "r-1")).await,
+        vec![Some(tilo_actions::Actor::Visitor(hex::encode(visitor)))],
+        "the visitor left it"
+    );
+    let refused = workspaces
+        .resource_command(
+            &view(ENTRY, Caller::visitor(visitor)),
+            viewed_put(REQUEST, "r-2", "everyone", "remove"),
+        )
+        .await
+        .unwrap_err();
+    assert!(refused.contains("may not remove"), "{refused}");
+    // Nor does a visitor read the members' resources through the view.
+    assert!(
+        title_through_service(&workspaces, &view(APP, Caller::visitor(visitor)), "i-1")
+            .await
+            .is_none(),
+        "a visitor reads no member's issue"
+    );
+    assert_eq!(
+        title_through_service(&workspaces, &view(APP, member(&editor)), "i-1").await,
+        Some(Value::Text("Edited".into())),
+        "the editor reads what every member reads"
     );
     drop(workspaces);
     server.shutdown().await;
@@ -742,7 +918,7 @@ async fn index_retained_checkpoint(
     let device = workspaces.member_identity().unwrap();
     let context = context(workspace, &device.cert);
     let records = &workspaces.inner.records;
-    let before = records.retained(workspace_id).unwrap();
+    let before = records.retained(workspace_id).await.unwrap();
     let mut watches = workspaces.document_writes();
     let refused = workspaces
         .resource_command(&context, put_signed_issue("No signed base"))
@@ -754,7 +930,7 @@ async fn index_retained_checkpoint(
         .await
         .unwrap_err();
     assert!(refused.contains("has not opened this resource's signed history"));
-    assert_eq!(records.retained(workspace_id).unwrap(), before);
+    assert_eq!(records.retained(workspace_id).await.unwrap(), before);
     assert!(watches.try_recv().is_err());
     assert_eq!(
         title_through_service(workspaces, &context, "i-1").await,
@@ -800,7 +976,7 @@ async fn a_cancelled_write_keeps_nothing(
     context: &ResourceRequestContext,
 ) {
     let records = &workspaces.inner.records;
-    let before = records.retained(workspace_id).unwrap();
+    let before = records.retained(workspace_id).await.unwrap();
     let state = workspaces.workspace(workspace).await.unwrap();
     // The workspace held, the write waits for it before admission: cancelling
     // it there keeps nothing.
@@ -819,7 +995,7 @@ async fn a_cancelled_write_keeps_nothing(
     cancelled.abort();
     assert!(cancelled.await.unwrap_err().is_cancelled());
     drop(held);
-    assert_eq!(records.retained(workspace_id).unwrap(), before);
+    assert_eq!(records.retained(workspace_id).await.unwrap(), before);
     assert_eq!(
         title_through_service(workspaces, context, "i-1").await,
         None
@@ -847,7 +1023,7 @@ async fn a_first_resource_write_refused_by_retention_leaves_no_row() {
     };
     let context = context(&workspace, &cert);
     let records = &workspaces.inner.records;
-    let before = records.retained(created.workspace_id).unwrap();
+    let before = records.retained(created.workspace_id).await.unwrap();
     // Peer-state's admission refuses the first write: this device holds no keys
     // of the record's channel yet, so nothing is retained, nothing reads, and
     // whoever follows the workspace's records is not woken.
@@ -856,7 +1032,10 @@ async fn a_first_resource_write_refused_by_retention_leaves_no_row() {
         .resource_command(&context, put_signed_issue("Refused"))
         .await;
     assert_eq!(refused.unwrap_err(), "this channel has no keys yet");
-    assert_eq!(records.retained(created.workspace_id).unwrap(), before);
+    assert_eq!(
+        records.retained(created.workspace_id).await.unwrap(),
+        before
+    );
     let title = title_through_service(&workspaces, &context, "i-1").await;
     assert_eq!(
         title, None,
@@ -980,6 +1159,7 @@ async fn a_member_copy_retains_and_forwards_its_first_resource_write() {
     let retained = member
         .workspace_documents()
         .retained(created.workspace_id)
+        .await
         .unwrap();
     assert!(retained.iter().any(|frame| {
         frame.author == cert.device_public_key
@@ -1004,8 +1184,7 @@ async fn a_member_copy_retains_and_forwards_its_first_resource_write() {
 
 /// A device that joins a workspace reads the resources written there before it arrived, though
 /// their writes reach its copy before the group's keys reach the device: once the keys do, the
-/// copy opens what it kept, with nothing written since. A resource sealed to its author alone
-/// reaches the copy too, and stays shut: no member's keys open it.
+/// copy opens what it kept, with nothing written since.
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
@@ -1052,28 +1231,6 @@ async fn a_member_copy_reads_resources_that_reached_it_before_its_keys() {
         )
         .await
         .unwrap();
-    // A draft of the owner's that only they read: its own document, sealed to their group.
-    let author = hex::encode(owner_cert.user_public_key);
-    owner
-        .workspaces()
-        .resource_command(
-            &context(&workspace, &owner_cert),
-            Command::Put {
-                kind: KIND.into(),
-                id: "draft-1".into(),
-                resource: Resource {
-                    readers: author.clone(),
-                    ..signed_issue("Only mine")
-                },
-                stamp: Stamp::default(),
-            },
-        )
-        .await
-        .unwrap();
-    let private = |document_id: &str| {
-        collab_types::store_document_readers(document_id)
-            == Some(collab_types::reader_set_name(&author).as_str())
-    };
 
     let (key, cert) = device_cert(
         &SigningKey::from_bytes(&[41; 32]),
@@ -1108,28 +1265,23 @@ async fn a_member_copy_reads_resources_that_reached_it_before_its_keys() {
     let mut woke = member.workspaces().document_writes();
     let invite = tilo_peer_state::join::encode_invitation_text(&invite.signed_invitation);
     member.workspaces().join_member(&invite).await.unwrap();
-    let kept = |shared: bool| {
-        member
-            .workspace_documents()
-            .retained(created.workspace_id)
-            .unwrap()
-            .iter()
-            .any(|frame| {
+    tilo_test_env::within("the copy keeps the issue it cannot open yet", async {
+        loop {
+            let retained = member
+                .workspace_documents()
+                .retained(created.workspace_id)
+                .await
+                .unwrap();
+            if retained.iter().any(|frame| {
                 matches!(NeighbourMsg::decode(&frame.body), Ok(NeighbourMsg::AppDocument {
                     app_id, document_id, ..
-                }) if app_id == APP
-                    && collab_types::is_store_document(&document_id)
-                    && private(&document_id) != shared)
-            })
-    };
-    tilo_test_env::within(
-        "the copy keeps the issue and the draft it cannot open yet",
-        async {
-            while !(kept(true) && kept(false)) {
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }) if app_id == APP && collab_types::is_store_document(&document_id))
+            }) {
+                return;
             }
-        },
-    )
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
     .await;
     assert_eq!(
         title(member.workspaces(), &workspace, "i-1").await,
@@ -1139,7 +1291,7 @@ async fn a_member_copy_reads_resources_that_reached_it_before_its_keys() {
 
     // The keys make the kept write readable: the copy tells its followers so again.
     while woke.try_recv().is_ok() {}
-    member_keys.hand_every_member_of(&owner_keys, &workspace);
+    member_keys.hand_what_is_held_by(&owner_keys);
     let expected = Some(Value::Text("Written before".into()));
     tilo_test_env::within("the copy reads the issue once the keys are here", async {
         while title(member.workspaces(), &workspace, "i-1").await != expected {
@@ -1147,16 +1299,6 @@ async fn a_member_copy_reads_resources_that_reached_it_before_its_keys() {
         }
     })
     .await;
-    // The member's device holds the owner's draft, sealed, and opens none of it.
-    assert!(kept(false), "the copy keeps the sealed draft");
-    assert!(
-        holds(owner.workspaces(), &workspace, "draft-1").await,
-        "the owner reads their draft"
-    );
-    assert!(
-        !holds(member.workspaces(), &workspace, "draft-1").await,
-        "another member's device holds the draft and cannot open it"
-    );
     tilo_test_env::within(
         "the copy tells its followers the record it restored",
         async { while woke.recv().await.is_ok_and(|write| write.app != APP) {} },
@@ -1216,7 +1358,7 @@ async fn retained_store_checkpoint_restores_signed_history_on_open() {
 
     let context = context(&workspace, &cert);
     let records = &workspaces.inner.records;
-    let before_cancel = records.retained(created.workspace_id).unwrap();
+    let before_cancel = records.retained(created.workspace_id).await.unwrap();
     let mut watches = workspaces.document_writes();
     {
         let state = workspaces.workspace(&workspace).await.unwrap();
@@ -1251,7 +1393,7 @@ async fn retained_store_checkpoint_restores_signed_history_on_open() {
         Some(Value::Text("First".into()))
     );
     assert_eq!(
-        records.retained(created.workspace_id).unwrap(),
+        records.retained(created.workspace_id).await.unwrap(),
         before_cancel,
         "a cancelled write leaves retained history untouched"
     );
@@ -1333,6 +1475,7 @@ async fn a_write_this_device_cannot_send_is_not_read_back() {
         .inner
         .records
         .retained(created.workspace_id)
+        .await
         .unwrap();
     assert!(
         !retained.iter().any(|frame| matches!(

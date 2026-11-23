@@ -20,14 +20,13 @@ use ui::permissions::{MemberId, SharedPermissions};
 use ui::portable_storage::{PortableStorage, StorageKey};
 use ui::resource::{DocumentCheckout, DocumentId, ResourceOwners};
 
-use super::proto::PageAction;
+use super::ViewReadPolicy;
 use super::proto::{
     CONTENT_BATCH_BYTES, FRAMING, MAX_CONTENT_ITEM_BYTES, Mode, PROTOCOL_VERSION, ProbeReport,
     Reply, Request, Slot, WireApiError,
 };
 use super::region::Region;
 use crate::apps::{AppCatalogue, Replica, ReplicaActor, Seed};
-use crate::workspace_actions::ViewReadPolicy;
 
 /// Serve as a worker on the socket that is this process's stdin.
 /// Returns the exit code.
@@ -230,13 +229,9 @@ struct Worker {
     mode: Mode,
     catalogue: AppCatalogue,
     replica: Option<Replica>,
-    views: Option<(String, automerge::AutoCommit)>,
     /// Loaded before the confinement, for the one component a reader mounts.
     text: Option<ui::TextRenderer>,
     read: Option<ReadSession>,
-    /// The page the held document's view is shown as ([`Mode::Page`]): the
-    /// numbers its elements carry and what it last answered.
-    page: Option<ui::composition::page::Page>,
     /// What the held record's view is lent as its content store.
     content: WorkerContent,
 }
@@ -304,10 +299,8 @@ impl Worker {
             mode,
             catalogue,
             replica: None,
-            views: None,
             text,
             read: None,
-            page: None,
             content: WorkerContent::new(),
         }
     }
@@ -332,8 +325,6 @@ impl Worker {
                 Ok(actor) => self.open(&app_id, &workspace, &member, actor, seed, asks_workspace),
                 Err(reason) => Reply::Failed(reason),
             },
-            Request::ViewsLoad { app_id, doc } => self.load_views(app_id, &doc),
-            Request::Views { wanted, policy } => self.views(&wanted, &policy),
             Request::Title { app_id, doc } => self.title(&app_id, &doc),
             Request::Entries { app_id, doc } => self.entries(&app_id, &doc),
             Request::ReadPrepare {
@@ -372,94 +363,8 @@ impl Worker {
                     (Err(reason), _) | (_, Err(reason)) => Reply::Failed(reason),
                 }
             }
-            Request::PageShow { show } => self.page_show(show.as_deref()),
-            Request::PageAct { id, target, action } => {
-                self.page_act(id, target.as_deref(), &action)
-            }
-            Request::PagePatch => self.page_patch(),
             request => self.replica_request(request),
         }
-    }
-
-    /// The held document's view as a whole page, after activating `show`.
-    fn page_show(&mut self, show: Option<&str>) -> Reply {
-        let Some(replica) = self.replica.as_mut().filter(|_| self.mode == Mode::Page) else {
-            return Reply::Failed("this worker shows no page here".into());
-        };
-        // The address names what to show by the semantic target its element
-        // carries (a note's row): activated as a click on that row is.
-        if let Some(show) = show {
-            let (composition, _) = replica.page();
-            let shown = widget_of_target(&composition, show)
-                .ok_or_else(|| "no element carries it".to_owned())
-                .and_then(|widget| {
-                    replica.act_on_page(&widget, Some(show), &ui::a11y::Action::Activate)
-                });
-            if let Err(reason) = shown {
-                tracing::debug!(%reason, show, "app worker: the page's address names nothing it shows");
-            }
-        }
-        let (composition, theme) = replica.page();
-        let title = self
-            .catalogue
-            .get(replica.app_id())
-            .map(|app| app.title().to_owned())
-            .unwrap_or_default();
-        let page = self.page.insert(ui::composition::page::Page::new());
-        Reply::Shown {
-            title,
-            css: ui::composition::page::theme_css(&theme) + ui::composition::page::PAGE_CSS,
-            body: page.render(&composition),
-        }
-    }
-
-    /// What a person did on the page, acted on the view, and what it changed.
-    /// A page not rendered here yet (its worker was replaced) acts on
-    /// nothing and answers itself whole.
-    fn page_act(&mut self, id: u32, target: Option<&str>, action: &PageAction) -> Reply {
-        let Some(replica) = self.replica.as_mut().filter(|_| self.mode == Mode::Page) else {
-            return Reply::Failed("this worker shows no page here".into());
-        };
-        let Some(semantic) = super::proto::semantic(action) else {
-            if let PageAction::Resize { width, height } = action {
-                // The view lays itself out at the page's size, as a window at its own: what a
-                // node's bounds say is then where the page shows it.
-                if let Err(reason) = replica.resize_page((*width, *height)) {
-                    tracing::debug!(%reason, "app worker: the page's view did not lay out at its size");
-                }
-            }
-            return self.page_patch();
-        };
-        // An element a page numbers for a part of a widget (a document's block,
-        // a control) is acted on through the widget it is a part of.
-        if let Some(path) = self.page.as_ref().and_then(|page| page.path(id)) {
-            let widget = path
-                .split_once('#')
-                .map_or(path, |(widget, _)| widget)
-                .to_owned();
-            if let Err(reason) = replica.act_on_page(&widget, target, &semantic) {
-                tracing::debug!(%reason, widget, "app worker: the page's action was refused");
-            }
-        }
-        self.page_patch()
-    }
-
-    /// What changed on the page since it last answered.
-    fn page_patch(&mut self) -> Reply {
-        let Some(replica) = self.replica.as_ref().filter(|_| self.mode == Mode::Page) else {
-            return Reply::Failed("this worker shows no page here".into());
-        };
-        let (composition, _) = replica.page();
-        let patches = self
-            .page
-            .get_or_insert_with(ui::composition::page::Page::new)
-            .patch(&composition);
-        Reply::Patches(
-            patches
-                .into_iter()
-                .map(|patch| (patch.id, patch.html))
-                .collect(),
-        )
     }
 
     fn replica_request(&mut self, request: Request) -> Reply {
@@ -546,7 +451,6 @@ impl Worker {
             request @ (Request::AskWorkspace | Request::Wanted | Request::Answered { .. }) => {
                 workspace_reply(replica, request)
             }
-            Request::Renew { actor } => renewed(replica, &actor),
             Request::Presence => Reply::Presence(
                 replica
                     .presence()
@@ -565,7 +469,7 @@ impl Worker {
         seed: Option<(String, Vec<Vec<u8>>)>,
         asks_workspace: bool,
     ) -> Reply {
-        if !matches!(self.mode, Mode::Replica | Mode::Page) || self.replica.is_some() {
+        if self.mode != Mode::Replica || self.replica.is_some() {
             return Reply::Failed("this slot holds one record".into());
         }
         let seed = match seed {
@@ -595,18 +499,6 @@ impl Worker {
         }
     }
 
-    fn load_views(&mut self, app_id: String, bytes: &[u8]) -> Reply {
-        if self.mode != Mode::Views || self.views.is_some() {
-            return Reply::Failed("this slot reads one document".into());
-        }
-        let mut doc = automerge::AutoCommit::new();
-        if let Err(error) = tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes) {
-            return Reply::Failed(error.to_string());
-        }
-        self.views = Some((app_id, doc));
-        Reply::Done
-    }
-
     fn title(&self, app_id: &str, bytes: &[u8]) -> Reply {
         if self.mode != Mode::Views {
             return Reply::Failed("this worker reads no titles".into());
@@ -630,31 +522,6 @@ impl Worker {
         match serde_json::to_string(&entries) {
             Ok(entries) => Reply::Entries(entries),
             Err(error) => Reply::Failed(error.to_string()),
-        }
-    }
-
-    /// The views of one resource under a policy: of the document loaded for
-    /// it, or of the record this worker holds, as it holds it now.
-    fn views(&self, wanted: &str, policy: &str) -> Reply {
-        let (wanted, policy) = match (
-            decode::<tilo_actions::remote::ViewResourceQuery>(wanted),
-            decode::<ViewReadPolicy>(policy),
-        ) {
-            (Ok(wanted), Ok(policy)) => (wanted, policy),
-            (Err(reason), _) | (_, Err(reason)) => return Reply::Failed(reason),
-        };
-        let permissions = policy.permissions();
-        match (self.views.as_ref(), self.replica.as_ref()) {
-            (Some((app_id, doc)), _) => descriptors(&self.catalogue.resource_views(
-                app_id,
-                doc,
-                &wanted,
-                &permissions,
-            )),
-            (None, Some(replica)) => {
-                descriptors(&replica.resource_views(&wanted.id, &wanted.kind, &permissions))
-            }
-            (None, None) => Reply::Failed("no document is loaded".into()),
         }
     }
 
@@ -979,14 +846,6 @@ fn invoked(
     }
 }
 
-fn renewed(replica: &mut crate::Replica, actor: &str) -> Reply {
-    match decode(actor).map(|actor| replica.renew(actor)) {
-        Ok(Ok(())) => Reply::Done,
-        Ok(Err(error)) => Reply::Failed(error.to_string()),
-        Err(reason) => Reply::Failed(reason),
-    }
-}
-
 fn taken_mutation(replica: &mut crate::Replica) -> Reply {
     match replica.take_mutation() {
         Ok(mutation) => Reply::Mutation(mutation.map(wire_mutation)),
@@ -1013,22 +872,4 @@ fn taken_document_mutations(replica: &mut crate::Replica) -> Reply {
         ),
         Err(error) => Reply::Failed(error.to_string()),
     }
-}
-
-/// The path of the widget whose element carries the semantic target `target`.
-fn widget_of_target(composition: &ui::composition::Composition, target: &str) -> Option<String> {
-    fn find(node: &ui::composition::Composed, target: &str) -> Option<String> {
-        if node
-            .semantics
-            .as_ref()
-            .and_then(|semantics| semantics.action_target.as_deref())
-            == Some(target)
-        {
-            return Some(node.path.clone());
-        }
-        node.children.iter().find_map(|child| find(child, target))
-    }
-    std::iter::once(&composition.root)
-        .chain(&composition.layers)
-        .find_map(|node| find(node, target))
 }

@@ -19,7 +19,6 @@
 
 use serde::{Deserialize, Serialize};
 use tilo_actions::api::ApiError;
-pub use tilo_server_protocol::page::PageAction;
 use wire_frame::Framing;
 
 /// Frames in either direction: a record's whole document, with workspace.
@@ -50,9 +49,6 @@ pub(crate) enum Mode {
     Views,
     /// Mount one record's component to answer its registered reads.
     Read,
-    /// Hold one document as [`Self::Replica`] does, and show its view as a web
-    /// page a person acts on ([`ui::composition::page::Page`]).
-    Page,
 }
 
 impl Mode {
@@ -61,7 +57,6 @@ impl Mode {
             Self::Replica => "replica",
             Self::Views => "views",
             Self::Read => "read",
-            Self::Page => "page",
         }
     }
 
@@ -70,7 +65,6 @@ impl Mode {
             "replica" => Some(Self::Replica),
             "views" => Some(Self::Views),
             "read" => Some(Self::Read),
-            "page" => Some(Self::Page),
             _ => None,
         }
     }
@@ -82,7 +76,7 @@ impl Mode {
 pub(crate) type Slot = u64;
 
 /// The supervisor's requests, each sent as `(Slot, Mode, Region, Request)`: the
-/// slot it is for, what that slot does, and the region of the person whose views it
+/// slot it is for, what that slot does, and the region its views
 /// renders ([`super::region`]). Each reply comes back as
 /// `(Slot, Reply)`, a slot's in the order it was asked; [`Request::Close`] is
 /// not answered.
@@ -105,9 +99,6 @@ pub(crate) enum Request {
         /// does not hold ([`crate::Replica::ask_workspace_for_missing`]).
         asks_workspace: bool,
     },
-    /// The held record's member reads their member access as of a later time:
-    /// JSON `ReplicaActor`, a member whose access is read again.
-    Renew { actor: String },
     /// Every operation the held record publishes now.
     Survey,
     /// Every operation the held record publishes now, each in the row of the
@@ -182,9 +173,6 @@ pub(crate) enum Request {
         record: String,
         answer: ui::resource::WorkspaceAnswer,
     },
-    /// Load an existing document of `app_id` to discover its views
-    /// ([`Mode::Views`]).
-    ViewsLoad { app_id: String, doc: Vec<u8> },
     /// What an existing document of `app_id` is called ([`Mode::Views`]):
     /// [`crate::AppCatalogue::resource_title`]. The document is read for the
     /// answer and dropped; the worker answers any number of these.
@@ -195,13 +183,6 @@ pub(crate) enum Request {
     /// and its words), answered with [`Reply::Entries`]. Read and dropped as
     /// [`Self::Title`] is.
     Entries { app_id: String, doc: Vec<u8> },
-    /// The views of one resource of the loaded document under `policy`.
-    Views {
-        /// JSON `ViewResourceQuery`.
-        wanted: String,
-        /// JSON `ViewReadPolicy`.
-        policy: String,
-    },
     /// Mount a record's component over its retained source ([`Mode::Read`]).
     ReadPrepare {
         app_id: String,
@@ -237,42 +218,10 @@ pub(crate) enum Request {
     /// What the app stored since the last take and what it asked for but
     /// lacked; answered with [`Reply::Content`].
     TakeContent,
-    /// The held document's view as a whole page ([`Mode::Page`]), after
-    /// activating `show` when one is named (the note a page's address names):
-    /// answered with [`Reply::Shown`].
-    PageShow { show: Option<String> },
-    /// What a person did on the page: `action` on the element numbered `id`,
-    /// at the semantic `target` it carries; answered with [`Reply::Patches`].
-    PageAct {
-        id: u32,
-        target: Option<String>,
-        action: PageAction,
-    },
-    /// What changed on the page since it was last answered, after the document
-    /// took others' changes; answered with [`Reply::Patches`].
-    PagePatch,
     /// Hold the slot's thread for `millis`, then answer [`Reply::Done`]: a
     /// request that takes long, for the tests of how one is borne.
     #[cfg(test)]
     Stall { millis: u64 },
-}
-
-/// What a person does on a page, as the view's semantic action it stands for.
-/// `None` for what is no node's action (the page's window resized).
-pub(crate) fn semantic(action: &PageAction) -> Option<ui::a11y::Action> {
-    Some(match action {
-        PageAction::Activate => ui::a11y::Action::Activate,
-        PageAction::Toggle => ui::a11y::Action::ToggleCheck,
-        PageAction::Focus => ui::a11y::Action::Focus,
-        PageAction::Increment => ui::a11y::Action::Increment,
-        PageAction::Decrement => ui::a11y::Action::Decrement,
-        PageAction::Value(value) => ui::a11y::Action::SetValue(value.clone()),
-        PageAction::Select { anchor, focus } => ui::a11y::Action::SetSelection {
-            anchor: usize::try_from(*anchor).unwrap_or(usize::MAX),
-            focus: usize::try_from(*focus).unwrap_or(usize::MAX),
-        },
-        PageAction::Resize { .. } => return None,
-    })
 }
 
 impl Request {
@@ -292,7 +241,6 @@ impl Request {
         match self {
             Self::Close => "close",
             Self::Open { .. } => "open",
-            Self::Renew { .. } => "renew",
             Self::Survey => "survey",
             Self::SurveyRows => "survey-rows",
             Self::SurveyPage { .. } => "survey-page",
@@ -306,10 +254,8 @@ impl Request {
             Self::AskWorkspace => "ask-workspace",
             Self::Wanted => "wanted",
             Self::Answered { .. } => "answered",
-            Self::ViewsLoad { .. } => "views-load",
             Self::Title { .. } => "title",
             Self::Entries { .. } => "entries",
-            Self::Views { .. } => "views",
             Self::ReadPrepare { .. } => "read-prepare",
             Self::ReadPolicy { .. } => "read-policy",
             Self::ReadOperations => "read-operations",
@@ -318,9 +264,6 @@ impl Request {
             Self::Probe { .. } => "probe",
             Self::PutContent { .. } => "put-content",
             Self::TakeContent => "take-content",
-            Self::PageShow { .. } => "page-show",
-            Self::PageAct { .. } => "page-act",
-            Self::PagePatch => "page-patch",
             #[cfg(test)]
             Self::Stall { .. } => "stall",
         }
@@ -382,15 +325,6 @@ pub(crate) enum Reply {
         offered: Vec<Vec<u8>>,
         wanted: Vec<String>,
     },
-    /// The page whole: what its document is called, the theme's stylesheet
-    /// and the body ([`ui::composition::page::Page::render`]).
-    Shown {
-        title: String,
-        css: String,
-        body: String,
-    },
-    /// The page's elements that changed, each by its number and new HTML.
-    Patches(Vec<(u32, String)>),
 }
 
 /// One record held beside the held one that changed, as the worker hands it
@@ -525,7 +459,7 @@ mod tests {
 
     #[test]
     fn modes_round_trip_by_name() {
-        for mode in [Mode::Replica, Mode::Views, Mode::Read, Mode::Page] {
+        for mode in [Mode::Replica, Mode::Views, Mode::Read] {
             assert_eq!(Mode::parse(mode.as_str()), Some(mode));
         }
         assert_eq!(Mode::parse("other"), None);

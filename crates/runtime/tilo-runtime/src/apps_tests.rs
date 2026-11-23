@@ -658,3 +658,74 @@ int main(void) {
     drop(collab);
     assert_eq!(launch.wait(), Some(0));
 }
+
+/// A connection this daemon makes for an instance it starts itself names that instance, and the
+/// collaboration service attests it as exactly that, once, from this process alone: opened for the
+/// caller its view was opened for (a visitor at a page here), or showing nothing. The connection is
+/// the instance's; who acts is the caller it carries. An app that is no tilolang app installed here
+/// opens no view, and nothing starts for it.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_daemons_own_instances_are_attested_as_the_view_they_were_opened_for() {
+    use std::io::Read as _;
+    use tilo_actions::remote::Caller;
+    let (_temp, root) = canonical_temp();
+    let store = Store::new(&root);
+    let listener = std::os::unix::net::UnixListener::bind(root.join(crate::COLLAB_SOCKET)).unwrap();
+    let apps = apps(&store, &root, Vec::new());
+    let ours = std::process::id();
+    let visitor = Caller::visitor([9; 32]).in_workspace(WORKSPACE);
+
+    let _view = apps
+        .instances
+        .connect(VIEWER, WORKSPACE, 7, Some(visitor.clone()))
+        .unwrap();
+    let (mut broker_end, _) = listener.accept().unwrap();
+    let mut named = [0; 256];
+    let read = broker_end.read(&mut named).unwrap();
+    let named = String::from_utf8_lossy(&named[..read]);
+    assert!(
+        named.contains(VIEWER) && named.contains("\"window_instance\":7"),
+        "the connection names the instance it is for: {named}"
+    );
+    assert!(
+        apps.authenticated_launch(1, VIEWER, WORKSPACE, Some(7))
+            .unwrap()
+            .is_none(),
+        "another process naming the instance is no launch"
+    );
+    let launch = apps
+        .authenticated_launch(ours, VIEWER, WORKSPACE, Some(7))
+        .unwrap()
+        .expect("the instance's connection is attested");
+    assert_eq!(launch.continuation_instance, Some(7));
+    assert!(!launch.windowless, "it shows a view");
+    assert_eq!(
+        launch.opened_for,
+        Some(visitor.clone()),
+        "opened for the visitor"
+    );
+    assert!(
+        apps.authenticated_launch(ours, VIEWER, WORKSPACE, Some(7))
+            .unwrap()
+            .is_none(),
+        "a second connection naming it is no launch"
+    );
+
+    let _no_view = apps.instances.connect(VIEWER, WORKSPACE, 8, None).unwrap();
+    let launch = apps
+        .authenticated_launch(ours, VIEWER, WORKSPACE, Some(8))
+        .unwrap()
+        .expect("the instance that shows nothing is attested");
+    assert!(launch.windowless, "it shows nothing");
+    assert_eq!(launch.opened_for, None, "and was opened for nobody");
+
+    let refused = apps
+        .open_view(&visitor, VIEWER, WORKSPACE, None, None)
+        .unwrap_err();
+    assert!(refused.contains("no tilolang app"), "{refused}");
+    assert!(
+        apps.windowless(VIEWER, WORKSPACE).unwrap().is_none(),
+        "an app that is no tilolang app is launched as it always was"
+    );
+}

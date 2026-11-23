@@ -329,6 +329,7 @@ impl ServiceSessions {
             environments: self.handler.environments.clone(),
             work: cfg.work.clone(),
             reachability: cfg.reachability.clone(),
+            reaching: cfg.reaching,
             holder: Arc::new(std::sync::RwLock::new(crate::workspaces::HolderClaim {
                 label: cfg.label.clone(),
                 cloud: cfg.rented,
@@ -615,6 +616,12 @@ impl WorkspaceService {
             .iter()
             .find(|(own, _)| *own == alpn)
             .map(|(_, handler)| handler)
+    }
+
+    /// The session stack the service's members connect through.
+    #[must_use]
+    pub const fn sessions(&self) -> &ServiceSessions {
+        &self.sessions
     }
 
     /// The governance of the workspaces served here.

@@ -5,14 +5,14 @@
 #   1. with nothing privileged running it passes. In particular the shells
 #      around it, whose command lines name what it looks for, are not taken
 #      for those processes; that mistake failed every release check run.
-#   2. each process it exists to catch (pkexec, a polkit agent's helper, the
-#      home-peer control helper), whether known by its own name or by the
+#   2. each process it exists to catch (pkexec, a polkit agent's helper),
+#      whether known by its own name or by the
 #      program its argv[0] names, makes it fail and is named.
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 probe="$repo/os/dev/nearby-privileged-processes.sh"
-names=(pkexec polkit-agent-helper-1 tilo-home-peer-control)
+names=(pkexec polkit-agent-helper-1)
 
 work="$(mktemp -d)"
 fakes=()
@@ -28,7 +28,7 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 # shell stays the probe's parent, and its command line names every process
 # the probe looks for.
 run_probe() {
-  bash -c 'sh -s; status=$?; : pkexec polkit-agent-helper-1 tilo-home-peer-control; exit "$status"' \
+  bash -c 'sh -s; status=$?; : pkexec polkit-agent-helper-1; exit "$status"' \
     < "$probe" 2> "$work/probe.err"
 }
 

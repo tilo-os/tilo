@@ -5,7 +5,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::process::Command;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use ui::time::{Duration, Instant, SystemTime};
@@ -64,12 +63,8 @@ const DEFAULT_CONFIG: &str = "/etc/tilo/server.toml";
 const CONTINUITY_ENABLED_KEY: &str = "device_mesh.continuity.enabled";
 const AGENTS_ACCEPT_KEY: &str = "device_mesh.agents.accept_other_devices";
 const AGENTS_ACT_KEY: &str = "device_mesh.agents.act_without_asking";
-const CONTROL_HELPER: &str = "/usr/libexec/tilo-home-peer-control";
-
 const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 const STATUS_FRESHNESS: Duration = Duration::from_secs(5);
-const COMMAND_OUTPUT_LIMIT: usize = 1024 * 1024;
-const APPLY_TIMEOUT: Duration = Duration::from_secs(120);
 /// The work this device can take, named by its message: the chooser's values
 /// are these, so its labels and the setting a choice writes share one table.
 const WORK_FROM: [&str; 3] = ["mesh-work-nothing", "mesh-work-own", "mesh-work-anyone"];
@@ -596,10 +591,6 @@ impl MeshStatus {
     }
 }
 
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "independent facts: what is being saved, paired and delivered, and whether it changed"
-)]
 pub struct DeviceMeshModel {
     config_path: PathBuf,
     config: ServerConfig,
@@ -628,8 +619,6 @@ pub struct DeviceMeshModel {
     removing: Option<String>,
     management_call: Option<(ui::InvocationCall, Managing)>,
     next_peer_health: usize,
-    apply_child: Option<bounded_command::AsyncCommand>,
-    apply_queued: bool,
     /// The call printing a code for a new computer, while it runs.
     ticket_call: Option<ui::InvocationCall>,
     /// The code printed here last: what the pane shows with its copy control.
@@ -723,35 +712,6 @@ fn peer_health_detail(health: HomePeerHealth) -> String {
         HomePeerHealth::Removed => "mesh-badge-removed",
         HomePeerHealth::Unreachable => "mesh-health-unreachable",
     })
-}
-
-pub(crate) fn identity_root() -> PathBuf {
-    std::env::var_os("TILO_IDENTITY_ROOT").map_or_else(
-        || {
-            if PathBuf::from("/var/lib/tilo/device").is_dir() {
-                PathBuf::from("/var/lib/tilo")
-            } else {
-                tilo_paths::data_dir()
-                    .unwrap_or_else(|| PathBuf::from(".local/share"))
-                    .join("tilo")
-            }
-        },
-        PathBuf::from,
-    )
-}
-
-fn command_error(stderr: &[u8], fallback: &str) -> String {
-    let detail = String::from_utf8_lossy(stderr);
-    let detail = detail.trim();
-    if detail.is_empty() {
-        fallback.to_owned()
-    } else {
-        detail
-            .chars()
-            .filter(|character| !character.is_control() || *character == ' ')
-            .take(512)
-            .collect()
-    }
 }
 
 pub(crate) struct MeshRead {
@@ -882,8 +842,6 @@ impl DeviceMeshModel {
             removing: None,
             management_call: None,
             next_peer_health: 0,
-            apply_child: None,
-            apply_queued: false,
             ticket_call: None,
             ticket: None,
             copy: ui::CopyWatch::default(),
@@ -1536,15 +1494,6 @@ fn activity_section(continuity: &ContinuityPrivacy) -> SettingsSection {
 
 impl DeviceMeshModel {
     fn persist(&mut self) {
-        if self.config_path == std::path::Path::new(DEFAULT_CONFIG) {
-            if self.apply_child.is_some() {
-                self.apply_queued = true;
-                self.status = MeshStatus::Ready;
-            } else {
-                self.start_apply();
-            }
-            return;
-        }
         self.status = match self.config.save(&self.config_path) {
             Ok(()) => MeshStatus::Ready,
             Err(error) => {
@@ -1557,43 +1506,6 @@ impl DeviceMeshModel {
                 MeshStatus::NotSaved
             }
         };
-    }
-
-    fn spawn_apply(&self) -> Result<bounded_command::AsyncCommand, bounded_command::Error> {
-        let request = serde_json::json!({
-            "identity_root": identity_root(),
-            "work": self.config.work,
-            "workspace_ids": Vec::<u64>::new(),
-            "inbound_server": self.config.services.inbound_server,
-            "remote_control_server": self.config.services.remote_control_server,
-            "app_serving": self.config.services.app_serving,
-            "compute": self.config.services.compute,
-        });
-        let mut command = Command::new("pkexec");
-        command.args([CONTROL_HELPER, "apply"]);
-        bounded_command::spawn_prepared(
-            command,
-            Some(request.to_string().as_bytes()),
-            COMMAND_OUTPUT_LIMIT,
-            APPLY_TIMEOUT,
-        )
-    }
-
-    fn start_apply(&mut self) {
-        match self.spawn_apply() {
-            Ok(child) => {
-                self.apply_child = Some(child);
-                self.status = MeshStatus::Ready;
-            }
-            Err(error) => {
-                tracing::warn!(
-                    target: "tilo::settings",
-                    %error,
-                    "this device's sync setup could not be started"
-                );
-                self.status = MeshStatus::NotSaved;
-            }
-        }
     }
 
     /// Ask this computer for a code a new computer joins with, one at a time.
@@ -1688,48 +1600,6 @@ impl DeviceMeshModel {
     }
 
     fn poll_background_tasks(&mut self) {
-        let apply_result = self
-            .apply_child
-            .as_mut()
-            .and_then(bounded_command::AsyncCommand::try_wait);
-        match apply_result {
-            Some(Ok(output)) => {
-                self.apply_child = None;
-                if output.status.success() {
-                    if self.apply_queued {
-                        self.apply_queued = false;
-                        self.start_apply();
-                    } else {
-                        self.status = MeshStatus::Ready;
-                    }
-                } else {
-                    self.apply_queued = false;
-                    tracing::warn!(
-                        target: "tilo::settings",
-                        detail = %command_error(
-                            &output.stderr,
-                            "administrator approval was not granted"
-                        ),
-                        "this device's sync settings could not be applied"
-                    );
-                    self.status = MeshStatus::NotSaved;
-                }
-                self.changed = true;
-            }
-            Some(Err(error)) => {
-                self.apply_child = None;
-                self.apply_queued = false;
-                tracing::warn!(
-                    target: "tilo::settings",
-                    %error,
-                    "this device's sync settings could not be applied"
-                );
-                self.status = MeshStatus::NotSaved;
-                self.changed = true;
-            }
-            None => {}
-        }
-
         self.poll_ticket();
         self.poll_host_calls();
         self.poll_other_device_agents();
@@ -1763,7 +1633,7 @@ impl DeviceMeshModel {
     }
 
     fn busy(&self) -> bool {
-        self.apply_child.is_some() || self.ticket_call.is_some()
+        self.ticket_call.is_some()
     }
 
     fn next_wake(&self) -> Option<Instant> {
@@ -1988,25 +1858,6 @@ mod tests {
                 assert_eq!(work_from_key(&t("mesh-work-some")), None);
                 assert!(work_from(WorkFrom::Nobody, WorkWhen::always()).takes_nothing());
                 assert!(!work_from(WorkFrom::OwnDevices, WorkWhen::always()).takes_nothing());
-            }
-
-            {
-                let dir = tempfile::tempdir().unwrap();
-                let mut pane = DeviceMeshModel::with_path(&dir.path().join("server.toml"));
-                pane.config_path = PathBuf::from(DEFAULT_CONFIG);
-                let mut command = Command::new("sleep");
-                command.arg("infinity");
-                pane.apply_child = Some(
-                    bounded_command::spawn_prepared(command, None, 64, tilo_test_env::hang_bound())
-                        .unwrap(),
-                );
-
-                pane.persist();
-                pane.poll_background_tasks();
-
-                assert!(pane.apply_child.is_some(), "the running apply is kept");
-                assert!(pane.apply_queued);
-                pane.apply_child = None;
             }
         }
 
@@ -2653,7 +2504,7 @@ mod tests {
             assert_eq!(pane.ticket.as_deref(), Some(TICKET));
             assert!(pane.ticket_call.is_none(), "the code has answered");
             assert!(
-                pane.apply_child.is_none() && pane.management_call.is_none(),
+                pane.management_call.is_none(),
                 "printing a code started no process in the app"
             );
 
@@ -2699,7 +2550,8 @@ mod tests {
             "device": NEARBY_DEVICE,
             "label": "Kitchen NAS",
             "endpoint": {
-                "id": hex::encode(tilo_server_protocol::server_node_id(&[0xbb; 32])),
+                // The ed25519 base point: a key that parses, which nothing here signs with.
+                "id": "5866666666666666666666666666666666666666666666666666666666666666",
                 "addrs": [],
             },
         }))

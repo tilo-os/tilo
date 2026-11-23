@@ -222,9 +222,10 @@ async fn apply_settings(
     Ok(applied)
 }
 
-/// Apply the document now, and again after each change to it and to the
-/// admin workspace's holders, for as long as `workspaces` lives, writing the
-/// requests to what `requests` names, and running this server's own
+/// Apply the document now, and again after each change to it, to the admin
+/// workspace's holders or to what this device refuses, for as long as
+/// `workspaces` lives, writing the requests to what `requests` names, and
+/// running this server's own
 /// operations with its state at `state_root`. A change another holder wrote
 /// reaches this one as its copy takes it in; one this device wrote, as it is
 /// committed. A server handed the workspace after it started applies it as
@@ -245,13 +246,14 @@ pub fn follow(
     let admin = person_workspace_id(&workspaces.serving_certificate().user_public_key);
     let mut writes = workspaces.document_writes();
     let mut governance = workspaces.governance_changes();
+    // A revocation of this device's key changes no document: it reaches the
+    // list every admission reads, which announces the change itself.
+    let mut authority = crate::authority_epoch::subscribe();
+    authority.mark_unchanged();
     // The requests one task here is running at a time: a write while it runs
     // applies the document again, and must not run the same one twice.
     let running = Arc::new(Mutex::new(HashSet::new()));
     tokio::spawn(async move {
-        let mut again = tokio::time::interval(super::attach::NAMED_TICK);
-        again.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let mut seen = (read(&workspaces).await.ok(), revoked(&workspaces));
         apply_now(&workspaces, &requests, endpoint.as_ref(), &state_root).await;
         answer_now(&workspaces, &state_root, &running).await;
         loop {
@@ -264,13 +266,10 @@ pub fn follow(
                     Err(error) => Err(error),
                 },
                 change = governance.recv() => change.map(|workspace| workspace == admin),
-                // A write another holder made reaches this copy without the write watch hearing
-                // it, and a revocation of this device's key reaches it with no write at all:
-                // the document is applied again once either reads otherwise than it did.
-                _ = again.tick() => {
-                    let now = (read(&workspaces).await.ok(), revoked(&workspaces));
-                    Ok((now.0.is_some() || now.1) && std::mem::replace(&mut seen, now.clone()) != now)
-                }
+                // What this device refuses may have narrowed: apply the
+                // document as it stands, which asks again whether its own key
+                // is revoked.
+                _ = authority.changed() => Ok(true),
             };
             match ours {
                 Ok(true) => apply_now(&workspaces, &requests, endpoint.as_ref(), &state_root).await,
@@ -394,5 +393,23 @@ async fn apply_now(
         Err(error) => {
             tracing::warn!(%error, "the servers' document was not applied");
         }
+    }
+    apply_web(workspaces).await;
+}
+
+/// Apply this server's own entry's web UI setting: a server whose person turned it off
+/// stops serving its browsers at once, and one they turned back on serves them again.
+/// An entry that says nothing serves one, as its image comes.
+async fn apply_web(workspaces: &Workspaces) {
+    let cert = workspaces.serving_certificate().clone();
+    let Ok(servers) = read(workspaces).await else {
+        return;
+    };
+    let Some(entry) = servers.servers.get(&device_id(&cert.device_public_key)) else {
+        return;
+    };
+    let serving = entry.web != super::WEB_SERVED[1];
+    if let Err(error) = workspaces.serve_web(serving) {
+        tracing::debug!(%error, "this server's web UI did not follow its entry");
     }
 }

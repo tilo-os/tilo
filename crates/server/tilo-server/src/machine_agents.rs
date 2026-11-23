@@ -35,7 +35,6 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tilo_actions::remote::Caller;
-use tilo_agent_session::WorkspaceActions;
 use tilo_lock::MutexRecover as _;
 use tilo_mcp::McpServer;
 use tilo_mcp::session_api::{Hello, proposed_agent_id};
@@ -45,7 +44,7 @@ pub use ush::hosted_vm::{AgentConnection, MachineAgents};
 use crate::WorkspaceId;
 use crate::certification::CertificationProtocol;
 use crate::workspaces::Workspaces;
-use tilo_workspace_service::agents::WorkspaceActionProvider;
+use tilo_workspace_service::agents::{EngineActions, WorkspaceActionProvider};
 
 /// How long the person has to answer whether a program may work in their workspace.
 const ANSWER_WAIT: Duration = Duration::from_secs(2 * 60);
@@ -76,7 +75,7 @@ pub struct MachineAgentsServer {
 /// What a connection is served through: the server's own services.
 struct Bound {
     workspaces: Workspaces,
-    actions: WorkspaceActions,
+    actions: EngineActions,
     certification: CertificationProtocol,
     runtime: tokio::runtime::Handle,
 }
@@ -153,7 +152,7 @@ impl MachineAgentsServer {
     pub fn bind(
         &self,
         workspaces: Workspaces,
-        actions: WorkspaceActions,
+        actions: EngineActions,
         certification: CertificationProtocol,
         runtime: tokio::runtime::Handle,
     ) {

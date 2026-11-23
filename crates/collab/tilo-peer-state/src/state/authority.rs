@@ -1345,7 +1345,9 @@ impl StatePeer {
             imported.as_ref(),
         )
         .and_then(|receipt| match receipt {
-            collab_types::Receipt::Admit => self.recorded_invocations(envelope).map(|()| receipt),
+            collab_types::Receipt::Admit => self
+                .recorded_invocations(envelope, app_id)
+                .map(|()| receipt),
             collab_types::Receipt::Hold => Ok(receipt),
         });
         match decided {
@@ -1528,11 +1530,26 @@ impl StatePeer {
     fn recorded_invocations(
         &self,
         envelope: &SignedOp,
+        app: &str,
     ) -> Result<(), collab_types::ReceiptRefusal> {
         for context in collab_types::recorded_contexts(envelope)? {
             tilo_server_protocol::invocation::verify_recorded(
                 &context,
                 &self.core.workspace,
+                &self.core.revocations,
+            )
+            .map_err(|error| collab_types::ReceiptRefusal::Invocation {
+                code: error.code(),
+                reason: error.to_string(),
+            })?;
+        }
+        // A resource store's change keeps the invocation its caller signed in its stamp: it is
+        // that app's, made under the invocation signed for it.
+        for stamp in collab_types::receipt::recorded_stamps(envelope)? {
+            tilo_server_protocol::invocation::verify_stamp(
+                &stamp,
+                &self.core.workspace,
+                app,
                 &self.core.revocations,
             )
             .map_err(|error| collab_types::ReceiptRefusal::Invocation {

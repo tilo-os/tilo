@@ -23,6 +23,7 @@ async fn a_kept_agent_joins_its_own_route_in_a_journaled_session() {
             services.launcher = Some(Arc::new(LaunchedHere {
                 app: env.route.app_id.clone(),
                 workspace: env.route.cluster_id.clone(),
+                opened_for: Mutex::new(None),
             }));
             let journal = tempfile::tempdir().unwrap();
             let config = crate::apps::NativePeerBrokerConfig {

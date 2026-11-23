@@ -105,8 +105,19 @@ impl WorkspaceDocuments {
     ///
     /// # Errors
     ///
-    /// A kept frame could not be read back.
-    pub fn retained(&self, workspace_id: WorkspaceId) -> Result<Vec<RetainedBody>, String> {
+    /// `workspace_id` is not a workspace this host keeps, or a kept frame
+    /// could not be read back.
+    pub async fn retained(&self, workspace_id: WorkspaceId) -> Result<Vec<RetainedBody>, String> {
+        // A workspace this host does not keep has nothing to replay, and a
+        // caller must be able to tell that from a workspace that is here and
+        // holds nothing yet. The registry is what keeps: a member copy this
+        // device holds syncs with the device serving it, and is no less kept
+        // for having no link of its own. The registry is let go before the
+        // store is read.
+        let kept = self.workspaces.lock().await.contains_key(&workspace_id);
+        if !kept {
+            return Err("the workspace is not hosted here".into());
+        }
         let mut bodies = Vec::new();
         for (author, message) in self.store.channels(workspace_id) {
             bodies.push(body_of(author, &message)?);
@@ -138,12 +149,12 @@ impl WorkspaceDocuments {
     ///
     /// # Errors
     ///
-    /// A kept frame could not be read back.
-    pub(crate) fn retained_settled(
+    /// As [`Self::retained`].
+    pub(crate) async fn retained_settled(
         &self,
         workspace_id: WorkspaceId,
     ) -> Result<Vec<RetainedBody>, String> {
-        self.retained(workspace_id)
+        self.retained(workspace_id).await
     }
 
     /// Publish `body` on `workspace_id`'s presence as this host's own, to
@@ -179,7 +190,7 @@ impl WorkspaceDocuments {
     ///
     /// As [`Self::retained`].
     #[cfg(feature = "agents")]
-    pub fn view_channel(
+    pub async fn view_channel(
         &self,
         workspace: WorkspaceId,
         channel: [u8; 32],
@@ -187,7 +198,7 @@ impl WorkspaceDocuments {
     ) -> Result<Vec<RetainedBody>, String> {
         let mut bytes = 0_usize;
         let mut kept = Vec::new();
-        for retained in self.retained(workspace)? {
+        for retained in self.retained(workspace).await? {
             let Ok(message) = NeighbourMsg::decode(&retained.body) else {
                 continue;
             };

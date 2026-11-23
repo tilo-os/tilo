@@ -1,234 +1,30 @@
-//! Reads of existing records, answered in slots of pooled confined app
-//! workers.
+//! The policy a worker reads a workspace's records under.
 
-use tilo_actions::ActionOutput;
-use tilo_actions::api::{ActionAddress, ActionDescriptor, ApiError};
-use tilo_actions::remote::ViewResourceQuery;
-use ui::resource::DocumentId;
-
-use super::process::{Lease, Stopped};
-use super::proto::{Mode, Reply, Request};
-use crate::workspace_actions::ViewReadPolicy;
-
-fn json<T: serde::Serialize + ?Sized>(value: &T) -> Result<String, String> {
-    serde_json::to_string(value).map_err(|error| error.to_string())
+/// Current governed read policy supplied by the authenticated host boundary.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ViewReadPolicy {
+    /// Governed workspace whose current policy authorized the exact source record.
+    pub workspace: String,
+    /// The certified caller's current member access in the workspace, including the
+    /// bound of a device that is not theirs.
+    pub access: ui::permissions::MemberAccess,
+    /// The workspace's current sandbox capabilities.
+    pub sandbox: Vec<collab_types::caps::CapOverride>,
+    /// Host time used to evaluate capability expiry.
+    pub unix_time: u64,
+    /// What the workspace's list of its agents bounds the agent asking to, when an agent asks
+    /// for the person (the workspace's list of its agents): empty follows the default.
+    #[serde(default)]
+    pub agent_bound: Vec<ui::permissions::policy::Rule>,
 }
 
-fn descriptors(reply: Reply) -> Result<Vec<ActionDescriptor>, String> {
-    match reply {
-        Reply::Descriptors(text) => serde_json::from_str(&text).map_err(|error| error.to_string()),
-        Reply::Failed(reason) => Err(reason),
-        _ => Err("the app worker answered out of turn".into()),
-    }
-}
-
-fn sent(lease: &mut Lease, request: &Request) -> Result<Reply, String> {
-    lease.call(request).map_err(|stopped| match stopped {
-        // What the slot held is gone with the worker: the caller holds it
-        // again from the source.
-        Stopped::Lost => "the app worker holding this was replaced; ask again".to_owned(),
-        Stopped::Failed(reason) => reason,
-        stopped @ Stopped::Slow => stopped.to_string(),
-    })
-}
-
-fn done(reply: Reply) -> Result<(), String> {
-    match reply {
-        Reply::Done => Ok(()),
-        Reply::Failed(reason) => Err(reason),
-        _ => Err("the app worker answered out of turn".into()),
-    }
-}
-
-/// One record's component mounted headless in a confined app worker over
-/// the host's retained source, for its registered reads. The host keeps the
-/// policy checks; the worker is given the source and the caller's current
-/// policy and runs the component.
-pub(crate) struct ConfinedRead {
-    process: Lease,
-}
-
-impl ConfinedRead {
-    /// Mount `record` of `app_id` in `workspace` over `source` under `policy`.
-    pub(crate) fn prepare(
-        app_id: &str,
-        workspace: &str,
-        record: &DocumentId,
-        source: Vec<u8>,
-        policy: &ViewReadPolicy,
-    ) -> Result<Self, String> {
-        #[cfg(feature = "test-support")]
-        crate::workspace_actions::slowed::wait(workspace, app_id);
-        let mut process = Lease::new(Mode::Read, workspace);
-        done(sent(
-            &mut process,
-            &Request::ReadPrepare {
-                app_id: app_id.to_owned(),
-                workspace: workspace.to_owned(),
-                record: record.as_str().to_owned(),
-                source,
-                policy: json(policy)?,
-            },
-        )?)?;
-        Ok(Self { process })
-    }
-
-    /// Replace the component's permissions with `policy`.
-    pub(crate) fn set_policy(&mut self, policy: &ViewReadPolicy) -> Result<(), String> {
-        done(sent(
-            &mut self.process,
-            &Request::ReadPolicy {
-                policy: json(policy)?,
-            },
-        )?)
-    }
-
-    /// The registered reads the component offers now.
-    pub(crate) fn operations(&mut self) -> Result<Vec<ActionDescriptor>, String> {
-        descriptors(sent(&mut self.process, &Request::ReadOperations)?)
-    }
-
-    /// Whether the component registers any reader: one that registers none
-    /// offers no registered read over any source.
-    pub(crate) fn registers(&mut self) -> Result<bool, String> {
-        match sent(&mut self.process, &Request::ReadRegisters)? {
-            Reply::Registers(registers) => Ok(registers),
-            Reply::Failed(reason) => Err(reason),
-            _ => Err("the app worker answered out of turn".into()),
-        }
-    }
-
-    /// Perform one registered read.
-    pub(crate) fn invoke(
-        &mut self,
-        address: &ActionAddress,
-        arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<ActionOutput, ApiError> {
-        let refused = || ApiError::Unknown(address.clone());
-        let request = Request::ReadInvoke {
-            address: json(address).map_err(|_| refused())?,
-            arguments: json(arguments).map_err(|_| refused())?,
-        };
-        match sent(&mut self.process, &request).map_err(|_| refused())? {
-            Reply::Output(text) => serde_json::from_str(&text).map_err(|_| refused()),
-            Reply::Refused(error) => Err(error.into_api(address)),
-            _ => Err(refused()),
-        }
-    }
-}
-
-/// One existing document of one app loaded in a confined app worker, to
-/// discover the views a resource of it offers.
-pub(crate) struct ConfinedViews {
-    process: Lease,
-}
-
-impl ConfinedViews {
-    /// Load `doc`, a document of `app_id`.
-    pub(crate) fn load(app_id: &str, doc: Vec<u8>) -> Result<Self, String> {
-        let mut process = Lease::new(Mode::Views, app_id);
-        done(sent(
-            &mut process,
-            &Request::ViewsLoad {
-                app_id: app_id.to_owned(),
-                doc,
-            },
-        )?)?;
-        Ok(Self { process })
-    }
-
-    /// The views `wanted` offers under `policy`: [`crate::AppCatalogue::resource_views`].
-    pub(crate) fn views(
-        &mut self,
-        wanted: &ViewResourceQuery,
-        policy: &ViewReadPolicy,
-    ) -> Result<Vec<ActionDescriptor>, String> {
-        descriptors(sent(
-            &mut self.process,
-            &Request::Views {
-                wanted: json(wanted)?,
-                policy: json(policy)?,
-            },
-        )?)
-    }
-}
-
-/// What existing documents are called and what search finds in them, read
-/// in one slot of a confined app worker taken on the first question and kept
-/// for the next.
-#[derive(Default)]
-pub(crate) struct ConfinedTitles {
-    process: Option<Lease>,
-}
-
-impl ConfinedTitles {
-    /// What `doc`, a document of `app_id`, is called:
-    /// [`crate::AppCatalogue::resource_title`].
-    pub(crate) fn title(&mut self, app_id: &str, doc: Vec<u8>) -> Result<Option<String>, String> {
-        let process = match &mut self.process {
-            Some(process) => process,
-            None => self.process.insert(Lease::new(Mode::Views, app_id)),
-        };
-        let reply = sent(
-            process,
-            &Request::Title {
-                app_id: app_id.to_owned(),
-                doc,
-            },
-        );
-        match reply {
-            Ok(Reply::Title(title)) => Ok(title),
-            Ok(Reply::Failed(reason)) => Err(reason),
-            Ok(_) => {
-                self.process = None;
-                Err("the app worker answered out of turn".into())
-            }
-            Err(reason) => {
-                // A worker that stopped answering is started again next time.
-                self.process = None;
-                Err(reason)
-            }
-        }
-    }
-
-    /// What search finds in `doc`, a document of `app_id`: the entries its
-    /// app publishes to the search index
-    /// ([`ui::framework::resource_index::hosted_entries`]), each bounded as an
-    /// index keeps it.
-    pub(crate) fn entries(
-        &mut self,
-        app_id: &str,
-        doc: Vec<u8>,
-    ) -> Result<Vec<ui::search::index_publication::IndexEntry>, String> {
-        let process = match &mut self.process {
-            Some(process) => process,
-            None => self.process.insert(Lease::new(Mode::Views, app_id)),
-        };
-        let reply = sent(
-            process,
-            &Request::Entries {
-                app_id: app_id.to_owned(),
-                doc,
-            },
-        );
-        match reply {
-            Ok(Reply::Entries(entries)) => {
-                let entries: Vec<ui::search::index_publication::IndexEntry> =
-                    serde_json::from_str(&entries).map_err(|error| error.to_string())?;
-                Ok(entries
-                    .into_iter()
-                    .filter_map(ui::search::index_publication::IndexEntry::bounded)
-                    .collect())
-            }
-            Ok(Reply::Failed(reason)) => Err(reason),
-            Ok(_) => {
-                self.process = None;
-                Err("the app worker answered out of turn".into())
-            }
-            Err(reason) => {
-                self.process = None;
-                Err(reason)
-            }
-        }
+impl ViewReadPolicy {
+    pub(crate) fn permissions(&self) -> ui::permissions::PermissionContext {
+        ui::permissions::PermissionContext::new(
+            ui::permissions::Acting::person(self.access.person_id().unwrap_or_default()),
+            self.sandbox.clone(),
+            self.access.clone(),
+        )
+        .at_unix_time(self.unix_time)
     }
 }

@@ -39,7 +39,7 @@ out=${4:?$usage}
 read -r generation < "$generation_file"
 [[ $generation =~ ^[1-9][0-9]*$ ]] || die "$generation_file holds no generation: '$generation'"
 cd "$repo_root"
-bins=(tilo-server tilo-server-admin tilo fs tilo-linux-vm tilo-hosted-jail tilo-api
+bins=(tilo-runtime tilo fs tilo-linux-vm tilo-hosted-jail tilo-api
       tilolang-process
       tilo-esp-write tilo-image-policy-check tilo-image-trust tilo-board-successor
       tilo-rollback tilo-auth tilo-boot-signin tilo-crypto tilo-default-start)

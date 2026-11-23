@@ -78,25 +78,3 @@ pub use metrics::MetricsSnapshot;
 pub use policy::TrustPolicy;
 pub use transport::{ALPN, DocumentAnswer, Envelope};
 pub use work::{Whose, WorkFrom, WorkKinds, WorkSetting, WorkWhen};
-
-/// Domain-separated secret the server binds, derived from the device secret.
-///
-/// The server and the filesystem must not publish competing address records
-/// for one Iroh node id. Callers that only need the dial target use
-/// [`server_node_id`].
-#[must_use]
-pub fn server_node_secret(device_secret: &[u8; 32]) -> [u8; 32] {
-    blake3::derive_key("tilo-server-iroh-service-key-v1", device_secret)
-}
-
-/// Public Iroh endpoint id of the server that belongs to this device secret.
-///
-/// This is the value stored as `server_node_id`. It is not the device
-/// public key, and deriving it does not require sending the device secret.
-#[must_use]
-pub fn server_node_id(device_secret: &[u8; 32]) -> [u8; 32] {
-    iroh_base::SecretKey::from_bytes(&server_node_secret(device_secret))
-        .public()
-        .as_bytes()
-        .to_owned()
-}

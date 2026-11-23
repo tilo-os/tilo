@@ -1089,7 +1089,7 @@ async fn a_copy_taking_in_its_kept_writes_lets_the_devices_other_work_run_meanwh
             let kept = copies
                 .inner
                 .records
-                .retained(workspace_id)
+                .retained(workspace_id).await
                 .expect("the copy's kept writes read")
                 .iter()
                 .filter(|frame| {

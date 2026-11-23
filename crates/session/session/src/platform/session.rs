@@ -956,6 +956,14 @@ impl Session {
         if let Some(engine) = &engine {
             session_services.keep_engine(std::sync::Arc::clone(engine));
         }
+        // A task's host is started as every tilolang process here is.
+        if let Some(processes) = options
+            .launch
+            .as_ref()
+            .and_then(|launch| launch.processes())
+        {
+            session_services.keep_processes(processes);
+        }
         // Until the first pass says whether the person has workspaces of their own, an ask of the
         // workspace the shell started with waits: that workspace is founded the moment it is known
         // to be theirs, and taken off the shell otherwise. A session with no identity founds none.

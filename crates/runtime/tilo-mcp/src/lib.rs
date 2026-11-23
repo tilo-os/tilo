@@ -9,8 +9,6 @@ mod images;
 pub mod lines;
 mod session;
 pub mod session_api;
-#[cfg(unix)]
-pub mod task_hosts;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_hosts;
 pub mod tool;
@@ -148,8 +146,8 @@ pub struct McpServer<H> {
     /// The `tilo` tool's session: the references its answers showed, and the steps its
     /// programs made, for `undo` and `history task`.
     programs: std::sync::Mutex<agent::Programs>,
-    /// Where this server starts its task's tilolang host
-    /// ([`task_hosts::TaskHosts`]); `None` for a server that runs no programs. A host
+    /// Where this server asks for its task's tilolang host ([`TaskHosts`]): the device that
+    /// runs the API starts it; `None` for a server that runs no programs. A host
     /// that cannot start one holds a value nothing constructs: its process link is a
     /// descriptor, which Windows has none of.
     #[cfg(unix)]

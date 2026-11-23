@@ -5,7 +5,7 @@
 
 use tilo_actions::ActionFailure;
 use tilo_actions::api::ApiError;
-use tilo_actions::remote::{ActionCallError, CatalogueRow, ReceiptStatus, application_open_target};
+use tilo_actions::remote::{ActionCallError, ReceiptStatus};
 use tilo_peer_state::document_frame::DocumentRoute;
 
 pub use tilo_actions::remote::RESOURCE_PROVIDER;
@@ -26,62 +26,6 @@ pub(crate) fn resource_of(provider: &str, workspace: &str) -> Option<DocumentRou
         cluster_id: workspace.to_owned(),
         document: record.to_owned(),
     })
-}
-
-/// The row offering to open `app` on a new record in workspace `workspace`,
-/// under the name people read it by (`label`).
-pub(crate) fn open_row(workspace: &str, app: &str, label: &str) -> CatalogueRow {
-    open_row_needing(workspace, app, label, None)
-}
-
-/// [`open_row`] of an app whose open opens nothing unless it names `needs`:
-/// the row declares it, so whoever opens the app is asked for it.
-pub(crate) fn open_row_needing(
-    workspace: &str,
-    app: &str,
-    label: &str,
-    needs: Option<crate::PlacedArgument>,
-) -> CatalogueRow {
-    let target = application_open_target(workspace, app);
-    CatalogueRow::for_action(
-        target.provider,
-        app,
-        tilo_actions::api::ActionDescriptor {
-            did: None,
-            state: tilo_actions::ActionState::default(),
-            semantic_identity: None,
-            address: target.address,
-            resource_kind: "applications.app".into(),
-            resource_label: label.to_owned(),
-            action_label: format!("Open {label}"),
-            keywords: Vec::new(),
-            icon: None,
-            description: Some(needs.map_or_else(
-                || format!("Open {label} on a new record in this workspace."),
-                |needs| {
-                    format!(
-                        "Open {label} in this workspace, naming `{}`: {}.",
-                        needs.name, needs.description
-                    )
-                },
-            )),
-            locus: tilo_actions::ExecutionLocus::ServerPreferred,
-            kind: tilo_actions::OperationKind::Effect,
-            contract: tilo_actions::ActionContract::default(),
-            params: needs
-                .map(|needs| {
-                    tilo_actions::ActionParam::required(
-                        needs.name,
-                        tilo_actions::ParamType::Text,
-                        needs.description,
-                    )
-                })
-                .into_iter()
-                .collect(),
-            input: tilo_actions::InputSpec::None,
-            view: None,
-        },
-    )
 }
 
 /// How an invocation the API refused ended.
@@ -142,39 +86,5 @@ pub(crate) fn api_status(error: &ApiError) -> ReceiptStatus {
     match api_outcome(error) {
         Outcome::Rejected(error) => ReceiptStatus::Rejected { error },
         Outcome::Failed(error) => ReceiptStatus::Failed { error },
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// An app that opens nothing unless its open names something declares
-    /// it, so whoever opens it from the listing is asked for it, rather than
-    /// offered an open that can only be refused.
-    #[test]
-    fn an_open_that_needs_a_name_declares_it() {
-        let plain = open_row("ws", "so.tilo.browser", "Browser")
-            .action
-            .expect("an open");
-        assert!(plain.params.is_empty());
-        let needing = open_row_needing(
-            "ws",
-            "so.tilo.linux",
-            "Linux apps",
-            Some(crate::PlacedArgument {
-                name: "app",
-                description: "the app to open",
-            }),
-        )
-        .action
-        .expect("an open");
-        assert_eq!(needing.params.len(), 1);
-        assert_eq!(needing.params[0].name, "app");
-        assert!(needing.params[0].required);
-        assert_eq!(
-            needing.description.as_deref(),
-            Some("Open Linux apps in this workspace, naming `app`: the app to open.")
-        );
     }
 }

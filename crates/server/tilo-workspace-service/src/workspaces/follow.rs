@@ -727,7 +727,11 @@ impl Workspaces {
     /// Replay every record write the device's store keeps for `workspace` into
     /// the governor's copy, and keep what it took in.
     pub(super) async fn recall(&self, workspace: &mut GovernedWorkspace) -> Result<(), String> {
-        let retained = self.inner.records.retained(workspace.workspace_id())?;
+        let retained = self
+            .inner
+            .records
+            .retained(workspace.workspace_id())
+            .await?;
         self.recall_retained(workspace, retained).await;
         Ok(())
     }

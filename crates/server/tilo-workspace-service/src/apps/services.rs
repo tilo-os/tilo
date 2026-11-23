@@ -624,6 +624,10 @@ pub struct ResourceRequestContext {
     /// each with who invoked it: a write that serves one is that invoker's, an agent acting for
     /// the caller included.
     serving: Vec<(tilo_actions::InvocationId, tilo_actions::Actor)>,
+    /// The caller the device opened this route's view for, when it opened one for a caller of
+    /// its dispatch: a write the app makes outside an invocation it serves is theirs, limited
+    /// to what they may do, and a read answers only what they may read.
+    opened_for: Option<tilo_actions::remote::Caller>,
 }
 
 impl ResourceRequestContext {
@@ -637,7 +641,22 @@ impl ResourceRequestContext {
             workspace_id: workspace_id.into(),
             caller,
             serving: Vec::new(),
+            opened_for: None,
         }
+    }
+
+    /// The context of a view the device opened for `opened_for`, when it opened it for a caller
+    /// of its dispatch rather than for the person at a window of its own.
+    #[must_use]
+    pub fn opened_for(mut self, opened_for: Option<tilo_actions::remote::Caller>) -> Self {
+        self.opened_for = opened_for;
+        self
+    }
+
+    /// The caller this route's view was opened for, when it was opened for one.
+    #[must_use]
+    pub const fn viewer(&self) -> Option<&tilo_actions::remote::Caller> {
+        self.opened_for.as_ref()
     }
 
     /// The context, with the invocations `serving` the workspace service delivered to its app and is

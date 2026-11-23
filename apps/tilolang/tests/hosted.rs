@@ -48,6 +48,8 @@ use packages::{package, package_of};
 
 #[path = "hosted/offers.rs"]
 mod offers;
+#[path = "hosted/on_page.rs"]
+mod on_page;
 
 #[path = "hosted/typing.rs"]
 mod typing;

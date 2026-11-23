@@ -897,9 +897,9 @@ daemon, the person's servers).
 
 A server is a device that stores more. Today the server side is
 `tilo-server` (122,096: the daemon with `init`, `run`, `workspace`, its own
-iroh relay, the web entry, and bots in `workspace_bots` (15,464)), with the
-`tilo-server-admin`, `tilo-enroll`, `tilo-approve` and
-`tilo-home-peer-control` binaries beside it. `tilo-api` (21,745) is the MCP
+iroh relay, the web entry, and bots in `workspace_bots` (15,464)); its
+operator verbs (`status`, `node-id`, `rollout`, the Files identity check) are
+subcommands of it, not binaries beside it. `tilo-api` (21,745) is the MCP
 and OAuth endpoint with its own grant and token store. A device without a
 desktop runs one daemon, `tilo-runtime`, which serves its apps, `tilo
 mcp` and the CLI's workspace commands over the device's one session. Both open

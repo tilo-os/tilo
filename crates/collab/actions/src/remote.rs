@@ -41,6 +41,7 @@ mod application;
 pub mod browser;
 mod caller;
 pub mod environment_device;
+pub mod invocation_record;
 pub mod linux_apps;
 pub mod mcp_server;
 pub use caller::{Caller, device_agent_id};
@@ -251,7 +252,7 @@ pub const WORKSPACE_WAITING: &str = "waiting";
 /// person names it. An operation not listed is published on the root under its
 /// own name; one listed on [`WORKSPACE_MEMBER`] is published on each person, who
 /// is its `person`.
-pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 22] = [
+pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 23] = [
     ("member.list", Some(WORKSPACE_MEMBERS), "list"),
     (
         "member.add",
@@ -280,6 +281,7 @@ pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 22] = [
     ("server.remove", Some(WORKSPACE_SERVERS), "remove"),
     ("server.move", Some(WORKSPACE_SERVERS), "move"),
     ("copies.set", Some(WORKSPACE_SERVERS), "copies"),
+    ("copies.read", Some(WORKSPACE_SERVERS), "keeps"),
     ("content.held", Some(WORKSPACE_SERVERS), "content"),
     ("install-app", Some(WORKSPACE_APPS), "install-app"),
     ("uninstall-app", Some(WORKSPACE_APPS), "uninstall-app"),

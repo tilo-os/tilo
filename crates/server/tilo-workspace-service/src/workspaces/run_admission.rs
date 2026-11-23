@@ -229,6 +229,46 @@ impl Workspaces {
                 "selected workspace identity differs from the runtime profile actor".into(),
             );
         }
+        self.admitted_run(selected, caller, own, pinned, presentation)
+    }
+
+    /// Admit a run of the key `key` certifies, in `workspace`, a workspace this service governs,
+    /// presenting `presentation` (the key's own proof for the workspace): the caller its calls
+    /// are is the key itself, never its person, so each call is decided by what the workspace
+    /// grants that key ([`Self::enter`] keeps a key's grant as it admits it).
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not governed here (a member copy's key enters where it is kept).
+    pub async fn admit_key(
+        &self,
+        workspace: &str,
+        key: &DeviceCert,
+        presentation: Vec<u8>,
+    ) -> Result<Arc<SessionAdmission>, String> {
+        let selected = WorkspaceId::parse(workspace).ok_or("invalid exact workspace")?;
+        if self.member_material(selected).is_some() {
+            return Err("this workspace is kept on another device; its keys act there".into());
+        }
+        self.workspace(workspace)
+            .await
+            .map_err(|_| "this device does not keep that workspace")?;
+        let caller = Caller::authenticated(key.user_public_key, key.device_public_key)
+            .in_workspace(workspace)
+            .from_foreign_device(true)
+            .in_new_execution();
+        self.admitted_run(selected, caller, key, Pinned::Own, presentation)
+    }
+
+    /// Register `caller`'s run in `selected`, pinned to `pinned`, and check it once.
+    fn admitted_run(
+        &self,
+        selected: WorkspaceId,
+        caller: Caller,
+        cert: &DeviceCert,
+        pinned: Pinned,
+        presentation: Vec<u8>,
+    ) -> Result<Arc<SessionAdmission>, String> {
         // The one owner observer is already installed. Register this exact
         // lease, then re-read the pinned material: a concurrent fence either
         // closes the lease or is detected by the changed enrollment.
@@ -256,7 +296,7 @@ impl Workspaces {
         let admission = Arc::new(SessionAdmission {
             caller,
             workspace: selected,
-            certificate: own.clone(),
+            certificate: cert.clone(),
             pinned,
             presentation,
             _registration: registration,

@@ -8,7 +8,7 @@ use tilo_server_protocol::page::{
 };
 use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert};
 
-use super::{AppPages, serve_pages};
+use super::{AppPages, Questions, serve_pages};
 use crate::WorkspaceId;
 
 const WORKSPACE: &str = "6f1d3a52-1c7e-4b6a-9d2e-5a4b3c2d1e0f";
@@ -87,6 +87,54 @@ fn handshake() -> serde_json::Value {
         "ack": hex::encode(postcard::to_allocvec(&ack).unwrap()),
         "server_nonce": hex::encode([9; 32]),
         "digest": hex::encode(client_challenge_digest(&[9; 32])),
+        "signing": signing(),
+    })
+}
+
+/// What the page's script signs for an act, from the types that check it: BLAKE3 across blocks
+/// and chunks, and one act's signed call with the message its key signs.
+fn signing() -> serde_json::Value {
+    use tilo_actions::remote::signed_invocation::{
+        InvocationStatement, SignedInvocation, argument_hash,
+    };
+    use tilo_actions::remote::{InvokeArgument, RemoteActionTarget, SignedCall};
+    let hashes: Vec<serde_json::Value> = [0_usize, 1, 64, 65, 1024, 1025, 2048, 3000, 5121]
+        .into_iter()
+        .map(|len| {
+            let input: Vec<u8> = (0..len).map(|i| u8::try_from(i % 251).unwrap()).collect();
+            serde_json::json!({ "len": len, "hash": blake3::hash(&input).to_hex().to_string() })
+        })
+        .collect();
+    let signer = cert(1, "Browser", DeviceCapabilities::member());
+    // Text past one chunk, with what JSON escapes in it.
+    let text = format!("Milk \"2\" ü \u{1}\n{}", "x".repeat(1100));
+    let act = serde_json::json!({ "id": 7, "target": "notes.block-text:b1", "action": { "value": text } });
+    let argument = InvokeArgument::Json(act.as_object().unwrap().clone());
+    let statement = InvocationStatement {
+        workspace: WORKSPACE.to_owned(),
+        invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(
+            0x0123_4567_89ab_4def_8123_4567_89ab_cdef,
+        )),
+        target: RemoteActionTarget {
+            provider: "notes".into(),
+            address: tilo_actions::ActionAddress::new("notes", "act"),
+        },
+        arguments: argument_hash(&argument),
+        on_behalf_of: None,
+        // Whole seconds: a JavaScript number holds them exactly.
+        issued_at_ns: 1_763_600_000_000_000_000,
+        signer: signer.device_public_key,
+    };
+    let message = statement.signing_message();
+    let call = SignedCall {
+        signed: SignedInvocation::new(statement, [4; 64], postcard::to_allocvec(&signer).unwrap()),
+        argument: Some(argument),
+    };
+    serde_json::json!({
+        "hashes": hashes,
+        "act": act,
+        "message": hex::encode(message),
+        "call": call,
     })
 }
 
@@ -137,12 +185,12 @@ impl AppPages for Echo {
         &self,
         _: WorkspaceId,
         _: u64,
-        act: Option<(u32, Option<String>, PageAction)>,
+        act: Option<crate::app_serving::PageAct>,
     ) -> Pending<Result<Vec<PagePatch>, PageRefusal>> {
         Pending::ready(Ok(act
-            .map(|(id, _, action)| PagePatch {
-                id,
-                html: format!("{action:?}"),
+            .map(|act| PagePatch {
+                id: act.id,
+                html: format!("{:?}", act.action),
             })
             .into_iter()
             .collect()))
@@ -174,7 +222,7 @@ async fn a_page_opens_acts_and_lets_go_when_its_browser_leaves() {
         app: "notes".into(),
         show: Some("notes:page:a".into()),
     };
-    let serving = serve_pages(&pages, &person, true, |_, _| async { Ok(true) }, recv, send);
+    let serving = serve_pages(&pages, &person, None, |_, _| async { Ok(true) }, recv, send);
     let browsing = async {
         ask(&mut browser, &PageAsk::Open(address)).await;
         // Its keys were on their way: it is told so, then shown.
@@ -192,6 +240,7 @@ async fn a_page_opens_acts_and_lets_go_when_its_browser_leaves() {
                 id: 3,
                 target: None,
                 action: PageAction::Value("Milk".into()),
+                signed: None,
             },
         )
         .await;
@@ -208,11 +257,24 @@ async fn a_page_opens_acts_and_lets_go_when_its_browser_leaves() {
     assert_eq!(*pages.closed.lock().unwrap(), vec![1], "the page is let go");
 }
 
-/// Pages that draw a question sheet over the app, and take the person's
-/// answer on it: what a page holding their identity shows.
+/// A person's waiting question, and the answers they gave on the sheet.
 #[derive(Default)]
 struct Asking {
     asked: Mutex<Vec<String>>,
+}
+
+impl Questions for Asking {
+    fn sheet(&self, _: &[u8; 32]) -> String {
+        sheet()
+    }
+
+    fn answer(&self, _: &[u8; 32], target: &str) -> Option<Result<String, String>> {
+        self.asked.lock().unwrap().push(target.to_owned());
+        Some(Ok(format!(
+            "<div data-p=\"{}\" hidden></div>",
+            tilo_server_protocol::page::QUESTION_PATCH_ID
+        )))
+    }
 }
 
 /// The sheet the asking page draws: a question's method and its Allow.
@@ -224,7 +286,10 @@ fn sheet() -> String {
     )
 }
 
-impl AppPages for Asking {
+/// One page of an app, over which the question sheet is drawn.
+struct OnePage;
+
+impl AppPages for OnePage {
     fn open(
         &self,
         _: WorkspaceId,
@@ -243,39 +308,29 @@ impl AppPages for Asking {
         &self,
         _: WorkspaceId,
         _: u64,
-        _: Option<(u32, Option<String>, PageAction)>,
+        _: Option<crate::app_serving::PageAct>,
     ) -> Pending<Result<Vec<PagePatch>, PageRefusal>> {
         Pending::ready(Ok(Vec::new()))
     }
 
     fn close(&self, _: WorkspaceId, _: u64) {}
-
-    fn question_sheet(&self, _: WorkspaceId, _: u64) -> String {
-        sheet()
-    }
-
-    fn answer_question(
-        &self,
-        _: WorkspaceId,
-        page: u64,
-        target: &str,
-    ) -> Option<Pending<Result<Vec<PagePatch>, PageRefusal>>> {
-        self.asked.lock().unwrap().push(target.to_owned());
-        Some(Pending::ready(Ok(vec![PagePatch {
-            id: tilo_server_protocol::page::QUESTION_PATCH_ID,
-            html: format!("<div data-p=\"{page}\" hidden></div>"),
-        }])))
-    }
 }
 
 #[tokio::test]
 async fn a_questions_answer_on_the_sheet_runs_it_and_patches_the_sheet() {
-    let pages = Asking::default();
+    let questions = Asking::default();
     let person = Caller::authenticated([1; 32], [2; 32]);
     let (mut browser, served) = tokio::io::duplex(1 << 16);
     let (recv, send) = tokio::io::split(served);
     let target = tilo_server_protocol::page::question_target([7; 32], "allow-once");
-    let serving = serve_pages(&pages, &person, true, |_, _| async { Ok(true) }, recv, send);
+    let serving = serve_pages(
+        &OnePage,
+        &person,
+        Some(&questions),
+        |_, _| async { Ok(true) },
+        recv,
+        send,
+    );
     let browsing = async {
         ask(
             &mut browser,
@@ -297,6 +352,7 @@ async fn a_questions_answer_on_the_sheet_runs_it_and_patches_the_sheet() {
                 id: tilo_server_protocol::page::QUESTION_PATCH_ID,
                 target: Some(target.clone()),
                 action: PageAction::Activate,
+                signed: None,
             },
         )
         .await;
@@ -308,7 +364,7 @@ async fn a_questions_answer_on_the_sheet_runs_it_and_patches_the_sheet() {
         drop(browser);
     };
     tokio::join!(serving, browsing);
-    assert_eq!(*pages.asked.lock().unwrap(), vec![target]);
+    assert_eq!(*questions.asked.lock().unwrap(), vec![target]);
 }
 
 #[tokio::test]
@@ -325,7 +381,7 @@ async fn a_workspace_only_stored_here_is_refused_and_opens_nothing() {
     let serving = serve_pages(
         &pages,
         &person,
-        true,
+        None,
         |_, _| async { Err(PageRefusal::StoredCopy) },
         recv,
         send,

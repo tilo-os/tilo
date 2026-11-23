@@ -1,9 +1,8 @@
 # Tilo server configuration.
 #
-# This process durably hosts workspace CRDT state and queues updates for
-# offline members.
-identity_root = "/var/lib/tilo"
-state_root = "/var/lib/tilo-server"
+# The device's one daemon reads it and keeps what a server keeps: the workspaces
+# placed on it, governed here, and what their members send while others are away.
+# Its identity is the login its ticket left; its state is the daemon's own.
 
 # Compose exposes this UDP port. Iroh still uses encrypted relay fallback and
 # NAT traversal when a direct path is unavailable.
@@ -12,6 +11,15 @@ iroh_listen = "0.0.0.0:4433"
 # Safe default: accept only device certificates chained to this owner's root.
 # See README.md before changing this for a cross-user workspace.
 trust_policy = { kind = "allow_matching_user" }
+
+# The server serves its own web UI, on by default: the pages its members open in a browser.
+# It is on unless its person turns it off from one of their devices, so nothing here
+# switches it; this names where it answers, and the certificate it answers with.
+web_listen = "0.0.0.0:8443"
+# The certificate is a development one, kept on the server's volume, until the deployment
+# names a PEM chain and key:
+# web_tls = { files = { chain = "/run/secrets/tls-chain.pem", key = "/run/secrets/tls-key.pem", host = "server.example" } }
+web_tls = "dev"
 
 # `allow_matching_user` hosts open an owner workspace when it first subscribes.
 # Any other workspace is held here because its governor made this server one of

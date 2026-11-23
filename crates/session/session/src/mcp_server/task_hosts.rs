@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use tilo_lock::MutexRecover as _;
-use tilo_mcp::task_hosts::{Catalogue, TaskCatalogue};
+use tilo_runtime::device::tasks::{Catalogue, TaskCatalogue};
 
 use super::{ApiAsk, SessionServices, WAIT};
 

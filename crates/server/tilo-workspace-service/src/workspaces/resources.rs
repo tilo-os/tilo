@@ -30,9 +30,6 @@ use tilo_resource_store::{Admit, Received, Refusal, Store};
 
 use super::{GovernedWorkspace, Workspaces};
 
-#[cfg(feature = "agents")]
-mod packaged;
-
 /// Where a workspace's store keeps its documents, under the workspace's directory.
 const STORE: &str = "store";
 const DOCS: &str = "docs";
@@ -943,11 +940,11 @@ impl Workspaces {
     async fn resource_read(
         &self,
         state: &tokio::sync::Mutex<GovernedWorkspace>,
-        device: &super::MemberDevice,
+        reader: &str,
         command: &tilo_resource_store::wire::Command,
     ) -> Result<tilo_resource_store::wire::Reply, String> {
         use tilo_resource_store::wire::{Command, Reply, read};
-        let may_read = may_read(hex::encode(device.cert.user_public_key));
+        let may_read = may_read(reader.to_owned());
         let mut governed = state.lock().await;
         let store = governed.store_with_surfaces(&self.inner.host.surfaces);
         let answer = match command {
@@ -1048,6 +1045,8 @@ impl Workspaces {
         }
         let device = self.member_identity()?;
         let writing = command.writes();
+        // What a view's caller writes outside an invocation: each write's resource type and verb.
+        let mut unserved = Vec::new();
         if writing {
             let caller = context.caller();
             if caller.workspace() != Some(workspace)
@@ -1060,22 +1059,33 @@ impl Workspaces {
                 .acting()
                 .person_id()
                 .ok_or("this resource route has no caller-scoped signer for the write")?;
-            let person = tilo_actions::Actor::Member(tilo_actions::MemberId::person(person));
-            stamp_resource_invoker(&mut command, &|invocation| {
-                context
-                    .invoker_of(invocation)
-                    .cloned()
-                    .unwrap_or_else(|| person.clone())
-            });
+            // What the app writes outside an invocation it serves is the person's at the window,
+            // or the caller's the device opened the view for.
+            let otherwise = context.viewer().map_or_else(
+                || tilo_actions::Actor::Member(tilo_actions::MemberId::person(person)),
+                |viewer| viewer.acting().by.clone(),
+            );
+            stamp_resource_invoker(
+                &mut command,
+                &|invocation| context.invoker_of(invocation).cloned(),
+                &otherwise,
+                &mut unserved,
+            );
         }
         let state = self
             .workspace(workspace)
             .await
             .map_err(|error| error.to_string())?;
         if !writing {
-            return self.resource_read(&state, &device, &command).await;
+            let reader = context
+                .viewer()
+                .map_or_else(|| hex::encode(device.cert.user_public_key), viewer_reader);
+            return self.resource_read(&state, &reader, &command).await;
         }
         let governed = state.lock_owned().await;
+        if let Some(viewer) = context.viewer() {
+            may_write_as_viewer(&governed, viewer, context.app_id(), &unserved)?;
+        }
         self.write_resources(governed, device, context.app_id(), command)
             .await
     }
@@ -1243,7 +1253,8 @@ impl Workspaces {
         context: &crate::apps::services::ResourceRequestContext,
         query: tilo_resource_store::Query,
     ) -> Result<tokio::sync::mpsc::UnboundedReceiver<tilo_resource_store::Page>, String> {
-        let reader = hex::encode(self.member_identity()?.cert.user_public_key);
+        let device = hex::encode(self.member_identity()?.cert.user_public_key);
+        let reader = context.viewer().map_or(device, viewer_reader);
         let state = self
             .workspace(context.workspace_id())
             .await
@@ -1255,24 +1266,28 @@ impl Workspaces {
 }
 
 /// The command names the verb and invocation, and the workspace service names who made it: whoever invoked
-/// the invocation a write serves, when the workspace service delivered that one to the app, and the person
-/// the route certifies otherwise.
+/// the invocation a write serves, when the workspace service delivered that one to the app, and
+/// `otherwise` (the person the route certifies, or the caller its view was opened for) for any
+/// other write, whose resource type and verb are added to `unserved`.
 #[cfg(feature = "apps")]
 fn stamp_resource_invoker(
     command: &mut tilo_resource_store::wire::Command,
-    invoker: &dyn Fn(&str) -> tilo_actions::Actor,
+    served: &dyn Fn(&str) -> Option<tilo_actions::Actor>,
+    otherwise: &tilo_actions::Actor,
+    unserved: &mut Vec<(String, String)>,
 ) {
     use tilo_resource_store::wire::Command;
-    match command {
-        Command::Put { stamp, .. }
-        | Command::Remove { stamp, .. }
-        | Command::Undo { stamp, .. }
-        | Command::Edit { stamp, .. } => {
-            stamp.invoker = tilo_resource_store::Stamp::by(&invoker(&stamp.invocation));
+    let (kind, stamp) = match command {
+        Command::Put { kind, stamp, .. }
+        | Command::Remove { kind, stamp, .. }
+        | Command::Edit { kind, stamp, .. } => (kind.as_str(), stamp),
+        Command::Undo { stamp, .. } => ("", stamp),
+        Command::Batch(commands) => {
+            for command in commands {
+                stamp_resource_invoker(command, served, otherwise, unserved);
+            }
+            return;
         }
-        Command::Batch(commands) => commands
-            .iter_mut()
-            .for_each(|command| stamp_resource_invoker(command, invoker)),
         Command::Get { .. }
         | Command::Query(_)
         | Command::Count { .. }
@@ -1288,14 +1303,71 @@ fn stamp_resource_invoker(
         | Command::PageAt { .. }
         | Command::Contents { .. }
         | Command::Fields { .. }
-        | Command::Turn { .. } => {}
+        | Command::Turn { .. } => return,
+    };
+    let invoker = served(&stamp.invocation).unwrap_or_else(|| {
+        unserved.push((kind.to_owned(), stamp.verb.clone()));
+        otherwise.clone()
+    });
+    stamp.invoker = tilo_resource_store::Stamp::by(&invoker);
+}
+
+/// Who a view's caller reads as: a member as the person they are or act for, and a visitor, who
+/// is in no resource's reader set, as nobody ([`may_read`]).
+#[cfg(feature = "apps")]
+fn viewer_reader(viewer: &tilo_actions::remote::Caller) -> String {
+    let acting = viewer.acting();
+    acting
+        .by
+        .member_id()
+        .and_then(tilo_actions::MemberId::person_id)
+        .or_else(|| acting.acted_for_person())
+        .map(ToString::to_string)
+        .unwrap_or_default()
+}
+
+/// Refuse the writes `unserved` (each a resource type and the verb the app named it by) that the
+/// caller `viewer`, whom the device opened this view of `app` for, may not make: a view runs
+/// with its viewer's permissions, never the device's.
+#[cfg(feature = "apps")]
+fn may_write_as_viewer(
+    governed: &GovernedWorkspace,
+    viewer: &tilo_actions::remote::Caller,
+    app: &str,
+    unserved: &[(String, String)],
+) -> Result<(), String> {
+    if unserved.is_empty() {
+        return Ok(());
     }
+    let workspace = governed.workspace();
+    let policy = governed.peer().governance().governed_policy()?;
+    let acting = viewer.acting();
+    let mut granted = acting.handed_preset(workspace);
+    granted.extend(viewer.granted(&[]));
+    let authority = tilo_action_policy::Authority::of_acting(acting, &policy, &granted);
+    let cx = tilo_action_policy::Context::at_time(tilo_clock::wall());
+    for (kind, verb) in unserved {
+        let mut node = tilo_action_policy::TreePath::workspace(workspace).app(app);
+        if !kind.is_empty() {
+            node = node.resource(kind.as_str());
+        }
+        let node = node.action(verb.as_str());
+        let decided = authority.decide(&node, tilo_action_policy::ActionKind::Undoable, &cx);
+        if decided.answer != tilo_action_policy::Answer::Allow {
+            return Err(format!(
+                "the view's caller may not {verb} here: the write was refused"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Whether the reader set `readers` names `reader`: `*` names everyone.
 #[cfg(feature = "apps")]
 fn may_read(reader: String) -> impl Fn(&str) -> bool {
-    move |readers| readers == "*" || readers.split(',').any(|person| person == reader)
+    move |readers| {
+        !reader.is_empty() && (readers == "*" || readers.split(',').any(|person| person == reader))
+    }
 }
 
 // The tests write and read a device's resources through the store (`apps`) and

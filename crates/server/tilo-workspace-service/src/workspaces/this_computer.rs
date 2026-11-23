@@ -361,3 +361,83 @@ pub fn link_this_computer_at(
 fn workspace_root_at(service_root: &Path, workspace: &str) -> std::path::PathBuf {
     super::person_asking::workspace_store_dir(&service_root.join("workspaces"), workspace)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agent_provider_config::{ModelDescriptor, ProviderProtocol};
+
+    /// A model server on this computer, as its Agent models pane keeps it: Ollama on loopback,
+    /// asked without a key, offering `models`, of which agents answer with `chosen`.
+    fn ollama(models: &[&str], chosen: &str) -> ProviderConfig {
+        let profile = ProviderProfile {
+            id: "ollama".to_owned(),
+            label: "Ollama".to_owned(),
+            protocol: ProviderProtocol::OpenAiCompatible,
+            endpoint: "http://127.0.0.1:11434/v1".to_owned(),
+            location: EndpointLocation::ThisDevice,
+            models: models
+                .iter()
+                .map(|model| ModelDescriptor {
+                    tool_calling: true,
+                    ..ModelDescriptor::new(*model)
+                })
+                .collect(),
+            default_model: Some(chosen.to_owned()),
+            ..ProviderProfile::local_vllm()
+        };
+        ProviderConfig {
+            default_profile: Some(profile.id.clone()),
+            profiles: vec![profile],
+            ..ProviderConfig::default()
+        }
+    }
+
+    /// A model chosen in the computer's Agent models pane before agents answered on the
+    /// workspace's models is linked into the workspace once, with no key; each later pick in
+    /// the pane follows into it while it still runs on the computer's last choice, and never
+    /// over a model the workspace chose itself.
+    #[test]
+    fn the_computers_model_choice_is_linked_once_and_then_followed() {
+        let workspace = tempfile::tempdir().unwrap();
+        let root = workspace.path();
+        let default_model = |root: &Path| default_of(&provider_config(root)).map(|d| d.model);
+
+        let chose = ollama(&["llama3.2", "qwen3", "mistral"], "llama3.2");
+        assert!(
+            link(root, &chose, Linking::Once).unwrap(),
+            "the computer's choice becomes the workspace's"
+        );
+        assert!(
+            !link(root, &chose, Linking::Once).unwrap(),
+            "once: a workspace it was linked into is not linked again"
+        );
+        let models = provider_config(root);
+        assert_eq!(models.default_profile.as_deref(), Some("ollama"));
+        assert!(
+            models
+                .profiles
+                .iter()
+                .all(|profile| profile.credential.is_none()),
+            "no key comes with it"
+        );
+        assert_eq!(default_model(root).as_deref(), Some("llama3.2"));
+
+        // Another pick in the pane: the workspace, still on the computer's choice, follows.
+        let picked = ollama(&["llama3.2", "qwen3", "mistral"], "qwen3");
+        assert!(link(root, &picked, Linking::Following).unwrap());
+        assert_eq!(default_model(root).as_deref(), Some("qwen3"));
+
+        // The workspace chose a model of its own: the pane's next pick leaves it alone.
+        let mut own = provider_config(root);
+        own.profiles[0].default_model = Some("mistral".to_owned());
+        save_provider_config(root, &own).unwrap();
+        assert!(!link(root, &chose, Linking::Following).unwrap());
+        assert_eq!(default_model(root).as_deref(), Some("mistral"));
+        assert!(
+            link(root, &picked, Linking::Chosen).unwrap(),
+            "asked for, the computer's choice is the workspace's whatever it ran on"
+        );
+        assert_eq!(default_model(root).as_deref(), Some("qwen3"));
+    }
+}

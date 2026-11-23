@@ -20,7 +20,9 @@ use tilo_server_protocol::{WorkSetting, WorkspaceId};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 use tilo_workspace_service::workspaces::MemberDevice;
 
-use crate::common::{Hosted, TestDevice, TestUser, device_endpoint, serve_in};
+use crate::common::{
+    Hosted, TestDevice, TestUser, device_endpoint, join_person_workspace, serve_in,
+};
 
 /// The provider and resource a server answers its own operations on.
 const HOST_PROVIDER: &str = "tilo.host";
@@ -248,19 +250,7 @@ async fn a_person_with_no_server_plans_a_machine_and_walks_it_through_its_instal
     // Another of their devices holds the workspace too, and answers what the
     // machine asks there.
     let tablet_host = own_host(&alice, &tablet).await;
-    servers::take_in(
-        laptop_host.host.workspaces(),
-        &tablet.cert,
-        &tablet_host.host.node_addr(),
-    )
-    .await
-    .unwrap();
-    tilo_test_env::within("the other device to hold the Servers workspace", async {
-        while !servers::holds_person_workspace(tablet_host.host.workspaces()).await {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
-    .await;
+    join_person_workspace(&laptop_host, &tablet, &tablet_host).await;
 
     // The machine, holding the workspace now, reports the drives it really has
     // and asks which one: its entry is the plan it reads.
@@ -425,19 +415,7 @@ async fn a_machine_that_enrolled_with_a_plan_installs_from_it_on_its_first_start
     )
     .await
     .unwrap();
-    servers::take_in(
-        laptop_host.host.workspaces(),
-        &cupboard.cert,
-        &machine_host.host.node_addr(),
-    )
-    .await
-    .unwrap();
-    tilo_test_env::within("the machine to hold the Servers workspace", async {
-        while !servers::holds_person_workspace(machine_host.host.workspaces()).await {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
-    .await;
+    join_person_workspace(&laptop_host, &cupboard, &machine_host).await;
 
     // The machine's first start: its entry is its own, under its device key.
     let state = tempfile::tempdir().unwrap();
@@ -715,13 +693,7 @@ async fn a_new_device_reads_the_wifi_and_devices_its_person_kept() {
     .await
     .unwrap();
 
-    servers::take_in(
-        laptop_host.host.workspaces(),
-        &desktop.cert,
-        &desktop_host.host.node_addr(),
-    )
-    .await
-    .unwrap();
+    join_person_workspace(&laptop_host, &desktop, &desktop_host).await;
     tilo_test_env::within("the new device to read what the person kept", async {
         loop {
             let read = person_workspace::read::<Devices>(desktop_host.host.workspaces(), DEVICES)

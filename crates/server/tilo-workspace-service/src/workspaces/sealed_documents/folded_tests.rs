@@ -20,13 +20,14 @@ use tilo_user_identity::DeviceCert;
 
 /// The body of every retained write of `resource`, once the workspace's store
 /// settled every write its owner took before the call.
-fn retained_write_bodies(
+async fn retained_write_bodies(
     documents: &crate::workspace_documents::WorkspaceDocuments,
     workspace_id: WorkspaceId,
     resource: &str,
 ) -> Vec<Vec<u8>> {
     documents
         .retained_settled(workspace_id)
+        .await
         .unwrap()
         .into_iter()
         .filter(|retained| {
@@ -185,7 +186,7 @@ async fn a_compaction_folds_the_writes_of_every_author_a_newcomer_replays() {
     )
     .await;
     let before_writes =
-        retained_write_bodies(&server.workspace_documents(), workspace_id, RESOURCE);
+        retained_write_bodies(&server.workspace_documents(), workspace_id, RESOURCE).await;
     assert!(
         before_writes.len() >= GOVERNOR_WRITES + MEMBER_WRITES,
         "the node retains every write a newcomer replays: {}",
@@ -250,7 +251,8 @@ async fn a_compaction_folds_the_writes_of_every_author_a_newcomer_replays() {
         &held,
         (&newest, "governor 11"),
     );
-    let after_writes = retained_write_bodies(&server.workspace_documents(), workspace_id, RESOURCE);
+    let after_writes =
+        retained_write_bodies(&server.workspace_documents(), workspace_id, RESOURCE).await;
     assert_sent_less(&before_writes, &after_writes);
     drop(workspaces);
     server.shutdown().await;

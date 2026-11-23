@@ -383,7 +383,7 @@ impl Drop for LaunchReadiness {
 }
 
 /// Original host-retained facts for one authenticated live launch.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct AuthenticatedApplicationLaunch {
     pub continuation_instance: Option<u64>,
     /// The ticket that launch answered ([`Launched::Started`]), from the host's own launch
@@ -392,6 +392,12 @@ pub struct AuthenticatedApplicationLaunch {
     /// The host made this connection for an instance with no window: it takes the app's actions
     /// on its records, never an `open`, which shows something.
     pub windowless: bool,
+    /// The caller the host opened this instance's view for, when the device's dispatch admitted
+    /// one (a member, a member's agent, a visitor at a page) rather than a person at a window of
+    /// the host's own. What the instance writes outside an invocation it serves is that
+    /// caller's, limited to what they may do, and it reads only what they may read. The connection
+    /// itself is the instance's, which the device runs for the workspace.
+    pub opened_for: Option<tilo_actions::remote::Caller>,
 }
 
 /// What [`LauncherServices::launch_content`] started.
@@ -582,6 +588,7 @@ pub trait LauncherServices: Send + Sync {
             continuation_instance: None,
             launch_ticket: None,
             windowless: false,
+            opened_for: None,
         }))
     }
 

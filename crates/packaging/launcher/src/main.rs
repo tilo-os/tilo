@@ -302,6 +302,10 @@ enum Cmd {
         /// Where the process sees `--earlier`, as a relative path beneath its mount.
         #[arg(long, requires = "earlier")]
         earlier_under: Option<PathBuf>,
+        /// Run the window a device shows on a web page in the same sandbox, on the patch
+        /// connection and page link handed over as descriptors 3 and 4.
+        #[arg(long, conflicts_with = "earlier")]
+        page: bool,
     },
 }
 
@@ -608,6 +612,7 @@ fn dispatch_command(
             storage,
             earlier,
             earlier_under,
+            page,
         } => tilolang_process(
             runtime,
             app_runtime,
@@ -615,21 +620,34 @@ fn dispatch_command(
             earlier
                 .zip(earlier_under)
                 .map(|(dir, under)| launcher::run::tilolang_process::Earlier { dir, under }),
+            page,
         ),
     }
 }
 
-/// Run the tilolang host the session started, on the link it handed over.
+/// Run the tilolang host the session started, on the socket it handed over as this process's stdin.
 fn tilolang_process(
     runtime: String,
     app_runtime: String,
     storage: PathBuf,
     earlier: Option<launcher::run::tilolang_process::Earlier>,
+    page: bool,
 ) -> ExitCode {
     use launcher::run::tilolang_process::{ProcessLaunch, launch_tilolang_process};
-    let Some(socket) = runtime_portal::process_link::take() else {
-        eprintln!("tilo-launcher: the tilolang host was handed no link");
-        return ExitCode::FAILURE;
+    let socket = match take_stdin() {
+        Ok(socket) => socket,
+        Err(error) => {
+            eprintln!("tilo-launcher: the tilolang host's socket: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let page = match page.then(|| Ok::<_, std::io::Error>((take_fd(3)?, take_fd(4)?))) {
+        None => None,
+        Some(Ok(page)) => Some(page),
+        Some(Err(error)) => {
+            eprintln!("tilo-launcher: the page window's connections: {error}");
+            return ExitCode::FAILURE;
+        }
     };
     let launch = ProcessLaunch {
         runtime,
@@ -637,13 +655,47 @@ fn tilolang_process(
         storage,
         earlier,
     };
-    match launch_tilolang_process(&launch, socket, &launcher::run::LaunchOptions::default()) {
+    match launch_tilolang_process(
+        &launch,
+        socket,
+        page.as_ref(),
+        &launcher::run::LaunchOptions::default(),
+    ) {
         Ok(status) => ExitCode::from(u8::try_from(status.code().unwrap_or(1)).unwrap_or(1)),
         Err(error) => {
             eprintln!("tilo-launcher: the tilolang host did not start: {error}");
             ExitCode::FAILURE
         }
     }
+}
+
+/// The socket the device handed over at descriptor `fd`, taken by this process and closed to
+/// anything it starts.
+fn take_fd(fd: std::os::fd::RawFd) -> std::io::Result<std::os::fd::OwnedFd> {
+    use std::os::fd::FromRawFd as _;
+    // SAFETY: fcntl on a descriptor number only reads or sets its flags; a closed one fails.
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: the descriptor is open, and nothing else in this process owns it: the device handed
+    // it to this process alone, at this number.
+    let taken = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
+    std::os::unix::net::UnixStream::from(taken.try_clone()?).peer_addr()?;
+    Ok(taken)
+}
+
+/// What the session handed over as this process's stdin, moved off it: stdin is `/dev/null` from
+/// here on, so nothing this process starts inherits it.
+fn take_stdin() -> std::io::Result<std::os::fd::OwnedFd> {
+    use std::os::fd::{AsFd as _, AsRawFd as _};
+    let taken = std::io::stdin().as_fd().try_clone_to_owned()?;
+    let null = std::fs::File::open("/dev/null")?;
+    // SAFETY: both are descriptors this process owns; replacing descriptor 0 closes the handed
+    // one there in one step.
+    if unsafe { libc::dup2(null.as_raw_fd(), 0) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(taken)
 }
 
 /// The arguments of a `run` command; `None` for any other command.
@@ -1029,21 +1081,18 @@ fn report_launch_result(
             // How the app ended, said where its output goes: a signal leaves no exit code of its own,
             // and is folded into 1 below.
             if !status.success() {
-                // A sandbox this computer cannot make ends every app the same way: said by its
-                // own exit code, so whoever started the app names the cause. The cause and how to
-                // fix it come first, how the app ended last.
-                let refusal = launcher::user_namespaces::refusal().ok().flatten();
-                if let Some(refusal) = &refusal {
-                    for line in refusal.to_string().lines() {
-                        eprintln!("{}{line}", launcher::SAYS);
-                    }
-                }
                 eprintln!(
-                    "{}{} ended: {status}",
-                    launcher::SAYS,
+                    "tilo-launcher: {} ended: {status}",
                     app_id.unwrap_or("the app")
                 );
-                if refusal.is_some() {
+                // A sandbox this computer cannot make ends every app the same way: said by its
+                // own exit code, so whoever started the app names the cause.
+                if let Ok(Some(refusal)) = launcher::user_namespaces::refusal() {
+                    eprintln!(
+                        "tilo-launcher: this computer allows no user namespaces, which every app's \
+                         sandbox is made in"
+                    );
+                    eprintln!("tilo-launcher: {refusal}");
                     return exit_code(launcher::user_namespaces::EXIT_NO_USER_NAMESPACES);
                 }
             }

@@ -627,6 +627,12 @@ impl Apps {
         Ok(())
     }
 
+    /// The tilolang processes this session runs, once it lent its window links: what starts every
+    /// tilolang process here, an agent task's host among them.
+    pub fn processes(&self) -> Option<Arc<tilo_runtime::device::processes::Processes>> {
+        self.state.borrow().processes.clone()
+    }
+
     /// The window links the session keeps for the apps it starts: from here on the first launch of
     /// an app in a workspace hands its process the link, and every later window of that app there
     /// opens in that process.

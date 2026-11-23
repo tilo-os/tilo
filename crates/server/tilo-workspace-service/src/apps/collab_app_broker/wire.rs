@@ -935,7 +935,11 @@ impl JoinedChannel {
         let request = RemoteActionFrame::decode(frame)
             .map_err(|error| BrokerError::failed(error.to_string()))?;
         let route = self.route();
-        let person = current.caller(&route.cluster_id);
+        // A view the device opened for a caller of its dispatch acts as that caller, never as
+        // the device's own person: what a press in it asks is theirs, within what they may do.
+        let viewed = self.opened_for().filter(|_| current.agent_id.is_none());
+        let shown_for = viewed.is_some();
+        let person = viewed.unwrap_or_else(|| current.caller(&route.cluster_id));
         // An app's request continuing an invocation someone asked of it (an
         // edit its effect submits, another app's action its effect calls) is
         // decided as that invocation's caller, under its ownership; its open
@@ -987,12 +991,21 @@ impl JoinedChannel {
                     app_consent::ConsentStep::Refuse(refused) => {
                         return refusal(&request.message, refused);
                     }
+                    // Nobody at this device can answer for the caller a view was opened for:
+                    // what would need their consent is refused, never asked of the device's person.
+                    app_consent::ConsentStep::Ask(_) if shown_for => {
+                        return refusal(
+                            &request.message,
+                            tilo_actions::remote::ActionCallError::confirmation_required(),
+                        );
+                    }
                     app_consent::ConsentStep::Ask(consent) => Some(consent),
                 }
             }
             _ => None,
         };
-        let admitting_person = current.actor_key.clone();
+        // A view opened for a caller has no one here to ask on their behalf.
+        let admitting_person = (!shown_for).then(|| current.actor_key.clone());
         let provider = action_provider::ConnectionActionProvider {
             state: Arc::clone(&self.state),
             own_peer: self.peer_id,
@@ -1012,7 +1025,8 @@ impl JoinedChannel {
             ));
         }
         // An invocation the caller may not confirm itself is put to the
-        // person who admitted the connection, on their own device.
+        // person who admitted the connection, on their own device, or refused
+        // in a view opened for a caller.
         let answer = super::approval::serve_answering(
             Arc::clone(&self.state),
             provider,

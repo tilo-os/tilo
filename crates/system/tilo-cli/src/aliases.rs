@@ -36,7 +36,6 @@ pub const MOVED: &[&str] = &[
     "tilo-image-trust",
     "tilo-installer",
     "tilo-server",
-    "tilo-server-admin",
     "tilo-rollback",
     "tilo-vm",
 ];

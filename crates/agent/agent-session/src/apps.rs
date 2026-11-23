@@ -28,7 +28,7 @@ use tilo_server_protocol::live::presence_anchors;
 use ui::application::ApplicationDefinition;
 use ui::collaboration::PresencePayload;
 use ui::framework::{AttachedView, BesideChange, ResourceSelection};
-use ui::permissions::{PermissionContext, Role, policy};
+use ui::permissions::policy;
 use ui::portable_storage::PortableStorage;
 use ui::resource::{DocumentCheckout, DocumentId, ResourceOwners};
 use ui::tilo_resource::{MemberId, Place, ResourceKind};
@@ -138,32 +138,6 @@ impl AppCatalogue {
     /// Every app another device holds the windows of, in registration order.
     pub fn iter_placed(&self) -> impl Iterator<Item = PlacedApp> + '_ {
         self.placed.iter().copied()
-    }
-
-    /// Read existing resource view descriptors without mounting or initializing
-    /// an application. The document remains owned by its original workspace.
-    #[must_use]
-    pub fn resource_views(
-        &self,
-        app_id: &str,
-        doc: &automerge::AutoCommit,
-        wanted: &tilo_actions::remote::ViewResourceQuery,
-        permissions: &PermissionContext,
-    ) -> Vec<ActionDescriptor> {
-        // A part of a chain the app keeps beside its record (a chat's
-        // messages) is of the part's own resource, as its identity names it.
-        let part = ui::resource::identity(doc)
-            .filter(|checkout| checkout.id.chain_part().is_some())
-            .and_then(|checkout| {
-                ui::framework::hosted_kinds()
-                    .get(checkout.kind.as_str())
-                    .copied()
-            })
-            .filter(|kind| kind.app_id() == Some(app_id));
-        let Some(kind) = part.or_else(|| self.kind(app_id)) else {
-            return Vec::new();
-        };
-        discover_views(kind, app_id, doc, wanted, permissions)
     }
 
     /// The app whose records are of `kind`: where a trigger that names a
@@ -325,52 +299,6 @@ pub struct Replica {
     /// What a plain listing of the app's resource has walked to, so its next
     /// page starts where the last ended ([`Self::survey_page_of`]).
     walked: std::cell::RefCell<Option<SurveyProgress>>,
-    /// The member access its permissions were made from, and when: what [`Self::renew`]
-    /// compares a later read of it with.
-    held_access: Option<HeldAccess>,
-}
-
-/// A member's access as a replica's permissions were made from it, at `unix_time`:
-/// who acts, and what the permission model decides their actions from.
-#[derive(Clone)]
-struct HeldAccess {
-    acting: policy::Acting,
-    effective: policy::Effective,
-    sandbox: Vec<collab_types::caps::CapOverride>,
-    unix_time: u64,
-}
-
-impl HeldAccess {
-    fn of(actor: &ReplicaActor) -> Option<Self> {
-        match actor {
-            ReplicaActor::Member {
-                access,
-                sandbox,
-                unix_time,
-                ..
-            } => Some(Self {
-                acting: access.acting.clone(),
-                effective: access.effective(),
-                sandbox: sandbox.clone(),
-                unix_time: *unix_time,
-            }),
-            _ => None,
-        }
-    }
-
-    /// Whether the access read again at `later` decides as it did: the same acting, with
-    /// nothing it decides by changed (another member admitted or given a role changes
-    /// none of it), and no grant of it lapsed in between, which is the one thing time
-    /// changes.
-    fn decides_alike(&self, later: &Self) -> bool {
-        self.acting == later.acting
-            && self.effective == later.effective
-            && self.sandbox == later.sandbox
-            && !self.effective.lapses_between(
-                self.unix_time.saturating_mul(1000),
-                later.unix_time.saturating_mul(1000),
-            )
-    }
 }
 
 /// The tree a view publishes, shared with what reads it.
@@ -601,8 +529,15 @@ impl Replica {
             ReplicaActor::Agent { person, .. } => Some(person.clone()),
             _ => None,
         };
-        let held_access = HeldAccess::of(&actor);
-        let (invoker, permissions) = replica_access(actor, workspace, member);
+        // A bot's installed grant is what bounds it: the workspace's bots call their replicas
+        // directly, not through the device's dispatch, so the replica holds them to the grant.
+        let bot_grant = match &actor {
+            ReplicaActor::Bot { access, .. } => Some(
+                ui::permissions::PermissionContext::from_access(access.clone()),
+            ),
+            _ => None,
+        };
+        let invoker = invoker_of(actor, member);
         let creator = acted_for.unwrap_or_else(|| {
             invoker
                 .acting
@@ -614,7 +549,9 @@ impl Replica {
         let (checkout, bytes, created) = seeded(definition, kind, workspace, &creator, seed)?;
         let opening = AttachedView::opening(definition, workspace, checkout, bytes)
             .for_invoker(&invoker)
-            .with_permissions(permissions)
+            .with_permissions(
+                bot_grant.unwrap_or_else(ui::permissions::PermissionContext::permissive),
+            )
             .created(created);
         let opening = if asks_workspace {
             opening.asking_the_workspace()
@@ -636,7 +573,6 @@ impl Replica {
             automated,
             runs_views,
             walked: std::cell::RefCell::new(None),
-            held_access,
         })
     }
 
@@ -671,34 +607,6 @@ impl Replica {
     #[must_use]
     pub const fn document_id(&self) -> &DocumentId {
         &self.view.checkout().id
-    }
-
-    /// The document's view as a page shows it ([`AttachedView::composition`]),
-    /// and the theme it is laid out in.
-    #[must_use]
-    pub fn page(&self) -> (ui::composition::Composition, ui::Theme) {
-        (self.view.composition(), self.view.theme())
-    }
-
-    /// The view laid out at its page's size ([`AttachedView::resize_page`]).
-    ///
-    /// # Errors
-    /// The view could not be laid out at that size.
-    pub fn resize_page(&mut self, viewport: (u32, u32)) -> Result<(), String> {
-        self.view.resize_page(viewport)
-    }
-
-    /// What its member did on the view's page ([`AttachedView::act_on_page`]).
-    ///
-    /// # Errors
-    /// The view has no such widget, or refuses the action.
-    pub fn act_on_page(
-        &mut self,
-        widget: &str,
-        target: Option<&str>,
-        action: &ui::a11y::Action,
-    ) -> Result<(), String> {
-        self.view.act_on_page(widget, target, action)
     }
 
     /// Where the member's last operation left it, as the live session's
@@ -1707,29 +1615,6 @@ impl Replica {
         Ok(true)
     }
 
-    /// Discover one existing resource's local view metadata under the caller's
-    /// current read policy. Views are inert; `invoke` remains document-only.
-    #[must_use]
-    pub fn resource_views(
-        &self,
-        id: &str,
-        kind: &str,
-        permissions: &PermissionContext,
-    ) -> Vec<ActionDescriptor> {
-        let wanted = tilo_actions::remote::ViewResourceQuery {
-            id: id.to_owned(),
-            kind: kind.to_owned(),
-        };
-        // An item of a chain the app keeps beside its record (an issue in
-        // one of the tracker's parts) is in no record's document alone: the
-        // view publishes it, with the view its opener shows.
-        if let Some(published) = published_resource(&self.view.published(), id) {
-            return views_of(published, self.app_id, &wanted, permissions);
-        }
-        self.read(|doc| discover_views(self.kind, self.app_id, doc, &wanted, permissions))
-            .unwrap_or_default()
-    }
-
     /// Perform one published operation through the view, the API a
     /// person's click takes: permission, confirmation and strict argument
     /// binding exactly as for a person. The change it made is taken with
@@ -1867,40 +1752,6 @@ impl Replica {
     /// done. They stay in the record and go with the next call.
     pub fn take_mutation(&mut self) -> Result<Option<DocumentMutation>, AppError> {
         self.view.take_changes().map_err(AppError::Merge)
-    }
-
-    /// A member's access read again: at a later time, what was granted until
-    /// a time is held to the new one; after the workspace's policy or sandbox
-    /// moved, the replica acts under what they say now. Nothing of the record
-    /// is opened again for it, which costs more the more it holds.
-    ///
-    /// # Errors
-    ///
-    /// [`AppError::Launch`] for any actor but a member.
-    pub fn renew(&mut self, actor: ReplicaActor) -> Result<(), AppError> {
-        // The same access read again, with no grant lapsed since: the replica keeps the
-        // permissions it has, and with them everything its view laid out. Taking them in
-        // again laid the view out whole, which for a tracker of thousands of issues cost the
-        // next listing as much as the rest of it.
-        let later = HeldAccess::of(&actor);
-        if let (Some(held), Some(later)) = (&self.held_access, &later)
-            && held.decides_alike(later)
-        {
-            return Ok(());
-        }
-        let ReplicaActor::Member {
-            access,
-            sandbox,
-            unix_time,
-            ..
-        } = actor
-        else {
-            return Err(AppError::Launch("only a member's access is renewed".into()));
-        };
-        self.view
-            .set_permissions(member_permissions(access, sandbox, unix_time));
-        self.held_access = later;
-        Ok(())
     }
 
     /// Merge another member's durable change into the view's record.
@@ -2395,132 +2246,35 @@ fn genesis(
         .ok_or_else(|| AppError::Launch("the new record did not open".into()))
 }
 
-fn discover_views(
-    resource_kind: ResourceKind,
-    app_id: &str,
-    doc: &automerge::AutoCommit,
-    wanted: &tilo_actions::remote::ViewResourceQuery,
-    permissions: &PermissionContext,
-) -> Vec<ActionDescriptor> {
-    let published = match resource_kind.child(doc, &wanted.id) {
-        Ok(Some(child)) if child.id.as_str() == wanted.id => child,
-        _ => match resource_kind.publish(resource_kind.kind(), doc) {
-            Ok(published) => published,
-            Err(_) => return Vec::new(),
-        },
-    };
-    views_of(published, app_id, wanted, permissions)
-}
-
-/// The resource `id` among `resources` and their children, as published.
-fn published_resource(
-    resources: &[tilo_actions::ResourceSpec],
-    id: &str,
-) -> Option<tilo_actions::ResourceSpec> {
-    resources.iter().find_map(|resource| {
-        if resource.id.as_str() == id {
-            Some(resource.clone())
-        } else {
-            published_resource(&resource.children, id)
-        }
-    })
-}
-
-/// The views `wanted` offers in `published`, a resource of `app_id`, that
-/// `permissions` let the caller open.
-fn views_of(
-    published: tilo_actions::ResourceSpec,
-    app_id: &str,
-    wanted: &tilo_actions::remote::ViewResourceQuery,
-    permissions: &PermissionContext,
-) -> Vec<ActionDescriptor> {
-    let Some(permitted) = permissions.permitted_resource(app_id, published) else {
-        return Vec::new();
-    };
-    tilo_actions::api::survey(&[permitted])
-        .into_iter()
-        .filter(|descriptor| {
-            descriptor.address.resource.as_str() == wanted.id
-                && descriptor.resource_kind == wanted.kind
-                && descriptor.kind == tilo_actions::OperationKind::View
-                && permissions.check(&ui::permissions::PermissionScope::Action {
-                    node: tilo_actions::action_node(
-                        &ui::permissions::TreePath::root(),
-                        app_id,
-                        &descriptor.resource_kind,
-                        &descriptor.address.resource,
-                        descriptor.contract.field.as_deref(),
-                        &descriptor.address.action,
-                    ),
-                    kind: descriptor.contract.need().kind,
-                })
-        })
-        .collect()
-}
-
-/// Who a replica acts as and what it may do in `workspace`: an agent with the
-/// operator preset under its person, an owner, a bot acting for whoever
-/// installed it, or a member with their access.
-fn replica_access(
-    actor: ReplicaActor,
-    workspace: &str,
-    member: &MemberId,
-) -> (tilo_actions::ActionInvoker, PermissionContext) {
+/// Who a replica's changes are by: an agent under the delegation its person handed it, an owner,
+/// a bot acting for whoever installed it, or a member as they were admitted. What any of them may
+/// do was decided by the device's dispatch before the call reached the replica.
+fn invoker_of(actor: ReplicaActor, member: &MemberId) -> tilo_actions::ActionInvoker {
     let mut invoker = tilo_actions::ActionInvoker::member(member.clone());
-    let permissions = match actor {
+    match actor {
         ReplicaActor::Agent { person, name } => {
-            let id = member.id();
-            // The delegation its person handed it is its acting's own, and the agent is who the
-            // changes are by, for the person it acts for, under the name its delegation gives it:
-            // its changes name that acting, so every receiver decides them as this replica does.
-            let acting = policy::Acting::handed_agent(id, person.id());
+            // The agent is who the changes are by, for the person it acts for, under the name its
+            // delegation gives it.
+            let acting = policy::Acting::handed_agent(member.id(), person.id());
             invoker = tilo_actions::ActionInvoker::admitted(&acting)
                 .named(Some(name).filter(|name| !name.trim().is_empty()));
-            let permissions = PermissionContext::member_of(workspace, &person, Role::Editor);
-            match permissions.access().clone().as_acting(acting) {
-                Some(access) => permissions.with_access(access),
-                None => permissions.read_only(),
-            }
         }
-        ReplicaActor::Owner => PermissionContext::member_of(workspace, member, Role::Owner),
-        ReplicaActor::Bot {
-            installer, access, ..
-        } => {
-            invoker = invoker.acting_for(installer);
-            PermissionContext::from_access(access)
-        }
+        ReplicaActor::Owner => {}
+        ReplicaActor::Bot { installer, .. } => invoker = invoker.acting_for(installer),
         ReplicaActor::Member {
             access,
-            sandbox,
-            unix_time,
             agent_name,
             device,
+            ..
         } => {
             if access.acting.is_agent() {
                 // The agent's changes name it as it was admitted (`Caller::acting`): for the
-                // person, in its session, with the delegation its person handed it. So History
-                // reads the agent, and every receiver decides its changes as this access does.
+                // person, in its session, with the delegation its person handed it.
                 invoker = tilo_actions::ActionInvoker::admitted(&access.acting).named(agent_name);
             }
-            // Where the work was made, when the caller named this device: a server taking
-            // a member's work under the delegation that admits it.
+            // Where the work was made, when the caller named this device.
             invoker.device = device;
-            member_permissions(access, sandbox, unix_time)
         }
-    };
-    (invoker, permissions)
-}
-
-/// A member's permissions on `access`: the host bounded the member access as it
-/// reads the caller (`Caller::invoker`), and puts an ask to the person on
-/// their own devices when their agent acts.
-fn member_permissions(
-    access: policy::MemberAccess,
-    sandbox: Vec<collab_types::caps::CapOverride>,
-    unix_time: u64,
-) -> PermissionContext {
-    let person = access.person_id().unwrap_or_default().to_owned();
-    PermissionContext::new(ui::permissions::Acting::person(person), sandbox, access)
-        .at_unix_time(unix_time)
-        .reaching_person()
+    }
+    invoker
 }

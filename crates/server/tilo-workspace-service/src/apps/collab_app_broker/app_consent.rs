@@ -321,7 +321,7 @@ pub(super) fn serve_after_consent(
                         }
                         other => other,
                     };
-                    let person = consent.request.person.clone();
+                    let person = Some(consent.request.person.clone());
                     super::approval::serve_answering(
                         Arc::clone(&state),
                         provider,

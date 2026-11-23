@@ -35,6 +35,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
+use crate::agents::EngineActions;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tilo_actions::api::{ActionAddress, ActionDescriptor, InputSpec};
@@ -57,7 +58,6 @@ use tilo_actions::{ActionOutput, ExecutionLocus, OperationKind};
 use tilo_agent_session::bot::host_steps::{
     HostStepError as StepError, HostSteps as Steps, Instruction, Judgement,
 };
-use tilo_agent_session::workspace_actions::WorkspaceActions;
 use tilo_automation::{Schedule, TriggerSpec};
 use tilo_lock::MutexRecover as _;
 
@@ -211,9 +211,9 @@ struct Inner {
     workspaces: Workspaces,
     /// The events the look-round is one of, once they are started.
     events: OnceLock<WorkspaceEvents>,
-    /// The server's action service, where it has one: a proposed piece of
+    /// The device's dispatch, where it has one: a proposed piece of
     /// work is filed in the workspace's tracker through it.
-    actions: Option<WorkspaceActions>,
+    actions: Option<EngineActions>,
     kept: Mutex<BTreeMap<String, Kept>>,
     /// The workspaces whose mail the server watches because their
     /// assistant looks round.
@@ -242,7 +242,7 @@ impl Initiative {
     #[must_use]
     pub fn start(
         workspaces: Workspaces,
-        actions: Option<WorkspaceActions>,
+        actions: Option<EngineActions>,
         runner: Arc<dyn Runner>,
     ) -> (Self, WorkspaceEvents) {
         let initiative = Self::new(workspaces.clone(), actions.clone());
@@ -266,7 +266,7 @@ impl Initiative {
         (initiative, events)
     }
 
-    fn new(workspaces: Workspaces, actions: Option<WorkspaceActions>) -> Self {
+    fn new(workspaces: Workspaces, actions: Option<EngineActions>) -> Self {
         Self {
             inner: Arc::new(Inner {
                 workspaces,
@@ -965,7 +965,7 @@ impl Initiative {
     }
 
     /// The tracker's actions as `asked`'s caller takes them, where this
-    /// server has an action service.
+    /// device has a dispatch.
     fn tracker(&self, asked: &Asked<'_>) -> Option<tracker::Tracker> {
         let actions = self.inner.actions.clone()?;
         Some(tracker::Tracker {
