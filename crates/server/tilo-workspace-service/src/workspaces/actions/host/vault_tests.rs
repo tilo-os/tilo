@@ -769,7 +769,9 @@ async fn an_agent_keeps_a_providers_key_by_naming_the_vault_item() {
     )
     .await;
     let helper = Caller::delegated_agent("assistant", ada.user_public_key, ada.device_public_key)
-        .named("Helper");
+        .in_workspace(workspace_id.to_string())
+        .named("Helper")
+        .held_to(Vec::new());
 
     // A change the agent makes is put to its person first: with nobody to
     // ask, nothing is kept.

@@ -749,7 +749,8 @@ pub(super) fn session_caller(
             peer.user_public_key,
             peer.device_public_key,
         )
-        .named(tilo_server_client::grant_holder(&peer.cert.device_label)),
+        .named(tilo_server_client::grant_holder(&peer.cert.device_label))
+        .held_to(Vec::new()),
         None => Caller::authenticated(peer.user_public_key, peer.device_public_key),
     };
     // An agent's (or a key's) requests on this connection are one run, the

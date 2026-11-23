@@ -312,7 +312,9 @@ async fn she_alone_takes_the_leave_back(
     item: &Value,
 ) -> Value {
     let as_ada = caller(ada);
-    let helper = Caller::delegated_agent("scout", ada.user_public_key, ada.device_public_key);
+    let helper = Caller::delegated_agent("scout", ada.user_public_key, ada.device_public_key)
+        .in_workspace(workspace_id.to_string())
+        .held_to(Vec::new());
     ask(
         service,
         workspace_id,

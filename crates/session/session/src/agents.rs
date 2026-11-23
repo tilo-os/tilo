@@ -315,17 +315,15 @@ impl crate::Shared {
         let (kept, listed) = self.agents.feed(&self.person, &workspaces);
         self.search.set_kept_agents(&kept);
         self.search.set_listed_agents(&listed);
-        self.conversations.feed(
-            &self.person,
-            workspaces
-                .into_iter()
-                .map(|(workspace, policy)| crate::conversations::WorkspaceFacts {
-                    members: self.member_names(&workspace, &listed),
-                    workspace,
-                    policy,
-                })
-                .collect(),
-        );
+        let facts: Vec<_> = workspaces
+            .into_iter()
+            .map(|(workspace, policy)| crate::conversations::WorkspaceFacts {
+                members: self.member_names(&workspace, &listed),
+                workspace,
+                policy,
+            })
+            .collect();
+        self.conversations.feed(&self.person, &facts);
         // A turn the person asked on the canvas stands where they asked once Chat said which
         // message it posted for the ask and its record holds it (canvas.md §3).
         let mut layout = self.layout.borrow_mut();

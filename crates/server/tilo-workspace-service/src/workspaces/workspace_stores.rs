@@ -173,11 +173,13 @@ impl Workspaces {
             .peer()
             .permissions(certificate.device_public_key, now)
             .map_err(|_| ActionCallError::UnknownAction)?;
-        // An agent a device of its person's runs acts as itself, within what its person may.
+        // An agent a device of its person's runs acts as itself, with what its person's grant
+        // gives it, within what its person may.
         let access = if caller.is_device_agent() {
             access
                 .as_acting(acting.clone())
                 .ok_or(ActionCallError::UnknownAction)?
+                .granted(caller.granted(&[]))
         } else {
             access
         };

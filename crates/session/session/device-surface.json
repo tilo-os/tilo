@@ -3144,14 +3144,6 @@
               "type": "int"
             },
             {
-              "name": "device",
-              "type": "text"
-            },
-            {
-              "name": "device_name",
-              "type": "text"
-            },
-            {
               "name": "environment",
               "type": "text"
             },
