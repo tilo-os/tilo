@@ -2336,7 +2336,7 @@ fn endpoint_for(
     identity: Option<&DeviceIdentity>,
     relays: &tilo_endpoint_reachability::EndpointRelays,
     lan: &tilo_endpoint_reachability::Nearby,
-    rosters: &network::LanRosters,
+    workspace_devices: &network::WorkspaceDevices,
 ) -> Result<(iroh::endpoint::Builder, iroh::RelayMap), String> {
     let Some(identity) = identity else {
         return Ok((loopback_endpoint()?, iroh::RelayMap::empty()));
@@ -2357,7 +2357,7 @@ fn endpoint_for(
     // network learns no key and no address.
     let fleet = network::LanFleet {
         identity: identity.clone(),
-        rosters: rosters.clone(),
+        workspace_devices: workspace_devices.clone(),
     };
     let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(key)

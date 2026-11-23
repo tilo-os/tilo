@@ -210,15 +210,15 @@ pub(crate) struct Bound {
     /// What it hears on the local network.
     pub(crate) lan: tilo_endpoint_reachability::Nearby,
     /// The devices the workspaces it is in admit, whom that discovery answers too.
-    pub(crate) rosters: LanRosters,
+    pub(crate) workspace_devices: WorkspaceDevices,
     pub(crate) reached: Reached,
 }
 
 /// The devices each workspace this device is in admitted, as the session last handed the peer
-/// network their rosters: beside the person's own devices, the ones this device's local discovery
+/// network the devices each admits: beside the person's own devices, the ones this device's local discovery
 /// answers ([`LanFleet`]).
 #[derive(Clone, Default)]
-pub(crate) struct LanRosters(
+pub(crate) struct WorkspaceDevices(
     Arc<
         std::sync::Mutex<
             std::collections::HashMap<WorkspaceId, Vec<tilo_network_actor::RosterDevice>>,
@@ -226,8 +226,8 @@ pub(crate) struct LanRosters(
     >,
 );
 
-impl LanRosters {
-    /// Take what `command` says of a workspace's roster: the devices it admits now, or none once
+impl WorkspaceDevices {
+    /// Take what `command` says of a workspace's devices: the devices it admits now, or none once
     /// this device left it.
     fn note(&self, command: &Cmd) {
         match command {
@@ -258,7 +258,7 @@ impl LanRosters {
 /// workspace this device is in admitted. Its probes present the person's certificate.
 pub(crate) struct LanFleet {
     pub(crate) identity: DeviceIdentity,
-    pub(crate) rosters: LanRosters,
+    pub(crate) workspace_devices: WorkspaceDevices,
 }
 
 impl tilo_endpoint_reachability::Fleet for LanFleet {
@@ -286,7 +286,7 @@ impl tilo_endpoint_reachability::Fleet for LanFleet {
                     == (cert.user_public_key, cert.device_public_key)
                     && entry.revoked_at_ns <= now
             });
-        persons || self.rosters.admit(&cert.device_public_key, now)
+        persons || self.workspace_devices.admit(&cert.device_public_key, now)
     }
 }
 
@@ -302,7 +302,7 @@ impl Bound {
             endpoint,
             relays,
             lan,
-            rosters: LanRosters::default(),
+            workspace_devices: WorkspaceDevices::default(),
             reached: Reached::default(),
         }
     }
@@ -433,7 +433,7 @@ pub(super) fn run(
         };
         while let Some(command) = commands.recv().await {
             if let HostCmd::Network(command) = &command {
-                bound.rosters.note(command);
+                bound.workspace_devices.note(command);
             }
             let Some(taken) = carry_host(&actor, &events, &asking, command).await else {
                 break;
@@ -688,14 +688,18 @@ async fn listening(
     bound: &Bound,
 ) -> Option<Listening> {
     let lookup = iroh::address_lookup::memory::MemoryLookup::new();
-    let (builder, deferred_relays) =
-        match endpoint_for(identity, &bound.relays, &bound.lan, &bound.rosters) {
-            Ok(building) => building,
-            Err(error) => {
-                let _ = ready.send(Err(error));
-                return None;
-            }
-        };
+    let (builder, deferred_relays) = match endpoint_for(
+        identity,
+        &bound.relays,
+        &bound.lan,
+        &bound.workspace_devices,
+    ) {
+        Ok(building) => building,
+        Err(error) => {
+            let _ = ready.send(Err(error));
+            return None;
+        }
+    };
     let endpoint = match bound
         .reached
         .resolving(builder, &lookup)
