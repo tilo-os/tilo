@@ -21,6 +21,8 @@ pub enum PrintChange {
     Add { uri: String, name: String },
     Remove(String),
     SetDefault(String),
+    /// Print to the queue on the paper size `media`.
+    SetMedia(String, String),
     /// Hold the queue's work, or let it print again.
     SetPaused(String, bool),
     CancelJob(String),
@@ -344,6 +346,9 @@ impl System for OsSystem {
             PrintChange::Add { uri, name } => os_actions::printing::add_driverless(uri, name),
             PrintChange::Remove(printer) => os_actions::printing::remove_queue(printer),
             PrintChange::SetDefault(printer) => os_actions::printing::set_default(printer),
+            PrintChange::SetMedia(printer, media) => {
+                os_actions::printing::set_media(printer, media)
+            }
             PrintChange::SetPaused(printer, paused) => {
                 os_actions::printing::set_enabled(printer, !paused)
             }
@@ -421,32 +426,51 @@ fn queues_reading(queues: Vec<os_actions::printing::PrinterQueue>) -> Vec<PrintQ
     use os_actions::printing::QueueState;
     queues
         .into_iter()
-        .map(|queue| PrintQueue {
-            name: queue.name,
-            state: match queue.state {
-                QueueState::Ready => PrintQueueState::Ready,
-                QueueState::Printing => PrintQueueState::Printing,
-                QueueState::Paused => PrintQueueState::Paused,
-                QueueState::Offline => PrintQueueState::Offline,
-            },
-            default: queue.default,
-            accepting: queue.accepting_jobs,
-            reason: queue.reason.or_else(|| {
-                let reasons = queue.telemetry.state_reasons;
-                (!reasons.is_empty()).then(|| reasons.join(", "))
-            }),
-            supplies: queue
-                .telemetry
-                .supplies
-                .unwrap_or_default()
-                .into_iter()
-                .map(|supply| PrinterSupply {
-                    name: supply.name,
-                    color: supply.color,
-                    level: supply.level_percent,
-                })
-                .collect(),
-            reachable: queue.telemetry.available,
+        .map(|queue| {
+            let options = os_actions::printing::printer_options(&queue.name).ok();
+            let (media, default_media) = options.as_ref().map_or_else(
+                || (Vec::new(), None),
+                |options| {
+                    (
+                        options
+                            .page_sizes
+                            .iter()
+                            .map(|choice| choice.key.clone())
+                            .collect(),
+                        os_actions::printing::PrinterOptions::default_key(&options.page_sizes)
+                            .map(str::to_owned),
+                    )
+                },
+            );
+            PrintQueue {
+                name: queue.name,
+                state: match queue.state {
+                    QueueState::Ready => PrintQueueState::Ready,
+                    QueueState::Printing => PrintQueueState::Printing,
+                    QueueState::Paused => PrintQueueState::Paused,
+                    QueueState::Offline => PrintQueueState::Offline,
+                },
+                default: queue.default,
+                accepting: queue.accepting_jobs,
+                reason: queue.reason.or_else(|| {
+                    let reasons = queue.telemetry.state_reasons;
+                    (!reasons.is_empty()).then(|| reasons.join(", "))
+                }),
+                supplies: queue
+                    .telemetry
+                    .supplies
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|supply| PrinterSupply {
+                        name: supply.name,
+                        color: supply.color,
+                        level: supply.level_percent,
+                    })
+                    .collect(),
+                reachable: queue.telemetry.available,
+                media,
+                default_media,
+            }
         })
         .collect()
 }

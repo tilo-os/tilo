@@ -387,6 +387,33 @@ pub fn remove_queue(name: &str) -> Result<(), String> {
     run("lpadmin", &["-x", &name])
 }
 
+/// Print to the queue `queue` on the paper size `media`, named as its
+/// driver's PPD names it (`A4`, `na_letter_8.5x11in`).
+pub fn set_media(queue: &str, media: &str) -> Result<(), String> {
+    let queue = queue_name(queue)?;
+    let media = media_key(media)?;
+    run(
+        "lpoptions",
+        &["-p", queue.as_str(), "-o", &format!("media={media}")],
+    )
+}
+
+/// The paper size `raw` names, if it is one a driver's PPD can name: letters, digits and
+/// `.`, `-`, `_` or `+`, at most 64 bytes, never an `=` or a space that would make the
+/// option two.
+fn media_key(raw: &str) -> Result<String, String> {
+    let value = raw.trim();
+    if value.is_empty()
+        || value.len() > 64
+        || !value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b'+'))
+    {
+        return Err("a paper size may contain letters, numbers, '.', '-', '_' and '+'".into());
+    }
+    Ok(value.to_owned())
+}
+
 pub fn set_default(name: &str) -> Result<(), String> {
     let name = queue_name(name)?;
     run("lpoptions", &["-d", &name])
@@ -1197,5 +1224,17 @@ printer-make-and-model/Custom.10 = Acme Laser 4
                 assert!(PageRange::parse(bad).is_err(), "{bad}");
             }
         }
+    }
+
+    #[test]
+    fn a_paper_size_is_a_ppd_key_and_nothing_else() {
+        assert_eq!(media_key("A4").as_deref(), Ok("A4"));
+        assert_eq!(
+            media_key("na_letter_8.5x11in").as_deref(),
+            Ok("na_letter_8.5x11in")
+        );
+        assert!(media_key("A4; reboot").is_err(), "no shell words");
+        assert!(media_key("A4 media=B4").is_err(), "no second option");
+        assert!(media_key("").is_err());
     }
 }

@@ -1000,6 +1000,9 @@ impl Service for SystemService {
                     tilo_system_resources::printers::PrintAction::SetDefault { printer } => {
                         Ok(self.start_print(id, PrintChange::SetDefault(printer)))
                     }
+                    tilo_system_resources::printers::PrintAction::SetMedia { printer, media } => {
+                        Ok(self.start_print(id, PrintChange::SetMedia(printer, media)))
+                    }
                     tilo_system_resources::printers::PrintAction::SetPaused { printer, paused } => {
                         Ok(self.start_print(id, PrintChange::SetPaused(printer, paused)))
                     }

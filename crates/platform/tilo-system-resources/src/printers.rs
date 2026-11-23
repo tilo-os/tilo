@@ -52,6 +52,11 @@ pub struct PrinterQueue {
     pub supplies: Vec<PrinterSupply>,
     /// Whether the device answered at all.
     pub reachable: bool,
+    /// The paper sizes its driver accepts, by the keys it names them with (`A4`,
+    /// `na_letter_8.5x11in`); empty when the queue does not say.
+    pub media: Vec<String>,
+    /// The paper size it prints on unless another is chosen.
+    pub default_media: Option<String>,
 }
 
 /// How a job stands.
@@ -154,6 +159,18 @@ pub enum PrintAction {
     #[effect(own_device, icon = "check", keywords = "default printer, standarddrucker")]
     SetDefault {
         #[param("The queue's name")] printer: String,
+    },
+    /// Print to a queue on another paper size.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "file",
+        keywords = "paper size, media, page size, papierformat"
+    )]
+    SetMedia {
+        #[param("The queue's name")] printer: String,
+        #[param("The paper size's key, as the printer names it")] media: String,
     },
     /// Hold a queue's work, or let it print again.
     #[effect(kind = "outside")]

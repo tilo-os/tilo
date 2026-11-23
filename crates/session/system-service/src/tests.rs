@@ -80,6 +80,8 @@ impl Fake {
                     reason: None,
                     supplies: Vec::new(),
                     reachable: true,
+                    media: vec!["A4".into(), "Letter".into()],
+                    default_media: Some("A4".into()),
                 }],
                 jobs: vec![PrintJob {
                     id: "12".into(),
@@ -250,6 +252,11 @@ impl System for Fake {
                     queue.default = queue.name == *printer;
                 }
             }
+            PrintChange::SetMedia(printer, media) => {
+                if let Some(found) = printers.queues.iter_mut().find(|q| q.name == *printer) {
+                    found.default_media = Some(media.clone());
+                }
+            }
             PrintChange::Remove(printer) => printers.queues.retain(|q| q.name != *printer),
             PrintChange::Add { uri: _, name } => printers.queues.push(PrinterQueue {
                 name: name.clone(),
@@ -259,6 +266,8 @@ impl System for Fake {
                 reason: None,
                 supplies: Vec::new(),
                 reachable: true,
+                media: Vec::new(),
+                default_media: None,
             }),
         }
         Ok(())
@@ -1109,6 +1118,7 @@ fn the_printers_resource_reads_the_queues_and_jobs_and_takes_their_actions() {
         "add",
         "remove",
         "set-default",
+        "set-media",
         "set-paused",
         "cancel-job",
         "retry-job",
@@ -1129,6 +1139,27 @@ fn the_printers_resource_reads_the_queues_and_jobs_and_takes_their_actions() {
     let printers = service.read(PRINTERS).unwrap();
     assert_eq!(printers["pending"], json!([]));
     assert_eq!(printers["jobs"][0]["state"], json!("cancelled"));
+
+    // A queue's paper sizes are what its driver lists, and choosing one is the machine's change.
+    assert_eq!(printers["queues"][0]["media"], json!(["A4", "Letter"]));
+    assert_eq!(printers["queues"][0]["default_media"], json!("A4"));
+    assert_eq!(
+        service.invoke(
+            PRINTERS,
+            "set-media",
+            &arguments(json!({"printer": "Office", "media": "Letter"})),
+        ),
+        Ok(Started::Accepted)
+    );
+    service.settle();
+    assert_eq!(
+        fake.print_changes().last(),
+        Some(&PrintChange::SetMedia("Office".into(), "Letter".into()))
+    );
+    assert_eq!(
+        service.read(PRINTERS).unwrap()["queues"][0]["default_media"],
+        json!("Letter")
+    );
 
     // A machine whose printer service refuses says why, and the reading keeps nothing pending.
     *fake.print_refusal.lock().unwrap() = Some("The queue is gone".into());

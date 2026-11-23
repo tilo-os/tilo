@@ -46,6 +46,24 @@ view printers_pane() {
                         }
                     }
                 }
+                if not queue.media.is_empty() {
+                    ui.Text("Paper", role: .caption, secondary: true)
+                    row(gap: .tight, align: .center, wrap: true) {
+                        for size in queue.media.take(8) {
+                            ui.Button(
+                                size,
+                                size: .small,
+                                toggled: queue.default_media == .some(size),
+                            ) {
+                                on press: device.set_media(
+                                    device.printers,
+                                    printer: queue.name,
+                                    media: size,
+                                )
+                            }
+                        }
+                    }
+                }
                 for supply in queue.supplies {
                     if let level = supply.level {
                         ui.ListRow(supply.name, secondary: "{level}% left", icon: .droplet)
