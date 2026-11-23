@@ -122,9 +122,6 @@ tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 # references and files the window attached, as the app that keeps them reads
 # them.
 tilo-reference = { path = "../../collab/reference" }
-# What a report is before it is filed: the reviewed submission a channel's
-# `submit-feedback` files, the same one a browser's feedback sheet sends.
-tilo-feedback = { path = "../../sdk/feedback" }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 collab-types = { path = "../../collab/collab-types" }
 # The workspace's folder, as the record its files' versions are: the history

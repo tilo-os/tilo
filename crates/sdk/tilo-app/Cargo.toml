@@ -80,8 +80,6 @@ collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 # The link grammar `share-link` renders.
 tilo-reference = { version = "0.1.0", path = "../../collab/reference" }
 tilo-history = { version = "0.1.0", path = "../tilo-history" }
-# Portable feedback review, capture and durable delivery contracts.
-tilo-feedback = { version = "0.1.0", path = "../../collab/feedback" }
 # The workspace's own emoji and its agents, which every window opens and
 # offers its views.
 tilo-workspace-agent = { version = "0.1.0", path = "../../platform/tilo-workspace-agent" }

@@ -43,8 +43,6 @@ tilo-desktop-surface = { path = "../desktop-surface", default-features = false }
 # Where each person here stands, as following reads them.
 tilo-session-core = { path = "../core" }
 tilo-desktop-search = { path = "../desktop-search" }
-# A report's transport and the profile ownership a desktop installs.
-tilo-feedback-transport = { path = "../../sdk/feedback-transport" }
 tilo-resource = { path = "../../sdk/tilo-resource" }
 desktop-policy = { path = "../../system/desktop-policy", default-features = false }
 tilo-app-id = { path = "../../platform/tilo-app-id" }
