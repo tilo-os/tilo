@@ -202,6 +202,10 @@ pub(crate) struct TrayItem {
     pub title: String,
     /// Whether choosing it opens its menu rather than its window.
     pub menu: bool,
+    /// How many unread notifications the app that owns it has, as its badge shows.
+    pub badge: i64,
+    /// Whether it wants the person: a pulsing dot, as a status notifier says with `NeedsAttention`.
+    pub attention: bool,
 }
 
 /// The styles every installed package offers (shell.md §6).
@@ -674,19 +678,31 @@ impl DeviceLists {
     }
 
     /// The running applications' tray items, in the order they registered: each's key, the app's
-    /// own words for it, and whether choosing it opens a menu rather than its window.
+    /// own words for it, whether choosing it opens a menu rather than its window, and the app's
+    /// own unread count. An item the protocol asks to hide (`Passive`) is left out, as the bar
+    /// draws none of it.
     fn tray_items(&self) -> Vec<TrayItem> {
         self.tray.as_ref().map_or_else(Vec::new, |tray| {
             tray.snapshot()
                 .into_iter()
-                .map(|item| TrayItem {
-                    key: item.key,
-                    title: if item.title.trim().is_empty() {
-                        item.id
-                    } else {
-                        item.title
-                    },
-                    menu: item.item_is_menu,
+                .filter(|item| item.status != tilo_tray::ItemStatus::Passive)
+                .map(|item| {
+                    let badge = item
+                        .address
+                        .owner_app
+                        .as_deref()
+                        .map_or(0, |app| i64::from(self.surfaces.notices.app_badge(app)));
+                    TrayItem {
+                        key: item.key,
+                        title: if item.title.trim().is_empty() {
+                            item.id
+                        } else {
+                            item.title
+                        },
+                        menu: item.item_is_menu,
+                        badge,
+                        attention: item.status == tilo_tray::ItemStatus::NeedsAttention,
+                    }
                 })
                 .collect()
         })

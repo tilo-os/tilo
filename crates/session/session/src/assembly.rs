@@ -143,6 +143,14 @@ pub(crate) struct Shared {
     /// sound and capture uses, its charge and what plays. The bar's status
     /// cluster, the lock screen and the session read it.
     pub(crate) readings: crate::status::Shared,
+    /// The hardware keys' readout: what the last press said, and when it goes,
+    /// published as `device.osd` for the shell that draws it.
+    #[cfg(target_os = "linux")]
+    pub(crate) osd: crate::osd::Shared,
+    /// Whether this session shows the tilolang shell, which draws the readout and the banners
+    /// itself: the native ones are not drawn beside them.
+    #[cfg(target_os = "linux")]
+    pub(crate) tilolang_shell: bool,
     /// The system services, reached for their readings.
     pub(crate) services: Rc<RefCell<tilo_service::Services>>,
     /// The sends the session's send action took, which the pass carries out.

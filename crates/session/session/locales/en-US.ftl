@@ -236,6 +236,7 @@ session-bluetooth-timed-out = The move took too long.
 session-bluetooth-unknown = That is not a Bluetooth address.
 session-notifications = Notification centre
 session-time = Time
+
 session-windows = Windows
 session-tray = Tray
 session-invite = Invite
@@ -246,6 +247,7 @@ session-notifications-dismiss = Dismiss the notification
 session-notifications-act = Run the notification's action
 session-notifications-clear = Clear the notification centre
 session-notifications-undo-clear = Bring back the cleared notifications
+session-notifications-reply = Reply in the notification
 session-notifications-open = Open the notification
 ## A notification another of the person's devices projected here: the app it
 ## came from and the device that showed it first.
@@ -599,3 +601,6 @@ airdrop-error-failed = AirDrop transfer failed. Verify the receiver again before
 airdrop-error-declined = AirDrop transfer was cancelled before sending.
 airdrop-error-verification = Fingerprint differs. Check the receiver; nothing sent.
 airdrop-error-fresh-consent = Start a new AirDrop attempt to verify the receiver and approve this file again.
+
+so-tilo-session-notifications-reply = Reply in a banner that offers a reply
+session-osd = Readout

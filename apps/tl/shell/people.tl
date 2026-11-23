@@ -34,10 +34,17 @@ view people_button() {
     }
 }
 
-/// An agent here, as its presence: a chip that opens its menu. Stopping one ends
-/// the connection the person admitted.
+/// An agent here, as its presence: a chip that opens its menu. The menu says what it is doing and
+/// where to find it, and stopping one ends the connection the person admitted.
 view agent_chip(a: device.Agent) {
-    ui.MenuButton(a.name, icon: .bot, role: .bar) {
+    let label = if a.unseen > 0 { "{a.name}, {a.unseen} new" } else { a.name }
+    ui.MenuButton(label, icon: .bot, role: .bar) {
+        if a.doing != "" {
+            ui.MenuItem(a.doing, disabled: true)
+        }
+        ui.MenuItem("Show who is here", icon: .users) {
+            on choose: session.toggle_people()
+        }
         ui.MenuItem("Stop", icon: .square, destructive: true) {
             on choose: device.stop_agent(device.agents, agent: a.key)
         }

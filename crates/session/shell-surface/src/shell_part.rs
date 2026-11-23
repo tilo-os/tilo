@@ -87,6 +87,7 @@ const SHELL_FILES: &[(&str, &str)] = &[
         "notices.tl",
         include_str!("../../../../apps/tl/shell/notices.tl"),
     ),
+    ("osd.tl", include_str!("../../../../apps/tl/shell/osd.tl")),
     (
         "overview.tl",
         include_str!("../../../../apps/tl/shell/overview.tl"),

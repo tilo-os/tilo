@@ -304,6 +304,8 @@ pub mod notices;
 mod notifications;
 #[cfg(target_os = "linux")]
 mod options;
+#[cfg(target_os = "linux")]
+mod osd;
 mod overview;
 #[cfg(target_os = "linux")]
 mod owner_session;

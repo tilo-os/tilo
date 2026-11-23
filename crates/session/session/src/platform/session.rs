@@ -1695,6 +1695,8 @@ impl Session {
             controls: Rc::clone(&controls_reading),
             waiting: RefCell::default(),
             readings,
+            osd: Rc::default(),
+            tilolang_shell: options.shell,
             services,
             sends,
             table,
@@ -1817,6 +1819,16 @@ impl Session {
             .add(Box::new(crate::time::Served::new(Rc::clone(
                 &shared.activities,
             ))));
+        // What the hardware keys last said, read by the tilolang shell's readout.
+        shared
+            .services
+            .borrow_mut()
+            .add(Box::new(crate::osd::Served::new(Rc::clone(&shared.osd))));
+        // The tilolang shell draws the banners itself, so the session ages them here: one goes a
+        // few seconds after it arrived, as a banner stack takes it away.
+        if options.shell {
+            shared.notifications.borrow().set_shell_banners();
+        }
         // The session's own diagnostics: the profiler and the heap trim, which
         // the device admin and a person's own scripts read and drive through
         // the same API as the desktop's other actions.

@@ -413,6 +413,13 @@ pub fn bluetooth_surface() -> tilo_resource::surface::Surface {
     tilo_resource::surface::reading_surface::<Bluetooth, BluetoothAction>("bluetooth", "Bluetooth")
 }
 
+/// The VPN resource as a view of another language reads and changes it: the profiles and whether
+/// each is connected, and the verbs that join, import and forget one.
+#[must_use]
+pub fn vpn_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<Vpn, VpnAction>("vpn", "VPN")
+}
+
 /// The `network` resource's declared type.
 #[derive(tilo_resource::Row)]
 #[row(kind = "so.tilo.connectivity.network", label = "Network")]

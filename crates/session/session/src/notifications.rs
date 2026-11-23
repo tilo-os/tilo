@@ -407,6 +407,9 @@ pub(crate) struct SessionNotifications {
     transient: BTreeSet<u64>,
     /// The log revision the banners were last handed.
     published: Option<u64>,
+    /// Whether the tilolang shell draws the banners itself: then the session ages them here, as a
+    /// banner's stack would, so a banner goes a few seconds after it arrived.
+    shell_banners: Cell<bool>,
     /// Counts arrivals, keeping each one's artwork apart.
     generation: u64,
     /// The Do Not Disturb change since the readout last said one: whoever flipped the switch, on
@@ -524,6 +527,7 @@ impl SessionNotifications {
             banners_up: BTreeSet::new(),
             transient: BTreeSet::new(),
             published: None,
+            shell_banners: Cell::new(false),
             generation: 0,
             quiet_changed: Cell::new(None),
             history,
@@ -758,7 +762,9 @@ impl SessionNotifications {
             count: self.desktop.unread(),
             quiet: self.quiet_status(),
             notices,
+            banners: log.active().iter().rev().map(|notice| notice.id).collect(),
             banner: log.active().last().map(|notice| notice.id),
+            undo: self.desktop.can_undo_clear(),
         }
     }
 
@@ -825,6 +831,23 @@ impl SessionNotifications {
         self.desktop.invoke_action(id, key);
     }
 
+    /// Reply in a banner that offers a reply: what the person typed reaches its sender, and the
+    /// banner goes, as the banners' own reply field carries it.
+    pub(crate) fn reply(&self, id: u64, text: &str) {
+        let Some(banner) = self.banner(id) else {
+            return;
+        };
+        let takes_reply = banner
+            .actions
+            .iter()
+            .any(|(key, _)| key == tilo_notification_banners::INLINE_REPLY);
+        if let (Some(sender), true) = (banner.sender_id, takes_reply) {
+            self.daemon.replied(sender, text);
+            self.desktop
+                .answer(tilo_desktop_surface::notifications::BannerAsk::Dismiss(id));
+        }
+    }
+
     /// Clear the centre, or bring back what the last Clear all took.
     pub(crate) fn clear(&self) {
         self.desktop.clear_history();
@@ -867,6 +890,12 @@ impl SessionNotifications {
         self.desktop.next_deadline()
     }
 
+    /// The tilolang shell draws this device's banners itself: the session ages them here, so a
+    /// banner goes a few seconds after it arrived rather than waiting for a dismissal.
+    pub(crate) fn set_shell_banners(&self) {
+        self.shell_banners.set(true);
+    }
+
     /// The places the person chose from a role's notices since this was last taken.
     pub(crate) fn take_places_chosen(&self) -> Vec<Place> {
         std::mem::take(&mut *self.places_chosen.borrow_mut())
@@ -897,6 +926,21 @@ impl SessionNotifications {
     /// `token` mints the token an app raises its window by. Answers whether a banner the person was
     /// not shown before is up now, for their visual alert.
     pub(crate) fn step(&mut self, token: &mut dyn FnMut() -> Option<String>) -> bool {
+        // The tilolang shell draws its banners from the log, so the session ages them: every live
+        // banner counts as on screen, so one goes a few seconds after it arrived, with nothing
+        // over it holding it.
+        if self.shell_banners.get() {
+            let now = ui::time::now();
+            let on_screen: Vec<u64> = self
+                .desktop
+                .log()
+                .active()
+                .iter()
+                .rev()
+                .map(|notice| notice.id)
+                .collect();
+            self.desktop.present(now, &on_screen, false);
+        }
         // Banners whose time on screen ran out leave first.
         self.desktop.expire(ui::time::now());
         self.settle(CloseReason::Expired);
@@ -1208,6 +1252,18 @@ pub enum CentreAction {
     #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     UndoClear,
+    /// Reply in a banner that offers a reply: what the person typed reaches its sender, and the
+    /// banner goes
+    #[effect(kind = "outside")]
+    #[effect(own_device)]
+    Reply {
+        /// The notification's id, as the banners carry it.
+        #[param("The notification")]
+        notification: u64,
+        /// What the person typed.
+        #[param("What to say back")]
+        text: String,
+    },
     /// Open one of the notifications the centre kept
     #[effect(kind = "outside")]
     #[effect(own_device)]
@@ -1284,6 +1340,7 @@ impl Service for Served {
                 "act" => t("session-notifications-act"),
                 "clear" => t("session-notifications-clear"),
                 "undo-clear" => t("session-notifications-undo-clear"),
+                "reply" => t("session-notifications-reply"),
                 "open-notice" => t("session-notifications-open"),
                 _ => continue,
             };
@@ -1328,6 +1385,9 @@ impl Service for Served {
                 .run_action(notification, &action),
             CentreAction::Clear => self.notifications.borrow().clear(),
             CentreAction::UndoClear => self.notifications.borrow().undo_clear(),
+            CentreAction::Reply { notification, text } => {
+                self.notifications.borrow().reply(notification, &text)
+            }
             CentreAction::OpenNotice { notification } => {
                 self.notifications.borrow().ask_open(notification);
             }

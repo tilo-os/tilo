@@ -241,6 +241,7 @@ session-bluetooth-timed-out = Der Umzug hat zu lange gedauert.
 session-bluetooth-unknown = Das ist keine Bluetooth-Adresse.
 session-notifications = Benachrichtigungszentrum
 session-time = Uhrzeit
+
 session-windows = Fenster
 session-tray = Statusleiste
 session-invite = Einladen
@@ -251,6 +252,7 @@ session-notifications-dismiss = Die Benachrichtigung verwerfen
 session-notifications-act = Die Aktion der Benachrichtigung ausführen
 session-notifications-clear = Das Benachrichtigungszentrum leeren
 session-notifications-undo-clear = Die verworfenen Benachrichtigungen zurückholen
+session-notifications-reply = In der Benachrichtigung antworten
 session-notifications-open = Die Benachrichtigung öffnen
 ## A notification another of the person's devices projected here: the app it
 ## came from and the device that showed it first.
@@ -604,3 +606,6 @@ airdrop-error-failed = AirDrop-Übertragung fehlgeschlagen. Den Empfänger vor e
 airdrop-error-declined = Die AirDrop-Übertragung wurde vor dem Senden abgebrochen.
 airdrop-error-verification = Fingerabdruck stimmt nicht überein. Keine Datei gesendet.
 airdrop-error-fresh-consent = Einen neuen AirDrop-Versuch starten, um Empfänger und Datei erneut zu bestätigen.
+
+so-tilo-session-notifications-reply = In einer Benachrichtigung mit Antwortfeld antworten
+session-osd = Anzeige
