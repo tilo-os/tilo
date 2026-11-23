@@ -9,131 +9,22 @@
 //! see theirs too.
 
 use super::api::ISSUER;
-use super::api_on_server::{api_on_server, approved_key, headers, json_of};
+use super::api_agent::{Agent, workspace};
+use super::api_on_server::{api_on_server, approved_key};
 use super::*;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use tilo_agent_session::workspace_actions::replica_reads;
-use tilo_api::Server;
 
 /// The workspace sizes a refresh is counted at: one small enough to show a
 /// per-document cost as a handful of reads, one where a per-document cost is
 /// hundreds.
 const SIZES: [usize; 2] = [10, 1000];
 
-/// The most members one `group` call carries, as the SDK sends them.
-const GROUP_MEMBERS: usize = 500;
-
-/// The most reads one action may take at either size: the document acted on,
-/// what changed since the last refresh, and the documents the worker holds
-/// mounted, which is bounded by its own cache and never by the workspace.
+/// The most reads one action may take at either size: the document acted on, what changed since
+/// the last refresh, and the documents the worker holds mounted, which is bounded by its own
+/// cache and never by the workspace.
 const CEILING: u64 = 16;
-
-/// A key's calls of the API.
-struct Agent<'a> {
-    api: &'a Arc<Server>,
-    token: String,
-}
-
-impl Agent<'_> {
-    async fn send(
-        &self,
-        method: hyper::Method,
-        path: &str,
-        body: &[u8],
-        kind: &str,
-    ) -> (u16, Value) {
-        let bearer = format!("Bearer {}", self.token);
-        let pairs = [("authorization", bearer.as_str()), ("content-type", kind)];
-        let (path, query) = path.split_once('?').unwrap_or((path, ""));
-        let reply = Box::pin(
-            self.api
-                .dispatch(&method, path, query, &headers(&pairs), body),
-        )
-        .await;
-        json_of(reply).await
-    }
-
-    async fn get(&self, path: &str) -> Value {
-        let (status, value) = self
-            .send(hyper::Method::GET, path, b"", "application/json")
-            .await;
-        assert_eq!(status, 200, "GET {path}: {value}");
-        value
-    }
-
-    /// `action` of `resource` with `args`, which ran: its result.
-    async fn act(&self, base: &str, resource: &str, action: &str, args: &Value) -> Value {
-        let (status, reply) = self
-            .send(
-                hyper::Method::POST,
-                &format!("{base}/resources/{resource}/actions/{action}"),
-                args.to_string().as_bytes(),
-                "application/json",
-            )
-            .await;
-        assert_eq!(status, 200, "{resource}#{action} {args}: {reply}");
-        assert_eq!(reply["status"], "ok", "{resource}#{action} {args}: {reply}");
-        reply["result"].clone()
-    }
-
-    /// [`Self::act`] for each of `items` in as few `group` calls as the API
-    /// takes: what the SDK's bulk calls send. A resource that takes no group
-    /// is given its calls one at a time.
-    async fn many(&self, base: &str, resource: &str, action: &str, items: &[Value]) {
-        if let Err(refused) = self.grouped(base, resource, action, items).await {
-            eprintln!("{resource}#{action}: no bulk call ({refused}); one at a time");
-            for args in items {
-                self.act(base, resource, action, args).await;
-            }
-        }
-    }
-
-    async fn grouped(
-        &self,
-        base: &str,
-        resource: &str,
-        action: &str,
-        items: &[Value],
-    ) -> Result<(), String> {
-        for chunk in items.chunks(GROUP_MEMBERS) {
-            let members: Vec<Value> = chunk
-                .iter()
-                .map(|args| json!({"action": action, "args": args}))
-                .collect();
-            let (status, reply) = self
-                .send(
-                    hyper::Method::POST,
-                    &format!("{base}/resources/{resource}/actions/group"),
-                    json!({ "actions": members }).to_string().as_bytes(),
-                    "application/json",
-                )
-                .await;
-            if status != 200 || reply["status"] != "ok" {
-                return Err(format!("{status} {reply}"));
-            }
-        }
-        Ok(())
-    }
-}
-
-/// A workspace of Ada's, through the API: its base path and id.
-async fn workspace(agent: &Agent<'_>, name: &str) -> (String, String) {
-    let (status, made) = agent
-        .send(
-            hyper::Method::POST,
-            "/v1/resources/account/workspaces/actions/create",
-            json!({ "name": name }).to_string().as_bytes(),
-            "application/json",
-        )
-        .await;
-    assert_eq!(status, 200, "{made}");
-    let id = made["result"]["workspace"]["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    (format!("/v1/workspaces/{id}"), id)
-}
 
 /// The path of the resource of the tracker's issues: the row whose actions
 /// make an issue.
@@ -170,7 +61,9 @@ async fn reads_per_action(agent: &Agent<'_>, base: &str, size: usize) -> u64 {
     agent.act(base, "tasks", "open", &json!({})).await;
     let issues = issues(agent, base).await;
     let seed: Vec<Value> = (0..size).map(new_issue).collect();
-    agent.many(base, &issues, "create", &seed).await;
+    if let Some(refused) = agent.many_or_each(base, &issues, "create", &seed).await {
+        eprintln!("{issues}#create: no bulk call ({refused}); one at a time");
+    }
     // The first action catches up what seeding changed; only the ones after
     // it show what a refresh costs once the workspace is where it is.
     agent.act(base, &issues, "create", &new_issue(size)).await;

@@ -12,6 +12,10 @@ use ui::tilo_workspace_agent::{Agent, NewSubAgent, Stands, workspace_agents};
 #[path = "hosted_share_ends.rs"]
 mod share_ends;
 
+/// The one provider the reply tests below watch writing, and what they read of its answers.
+#[path = "reply_writing.rs"]
+mod writing;
+
 /// A model whose answer to each call is `play`'s. Every call is kept, in the order asked.
 struct Plays {
     play: Arc<dyn Fn(&ModelRequest) -> ModelResponse + Send + Sync>,

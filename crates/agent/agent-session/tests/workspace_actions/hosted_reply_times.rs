@@ -9,52 +9,8 @@
 //! machine's speed decides is printed, on a pass too (`.config/nextest.toml`): how many
 //! changes the words came in, when the first and the last arrived after the model's first and
 //! last word, and how many bytes a change adds to what the device keeps of the conversation.
+use super::writing::{PACED_EVERY, WORDS, paced, paced_whole};
 use super::*;
-use tilo_server::workspaces::person_model::{
-    Events, ModelProvider, ProviderCall, ProviderFuture, ProviderProtocol, protocol::StreamEvent,
-    scripted::Linking,
-};
-
-/// How many words the model writes.
-const WORDS: usize = 400;
-
-/// The wait between two of its words.
-const EVERY: Duration = Duration::from_millis(25);
-
-/// A provider that writes [`WORDS`] words, one every [`EVERY`], and keeps when it wrote each.
-#[derive(Default)]
-struct Paced {
-    wrote: Mutex<Vec<Instant>>,
-}
-
-impl ModelProvider for Paced {
-    fn answer<'a>(&'a self, _: ProviderCall<'a>, events: Events<'a>) -> ProviderFuture<'a> {
-        Box::pin(async move {
-            for n in 0..WORDS {
-                if n > 0 {
-                    tokio::time::sleep(EVERY).await;
-                }
-                self.wrote.lock().unwrap().push(Instant::now());
-                events(StreamEvent::TextDelta {
-                    text: format!("word{n} "),
-                });
-            }
-            Ok(answer(
-                vec![Content::Text { text: whole() }],
-                StopReason::EndTurn,
-                100,
-            ))
-        })
-    }
-}
-
-/// The answer whole: every word once, in order.
-fn whole() -> String {
-    (0..WORDS)
-        .map(|n| format!("word{n}"))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
 
 /// One change of the conversation's part as the device received it.
 struct Change {
@@ -181,7 +137,7 @@ fn table(grown: &[(&Change, usize)], began: Instant, ended: Instant) -> String {
          The conversation's part as the device keeps it: {} bytes before the first word, {} \
          after the last; a change that brought words grew it by {} bytes.\n\
          The first, the middle and the last change: {three}.",
-        EVERY.as_millis(),
+        PACED_EVERY.as_millis(),
         ended.saturating_duration_since(began).as_millis(),
         grown.len(),
         first.at.saturating_duration_since(began).as_millis(),
@@ -204,22 +160,7 @@ async fn four_hundred_words_reach_a_device_while_they_are_written() {
         root, browser, actions, workspaces, workspace, page, person, served
     );
     let mut page = page;
-    let theirs = Arc::new(Paced::default());
-    workspaces.answer_models_with(theirs.clone());
-    workspaces
-        .link_model_for(
-            &workspace,
-            &Linking {
-                name: "Google",
-                protocol: ProviderProtocol::OpenAiCompatible,
-                endpoint: "https://generativelanguage.googleapis.com/v1beta/openai",
-                key: Some("sk-made-up-for-this-measurement"),
-                models: &["gemini-main"],
-            },
-            true,
-        )
-        .await
-        .unwrap();
+    let (theirs, _lets_go) = paced(&workspaces, &workspace).await;
     let first = write_to_agent(
         &actions,
         &workspaces,
@@ -242,7 +183,7 @@ async fn four_hundred_words_reach_a_device_while_they_are_written() {
     let going = tokio::spawn(async move { answering.answer(&at, &turn).await });
 
     let reply_id = chat::chat::reply_id(&first, &MemberId::agent(SCOUT));
-    let answer = whole();
+    let answer = paced_whole();
     // When each change of the part arrived at the device, in the order it keeps them.
     let mut arrived = vec![Instant::now(); page.heard(&route)];
     let deadline = tilo_test_env::hang_deadline();
@@ -268,7 +209,7 @@ async fn four_hundred_words_reach_a_device_while_they_are_written() {
         "every word stands in the reply on the server, once and in order"
     );
 
-    let wrote = theirs.wrote.lock().unwrap().clone();
+    let wrote = theirs.wrote();
     let (Some(began), Some(last_word)) = (wrote.first().copied(), wrote.last().copied()) else {
         panic!("the model wrote nothing");
     };

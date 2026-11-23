@@ -2,93 +2,17 @@
 //!
 //! Where a person's provider shows what its model thinks before it writes, the server puts
 //! that into the reply's thinking as it arrives, so a wait is not silent, and never among the
-//! answer's words. The provider here thinks in pieces and then waits until a test lets it go
-//! on: the test reads the reply while its model has thought and not yet answered.
+//! answer's words. The test's provider thinks in pieces and then waits until the test lets it
+//! go on: the test reads the reply while its model has thought and not yet answered.
+use super::writing::{Next::*, writing};
 use super::*;
 use chat::agent_stream::AgentFinish;
-use tilo_server::workspaces::person_model::{
-    Events, ModelProvider, ProviderCall, ProviderFuture, ProviderProtocol, protocol::StreamEvent,
-    scripted::Linking,
-};
 
 /// What the provider's model thinks, in the pieces its provider shows it in.
 const THOUGHTS: [&str; 3] = ["The plan names ", "one month for the launch: ", "May."];
 
 /// What it answers.
 const ANSWER: &str = "The launch is planned for May.";
-
-/// A person's provider whose model thinks in pieces, waits until the test lets it go on and
-/// then answers: its words piece by piece where it `writes`, else whole at the answer's end.
-struct Thinking {
-    writes: bool,
-    paused: tokio::sync::Semaphore,
-}
-
-impl ModelProvider for Thinking {
-    fn answer<'a>(&'a self, _: ProviderCall<'a>, events: Events<'a>) -> ProviderFuture<'a> {
-        Box::pin(async move {
-            for thought in THOUGHTS {
-                events(StreamEvent::ReasoningDelta {
-                    text: thought.to_owned(),
-                });
-            }
-            self.paused.acquire().await.unwrap().forget();
-            if self.writes {
-                for words in ANSWER.split_inclusive(' ') {
-                    events(StreamEvent::TextDelta {
-                        text: words.to_owned(),
-                    });
-                }
-            }
-            Ok(answer(
-                vec![Content::Text {
-                    text: ANSWER.to_owned(),
-                }],
-                StopReason::EndTurn,
-                100,
-            ))
-        })
-    }
-}
-
-/// Lets the call that waits go on when the test ends, however it ends, so that none of the
-/// provider's threads is left waiting.
-struct LetsGo(Arc<Thinking>);
-
-impl Drop for LetsGo {
-    fn drop(&mut self) {
-        self.0.paused.add_permits(8);
-    }
-}
-
-/// Link the workspace a provider of its own whose model thinks before it answers, and have the
-/// server ask it for their agent's turns.
-async fn thinking(
-    workspaces: &tilo_server::workspaces::Workspaces,
-    workspace: &str,
-    writes: bool,
-) -> (Arc<Thinking>, LetsGo) {
-    let theirs = Arc::new(Thinking {
-        writes,
-        paused: tokio::sync::Semaphore::new(0),
-    });
-    workspaces.answer_models_with(theirs.clone());
-    workspaces
-        .link_model_for(
-            workspace,
-            &Linking {
-                name: "Google",
-                protocol: ProviderProtocol::OpenAiCompatible,
-                endpoint: "https://generativelanguage.googleapis.com/v1beta/openai",
-                key: Some("sk-made-up-for-this-test"),
-                models: &["gemini-main"],
-            },
-            true,
-        )
-        .await
-        .unwrap();
-    (theirs.clone(), LetsGo(theirs))
-}
 
 /// What `reply` shows of its model's thinking.
 fn thinking_of(reply: &chat::chat::Message) -> String {
@@ -143,7 +67,18 @@ async fn a_reply_shows_its_model_thinking_and_keeps_an_answer_that_came_whole() 
     team!(
         root, browser, actions, workspaces, workspace, page, person, served
     );
-    let (theirs, _lets_go) = thinking(&workspaces, &workspace, false).await;
+    let (theirs, _lets_go) = writing(
+        &workspaces,
+        &workspace,
+        [vec![
+            Thinks("The plan names "),
+            Thinks("one month for the launch: "),
+            Thinks("May."),
+            Waits,
+            Says(ANSWER),
+        ]],
+    )
+    .await;
     let first = write_to_agent(
         &actions,
         &workspaces,
@@ -169,7 +104,7 @@ async fn a_reply_shows_its_model_thinking_and_keeps_an_answer_that_came_whole() 
         "the reply says its model is still at work"
     );
 
-    theirs.paused.add_permits(1);
+    theirs.go_on();
     going.await.unwrap().unwrap();
     let reply = ended(&workspaces, &workspace, &first).await;
     assert_eq!(
@@ -193,7 +128,20 @@ async fn what_a_model_thought_stands_beside_the_words_it_then_writes() {
     team!(
         root, browser, actions, workspaces, workspace, page, person, served
     );
-    let (theirs, _lets_go) = thinking(&workspaces, &workspace, true).await;
+    let (theirs, _lets_go) = writing(
+        &workspaces,
+        &workspace,
+        [vec![
+            Thinks("The plan names "),
+            Thinks("one month for the launch: "),
+            Thinks("May."),
+            Waits,
+            Writes("The launch "),
+            Writes("is planned "),
+            Writes("for May."),
+        ]],
+    )
+    .await;
     let first = write_to_agent(
         &actions,
         &workspaces,
@@ -214,7 +162,7 @@ async fn what_a_model_thought_stands_beside_the_words_it_then_writes() {
         "what a model thinks is never among its reply's words"
     );
 
-    theirs.paused.add_permits(1);
+    theirs.go_on();
     going.await.unwrap().unwrap();
     let reply = ended(&workspaces, &workspace, &first).await;
     assert_eq!(reply.text, ANSWER, "the reply reads the answer once");

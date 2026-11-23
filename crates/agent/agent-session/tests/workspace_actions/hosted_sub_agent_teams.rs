@@ -712,41 +712,15 @@ async fn a_lead_reads_the_team_under_it_and_nothing_above_or_beside_it() {
 /// Admit the person of `device` to `workspace` as an editor: the server issues them an
 /// invitation and their device redeems it.
 async fn admit(workspaces: &Workspaces, workspace: &str, device: &crate::support::Device) {
-    let invitation = workspaces
-        .issue(
-            workspace,
-            &workspaces.governor().clone(),
-            tilo_server::workspaces::IssueInvitationRequest {
-                request_id: device.cert.device_public_key,
-                role: tilo_peer_state::join::Role::Editor,
-                recipient_user_public_key: Some(device.cert.user_public_key),
-                invitee_name: Some("Bo".into()),
-                inviter_name: None,
-                expires_at_ns: tilo_clock::unix_now_ns()
-                    .checked_add(600_000_000_000)
-                    .unwrap(),
-            },
-        )
-        .await
-        .unwrap();
-    let verified = tilo_peer_state::join::decode_and_verify_invitation(
-        &invitation.signed_invitation,
-        None,
-        &RevocationList::new(),
-        tilo_clock::unix_now_ns(),
+    crate::workspace_actions::resource_support::admit_with(
+        workspaces,
+        workspaces.governor(),
+        workspace,
+        device,
+        tilo_peer_state::join::Role::Editor,
+        "Bo",
     )
-    .unwrap();
-    let endpoint = test_server::endpoint(iroh::SecretKey::from_bytes(&device.key.to_bytes())).await;
-    tilo_server::workspace_join::WorkspaceJoinClient::new(endpoint)
-        .redeem_hint(
-            verified.grant().transport.first().unwrap(),
-            invitation.signed_invitation.clone(),
-            device.cert.clone(),
-            &device.key,
-            device.cert.device_public_key,
-        )
-        .await
-        .unwrap();
+    .await;
 }
 
 /// What the server's action service answers `caller` outside any turn for a start on the

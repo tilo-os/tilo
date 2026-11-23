@@ -38,6 +38,9 @@ mod agent_views;
 #[path = "workspace_actions/api.rs"]
 mod api;
 #[cfg(test)]
+#[path = "workspace_actions/api_agent.rs"]
+mod api_agent;
+#[cfg(test)]
 #[path = "workspace_actions/api_apps.rs"]
 mod api_apps;
 #[cfg(test)]

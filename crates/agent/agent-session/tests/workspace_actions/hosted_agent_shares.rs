@@ -2,6 +2,7 @@
 //! Chat's own `share-window` of that document, posted for the model's `answer_with_document` in
 //! the turn's own conversation, as the agent acting for its person. Where it is shown and whose
 //! share it is are never the model's to say, and a thing the turn cannot read is not shown.
+use super::answer::{answer_the_turn, calls_then_answers, team};
 use super::*;
 
 /// The word processor, by its id.
@@ -9,91 +10,6 @@ const WRITER: &str = "so.tilo.word-processor";
 /// What Chat's share verbs call the conversation they post in, and an address its document.
 const IN: &str = "channel";
 const DOCUMENT: &str = "record";
-
-/// A workspace on a server with one person in its chat and their agent kept there. The person's
-/// page joins: its device is the one their agent's turns are admitted on.
-macro_rules! team {
-    ($root:ident, $browser:ident, $actions:ident, $workspaces:ident, $workspace:ident, $page:ident, $served:ident) => {
-        let ($root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-        let server = enrol(&$root, "tilo-sh", DeviceCapabilities::member());
-        let $browser = enrol(&$root, "browser", DeviceCapabilities::member());
-        let state = crate::support::scratch_dir();
-        let $served = crate::harness::hosted::start(
-            &$root,
-            &server,
-            state.path(),
-            crate::harness::hosted::Options::offering(crate::common::catalogue),
-        )
-        .await;
-        let $actions = $served.roster.actions.clone();
-        let $workspaces = $served.workspaces().unwrap().clone();
-        let $workspace = $workspaces.create("Team").await.unwrap().workspace;
-        let $page = Browser::open_at(&$served, &$browser, &server, &$workspace).await;
-        let person = hex::encode($root.verifying_key().to_bytes());
-        make_agent(&$page, &$workspaces, &$workspace, &person, None).await;
-        let catalogue = crate::common::catalogue();
-        let governor = $workspaces.governor().clone();
-        $workspaces
-            .prepare_application(&$workspace, &governor, &catalogue, CHAT, "")
-            .await
-            .unwrap();
-    };
-}
-
-/// Answer the one turn the workspace owes, with the model `$model`.
-macro_rules! answer_the_turn {
-    ($served:ident, $workspace:ident, $model:expr) => {
-        let agents = $served
-            .approving(&$workspace, &[SCOUT])
-            .await
-            .scripted($model);
-        let turns = agents.turns(&$workspace).await.unwrap();
-        assert_eq!(turns.len(), 1, "the message is the agent's turn: {turns:?}");
-        tokio::time::timeout(
-            Duration::from_secs(90),
-            agents.answer(&$workspace, &turns[0]),
-        )
-        .await
-        .expect("the turn ends")
-        .unwrap();
-    };
-}
-
-/// A model that makes each of `calls` (a tool and what it is given), one a turn, then answers
-/// `words`.
-fn calls_then_answers(
-    calls: Vec<(&'static str, serde_json::Value)>,
-    words: &'static str,
-    asked: Arc<Mutex<Vec<ModelRequest>>>,
-) -> Model {
-    Arc::new(move || {
-        let mut answers: Vec<ModelResponse> = calls
-            .iter()
-            .enumerate()
-            .map(|(n, (tool, input))| {
-                answer(
-                    vec![Content::ToolCall(ToolCall {
-                        id: format!("call-{n}"),
-                        name: (*tool).into(),
-                        input: input.clone(),
-                        extra_content: None,
-                    })],
-                    StopReason::ToolCalls,
-                    1_000,
-                )
-            })
-            .collect();
-        answers.push(answer(
-            vec![Content::Text { text: words.into() }],
-            StopReason::EndTurn,
-            1_000,
-        ));
-        Some(Box::new(Scripted {
-            answers,
-            asked: Arc::clone(&asked),
-        }) as Box<dyn tilo_agent_session::model::PlanTurns>)
-    })
-}
 
 /// What the last request tells the model its tools answered, in order, each with whether it
 /// failed.

@@ -1,60 +1,12 @@
 //! A turn of an agent on a workspace's server answers with a view it wrote: through Chat's own
 //! `answer-with-view`, on its reply to the message that asked it, as the agent acting for its
 //! person. Which message it answers and whose view it is are never the model's to say.
+use super::answer::{answer_the_turn, calls_then_answers, team, tool_answers};
 use super::*;
 
 /// A view over what Tasks keeps for the workspace, as a model writes one.
 const PROJECTS: &str =
     "view projects() {\n    for a in tasks.tracker.areas {\n        text(a.name)\n    }\n}";
-
-/// A workspace on a server with one person in its chat and their agent kept there. The person's
-/// page joins: its device is the one their agent's turns are admitted on.
-macro_rules! team {
-    ($root:ident, $browser:ident, $actions:ident, $workspaces:ident, $workspace:ident, $page:ident, $served:ident) => {
-        let ($root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-        let server = enrol(&$root, "tilo-sh", DeviceCapabilities::member());
-        let $browser = enrol(&$root, "browser", DeviceCapabilities::member());
-        let state = crate::support::scratch_dir();
-        let $served = crate::harness::hosted::start(
-            &$root,
-            &server,
-            state.path(),
-            crate::harness::hosted::Options::offering(crate::common::catalogue),
-        )
-        .await;
-        let $actions = $served.roster.actions.clone();
-        let $workspaces = $served.workspaces().unwrap().clone();
-        let $workspace = $workspaces.create("Team").await.unwrap().workspace;
-        let $page = Browser::open_at(&$served, &$browser, &server, &$workspace).await;
-        let person = hex::encode($root.verifying_key().to_bytes());
-        make_agent(&$page, &$workspaces, &$workspace, &person, None).await;
-        let catalogue = crate::common::catalogue();
-        let governor = $workspaces.governor().clone();
-        $workspaces
-            .prepare_application(&$workspace, &governor, &catalogue, CHAT, "")
-            .await
-            .unwrap();
-    };
-}
-
-/// Answer the one turn the workspace owes, with the model `$model`.
-macro_rules! answer_the_turn {
-    ($served:ident, $workspace:ident, $model:expr) => {
-        let agents = $served
-            .approving(&$workspace, &[SCOUT])
-            .await
-            .scripted($model);
-        let turns = agents.turns(&$workspace).await.unwrap();
-        assert_eq!(turns.len(), 1, "the message is the agent's turn: {turns:?}");
-        tokio::time::timeout(
-            Duration::from_secs(60),
-            agents.answer(&$workspace, &turns[0]),
-        )
-        .await
-        .expect("the turn ends")
-        .unwrap();
-    };
-}
 
 /// A model that calls `answer_with_view` once with each of `inputs`, one call a turn, then
 /// answers `words`.
@@ -63,33 +15,14 @@ fn views_then_answers(
     words: &'static str,
     asked: Arc<Mutex<Vec<ModelRequest>>>,
 ) -> Model {
-    Arc::new(move || {
-        let mut answers: Vec<ModelResponse> = inputs
-            .iter()
-            .enumerate()
-            .map(|(n, input)| {
-                answer(
-                    vec![Content::ToolCall(ToolCall {
-                        id: format!("call-{n}"),
-                        name: "answer_with_view".into(),
-                        input: input.clone(),
-                        extra_content: None,
-                    })],
-                    StopReason::ToolCalls,
-                    1_000,
-                )
-            })
-            .collect();
-        answers.push(answer(
-            vec![Content::Text { text: words.into() }],
-            StopReason::EndTurn,
-            1_000,
-        ));
-        Some(Box::new(Scripted {
-            answers,
-            asked: Arc::clone(&asked),
-        }) as Box<dyn tilo_agent_session::model::PlanTurns>)
-    })
+    calls_then_answers(
+        inputs
+            .into_iter()
+            .map(|input| ("answer_with_view", input))
+            .collect(),
+        words,
+        asked,
+    )
 }
 
 /// The id of the agent's reply to the message `to`.
@@ -100,19 +33,6 @@ fn reply_to(part: &chat::parts::ChatMessages, to: &Id) -> Id {
         .find(|(_, held)| held.author == agent && held.parent.as_ref() == Some(to))
         .map(|(id, _)| id.clone())
         .expect("the agent's reply is in the conversation")
-}
-
-/// What `request` tells the model its tools answered, each with whether it failed.
-fn tool_answers(request: &ModelRequest) -> Vec<(String, bool)> {
-    request
-        .messages
-        .iter()
-        .flat_map(|message| message.content.iter())
-        .filter_map(|content| match content {
-            Content::ToolResult(result) => Some((result.content.clone(), result.is_error)),
-            _ => None,
-        })
-        .collect()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

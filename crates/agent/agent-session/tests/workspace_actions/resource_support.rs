@@ -1,8 +1,9 @@
 //! Certified admission for resource fixtures; no owner-only workspace entry.
 use super::{Browser, Device, Hosted, RevocationList, ServerAddress, ready, start_peer};
 use tilo_peer_state::join::{Role, decode_and_verify_invitation};
-use tilo_server::workspaces::IssueInvitationRequest;
+use tilo_server::workspaces::{IssueInvitationRequest, Workspaces};
 use tilo_session_client::{Cmd, Outbox};
+use tilo_user_identity::DeviceCert;
 
 pub(super) async fn open_admitted_peer(
     hosted: &Hosted,
@@ -53,17 +54,36 @@ pub(super) async fn admit_person_at(
     device: &Device,
     role: Role,
 ) {
-    let invitation = server
-        .workspaces()
-        .unwrap()
+    admit_with(
+        server.workspaces().unwrap(),
+        &holder.cert,
+        workspace,
+        device,
+        role,
+        "Encrypted resource fixture",
+    )
+    .await;
+}
+
+/// Admit `device` to `workspace` as `role`, invited by the administrator `administrator` and
+/// named `name`: the server issues an invitation and the device redeems it.
+pub(super) async fn admit_with(
+    workspaces: &Workspaces,
+    administrator: &DeviceCert,
+    workspace: &str,
+    device: &Device,
+    role: Role,
+    name: &str,
+) {
+    let invitation = workspaces
         .issue(
             workspace,
-            &holder.cert,
+            administrator,
             IssueInvitationRequest {
                 request_id: device.cert.device_public_key,
                 role,
                 recipient_user_public_key: Some(device.cert.user_public_key),
-                invitee_name: Some("Encrypted resource fixture".into()),
+                invitee_name: Some(name.to_owned()),
                 inviter_name: None,
                 expires_at_ns: tilo_clock::unix_now_ns()
                     .checked_add(600_000_000_000)

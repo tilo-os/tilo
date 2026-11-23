@@ -15,6 +15,10 @@ pub(super) const TASKS: &str = "so.tilo.tasks";
 /// The agent's id in the workspace's record of its agents.
 pub(super) const SCOUT: &str = "scout";
 
+/// The workspace the answer tests work in, and a model that calls tools before it answers.
+#[path = "hosted_agent_answer.rs"]
+mod answer;
+
 /// A model whose turns are written out: each answer in order, then the last again. What each
 /// request asked is kept.
 struct Scripted {

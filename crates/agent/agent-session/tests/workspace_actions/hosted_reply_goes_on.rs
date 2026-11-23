@@ -4,191 +4,12 @@
 //! answer: a long report, a whole document. Where the reply is full the answer goes on in the
 //! agent's next message, which grows as the first did: every word stands once and in order,
 //! a message ends where a word ends, and no message says its work ended while the answer
-//! still goes on. The provider here writes a report a little longer than one message holds,
-//! line by line as a provider streams it, and waits where a test tells it to.
+//! still goes on. The test's provider writes a report a little longer than one message holds,
+//! line by line as a provider streams it, and waits where the test tells it to.
+use super::writing::{BEYOND, Next::*, begin, line, lines, report, writing};
 use super::*;
 use chat::agent_stream::AgentFinish;
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use tilo_server::workspaces::person_model::{
-    Events, ModelProvider, ProviderCall, ProviderFuture, ProviderProtocol, protocol::StreamEvent,
-    scripted::Linking,
-};
-
-/// How many lines the report has beyond what one message holds.
-const BEYOND: usize = 120;
-
-/// Line `n` of the long report.
-fn line(n: usize) -> String {
-    format!("Line {n:05} of a long report: nothing is left out and nothing is said twice.")
-}
-
-/// How many lines the report has: more than one message holds.
-fn lines() -> usize {
-    (chat::chat::MAX_MESSAGE_TEXT_BYTES / line(0).len().saturating_add(1)).saturating_add(BEYOND)
-}
-
-/// The report's lines from `from` to before `to`, as they stand in it.
-fn report(from: usize, to: usize) -> String {
-    (from..to).map(line).collect::<Vec<_>>().join("\n")
-}
-
-/// What a reporting provider does next in an answer.
-#[derive(Clone)]
-enum Next {
-    /// It shows this thought.
-    Thinks(&'static str),
-    /// It writes these words.
-    Writes(&'static str),
-    /// It writes the report's lines from the first to before the second, one after the other.
-    Reports(usize, usize),
-    /// It waits until the test lets it go on.
-    Waits,
-    /// It lists the workspace through its tool, which ends the call.
-    Looks,
-}
-use Next::{Looks, Reports, Thinks, Waits, Writes};
-
-/// A person's provider that writes each answer piece by piece, as a provider streams it.
-struct Reporting {
-    /// The calls it answers, in order, each as the steps it takes.
-    calls: Mutex<VecDeque<Vec<Next>>>,
-    /// What it waits at: one call goes on each time the test lets it.
-    paused: tokio::sync::Semaphore,
-    /// How many times it came to wait.
-    waited: AtomicUsize,
-    /// How many of its calls whoever asked let go of before they ended.
-    let_go: AtomicUsize,
-}
-
-/// A call under way: counted as let go of when it is dropped before it ended.
-struct Call<'a> {
-    of: &'a Reporting,
-    ended: bool,
-}
-
-impl Drop for Call<'_> {
-    fn drop(&mut self) {
-        if !self.ended {
-            self.of.let_go.fetch_add(1, Ordering::SeqCst);
-        }
-    }
-}
-
-impl Reporting {
-    /// Let the call that waits go on.
-    fn go_on(&self) {
-        self.paused.add_permits(1);
-    }
-}
-
-impl ModelProvider for Reporting {
-    fn answer<'a>(&'a self, _: ProviderCall<'a>, events: Events<'a>) -> ProviderFuture<'a> {
-        let steps = self.calls.lock().unwrap().pop_front();
-        Box::pin(async move {
-            let mut call = Call {
-                of: self,
-                ended: false,
-            };
-            let (mut said, mut content) = (String::new(), Vec::new());
-            let mut stop_reason = StopReason::EndTurn;
-            for step in steps.expect("the provider is asked as often as the test wrote") {
-                match step {
-                    Thinks(thought) => events(StreamEvent::ReasoningDelta {
-                        text: thought.to_owned(),
-                    }),
-                    Writes(words) => {
-                        events(StreamEvent::TextDelta {
-                            text: words.to_owned(),
-                        });
-                        said.push_str(words);
-                    }
-                    Looks => {
-                        content.push(Content::ToolCall(ToolCall {
-                            id: "call-1".into(),
-                            name: "tilo_ls".into(),
-                            input: serde_json::json!({}),
-                            extra_content: None,
-                        }));
-                        stop_reason = StopReason::ToolCalls;
-                    }
-                    Reports(from, to) => {
-                        for n in from..to {
-                            let text = if said.is_empty() {
-                                line(n)
-                            } else {
-                                format!("\n{}", line(n))
-                            };
-                            said.push_str(&text);
-                            events(StreamEvent::TextDelta { text });
-                            tokio::task::yield_now().await;
-                        }
-                    }
-                    Waits => {
-                        self.waited.fetch_add(1, Ordering::SeqCst);
-                        self.paused.acquire().await.unwrap().forget();
-                    }
-                }
-            }
-            call.ended = true;
-            if !said.is_empty() {
-                content.insert(0, Content::Text { text: said });
-            }
-            Ok(answer(content, stop_reason, 100))
-        })
-    }
-}
-
-/// Lets every call that waits go on when the test ends, however it ends, so that none of the
-/// provider's threads is left waiting.
-struct LetsGo(Arc<Reporting>);
-
-impl Drop for LetsGo {
-    fn drop(&mut self) {
-        self.0.paused.add_permits(64);
-    }
-}
-
-/// Link `root` a provider of their own that answers `calls`, each as its steps, and have the
-/// server ask it for their agent's turns.
-async fn reporting(
-    workspaces: &tilo_server::workspaces::Workspaces,
-    workspace: &str,
-    calls: impl IntoIterator<Item = Vec<Next>>,
-) -> (Arc<Reporting>, LetsGo) {
-    let theirs = Arc::new(Reporting {
-        calls: Mutex::new(calls.into_iter().collect()),
-        paused: tokio::sync::Semaphore::new(0),
-        waited: AtomicUsize::new(0),
-        let_go: AtomicUsize::new(0),
-    });
-    workspaces.answer_models_with(theirs.clone());
-    workspaces
-        .link_model_for(
-            workspace,
-            &Linking {
-                name: "Google",
-                protocol: ProviderProtocol::OpenAiCompatible,
-                endpoint: "https://generativelanguage.googleapis.com/v1beta/openai",
-                key: Some("sk-made-up-for-this-test"),
-                models: &["gemini-main"],
-            },
-            true,
-        )
-        .await
-        .unwrap();
-    (theirs.clone(), LetsGo(theirs))
-}
-
-/// Begin the one turn the workspace owes `$agents`, and go on while it works.
-macro_rules! begin {
-    ($agents:expr, $workspace:expr) => {{
-        let turns = $agents.turns(&$workspace).await.unwrap();
-        assert_eq!(turns.len(), 1, "{turns:?}");
-        let (agents, workspace, turn) = ($agents.clone(), $workspace.clone(), turns[0].clone());
-        tokio::spawn(async move { agents.answer(&workspace, &turn).await })
-    }};
-}
+use std::sync::atomic::Ordering;
 
 /// The messages `agent` answers `message` with, as the conversation holds them now: its
 /// reply, and each message the answer goes on in, by the id Chat derives for the message
@@ -358,7 +179,7 @@ async fn an_answer_longer_than_one_message_stands_whole_in_the_conversation() {
     );
     // The provider waits with sixty lines written past what one message holds.
     let waits_at = lines().saturating_sub(BEYOND / 2);
-    let (theirs, _lets_go) = reporting(
+    let (theirs, _lets_go) = writing(
         &workspaces,
         &workspace,
         [vec![
@@ -497,7 +318,7 @@ async fn a_stop_that_names_a_message_of_a_long_answer_ends_its_turn(nth: usize) 
         root, browser, actions, workspaces, workspace, page, person, served
     );
     let waits_at = lines().saturating_sub(BEYOND / 2);
-    let (theirs, _lets_go) = reporting(
+    let (theirs, _lets_go) = writing(
         &workspaces,
         &workspace,
         [vec![
@@ -595,7 +416,7 @@ async fn a_long_answer_goes_on_below_its_newest_message_after_a_server_stopped()
         root, browser, actions, workspaces, workspace, page, person, served
     );
     let waits_at = lines().saturating_sub(BEYOND / 2);
-    let (theirs, _lets_go) = reporting(
+    let (theirs, _lets_go) = writing(
         &workspaces,
         &workspace,
         [
@@ -671,7 +492,7 @@ async fn the_thinking_and_the_steps_of_a_long_answer_stay_with_its_first_message
     team!(
         root, browser, actions, workspaces, workspace, page, person, served
     );
-    let (theirs, _lets_go) = reporting(
+    let (theirs, _lets_go) = writing(
         &workspaces,
         &workspace,
         [
@@ -782,7 +603,7 @@ async fn a_sub_agents_long_answer_goes_on_in_its_own_conversation() {
     let ada = themselves(&root, &browser, &workspace);
     let thread = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent(SCOUT)]);
     let own = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent("writer")]);
-    let (_theirs, _lets_go) = reporting(
+    let (_theirs, _lets_go) = writing(
         &workspaces,
         &workspace,
         [

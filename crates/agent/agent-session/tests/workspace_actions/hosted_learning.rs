@@ -4,11 +4,7 @@
 //! interfaces, with no device of either person doing anything.
 use super::*;
 use tilo_actions::remote::Caller;
-use tilo_peer_state::join::decode_and_verify_invitation;
-use tilo_server::{
-    workspace_join::WorkspaceJoinClient,
-    workspaces::{IssueInvitationRequest, Workspaces},
-};
+use tilo_server::workspaces::Workspaces;
 use tilo_workspace_service::agents::{Turn, WorkspaceActionProvider, invoke_named};
 use ui::collaboration::recall::{INSTRUCTION_CONVERSATION, INSTRUCTION_LEARNED};
 
@@ -146,41 +142,15 @@ async fn admit(
     workspace: &str,
     device: &crate::support::Device,
 ) {
-    let invitation = workspaces
-        .issue(
-            workspace,
-            &server.cert,
-            IssueInvitationRequest {
-                request_id: device.cert.device_public_key,
-                role: tilo_peer_state::join::Role::Editor,
-                recipient_user_public_key: Some(device.cert.user_public_key),
-                invitee_name: Some("Bo".into()),
-                inviter_name: None,
-                expires_at_ns: tilo_clock::unix_now_ns()
-                    .checked_add(600_000_000_000)
-                    .unwrap(),
-            },
-        )
-        .await
-        .unwrap();
-    let verified = decode_and_verify_invitation(
-        &invitation.signed_invitation,
-        None,
-        &RevocationList::new(),
-        tilo_clock::unix_now_ns(),
+    crate::workspace_actions::resource_support::admit_with(
+        workspaces,
+        &server.cert,
+        workspace,
+        device,
+        tilo_peer_state::join::Role::Editor,
+        "Bo",
     )
-    .unwrap();
-    let endpoint = test_server::endpoint(iroh::SecretKey::from_bytes(&device.key.to_bytes())).await;
-    WorkspaceJoinClient::new(endpoint)
-        .redeem_hint(
-            verified.grant().transport.first().unwrap(),
-            invitation.signed_invitation.clone(),
-            device.cert.clone(),
-            &device.key,
-            device.cert.device_public_key,
-        )
-        .await
-        .unwrap();
+    .await;
 }
 
 /// A hosted workspace with two people in its chat: Ada, who keeps the agent on the workspace's

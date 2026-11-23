@@ -1,8 +1,6 @@
 //! Who ends a share an agent on a workspace's server made for its person, through the server's
 //! own interfaces: the person themselves, from any device of theirs, and nobody else.
 use super::*;
-use tilo_peer_state::join::decode_and_verify_invitation;
-use tilo_server::{workspace_join::WorkspaceJoinClient, workspaces::IssueInvitationRequest};
 
 /// The word processor, by its id.
 const WRITER: &str = "so.tilo.word-processor";
@@ -13,41 +11,15 @@ type Actions = tilo_agent_session::workspace_actions::WorkspaceActions;
 /// Admit `device`'s person to `workspace` as an editor, by an invitation its server issues, as
 /// another member joins.
 async fn admit(workspaces: &Workspaces, server: &Device, workspace: &str, device: &Device) {
-    let invitation = workspaces
-        .issue(
-            workspace,
-            &server.cert,
-            IssueInvitationRequest {
-                request_id: device.cert.device_public_key,
-                role: tilo_peer_state::join::Role::Editor,
-                recipient_user_public_key: Some(device.cert.user_public_key),
-                invitee_name: Some("Bo".into()),
-                inviter_name: None,
-                expires_at_ns: tilo_clock::unix_now_ns()
-                    .checked_add(600_000_000_000)
-                    .unwrap(),
-            },
-        )
-        .await
-        .unwrap();
-    let verified = decode_and_verify_invitation(
-        &invitation.signed_invitation,
-        None,
-        &RevocationList::new(),
-        tilo_clock::unix_now_ns(),
+    crate::workspace_actions::resource_support::admit_with(
+        workspaces,
+        &server.cert,
+        workspace,
+        device,
+        tilo_peer_state::join::Role::Editor,
+        "Bo",
     )
-    .unwrap();
-    let endpoint = test_server::endpoint(iroh::SecretKey::from_bytes(&device.key.to_bytes())).await;
-    WorkspaceJoinClient::new(endpoint)
-        .redeem_hint(
-            verified.grant().transport.first().unwrap(),
-            invitation.signed_invitation.clone(),
-            device.cert.clone(),
-            &device.key,
-            device.cert.device_public_key,
-        )
-        .await
-        .unwrap();
+    .await;
 }
 
 /// A model that shares the word processor's document into `conversation` through the action
