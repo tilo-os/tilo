@@ -275,6 +275,7 @@ imports! {
     (TimeClock, "time_clock", "i", "i"),
     (DayShift, "day_shift", "ili", "i"),
     (TimeSpan, "time_span", "ii", "l"),
+    (Occurrences, "occurrences", "iiiiii", "i"),
     (DayPart, "day_part", "ii", "l"),
     (DayWeekday, "day_weekday", "i", "l"),
     (DayStartOfWeek, "day_start_of_week", "i", "i"),

@@ -488,6 +488,46 @@ impl Checker<'_> {
         Ex::host(Imp::MayRead, vec![who, r], Ty::Bool)
     }
 
+    /// `std.occurrences(rule, start, timezone, exdates, from, to)`: the moments the series of a
+    /// repeat's rule starts at, from the day `from` to the day `to`, its wall time read in
+    /// `timezone` and the days `exdates` left out. Read from the rule alone, so a view may call it.
+    pub(super) fn builtin_occurrences(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let some_left_out = "`std.occurrences` takes the rule, the start, the time zone, the days \
+                             left out, and the window's days: `std.occurrences(rule, start, \
+                             timezone, exdates, from, to)`";
+        if args.len() != 6 {
+            self.err("E022", span, some_left_out);
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        }
+        for a in args {
+            if let Some(name) = &a.name {
+                self.err(
+                    "E022",
+                    name.span,
+                    "`std.occurrences` takes its arguments by position: `std.occurrences(rule, \
+                     start, timezone, exdates, from, to)`",
+                );
+            }
+        }
+        let wanted = [
+            Ty::Text,
+            Ty::Time,
+            Ty::Text,
+            Ty::Set(Box::new(Ty::Text)),
+            Ty::Date,
+            Ty::Date,
+        ];
+        let given: Vec<Ex> = args
+            .iter()
+            .zip(wanted)
+            .map(|(a, ty)| self.expr_as(&a.value, &ty))
+            .collect();
+        Ex::host(Imp::Occurrences, given, Ty::List(Box::new(Ty::Time)))
+    }
+
     /// `workspace.members`: everyone in the workspace now, read from the platform's membership.
     /// `workspace.me`: the person the view is shown to.
     pub(super) fn workspace_field(&mut self, name: &ast::Ident) -> Ex {

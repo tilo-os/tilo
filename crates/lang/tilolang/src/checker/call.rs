@@ -68,6 +68,11 @@ impl Checker<'_> {
                     if name.name == "may_read" {
                         return self.builtin_may_read(args, span);
                     }
+                    // `std.occurrences(rule, start, timezone, exdates, from, to)`: the moments a
+                    // repeat falls on in a window, read from the rule alone.
+                    if name.name == "occurrences" {
+                        return self.builtin_occurrences(args, span);
+                    }
                 }
                 if matches!(&base.kind, ExprKind::Ident(ns) if ns == RANDOM)
                     && self.lookup(RANDOM).is_none()
