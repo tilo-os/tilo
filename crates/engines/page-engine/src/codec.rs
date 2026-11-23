@@ -268,10 +268,13 @@ pub fn decode(request: &str) -> Result<Ask, String> {
         "start_download" => Ask::Command(WebViewCommand::StartDownload {
             uri: text(&value, "url").unwrap_or_default(),
         }),
-        "answer_download" => Ask::Command(WebViewCommand::DownloadDecision {
+        "answer_download" => Ask::Command(WebViewCommand::AnswerDownload {
             id: integer(&value, "id").unwrap_or_default(),
-            allow: flag(&value, "allow"),
-            by: tilo_webview::AnsweredBy::Person,
+            leaving: if flag(&value, "allow") {
+                tilo_webview::Leaving::Allowed
+            } else {
+                tilo_webview::Leaving::Kept
+            },
         }),
         "cancel_download" => Ask::Command(WebViewCommand::CancelNativeDownload {
             id: integer(&value, "id").unwrap_or_default(),
