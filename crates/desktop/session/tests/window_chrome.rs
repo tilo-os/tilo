@@ -834,10 +834,8 @@ fn a_windows_author_is_who_opened_it_person_or_agent() {
     let one = place(&mut session, &notes[0]);
     let two = place(&mut session, &notes[1]);
     // The workspace's shared desktop says who opened each window: a person, and an agent's run.
-    let authors = std::collections::BTreeMap::from([
-        (one, "ada".to_owned()),
-        (two, "ada".to_owned()),
-    ]);
+    let authors =
+        std::collections::BTreeMap::from([(one, "ada".to_owned()), (two, "ada".to_owned())]);
     session.handle().set_authors(authors);
     let run = tilo_desktop_model::ownership::OpenedBy {
         run: "agent-run:1".to_owned(),
@@ -863,7 +861,11 @@ fn a_windows_author_is_who_opened_it_person_or_agent() {
         "the colour they wear everywhere: {person:?}"
     );
     let agent = window(&session, &key_two)["author"].clone();
-    assert_eq!(agent["identity"], json!("claude"), "an agent by its member id");
+    assert_eq!(
+        agent["identity"],
+        json!("claude"),
+        "an agent by its member id"
+    );
     assert_eq!(agent["name"], json!("Claude"));
     assert_eq!(agent["run"], json!("agent-run:1"));
     assert_eq!(agent["title"], json!("Sort the notes"));
@@ -874,6 +876,7 @@ fn ended(what: &str, why: &str) -> tilo_session_core::desktop::state::EndedAnswe
     tilo_session_core::desktop::state::EndedAnswer {
         what: what.to_owned(),
         why: why.to_owned(),
+        said: "the display refused this app".to_owned(),
         retry: Some("Reopen".to_owned()),
         details: "exit status: 1".to_owned(),
     }
@@ -897,10 +900,13 @@ fn a_window_whose_app_ended_says_what_became_of_it() {
     });
     let answer = window(&session, &key)["ended"].clone();
     assert_eq!(answer["why"], json!("It ended unexpectedly"));
+    assert_eq!(answer["said"], json!("the display refused this app"));
     assert_eq!(answer["retry"], json!("Reopen"));
     assert_eq!(answer["details"], json!("exit status: 1"));
 }
 
+/// The card leads with the shell's sentence, quotes what the app itself said under it, and keeps
+/// everything the launch printed behind its Details.
 #[test]
 fn the_crashed_windows_card_offers_reopen_and_dismiss() {
     let _settled = ui::motion::testing::settled();
@@ -916,6 +922,8 @@ fn the_crashed_windows_card_offers_reopen_and_dismiss() {
     until(&mut session, "the crashed window's card", |session| {
         on_screen(session, "App ended").is_some()
             && on_screen(session, "Notes stopped working").is_some()
+            && on_screen(session, "the display refused this app").is_some()
+            && on_screen(session, "Details").is_some()
             && on_screen(session, "Reopen").is_some()
             && on_screen(session, "Dismiss").is_some()
     });
@@ -946,9 +954,11 @@ fn reopening_a_crashed_window_keeps_its_place() {
         "the tab keeps the place the window stood in"
     );
     session.handle().set_ended_answer(one, None);
-    until(&mut session, "the card gone with the window back", |session| {
-        on_screen(session, "App ended").is_none()
-    });
+    until(
+        &mut session,
+        "the card gone with the window back",
+        |session| on_screen(session, "App ended").is_none(),
+    );
 }
 
 #[test]

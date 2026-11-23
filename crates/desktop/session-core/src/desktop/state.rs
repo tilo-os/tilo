@@ -188,6 +188,9 @@ pub struct EndedAnswer {
     pub what: String,
     /// Why, in words they can act on; empty where what happened is all there is to say.
     pub why: String,
+    /// What the app itself said of it, quoted under the sentence; empty where it said nothing
+    /// that tells.
+    pub said: String,
     /// The label of the button that asks for the app again, when asking can work.
     pub retry: Option<String>,
     /// The technical side, kept behind the card's Details; empty where there is none.

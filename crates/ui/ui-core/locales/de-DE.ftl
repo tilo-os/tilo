@@ -740,6 +740,8 @@ framework-unreadable = Dies kann nicht geöffnet werden
 framework-unreadable-hint = Diese Version der App kann nicht lesen, was hier gespeichert ist. Es wurde nichts verändert; ein Update der App kann es öffnen.
 # The disclosure under an empty or error state that holds what went wrong technically.
 empty-state-details = Details
+# Was die App oder der Dienst selbst gesagt hat, als Zitat unter der Meldung eines Fehlers vorgelesen.
+empty-state-quote = Es sagte: { $said }
 file-open-drop-hint = Oder eine Datei hier ablegen
 file-open-release = Zum Öffnen loslassen
 # The page rail's title, above its thumbnails, unless the app names it.

@@ -740,6 +740,8 @@ framework-unreadable = This can't be opened
 framework-unreadable-hint = This version of the app can't read what is saved here. Nothing was changed; an update to the app may open it.
 # The disclosure under an empty or error state that holds what went wrong technically.
 empty-state-details = Details
+# What the app or service itself said, read out as a quote under an error state's message.
+empty-state-quote = It said: { $said }
 # Under an app's "open a file" empty state: the file can also be dragged in.
 file-open-drop-hint = Or drop a file here
 # The empty state while a file is dragged over the window.

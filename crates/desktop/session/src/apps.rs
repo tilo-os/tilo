@@ -60,8 +60,9 @@ struct AppConnections {
 
 use crate::search::AppActions;
 
-/// The answer for `asked` that did not open, and `why`, with trying again as its button and
-/// `details`, what the launch itself said, behind the card's Details.
+/// The answer for `asked` that did not open: the designed sentence `why` with trying again as its
+/// button, `said`, what the app itself said, quoted in view under it, and `details`, all the launch
+/// printed, behind the card's Details.
 /// `title` names the launch when the asked string is an internal one (a Windows program's entry):
 /// a person reads the name the manager started it by, never an id.
 fn not_opened(
@@ -69,6 +70,7 @@ fn not_opened(
     asked: &str,
     title: Option<&str>,
     why: &str,
+    said: Option<&str>,
     details: &str,
 ) -> Outcome {
     // The name its launch was started with is what a person knows it by; the shell's own name
@@ -77,7 +79,11 @@ fn not_opened(
         Some(title) => title.to_owned(),
         None => policy.name_of(asked),
     };
-    Outcome::not_built_because(&name, why, details)
+    let outcome = Outcome::not_built_because(&name, why, details);
+    match said.filter(|said| !said.trim().is_empty()) {
+        Some(said) => outcome.with_said(said),
+        None => outcome,
+    }
 }
 
 /// Why a launch this session planned starts nothing, said where a person reads it: an app this
@@ -290,8 +296,8 @@ pub enum LaunchState {
     Arriving,
     /// A window this launch's own process made appeared: it opened.
     Landed,
-    /// The launch ended before any window of it appeared: `why` is the app's own last word, when
-    /// it said one.
+    /// The launch ended before any window of it appeared: `why` is what the app itself said,
+    /// when it said anything, else the shell's own account.
     CouldNotOpen { why: String },
 }
 
@@ -333,7 +339,8 @@ enum Got {
     Landed,
     /// It ended, after opening: an app that closed.
     Closed,
-    /// It ended before any window of it appeared: `why` is what the app said.
+    /// It ended before any window of it appeared: `why` is what the app said, when it said
+    /// anything, else the shell's own account.
     CouldNotOpen { why: String },
 }
 
@@ -1557,23 +1564,25 @@ impl Apps {
     /// and shows the answer, with the button that asks for the app again. A launch no tab holds is
     /// answered by whoever asked for it.
     fn could_not_open(&self, tab: Option<u64>, asked: &str, title: Option<&str>, why: &str) {
-        self.could_not_open_saying(tab, asked, title, why, "");
+        self.could_not_open_saying(tab, asked, title, why, None, "");
     }
 
-    /// [`Self::could_not_open`] with `details`, what the launch said, behind the card's Details.
+    /// [`Self::could_not_open`] with `said`, what the app itself said, quoted in view, and
+    /// `details`, all the launch printed, behind the card's Details.
     fn could_not_open_saying(
         &self,
         tab: Option<u64>,
         asked: &str,
         title: Option<&str>,
         why: &str,
+        said: Option<&str>,
         details: &str,
     ) {
         let Some(tab) = tab else {
             return;
         };
         self.answer_in_tabs(|policy| {
-            let outcome = not_opened(policy, asked, title, why, details);
+            let outcome = not_opened(policy, asked, title, why, said, details);
             policy.failed_at(tab, asked, outcome);
         });
     }

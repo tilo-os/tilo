@@ -55,9 +55,10 @@ view hung_card(w: device.Window) {
     }
 }
 
-/// The card a window shows where its app left: what happened, why, and the two answers — ask for
-/// the app again in this same place, or dismiss what it says. Reopen keeps the tab, so the window
-/// that comes back lands where this one stood.
+/// The card a window shows where its app left: what happened, why, what the app itself said of it,
+/// quoted, and the two answers — ask for the app again in this same place, or dismiss what it says.
+/// Everything the launch printed waits behind Details. Reopen keeps the tab, so the window that
+/// comes back lands where this one stood.
 view crashed_card(w: device.Window) {
     if let e = w.ended {
         row(fill, align: .center, distribute: .center, padding: .group) {
@@ -67,6 +68,14 @@ view crashed_card(w: device.Window) {
                     ui.Text(e.what, role: .title)
                     if e.why != "" {
                         ui.Text(e.why, secondary: true)
+                    }
+                    if e.said != "" {
+                        ui.Quote(e.said)
+                    }
+                    if e.details != "" {
+                        ui.DisclosureRow("Details") {
+                            ui.Text(e.details, role: .caption, secondary: true)
+                        }
                     }
                     row(gap: .tight, align: .center, wrap: true) {
                         if let label = e.retry {

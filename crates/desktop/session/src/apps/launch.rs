@@ -132,8 +132,8 @@ impl Apps {
 
     /// The apps that ended since the last pass: one whose window came leaves it behind and is
     /// gone; one that crashed gets a notice in the place it had, offering it again; and one that
-    /// ended before any window of it appeared could not open, and says so with the app's own
-    /// reason.
+    /// ended before any window of it appeared could not open, and says so with a designed
+    /// sentence and what the app itself said under it.
     pub(super) fn follow_ended(&self) {
         self.mark_placed();
         let ended = self.state.borrow().spawner.events();
@@ -161,13 +161,17 @@ impl Apps {
             let could_not_open = launch
                 .as_ref()
                 .is_some_and(|launch| launch.got == Got::Arriving);
-            // The reason is the app's own last word when it said one: "it closed before its
-            // window came" names no cause the person or an agent can act on.
-            let why = why_not_opened(&event, could_not_open);
+            // The card leads with a designed sentence; what the app itself said goes under it,
+            // in its own words, where a person can read them.
+            let (why, said, printed) = not_opened_card(&event, could_not_open);
             self.end_launch(
                 event.id,
                 if could_not_open {
-                    Got::CouldNotOpen { why: why.clone() }
+                    // What the app said, where it said anything, is what an agent asking after
+                    // this launch reads; the card's own sentence is for the person.
+                    Got::CouldNotOpen {
+                        why: said.clone().unwrap_or_else(|| why.clone()),
+                    }
                 } else {
                     Got::Closed
                 },
@@ -201,66 +205,79 @@ impl Apps {
                 tracing::warn!(app = %event.app, end = %event.end, "an app stopped");
             }
             log_what_it_said(&event);
-            // Reopen asks for the app the way it was asked for this time: a host app by its desktop
-            // id, a Tilo app by its package id.
-            let asked = launch
-                .as_ref()
-                .map_or_else(|| event.app.clone(), |launch| launch.asked.clone());
-            // A Windows program is asked by its entry in the manager's list, an identifier no
-            // person reads; one that never showed a window never had a place on the shell.
-            let windows_program = crate::windows_compat::asked_entry(&asked).is_some();
-            if launch.is_none() {
-                tracing::warn!(app = %event.app, "a stopped app this session did not start");
-            }
-            // An app the session closed for memory did not stop working: the notice says which it
-            // was, so the person does not read a closing they caused as a crash.
-            let closed = match event.end.memory() {
-                Some(Cause::Kernel) => Closed::Memory,
-                Some(Cause::Runaway) => Closed::Runaway,
-                None => Closed::Crashed,
-            };
-            if let Some(desktop) = self.desktop.borrow().clone() {
-                // The tab the window was asked for says the launch could not open, rather than
-                // waiting on a window that is not coming.
-                let held = launch.as_ref().and_then(|launch| launch.instance);
-                // The card says the reason the launch gave; what it printed besides that reason
-                // is its Details.
-                let details = details_not_opened(&event, could_not_open);
-                if let Some(tab) = held.filter(|_| could_not_open) {
-                    self.could_not_open_saying(
-                        Some(tab),
-                        &asked,
-                        Some(&event.title),
-                        &why,
-                        &details,
-                    );
-                    continue;
-                }
-                // A Windows program with no window that ends at once never showed: the manager
-                // that started it says what became of it, and a tab for something that never
-                // showed is noise in the place the person is not looking.
-                if could_not_open && windows_program {
-                    tracing::info!(app = %event.app, "a Windows program that never showed a window leaves no tab");
-                    continue;
-                }
-                let notice = desktop.with_policy(|policy| {
-                    if could_not_open {
-                        let answer = not_opened(policy, &asked, Some(&event.title), &why, &details);
-                        policy.not_opened(&asked, &event.title, answer)
-                    } else {
-                        // In the tab its last window was in, where the person left it.
-                        let tab = launch.as_ref().and_then(|launch| launch.tab);
-                        policy.stopped(&asked, &event.title, closed, tab)
-                    }
-                });
-                if let Err(error) = notice {
-                    tracing::warn!(%error, app = %event.app, "no notice for the app");
-                }
-                // The notice is a shell command like any other: the shell carries it out, and lays
-                // its tab out, on its next pass.
-                desktop.ask();
-            }
+            self.tell_ended(
+                &event,
+                launch.as_ref(),
+                could_not_open,
+                &why,
+                said.as_deref(),
+                &printed,
+            );
         }
+    }
+
+    /// Tell the person `event` ended: the tab its window was asked for says it could not open,
+    /// with `why`, `said` what the app itself said and `printed` everything the launch printed; or
+    /// the place its last window had says it stopped working. A launch no tab held is answered by
+    /// whoever asked for it.
+    fn tell_ended(
+        &self,
+        event: &Event,
+        launch: Option<&Launching>,
+        could_not_open: bool,
+        why: &str,
+        said: Option<&str>,
+        printed: &str,
+    ) {
+        // Reopen asks for the app the way it was asked for this time: a host app by its desktop
+        // id, a Tilo app by its package id.
+        let asked = launch.map_or_else(|| event.app.clone(), |launch| launch.asked.clone());
+        // A Windows program is asked by its entry in the manager's list, an identifier no person
+        // reads; one that never showed a window never had a place on the shell.
+        let windows_program = crate::windows_compat::asked_entry(&asked).is_some();
+        if launch.is_none() {
+            tracing::warn!(app = %event.app, "a stopped app this session did not start");
+        }
+        // An app the session closed for memory did not stop working: the notice says which it
+        // was, so the person does not read a closing they caused as a crash.
+        let closed = match event.end.memory() {
+            Some(Cause::Kernel) => Closed::Memory,
+            Some(Cause::Runaway) => Closed::Runaway,
+            None => Closed::Crashed,
+        };
+        let Some(desktop) = self.desktop.borrow().clone() else {
+            return;
+        };
+        // The tab the window was asked for says the launch could not open, rather than waiting on
+        // a window that is not coming.
+        let held = launch.and_then(|launch| launch.instance);
+        if let Some(tab) = held.filter(|_| could_not_open) {
+            self.could_not_open_saying(Some(tab), &asked, Some(&event.title), why, said, printed);
+            return;
+        }
+        // A Windows program with no window that ends at once never showed: the manager that
+        // started it says what became of it, and a tab for something that never showed is noise
+        // in the place the person is not looking.
+        if could_not_open && windows_program {
+            tracing::info!(app = %event.app, "a Windows program that never showed a window leaves no tab");
+            return;
+        }
+        let notice = desktop.with_policy(|policy| {
+            if could_not_open {
+                let answer = not_opened(policy, &asked, Some(&event.title), why, said, printed);
+                policy.not_opened(&asked, &event.title, answer)
+            } else {
+                // In the tab its last window was in, where the person left it.
+                let tab = launch.and_then(|launch| launch.tab);
+                policy.stopped(&asked, &event.title, closed, tab)
+            }
+        });
+        if let Err(error) = notice {
+            tracing::warn!(%error, app = %event.app, "no notice for the app");
+        }
+        // The notice is a shell command like any other: the shell carries it out, and lays its tab
+        // out, on its next pass.
+        desktop.ask();
     }
 
     /// Read the windows the desktop gave a place since the last pass: a window whose process
@@ -391,28 +408,69 @@ fn details_said(event: &Event) -> String {
         .join("\n")
 }
 
-/// What the app itself said last, when `event` ended before its window came: the last of its
-/// stderr lines that is not the launcher's own account of the launch. "tilo-launcher: … ended:
-/// exit status: 1" is no reason the app gave, and tells a person nothing to act on.
-fn app_said(event: &Event, could_not_open: bool) -> Option<&str> {
+/// What a launch's answer is made of: the designed sentence the card leads with, what the app
+/// itself said, quoted under it, and every line the launch printed, behind Details.
+fn not_opened_card(event: &Event, could_not_open: bool) -> (String, Option<String>, String) {
+    (
+        why_not_opened(event, could_not_open),
+        what_it_said(event, could_not_open),
+        details_said(event),
+    )
+}
+
+/// What the app itself said, in the one line that tells a person most, when `event` ended before
+/// its window came: a panic's message, else the last of its stderr lines that is not the
+/// launcher's own account of the launch. "tilo-launcher: … ended: exit status: 1" is no reason
+/// the app gave, and tells a person nothing to act on.
+fn what_it_said(event: &Event, could_not_open: bool) -> Option<String> {
     if !could_not_open {
         return None;
     }
-    event
-        .said
-        .stderr
-        .iter()
-        .rev()
-        .find(|line| !line.starts_with(launcher::SAYS))
-        .map(String::as_str)
+    telling_line(&event.said.stderr)
 }
 
-/// The reason the app whose launch `event` ended gives the person: its own last word when it said
-/// one and never opened, else the cause the launcher named by its exit, when it is one it knows,
-/// else the shell's account that its window did not come.
+/// The line of an app's stderr that best tells why it could not come: the message of the panic
+/// that ended it (`thread 'main' panicked at src/main.rs:12:5:` says nothing a person can act on;
+/// the line after it does), else its last line that is not the launcher's own or a note the
+/// toolchain printed for whoever debugs it.
+fn telling_line(stderr: &[String]) -> Option<String> {
+    let mut lines: Vec<&str> = stderr
+        .iter()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty() && !line.starts_with(launcher::SAYS))
+        .collect();
+    if lines.iter().any(|line| line.contains("panicked at")) {
+        // The notes Rust prints for whoever debugs a panic are no cause the app gave.
+        lines.retain(|line| !line.starts_with("note:"));
+    }
+    if let Some(at) = lines.iter().rposition(|line| line.contains("panicked at")) {
+        let line = *lines.get(at)?;
+        // Rust keeps the message on the line after "panicked at …:", and older versions keep it
+        // in quotes on the same line.
+        if let Some((message, close)) = line
+            .split_once("panicked at ")
+            .map(|(_, rest)| rest)
+            .and_then(|rest| {
+                rest.strip_prefix('\'')
+                    .map(|message| (message, '\''))
+                    .or_else(|| rest.strip_prefix('`').map(|message| (message, '`')))
+            })
+            && let Some(end) = message.find(close)
+        {
+            return message.get(..end).map(str::to_owned);
+        }
+        let next = at.checked_add(1).and_then(|next| lines.get(next));
+        return next.map(|message| (*message).to_owned());
+    }
+    lines.last().map(|line| (*line).to_owned())
+}
+
+/// The sentence the app whose launch `event` ended leads the person with: the cause the launcher
+/// named by its exit, when it is one it knows, else the shell's account that its window did not
+/// come. What the app printed stays out of it: [`what_it_said`] shows that as a quote.
 fn why_not_opened(event: &Event, could_not_open: bool) -> String {
-    if let Some(said) = app_said(event, could_not_open) {
-        return said.to_owned();
+    if !could_not_open {
+        return tilo_session_core::desktop::i18n::t("answer-why-not-opened");
     }
     let key = match event.end {
         tilo_app_launch::End::Exited {
@@ -424,12 +482,64 @@ fn why_not_opened(event: &Event, could_not_open: bool) -> String {
     tilo_session_core::desktop::i18n::t(key)
 }
 
-/// The Details of the launch `event` that could not open, when the card's reason is the shell's
-/// own account: what the launch said, line for line. An app that said why it could not come has
-/// said the reason itself, and the card says that; nothing further is kept behind Details.
-fn details_not_opened(event: &Event, could_not_open: bool) -> String {
-    if app_said(event, could_not_open).is_some() {
-        return String::new();
+#[cfg(test)]
+mod tests {
+    use super::telling_line;
+
+    fn lines(text: &str) -> Vec<String> {
+        text.lines().map(str::to_owned).collect()
     }
-    details_said(event)
+
+    /// A panic says where it happened in one line that helps nobody, and what went wrong in the
+    /// next: the card quotes the second, never the address or the backtrace note.
+    #[test]
+    fn a_panics_message_is_what_the_app_said() {
+        let said = telling_line(&lines(
+            "thread 'main' panicked at apps/notes/src/main.rs:12:5:\n\
+             called `Option::unwrap()` on a `None` value\n\
+             note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\
+             tilo-launcher: so.tilo.notes ended: exit status: 101",
+        ));
+        assert_eq!(
+            said.as_deref(),
+            Some("called `Option::unwrap()` on a `None` value")
+        );
+    }
+
+    /// An older Rust keeps the message on the panic line, in quotes.
+    #[test]
+    fn an_older_panics_message_is_read_from_its_quotes() {
+        let said = telling_line(&lines(
+            "thread 'main' panicked at 'called `Result::unwrap()` on an `Err` value: NoSpace', src/main.rs:30:9\n\
+             note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace",
+        ));
+        assert_eq!(
+            said.as_deref(),
+            Some("called `Result::unwrap()` on an `Err` value: NoSpace")
+        );
+    }
+
+    /// An app that says why in words, and then a launcher that says the process ended, is quoted
+    /// by its own words alone.
+    #[test]
+    fn an_apps_last_words_are_quoted_without_the_launchers() {
+        let said = telling_line(&lines(
+            "the API failed error=the database went away (os error 88)\n\
+             tilo-launcher: so.tilo.photos ended: exit status: 1",
+        ));
+        assert_eq!(
+            said.as_deref(),
+            Some("the API failed error=the database went away (os error 88)")
+        );
+    }
+
+    /// Nothing the app said, only the launcher's own account: there is no quote to show.
+    #[test]
+    fn a_launcher_alone_says_nothing_of_the_app() {
+        assert_eq!(
+            telling_line(&lines("tilo-launcher: so.tilo.notes ended: exit status: 1")),
+            None
+        );
+        assert_eq!(telling_line(&[]), None);
+    }
 }

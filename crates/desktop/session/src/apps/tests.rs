@@ -329,6 +329,20 @@ fn details(desktop: &ShellDesktop) -> Vec<String> {
     })
 }
 
+/// What the cards on the desktop say of why the app did not come, as the shell draws them: the
+/// shell's own sentence, and what the app itself said, which the card quotes under it.
+fn described(desktop: &ShellDesktop) -> Vec<String> {
+    desktop.pass();
+    desktop.with_policy(|policy| {
+        policy
+            .said_in_tabs()
+            .into_iter()
+            .flat_map(|(_, said)| [said.why, said.said])
+            .filter(|text| !text.is_empty())
+            .collect()
+    })
+}
+
 /// An app that ended without ever showing a window never opened, however long it ran first
 /// (Chat joined its workspace's record and went, on the e2e-ws-branch box) and however it
 /// ended: the person is told it could not open, with what it said, though no tab waited.
@@ -346,6 +360,18 @@ fn an_app_that_ends_without_ever_showing_a_window_could_not_open() {
         assert!(
             shown.iter().any(|text| text.contains("could not open")),
             "{n}: the person is told Canvas could not open: {shown:?}"
+        );
+
+        let said = described(&desktop);
+        assert!(
+            said.iter()
+                .any(|word| word.contains("It stopped before its window appeared.")),
+            "{n}: the card says in the shell's words why the window did not come: {said:?}"
+        );
+        assert!(
+            said.iter()
+                .any(|word| *word == "the display refused this app"),
+            "{n}: with what Canvas said, quoted under it: {said:?}"
         );
         // What the app printed waits behind the card's Details, kept in the app's own words for
         // whoever opens them.
@@ -379,15 +405,20 @@ fn a_launchers_account_of_a_failed_launch_is_not_its_reason() {
     );
     apps.follow_ended();
     let shown = texts(&desktop);
+    let said = described(&desktop);
     assert!(
-        shown
-            .iter()
-            .any(|text| text.contains("the display refused this app")),
-        "the app's own reason is what the card says: {shown:?}"
+        said.iter()
+            .any(|word| word.contains("It stopped before its window appeared.")),
+        "the card leads with the shell's words: {said:?}"
+    );
+    assert!(
+        said.iter()
+            .any(|word| *word == "the display refused this app"),
+        "with the app's own reason quoted under it: {said:?}"
     );
     assert!(
         !shown.iter().any(|text| text.contains("tilo-launcher:")),
-        "the launcher's account is never the reason: {shown:?}"
+        "the launcher's account is never what the card says: {shown:?}"
     );
 }
 

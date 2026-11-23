@@ -1773,6 +1773,7 @@ d-tbvykixf = Abgestürzte Karte
     .w-app-ended = App beendet
     .w-reopen = Wieder öffnen
     .w-dismiss = Verwerfen
+    .w-details = Details
 
 d-agpwsfhm = Telefon
     .w-sign-in-to-tilo = Bei Tilo anmelden

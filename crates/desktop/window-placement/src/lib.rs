@@ -779,6 +779,7 @@ impl DesktopPolicy {
             Some(tilo_session_core::desktop::state::EndedAnswer {
                 what: answer.what.clone(),
                 why: answer.why.clone(),
+                said: answer.said.clone(),
                 retry: answer.retry.clone(),
                 details: answer.technical_details.clone(),
             }),
