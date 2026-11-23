@@ -16,12 +16,13 @@ use std::sync::{Arc, Mutex};
 use connectivity::model::{Bluetooth, Network, Vpn};
 use power::{Battery, Sleep};
 use serde::Deserialize;
+use tilo_system_resources::model::{Power, PowerMode};
 use tilo_system_resources::update::Update;
 use ui::serde_json;
 
 use crate::PowerProfile;
 use crate::session::{
-    BATTERY, BLUETOOTH, CLIPBOARD, DEVICES, DISPLAYS, NETWORK, NIGHT_LIGHT, NOTIFICATIONS,
+    BATTERY, BLUETOOTH, CLIPBOARD, DEVICES, DISPLAYS, NETWORK, NIGHT_LIGHT, NOTIFICATIONS, POWER,
     QUICK_SETTINGS, SLEEP, SOUND, SYSTEM_UPDATE, VPN,
 };
 use crate::state::QuickSettingsState;
@@ -142,6 +143,7 @@ pub(crate) fn land(readings: &Readings, resource: &str, text: &str) -> bool {
         }),
         BATTERY => parse::<Battery>(readings, resource, text, land_battery),
         SLEEP => parse::<Sleep>(readings, resource, text, land_sleep),
+        POWER => parse::<Power>(readings, resource, text, land_power),
         SYSTEM_UPDATE => parse::<Update>(readings, resource, text, |state, update| {
             state.firmware_updates = update.firmware;
         }),
@@ -249,16 +251,37 @@ fn land_battery(state: &mut QuickSettingsState, battery: &Battery) {
     });
 }
 
-/// What holds the machine awake, and the power profiles it offers.
+/// What holds the machine awake.
 fn land_sleep(state: &mut QuickSettingsState, sleep: &Sleep) {
     state.awake_holders.clone_from(&sleep.holds);
-    state.power_profiles = sleep
-        .profiles
-        .iter()
-        .filter_map(|it| profile_named(it))
-        .collect();
-    if let Some(profile) = sleep.profile.as_deref().and_then(profile_named) {
-        state.power_profile = profile;
+}
+
+/// The power modes this machine offers, the one in force, and any refusal from
+/// the last power change.
+fn land_power(state: &mut QuickSettingsState, power: &Power) {
+    state.power_profiles = power.modes.iter().copied().map(power_profile).collect();
+    if let Some(mode) = power.mode {
+        state.power_profile = power_profile(mode);
+    }
+    let finished = state.power_pending && power.pending.is_empty();
+    state.power_pending = !power.pending.is_empty();
+    let problem_changed = state.power_problem != power.problem;
+    if problem_changed || finished {
+        if let Some(problem) = &power.problem {
+            state.refusal = Some(problem.clone());
+        } else if problem_changed && state.refusal == state.power_problem {
+            state.refusal = None;
+        }
+        state.power_problem.clone_from(&power.problem);
+    }
+}
+
+/// The panel's profile variant for a published [`PowerMode`].
+const fn power_profile(mode: PowerMode) -> PowerProfile {
+    match mode {
+        PowerMode::Saver => PowerProfile::Saver,
+        PowerMode::Balanced => PowerProfile::Balanced,
+        PowerMode::Performance => PowerProfile::Performance,
     }
 }
 
@@ -313,17 +336,6 @@ fn land_devices(state: &mut QuickSettingsState, reading: &crate::hosted::Devices
     state.personal_devices = Some(reading.count());
     state.handoff_targets = Some(reading.targets());
     state.offer.clone_from(&reading.offer);
-}
-
-/// The power profile `name` is, as the daemon words it; `None` for a name
-/// this panel does not know.
-fn profile_named(name: &str) -> Option<PowerProfile> {
-    match name.trim().to_ascii_lowercase().as_str() {
-        "power-saver" | "saver" => Some(PowerProfile::Saver),
-        "balanced" | "balance" => Some(PowerProfile::Balanced),
-        "performance" => Some(PowerProfile::Performance),
-        _ => None,
-    }
 }
 
 /// The displays, as the session publishes them: enough of each to show its
@@ -424,7 +436,7 @@ mod tests {
     }
 
     #[test]
-    fn a_published_sleep_reading_lands_its_holds_and_profiles() {
+    fn a_published_sleep_reading_lands_its_holds() {
         let _settings = isolated_settings(serde_json::Map::new());
         let readings = Readings::new(QuickSettingsState::unread());
         let sleep = Sleep {
@@ -436,17 +448,57 @@ mod tests {
             power_key: PowerAction::Suspend,
             held_awake: true,
             holds: vec!["Video Player".into()],
-            profile: Some("power-saver".into()),
-            profiles: vec![
-                "power-saver".into(),
-                "balanced".into(),
-                "performance".into(),
-            ],
+            profile: None,
+            profiles: Vec::new(),
         };
-        assert!(land(&readings, SLEEP, &published(&sleep)));
+        let wire = tilo_service::reading(&sleep);
+        assert_eq!(wire.get("profile"), None, "{wire}");
+        assert_eq!(wire.get("profiles"), None, "{wire}");
+        assert!(land(&readings, SLEEP, &wire.to_string()));
         readings.read(|state| {
             assert_eq!(state.awake_holders, ["Video Player"]);
+            assert!(state.power_profiles.is_empty());
+        });
+    }
+
+    #[test]
+    fn a_published_power_reading_lands_its_mode_modes_and_problem() {
+        use tilo_system_resources::model::{Power, PowerMode};
+
+        let _settings = isolated_settings(serde_json::Map::new());
+        assert!(
+            crate::session::WATCHED.contains(&crate::session::POWER),
+            "Quick Settings watches the system service's power resource"
+        );
+        let readings = Readings::new(QuickSettingsState::unread());
+        let initial = Power {
+            modes: vec![PowerMode::Saver, PowerMode::Balanced],
+            mode: Some(PowerMode::Saver),
+            ..Power::default()
+        };
+        assert!(land(&readings, POWER, &published(&initial)));
+        readings.read(|state| {
             assert_eq!(state.power_profile, PowerProfile::Saver);
+            assert_eq!(
+                state.power_profiles,
+                [PowerProfile::Saver, PowerProfile::Balanced]
+            );
+            assert_eq!(state.refusal, None);
+        });
+
+        let failed = Power {
+            modes: vec![
+                PowerMode::Saver,
+                PowerMode::Balanced,
+                PowerMode::Performance,
+            ],
+            mode: Some(PowerMode::Performance),
+            problem: Some("power-profiles-daemon refused performance".into()),
+            ..Power::default()
+        };
+        assert!(land(&readings, POWER, &published(&failed)));
+        readings.read(|state| {
+            assert_eq!(state.power_profile, PowerProfile::Performance);
             assert_eq!(
                 state.power_profiles,
                 [
@@ -455,7 +507,45 @@ mod tests {
                     PowerProfile::Performance,
                 ]
             );
+            assert_eq!(
+                state.refusal.as_deref(),
+                Some("power-profiles-daemon refused performance")
+            );
         });
+
+        // Dismissing keeps the banner away while the same stale problem stays on later readings.
+        readings.update(|state| state.refusal = None);
+        let external_change = Power {
+            mode: Some(PowerMode::Balanced),
+            ..failed
+        };
+        assert!(land(&readings, POWER, &published(&external_change)));
+        readings.read(|state| {
+            assert_eq!(state.power_profile, PowerProfile::Balanced);
+            assert_eq!(state.refusal, None);
+        });
+
+        // A new attempt that runs and fails with the same message surfaces again.
+        let pending = Power {
+            pending: vec!["set-power-mode".into()],
+            ..external_change.clone()
+        };
+        assert!(land(&readings, POWER, &published(&pending)));
+        assert!(land(&readings, POWER, &published(&external_change)));
+        readings.read(|state| {
+            assert_eq!(
+                state.refusal.as_deref(),
+                Some("power-profiles-daemon refused performance")
+            );
+        });
+
+        // A subsequent success clears the refusal it put up.
+        let recovered = Power {
+            problem: None,
+            ..external_change
+        };
+        assert!(land(&readings, POWER, &published(&recovered)));
+        readings.read(|state| assert_eq!(state.refusal, None));
     }
 
     #[test]
