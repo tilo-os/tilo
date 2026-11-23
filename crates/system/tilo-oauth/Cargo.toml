@@ -34,7 +34,6 @@ fake = ["dep:test-http"]
 
 [dev-dependencies]
 test-http = { path = "../../dev/test-http" }
-hex.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
