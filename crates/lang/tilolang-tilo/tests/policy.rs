@@ -66,11 +66,7 @@ fn an_agent_the_person_denied_the_app_is_denied() {
     let (ada, packages) = Replica::access(
         "ada",
         Workspace::new(),
-        &[
-            crate::fixtures::AGENT,
-            (DISCUSSION, DISCUSSION_IDS),
-            (TODO, TODO_IDS),
-        ],
+        &[(DISCUSSION, DISCUSSION_IDS), (TODO, TODO_IDS)],
         Some(access(vec![answer])),
     );
     let meta = &packages.last().unwrap().meta;
@@ -115,7 +111,7 @@ tilo_test_env::scenario! {
         let (ada, _) = Replica::access(
             "ada",
             Workspace::new(),
-            &[crate::fixtures::AGENT, (DISCUSSION, DISCUSSION_IDS), (TODO, TODO_IDS)],
+            &[(DISCUSSION, DISCUSSION_IDS), (TODO, TODO_IDS)],
             Some(access(Vec::new())),
         );
         ada.host.root_of(APP).unwrap();

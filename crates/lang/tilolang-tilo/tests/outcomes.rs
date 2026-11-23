@@ -22,11 +22,7 @@ fn workspace() -> (Replica, Replica, Meta, ResourceRef) {
     let (ada, packages) = Replica::new(
         "ada",
         Workspace::new(),
-        &[
-            crate::fixtures::AGENT,
-            (DISCUSSION, DISCUSSION_IDS),
-            (TODO, TODO_IDS),
-        ],
+        &[(DISCUSSION, DISCUSSION_IDS), (TODO, TODO_IDS)],
     );
     let meta = packages.last().unwrap().meta.clone();
     let root = ada.host.root_of(APP).unwrap();
@@ -48,14 +44,7 @@ fn workspace() -> (Replica, Replica, Meta, ResourceRef) {
         },
         other => panic!("no items: {other:?}"),
     };
-    let grace = ada.fork(
-        "grace",
-        &[
-            crate::fixtures::AGENT,
-            (DISCUSSION, DISCUSSION_IDS),
-            (TODO, TODO_IDS),
-        ],
-    );
+    let grace = ada.fork("grace", &[(DISCUSSION, DISCUSSION_IDS), (TODO, TODO_IDS)]);
     (ada, grace, meta, first)
 }
 
