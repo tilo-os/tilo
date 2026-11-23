@@ -479,6 +479,14 @@ There are seven ways to add a device:
   root certifies is an entry there: a device, an agent's grant key or a
   script's key, each revoked the same way. The list says who a key is; each
   workspace's grants say what it may do.
+- **One way to admit a member**: `workspace/members#admit`, on the one
+  dispatch. An invitation's redemption, a crowd join and a member adding
+  someone all call it. An invitation's bearer calls with the issuer's grant,
+  checked when it is used. One call is one change: the governance entry,
+  the spent invitation and the member's record together, or nothing.
+- **One way to create a person**: one action on the device's daemon makes
+  the root and founds the person's own workspace. First-run onboarding and
+  the CLI both call it.
 - **One way to add a device**: a ticket. `tilo device add` issues one and
   `tilo login <ticket>` uses it; the root certifies the new device. There are
   no tokens, codes or a join to wait on.
