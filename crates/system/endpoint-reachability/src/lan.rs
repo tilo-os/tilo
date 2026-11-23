@@ -418,11 +418,12 @@ fn clock_epoch() -> Option<u32> {
 
 #[cfg(target_os = "linux")]
 fn clock_synchronised() -> bool {
-    // SAFETY: `timex` is plain old data; with `modes` zero `ntp_adjtime`
-    // only reads the kernel's clock state into it.
+    // SAFETY: `timex` is plain old data; with `modes` zero `adjtimex` only
+    // reads the kernel's clock state into it. musl, which the released CLI
+    // links, has `adjtimex` but no `ntp_adjtime`; glibc has both.
     let state = unsafe {
         let mut timex: libc::timex = std::mem::zeroed();
-        libc::ntp_adjtime(&raw mut timex)
+        libc::adjtimex(&raw mut timex)
     };
     state >= 0 && state != libc::TIME_ERROR
 }
