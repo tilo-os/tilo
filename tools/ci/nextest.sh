@@ -71,6 +71,8 @@ fi
 arguments=("$@")
 # What follows `--` goes to the test binaries (`cargo test -p NAME -- FILTER`): every option this
 # wrapper adds goes before it.
+# Arrays that may be empty are expanded as ${a[@]+"${a[@]}"}: macOS's bash 3.2 takes an empty
+# array for an unset one under `set -u`, and "${a[@]}" then stops the script.
 tail=()
 for (( index = 0; index < ${#arguments[@]}; index++ )); do
     if [[ ${arguments[index]} == -- ]]; then
@@ -119,7 +121,7 @@ unify=()
 if (( nextest )) && [[ " $* " == *" -p "* || " $* " == *" --package "* ]]; then
     # Not as --features: `tilo-media/decode` there also turns on the optional tilo-media of every
     # package selected beside it.
-    arguments+=("${unify[@]}")
+    arguments+=(${unify[@]+"${unify[@]}"})
 fi
 
 # The programs the tests of these packages start, handed by t (tools/ci/handed.sh) or, for a
@@ -267,7 +269,7 @@ done
 environment=()
 (( nextest || ! runs_tests )) || environment=(bash "$root/tools/test-env.sh")
 if (( ! timed )); then
-    exec "${environment[@]}" "${arguments[@]}" "${tail[@]}"
+    exec ${environment[@]+"${environment[@]}"} "${arguments[@]}" ${tail[@]+"${tail[@]}"}
 fi
 # nextest's output and libtest's JSON events stay the log's own, as they were
 # written: the events pass through unchanged, and the times
@@ -278,7 +280,7 @@ fi
 format=(--message-format json-pretty)
 [[ " $* " == *" --message-format "* || " $* " == *" --message-format="* ]] && format=()
 status=0
-"${arguments[@]}" "${format[@]}" "${tail[@]}" 2>&1 \
+"${arguments[@]}" ${format[@]+"${format[@]}"} ${tail[@]+"${tail[@]}"} 2>&1 \
     | python3 -u "$root/tools/ci/ci_test_timings.py" record --json "$timings" || status=$?
 # The run's own verdict, not the recording's.
 exit "$status"
