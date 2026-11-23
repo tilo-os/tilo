@@ -12,7 +12,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use super::workspace_invocations::{CANCEL, GET, PROVIDER};
+use super::workspace_invocations::{CANCEL, GET, PROVIDER, RETRY};
 use super::{
     ActionCallError, ActionProvider, Caller, InvocationReceipt, InvocationState, InvokeRequest,
     Pending, ReceiptStatus,
@@ -132,8 +132,8 @@ impl Invocations {
     }
 
     /// The answer to `request` when it asks one of [`PROVIDER`]'s invocations how it stands
-    /// ([`GET`]) or to stop ([`CANCEL`]): the invocation is the resource, by its id. `None` for
-    /// any other request.
+    /// ([`GET`]), to stop ([`CANCEL`]) or to run again ([`RETRY`]): the invocation is the
+    /// resource, by its id. `None` for any other request.
     #[must_use]
     pub fn answer(
         &self,
@@ -141,7 +141,9 @@ impl Invocations {
         request: &InvokeRequest,
     ) -> Option<Pending<Result<InvocationReceipt, ActionCallError>>> {
         let target = &request.target;
-        if target.provider != PROVIDER || ![GET, CANCEL].contains(&target.address.action.as_str()) {
+        if target.provider != PROVIDER
+            || ![GET, CANCEL, RETRY].contains(&target.address.action.as_str())
+        {
             return None;
         }
         let invocation = request.invocation;
@@ -163,6 +165,9 @@ impl Invocations {
                 })
             }));
         }
+        if target.address.action == RETRY {
+            return Some(self.retry(caller, &id, invocation));
+        }
         let state = self.observe(caller, &id);
         let recorded = self.get(caller, &id)?;
         let value = serde_json::json!({
@@ -180,6 +185,50 @@ impl Invocations {
                 ..crate::ActionOutput::default()
             },
         })))
+    }
+
+    /// Run `id` again: its request, under a new id, as the caller that asked for it, at the
+    /// provider it ran at. The new invocation is recorded like the first, and the receipt (as
+    /// `asked`, the invocation that asked for the run) names it, so the one who retried follows
+    /// it. A request its caller signed on another device binds its first id, and is not signed
+    /// again here: the caller asks for it again from there.
+    fn retry(
+        &self,
+        caller: &Caller,
+        id: &InvocationId,
+        asked: InvocationId,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let Some(recorded) = self.get(caller, id) else {
+            return Pending::ready(Err(ActionCallError::UnknownInvocation));
+        };
+        if recorded.request.signed.is_some() {
+            return Pending::ready(Err(ActionCallError::Refused {
+                reason: "it was asked for from another device: run it again from there".to_owned(),
+            }));
+        }
+        let (provider, runs_as) = recorded.route.clone();
+        let again = InvokeRequest {
+            invocation: InvocationId::new(),
+            ..recorded.request.clone()
+        };
+        let new = again.invocation;
+        self.record(
+            &recorded.caller,
+            &again,
+            recorded.workspace.as_deref(),
+            (Arc::clone(&provider), runs_as.clone()),
+        );
+        provider.invoke(&runs_as, again).map(move |admitted| {
+            admitted.map(|_| InvocationReceipt {
+                invocation: asked,
+                status: ReceiptStatus::Completed {
+                    output: crate::ActionOutput {
+                        value: Some(serde_json::json!({ "invocation": new.0.to_string() })),
+                        ..crate::ActionOutput::default()
+                    },
+                },
+            })
+        })
     }
 
     /// Stop `id` at the provider it runs at.

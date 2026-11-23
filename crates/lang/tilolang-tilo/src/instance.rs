@@ -377,6 +377,8 @@ pub struct Instance {
     calls: HashMap<String, Vec<crate::runtime::CallMember>>,
     /// The steps the person took in the system's calls, in order, not yet taken by the host.
     call_steps: Vec<(ResourceRef, crate::runtime::CallStep)>,
+    /// The tilolang lines the person ran from a view, in order, not yet taken by the host.
+    line_runs: Vec<(ResourceRef, String)>,
     /// The person's environment moved: their language, their formats, or what the member list
     /// calls someone. What a view shows of any of them is shown again, and what it sent is sent again.
     person_changed: bool,
@@ -509,6 +511,7 @@ impl Instance {
             lenses_changed: false,
             calls: HashMap::new(),
             call_steps: Vec::new(),
+            line_runs: Vec::new(),
             person_changed: false,
             open_requests: Rc::default(),
             place_opens: false,
@@ -869,6 +872,36 @@ impl Instance {
     /// the call service.
     pub fn take_call_steps(&mut self) -> Vec<(ResourceRef, crate::runtime::CallStep)> {
         std::mem::take(&mut self.call_steps)
+    }
+
+    /// The tilolang lines the person ran from a view since the host last took them, each with the
+    /// resource it was run from: the host runs each through the session's program host.
+    pub fn take_line_runs(&mut self) -> Vec<(ResourceRef, String)> {
+        std::mem::take(&mut self.line_runs)
+    }
+
+    /// The invocations the instance's views read (`invoked(id)`), by the id they read each by:
+    /// what the host reads the records of.
+    #[must_use]
+    pub fn invoked_read(&self) -> Vec<String> {
+        self.host()
+            .map(|host| host.runtime().invoked_read())
+            .unwrap_or_default()
+    }
+
+    /// How each invocation the views read stands, as the host read its record: `None` for one
+    /// whose record names nothing.
+    pub fn set_invoked(&mut self, id: &str, invoked: Option<&crate::runtime::Invoked>) {
+        if let Some(host) = self.host() {
+            host.runtime().set_invoked(id, invoked);
+        }
+    }
+
+    /// The lines the person ran from the resource whose own id is `place`, as they stand now.
+    pub fn set_lines(&mut self, place: &str, lines: &[crate::runtime::LineRun]) {
+        if let Some(host) = self.host() {
+            host.runtime().set_lines(place, lines);
+        }
     }
 
     /// Whether a view of the instance read who is in a call: its host follows the system's calls

@@ -286,6 +286,12 @@ imports! {
     // `join_call(r)` and its kin: the system's call held on `r` joined, left, or one of the
     // person's own switches in it (by name) turned on or off.
     ActCall = "act_call" ([H, H, I32] -> [H]);
+    // `invoked(id)`: the invocation the dispatch knows by `id`, as its record reads now.
+    Invoked = "invoked" ([H] -> [H]);
+    // `lines_run(r)`: the tilolang lines the person ran from this window in the conversation `r`.
+    LinesRun = "lines_run" ([H] -> [H]);
+    // `run_line(r, line)`: run `line` as the person's own step, from the conversation `r`.
+    ActRunLine = "act_run_line" ([H, H] -> [H]);
     Delivery = "delivery" ([H] -> [H]);
     WorkspaceMembers = "workspace_members" ([] -> [H]);
     Viewer = "viewer" ([] -> [H]);

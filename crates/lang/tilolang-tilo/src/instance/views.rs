@@ -650,6 +650,8 @@ impl Instance {
                 // it back while it says it.
                 // A step in a call is the system's call service's to carry out: the host takes it.
                 ViewEvent::Call { target, step } => self.call_steps.push((target, step)),
+                // A line the person ran is the session's program host's to run: the host takes it.
+                ViewEvent::RunLine { target, line } => self.line_runs.push((target, line)),
                 ViewEvent::Seen { count } => {
                     self.seen_offer = true;
                     self.out.push(ToUi::Notice {

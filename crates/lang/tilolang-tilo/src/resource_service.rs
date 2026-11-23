@@ -986,9 +986,14 @@ fn open_asked(payload: &[u8], resource: &str) -> Result<tilo_service::Open, Stri
     })
 }
 
+/// The pseudo-field of a reading of an item that names what holds it, as a link names what links
+/// to it (`{"ref": <published id>, "ty": "<app>#<Type>"}`): the conversation a message is in, the
+/// notebook a note is in. An item moved elsewhere reads as held where it is now.
+pub const HELD_IN: &str = "$in";
+
 /// The reading of the root or item `resource` (its published id, `tl:<app>:<id>`) that `host`
-/// reads: its fields as the runtime reads them, each by its field id, and what links to it. What a
-/// runtime that loads its package as another app's reads back
+/// reads: its fields as the runtime reads them, each by its field id, what holds it ([`HELD_IN`]),
+/// and what links to it. What a runtime that loads its package as another app's reads back
 /// ([`tilolang_runtime::Runtime::set_reading`]). `None` for a resource `host` holds none of.
 #[must_use]
 pub fn reading_of(host: &Host, resource: &str) -> Option<Json> {
@@ -1012,6 +1017,17 @@ pub fn reading_of(host: &Host, resource: &str) -> Option<Json> {
     // counts it as this app's own views do ([`tilolang_runtime::store::UNSEEN`]).
     if let Some(unseen) = runtime.unseen_reading(host.viewer(), &at) {
         fields.insert(tilolang_runtime::store::UNSEEN.to_owned(), unseen);
+    }
+    if let Ok(Some((holder, _))) = host.store().container(&at)
+        && let Some(schema) = crate::schema::lookup(&holder.ty)
+    {
+        fields.insert(
+            HELD_IN.to_owned(),
+            serde_json::json!({
+                "ref": resource_id(&schema.app, &holder.id_string()),
+                "ty": format!("{}#{}", schema.app, schema.name),
+            }),
+        );
     }
     // What links to it, each with how: a view composed elsewhere draws them as this app's
     // own views do ([`tilolang_runtime::store::LINKS`]), and runs again when they move.

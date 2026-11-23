@@ -14,7 +14,7 @@ use crate::error::RuntimeError;
 use crate::exec::{ExecCtx, InvokeOutcome};
 use crate::host_res::to_scalar;
 use crate::host_ui::{
-    CALL_ACTION, CHOOSE_ACTION, CHOOSE_FOLDER_ACTION, KEEP_ACTION, MARK_SEEN_ACTION, OPEN_ACTION, REVIEW_ACTION,
+    CALL_ACTION, RUN_LINE_ACTION, CHOOSE_ACTION, CHOOSE_FOLDER_ACTION, KEEP_ACTION, MARK_SEEN_ACTION, OPEN_ACTION, REVIEW_ACTION,
     SAVE_ACTION, SET_ACTION, SHORTCUT_ACTION, THEN_ACTION, UNDO_ACTION,
 };
 use crate::ids::{Actor, AppId, DocId, ModuleHash};
@@ -53,6 +53,9 @@ pub enum ViewEvent {
     /// A step of the person's own in the system's call held on `target` was pressed: the
     /// window's host carries it out through the call service.
     Call { target: ResourceRef, step: CallStep },
+    /// `run_line(r, line)` was pressed: the window's host runs `line` as the person's own step,
+    /// through the session's program host, and tells `lines_run(r)` what it answers.
+    RunLine { target: ResourceRef, line: String },
 }
 
 /// A step of the person's own in the system's call held on a resource.
@@ -864,6 +867,19 @@ impl ViewInstance {
                     target: ResourceRef::clone(&r.target),
                     step,
                 });
+                Ok(InvokeOutcome::Done(Value::Unit))
+            }
+            RUN_LINE_ACTION => {
+                let [Value::Ref(r), Value::Text(line)] = aref.args.as_slice() else {
+                    return Err(RuntimeError::BadArgs("a malformed line to run".into()));
+                };
+                // A line of nothing runs nothing.
+                if !line.trim().is_empty() {
+                    self.events.borrow_mut().push(ViewEvent::RunLine {
+                        target: ResourceRef::clone(&r.target),
+                        line: line.trim().to_owned(),
+                    });
+                }
                 Ok(InvokeOutcome::Done(Value::Unit))
             }
             _ => self.core.invoke_direct_in(&self.live.viewer, aref, gesture),

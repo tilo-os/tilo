@@ -15,7 +15,7 @@ use collaboration::{CollabEvent, CollabRequest};
 use tilolang_tilo::instance::Instance;
 use tilolang_tilo::runtime::platform::call_place;
 use tilolang_tilo::runtime::value::ResourceRef;
-use tilolang_tilo::runtime::{Actor, CallMember, CallStep};
+use tilolang_tilo::runtime::{Actor, Bridged, CallMember, CallStep};
 use ui::native_media::{Command, Issue, REPLY_LOST, Request, Snapshot, State, WATCH_LOST};
 use ui::permissions::MemberId;
 use ui::time::{Duration, Instant};
@@ -266,6 +266,21 @@ impl Calls {
                     deafened: has(&roster.deafened, person),
                     camera: has(&roster.cameras, person),
                     screen: has(&roster.screens, person),
+                    // Someone a bridge carries in from another service is shown by the name and
+                    // picture they have there, and marked as reached through it.
+                    bridged: roster
+                        .bridged
+                        .iter()
+                        .find(|bridged| bridged.person == **person)
+                        .map(|bridged| Bridged {
+                            service: bridged.service.clone(),
+                            name: bridged.name.clone(),
+                            avatar: bridged
+                                .avatar
+                                .as_deref()
+                                .map(|hash| format!("tilo-blob://{hash}"))
+                                .unwrap_or_default(),
+                        }),
                 });
             out.entry(roster.channel_id.clone())
                 .or_default()
@@ -291,6 +306,7 @@ impl Calls {
             deafened: snapshot.is_some_and(|s| s.deafened),
             camera: snapshot.is_some_and(|s| s.camera),
             screen: snapshot.is_some_and(|s| s.screen),
+            bridged: None,
         }
     }
 }

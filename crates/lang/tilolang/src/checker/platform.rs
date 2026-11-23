@@ -349,6 +349,87 @@ impl Checker<'_> {
         Ex::host(Imp::ActCall, vec![r, Ex::str(switch), on], Ty::Action)
     }
 
+    /// `invoked(id)`: the invocation the system's dispatch knows by `id` (the address a field
+    /// keeps, as a reply keeps the turn that wrote it), as its record reads now: `.none` until
+    /// the record is read, and for an id that names nothing. It is the dispatch's record, never
+    /// stored: a view that read it runs again as the invocation moves.
+    pub(super) fn builtin_invoked(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let [a] = args else {
+            self.err("E022", span, "`invoked` takes the id of one invocation: `invoked(m.turn)`");
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        };
+        if a.name.is_some() {
+            self.err(
+                "E022",
+                a.value.span,
+                "`invoked` takes the id by position: `invoked(m.turn)`",
+            );
+        }
+        let id = self.expr_as(&a.value, &Ty::Text);
+        Ex::host(
+            Imp::Invoked,
+            vec![id],
+            Ty::Option(Box::new(host_ty("Invoked"))),
+        )
+    }
+
+    /// `lines_run(r)`: the tilolang lines the person ran from this window in the conversation
+    /// `r` (`run_line`), oldest first, each with what it answered. They are this window's, never
+    /// stored: what a line changed is in the records it changed, credited to the person.
+    pub(super) fn builtin_lines_run(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let Some(r) = self.resource_arg("lines_run", args, span) else {
+            return Ex::error();
+        };
+        Ex::host(
+            Imp::LinesRun,
+            vec![r],
+            Ty::List(Box::new(host_ty("LineRun"))),
+        )
+    }
+
+    /// `run_line(r, line)`: run the tilolang `line` as the person's own step, through the
+    /// session's program host (`session:programs#run-line`), from the conversation `r`. Every call
+    /// it makes is the person's, decided where it lands; what it answers reads in `lines_run(r)`.
+    pub(super) fn builtin_run_line(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let [target, line] = args else {
+            self.err(
+                "E022",
+                span,
+                "`run_line` takes the conversation and the line: `run_line(c, line)`",
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        };
+        if args.iter().any(|a| a.name.is_some()) {
+            self.err(
+                "E022",
+                span,
+                "`run_line` takes its arguments by position: `run_line(c, line)`",
+            );
+        }
+        let r = self.expr(&target.value, None);
+        match &r.ty {
+            Ty::Record(_) => {}
+            Ty::Error => return Ex::error(),
+            other => {
+                let t = self.show(other);
+                self.err(
+                    "E020",
+                    target.value.span,
+                    format!("`run_line` runs a line from a resource, a value of a record type; this is {t}"),
+                );
+                return Ex::error();
+            }
+        }
+        let line = self.expr_as(&line.value, &Ty::Text);
+        Ex::host(Imp::ActRunLine, vec![r, line], Ty::Action)
+    }
+
     /// The collection `c` holds and the type of its items, which a fact about a conversation reads.
     fn conversation_of(&mut self, what: &str, c: &Ex, span: Span) -> Option<(String, TypeKey)> {
         let Ty::Record(key) = &c.ty else {

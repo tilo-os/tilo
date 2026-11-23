@@ -37,6 +37,49 @@ pub struct CallMember {
     pub deafened: bool,
     pub camera: bool,
     pub screen: bool,
+    /// Someone a bridge carries into the call from another service: which service, what it
+    /// calls them, and their picture there. `None` for someone in the call here.
+    pub bridged: Option<Bridged>,
+}
+
+/// Someone in a call from another service, as the bridge that carries them in says.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Bridged {
+    /// The service (`discord`).
+    pub service: String,
+    /// What that service calls them.
+    pub name: String,
+    /// The address of their picture there; empty for none.
+    pub avatar: String,
+}
+
+/// An invocation on the system's dispatch as its record reads now, as `invoked(id)` reads it
+/// (`host.Invoked`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Invoked {
+    /// The workspace its record is in, and its id there: what its record is addressed by.
+    pub workspace: String,
+    pub id: String,
+    /// `running`, `waiting`, `ended`, `failed`, `cancelled` or `undone`.
+    pub state: String,
+    pub action: String,
+    pub title: String,
+    pub summary: String,
+    pub failure: String,
+    /// The ids of the invocations it made, oldest first.
+    pub calls: Vec<String>,
+    pub provider: String,
+    pub model: String,
+    pub cost: f64,
+}
+
+/// A tilolang line the person ran from a window, as `lines_run(r)` reads it (`host.LineRun`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LineRun {
+    pub line: String,
+    pub running: bool,
+    pub said: String,
+    pub failed: bool,
 }
 
 /// What settling the outbox did.
@@ -1344,6 +1387,70 @@ impl Runtime {
                         Value::Bool(m.deafened),
                         Value::Bool(m.camera),
                         Value::Bool(m.screen),
+                        Value::Text(m.bridged.as_ref().map(|b| b.service.clone()).unwrap_or_default()),
+                        Value::Text(m.bridged.as_ref().map(|b| b.name.clone()).unwrap_or_default()),
+                        Value::Text(m.bridged.as_ref().map(|b| b.avatar.clone()).unwrap_or_default()),
+                    ])
+                })
+                .collect(),
+        );
+        let mut states = self.core.view_states.borrow_mut();
+        if states.get(&key) != Some(&value) {
+            states.set(key, value);
+        }
+    }
+
+    /// The invocations views read (`invoked(id)`), by the id they read them by: the host reads
+    /// each one's record, and again while it moves.
+    #[must_use]
+    pub fn invoked_read(&self) -> Vec<String> {
+        self.core.invoked_read.borrow().iter().cloned().collect()
+    }
+
+    /// How the invocation views read by `id` stands, as the host last read its record: what
+    /// `invoked(id)` reads. `None` for one whose record names nothing. A view that read it runs
+    /// again when it moves.
+    pub fn set_invoked(&self, id: &str, invoked: Option<&Invoked>) {
+        let key = crate::platform::invoked_key(id);
+        let value = invoked
+            .and_then(|i| {
+                let record = ResourceRef::parse_id(
+                    &format!("{}/{}", i.workspace, i.id),
+                    tilolang::INVOCATION_TYPE.to_owned(),
+                )?;
+                Some(Value::Tuple(vec![
+                    Value::resource(&record),
+                    Value::Text(i.state.clone()),
+                    Value::Text(i.action.clone()),
+                    Value::Text(i.title.clone()),
+                    Value::Text(i.summary.clone()),
+                    Value::Text(i.failure.clone()),
+                    Value::List(i.calls.iter().cloned().map(Value::Text).collect()),
+                    Value::Text(i.provider.clone()),
+                    Value::Text(i.model.clone()),
+                    Value::Float(i.cost),
+                ]))
+            })
+            .map_or_else(Value::none, Value::some);
+        let mut states = self.core.view_states.borrow_mut();
+        if states.get(&key) != Some(&value) {
+            states.set(key, value);
+        }
+    }
+
+    /// The lines the person ran from the resource whose own id is `place` (an item's id, or a
+    /// document's), oldest first, as the host last said: what `lines_run(r)` reads.
+    pub fn set_lines(&self, place: &str, lines: &[LineRun]) {
+        let key = crate::platform::lines_key(place);
+        let value = Value::List(
+            lines
+                .iter()
+                .map(|l| {
+                    Value::Tuple(vec![
+                        Value::Text(l.line.clone()),
+                        Value::Bool(l.running),
+                        Value::Text(l.said.clone()),
+                        Value::Bool(l.failed),
                     ])
                 })
                 .collect(),

@@ -18,6 +18,10 @@ pub const NOTICE_SEEN: &str = "notice-seen";
 pub const LINK_HOW_TYPE: &str = "host-link-how";
 /// The action a person answers an asked invocation with.
 pub const RESOLVE_ACTION: &str = "resolve";
+/// The action a person stops a running invocation with.
+pub const CANCEL_ACTION: &str = "cancel";
+/// The action a person runs an invocation again with, on the same arguments.
+pub const RETRY_ACTION: &str = "retry";
 
 /// The ids of the built-in enum `Result<T, E>`: its type, its variants and their payload fields. `try
 /// act(args)` builds one from an invocation's outcome.
@@ -642,6 +646,83 @@ pub const VALUE_TYPES: &[ValueType] = &[
             ),
         ],
     },
+    ValueType {
+        name: "CallMember",
+        id: "host-call-member",
+        doc: "Someone in the system's call held on a resource: who is in a voice channel, a person of the workspace or someone a bridge carries in from another service.",
+        fields: &[
+            ("who", "Actor", "Who it is: for someone a bridge carries in, the person the bridge speaks for."),
+            (
+                "mine",
+                "Bool",
+                "Whether it is the person looking, from this device.",
+            ),
+            ("speaking", "Bool", "Whether they are heard talking now."),
+            ("muted", "Bool", "Whether their microphone is off."),
+            (
+                "deafened",
+                "Bool",
+                "Whether they hear nothing of the call, which mutes them too.",
+            ),
+            ("camera", "Bool", "Whether their camera shows in the call."),
+            (
+                "screen",
+                "Bool",
+                "Whether they share their screen in the call.",
+            ),
+            (
+                "service",
+                "Text",
+                "The service a bridge carries them in from (`discord`); empty for someone in the call here.",
+            ),
+            (
+                "name",
+                "Text",
+                "What that service calls them; empty for someone in the call here, whose name is their own.",
+            ),
+            (
+                "avatar",
+                "Text",
+                "The address of their picture on that service; empty when it has none, or for someone in the call here.",
+            ),
+        ],
+    },
+    ValueType {
+        name: "Invoked",
+        id: "host-invoked",
+        doc: "An invocation on the system's dispatch as its record reads now: an agent's turn, one step of it, a question it waits on a person's answer to, or a line a person ran. Read by its id with `invoked(id)`; the view runs again as it moves.",
+        fields: &[
+            ("record", "Invocation", "Its record, which `host.cancel`, `host.retry` and `host.resolve` act on."),
+            (
+                "state",
+                "Text",
+                "running, waiting (a person is asked), ended, failed, cancelled or undone; empty until its record is read.",
+            ),
+            (
+                "action",
+                "Text",
+                "What it calls, `<app>#<action>`, while the dispatch remembers it.",
+            ),
+            ("title", "Text", "What it was called when it was started; empty when it was named nothing."),
+            ("summary", "Text", "What its newest change did, by the action's label."),
+            ("failure", "Text", "Why it failed, typed (`confirmation_required`); empty when it did not."),
+            ("calls", "List<Text>", "The ids of the invocations it made, oldest first: its steps."),
+            ("provider", "Text", "The model provider its model call went to; empty for a step that called no model."),
+            ("model", "Text", "The model its model call asked; empty for a step that called no model."),
+            ("cost", "Float", "What its model call cost, in US dollars; 0 when it called none."),
+        ],
+    },
+    ValueType {
+        name: "LineRun",
+        id: "host-line-run",
+        doc: "A tilolang line the person ran from this window as their own step (`run_line`), and what it answered.",
+        fields: &[
+            ("line", "Text", "The line, as they typed it."),
+            ("running", "Bool", "Whether it runs still."),
+            ("said", "Text", "What it answered, in the person's words; empty while it runs."),
+            ("failed", "Bool", "Whether it failed: what it answered says why."),
+        ],
+    },
 ];
 
 /// The type that stands for any resource, of whatever app: what `find` and `grep` answer when they read
@@ -704,32 +785,29 @@ fn notice_field(id: &str, name: &str, ty: &str, merge: MergeKind, doc: &str) -> 
     }
 }
 
-/// The action a person answers an asked invocation with, on its record. The host declares it and
-/// runs no code of it: a call is the record's own verb, sent to the app its workspace publishes,
-/// which answers it there (`tilolang_runtime::published`).
-fn resolve_action() -> ActionMeta {
-    let param = |name: &str, ty: &str, default: Option<DefaultMeta>| ParamMeta {
-        name: name.to_string(),
-        ty: ty.to_string(),
-        default,
+/// An action of an invocation record. The host declares it and runs no code of it: a call is the
+/// record's own verb, sent to the app its workspace publishes, which answers it there
+/// (`tilolang_runtime::published`).
+fn record_action(id: &str, label: &str, doc: &str, rest: Vec<ParamMeta>) -> ActionMeta {
+    let mut params = vec![ParamMeta {
+        name: "i".to_string(),
+        ty: "Invocation".to_string(),
+        default: None,
         place: false,
         entry: false,
         label: None,
-    };
+    }];
+    params.extend(rest);
     ActionMeta {
-        id: RESOLVE_ACTION.to_string(),
-        name: RESOLVE_ACTION.to_string(),
-        doc: "Answer an invocation that waits on you: approve it, approve it and stop asking, or decline it.".to_string(),
-        params: vec![
-            param("i", "Invocation", None),
-            param("resolution", "Text", None),
-            param("choice", "Option<Int>", Some(DefaultMeta::none())),
-        ],
+        id: id.to_string(),
+        name: id.to_string(),
+        doc: doc.to_string(),
+        params,
         result: Some("Text".to_string()),
         class: EffectClass::Outside,
         proposal: None,
         reaches: Vec::new(),
-        label: "Resolve".to_string(),
+        label: label.to_string(),
         icon: None,
         role: None,
         scenario: false,
@@ -746,6 +824,49 @@ fn resolve_action() -> ActionMeta {
         outside: Vec::new(),
         opens: Vec::new(),
     }
+}
+
+/// The action a person answers an asked invocation with, on its record: `approve`, `always`
+/// (approve, and stop asking) or `decline`.
+fn resolve_action() -> ActionMeta {
+    let param = |name: &str, ty: &str, default: Option<DefaultMeta>| ParamMeta {
+        name: name.to_string(),
+        ty: ty.to_string(),
+        default,
+        place: false,
+        entry: false,
+        label: None,
+    };
+    record_action(
+        RESOLVE_ACTION,
+        "Resolve",
+        "Answer an invocation that waits on you: approve it, approve it and stop asking, or decline it.",
+        vec![
+            param("resolution", "Text", None),
+            param("choice", "Option<Int>", Some(DefaultMeta::none())),
+        ],
+    )
+}
+
+/// The action a person stops an invocation that runs with: the dispatch's cancel of it.
+fn cancel_action() -> ActionMeta {
+    record_action(
+        CANCEL_ACTION,
+        "Stop",
+        "Stop an invocation that runs: what it did so far stays, and it ends as cancelled.",
+        Vec::new(),
+    )
+}
+
+/// The action a person runs an invocation again with: the same call, on the same arguments, as a
+/// new invocation the dispatch answers with.
+fn retry_action() -> ActionMeta {
+    record_action(
+        RETRY_ACTION,
+        "Retry",
+        "Run an invocation again, on the same arguments, as a new invocation.",
+        Vec::new(),
+    )
 }
 
 pub fn host_meta() -> PackageMeta {
@@ -827,7 +948,7 @@ pub fn host_meta() -> PackageMeta {
             }
         }))
         .collect(),
-        actions: vec![resolve_action()],
+        actions: vec![resolve_action(), cancel_action(), retry_action()],
         enums: HOST_ENUMS
             .iter()
             .map(|e| EnumMeta {

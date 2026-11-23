@@ -231,6 +231,8 @@ row view category_summary for Category
 
 row view voice_summary for VoiceChannel
 
+place view turn for Message
+
 default view skill for Skill
 
 row view skill_row for Skill
@@ -1373,6 +1375,7 @@ view direct(d: Direct) {
                 if let other = other_in(d, workspace.me) {
                     "Message {other.name()}"
                 } else { "Message {d.name}" },
+                agent: d.people.any(p -> p.kind() == .agent),
             )
         }
     }
@@ -1520,22 +1523,58 @@ view thread_message(
 
 /// The foot of a conversation: the message being answered, over the input and its send button.
 /// `said` is what the conversation holds, whose speakers its `@` drawer offers first.
+///
+/// In a conversation an agent answers in, a line that reads as a tilolang call
+/// (`tasks.add("Buy milk")`) runs as the person's own step rather than being said: every call it
+/// makes is theirs, what it answers shows above the composer, and what it changed is in the
+/// records it changed. `agent` says the conversation is one with an agent before it answered
+/// anything.
 view composer(
     to: TextChannel | Thread | Direct,
     said: List<Message>,
     draft: State<RichText>,
     replying: State<Option<Message>>,
     placeholder: Text,
+    agent: Bool = false,
 ) {
+    for l in lines_run(to) {
+        line_run(l)
+    }
     if let r = replying {
         std.reply_banner(r, cancel: set(replying, .none))
     }
     std.composer(
         draft,
         placeholder,
-        send(to, draft, replying).then(set(replying, .none)),
+        if (agent or said.any(m -> m.turn != "")) and reads_as_call(draft.text) {
+            run_line(to, draft.text)
+        } else { send(to, draft, replying).then(set(replying, .none)) },
         speakers: speakers(said),
     )
+}
+
+/// Whether `text` reads as a tilolang call the person runs rather than says: one line, a dotted
+/// name with no space in it before its first parenthesis, and a closing one at its end.
+fn reads_as_call(text: Text) -> Bool {
+    let line = text.trim()
+    if line.contains("\n") or not line.ends_with(")") {
+        return false
+    }
+    if let name = line.split("(").first() {
+        name != "" and name.contains(".") and not name.contains(" ")
+    } else { false }
+}
+
+/// A line the person ran from the composer, and what it answered: Running while it runs.
+view line_run(l: host.LineRun) {
+    stack(gap: .none) {
+        ui.Text(l.line, role: .label, truncate)
+        if l.running {
+            ui.Text("Running…", role: .caption, secondary: true)
+        } else if l.said != "" {
+            ui.Text(l.said, role: .caption, secondary: not l.failed)
+        }
+    }
 }
 
 /// Who is typing here, from the system's presence: the lenses on `of` whose person is
@@ -1623,6 +1662,9 @@ view message(
     } else {
         said(m)
     }
+    if m.turn != "" {
+        turn_steps(m)
+    }
     for f in m.attachments {
         ui.Link(f.blob, label: f.name)
     }
@@ -1642,6 +1684,97 @@ view message(
     }
     let listed = linked(m).filter(l -> shown.any(x -> l.of == x)).map(l -> l.of)
     std.linked(m, compact: true, without: listed)
+}
+
+/// The agent's turn a reply is, as the invocation that wrote it stands on the system's dispatch:
+/// each step it took, what it asks the person, and what its model calls cost. Stop while it runs,
+/// which cancels the invocation; Retry once it ended, which runs it again into this message.
+view turn_steps(m: Message) {
+    if let t = invoked(m.turn) {
+        stack(gap: .tight) {
+            for c in t.calls {
+                if let s = invoked(c) {
+                    turn_step(s)
+                }
+            }
+            if t.failure != "" {
+                ui.Text(t.failure, role: .caption)
+            }
+            row(gap: .tight, align: .center) {
+                ui.Text(turn_said(t), role: .caption, secondary: true, fill: 1.0, truncate)
+                if t.state == "running" or t.state == "waiting" {
+                    button(host.cancel(t.record), icon_only: true)
+                } else if t.state == "ended" or t.state == "failed" or t.state == "cancelled" {
+                    button(host.retry(t.record), icon_only: true)
+                }
+            }
+        }
+    }
+}
+
+/// How a turn stands in a line: what it is doing, the model it asked and what it cost.
+fn turn_said(t: host.Invoked) -> Text {
+    let state = if t.state == "running" {
+        "Working…"
+    } else if t.state == "waiting" {
+        "Waiting for your answer"
+    } else if t.state == "failed" {
+        "Failed"
+    } else if t.state == "cancelled" {
+        "Stopped"
+    } else { "Done" }
+    let model = if t.model != "" { " · {t.provider}/{t.model}" } else { "" }
+    let cost = if t.cost > 0.0 { " · ${t.cost.round(4)}" } else { "" }
+    "{state}{model}{cost}"
+}
+
+/// One step of an agent's turn: what it did, and, for one that asks the person, Allow, Always
+/// and Deny, answered through the system's ask-answer action on its record.
+view turn_step(s: host.Invoked) {
+    stack(gap: .none) {
+        row(gap: .tight, align: .center) {
+            ui.Text(
+                if s.title != "" { s.title } else if s.summary != "" { s.summary } else { s.action },
+                role: .caption,
+                secondary: s.state != "waiting",
+                fill: 1.0,
+                truncate,
+            )
+            if s.state == "running" {
+                ui.Text("Working…", role: .caption, secondary: true)
+            } else if s.state == "failed" {
+                ui.Text("Failed", role: .caption)
+            }
+        }
+        if s.state == "waiting" {
+            row(gap: .tight) {
+                ui.Button("Allow", role: .primary) {
+                    on press: host.resolve(s.record, "approve")
+                }
+                ui.Button("Always") {
+                    on press: host.resolve(s.record, "always")
+                }
+                ui.Button("Deny", role: .destructive) {
+                    on press: host.resolve(s.record, "decline")
+                }
+            }
+        }
+    }
+}
+
+/// A turn the person asked on the canvas, standing where they asked: the agent's answer, under
+/// the person's message it answers as a quiet line, with the turn's steps and controls. The
+/// conversation it is in opens from its place's handle.
+view turn(m: Message) {
+    stack(gap: .tight) {
+        if let r = m.reply_to {
+            text(r.body.excerpt, secondary: true)
+        }
+        said(m)
+        if m.turn != "" {
+            turn_steps(m)
+        }
+    }
 }
 
 /// What a message says, and that it was edited when its history holds an edit.

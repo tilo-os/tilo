@@ -30,6 +30,12 @@ pub const LENS_WINDOW: &str = "$lenses";
 pub const CALL_WINDOW: &str = "$calls";
 /// Where the runtime keeps how each resource's outside effects stand (`delivery(r)`).
 pub const DELIVERY_WINDOW: &str = "$delivery";
+/// The window the dispatch's invocations a view read are kept under, by id, as view state of no
+/// window: set by the host as their records move, read by `invoked(id)`.
+pub const INVOKED_WINDOW: &str = "$invoked";
+/// The window the tilolang lines the person ran from each resource are kept under: set by the
+/// host as each runs and answers, read by `lines_run(r)`.
+pub const LINES_WINDOW: &str = "$lines";
 
 /// One line of what proposing an action with some arguments says: the words a change to the
 /// field reads with, and the value they speak of as its type shows it, when they speak of one.
@@ -223,6 +229,18 @@ pub fn call_key(id: &str) -> StateKey {
     StateKey::runtime(CALL_WINDOW, None, id)
 }
 
+/// The key of how the invocation `id` stands, as the host last read its record.
+#[must_use]
+pub fn invoked_key(id: &str) -> StateKey {
+    StateKey::runtime(INVOKED_WINDOW, None, id)
+}
+
+/// The key of the lines the person ran from the resource whose own id is `id`.
+#[must_use]
+pub fn lines_key(id: &str) -> StateKey {
+    StateKey::runtime(LINES_WINDOW, None, id)
+}
+
 /// The id the call service names the call held on `target` by: the item's own id, or the
 /// document's for a resource that is no item.
 #[must_use]
@@ -363,6 +381,31 @@ impl Core {
             Imp::Lenses => {
                 let target = self.ref_arg(a.h(0)?)?;
                 let value = self.host_list(lens_key(&target.target.id_string()));
+                self.ret_h(value)
+            }
+            Imp::Invoked => {
+                let id = self.text(a.h(0)?)?;
+                let id = id.trim().to_owned();
+                if id.is_empty() {
+                    return self.ret_h(Value::none());
+                }
+                // The host reads the record of every invocation a view asked for, and keeps
+                // reading it while it moves.
+                self.invoked_read.borrow_mut().insert(id.clone());
+                let key = invoked_key(&id);
+                let (value, generation) = {
+                    let states = self.view_states.borrow();
+                    (
+                        states.get(&key).cloned().unwrap_or_else(Value::none),
+                        states.generation(&key),
+                    )
+                };
+                self.note_state_read(key, generation, &value);
+                self.ret_h(value)
+            }
+            Imp::LinesRun => {
+                let target = self.ref_arg(a.h(0)?)?;
+                let value = self.host_list(lines_key(&call_place(&target.target)));
                 self.ret_h(value)
             }
             Imp::CallMembers => {

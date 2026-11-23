@@ -61,6 +61,7 @@ mod used;
 use used::{Used, used_apps};
 
 use crate::call::Calls;
+use crate::invocations::Invocations;
 /// The package whose `Playback` an app's session keeps: the one a window's playback outputs come
 /// from.
 const PLAYBACK_APP: &str = "so.tilo.playback";
@@ -1083,6 +1084,9 @@ pub struct Hosted {
     presence: Presence,
     /// Who is in the system's calls the views show, and the steps the person takes in them.
     calls: Calls,
+    /// The invocations the views read (an agent's turn, its steps, what it asks), and the lines
+    /// the person ran from them.
+    invocations: Invocations,
     /// What the connection delivered before the instance ran, taken on its first frame.
     early: Vec<CollabEvent>,
     /// The records other devices wrote, as the connection told since the last frame: read again
@@ -1231,6 +1235,7 @@ impl Hosted {
         drop(in_scope);
         let presence = Presence::new(&spec.app, &spec.person);
         let calls = Calls::new(&spec.person);
+        let invocations = Invocations::new(&spec.workspace);
         // The apps this one may call, each by its package: what a call of another app's action
         // is built from.
         let callees = Rc::new(callees_of(&bundle, &spec.workspace));
@@ -1305,6 +1310,7 @@ impl Hosted {
             access,
             presence,
             calls,
+            invocations,
             early: Vec::new(),
             moved_records: std::collections::BTreeSet::new(),
             opening: None,
@@ -1401,6 +1407,7 @@ impl Hosted {
             self.instance.wakes_in(),
             self.presence.wakes_in(),
             self.calls.wakes_in(),
+            self.invocations.wakes_in(),
         ]
         .into_iter()
         .flatten()
@@ -1549,10 +1556,13 @@ impl Hosted {
         }
         // Who else is here and who is writing, before the views that show it run.
         let before = events.len();
-        events.retain(|event| !self.presence.take(event) && !self.calls.take(event));
+        events.retain(|event| {
+            !self.presence.take(event) && !self.calls.take(event) && !self.invocations.take(event)
+        });
         changed |= events.len() != before;
         self.presence.show(&mut self.instance);
         self.calls.show(&mut self.instance);
+        self.invocations.show(&mut self.instance);
         changed |= self.instance.update();
         // A watched folder that changed runs its action now, as the person's own step.
         changed |= self.run_watches();
@@ -1579,6 +1589,14 @@ impl Hosted {
         if self.instance.reads_calls() || self.calls.joined() {
             self.calls.say(|request| connection.manager().send(request));
         }
+        // The invocations the views read, read again while they run, and the lines the person
+        // ran, run as their own steps.
+        for (target, line) in self.instance.take_line_runs() {
+            self.invocations.run_line(&target, line);
+        }
+        self.invocations.follow(&self.instance);
+        self.invocations
+            .say(|request| connection.manager().send(request));
         self.presence.say(&self.instance, |request| {
             if !connection.manager().send(request) {
                 tracing::debug!("the connection did not take the person's presence");

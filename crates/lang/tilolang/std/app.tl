@@ -980,10 +980,28 @@ view call<R>(of: R) {
 }
 
 /// One person in a call, as [`call`] lists them: their face and name, and what they do there.
+/// Someone a bridge carries in from another service shows as that service shows them, their name
+/// and picture there, marked as from it.
 view call_member(m: host.CallMember) {
     row(gap: .tight, align: .center) {
-        avatar(m.who)
-        ui.Text(m.who.name(), role: .label, fill: 1.0, truncate)
+        if m.service != "" {
+            if m.avatar != "" {
+                ui.Avatar(name: m.name, picture: m.avatar)
+            } else {
+                ui.Avatar(name: m.name)
+            }
+            ui.Text(m.name, role: .label, fill: 1.0, truncate)
+            ui.Text(
+                if m.service == "discord" {
+                    phrase("tilolang-call-from-discord")
+                } else { phrase("tilolang-call-from", service: m.service) },
+                role: .caption,
+                secondary: true,
+            )
+        } else {
+            avatar(m.who)
+            ui.Text(m.who.name(), role: .label, fill: 1.0, truncate)
+        }
         if m.speaking {
             ui.Text(phrase("tilolang-call-speaking"), role: .caption, secondary: true)
         }

@@ -315,8 +315,20 @@ impl crate::Shared {
         let (kept, listed) = self.agents.feed(&self.person, &workspaces);
         self.search.set_kept_agents(&kept);
         self.search.set_listed_agents(&listed);
-        // Asks are the agent package's resources now: the session feeds no turns from
-        // conversations, and its agents answer none of their own here.
+        // A turn the person asked on the canvas stands where they asked once Chat's record holds
+        // the agent's answer to the message Chat posted for the ask (canvas.md §3).
+        if self.layout.borrow().awaits_turns() {
+            // What Chat answered the asks' sends, once they settled.
+            self.search.poll_answers();
+            let services = self.services.borrow();
+            self.layout.borrow_mut().stand_asked(
+                &|sent| {
+                    let message = self.sends.posted(sent)?;
+                    crate::asked_turns::asked_turn(&services, &message)
+                },
+                tilo_session_core::layout::Busy::default(),
+            );
+        }
     }
 
     /// The person's agent member for the MCP client `client` in `workspace`, by id and by the name

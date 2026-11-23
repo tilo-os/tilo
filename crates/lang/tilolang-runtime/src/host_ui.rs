@@ -50,6 +50,10 @@ pub const SAVE_ACTION: &str = "$save";
 /// `screen`) and whether it turns its switch on.
 pub const CALL_ACTION: &str = "$call";
 
+/// The action of `run_line(r, line)`: run a tilolang line as the person's own step, from the
+/// resource `r`. Its arguments are `r` and the line.
+pub const RUN_LINE_ACTION: &str = "$run-line";
+
 /// The prefix of the view state slot that names the view a window shows a resource through,
 /// the resource's id after it: what the bar's view switch sets. Empty until a person picks a
 /// view, so the resource's type's default view shows until then.
@@ -465,6 +469,28 @@ impl Core {
         }))
     }
 
+    /// `run_line(r, line)`: the person's own tilolang line, run from `r`, which the window's host
+    /// carries out through the session's program host.
+    fn act_run_line(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let target = match self.val(a.h(0)?)? {
+            Value::Ref(target) => Value::Ref(target),
+            other => {
+                return trap(format!(
+                    "a line is run from a resource, not {}",
+                    other.kind_name()
+                ));
+            }
+        };
+        let line = self.text(a.h(1)?)?;
+        let author = Some(self.module_of_frame()?);
+        self.ret_h(Value::Action(ActionRef {
+            action: RUN_LINE_ACTION.to_owned(),
+            args: vec![target, Value::Text(line)],
+            author,
+            from: None,
+        }))
+    }
+
     /// `undo(v)` of a `host.Version` (`a.h(1) == 0`) or `undo(run)` of a `host.Run`.
     fn act_undo(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
         let held = self.val(a.h(0)?)?;
@@ -661,6 +687,7 @@ impl Core {
             Imp::ActMany => self.act_many(a),
             Imp::ActOpen => self.act_open(a),
             Imp::ActCall => self.act_call(a),
+            Imp::ActRunLine => self.act_run_line(a),
             Imp::ActUndo => self.act_undo(a),
             Imp::ChangeView => self.change_view(a),
             _ => trap("not a ui import"),

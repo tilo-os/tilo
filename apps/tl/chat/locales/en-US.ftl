@@ -586,6 +586,15 @@ d-ymtess4x = Channel
     .w-save = Save
     .w-reply = Reply
     .w-edit = Edit
+    .w-running = Running…
+    .w-working = Working…
+    .w-waiting-for-your-answer = Waiting for your answer
+    .w-failed = Failed
+    .w-stopped = Stopped
+    .w-done = Done
+    .w-allow = Allow
+    .w-always = Always
+    .w-deny = Deny
 
 d-jbezqvlc = Direct
     .w-message = Message { $name }
@@ -597,6 +606,15 @@ d-jbezqvlc = Direct
     .w-save = Save
     .w-reply = Reply
     .w-edit = Edit
+    .w-running = Running…
+    .w-working = Working…
+    .w-waiting-for-your-answer = Waiting for your answer
+    .w-failed = Failed
+    .w-stopped = Stopped
+    .w-done = Done
+    .w-allow = Allow
+    .w-always = Always
+    .w-deny = Deny
 
 d-q45utnmh = Channel summary
 
@@ -620,6 +638,15 @@ d-enkgjyn7 = Thread
     .w-save = Save
     .w-reply = Reply
     .w-edit = Edit
+    .w-running = Running…
+    .w-working = Working…
+    .w-waiting-for-your-answer = Waiting for your answer
+    .w-failed = Failed
+    .w-stopped = Stopped
+    .w-done = Done
+    .w-allow = Allow
+    .w-always = Always
+    .w-deny = Deny
 
 d-rydgecpc = Typing here
     .w-is-typing = { $who } is typing…
@@ -632,6 +659,16 @@ d-tx3zjawu = Direct typing here
 d-dcprca6g = Thread typing here
     .w-is-typing = { $who } is typing…
     .w-and-others-are-typing = { $who } and others are typing…
+
+d-h327uiql = Turn
+    .w-working = Working…
+    .w-waiting-for-your-answer = Waiting for your answer
+    .w-failed = Failed
+    .w-stopped = Stopped
+    .w-done = Done
+    .w-allow = Allow
+    .w-always = Always
+    .w-deny = Deny
 
 d-hjw5xd6b = Said
     .w-a-view-to-add-to-your = A view, to add to your own views

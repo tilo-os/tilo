@@ -225,6 +225,9 @@ impl Checker<'_> {
             "actions" => return self.builtin_actions(args, span),
             "lenses" => return self.builtin_lenses(args, span),
             "call_members" => return self.builtin_call_members(args, span),
+            "invoked" => return self.builtin_invoked(args, span),
+            "lines_run" => return self.builtin_lines_run(args, span),
+            "run_line" => return self.builtin_run_line(args, span),
             "join_call" | "leave_call" | "mute_call" | "deafen_call" | "camera_call"
             | "screen_call" => return self.builtin_call(name, args, span),
             "delivery" => return self.builtin_delivery(args, span),

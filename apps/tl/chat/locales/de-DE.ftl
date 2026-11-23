@@ -300,10 +300,28 @@ d-5rkfnkg4 = Seitenleiste
 d-ymtess4x = Kanal
     .w-message = Nachricht an #{ $name }
     .w-send = Senden
+    .w-running = Läuft …
+    .w-working = Arbeitet …
+    .w-waiting-for-your-answer = Wartet auf deine Antwort
+    .w-failed = Fehlgeschlagen
+    .w-stopped = Gestoppt
+    .w-done = Fertig
+    .w-allow = Erlauben
+    .w-always = Immer
+    .w-deny = Ablehnen
 
 d-jbezqvlc = Direkt
     .w-message = Nachricht an { $name }
     .w-send = Senden
+    .w-running = Läuft …
+    .w-working = Arbeitet …
+    .w-waiting-for-your-answer = Wartet auf deine Antwort
+    .w-failed = Fehlgeschlagen
+    .w-stopped = Gestoppt
+    .w-done = Fertig
+    .w-allow = Erlauben
+    .w-always = Immer
+    .w-deny = Ablehnen
 
 d-q45utnmh = Kanalübersicht
 
@@ -316,6 +334,15 @@ d-hrbsxhor = Fähigkeitszeile
 d-enkgjyn7 = Thread
     .w-message = Nachricht an { $name }
     .w-send = Senden
+    .w-running = Läuft …
+    .w-working = Arbeitet …
+    .w-waiting-for-your-answer = Wartet auf deine Antwort
+    .w-failed = Fehlgeschlagen
+    .w-stopped = Gestoppt
+    .w-done = Fertig
+    .w-allow = Erlauben
+    .w-always = Immer
+    .w-deny = Ablehnen
 
 d-rydgecpc = Hier wird geschrieben
     .w-is-typing = { $who } schreibt …
@@ -328,6 +355,16 @@ d-tx3zjawu = Hier wird direkt geschrieben
 d-dcprca6g = Hier wird im Thread geschrieben
     .w-is-typing = { $who } schreibt …
     .w-and-others-are-typing = { $who } und andere schreiben …
+
+d-h327uiql = Frage und Antwort
+    .w-working = Arbeitet …
+    .w-waiting-for-your-answer = Wartet auf deine Antwort
+    .w-failed = Fehlgeschlagen
+    .w-stopped = Gestoppt
+    .w-done = Fertig
+    .w-allow = Erlauben
+    .w-always = Immer
+    .w-deny = Ablehnen
 
 d-hjw5xd6b = Gesagt
     .w-a-view-to-add-to-your = Eine Ansicht, die du den eigenen hinzufügen kannst

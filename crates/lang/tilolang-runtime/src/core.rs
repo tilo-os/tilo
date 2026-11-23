@@ -20,9 +20,9 @@ use crate::store::Store;
 use crate::value::Value;
 
 use Imp::{
-    Abort, ActChoose, ActMadeFrom, ActMany, ActOpen, ActRef, ActSave, ActSet, ActThen, ActUndo,
-    Actions, ActorEq, ActorKind, ActorName, ActorRole, AgentNamed, ArgAt, BytesLength, CallFn,
-    ChangeView, ClipboardCopyImage, ClipboardCopyText, ClipboardPasteImage, ClipboardPasteText,
+    Abort, ActCall, ActChoose, ActMadeFrom, ActMany, ActOpen, ActRef, ActRunLine, ActSave, ActSet, ActThen,
+    ActUndo, Actions, ActorEq, ActorKind, ActorName, ActorRole, AgentNamed, ArgAt, BytesLength, CallFn,
+    CallMembers, ChangeView, ClipboardCopyImage, ClipboardCopyText, ClipboardPasteImage, ClipboardPasteText,
     CollCount, CollCounted, CollEmpty, CollInsert, CollInsertAs, CollInsertKeyed, CollMove,
     CollMoveAmong, CollMoveTo, CollOrdered, CollPlace, CollRelatives, CollRemove, CollWhere,
     CollWhereWith, CountBy, DateShow, DayParse, DayPart, DayShift, DayStartOfWeek, DayWeekday,
@@ -38,7 +38,7 @@ use Imp::{
     FloatPow, FloatRound, FloatRoundTo, FloatSign, FloatSin, FloatSinh, FloatSqrt, FloatTan,
     FloatTanh, FloatToDegrees, FloatToRadians, FloatToStr, FloatTrunc, ForeignRef, Grep, GroupBy,
     IdentPart, IntAbs, IntClamp, IntMax, IntMin, IntToStr, InvocationPop, InvocationPush, Invoke,
-    Invoker, IsError, IsSome, JsonDecode, JsonEncode, JsonParse, Keep, Lenses, Links, ListAvg,
+    Invoked, Invoker, IsError, IsSome, JsonDecode, JsonEncode, JsonParse, Keep, Lenses, LinesRun, Links, ListAvg,
     ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew, ListPrevious, ListPushF,
     ListPushH, ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI, MadeFrom, MapGetH,
     MapGetValue, MapKeys, MapKeysValue, MapNew, MapPut, MapPutValue, MapRemove, MapRemoveValue,
@@ -217,6 +217,12 @@ pub struct Core {
     pub embeds: RefCell<crate::embed::EmbedState>,
     /// The view state of every view, and the platform's own readings.
     pub view_states: RefCell<crate::view_state::ViewStates>,
+    /// Whether a view read who is in a call (`call_members(r)`): the host follows the system's
+    /// calls only for an app that shows them.
+    pub calls_read: std::cell::Cell<bool>,
+    /// The invocations views read (`invoked(id)`), by id: the host reads each one's record and
+    /// keeps reading it while it moves.
+    pub invoked_read: RefCell<std::collections::BTreeSet<String>>,
     /// What `now` reads: the current time as ISO-8601 UTC text, `YYYY-MM-DDTHH:MM:SSZ`. Read
     /// once per outermost invocation; until the host sets one, it is the epoch.
     pub clock: RefCell<Option<Box<dyn Fn() -> String>>>,
@@ -397,6 +403,8 @@ impl Core {
             catalogues: RefCell::new(Vec::new()),
             embeds: RefCell::new(crate::embed::EmbedState::default()),
             view_states: RefCell::new(crate::view_state::ViewStates::default()),
+            calls_read: std::cell::Cell::new(false),
+            invoked_read: RefCell::new(std::collections::BTreeSet::new()),
             clock: RefCell::new(None),
             zone: RefCell::new(None),
             week_start: RefCell::new(None),
@@ -624,8 +632,11 @@ impl Core {
             UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiOn
             | UiAnchor | SpaceI | SpaceF | RowOpen | UiBindState | StateGet | StateAt | ArgAt
             | ActSet | ActThen | ActMadeFrom | ActMany | ActOpen | ActUndo | ChangeView
-            | UiActions | UiAction | ActChoose | ActSave => self.ui_import(imp, a),
-            EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions | Links
+            | UiActions | UiAction | ActChoose | ActSave | ActCall | ActRunLine => {
+                self.ui_import(imp, a)
+            }
+            EventValue | EventPart | Actions | Lenses | CallMembers | Invoked | LinesRun
+            | Delivery | MetaOf | Versions | Links
             | RunChanges | Unseen | FirstUnseen | SeenBy | Mentions | Steps | VersionEnd
             | FieldChanged | Phrase | Word | EntryParts | Viewer => self.platform_import(imp, a),
             WorkspaceMembers | Members | MayRead | Speakers | ActorKind | ActorRole => {

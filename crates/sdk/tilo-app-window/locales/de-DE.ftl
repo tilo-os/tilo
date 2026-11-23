@@ -126,6 +126,8 @@ tilolang-call-muted = Stumm
 tilolang-call-deafened = Hört nichts
 tilolang-call-on-camera = Kamera
 tilolang-call-sharing = Teilt Bildschirm
+tilolang-call-from-discord = Aus Discord
+tilolang-call-from = Aus { $service }
 
 app-activate-window = Dieses Fenster anzeigen
 app-activate-window-description = Das Fenster dieser App in den Vordergrund holen.
