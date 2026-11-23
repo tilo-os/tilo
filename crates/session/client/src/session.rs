@@ -389,7 +389,6 @@ fn session_task(
         when_opened: BTreeSet::new(),
         barriers: Vec::new(),
         sending: BTreeMap::new(),
-        not_ready: BTreeSet::new(),
         awaiting_surface: BTreeMap::new(),
         surfaces_arrived: false,
         compactions: Vec::new(),
@@ -620,7 +619,6 @@ struct Task {
     /// while it is not this one ([`outbound::Scope::Workspaces`]).
     /// The writes the host was not ready for: each is sent again once the host says the
     /// workspace is ready, and refused if the host turns it away again.
-    not_ready: BTreeSet<[u8; 32]>,
     /// Writes the owner holds for an app surface this page does not have, by that surface: the
     /// routes the host replays once it arrived.
     awaiting_surface: BTreeMap<[u8; 32], (WorkspaceId, DocumentRoute)>,

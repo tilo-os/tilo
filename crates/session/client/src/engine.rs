@@ -178,8 +178,6 @@ pub struct Engine {
     /// the session opens the workspaces before it opens the service, and every reader of a sealed
     /// record goes through this.
     keys: KeyProvider,
-    /// How this host proves this device still owns a workspace before it commits there.
-    ownership: Arc<dyn crate::membership_check::MembershipCheck>,
     /// The workspace transport of this session's peer network, once it runs: a record the
     /// workspace's hosts send only once asked is asked for here, and the peer network is gone while this
     /// is `None` .
@@ -403,7 +401,7 @@ impl Engine {
         owner: NativeWorkspaceOwner,
         shown: Arc<Shown>,
         identity: DeviceIdentity,
-        ownership: Arc<dyn MembershipCheck>,
+        _ownership: Arc<dyn MembershipCheck>,
         founders: Arc<Founders>,
     ) -> Self {
         let keys = KeyProvider::default();
@@ -419,7 +417,6 @@ impl Engine {
             shown,
             identity,
             keys,
-            ownership,
             link,
             founding: std::sync::Mutex::new(std::collections::BTreeSet::new()),
             failed_at: std::sync::Mutex::new(std::collections::BTreeMap::new()),
@@ -443,7 +440,7 @@ impl Engine {
         identity: DeviceIdentity,
         state: Option<&Path>,
         workspaces: impl IntoIterator<Item = WorkspaceId>,
-        ownership: Arc<dyn MembershipCheck>,
+        _ownership: Arc<dyn MembershipCheck>,
     ) -> Result<Self, String> {
         let state = state.ok_or("this session keeps no state, so it holds no workspace")?;
         let path = owner_path(state)?;
@@ -451,13 +448,7 @@ impl Engine {
             workspaces.into_iter().collect(),
         )));
         let owner = open_file_with(&path, Arc::clone(&shown) as Arc<dyn FileHost>)?;
-        let mut engine = Self::holding(
-            owner,
-            shown,
-            identity,
-            ownership,
-            Arc::new(Founders::default()),
-        );
+        let mut engine = Self::holding(owner, shown, identity, Arc::new(Founders::default()));
         engine.service_root = Some(state.join("tilo").join("workspace-service"));
         Ok(engine)
     }
@@ -468,11 +459,11 @@ impl Engine {
     pub fn for_this_device(
         state: Option<&Path>,
         workspaces: impl IntoIterator<Item = WorkspaceId>,
-        ownership: Arc<dyn MembershipCheck>,
+        _ownership: Arc<dyn MembershipCheck>,
     ) -> Result<Self, String> {
         let identity = identity::device_identity()
             .ok_or("this computer has no identity yet, so it holds no workspace")?;
-        Self::open(identity, state, workspaces, ownership)
+        Self::open(identity, state, workspaces, _ownership)
     }
 
     /// Where this device's own workspace service keeps its workspaces; `None` for an engine that

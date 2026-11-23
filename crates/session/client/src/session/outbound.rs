@@ -868,11 +868,3 @@ impl Task {
         }
     }
 }
-
-/// What this session reports when the host would not take a change it read.
-fn refusal_text(refusal: &tilo_server_protocol::refusal::Refusal) -> String {
-    format!("{REFUSAL}: {refusal}")
-}
-
-/// The phrasing this session uses for the one answer that is a refusal.
-const REFUSAL: &str = "the workspace refused the change";
