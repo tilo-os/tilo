@@ -563,6 +563,36 @@ impl Daemon {
         let taking = take_work.is_some();
         let take_work =
             take_work_action_service(root, &workspaces, take_work, &replica_slot, stage)?;
+        // The workspaces this device governs run their Terminal sessions' shells here: the
+        // dispatch answers the records' `run` and `open-terminal` with ush's shells. A member
+        // that takes its server's work runs them for its server instead, and answers none
+        // itself.
+        #[cfg(target_os = "linux")]
+        if !taking {
+            stage("opening the workspaces' shells");
+            // This computer is the machine: its person's own workspace runs its programs here,
+            // as a desktop install's Terminal does, in ush's Host environment.
+            let shells = super::take_work::workspace_shells(
+                root,
+                &workspaces,
+                Some(replica_slot.clone()),
+                None,
+            )
+            .on_machine(true);
+            let host = Arc::new(super::terminal::HostShells::new(
+                shells,
+                workspaces.copies().clone(),
+            ));
+            let terminal = tilo_workspace_service::workspaces::terminal::TerminalService::new(
+                workspaces.copies().clone(),
+                host,
+                tilo_rt::app().handle().clone(),
+            );
+            workspaces.copies().provide(
+                tilo_workspace_service::workspaces::terminal::PROVIDER,
+                Arc::new(terminal),
+            );
+        }
         // The one action service the daemon's router answers the device actions on: the work
         // this member takes from its server when it takes any, else its workspaces'. A ticket's
         // certify call is admitted on it while a computer asks.

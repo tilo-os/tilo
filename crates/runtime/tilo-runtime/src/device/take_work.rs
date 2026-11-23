@@ -277,26 +277,19 @@ fn keep_vm_leases(holding: &Arc<ServiceWorkspaces>, vms: PathBuf) {
     }
 }
 
-/// The runs this member answers with: the workspace's shell, asked by the
-/// devices of the person this member belongs to, in the folder of the synced
-/// replica of the workspace's files once `replicas` holds them. `None` on a
-/// host whose shell, ush, is not built for it.
+/// This device's workspaces' shells, ush's: the folder of the synced replica of each
+/// workspace's files once `replicas` holds them, and the hosted-VM service it runs programs on.
 #[cfg(target_os = "linux")]
-#[allow(
-    clippy::unnecessary_wraps,
-    reason = "the variant for a host ush is not built for answers no dispatcher"
-)]
-fn shell_runs(
+pub(crate) fn workspace_shells(
     profile: &Path,
     workspaces: &Arc<ServiceWorkspaces>,
     replicas: Option<files::ReplicaSlot>,
     browsers: Option<PathBuf>,
-) -> Option<Shells> {
-    use ush::environment_commands::EnvironmentCommands;
+) -> ush::workspace_shell::WorkspaceShells {
     use ush::workspace_shell::WorkspaceShells;
     let member = profile.to_path_buf();
     let holder = Arc::downgrade(workspaces);
-    let shells = WorkspaceShells::from_env(profile.join(STATE))
+    WorkspaceShells::from_env(profile.join(STATE))
         .with_files(move |workspace| {
             // The workspace's files are held from its first run on, a workspace
             // entered for the run included.
@@ -320,7 +313,26 @@ fn shell_runs(
         // runs the workspaces' VMs.
         .with_browsers_on(
             browsers.or_else(|| std::env::var_os(ush::hosted_vm::SOCKET_ENV).map(PathBuf::from)),
-        );
+        )
+}
+
+/// The runs this member answers with: the workspace's shell, asked by the
+/// devices of the person this member belongs to, in the folder of the synced
+/// replica of the workspace's files once `replicas` holds them. `None` on a
+/// host whose shell, ush, is not built for it.
+#[cfg(target_os = "linux")]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "the variant for a host ush is not built for answers no dispatcher"
+)]
+fn shell_runs(
+    profile: &Path,
+    workspaces: &Arc<ServiceWorkspaces>,
+    replicas: Option<files::ReplicaSlot>,
+    browsers: Option<PathBuf>,
+) -> Option<Shells> {
+    use ush::environment_commands::EnvironmentCommands;
+    let shells = workspace_shells(profile, workspaces, replicas, browsers);
     let commands = Arc::new(EnvironmentCommands::new(shells, workspaces.operator()));
     let streams = Arc::clone(&commands);
     let terminals: TerminalsOf = Box::new(move |actions: ActionService| {

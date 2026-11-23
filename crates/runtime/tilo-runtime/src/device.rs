@@ -50,6 +50,8 @@ pub mod shortcuts;
 pub mod take_work;
 #[cfg(target_os = "linux")]
 pub mod tasks;
+#[cfg(target_os = "linux")]
+pub(crate) mod terminal;
 pub(crate) mod ticket;
 #[cfg(test)]
 mod ticket_tests;

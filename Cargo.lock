@@ -20987,6 +20987,7 @@ dependencies = [
  "tilo-action-policy",
  "tilo-actions",
  "tilo-advisory-lock",
+ "tilo-agent-session",
  "tilo-api",
  "tilo-app-package",
  "tilo-app-state",
