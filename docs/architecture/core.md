@@ -100,7 +100,11 @@ use the same addresses.
   a change whose author was not allowed to make it at the time), and through
   the keys (reading means holding the keys of the resource's readers;
   resources with the same readers share one key group, and removing a reader
-  rekeys it). What a device already received cannot be taken back.
+  rekeys it). A reader set names people, a governance role (`author and
+  moderator`) or both. Its group holds whoever the workspace's policy says
+  reads it now, so a role granted or taken away moves the group by the same
+  commits as a member joining or leaving. No action hands out or rotates
+  keys itself. What a device already received cannot be taken back.
 - A window does not decide permissions itself. The device's daemon answers
   for the actions a view shows, the window holds those answers for its
   controls and updates them live as grants change, and the call is still
