@@ -1487,6 +1487,7 @@ impl Engine {
 /// What the broker's writes ask of this device's workspaces: the engine's owner is the
 /// canonical copy of every workspace it holds, and what it commits leaves on the peer network's
 /// session with the workspace's other devices.
+#[cfg(not(target_arch = "wasm32"))]
 impl tilo_broker_core::workspace_commits::WorkspaceCommits for Engine {
     fn projects_workspace(&self, workspace_id: WorkspaceId) -> bool {
         self.holds(workspace_id)
