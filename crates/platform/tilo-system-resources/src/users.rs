@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 pub const USERS: &str = "users";
 
 /// A local login account.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct LocalAccount {
     /// The login name.
     pub username: String,
@@ -32,7 +32,7 @@ pub struct LocalAccount {
 }
 
 /// What this computer's accounts read as now.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct Users {
     /// Whether this computer's account service answers: where it does not, no account changes.
     #[serde(default)]

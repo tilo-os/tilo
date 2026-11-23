@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 pub const STORAGE: &str = "storage";
 
 /// How full the disk the person's files live on is.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct DiskUsage {
     pub total_bytes: u64,
     pub free_bytes: u64,
@@ -26,7 +26,7 @@ impl DiskUsage {
 }
 
 /// What one kind of item takes: installed apps, app data, cache or synced files.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct CategoryUsage {
     /// What the kind is called: "Installed apps", "App data", "Cache", "Synced files".
     pub category: String,
@@ -37,7 +37,7 @@ pub struct CategoryUsage {
 }
 
 /// One of the largest items the scan found.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct StoredItem {
     /// The kind it is: "Installed apps", "App data", "Cache", "Synced files".
     pub category: String,
@@ -49,7 +49,7 @@ pub struct StoredItem {
 }
 
 /// What this computer's storage reads as now.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct Storage {
     /// The disk the person's home lives on, where it could be measured.
     #[serde(default)]

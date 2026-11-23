@@ -12,7 +12,7 @@ pub const DRIVES: &str = "drives";
 
 /// How a drive is opened: the faster kernel driver, or a confined userspace one for drives the
 /// person does not know.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DriveMode {
     /// The faster driver.
@@ -23,7 +23,7 @@ pub enum DriveMode {
 }
 
 /// Where a drive sits.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Placement {
     #[default]
@@ -33,7 +33,7 @@ pub enum Placement {
 }
 
 /// Why a drive opened read-only.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ReadOnlyReason {
     /// Windows hibernated rather than shutting down.
@@ -45,7 +45,7 @@ pub enum ReadOnlyReason {
 }
 
 /// What the person may choose to remember about a drive.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RememberOffer {
     /// Nothing: it is asked about every time.
@@ -58,7 +58,7 @@ pub enum RememberOffer {
 }
 
 /// A drive that is open and where.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct Mounted {
     /// Where it is open.
     pub path: String,
@@ -68,7 +68,7 @@ pub struct Mounted {
 }
 
 /// What the person chose to remember about a drive.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct Remembered {
     /// The drive this choice is for, as the drive list names it.
     pub grant: String,
@@ -76,7 +76,7 @@ pub struct Remembered {
 }
 
 /// An NTFS volume attached now.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct Drive {
     /// Names the volume while it stays attached.
     pub id: String,
@@ -96,7 +96,7 @@ pub struct Drive {
 }
 
 /// A drive the person chose to remember.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct RememberedDrive {
     /// The drive this choice is for.
     pub grant: String,
@@ -108,7 +108,7 @@ pub struct RememberedDrive {
 }
 
 /// What the computer's drives read as now.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct Drives {
     /// Whether the drive service answers here.
     #[serde(default)]

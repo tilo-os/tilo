@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 pub const HOST_INFO: &str = "host-info";
 
 /// What this device is: its name, its system image, its kernel and its hardware.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct HostInfo {
     /// The OS image's name, as `/etc/os-release` gives it.
     pub pretty_name: String,

@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 pub const DISK_UNLOCK: &str = "disk-unlock";
 
 /// How a volume keeps the half of its key its siblings release.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum Sealing {
     /// Sealed to the machine's TPM: a disk taken to another machine cannot ask with it.
@@ -22,7 +22,7 @@ pub enum Sealing {
 }
 
 /// An encrypted volume enrolled for sibling unlock.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct UnlockVolume {
     /// The volume's LUKS UUID.
     pub volume: String,
@@ -40,7 +40,7 @@ pub struct UnlockVolume {
 }
 
 /// What this computer's enrolled volumes read as now.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct DiskUnlock {
     /// The volumes enrolled for sibling unlock.
     pub volumes: Vec<UnlockVolume>,
