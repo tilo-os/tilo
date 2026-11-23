@@ -1042,6 +1042,44 @@ mod cases {
         );
     }
 
+    /// The editor's `/` menu offers a picture and a page of the note's own, which only the app can
+    /// give it: a page made from a block is a note under the open one, titled with the words that
+    /// stood in the block.
+    #[test]
+    fn a_page_made_from_a_block_is_a_note_titled_with_its_words() {
+        let n = Notes::new();
+        let plan = n.titled("Q3 plan");
+        let mut view = n.window();
+        let editors = of_kind(view.tree(), "ui.BlockEditor");
+        let editor = editors.first().expect("the open note's body is the editor");
+        assert_eq!(
+            editor.props.get("slash"),
+            Some(&Value::List(vec![
+                Value::text("image"),
+                Value::text("page"),
+            ])),
+            "the view offers the commands only it can carry out: {}",
+            dump(view.tree())
+        );
+        let key = editor.key.clone();
+        view.fire_with(&key, "slash_page", Some(&Value::text("Meeting notes")))
+            .expect("the view makes the page");
+        view.poll_patches().unwrap();
+
+        assert_eq!(
+            labels(&view),
+            ["Q3 plan", "Meeting notes"],
+            "the page stands under the open note: {}",
+            dump(view.tree())
+        );
+        let made = node_titled(&view, "Meeting notes");
+        assert_eq!(
+            parent_of_node(made).map(|parent| parent.id_string()),
+            Some(plan.id_string()),
+            "it is the note's own page"
+        );
+    }
+
     #[test]
     fn the_note_page_says_where_the_note_stands() {
         let n = Notes::new();

@@ -75,7 +75,9 @@ d-qymo5lg2-title = Title
 d-qymo5lg2-body = Body
 
 d-37dxigeq = New sub-note
-    .doc = Starts a note inside `n`'s own, after the notes it already holds: the note the window has open too, so a person writing one starts the note it stands under without finding its row.
+    .doc = Starts a note inside `n`'s own, after the notes it already holds, titled `words` when the caller knows them already (a `/page` in one of `n`'s blocks names the page it makes with the words that stood there): the note the window has open too, so a person writing one starts the note it stands under without finding its row.
+
+d-37dxigeq-words = Words
 
 d-qvjedq2v = Carry native notebook
     .doc = The notebook the native Notes app kept before this app took its id over, carried into this one once: each page a note, under the note its page stood under and in the order its pages stood there, with its title, its body, its tags and the id its page had.
@@ -252,6 +254,8 @@ d-akcqjax3 = Notebook
     .w-outline = Outline
     .w-reacted-in-the-native-notes = Reacted in the native Notes: { $reacted }
     .w-write-something = Write something
+    .w-image = image
+    .w-page = page
 
 d-x4im3xs5 = Notebook head
 
@@ -277,6 +281,8 @@ d-xqxkoqbj = Note row
 d-6wqou47w = Note editor
     .w-reacted-in-the-native-notes = Reacted in the native Notes: { $reacted }
     .w-write-something = Write something
+    .w-image = image
+    .w-page = page
 
 d-nki6assy = Note details
     .w-from = From { $service }

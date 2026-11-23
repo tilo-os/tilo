@@ -74,11 +74,13 @@ primary action new_note(nb: Notebook, title: Text = "", body: Text = "") -> Note
     nb.notes.insert(Note(title: title, body: RichText.from_markdown(body)))
 }
 
-/// Starts a note inside `n`'s own, after the notes it already holds: the note the window has
-/// open too, so a person writing one starts the note it stands under without finding its row.
-/// It is `n`'s action, so the window offers it for the note it shows and its row offers it.
-action new_child(n: Note) -> Note (icon: .plus, label: "New sub-note") {
-    let made = notebook.notes.insert(Note(title: "", parent: n))
+/// Starts a note inside `n`'s own, after the notes it already holds, titled `words` when the
+/// caller knows them already (a `/page` in one of `n`'s blocks names the page it makes with the
+/// words that stood there): the note the window has open too, so a person writing one starts the
+/// note it stands under without finding its row. It is `n`'s action, so the window offers it for
+/// the note it shows and its row offers it.
+action new_child(n: Note, words: Text = "") -> Note (icon: .plus, label: "New sub-note") {
+    let made = notebook.notes.insert(Note(title: words, parent: n))
     if let last = notebook.notes.filter(x -> x.parent == n and x != made).last() {
         notebook.notes.move(made, after: last)
     } else { notebook.notes.move(made, after: n) }
@@ -1050,18 +1052,27 @@ template view note_page(
         }
         // What `[[` offers: the notebook's notes that hold what is typed in it, asked of the
         // store as it is typed and handed a page at a time, and none at all while the picker is
-        // closed.
+        // closed. Its `/` menu offers a picture and a page of this note's own, which only the
+        // app can give it: one asks the person for a file, the other makes a note.
         ui.BlockEditor(
             bind: n.body,
             placeholder: "Write something",
             links: if linking { nb.notes.matching(link_text).take(48) } else { [] },
             reveal: reveal,
+            slash: ["image", "page"],
         ) {
             on links_open(open): set(linking, open)
             on links_query(text): set(link_text, text)
             // A picture pasted or dropped into the body is in it already, where the caret was:
             // the note keeps its name beside the address its bytes were kept at.
             on image(picture): keep_image(n, picture)
+            on slash_image: file.choose(
+                insert_image(n),
+                accept: ["image/png", "image/jpeg", "image/webp"],
+            )
+            // A page made from a block is titled with its words, as the words stand: what a
+            // person wrote in the block names the page it became.
+            on slash_page(words): new_child(n, words)
             on headings(words, levels): set(headings, words).then(set(heading_levels, levels))
         }
         std.linked(n, compact: true)
