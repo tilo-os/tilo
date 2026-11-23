@@ -1,5 +1,5 @@
 //! Calendar setup against an existing canonical account. No credentials are copied.
-use calendar_model::account::{CalDavConfig, RemoteCalendar};
+use accounts::calendar::{CalDavConfig, RemoteCalendar};
 
 pub const GOOGLE_CALDAV_URL: &str = "https://apidata.googleusercontent.com/caldav/v2/";
 
@@ -152,7 +152,7 @@ mod tests {
                 saved.account(account.id.as_str()).unwrap().config["files"],
                 original["files"]
             );
-            let projection = calendar_model::account::CalendarAccounts::from_shared(&saved);
+            let projection = accounts::calendar::CalendarAccounts::from_shared(&saved);
             assert_eq!(projection.accounts.len(), 1);
             assert_eq!(projection.accounts[0].id, "canonical-nextcloud");
             assert_eq!(
@@ -205,7 +205,7 @@ mod tests {
             );
             let mut shared = AccountList::default();
             shared.keep(&account).unwrap();
-            let projection = calendar_model::account::CalendarAccounts::from_shared(&shared);
+            let projection = accounts::calendar::CalendarAccounts::from_shared(&shared);
             assert_eq!(projection.accounts.len(), 1);
             assert!(projection.accounts[0].read_only);
             assert!(projection.accounts[0].calendars[0].read_only);
@@ -329,7 +329,7 @@ mod tests {
             let vault = SecretVault::open_in(root.path());
             let before = vault.get(&AccountId::from("drive-account")).unwrap();
             let shared = record.state().unwrap();
-            let projection = calendar_model::account::CalendarAccounts::from_shared(&shared);
+            let projection = accounts::calendar::CalendarAccounts::from_shared(&shared);
             assert_eq!(
                 projection.accounts[0].config.oauth_account_id.as_deref(),
                 Some("drive-account")

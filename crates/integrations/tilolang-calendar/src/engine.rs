@@ -8,10 +8,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 
-use calendar_model::ics;
-use calendar_model::model::{
-    Attendee, Calendar, Event, Id, InviteStatus, OccurrenceOverride, Recurrence,
-};
+use crate::ics;
+use crate::model::{Attendee, Calendar, Event, Id, InviteStatus, OccurrenceOverride, Recurrence};
 use jiff::civil::{Date, DateTime, Time};
 use tilo_dav::{
     Credentials, DavClient, Depth, Limits, Options, Precondition, Redirects, Url, props,

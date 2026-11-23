@@ -143,7 +143,7 @@ tilo_test_env::scenario! {
         pane.submit_form_for_test();
         assert!(pane.finish_form_submission_for_test(tilo_test_env::hang_bound()));
         assert!(!pane.form_open());
-        let loaded = calendar_model::account::CalendarAccounts::from_shared(&account_root.store());
+        let loaded = accounts::calendar::CalendarAccounts::from_shared(&account_root.store());
         assert_eq!(loaded.len(), 1);
         let account = &loaded.accounts[0];
         assert_eq!(account.config.username, "login@example.test");
@@ -242,7 +242,7 @@ tilo_test_env::scenario! {
                 "calendar setup must not rewrite or copy the canonical sign-in"
             );
             assert!(account_root.vault().is_empty(), "the device's vault keeps nothing");
-            let loaded = calendar_model::account::CalendarAccounts::from_shared(&account_root.store());
+            let loaded = accounts::calendar::CalendarAccounts::from_shared(&account_root.store());
             assert_eq!(loaded.len(), 1);
             assert_eq!(loaded.accounts[0].id, account.id.as_str());
             assert_eq!(loaded.accounts[0].config.display_name, "My cloud");

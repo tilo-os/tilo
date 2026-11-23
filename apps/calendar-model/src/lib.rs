@@ -20,19 +20,20 @@
     reason = "bounded date, time and duration arithmetic on calendar values"
 )]
 
-pub mod account;
 pub mod actions;
-pub mod ics;
-pub mod model;
 pub mod resource;
 pub mod shown;
 pub mod spans;
-pub mod timezone;
 
-pub use account::CalendarAccounts;
-pub use model::{
+// The iCalendar format and the event, task and calendar shapes an entry is
+// read into and written from live with the calendar origin that speaks it.
+pub use tilolang_calendar::ics;
+pub use tilolang_calendar::model;
+pub use tilolang_calendar::timezone;
+
+pub use resource::calendar;
+pub use resource::{CalendarAction, RemoteAt, fingerprint, notes_path, notes_resource_id};
+pub use tilolang_calendar::model::{
     Attendee, Calendar, Event, Id, InviteStatus, OccurrenceOverride, Palette, Priority, Project,
     Recurrence, Task, View,
 };
-pub use resource::calendar;
-pub use resource::{CalendarAction, RemoteAt, fingerprint, notes_path, notes_resource_id};

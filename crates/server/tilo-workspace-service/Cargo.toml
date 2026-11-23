@@ -17,7 +17,7 @@ test-support = ["tilo-peer-state/test-support", "dep:tilo-test-env", "tilo-accou
 # Agents on the host: workspaces keep apps' confined replicas and hand their
 # records' channel keys to pages, and the agents themselves run here
 # ([`agents`]).
-agents = ["device-keys", "dep:tilo-broker-core", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:collaboration", "dep:ui", "dep:calendar-model", "dep:tilo-model-gateway", "dep:tilo-environment", "dep:tilo-mcp", "dep:tilo-agent-turn", "dep:runtime-collab", "dep:tilo-web-search", "dep:jiff", "dep:tilo-identity", "tilo-clock/local"]
+agents = ["device-keys", "dep:tilo-broker-core", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:collaboration", "dep:ui", "dep:calendar-model", "dep:tilolang-calendar", "dep:tilo-model-gateway", "dep:tilo-environment", "dep:tilo-mcp", "dep:tilo-agent-turn", "dep:runtime-collab", "dep:tilo-web-search", "dep:jiff", "dep:tilo-identity", "tilo-clock/local"]
 # A device's own workspace service and the key service beside it: what every device and
 # the server open, whether or not they serve apps. A key holder keeps the records its members
 # write sealed and opens them with the channels' keys it holds.
@@ -90,9 +90,10 @@ tilo-agent-session = { path = "../../agent/agent-session", optional = true }
 tilo-model-gateway = { path = "../../integrations/model-gateway", default-features = false, features = ["host-backend"], optional = true }
 tilo-secrets = { path = "../../platform/tilo-secrets", optional = true }
 # A person's calendars on their host are read, expanded and filed by the
-# Calendar model's own code, so a device and its host agree about time. The
-# app's window is not linked: only the record, its iCalendar and its spans.
-calendar-model = { path = "../../../apps/calendar-model", features = ["store"], optional = true }
+# calendar origin's own iCalendar reader, so a device and its host agree
+# about time. calendar-model adds only the span and free-time answers.
+calendar-model = { path = "../../../apps/calendar-model", optional = true }
+tilolang-calendar = { path = "../../integrations/tilolang-calendar", default-features = false, optional = true }
 # The workspace's vault: Passwords' document, which this service reads and writes as a holder of
 # its keys.
 passwords-model = { path = "../../../apps/passwords-model" }

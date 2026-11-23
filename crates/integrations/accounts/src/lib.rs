@@ -81,6 +81,8 @@ pub use service_credentials::{
     provider_api_key,
 };
 #[cfg(feature = "person")]
+pub mod calendar;
+#[cfg(feature = "person")]
 pub mod person;
 pub mod status;
 pub mod vault_items;

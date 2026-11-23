@@ -1,4 +1,14 @@
-//! Pure data model for the calendar/todo app.
+//! The event, task and calendar shapes a calendar server's entry is read into
+//! and written from.
+
+// Calendar arithmetic is bounded by the values a calendar holds: a time of
+// day, a duration within one, a count of occurrences. Panic-producing lints
+// stay denied.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_precision_loss,
+    reason = "bounded date, time and duration arithmetic on calendar values"
+)]
 
 use std::collections::BTreeMap;
 
@@ -11,6 +21,24 @@ use uuid::Uuid;
 pub use tilo_recurrence::Repeat as Recurrence;
 
 pub type Id = Uuid;
+
+/// The address `value` is, when it is a complete one: `None` for a name with
+/// no host or a host with no dot.
+#[must_use]
+pub fn email_address(value: &str) -> Option<&str> {
+    let (local, domain) = value.split_once('@')?;
+    (!local.is_empty() && domain.contains('.') && !domain.contains(char::is_whitespace))
+        .then_some(value)
+}
+
+/// The IANA name `value` names, or `floating`: `None` for a zone this build
+/// does not know.
+#[must_use]
+pub fn normalize_timezone(value: &str) -> Option<String> {
+    (value.len() <= 128)
+        .then(|| crate::timezone::canonical_zone(value))
+        .flatten()
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum View {
@@ -197,7 +225,7 @@ pub struct Attendee {
 
 impl Attendee {
     fn valid(&self) -> Result<(), Refusal> {
-        if crate::actions::email_address(&self.email).is_none() {
+        if email_address(&self.email).is_none() {
             return Err(Refusal::new("an attendee needs a complete email address"));
         }
         Ok(())
@@ -378,7 +406,7 @@ pub struct Event {
     pub project: Option<Id>,
     /// Which remote calendar this event was synced from, if any. Local events
     /// (created in-app or imported) carry `None` and are always shown; a synced
-    /// event carries its source [`crate::account::RemoteCalendar`] id so the
+    /// event carries its source calendar's account id so the
     /// sidebar's per-calendar visibility toggle can hide/show it on the spot,
     /// without a re-sync. Persisted in the CRDT under the `cal` key.
     pub calendar_id: Option<String>,
@@ -469,9 +497,7 @@ impl Event {
                 "an event has at most 32 categories, each a few words of at most 64 characters",
             ));
         }
-        if crate::actions::normalize_timezone(&self.timezone).as_deref()
-            != Some(self.timezone.as_str())
-        {
+        if normalize_timezone(&self.timezone).as_deref() != Some(self.timezone.as_str()) {
             return Err(Refusal::new(
                 "an event's time zone is an IANA name or `floating`",
             ));
@@ -498,23 +524,7 @@ impl Event {
     }
 }
 
-pub fn untitled_event() -> String {
-    tilo_resource::word!("calendar-untitled-event").read()
-}
-
 impl Event {
-    /// The title to render in views: the user's title, or, while it has none,
-    /// what the window calls an event nobody has named yet. The stored `title`
-    /// stays empty so the edit form shows its placeholder rather than literal
-    /// text the user must delete.
-    pub fn display_title(&self) -> String {
-        if self.title.trim().is_empty() {
-            untitled_event()
-        } else {
-            self.title.clone()
-        }
-    }
-
     pub fn all_day_last_date(&self) -> Date {
         if !self.all_day {
             return self.end.date();

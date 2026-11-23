@@ -1,13 +1,11 @@
 //! The calendar's shape of the workspace's accounts: the servers it signs in
 //! to and the calendars each of them holds.
 //!
-//! The types are the resource's, read by an agent too. Reading the workspace's
-//! account list in this shape, with a password from the vault, is the `store`
-//! feature: a device that only applies the resource's verbs links none of it.
+//! The types are the account record's, read by an agent too. Reading the
+//! workspace's account list in this shape, with a password from the vault, is
+//! [`CalendarAccounts::from_shared`].
 
 use serde::{Deserialize, Serialize};
-
-use crate::model::Palette;
 
 pub const TYPE_ID: &str = "caldav";
 
@@ -74,12 +72,6 @@ pub struct RemoteCalendar {
 
 fn default_true() -> bool {
     true
-}
-
-impl RemoteCalendar {
-    pub fn palette(&self) -> Palette {
-        Palette::from_index(self.color as usize)
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -176,80 +168,7 @@ impl CalendarAccounts {
             .iter()
             .flat_map(|a| a.calendars.iter().map(move |c| (a, c)))
     }
-
-    /// A representative offline store so `--shots` shows real `CalDAV` accounts in the sidebar without a
-    /// network: the shape Settings persists after a connect, minus the credentials.
-    pub fn sample() -> Self {
-        Self {
-            accounts: vec![
-                CalendarAccount {
-                    id: "work@fastmail.example".into(),
-                    config: CalDavConfig {
-                        display_name: "Work".into(),
-                        server_url: "https://caldav.fastmail.com/dav/calendars".into(),
-                        username: "work@fastmail.example".into(),
-                        password: String::new(),
-                        password_item: None,
-                        oauth_account_id: None,
-                    },
-                    calendars: vec![
-                        RemoteCalendar {
-                            id: "work/default".into(),
-                            name: "Team".into(),
-                            color: color_byte(Palette::Indigo),
-                            visible: true,
-                            read_only: false,
-                        },
-                        RemoteCalendar {
-                            id: "work/oncall".into(),
-                            name: "On-call".into(),
-                            color: color_byte(Palette::Red),
-                            visible: true,
-                            read_only: false,
-                        },
-                    ],
-                    collapsed: false,
-                    read_only: false,
-                },
-                CalendarAccount {
-                    id: "me@icloud.example".into(),
-                    config: CalDavConfig {
-                        display_name: "iCloud".into(),
-                        server_url: "https://caldav.icloud.com".into(),
-                        username: "me@icloud.example".into(),
-                        password: String::new(),
-                        password_item: None,
-                        oauth_account_id: None,
-                    },
-                    calendars: vec![
-                        RemoteCalendar {
-                            id: "icloud/personal".into(),
-                            name: "Personal".into(),
-                            color: color_byte(Palette::Emerald),
-                            visible: true,
-                            read_only: false,
-                        },
-                        RemoteCalendar {
-                            id: "icloud/holidays".into(),
-                            name: "Holidays".into(),
-                            color: color_byte(Palette::Amber),
-                            visible: false,
-                            read_only: false,
-                        },
-                    ],
-                    collapsed: false,
-                    read_only: false,
-                },
-            ],
-        }
-    }
 }
 
-/// The byte a calendar's colour is kept as: its place in the palette, which
-/// is far below what a byte holds.
-fn color_byte(palette: Palette) -> u8 {
-    u8::try_from(palette.index()).unwrap_or_default()
-}
-
-#[cfg(feature = "store")]
+#[cfg(feature = "person")]
 mod store;

@@ -2,8 +2,8 @@
 //! window reads them as. A calendar's password is the workspace's vault's, not
 //! this device's: the app asks the session for it when it signs in.
 
-use accounts::person::AccountList;
-use accounts::{Account as StoredAccount, AccountId};
+use crate::person::AccountList;
+use crate::{Account as StoredAccount, AccountId};
 use serde::{Deserialize, Serialize};
 
 use super::{CalDavConfig, CalendarAccount, CalendarAccounts, RemoteCalendar, TYPE_ID};
@@ -38,11 +38,6 @@ impl CalendarAccount {
         stored
     }
 
-    /// The payload a test keeps, so what it saves reads back as an account.
-    pub fn to_stored_for_test(&self) -> StoredAccount {
-        self.to_stored()
-    }
-
     fn from_stored(stored: &StoredAccount) -> Option<Self> {
         let payload: StoredConfig = stored
             .config
@@ -55,7 +50,7 @@ impl CalendarAccount {
         }
         // The entry of the workspace's vault this account's password is in, as Settings names it.
         // The app asks the session for it when it signs in, and this device keeps none.
-        config.password_item = accounts::email::password_item(&stored.config).map(str::to_owned);
+        config.password_item = crate::email::password_item(&stored.config).map(str::to_owned);
         if stored
             .config
             .get("calendar_provider")
@@ -105,18 +100,18 @@ mod tests {
     /// Keep `store`'s accounts as the record a home stages, as a device does
     /// through the workspace's record.
     fn keep(root: &std::path::Path, store: &CalendarAccounts) {
-        let mut record = accounts::person::staged_in(root).unwrap();
+        let mut record = crate::person::staged_in(root).unwrap();
         for account in &store.accounts {
             record
                 .apply_confirmed(AccountList::saving(&account.to_stored()))
                 .unwrap();
         }
-        accounts::person::keep_staged_in(root, &mut record).unwrap();
+        crate::person::keep_staged_in(root, &mut record).unwrap();
     }
 
     /// The accounts `root`'s staged record holds, as the calendar reads them.
     fn load(root: &std::path::Path) -> CalendarAccounts {
-        let record = accounts::person::staged_in(root).unwrap();
+        let record = crate::person::staged_in(root).unwrap();
         CalendarAccounts::from_shared(&record.state().unwrap())
     }
 
@@ -126,6 +121,72 @@ mod tests {
             server_url: "https://caldav.example".into(),
             username: user.into(),
             ..Default::default()
+        }
+    }
+
+    /// The shape Settings persists after a connect, minus the credentials.
+    fn sample() -> CalendarAccounts {
+        CalendarAccounts {
+            accounts: vec![
+                CalendarAccount {
+                    id: "work@fastmail.example".into(),
+                    config: CalDavConfig {
+                        display_name: "Work".into(),
+                        server_url: "https://caldav.fastmail.com/dav/calendars".into(),
+                        username: "work@fastmail.example".into(),
+                        password: String::new(),
+                        password_item: None,
+                        oauth_account_id: None,
+                    },
+                    calendars: vec![
+                        RemoteCalendar {
+                            id: "work/default".into(),
+                            name: "Team".into(),
+                            color: 0,
+                            visible: true,
+                            read_only: false,
+                        },
+                        RemoteCalendar {
+                            id: "work/oncall".into(),
+                            name: "On-call".into(),
+                            color: 3,
+                            visible: true,
+                            read_only: false,
+                        },
+                    ],
+                    collapsed: false,
+                    read_only: false,
+                },
+                CalendarAccount {
+                    id: "me@icloud.example".into(),
+                    config: CalDavConfig {
+                        display_name: "iCloud".into(),
+                        server_url: "https://caldav.icloud.com".into(),
+                        username: "me@icloud.example".into(),
+                        password: String::new(),
+                        password_item: None,
+                        oauth_account_id: None,
+                    },
+                    calendars: vec![
+                        RemoteCalendar {
+                            id: "icloud/personal".into(),
+                            name: "Personal".into(),
+                            color: 1,
+                            visible: true,
+                            read_only: false,
+                        },
+                        RemoteCalendar {
+                            id: "icloud/holidays".into(),
+                            name: "Holidays".into(),
+                            color: 2,
+                            visible: false,
+                            read_only: false,
+                        },
+                    ],
+                    collapsed: false,
+                    read_only: false,
+                },
+            ],
         }
     }
 
@@ -181,19 +242,19 @@ mod tests {
             {
                 let root = temp_root();
                 let other_id = AccountId::from("unrelated-service");
-                let mut record = accounts::person::staged_in(&root).unwrap();
+                let mut record = crate::person::staged_in(&root).unwrap();
                 record
                     .apply_confirmed(AccountList::saving(&StoredAccount::new(
                         other_id.clone(),
                         "unrelated",
                     )))
                     .unwrap();
-                accounts::person::keep_staged_in(&root, &mut record).unwrap();
-                let mut vault = accounts::SecretVault::open_in(&root);
-                vault.put(&other_id, &accounts::Secret::password("unrelated-secret"));
+                crate::person::keep_staged_in(&root, &mut record).unwrap();
+                let mut vault = crate::SecretVault::open_in(&root);
+                vault.put(&other_id, &crate::Secret::password("unrelated-secret"));
                 vault.save();
 
-                let mut store = CalendarAccounts::sample();
+                let mut store = sample();
                 keep(&root, &store);
                 let calendar = &mut store.accounts[0].calendars[0];
                 let id = calendar.id.clone();
@@ -207,10 +268,10 @@ mod tests {
                         .find(|(_, calendar)| calendar.id == id)
                         .is_some_and(|(_, calendar)| !calendar.visible)
                 );
-                let staged = accounts::person::staged_in(&root).unwrap();
+                let staged = crate::person::staged_in(&root).unwrap();
                 let kept = staged.state().unwrap();
                 assert!(kept.account(other_id.as_str()).is_some());
-                assert!(accounts::SecretVault::open_in(&root).get(&other_id).is_some());
+                assert!(crate::SecretVault::open_in(&root).get(&other_id).is_some());
                 std::fs::remove_dir_all(&root).ok();
             }
             {
@@ -231,7 +292,7 @@ mod tests {
                 keep(&root, &store);
 
                 let kept =
-                    String::from_utf8_lossy(&std::fs::read(accounts::person::staged_path_in(&root)).unwrap())
+                    String::from_utf8_lossy(&std::fs::read(crate::person::staged_path_in(&root)).unwrap())
                         .into_owned();
                 assert!(
                     !kept.contains("hunter2"),
@@ -246,7 +307,7 @@ mod tests {
                 std::fs::remove_dir_all(&root).ok();
             }
             {
-                let store = CalendarAccounts::sample();
+                let store = sample();
                 assert_eq!(store.len(), 2);
                 let total = store.all_calendars().count();
                 assert_eq!(total, 4);
@@ -279,7 +340,7 @@ mod tests {
             // The account's settings say it, beside its server and its user name, and so
             // does every calendar of it. An account that is written to says nothing new.
             let reading_id = AccountId::from("a@x.example");
-            let staged = accounts::person::staged_in(&root).unwrap();
+            let staged = crate::person::staged_in(&root).unwrap();
             let kept_record = staged.state().unwrap();
             let kept = kept_record.account(reading_id.as_str()).expect("kept").config;
             assert_eq!(kept["read_only"], true, "{kept}");
@@ -303,7 +364,7 @@ mod tests {
 
             // Settings in which a calendar lost its own mark and the account kept its word
             // read as an account none of whose calendars can be written.
-            let mut record = accounts::person::staged_in(&root).unwrap();
+            let mut record = crate::person::staged_in(&root).unwrap();
             let mut stored = record
                 .state()
                 .unwrap()
@@ -313,7 +374,7 @@ mod tests {
             record
                 .apply_confirmed(AccountList::saving(&stored))
                 .unwrap();
-            accounts::person::keep_staged_in(&root, &mut record).unwrap();
+            crate::person::keep_staged_in(&root, &mut record).unwrap();
             let read = load(&root);
             assert!(read.accounts[0].read_only && read.accounts[0].calendars[0].read_only);
             std::fs::remove_dir_all(&root).ok();

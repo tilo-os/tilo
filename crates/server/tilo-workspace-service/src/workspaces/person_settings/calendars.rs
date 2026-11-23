@@ -20,7 +20,7 @@
 //! account is a copy of what the server holds, entry by entry as the server
 //! wrote it, with where each calendar's last pull ended. So the holder knows
 //! every entry's time with every device off, and an entry is read, expanded
-//! and filed by the Calendar app's own code ([`calendar_model::ics`],
+//! and filed by the calendar origin's own reader ([`tilolang_calendar::ics`],
 //! [`calendar_model::spans`]): a device and its holder agree about time zones,
 //! repeats and all-day entries because they are the same reader.
 //!
@@ -32,7 +32,7 @@
 //! nothing. What a server already does is not undone either: a line it
 //! writes for, in an entry another client stored, goes up as the server
 //! holds it, because marking it then would have the server tell that person
-//! the event is off (RFC 6638, 3.2.1.2; [`calendar_model::ics::kept_beside`]).
+//! the event is off (RFC 6638, 3.2.1.2; [`tilolang_calendar::ics::kept_beside`]).
 //!
 //! The person changes their calendar by asking. An agent they named for the
 //! account hands over text of its own writing, so what it may do with it is
@@ -55,8 +55,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 
-use calendar_model::account::{RemoteCalendar, TYPE_ID};
-use calendar_model::model::Event;
+use accounts::calendar::{RemoteCalendar, TYPE_ID};
 use calendar_model::spans::{FreeAsked, SpanAsked};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -69,6 +68,7 @@ use tilo_actions::remote::{ActionCallError as ActionError, Caller, InvokeRequest
 use tilo_dav::{Credentials, DavClient, Depth, Limits, Precondition, Url, props};
 use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::DeviceCert;
+use tilolang_calendar::model::Event;
 
 use super::kept_sign_ins::{NO_SIGN_IN, SIGN_IN, Signing, places_of, sign_in_of};
 use super::{answer, argument, mail_accounts, sending};
@@ -651,7 +651,7 @@ fn held(root: &Path, accounts: &[Account]) -> Vec<Held> {
     for account in accounts {
         for (calendar, state) in read_kept(root, &account.id).calendars {
             for (url, entry) in state.entries {
-                for mut event in calendar_model::ics::parse(&entry.ics).0 {
+                for mut event in tilolang_calendar::ics::parse(&entry.ics).0 {
                     event.calendar_id = Some(calendar.clone());
                     all.push(Held {
                         account: account.id.clone(),
@@ -1040,7 +1040,7 @@ fn entries(
             .iter()
             .find(|held| held.event.id.to_string() == occurrence.entry)
         {
-            occurrence.notes = bounded_notes(&calendar_model::ics::notes(&of.ics));
+            occurrence.notes = bounded_notes(&tilolang_calendar::ics::notes(&of.ics));
         }
     }
     let mut value = serde_json::to_value(&answered).map_err(|error| error.to_string())?;
@@ -1158,7 +1158,7 @@ struct Found {
     url: String,
     etag: Option<String>,
     /// Whom it names, as its server holds it.
-    named: calendar_model::ics::Named,
+    named: tilolang_calendar::ics::Named,
     /// The agent that put it in, where one did.
     put_in: Option<PutIn>,
 }
@@ -1168,7 +1168,7 @@ impl Found {
         Self {
             url: held.url.clone(),
             etag: held.etag.clone(),
-            named: calendar_model::ics::named(&held.ics),
+            named: tilolang_calendar::ics::named(&held.ics),
             put_in: held.put_in.clone(),
         }
     }
@@ -1201,7 +1201,7 @@ struct Planned {
     /// The text as the calendar would keep it.
     text: String,
     /// Whom that text names.
-    named: calendar_model::ics::Named,
+    named: tilolang_calendar::ics::Named,
     change: Change,
 }
 
@@ -1214,8 +1214,8 @@ fn planned(
     accounts: &[Account],
     invitation: &Invitation,
 ) -> Result<Planned, String> {
-    let calendar_model::ics::Invitation { event, cancels } =
-        calendar_model::ics::invitation(&invitation.ics)?;
+    let tilolang_calendar::ics::Invitation { event, cancels } =
+        tilolang_calendar::ics::invitation(&invitation.ics)?;
     let (account, calendar) = writable(accounts, invitation.calendar.as_deref())?;
     let _ = sync(root, reach, account);
     let existing = held(root, std::slice::from_ref(account))
@@ -1224,7 +1224,7 @@ fn planned(
     // What a line says of who writes to the person it names is settled
     // against what the server holds of them (RFC 6638, 3.2.1.2), as just
     // read, and is written over that version only ([`carry_out`]).
-    let text = calendar_model::ics::kept_beside(
+    let text = tilolang_calendar::ics::kept_beside(
         &invitation.ics,
         existing.as_ref().map(|held| held.ics.as_str()),
     );
@@ -1232,7 +1232,7 @@ fn planned(
         (None, true) => (Change::Nothing, text),
         (Some(held), true) => (Change::Remove(Found::of(&held)), text),
         (Some(held), false) => {
-            let same = calendar_model::ics::parse(&text)
+            let same = tilolang_calendar::ics::parse(&text)
                 .0
                 .into_iter()
                 .next()
@@ -1246,7 +1246,7 @@ fn planned(
                 // What its person filed it under on the server stays.
                 let kept: Vec<String> = held.event.categories.iter().cloned().collect();
                 let text = if event.categories.is_empty() && !kept.is_empty() {
-                    calendar_model::ics::with_categories(&text, &kept).unwrap_or(text)
+                    tilolang_calendar::ics::with_categories(&text, &kept).unwrap_or(text)
                 } else {
                     text
                 };
@@ -1268,7 +1268,7 @@ fn planned(
             event.timezone
         ),
         title: event.title,
-        named: calendar_model::ics::named(&text),
+        named: tilolang_calendar::ics::named(&text),
         text,
         change,
     })
@@ -1419,7 +1419,7 @@ fn own_addresses(
 /// written to at `own`: one organiser, who is somebody else, and an address
 /// of the person's among those it invites. Where this holder knows no
 /// address of the person's, nothing is.
-fn invites(named: &calendar_model::ics::Named, own: &BTreeSet<String>) -> bool {
+fn invites(named: &tilolang_calendar::ics::Named, own: &BTreeSet<String>) -> bool {
     match named.organizers.as_slice() {
         [organizer] => {
             !own.contains(organizer) && named.attendees.iter().any(|invited| own.contains(invited))
@@ -1623,13 +1623,13 @@ fn filing(
     accounts: &[Account],
     asked: &Categories,
 ) -> Result<Filing, String> {
-    if asked.categories.len() > calendar_model::model::MAX_CATEGORIES {
+    if asked.categories.len() > tilolang_calendar::model::MAX_CATEGORIES {
         return Err("an entry has at most 32 categories".into());
     }
     let categories = asked
         .categories
         .iter()
-        .map(|named| calendar_model::model::category(named))
+        .map(|named| tilolang_calendar::model::category(named))
         .collect::<Option<Vec<String>>>()
         .ok_or("a category is a few words of at most 64 characters")?;
     freshen(root, reach, accounts, FRESH_MS);
@@ -1646,7 +1646,7 @@ fn filing(
     if account.read_only {
         return Err(READ_ONLY.into());
     }
-    let text = calendar_model::ics::with_categories(&held.ics, &categories)
+    let text = tilolang_calendar::ics::with_categories(&held.ics, &categories)
         .ok_or("the entry as its server holds it does not read")?;
     let calendar = account
         .calendars
@@ -1663,7 +1663,7 @@ fn filing(
             held.event.timezone
         ),
         filed: held.event.categories.iter().cloned().collect(),
-        leaves_writing: calendar_model::ics::leaves_writing_to_its_server(&held.ics),
+        leaves_writing: tilolang_calendar::ics::leaves_writing_to_its_server(&held.ics),
         title: held.event.title,
         categories,
         url: held.url,

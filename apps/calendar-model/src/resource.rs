@@ -22,6 +22,18 @@ use crate::model::{
 
 pub(crate) const MAX_ITEMS_PER_ACTION: usize = 4096;
 
+/// The title to render in views: the person's title, or, while it has none,
+/// what the window calls an event nobody has named yet. The stored `title`
+/// stays empty so the edit form shows its placeholder rather than literal
+/// text the person must delete.
+fn display_title(event: &Event) -> String {
+    if event.title.trim().is_empty() {
+        tilo_resource::word!("calendar-untitled-event").read()
+    } else {
+        event.title.clone()
+    }
+}
+
 /// The scope the calendar's events are searched and granted under.
 pub const EVENTS_SCOPE: &str = "calendar.events";
 /// The scope its tasks are, and each project's under it.
@@ -273,7 +285,7 @@ impl Calendar {
         #[param("Their name")] name: String,
     ) -> Result<(), Refusal> {
         let email = email.trim();
-        let email = crate::actions::email_address(email)
+        let email = crate::model::email_address(email)
             .ok_or_else(|| Refusal::new("a complete email address, such as name@example.com"))?;
         let event = self
             .events
@@ -670,7 +682,7 @@ impl Calendar {
         let event_line = |event: &Event| {
             serde_json::json!({
                 "item": crate::actions::event_resource_id(event.id),
-                "title": event.display_title(),
+                "title": display_title(event),
                 "start": event.start.to_string(),
                 "end": event.end.to_string(),
                 "all_day": event.all_day,
@@ -980,7 +992,7 @@ impl Calendar {
         let events = self.events.iter().map(|event| SearchEntry {
             within: Some(EVENTS_SCOPE.into()),
             anchor: Some(crate::actions::event_resource_id(event.id)),
-            title: event.display_title(),
+            title: display_title(event),
             text: format!("{} {}", event.location, self.notes_text(event.id))
                 .trim()
                 .to_owned(),

@@ -12,12 +12,18 @@
 pub mod connector;
 #[cfg(feature = "engine")]
 pub mod engine;
+// The iCalendar format the servers of calendar accounts speak, and the event,
+// task and calendar shapes an entry is read into and written from: the origin's
+// own reading of an entry, shared with the workspace host.
+pub mod ics;
+pub mod model;
 pub mod origin;
 pub mod remote;
 #[cfg(feature = "engine")]
 pub mod serve;
 #[cfg(feature = "engine")]
 pub mod sign_ins;
+pub mod timezone;
 pub mod wire;
 
 use std::cell::RefCell;

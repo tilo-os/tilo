@@ -10,11 +10,11 @@ use std::sync::{Arc, Mutex, mpsc};
 
 use account_credentials::portable::{self, PasswordSealedAccounts, PortableBinding};
 use account_credentials::{CredentialStore, LoopbackCancel, OAuthCloud, OAuthIssuer, OAuthUse};
+use accounts::calendar::{CalDavConfig, RemoteCalendar};
 use accounts::{Account, AccountId, Secret, SecretVault};
 use zeroize::Zeroize;
 
 use crate::account_store::Accounts;
-use calendar_model::account::{CalDavConfig, RemoteCalendar};
 
 pub use account_credentials::hints::{self, AccountHint, Provider};
 use browser::{BrowserOpener, LiveBrowserOpener};

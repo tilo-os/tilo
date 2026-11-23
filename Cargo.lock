@@ -161,6 +161,7 @@ dependencies = [
  "tilo-resource",
  "tilo-secret-vault",
  "tilo-secrets",
+ "tilo-test-env",
  "tracing",
  "url",
  "uuid",
@@ -1839,31 +1840,18 @@ checksum = "ade8366b8bd5ba243f0a58f036cc0ca8a2f069cff1a2351ef1cac6b083e16fc0"
 name = "calendar-model"
 version = "0.1.0"
 dependencies = [
- "accounts",
  "fnv",
  "jiff",
- "pim-lines",
  "serde",
  "serde_json",
  "tilo-automerge-fork",
  "tilo-clock",
- "tilo-dav",
  "tilo-document",
  "tilo-formats",
- "tilo-recurrence",
  "tilo-resource",
  "tilo-test-env",
- "tracing",
+ "tilolang-calendar",
  "uuid",
- "workspace-hack",
-]
-
-[[package]]
-name = "calendar-model-wasm"
-version = "0.1.0"
-dependencies = [
- "calendar-model",
- "tilo-model-guest",
  "workspace-hack",
 ]
 
@@ -7586,7 +7574,6 @@ dependencies = [
  "block-devices",
  "bounded-command",
  "browser-continuity",
- "calendar-model",
  "cap-fs-ext",
  "cap-primitives",
  "cap-std",
@@ -15254,7 +15241,6 @@ dependencies = [
  "accounts",
  "agent-provider-config",
  "bounded-command",
- "calendar-model",
  "collab-types",
  "desktop-policy",
  "hex",
@@ -20008,7 +19994,6 @@ dependencies = [
  "assistant-model-wasm",
  "backups-model-wasm",
  "browser-model-wasm",
- "calendar-model-wasm",
  "camera-model-wasm",
  "clocks-model-wasm",
  "console-model-wasm",
@@ -23299,6 +23284,7 @@ dependencies = [
  "tilo-web-search",
  "tilo-workspace-agent",
  "tilo-workspace-keys",
+ "tilolang-calendar",
  "tokio",
  "tokio-rustls",
  "tracing",
@@ -23370,8 +23356,8 @@ name = "tilolang-calendar"
 version = "0.1.0"
 dependencies = [
  "accounts",
- "calendar-model",
  "jiff",
+ "pim-lines",
  "runtime-portal",
  "serde",
  "serde_json",
@@ -23380,7 +23366,10 @@ dependencies = [
  "tilo-action-policy",
  "tilo-dav",
  "tilo-document",
+ "tilo-formats",
  "tilo-net",
+ "tilo-recurrence",
+ "tilo-resource",
  "tilo-test-env",
  "tilolang-runtime",
  "tilolang-tilo",
@@ -27717,7 +27706,6 @@ dependencies = [
  "cached_proc_macro",
  "cached_proc_macro_types",
  "calendar-model",
- "calendar-model-wasm",
  "calloop",
  "calloop-wayland-source",
  "camera",

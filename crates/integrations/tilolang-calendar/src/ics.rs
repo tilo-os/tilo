@@ -1,4 +1,12 @@
 //! Minimal iCalendar (RFC 5545) import/export.
+// Calendar arithmetic is bounded by the values a calendar holds: a time of
+// day, a duration within one, a count of occurrences. Panic-producing lints
+// stay denied.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_precision_loss,
+    reason = "bounded date, time and duration arithmetic on calendar values"
+)]
 
 use std::collections::HashMap;
 use std::fmt::Write as _;

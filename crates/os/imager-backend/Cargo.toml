@@ -23,7 +23,6 @@ installation = ["dep:leveldb-sys"]
 # (`destination`): disks, the privileged install, network, power, online
 # accounts and the medium's profile. imager's `destination` feature enables it.
 destination = [
-    "dep:calendar-model",
     "dep:os-actions",
     "dep:tilo-power-mgmt",
     "dep:console-control",
@@ -83,7 +82,6 @@ staging-handoff-model = { path = "../../../apps/staging-handoff-model" }
 install-profile-model = { path = "../install-profile-model", features = ["model"] }
 prepared-setup-model = { path = "../../session/prepared-setup-model" }
 # The destination side (`destination`).
-calendar-model = { path = "../../../apps/calendar-model", default-features = false, features = ["store"], optional = true }
 os-actions = { path = "../../system/os-actions", optional = true }
 tilo-power-mgmt = { path = "../power", default-features = false, optional = true }
 console-control = { path = "../console-control", optional = true }

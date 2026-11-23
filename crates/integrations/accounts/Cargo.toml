@@ -65,6 +65,8 @@ sign-ins-fixture = []
 [dev-dependencies]
 # The record's actions are decided by the workspace's roles and grants.
 tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
+# `scenario!`: one test function holds the cases of one subject.
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [[example]]
 name = "account_storage_probe"

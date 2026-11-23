@@ -1,3 +1,11 @@
+// Calendar arithmetic is bounded by the values a calendar holds: a time of
+// day, a duration within one, a count of occurrences. Panic-producing lints
+// stay denied.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_precision_loss,
+    reason = "bounded date, time and duration arithmetic on calendar values"
+)]
 use super::*;
 
 tilo_test_env::scenario! {
@@ -85,16 +93,14 @@ tilo_test_env::scenario! {
              BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:{trigger}\r\nEND:VALARM\r\n\
              END:VEVENT\r\nEND:VCALENDAR\r\n"
             );
-            let parsed = parse(&payload).0[0].reminder_min;
-            let (events, _) = crate::actions::import_payload(&payload).expect("one event");
-            (parsed, events[0].reminder)
+            parse(&payload).0[0].reminder_min
         };
-        assert_eq!(reminder("-PT15M"), (Some(15), 15));
-        assert_eq!(reminder("-PT1H"), (Some(60), 60));
-        assert_eq!(reminder("-P1D"), (Some(1440), 1440));
-        assert_eq!(reminder("PT0S"), (Some(0), 0));
-        assert_eq!(reminder("-PT1H30M"), (Some(90), -1));
-        assert_eq!(reminder("PT15M"), (None, -1));
+        assert_eq!(reminder("-PT15M"), Some(15));
+        assert_eq!(reminder("-PT1H"), Some(60));
+        assert_eq!(reminder("-P1D"), Some(1440));
+        assert_eq!(reminder("PT0S"), Some(0));
+        assert_eq!(reminder("-PT1H30M"), Some(90));
+        assert_eq!(reminder("PT15M"), None);
     }
 
     phase date_time_series_ends_exclusions_and_due_times_import;
@@ -215,11 +221,10 @@ tilo_test_env::scenario! {
                 imported_at(&payload),
                 ("Europe/Berlin".to_string(), at_ten.clone())
             );
-            let (events, _) = crate::actions::import_payload(&payload)
-                .expect("an Outlook invite is something to import");
-            assert_eq!(events[0].timezone, "Europe/Berlin");
-            assert_eq!(events[0].reminder, 15);
-            assert!(parse_calendar(&payload).unknown_zones.is_empty());
+            let parsed = parse_calendar(&payload);
+            assert_eq!(parsed.events[0].timezone, "Europe/Berlin");
+            assert_eq!(parsed.events[0].reminder_min, Some(15));
+            assert!(parsed.unknown_zones.is_empty());
         }
         assert_eq!(
             imported_at(&outlook_invite(
@@ -336,18 +341,6 @@ tilo_test_env::scenario! {
             assert_eq!(event.timezone, "floating");
             assert_eq!(event.start.to_string(), "2026-11-03T10:00:00");
             assert_eq!(event.end.to_string(), "2026-11-03T11:00:00");
-            let (import, unknown) =
-                crate::actions::import_reporting(&payload).expect("the event is imported");
-            assert_eq!(unknown, vec![tzid.to_string()]);
-            assert_eq!(
-                crate::actions::imported_status("invite.ics", &unknown),
-                format!(
-                    "Imported calendar items from invite.ics. Times in {tzid} stay as written, as that time zone is unknown"
-                )
-            );
-            let mut calendar = tilo_resource::Replica::<Calendar>::new();
-            calendar.apply(import).unwrap();
-            assert_eq!(calendar.state().unwrap().events.len(), 1);
         }
     }
 

@@ -17,42 +17,23 @@ path = "src/lib.rs"
 
 [dependencies]
 automerge.workspace = true
-# The workspace's accounts record and the encrypted secret vault, for `store`.
-accounts = { path = "../../crates/integrations/accounts", features = ["person"], optional = true }
 # A fingerprint of what a server holds, so an unchanged event is owed nothing.
 fnv.workspace = true
 jiff.workspace = true
-# RFC 5545 content lines: folding, parameter quoting and TEXT escaping.
-pim-lines = { path = "../../crates/engines/pim-lines" }
 serde.workspace = true
 serde_json.workspace = true
 tilo-document = { path = "../../crates/sdk/tilo-document" }
 tilo-formats = { path = "../../crates/ui/tilo-formats" }
 # The person's local time, read the one way a device and a page both answer.
 tilo-clock = { path = "../../crates/platform/tilo-clock", features = ["local"] }
-# RRULE/EXDATE expansion and the one fold/gap wall-time policy, shared with
-# every other iCalendar consumer.
-tilo-recurrence = { path = "../../crates/engines/tilo-recurrence" }
 tilo-resource = { path = "../../crates/sdk/tilo-resource" }
-tracing = { workspace = true, optional = true }
+# The iCalendar format and the event, task and calendar shapes an entry is
+# read into and written from.
+tilolang-calendar = { path = "../../crates/integrations/tilolang-calendar", default-features = false }
 uuid.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# Multistatus parsing and REPORT bodies are always built; the live client
-# behind `live` is not part of a record.
-tilo-dav = { path = "../../crates/integrations/tilo-dav", default-features = false, optional = true }
 workspace-hack = { version = "0.1" }
-
-[features]
-# Reading the workspace's accounts in the calendar's shape, with a password
-# from the vault: what a device with a window does. A device that only applies
-# the resource's verbs links none of it.
-store = ["dep:accounts", "dep:tracing"]
-# The vault's calendar secrets reach their server's sign-in.
-live = ["dep:tilo-dav", "tilo-dav/oauth"]
-# Reach the time-zone database through the runtime bundle's engine library
-# instead of linking it, as a thin app build does.
-runtime-engine = ["tilo-recurrence/runtime-engine"]
 
 [dev-dependencies]
 tilo-resource = { path = "../../crates/sdk/tilo-resource", features = ["test-support"] }

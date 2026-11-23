@@ -8,7 +8,7 @@ use tilo_resource::{self, JsonSchema, items::item_resource_id};
 
 use crate::model::{
     Attendee, Calendar, Event, Id, InviteStatus, OccurrenceOverride, Palette, Priority, Recurrence,
-    Task, key,
+    Task, email_address, key, normalize_timezone,
 };
 
 pub fn event_resource_id(id: Id) -> String {
@@ -355,12 +355,6 @@ fn parse_optional_id(value: &str) -> Option<Option<Id>> {
     }
 }
 
-pub(crate) fn normalize_timezone(value: &str) -> Option<String> {
-    (value.len() <= 128)
-        .then(|| crate::timezone::canonical_zone(value))
-        .flatten()
-}
-
 impl AttendeeData {
     fn from_attendee(value: &Attendee) -> Self {
         Self {
@@ -384,12 +378,6 @@ impl AttendeeData {
             status: InviteStatus::from_ical(&self.status),
         })
     }
-}
-
-pub(crate) fn email_address(value: &str) -> Option<&str> {
-    let (local, domain) = value.split_once('@')?;
-    (!local.is_empty() && domain.contains('.') && !domain.contains(char::is_whitespace))
-        .then_some(value)
 }
 
 impl OccurrenceOverrideData {

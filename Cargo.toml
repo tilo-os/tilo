@@ -113,7 +113,6 @@ members = [
     "apps/browser-model",
     "apps/browser-model-wasm",
     "apps/calendar-model",
-    "apps/calendar-model-wasm",
     "apps/camera",
     "apps/camera-model",
     "apps/camera-model-wasm",
