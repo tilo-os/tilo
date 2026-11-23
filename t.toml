@@ -4294,8 +4294,10 @@ id_token = ["registry.tilo.so"]
 
 [[check]]
 name = "build/windows-sdk-{arch}"
-# Fetches from mirrors, registries and release hosts no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# Fetches Microsoft's CRT and SDK packages, at the versions tools/ci/windows/xwin-env.sh pins
+# (xwin checks each package against the hash the manifest names), so the archive is served from
+# the cache instead of fetched again by every Windows build.
+egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
 run = "bash tools/ci/windows/build.sh sdk {arch} /target/windows/sdk"
 image = "registry.tilo.so/tilo/tilo-builder@sha256:da7c1556f8a38b33e5e85f8086bbd162194a2377e56898481000cefb4412fa9d"
 outputs = ["/target/windows/sdk/sdk-{arch}.tar.zst", "/target/windows/sdk/sdk-{arch}.tar.zst.sha256"]
