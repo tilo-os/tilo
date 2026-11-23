@@ -14,9 +14,9 @@
 use serde::Serialize;
 use tilo_actions::params::{ActionParam, ParamType};
 use tilo_actions::surface::{
-    FieldType, ParamSurface, RESOURCE_UNIT, Surface, TypeSet, VerbSurface,
+    FieldType, ParamSurface, Surface, TypeSet, VerbSurface, param_type, verb_of,
 };
-use tilo_actions::{ActionSpec, ResourceSpec, RiskLevel};
+use tilo_actions::{ActionSpec, ResourceSpec};
 use tilo_resource::Effect;
 use tilo_resource::effect::EffectDecl;
 use tilo_session_core::desktop::navigation::{ChromeEffect, LayoutEffect};
@@ -144,22 +144,6 @@ fn application() -> ResourceSpec {
     resource
 }
 
-/// The type of a parameter as the description writes it. A resource is a resource of the kind it
-/// names, or of any kind: code passes the value it has (a note it found), never its id's text. An
-/// object or a list has no type tilolang code gives, so the action is left out.
-fn field_type(param: &ActionParam) -> FieldType {
-    match param.ty {
-        ParamType::Text | ParamType::Secret | ParamType::DateTime => FieldType::Text,
-        ParamType::Resource => {
-            FieldType::Resource(param.resource_kind().unwrap_or_default().to_owned())
-        }
-        ParamType::Integer => FieldType::Int,
-        ParamType::Number => FieldType::Float,
-        ParamType::Boolean => FieldType::Bool,
-        ParamType::Object | ParamType::Array => FieldType::Any,
-    }
-}
-
 /// A parameter as the description writes it. An enum its declaration types (sent as an
 /// object) is that enum, declared in `types`, so a call in tilolang builds its value. A plain
 /// record of named fields, which tilolang has no value of (its records are resources), is its
@@ -177,7 +161,7 @@ fn params(
         name: param.name.to_string(),
         required: param.required,
         schema: serde_json::Value::Null,
-        ty: if ty.is_any() { field_type(param) } else { ty },
+        ty: if ty.is_any() { param_type(param) } else { ty },
         within: None,
     };
     let declared = decl.and_then(|decl| {
@@ -265,19 +249,7 @@ fn verb(action: &ActionSpec, declared: Option<Declared>, types: &mut TypeSet) ->
             param.name
         );
     }
-    VerbSurface {
-        id: action.id.clone(),
-        name: String::new(),
-        label: String::new(),
-        description: None,
-        kind: action.contract.settled_kind(),
-        destructive: action.contract.risk == RiskLevel::Destructive,
-        incoming_message: false,
-        params,
-        returns: None,
-        writes: vec![RESOURCE_UNIT.to_owned()],
-        field: None,
-    }
+    verb_of(action, params)
 }
 
 /// `described`: the kinds the package describes per thing ([`instances`]).

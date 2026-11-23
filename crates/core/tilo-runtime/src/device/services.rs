@@ -711,6 +711,9 @@ impl Daemon {
         let personal = tilo_workspace_service::workspaces::PersonResources::default();
         personal.attach(workspaces.copies().clone(), tilo_rt::app().handle(), None);
         apps.device_grants().keep_in(std::sync::Arc::new(personal));
+        // What the device's providers publish at fixed addresses is what an app's code calls them
+        // by: each instance is handed their packages.
+        apps.read_provided_from(workspaces.copies().providers());
         let identity_socket = sockets.join(IDENTITY_SOCKET);
         stage("starting the identity service");
         let identity_broker = identity_service(

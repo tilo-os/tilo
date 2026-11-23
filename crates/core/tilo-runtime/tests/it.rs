@@ -108,6 +108,8 @@ mod invocations;
 mod joining;
 #[path = "machine_secrets.rs"]
 mod machine_secrets;
+#[path = "migrate_engine.rs"]
+mod migrate_engine;
 #[path = "provided.rs"]
 mod provided;
 #[path = "root_holder_login.rs"]

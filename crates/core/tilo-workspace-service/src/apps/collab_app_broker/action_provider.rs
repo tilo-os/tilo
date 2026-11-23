@@ -1766,10 +1766,12 @@ impl AppBrokerState {
         if query.provider.is_none() {
             page.providers = providers;
         }
-        match self.provided() {
-            Some(provided) => provided.listed(caller, query, page),
-            None => Pending::ready(Ok(page)),
+        // What the registered providers publish at fixed addresses, as the packages an app's code
+        // compiles its calls of them against.
+        if let Some(provided) = self.provided() {
+            page.packages = provided.packages();
         }
+        Pending::ready(Ok(page))
     }
 
     /// Admit `request` for `caller`, or report the invocation already
@@ -1850,6 +1852,21 @@ impl AppBrokerState {
             };
             return self.invoke_directory(caller, root, origin, request);
         }
+        // An app's code calls by address, naming its own app or the one it uses: an address a
+        // provider registered on this device publishes is that provider's, and its call is the
+        // provider's like any other, admitted under the application its registration names.
+        if let Some(registered) = self
+            .services
+            .providers
+            .as_ref()
+            .and_then(|providers| providers.publishing(&request.target))
+        {
+            let mut request = request.clone();
+            registered
+                .provider
+                .clone_into(&mut request.target.provider);
+            return Pending::ready(self.invoke_registered(caller, origin, &registered, &request));
+        }
         if is_launchable_provider(&request.target.provider)
             || application_provider(&request.target.provider).is_some()
             || super::windowless_instances::started_app(request).is_some()
@@ -1869,16 +1886,6 @@ impl AppBrokerState {
             return Pending::ready(
                 self.invoke_shortcut_run(caller, origin, workspace, shortcut, request),
             );
-        }
-        // A provider this device's embedder registered answers here exactly as it answers another
-        // device's call, admitted in the same place.
-        if let Some(answer) = self
-            .services
-            .providers
-            .as_ref()
-            .and_then(|providers| providers.invoke(caller, request.clone()))
-        {
-            return answer;
         }
         // A provider registered on this device: the host's own steps, and what its embedder
         // registered, which another device's call reaches through the same registry.

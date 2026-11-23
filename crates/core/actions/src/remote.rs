@@ -113,8 +113,8 @@ pub use providers::{
 pub use catalogue::{
     CanonicalActionRoute, CatalogueLimits, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueResource, CatalogueRow, MAX_BY_RESOURCE_PAGE, MAX_CATALOGUE_PAGE, Offered,
-    ResourceViewLocator, RowVisibility, ViewResourceQuery, compact, expand, rows_weight,
-    truncate_resources, truncate_rows,
+    ProvidedPackage, ProvidedResource, ResourceViewLocator, RowVisibility, ViewResourceQuery,
+    compact, expand, rows_weight, truncate_resources, truncate_rows,
 };
 pub use changes::{CHANGE_FEED_UNAVAILABLE, ChangeFeed, ChangePage, ResourceChanged};
 pub use content_get::{CONTENT_GETS_UNAVAILABLE, ContentGetAnswer, ContentGets, ContentPiece};
@@ -1409,6 +1409,15 @@ pub trait ActionProvider {
     fn serves(&self, provider: &str) -> bool {
         let _ = provider;
         false
+    }
+
+    /// The resources this provider publishes under fixed addresses, with every action it
+    /// answers on them: what a device registers with it, so a call naming one of those
+    /// addresses reaches it whichever app the caller named, and what another language compiles
+    /// its calls against ([`ProvidedPackage`]). Empty for a provider whose resources are
+    /// found only by querying it.
+    fn published(&self) -> Vec<crate::ResourceSpec> {
+        Vec::new()
     }
 
     /// One page of what `caller` is offered. An action the caller may not

@@ -10,6 +10,12 @@
 //! (`tilo-actions/1`) reaches a provider registered to reach devices ([`Providers::from_device`]),
 //! admitted by the grants of the workspace it asks in for the asking device. A provider decides no
 //! grant itself.
+//!
+//! A provider registers the resources it publishes at fixed addresses with it
+//! ([`ActionProvider::published`]). An app's call naming one of those addresses reaches it whichever
+//! app the call names ([`Providers::publishing`]): an app's code calls by address and never knows
+//! whether an app or a provider answers, and the providers' packages are what that code compiles
+//! against ([`Providers::packages`]).
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -17,8 +23,10 @@ use std::sync::Arc;
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
-    InvocationState, InvokeRequest, Pending,
+    InvocationState, InvokeRequest, Pending, ProvidedPackage, RemoteActionTarget,
+    application_provider,
 };
+use tilo_actions::{ResourceSpec, api::locate};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 
 /// How far a registered provider reaches.
@@ -71,6 +79,8 @@ pub struct Registered {
     pub reach: Reach,
     /// What answers its calls.
     pub answers: Arc<dyn ActionProvider + Send + Sync>,
+    /// The resources it publishes at fixed addresses.
+    pub published: Vec<ResourceSpec>,
 }
 
 /// How many invocations from other devices a registered provider took are remembered for routing
@@ -90,8 +100,8 @@ struct Inner {
 }
 
 impl Providers {
-    /// Answer the calls that name `provider` with `answers` from now on, decided by the grants of
-    /// the application `app` and reaching as far as `reach`.
+    /// Answer the calls that name `provider`, or an address it publishes, with `answers` from now
+    /// on, decided by the grants of the application `app` and reaching as far as `reach`.
     pub fn provide(
         &self,
         provider: &'static str,
@@ -99,6 +109,7 @@ impl Providers {
         reach: Reach,
         answers: Arc<dyn ActionProvider + Send + Sync>,
     ) {
+        let published = answers.published();
         self.0.provided.write_recover().insert(
             provider,
             Registered {
@@ -106,8 +117,35 @@ impl Providers {
                 app,
                 reach,
                 answers,
+                published,
             },
         );
+    }
+
+    /// The registered provider that published the address an app's call (`application:<workspace>:
+    /// <app>`) names; `None` for a call naming no app, or an address no registered provider
+    /// publishes, which an app answers.
+    #[must_use]
+    pub fn publishing(&self, target: &RemoteActionTarget) -> Option<Registered> {
+        application_provider(&target.provider)?;
+        self.0
+            .provided
+            .read_recover()
+            .values()
+            .find(|registered| locate(&registered.published, &target.address).is_some())
+            .cloned()
+    }
+
+    /// What each registered provider publishes at fixed addresses, as the package an app's code
+    /// calls it by.
+    #[must_use]
+    pub fn packages(&self) -> Vec<ProvidedPackage> {
+        self.0
+            .provided
+            .read_recover()
+            .values()
+            .filter_map(|registered| ProvidedPackage::of(&registered.published))
+            .collect()
     }
 
     /// The provider registered under `provider`, or under the app a record provider names

@@ -347,3 +347,87 @@ fn a_drive_is_paged_chosen_at_any_depth_and_given_a_destination_through_the_acti
     assert_eq!(status["failed"], json!([]));
     assert_eq!(status["left_out"], json!([]));
 }
+
+#[test]
+fn stopping_a_source_cancels_its_run() {
+    let (device, migrations) = device();
+    let reviewed = run(&migrations, "review", json!({"source": "thunderbird"}));
+    let book = address_book(value(&reviewed));
+    run(
+        &migrations,
+        "choose",
+        json!({"source": "thunderbird", "items": [book], "only": true}),
+    );
+
+    // Paused while it reaches the workspace, the run is stopped by its source, by whoever asks.
+    let (closed, opened) = &device.gate;
+    *closed.lock().expect("gate") = true;
+    let request = request("start", json!({"source": "thunderbird"}));
+    let id = request.invocation;
+    answered(migrations.invoke(&caller(), request)).expect("admitted");
+    let waited = migrations
+        .next_change(&caller(), &id)
+        .expect("a step is followed by what moves it");
+    // The run is going once its thread took it up.
+    let until = Instant::now() + Duration::from_secs(30);
+    let stopped = loop {
+        let stopped = run(&migrations, "stop", json!({"source": "thunderbird"}));
+        if matches!(stopped, InvocationUpdate::Succeeded { .. }) || Instant::now() > until {
+            break stopped;
+        }
+    };
+    assert_eq!(
+        value(&stopped)["run"],
+        json!(id.0.to_string()),
+        "{stopped:?}"
+    );
+    *closed.lock().expect("gate") = false;
+    opened.notify_all();
+    assert!(
+        matches!(follow(&migrations, id), InvocationUpdate::Cancelled { .. }),
+        "stopping it is cancelling it"
+    );
+    // Its follower was told.
+    answered(waited);
+
+    let nothing = run(&migrations, "stop", json!({"source": "thunderbird"}));
+    assert!(
+        matches!(nothing, InvocationUpdate::Failed { .. }),
+        "nothing of it is going any more: {nothing:?}"
+    );
+}
+
+/// What code compiles its calls of the engine against (`apps/tl/migrate-engine`) is what the
+/// device registers with it.
+#[test]
+fn the_committed_package_is_what_the_engine_registers() {
+    let (_, migrations) = device();
+    let registered = tilo_actions::remote::ProvidedPackage::of(&migrations.published())
+        .expect("the engine publishes a package");
+    let manifest: toml::Table = toml::from_str(include_str!(
+        "../../../../../apps/tl/migrate-engine/tilo-app.toml"
+    ))
+    .expect("the manifest reads");
+    assert_eq!(manifest["package"]["id"].as_str(), Some(super::PACKAGE));
+    assert_eq!(registered.app, super::PACKAGE);
+    assert_eq!(
+        manifest["package"]["name"].as_str(),
+        Some(registered.title.as_str())
+    );
+    let committed: toml::Table = toml::from_str(include_str!(
+        "../../../../../apps/tl/migrate-engine/surface.toml"
+    ))
+    .expect("the description reads");
+    let committed: Vec<tilo_actions::surface::Surface> =
+        serde_json::from_value(serde_json::to_value(&committed["resources"]).expect("as JSON"))
+            .expect("the description is surfaces");
+    let published: Vec<_> = registered
+        .resources
+        .into_iter()
+        .map(|resource| {
+            assert_eq!(resource.address, super::resource(&DEVICE));
+            resource.surface
+        })
+        .collect();
+    assert_eq!(committed, published);
+}
