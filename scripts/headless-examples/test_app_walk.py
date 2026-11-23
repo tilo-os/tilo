@@ -550,5 +550,22 @@ class NamingWhatTheRunMade(unittest.TestCase):
             walk.resolved({}, {"served": "provider.id"})
 
 
+class CountingControls(unittest.TestCase):
+    TARGETS = [{"name": "Strips", "rect": [0, 0, 80, 24]},
+               {"name": "Strips", "rect": [0, 24, 80, 24]},
+               {"name": "Settings for Strips", "rect": [0, 48, 80, 24]},
+               {"name": "note-7f3a", "identity": "k7f\x1fdpj7scfe", "rect": [0, 0, 200, 24]}]
+
+    def test_a_name_counts_the_controls_drawn_with_it(self):
+        self.assertEqual(sum(walk.matches(t, "Strips") for t in self.TARGETS), 2)
+
+    def test_a_prefix_counts_the_rows_named_by_an_id(self):
+        self.assertEqual(sum(walk.matches(t, {"prefix": "note-"}) for t in self.TARGETS), 1)
+
+    def test_an_identity_or_what_a_control_does_names_one(self):
+        self.assertTrue(walk.matches(self.TARGETS[3], "k7f\x1fdpj7scfe"))
+        self.assertTrue(walk.matches(self.TARGETS[3], {"doing": "dpj7scfe"}))
+
+
 if __name__ == "__main__":
     unittest.main()

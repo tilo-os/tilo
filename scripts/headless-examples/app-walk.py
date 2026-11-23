@@ -400,20 +400,20 @@ def control(session: Session, selector) -> dict | None:
             if target.get("name") == selector["menuitem"] and drawn(target)
         ]
         return max(found, key=lambda target: target["rect"][2]) if found else None
-    for target in targets:
-        identity = target.get("identity") or ""
-        if isinstance(selector, dict):
-            if "prefix" in selector:
-                if str(target.get("name", "")).startswith(selector["prefix"]):
-                    return target
-            elif ID_SEP in identity and identity.rsplit(ID_SEP, 1)[-1] == selector["doing"]:
-                return target
-        elif ID_SEP in selector:
-            if identity == selector:
-                return target
-        elif target.get("name") == selector:
-            return target
-    return None
+    return next((target for target in targets if matches(target, selector)), None)
+
+
+def matches(target: dict, selector) -> bool:
+    """Whether `target` is one `selector` names: the same forms `control` takes,
+    minus the menu item's widest-of-a-name choice."""
+    identity = target.get("identity") or ""
+    if isinstance(selector, dict):
+        if "prefix" in selector:
+            return str(target.get("name", "")).startswith(selector["prefix"])
+        return ID_SEP in identity and identity.rsplit(ID_SEP, 1)[-1] == selector.get("doing")
+    if ID_SEP in str(selector):
+        return identity == selector
+    return target.get("name") == selector
 
 
 def provider_addresses(said: str) -> dict:
@@ -1067,6 +1067,33 @@ class Walk:
         if missing:
             raise Failed(f"not on screen: {json.dumps(missing, ensure_ascii=False)}")
         return {"saw": entries}
+
+    def op_count(self, value) -> dict:
+        """How many controls the selector in `see` is drawn as, which must be
+        `is`: `{"see": "Strips", "is": 2}` — two rows of one name, a list that
+        holds the same style twice, a badge whose number of rows is the finding.
+        The count must hold within ten seconds (`within` sets another patience),
+        so a list still filling in is given its time."""
+        selector = pick(value["see"], self.variant)
+        wanted = int(value["is"])
+        deadline = float(value.get("within", 10))
+
+        def held() -> int:
+            return sum(1 for target in self.session.targets()
+                       if drawn(target) and matches(target, selector))
+
+        def differs() -> int | None:
+            found = held()
+            return None if found == wanted else found
+
+        left = differs()
+        end = time.monotonic() + deadline
+        while left is not None and time.monotonic() < end:
+            time.sleep(0.05)
+            left = differs()
+        if left is not None:
+            raise Failed(f"{selector!r} is drawn {left} time(s), not {wanted}")
+        return {"count": wanted, "of": selector}
 
     def op_must_not(self, value) -> dict:
         """What must be gone now: a sheet closed, a banner dismissed. Each

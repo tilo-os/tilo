@@ -44,6 +44,16 @@
       "budget_ms": 120000
     },
     {
+      "id": "the-switch-offers-it",
+      "said": "The shell's switch lists my copy beside the shipped style it was made from",
+      "ops": [
+        {"press": "Showing Strips"},
+        {"count": {"see": "Strips", "is": 2}}
+      ],
+      "dark": true,
+      "budget_ms": 10000
+    },
+    {
       "id": "show-it",
       "said": "Show the shell as my own style",
       "ops": [
@@ -53,16 +63,9 @@
             "show_style",
             {"style": "mine.shell:strips"}
           ]
-        }
-      ],
-      "dark": true,
-      "budget_ms": 10000
-    },
-    {
-      "id": "it-is-shown",
-      "said": "The switch says the shell shows my style",
-      "ops": [
-        {"must": ["Showing My shell"]}
+        },
+        {"key": "Escape"},
+        {"must": ["Showing Strips", "Strip 1"]}
       ],
       "dark": true,
       "budget_ms": 10000
