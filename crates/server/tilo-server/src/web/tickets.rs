@@ -349,7 +349,7 @@ impl Tickets {
                     tilo_user_identity::DeviceCapabilities::member(),
                     Arc::new(PageApprover(Arc::clone(&slot))),
                     self.certification.revocations(),
-                    TICKET_LIFETIME_NS,
+                    slot.expires_at_ns,
                 );
                 *slot.served.lock_recover() = Some(served.clone());
                 self.watch_certified(Arc::clone(&slot), &served);

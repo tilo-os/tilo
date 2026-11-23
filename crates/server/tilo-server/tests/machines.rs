@@ -935,3 +935,322 @@ async fn a_machine_keeps_its_disk_recovery_key_and_only_its_person_reads_it() {
         "nothing else changed it"
     );
 }
+
+/// The planned machine every planned-ticket test plans.
+const PLANNED: &str = "0123456789abcdef0123456789abcdef";
+
+/// A device of the person's as the ticket server it runs knows it: its own workspace service,
+/// which holds their Servers workspace, where it is reached, its certificate and key, and their
+/// root.
+struct Issuing {
+    workspaces: tilo_workspace_service::workspaces::Workspaces,
+    addr: iroh::EndpointAddr,
+    cert: tilo_user_identity::DeviceCert,
+    key: ed25519_dalek::SigningKey,
+    root: ed25519_dalek::SigningKey,
+}
+
+impl Issuing {
+    fn reached(&self) -> tilo_device_identity::login::Reached {
+        tilo_device_identity::login::Reached {
+            endpoint: *self.addr.id.as_bytes(),
+            relay: None,
+            direct: self.addr.ip_addrs().copied().collect(),
+        }
+    }
+}
+
+impl tilo_workspace_service::device_tickets::Issuer for Issuing {
+    fn serving(
+        &self,
+    ) -> Result<
+        (
+            tilo_device_identity::login::Reached,
+            tilo_peer_state::actions::ActionService,
+        ),
+        String,
+    > {
+        Ok((self.reached(), self.workspaces.action_service()))
+    }
+
+    fn device(
+        &self,
+    ) -> Result<
+        (
+            tilo_user_identity::DeviceCert,
+            Arc<dyn collab_types::signer::DeviceSigner>,
+        ),
+        String,
+    > {
+        Ok((self.cert.clone(), Arc::new(self.key.clone())))
+    }
+
+    fn root(&self) -> Result<Option<tilo_workspace_service::device_tickets::Root>, String> {
+        Ok(Some(Arc::new(self.root.clone())))
+    }
+
+    fn entry(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn Future<Output = Result<tilo_device_identity::login::Entry, String>> + Send + '_>,
+    > {
+        Box::pin(std::future::ready(Ok(tilo_device_identity::login::Entry {
+            workspace: person_workspace_id(&self.cert.user_public_key),
+            workspace_name: None,
+            server_cert: self.workspaces.serving_certificate().clone(),
+            server: self.reached(),
+            site: "https://tilo.test/".to_owned(),
+            host_origin: "iroh:laptop".to_owned(),
+        })))
+    }
+
+    fn servers(&self) -> Option<tilo_workspace_service::workspaces::Workspaces> {
+        Some(self.workspaces.clone())
+    }
+}
+
+/// The laptop that plans machines, on its own workspace service over `state`, whose device takes
+/// part in its workspaces' channels through `keys`: what a restart opens again.
+async fn planning_laptop(
+    alice: &TestUser,
+    laptop: &TestDevice,
+    state: tempfile::TempDir,
+    keys: &Arc<tilo_workspace_service::workspaces::fixtures::TestGroupKeys>,
+) -> Hosted {
+    crate::common::serve_with_keys(
+        alice,
+        laptop,
+        WorkSetting::own_person(),
+        state,
+        Some(tilo_workspace_service::workspaces::DeviceKeyGroups {
+            keys: Arc::clone(keys) as _,
+            sink: None,
+        }),
+    )
+    .await
+}
+
+/// The ticket server `device` runs on `hosted`, as it starts, and how many kept tickets it
+/// serves again.
+async fn ticket_server(
+    alice: &TestUser,
+    device: &TestDevice,
+    hosted: &Hosted,
+    addr: iroh::EndpointAddr,
+) -> (tilo_workspace_service::device_tickets::TicketServer, usize) {
+    let tickets = tilo_workspace_service::device_tickets::TicketServer::new(Arc::new(Issuing {
+        workspaces: hosted.host.workspaces().clone(),
+        addr,
+        cert: device.cert.clone(),
+        key: device.sk.clone(),
+        root: alice.user_sk.clone(),
+    }));
+    let serving = tickets.restore().await.expect("the kept tickets read");
+    (tickets, serving)
+}
+
+/// Plan [`PLANNED`] on `hosted`, its ticket running out at `expires_at_ns`.
+async fn plan_cupboard(hosted: &Hosted, expires_at_ns: u64) {
+    let plan = install_plan::Choices {
+        destination: "tilo-server".to_owned(),
+        name: Some("cupboard".to_owned()),
+        network: Some(install_profile_model::plan::Network {
+            addressing: "dhcp".to_owned(),
+            ..install_profile_model::plan::Network::default()
+        }),
+        disk: Some(install_profile_model::plan::DiskRule {
+            kind: "empty".to_owned(),
+            identity: String::new(),
+        }),
+        unlock: Some("tpm".to_owned()),
+        updates: Some("stable".to_owned()),
+        hosting: Some(Vec::new()),
+    }
+    .plan(
+        PLANNED,
+        install_profile_model::plan::Token {
+            nonce: hex::encode([0x6b_u8; 16]),
+            expires_at_ns,
+        },
+    )
+    .unwrap();
+    servers::apply(
+        hosted.host.workspaces(),
+        Servers::PLAN_MACHINE.with((serde_json::to_string(&plan).unwrap(), "cupboard".into())),
+    )
+    .await
+    .unwrap();
+}
+
+/// The plan's ticket, as `tilo machine add` asks the laptop for it.
+async fn planned_ticket(
+    tickets: &tilo_workspace_service::device_tickets::TicketServer,
+) -> tilo_device_identity::login::Ticket {
+    tickets
+        .issue(Some(tilo_workspace_service::device_tickets::Role::Plan(
+            PLANNED.to_owned(),
+        )))
+        .await
+        .expect("the plan's ticket is issued")
+}
+
+/// A machine with the key `seed` asks the device at `issuer` to certify it with `ticket`,
+/// as the installer's `tilo login` does: its key once certified, or how it was refused.
+async fn machine_certified(
+    issuer: &iroh::EndpointAddr,
+    ticket: &tilo_device_identity::login::Ticket,
+    seed: u8,
+) -> Result<[u8; 32], String> {
+    use tilo_device_identity::login::{CERTIFY, CertifyInput, PROVIDER, RESOURCE, SCOPE};
+
+    let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+    let dialed = tilo_server_client::ServerAddress::at(issuer.clone());
+    let endpoint = dialed.bind(Some(key.to_bytes())).await.unwrap();
+    let service = tilo_peer_state::actions::ActionService::new(
+        key.clone(),
+        Arc::new(tilo_peer_state::actions::NoActions),
+    );
+    let device = Arc::new(service.remote(&endpoint, &dialed.addr(), SCOPE));
+    let input = CertifyInput {
+        secret: ticket.secret_hex(),
+        device_public_key: hex::encode(key.verifying_key().to_bytes()),
+        agent: "tilo".into(),
+        label: Some("cupboard".into()),
+    };
+    let serde_json::Value::Object(argument) = serde_json::to_value(&input).unwrap() else {
+        panic!("the input is an object");
+    };
+    let request = InvokeRequest {
+        on_behalf_of: None,
+        invocation: InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: PROVIDER.to_owned(),
+            address: ActionAddress::new(RESOURCE, CERTIFY),
+        },
+        argument: InvokeArgument::Json(argument),
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    let settled = device
+        .invoke_until_settled(request, std::time::Duration::from_secs(10))
+        .await;
+    endpoint.close().await;
+    match settled {
+        Some(Ok(tilo_actions::InvocationUpdate::Succeeded { .. })) => {
+            Ok(key.verifying_key().to_bytes())
+        }
+        other => Err(format!("{other:?}")),
+    }
+}
+
+/// The device key of the machine that took [`PLANNED`], once one did.
+async fn taken_by(hosted: &Hosted) -> Option<[u8; 32]> {
+    let servers = servers::read(hosted.host.workspaces()).await.unwrap();
+    servers.servers.iter().find_map(|(device, server)| {
+        let mut key = [0; 32];
+        (server.plan.plan == PLANNED && hex::decode_to_slice(device.as_str(), &mut key).is_ok())
+            .then_some(key)
+    })
+}
+
+/// The person plans a machine on their laptop and its ticket is printed; the laptop restarts
+/// before the machine installs. The restarted laptop serves the ticket again from the vault of
+/// the person's Servers workspace, and the machine joins with it and takes the plan's entry.
+/// Another device of the person's, reading the same vault, does not serve it, and once the plan
+/// is taken nothing serves it again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_planned_machines_ticket_outlives_a_restart_of_the_device_that_printed_it() {
+    let alice = TestUser::fresh("Alice");
+    let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
+    let phone = alice.enrol("phone", DeviceCapabilities::primary());
+    let keys = Arc::<tilo_workspace_service::workspaces::fixtures::TestGroupKeys>::default();
+    let hosted = planning_laptop(&alice, &laptop, tempfile::tempdir().unwrap(), &keys).await;
+    servers::found(hosted.host.workspaces()).await.unwrap();
+    plan_cupboard(&hosted, u64::MAX / 2).await;
+    let (printed, _) = ticket_server(&alice, &laptop, &hosted, hosted.host.node_addr()).await;
+    let ticket = planned_ticket(&printed).await;
+
+    // The laptop stops, and nothing it held in memory is left.
+    drop(printed);
+    let state = hosted.stop_keeping().await;
+    let hosted = planning_laptop(&alice, &laptop, state, &keys).await;
+    let (restarted, serving) =
+        ticket_server(&alice, &laptop, &hosted, hosted.host.node_addr()).await;
+    assert_eq!(
+        serving, 1,
+        "the restarted laptop serves the plan's ticket again"
+    );
+
+    // The phone reads the same vault and leaves the ticket: the ticket names the laptop.
+    let phone_addr = iroh::EndpointAddr::from_parts(
+        iroh::EndpointId::from_bytes(&phone.cert.device_public_key).unwrap(),
+        Vec::new(),
+    );
+    let (_phone, serving) = ticket_server(&alice, &phone, &hosted, phone_addr).await;
+    assert_eq!(
+        serving, 0,
+        "another device of the person's does not serve the laptop's ticket"
+    );
+
+    let machine = machine_certified(&hosted.host.node_addr(), &ticket, 0x51)
+        .await
+        .unwrap_or_else(|why| panic!("the machine joins with the kept ticket: {why}"));
+    assert_eq!(
+        taken_by(&hosted).await,
+        Some(machine),
+        "the machine took the plan"
+    );
+
+    // Taken, the plan's ticket is let go of: after another restart it serves no one.
+    drop(restarted);
+    let state = hosted.stop_keeping().await;
+    let hosted = planning_laptop(&alice, &laptop, state, &keys).await;
+    let (_again, serving) = ticket_server(&alice, &laptop, &hosted, hosted.host.node_addr()).await;
+    assert_eq!(serving, 0, "a taken plan's ticket is not served again");
+    let refused = machine_certified(&hosted.host.node_addr(), &ticket, 0x52).await;
+    assert!(
+        refused.is_err(),
+        "a taken plan's ticket is refused: {refused:?}"
+    );
+    assert_eq!(
+        taken_by(&hosted).await,
+        Some(machine),
+        "the plan stays the first machine's"
+    );
+    hosted.stop().await;
+}
+
+/// A planned machine's ticket that ran out while the laptop was stopped is not served again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_planned_machines_ticket_that_ran_out_is_refused_after_a_restart() {
+    let alice = TestUser::fresh("Alice");
+    let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
+    let keys = Arc::<tilo_workspace_service::workspaces::fixtures::TestGroupKeys>::default();
+    let hosted = planning_laptop(&alice, &laptop, tempfile::tempdir().unwrap(), &keys).await;
+    servers::found(hosted.host.workspaces()).await.unwrap();
+    let expires_at_ns = tilo_clock::unix_now_ns().saturating_add(2_000_000_000);
+    plan_cupboard(&hosted, expires_at_ns).await;
+    let (printed, _) = ticket_server(&alice, &laptop, &hosted, hosted.host.node_addr()).await;
+    let ticket = planned_ticket(&printed).await;
+    drop(printed);
+    let state = hosted.stop_keeping().await;
+    while tilo_clock::unix_now_ns() <= expires_at_ns {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    let hosted = planning_laptop(&alice, &laptop, state, &keys).await;
+    let (_restarted, serving) =
+        ticket_server(&alice, &laptop, &hosted, hosted.host.node_addr()).await;
+    assert_eq!(serving, 0, "a ticket that ran out is not served again");
+    let refused = machine_certified(&hosted.host.node_addr(), &ticket, 0x61).await;
+    assert!(
+        refused.is_err(),
+        "a ticket that ran out is refused: {refused:?}"
+    );
+    assert_eq!(taken_by(&hosted).await, None, "no machine took the plan");
+    hosted.stop().await;
+}

@@ -224,6 +224,15 @@ impl Servers {
         Ok(waiting)
     }
 
+    /// The plan `plan` while no machine has taken it: what the plan's ticket waits for. Once a
+    /// machine took it, the entry is under that machine's key.
+    #[must_use]
+    pub fn unclaimed(&self, plan: &str) -> Option<&Server> {
+        self.servers
+            .get(&Id::from_raw(plan.to_owned()))
+            .filter(|server| server.plan.status == plan::PLANNED)
+    }
+
     /// The planned machine whose plan is `plan`, as [`Self::waiting_plans`]
     /// tells it.
     ///

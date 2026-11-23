@@ -1129,8 +1129,15 @@ fn broker_services(
     // What each window this session runs shows, kept with its launches: read
     // by the service a window's app speaks on, and by the session's own passes.
     let window_notes = launches.notes();
+    // A ticket for a new computer: a planned machine's is served again once this device's
+    // workspace service opens, after a restart.
+    let device_tickets = crate::device_tickets::DeviceTickets::new(
+        hosted_endpoint,
+        hosted_device_actions,
+        service.clone(),
+    );
+    device_tickets.restore_once_open();
     // The session decides who may administer a workspace's identity.
-    let ticket_service = service.clone();
     let layout_authority = std::sync::Arc::clone(&layout);
     let grants_layout = std::sync::Arc::clone(&layout);
     // The certificate checks this session's broker decides a join and a
@@ -1367,11 +1374,7 @@ fn broker_services(
             [
                 vec![
                     activity as std::sync::Arc<dyn HostStepServices>,
-                    std::sync::Arc::new(crate::device_tickets::DeviceTickets::new(
-                        hosted_endpoint,
-                        hosted_device_actions,
-                        ticket_service,
-                    )),
+                    std::sync::Arc::new(device_tickets),
                     // The machines the person planned to install: their plans
                     // are entries in their Servers workspace, which this
                     // session's own workspace service keeps.

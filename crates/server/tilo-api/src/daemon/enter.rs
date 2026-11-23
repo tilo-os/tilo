@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use ed25519_dalek::SigningKey;
-use tilo_device_identity::login::{CertifyAnswer, Device, LOGIN_DAMAGED, Reached};
+use tilo_device_identity::login::{CertifyAnswer, Device, Entry, LOGIN_DAMAGED, Reached};
 use tilo_server_client::login::{PairingLink, SignIn};
 use tilo_session_client::device::Device as Entered;
 
@@ -198,6 +198,53 @@ pub fn reached_of(addr: &iroh::EndpointAddr) -> Reached {
     }
 }
 
+/// The site a computer is shown when the device that adds it enters no server's workspace but
+/// its own: the same one an invitation over iroh names.
+const FOUNDED_SITE: &str = "https://tilo.sh/";
+
+/// Where a computer that a device logged in as `login` adds enters: the workspace and server that
+/// login names.
+///
+/// # Errors
+/// The login names no server any more ([`LOGIN_ENDED`]).
+pub fn login_entry(login: &Device) -> Result<Entry, String> {
+    let published = login
+        .server_address
+        .as_ref()
+        .ok_or_else(|| LOGIN_ENDED.to_owned())?;
+    let mut server = reached_of(&published.endpoint_addr);
+    if server.relay.is_none() {
+        server.relay.clone_from(&published.relay_url);
+    }
+    Ok(Entry {
+        workspace: login.workspace.clone(),
+        workspace_name: login.workspace_name.clone(),
+        server_cert: login.server_cert.clone(),
+        server,
+        site: login.site.clone(),
+        host_origin: login.host_origin.clone(),
+    })
+}
+
+/// Where a computer that a device with no login adds enters: `workspace`, named `name`, which the
+/// device holds, through its `endpoint` and the certificate `server_cert` its workspace service
+/// proves.
+#[must_use]
+pub fn founded_entry(
+    endpoint: &iroh::Endpoint,
+    (workspace, name): (String, String),
+    server_cert: tilo_user_identity::DeviceCert,
+) -> Entry {
+    Entry {
+        workspace,
+        workspace_name: Some(name),
+        server_cert,
+        server: reached_of(&endpoint.addr()),
+        site: FOUNDED_SITE.to_owned(),
+        host_origin: format!("{IROH_ONLY}{}", endpoint.id()),
+    }
+}
+
 /// The login `answer` makes of this computer, for `agent`.
 #[must_use]
 pub fn device_of(answer: CertifyAnswer, agent: &str) -> Device {
@@ -311,7 +358,8 @@ pub fn issuing_for_test(
             tilo_user_identity::DeviceCapabilities::member(),
             approver,
             tilo_user_identity::RevocationList::new(),
-            tilo_device_identity::login::TICKET_LIFETIME_NS,
+            tilo_clock::unix_now_ns()
+                .saturating_add(tilo_device_identity::login::TICKET_LIFETIME_NS),
         )),
     );
     iroh::protocol::Router::builder(endpoint.clone())

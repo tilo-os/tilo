@@ -66,9 +66,10 @@ impl std::fmt::Debug for ServedTicket {
 }
 
 impl ServedTicket {
-    /// Serve `ticket`, issued now and live for `lifetime_ns`, for a computer to become a member
-    /// device of `user_public_key`, entering at `enter`, once `approver` approves it. A
-    /// certificate whose approver `revocations` refuses is never handed on.
+    /// Serve `ticket`, live until `expires_at_ns`, for a computer to become a member device of
+    /// `user_public_key`, entering at `enter`, once `approver` approves it. A certificate whose
+    /// approver `revocations` refuses is never handed on. A ticket served again after its issuer
+    /// restarted keeps the expiry it was issued with.
     ///
     /// # Panics
     ///
@@ -81,9 +82,9 @@ impl ServedTicket {
         capability: tilo_user_identity::DeviceCapabilities,
         approver: Arc<dyn Approver>,
         revocations: RevocationList,
-        lifetime_ns: u64,
+        expires_at_ns: u64,
     ) -> Self {
-        let secret = Secret::of(&ticket, tilo_clock::unix_now_ns(), lifetime_ns);
+        let secret = Secret::of(&ticket, 0, expires_at_ns);
         Self(Arc::new(Inner {
             ticket,
             secret,
@@ -97,6 +98,12 @@ impl ServedTicket {
             told: watch::Sender::new(false),
             runtime: tokio::runtime::Handle::current(),
         }))
+    }
+
+    /// The ticket served.
+    #[must_use]
+    pub fn ticket(&self) -> &Ticket {
+        &self.0.ticket
     }
 
     /// The certificate this ticket gave, once it gave one.
@@ -276,6 +283,17 @@ impl ServedTickets {
             .retain(|kept| !Arc::ptr_eq(&kept.0, &ticket.0));
     }
 
+    /// Whether a ticket served here takes `request`: one took it already, or its secret is the
+    /// one the call brings.
+    #[must_use]
+    pub fn knows(&self, request: &InvokeRequest) -> bool {
+        let secret = secret_of(request);
+        self.0
+            .lock_recover()
+            .iter()
+            .any(|kept| kept.has_call(&request.invocation) || kept.0.secret.is(secret))
+    }
+
     /// The ticket the call `request` is for: the one that took it already, else the one whose
     /// secret it brings, else the newest, which refuses it.
     fn for_request(&self, request: &InvokeRequest) -> Option<ServedTicket> {
@@ -286,13 +304,7 @@ impl ServedTickets {
         {
             return Some(taken.clone());
         }
-        let secret = match &request.argument {
-            InvokeArgument::Json(argument) => argument
-                .get("secret")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default(),
-            _ => "",
-        };
+        let secret = secret_of(request);
         served
             .iter()
             .find(|kept| kept.0.secret.is(secret))
@@ -348,6 +360,17 @@ impl ActionProvider for ServedTickets {
             Some(served) => served.cancel(caller, id),
             None => Pending::ready(Err(ActionCallError::UnknownAction)),
         }
+    }
+}
+
+/// The secret a certify call brings, hex: empty when it brings none.
+fn secret_of(request: &InvokeRequest) -> &str {
+    match &request.argument {
+        InvokeArgument::Json(argument) => argument
+            .get("secret")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default(),
+        _ => "",
     }
 }
 

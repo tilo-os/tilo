@@ -388,6 +388,11 @@ impl Daemon {
                 actions.clone(),
             )
         });
+        // A planned machine's ticket this daemon issued before it last stopped is served again.
+        let restoring = Arc::clone(&tickets);
+        tilo_rt::app()
+            .handle()
+            .spawn(async move { restoring.restore().await });
         stage("serving the device's endpoint");
         let endpoint_router = serve_device_endpoint(EndpointServing {
             workspaces: &workspaces,

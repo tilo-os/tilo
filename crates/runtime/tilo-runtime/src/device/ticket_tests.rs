@@ -15,14 +15,12 @@ use serde_json::{Value, json};
 use tilo_actions::remote::{ActionCallError, InvokeArgument, InvokeRequest, RemoteActionTarget};
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_device_identity::login::{
-    CERTIFY, CertifyInput, Entry, ISSUE, LOG_IN, PROVIDER, RESOURCE, SCOPE, TICKET_LIFETIME_NS,
-    Ticket,
+    CERTIFY, CertifyInput, ISSUE, LOG_IN, PROVIDER, RESOURCE, SCOPE, Ticket,
 };
 use tilo_peer_state::actions::{ACTIONS_ALPN, ActionService, NoActions};
-use tilo_peer_state::new_device::ServedTicket;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
-use super::ticket::{Founded, RootApprover, RootSource, Tickets};
+use super::ticket::{Founded, RootSource, Tickets};
 
 /// A device `root` certified, and its key.
 fn enrol(
@@ -218,42 +216,35 @@ async fn a_computer_logged_in_with_a_ticket_enters_as_the_persons_device() {
     // `tilo device add` on the laptop: its daemon serves a ticket on its endpoint, its root
     // approving the computer that comes with it.
     let laptop_endpoint = endpoint(&laptop_key).await;
-    let ticket = Ticket::new(tilo_api::daemon::enter::reached_of(&laptop_endpoint.addr()));
-    let mut reached = tilo_api::daemon::enter::reached_of(&server.node_addr());
-    if reached.relay.is_none() {
-        reached
-            .relay
-            .clone_from(&laptop_login.server_address.as_ref().unwrap().relay_url);
-    }
-    let enter = Entry {
-        workspace: laptop_login.workspace.clone(),
-        workspace_name: laptop_login.workspace_name.clone(),
-        server_cert: laptop_login.server_cert.clone(),
-        server: reached,
-        site: laptop_login.site.clone(),
-        host_origin: laptop_login.host_origin.clone(),
-    };
-    let waiting = ServedTicket::new(
-        ticket.clone(),
-        root.verifying_key().to_bytes(),
-        enter,
-        DeviceCapabilities::member(),
-        Arc::new(RootApprover {
-            root: root.clone(),
-            device: laptop_key.clone(),
-            cert: laptop_cert.clone(),
-            admission: None,
-        }),
-        RevocationList::new(),
-        TICKET_LIFETIME_NS,
-    );
+    let identity = tempfile::tempdir().unwrap();
+    tilo_identity::provisioning::import_single_device_root(
+        identity.path(),
+        &root,
+        "",
+        tilo_identity::provisioning::IdentityStorage::Files,
+    )
+    .unwrap();
     let service = ActionService::new(laptop_key.clone(), Arc::new(NoActions));
-    service.admit_uncertified(SCOPE, Arc::new(waiting.clone()));
+    let laptop = Tickets::new(
+        (laptop_key.clone(), laptop_cert.clone()),
+        laptop_endpoint.clone(),
+        Some((laptop_key.clone(), laptop_login.clone())),
+        root_in(identity.path().to_path_buf()),
+        None,
+        None,
+        tilo_device_identity::login::Place::at(
+            state.path().join("laptop"),
+            tilo_device_identity::IdentityPaths::under(state.path().join("laptop-keys")),
+        ),
+        service.clone(),
+    );
     let router = iroh::protocol::Router::builder(laptop_endpoint.clone())
         .accept(ACTIONS_ALPN, service)
         .spawn();
-
-    let text = ticket.encode();
+    let printed = ask_device(&laptop, ISSUE, json!({}))
+        .await
+        .expect("the laptop holding the person's root issues a ticket");
+    let text = printed["ticket"].as_str().unwrap().to_owned();
     let ticket = Ticket::parse(&text).unwrap();
     let (desk_key, desk_cert) = enrol(&root, "the desk", DeviceCapabilities::member());
 
