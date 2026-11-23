@@ -1986,3 +1986,140 @@ async fn failed_owner_query_is_retried_until_the_bus_answers() {
     task.abort();
     tap_task.abort();
 }
+
+async fn serve_base_daemons_with_devices(
+    address: &str,
+    device_count: usize,
+) -> (Connection, Shared) {
+    let calls = Shared::default();
+    let device_paths: Vec<OwnedObjectPath> = (0..device_count)
+        .map(|i| {
+            OwnedObjectPath::try_from(format!("/org/freedesktop/UPower/devices/ups_{i}"))
+                .expect("device object path")
+        })
+        .collect();
+    let mut builder = Builder::address(address)
+        .expect("addr")
+        .serve_at(
+            LOGIND_PATH,
+            FakeLogind {
+                calls: Arc::clone(&calls),
+                verdict: "yes".into(),
+                foreign: Vec::new(),
+                inhibit_gate: None,
+            },
+        )
+        .expect("logind")
+        .serve_at(
+            UPOWER_PATH,
+            FakeUPower {
+                calls: Arc::clone(&calls),
+                lid_closed: false,
+                lid_present: true,
+                on_battery: true,
+                devices: device_paths.clone(),
+            },
+        )
+        .expect("upower")
+        .serve_at(
+            DISPLAY_PATH,
+            FakeDisplayDevice {
+                kind: 2,
+                present: true,
+                percentage: 80.0,
+                state: 2,
+                capacity: 90.0,
+            },
+        )
+        .expect("display");
+    for path in &device_paths {
+        builder = builder
+            .serve_at(
+                path.as_str(),
+                FakeDisplayDevice {
+                    kind: 3,
+                    present: true,
+                    percentage: 85.0,
+                    state: 1,
+                    capacity: 95.0,
+                },
+            )
+            .expect("extra upower device");
+    }
+    let conn = builder
+        .name("org.freedesktop.login1")
+        .expect("login1")
+        .name("org.freedesktop.UPower")
+        .expect("upower")
+        .build()
+        .await
+        .expect("base daemons with devices");
+    (conn, calls)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn history_sample_over_multiple_upower_devices_does_not_stall_with_silent_profiles_daemon() {
+    let bus = tilo_test_env::PrivateBus::start();
+    let (base, base_calls) = serve_base_daemons_with_devices(bus.address(), 3).await;
+    let (bridge, _registry, wakeups, _state_home, task) = spawn_service_on_bus(bus.address()).await;
+
+    apply_quiet_policy(&bridge, &wakeups).await;
+    assert_eq!(
+        calls(&base_calls).enumerations,
+        1,
+        "startup samples battery history across the UPower devices"
+    );
+
+    let reads_started = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let _silent = Builder::address(bus.address())
+        .expect("addr")
+        .serve_at(
+            PROFILES_PATH,
+            SilentPowerProfiles {
+                reads_started: Arc::clone(&reads_started),
+            },
+        )
+        .expect("silent daemon")
+        .name("net.hadess.PowerProfiles")
+        .expect("ppd name")
+        .build()
+        .await
+        .expect("silent conn");
+    eventually("priming starts both silent property reads", || {
+        reads_started.load(Ordering::SeqCst) >= 2
+    })
+    .await;
+
+    // Resuming from sleep makes a battery history sample due immediately,
+    // generating enough D-Bus replies across the three devices to fill zbus's
+    // bounded reply channel if the prime read is not draining in its own task.
+    let logind = base
+        .object_server()
+        .interface::<_, FakeLogind>(LOGIND_PATH)
+        .await
+        .expect("logind iface");
+    FakeLogind::prepare_for_sleep(logind.signal_emitter(), false)
+        .await
+        .expect("PrepareForSleep(false)");
+    eventually(
+        "history sample runs across UPower devices after resume",
+        || calls(&base_calls).enumerations >= 2,
+    )
+    .await;
+
+    close_lid_on(&base).await;
+    let mut signals = Vec::new();
+    eventually(
+        "lid close still locks after history sample while profiles daemon is silent",
+        || {
+            signals.extend(bridge.drain_signals());
+            signals.contains(&PowerSignal::Lock)
+        },
+    )
+    .await;
+    assert!(
+        signals.contains(&PowerSignal::ResumedFromSleep),
+        "resume signal must have been delivered: {signals:?}"
+    );
+    task.abort();
+}
