@@ -418,6 +418,8 @@ def on_screen_keyboard(ctx, res):
     # service runs in the default automatic mode.
     ctx.vm.input("touch", "tap", str(x), str(y))
     showed = wait_until(lambda: (keys,) if (keys := _keyboard_keys(ctx, d0)) else None, 30, 0.5)
+    if not showed:
+        ctx.write("W19-keyboard.log", _keyboard_evidence(ctx))
     expect(showed, "the on-screen keyboard did not show after tapping the field")
     res.metrics["keys"] = len(showed[0])
     ctx.shot("W19-keyboard")
@@ -458,12 +460,18 @@ def _caret(st):
 
 
 def _keyboard_evidence(ctx) -> str:
-    """What the session said about the on-screen keyboard while the search field asked for it:
-    whether it was started, whether it was told to show, and how its own app answered."""
-    return ctx.vm.exec(
+    """Whether the on-screen keyboard is installed and running, and what the session said about
+    it: started, told to show, or never asked for."""
+    facts = ctx.vm.exec(
+        'command -v tilo-osk || echo "no tilo-osk on PATH"; '
+        'ls -l /usr/bin/tilo-osk 2>&1; '
+        'pgrep -a tilo-osk || echo "tilo-osk is not running"', check=False) or ""
+    said = ctx.vm.exec(
         f'tail -n 4000 "{core.SESSION_LOG}" | sed "s/\\x1b\\[[0-9;]*m//g" '
-        '| grep -aiE "keyboard|osk|tilo-osk|input method|ime|no on-screen" | tail -n 120 '
-        '| cut -c1-400', check=False) or "the session log said nothing about the keyboard"
+        '| grep -avE "realtime|collab:|launch_latency|app_output" '
+        '| grep -aiE "osk|on.screen keyboard|keyboard_run|surface app|input method|no keyboard|did not start" '
+        '| tail -n 80 | cut -c1-400', check=False) or "the session log said nothing about the keyboard"
+    return facts + "\n--- session log\n" + said
 
 
 def _close_search(ctx) -> None:
