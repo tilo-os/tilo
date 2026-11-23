@@ -81,6 +81,7 @@ pub fn device_surfaces() -> Vec<tilo_actions::surface::Surface> {
         crate::shell::state::overlays_surface(),
         tilo_workspace_service::apps::nearby_send::surface(),
         crate::devices::surface(),
+        crate::speakers::surface(),
         crate::quick_settings::controls_surface(),
     ]
 }

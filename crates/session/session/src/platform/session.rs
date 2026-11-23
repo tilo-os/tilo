@@ -1912,6 +1912,14 @@ impl Session {
         // themselves, which is nobody's personal content: their reading is
         // published for any app that may read the session's resources.
         if let Some(fabric) = shared.fabric.clone() {
+            // The speaker groups the person's devices play as one, published for Settings'
+            // speakers page, the shell and an agent: the same commands the page sends.
+            shared
+                .services
+                .borrow_mut()
+                .add(Box::new(crate::speakers::Served::new(std::sync::Arc::clone(
+                    &fabric,
+                ))));
             shared
                 .services
                 .borrow_mut()

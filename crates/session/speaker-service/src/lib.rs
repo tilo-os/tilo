@@ -9,6 +9,7 @@
 
 pub mod calibration;
 pub mod groups;
+pub mod published;
 pub mod remote_audio;
 pub mod settings;
 

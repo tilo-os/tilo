@@ -400,6 +400,13 @@ pub fn pump(network: &dyn FabricLink) {
     }
 }
 
+/// The speakers as they stand now: the reading the resource publishes to a view
+/// ([`crate::published`]), the same one this module answers Settings' snapshot with.
+#[must_use]
+pub fn snapshot_of(network: &dyn FabricLink) -> SpeakerSnapshot {
+    snapshot(network)
+}
+
 fn snapshot(network: &dyn FabricLink) -> SpeakerSnapshot {
     let media_enabled = network.require_media().is_ok();
     let Some((local, _)) = network.local_device_fabric_identity() else {

@@ -103,6 +103,7 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("overlays", "Overlays", "desktop:overlays"),
     ("nearby_send", "NearbySend", "session:nearby-send"),
     ("devices", "Devices", "session:devices"),
+    ("speakers", "Speakers", "session:speakers"),
     ("quick_settings", "QuickSettings", "session:quick-settings"),
 ];
 const VISION_ROOTS: &[(&str, &str, &str)] = &[

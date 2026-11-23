@@ -220,6 +220,7 @@ session-style-install = Ein Stilpaket installieren
 session-turn-conversation = Ganze Unterhaltung
 session-application-open = Die App öffnen
 session-devices = Geräte
+session-speakers = Lautsprecher
 session-devices-press = Eines deiner Geräte drücken
 session-bluetooth-app = Bluetooth
 session-bluetooth-moved = { $accessory } ist umgezogen

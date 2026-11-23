@@ -215,6 +215,7 @@ session-style-install = Install a style package
 session-turn-conversation = Whole conversation
 session-application-open = Open the app
 session-devices = Devices
+session-speakers = Speakers
 session-devices-press = Press one of your devices
 session-bluetooth-app = Bluetooth
 session-bluetooth-moved = { $accessory } moved

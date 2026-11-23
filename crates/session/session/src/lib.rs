@@ -388,6 +388,8 @@ mod shared_input;
 #[cfg(target_os = "linux")]
 mod sheets;
 #[cfg(target_os = "linux")]
+mod speakers;
+#[cfg(target_os = "linux")]
 pub mod shell;
 #[cfg(target_os = "linux")]
 mod shell_document;
