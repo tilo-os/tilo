@@ -1053,134 +1053,91 @@ mod tests {
             }
         }
 
-        phase desktop_artifact_inspection_binds_the_signed_desktop_target;
+        phase desktop_and_android_inspection_binds_the_signed_desktop_target;
         {
-            let identity = SigningIdentity::generate();
-            let (native, _) = signed_tapp(&identity);
-            let mut authored = app_registry::tapp::load(&native).unwrap().manifest;
-            authored.package.runtime = Some("tilo-runtime/2026.07".into());
-            let manifest = tilo_app_package::desktop::desktop_manifest(
-                &authored,
-                registry_types::MACOS_PLATFORM,
-                "aarch64",
-                "aarch64",
-                "bin/editor",
-            )
-            .unwrap();
-            let dir = tempfile::tempdir().unwrap();
-            std::fs::create_dir_all(dir.path().join("bin")).unwrap();
-            std::fs::write(dir.path().join("bin/editor"), b"\xcf\xfa\xed\xfe").unwrap();
-            let packed = pack(dir.path(), &manifest, &identity).unwrap();
-            let bytes = tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap();
-
-            let mut entry = sample_entry("https://example.com/editor-macos.tapp");
-            entry.publisher_pubkey_hex = hex::encode(identity.public_key_bytes());
-            let version = &mut entry.versions[0];
-            version.tapp_mut().unwrap().tapp_root_hash_hex = hex::encode(packed.id().as_bytes());
-            version.tapp_mut().unwrap().tapp_size_bytes = bytes.len() as u64;
-            version.tapp_mut().unwrap().tapp_blake3_hex = blake3::hash(&bytes).to_hex().to_string();
-            version.tapp_mut().unwrap().target = registry_types::RegistryTarget {
-                platform: registry_types::MACOS_PLATFORM.into(),
-                architecture: "aarch64".into(),
-                isa: "aarch64".into(),
-                runtime: Some("tilo-runtime/2026.07".into()),
-                interfaces: Vec::new(),
-            };
-            assert!(inspect_bytes(&entry, &entry.versions[0], &bytes).is_ok());
-
-            for other in [
-                registry_types::WINDOWS_PLATFORM,
-                registry_types::LINUX_PLATFORM,
-                registry_types::ANDROID_PLATFORM,
+            for (platform, entrypoint, binary, others) in [
+                (
+                    registry_types::MACOS_PLATFORM,
+                    "bin/editor",
+                    b"\xcf\xfa\xed\xfe".as_slice(),
+                    &[
+                        registry_types::WINDOWS_PLATFORM,
+                        registry_types::LINUX_PLATFORM,
+                        registry_types::ANDROID_PLATFORM,
+                    ][..],
+                ),
+                (
+                    registry_types::ANDROID_PLATFORM,
+                    "editor.apk",
+                    b"PK\x03\x04".as_slice(),
+                    &[registry_types::LINUX_PLATFORM, registry_types::MACOS_PLATFORM][..],
+                ),
             ] {
-                let mut relabelled = entry.versions[0].clone();
-                relabelled.tapp_mut().unwrap().target.platform = other.into();
+                let identity = SigningIdentity::generate();
+                let (native, _) = signed_tapp(&identity);
+                let mut authored = app_registry::tapp::load(&native).unwrap().manifest;
+                authored.package.runtime = Some("tilo-runtime/2026.07".into());
+                let manifest = tilo_app_package::desktop::desktop_manifest(
+                    &authored, platform, "aarch64", "aarch64", entrypoint,
+                )
+                .unwrap();
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join(entrypoint);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, binary).unwrap();
+                let packed = pack(dir.path(), &manifest, &identity).unwrap();
+                let bytes = tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap();
+
+                let mut entry = sample_entry(&format!("https://example.com/editor-{platform}.tapp"));
+                entry.publisher_pubkey_hex = hex::encode(identity.public_key_bytes());
+                let version = &mut entry.versions[0];
+                version.tapp_mut().unwrap().tapp_root_hash_hex =
+                    hex::encode(packed.id().as_bytes());
+                version.tapp_mut().unwrap().tapp_size_bytes = bytes.len() as u64;
+                version.tapp_mut().unwrap().tapp_blake3_hex =
+                    blake3::hash(&bytes).to_hex().to_string();
+                version.tapp_mut().unwrap().target = registry_types::RegistryTarget {
+                    platform: platform.into(),
+                    architecture: "aarch64".into(),
+                    isa: "aarch64".into(),
+                    runtime: Some("tilo-runtime/2026.07".into()),
+                    interfaces: Vec::new(),
+                };
+                assert!(
+                    inspect_bytes(&entry, &entry.versions[0], &bytes).is_ok(),
+                    "{platform}"
+                );
+
+                for other in others {
+                    let mut relabelled = entry.versions[0].clone();
+                    relabelled.tapp_mut().unwrap().target.platform = (*other).into();
+                    assert!(
+                        matches!(
+                            inspect_bytes(&entry, &relabelled, &bytes),
+                            Err(BundleReviewError::TargetMismatch { .. })
+                        ),
+                        "{other}"
+                    );
+                }
+                let mut as_intel = entry.versions[0].clone();
+                as_intel.tapp_mut().unwrap().target.architecture = "x86_64".into();
+                as_intel.tapp_mut().unwrap().target.isa = "x86_64".into();
                 assert!(matches!(
-                    inspect_bytes(&entry, &relabelled, &bytes),
+                    inspect_bytes(&entry, &as_intel, &bytes),
                     Err(BundleReviewError::TargetMismatch { .. })
                 ));
+                let mut as_tilo_os = entry.versions[0].clone();
+                as_tilo_os.tapp_mut().unwrap().target.platform =
+                    registry_types::TILO_OS_PLATFORM.into();
+                as_tilo_os.tapp_mut().unwrap().target.isa = "aarch64-v8.2".into();
+                assert!(inspect_bytes(&entry, &as_tilo_os, &bytes).is_err());
+
+                let policy = InspectionPolicy::default();
+                assert_eq!(
+                    policy.download_limit(entry.versions[0].tapp().unwrap()),
+                    tilo_app_package::MAX_DESKTOP_APP_TAPP_BYTES.max(policy.max_package_bytes)
+                );
             }
-            let mut as_intel = entry.versions[0].clone();
-            as_intel.tapp_mut().unwrap().target.architecture = "x86_64".into();
-            as_intel.tapp_mut().unwrap().target.isa = "x86_64".into();
-            assert!(matches!(
-                inspect_bytes(&entry, &as_intel, &bytes),
-                Err(BundleReviewError::TargetMismatch { .. })
-            ));
-            let mut as_tilo_os = entry.versions[0].clone();
-            as_tilo_os.tapp_mut().unwrap().target.platform = registry_types::TILO_OS_PLATFORM.into();
-            as_tilo_os.tapp_mut().unwrap().target.isa = "aarch64-v8.2".into();
-            assert!(inspect_bytes(&entry, &as_tilo_os, &bytes).is_err());
-
-            let policy = InspectionPolicy::default();
-            assert_eq!(
-                policy.download_limit(entry.versions[0].tapp().unwrap()),
-                tilo_app_package::MAX_DESKTOP_APP_TAPP_BYTES.max(policy.max_package_bytes)
-            );
-        }
-
-        phase android_artifact_inspection_binds_the_signed_android_target;
-        {
-            let identity = SigningIdentity::generate();
-            let (native, _) = signed_tapp(&identity);
-            let mut authored = app_registry::tapp::load(&native).unwrap().manifest;
-            authored.package.runtime = Some("tilo-runtime/2026.07".into());
-            let manifest = tilo_app_package::desktop::desktop_manifest(
-                &authored,
-                registry_types::ANDROID_PLATFORM,
-                "aarch64",
-                "aarch64",
-                "editor.apk",
-            )
-            .unwrap();
-            let dir = tempfile::tempdir().unwrap();
-            std::fs::write(dir.path().join("editor.apk"), b"PK\x03\x04").unwrap();
-            let packed = pack(dir.path(), &manifest, &identity).unwrap();
-            let bytes = tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap();
-
-            let mut entry = sample_entry("https://example.com/editor-android.tapp");
-            entry.publisher_pubkey_hex = hex::encode(identity.public_key_bytes());
-            let version = &mut entry.versions[0];
-            version.tapp_mut().unwrap().tapp_root_hash_hex = hex::encode(packed.id().as_bytes());
-            version.tapp_mut().unwrap().tapp_size_bytes = bytes.len() as u64;
-            version.tapp_mut().unwrap().tapp_blake3_hex = blake3::hash(&bytes).to_hex().to_string();
-            version.tapp_mut().unwrap().target = registry_types::RegistryTarget {
-                platform: registry_types::ANDROID_PLATFORM.into(),
-                architecture: "aarch64".into(),
-                isa: "aarch64".into(),
-                runtime: Some("tilo-runtime/2026.07".into()),
-                interfaces: Vec::new(),
-            };
-            assert!(inspect_bytes(&entry, &entry.versions[0], &bytes).is_ok());
-
-            for other in [
-                registry_types::LINUX_PLATFORM,
-                registry_types::MACOS_PLATFORM,
-            ] {
-                let mut relabelled = entry.versions[0].clone();
-                relabelled.tapp_mut().unwrap().target.platform = other.into();
-                assert!(matches!(
-                    inspect_bytes(&entry, &relabelled, &bytes),
-                    Err(BundleReviewError::TargetMismatch { .. })
-                ));
-            }
-            let mut as_x86 = entry.versions[0].clone();
-            as_x86.tapp_mut().unwrap().target.architecture = "x86_64".into();
-            as_x86.tapp_mut().unwrap().target.isa = "x86_64".into();
-            assert!(matches!(
-                inspect_bytes(&entry, &as_x86, &bytes),
-                Err(BundleReviewError::TargetMismatch { .. })
-            ));
-            let mut as_tilo_os = entry.versions[0].clone();
-            as_tilo_os.tapp_mut().unwrap().target.platform = registry_types::TILO_OS_PLATFORM.into();
-            as_tilo_os.tapp_mut().unwrap().target.isa = "aarch64-v8.2".into();
-            assert!(inspect_bytes(&entry, &as_tilo_os, &bytes).is_err());
-
-            let policy = InspectionPolicy::default();
-            assert_eq!(
-                policy.download_limit(entry.versions[0].tapp().unwrap()),
-                tilo_app_package::MAX_DESKTOP_APP_TAPP_BYTES.max(policy.max_package_bytes)
-            );
         }
     }
 

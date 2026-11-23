@@ -101,7 +101,7 @@ fn put_program(bots: &Bots, key: &SigningKey, bytes: &[u8]) -> reqwest::blocking
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_allowlisted_publisher_uploads_a_program_privately() {
+async fn programs_upload_privately_and_only_as_canonical_bytes_from_an_allowlisted_publisher() {
     let bots = spawn().await;
     let program = echo_program();
     let digest = blake3::hash(&program).to_hex().to_string();
@@ -124,12 +124,8 @@ async fn an_allowlisted_publisher_uploads_a_program_privately() {
             .unwrap()
     });
     assert_eq!(get.status(), 404);
-}
 
-#[tokio::test(flavor = "multi_thread")]
-async fn a_non_canonical_program_upload_is_refused() {
-    let bots = spawn().await;
-    let value: serde_json::Value = serde_json::from_slice(&echo_program()).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&program).unwrap();
     let pretty = serde_json::to_vec_pretty(&value).unwrap();
     let response = tokio::task::block_in_place(|| put_program(&bots, &bots.publisher, &pretty));
     assert_eq!(response.status(), 422);
@@ -137,7 +133,7 @@ async fn a_non_canonical_program_upload_is_refused() {
     let response = tokio::task::block_in_place(|| put_program(&bots, &bots.publisher, &oversized));
     assert_eq!(response.status(), 413);
     let stranger = SigningKey::from_bytes(&[9; 32]);
-    let response = tokio::task::block_in_place(|| put_program(&bots, &stranger, &echo_program()));
+    let response = tokio::task::block_in_place(|| put_program(&bots, &stranger, &program));
     assert_eq!(response.status(), 403);
 }
 
@@ -246,16 +242,39 @@ async fn a_bot_entry_needs_its_program_uploaded_and_honest_requirements() {
     tokio::task::block_in_place(|| {
         assert_eq!(put_program(&bots, &bots.publisher, &program).status(), 201);
     });
-    let mut wrong = echo_requires();
-    wrong.apps.push("so.tilo.notes".into());
-    let dishonest = submit(&bots, Add, bot_entry(&bots, &program, "1.0.0", 100, wrong));
-    assert!(
-        matches!(
-            dishonest,
-            Err(registry_server::ModerationError::BotProgram { .. })
-        ),
-        "{dishonest:?}"
-    );
+    // The listed requirements must be exactly what the program needs: no extra app, no missing
+    // app, no appearance or trigger the program does not use.
+    for listed in [
+        {
+            let mut listed = echo_requires();
+            listed.apps.push("so.tilo.notes".into());
+            listed
+        },
+        {
+            let mut listed = echo_requires();
+            listed.apps.clear();
+            listed
+        },
+        {
+            let mut listed = echo_requires();
+            listed.appearance = true;
+            listed
+        },
+        {
+            let mut listed = echo_requires();
+            listed.triggers = vec!["schedule".into()];
+            listed
+        },
+    ] {
+        let dishonest = submit(&bots, Add, bot_entry(&bots, &program, "1.0.0", 100, listed));
+        assert!(
+            matches!(
+                dishonest,
+                Err(registry_server::ModerationError::BotProgram { .. })
+            ),
+            "{dishonest:?}"
+        );
+    }
     let mut elsewhere = bot_entry(&bots, &program, "1.0.0", 100, echo_requires());
     if let registry_types::VersionArtifact::Bot(bot) = &mut elsewhere.versions[0].artifact {
         bot.program_url = format!("https://evil.example/blobs/{}", bot.program_blake3_hex);

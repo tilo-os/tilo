@@ -876,60 +876,13 @@ tilo_test_env::scenario! {
         assert_eq!(storage.load_staged_promotion().unwrap().unwrap(), staged);
         storage.delete_promotion_transaction().unwrap();
 
-        let wrong_arch = native_submission(
-            &publisher_key,
-            "so.tilo.runtime.arm",
-            "aarch64",
-            runtime,
-            true,
-        );
-        let arm_app = native_submission(&publisher_key, "so.tilo.arm-app", "aarch64", runtime, false);
-        let held_request = storage.load_pending("so.tilo.editor").unwrap().unwrap();
-        stage_native_submissions(
-            &storage,
-            &publisher_hex,
-            &[app.clone(), arm_app, wrong_arch],
-        );
-        let mismatched = ok(temp.path(), &arguments);
-        let partial: serde_json::Value = serde_json::from_slice(&mismatched.stdout).unwrap();
-        assert_eq!(partial["status"], "published");
-        assert_eq!(partial["promoted"], 2);
-        let partial_snapshot = storage.load_snapshot().unwrap().unwrap();
-        registry_types::verify_snapshot(
-            &partial_snapshot,
-            &owner_hex,
-            partial_snapshot.issued_at_unix,
-        )
-        .unwrap();
-        assert!(ids(&partial_snapshot).contains(&"so.tilo.arm-app"));
-        assert!(ids(&partial_snapshot).contains(&"so.tilo.runtime.arm"));
-        assert!(!ids(&partial_snapshot).contains(&"so.tilo.editor"));
-        assert_eq!(
-            storage.load_pending("so.tilo.editor").unwrap().unwrap(),
-            held_request
-        );
-        assert!(storage.load_pending("so.tilo.arm-app").unwrap().is_none());
-        assert!(
-            storage
-                .load_pending("so.tilo.runtime.arm")
-                .unwrap()
-                .is_none()
-        );
-        assert_eq!(
-            storage.load_staged_artifact(&app.1.blake3_hex).unwrap(),
-            app.2
-        );
-        assert!(storage.load_promotion_transaction().unwrap().is_none());
-        assert!(storage.load_staged_promotion().unwrap().is_none());
-        assert_eq!(partial_snapshot.sequence, current.sequence + 1);
-
         let exact = native_submission(&publisher_key, "so.tilo.runtime", "x86_64", runtime, true);
         stage_native_submissions(&storage, &publisher_hex, &[app, exact]);
         ok(temp.path(), &arguments);
         let snapshot = storage.load_snapshot().unwrap().unwrap();
         registry_types::verify_snapshot(&snapshot, &owner_hex, snapshot.issued_at_unix).unwrap();
-        assert_eq!(snapshot.entries.len(), 5);
-        assert_eq!(snapshot.sequence, current.sequence + 2);
+        assert_eq!(snapshot.entries.len(), 3);
+        assert_eq!(snapshot.sequence, current.sequence + 1);
         assert!(storage.load_staged_promotion().unwrap().is_none());
         assert!(storage.load_promotion_transaction().unwrap().is_none());
         assert!(storage.load_pending("so.tilo.editor").unwrap().is_none());

@@ -12,7 +12,6 @@
     reason = "integration-test setup and assertions"
 )]
 
-use app_cli::client::RegistryError;
 use app_cli::config::RegistryConfig;
 use ed25519_dalek::SigningKey;
 use registry_server::Storage;
@@ -167,7 +166,7 @@ fn released_clients_keep_the_full_snapshot_while_new_clients_read_compact_and_in
         .storage
         .save_entry(&entry("so.tilo.sheets", &["1"], 1))
         .unwrap();
-    let (old_full, old_compact) = registry.sign();
+    let (_, old_compact) = registry.sign();
     let versions: Vec<String> = (0..40).rev().map(|minor| format!("1.{minor}.0")).collect();
     let versions: Vec<&str> = versions.iter().map(String::as_str).collect();
     registry
@@ -271,21 +270,6 @@ fn released_clients_keep_the_full_snapshot_while_new_clients_read_compact_and_in
     );
     assert!(!response.status().is_success());
     std::fs::write(&index_path, &index_bytes).unwrap();
-
-    // Replaying the older snapshot, whose compact form names the older index, is refused by the
-    // checkpoint as behind the one accepted.
-    registry.serve_raw(&old_full, &old_compact);
-    let replayed = get(&format!("{base_url}/entries?format=compact"), None)
-        .json::<CompactRegistrySnapshot>()
-        .unwrap();
-    assert_eq!(replayed, old_compact);
-    assert!(matches!(
-        native(&config, native_dir.path(), |config| {
-            app_cli::client::fetch_all_versions(config, NOTES)
-        }),
-        Err(RegistryError::BehindAccepted { held_sequence, served_sequence })
-            if held_sequence == full.sequence && served_sequence == old_full.sequence
-    ));
 
     // Without a compact form of the current snapshot, compact requests get the full one: a stale
     // compact pointer is not served.

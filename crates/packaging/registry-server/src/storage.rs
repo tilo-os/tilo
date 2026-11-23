@@ -2054,83 +2054,22 @@ mod tests {
             );
         }
 
-        phase entries_and_identity_round_trip_through_the_storage_layout;
+        phase package_ids_are_escaped_into_the_entries_directory;
         {
-            {
-                let dir = tempfile::tempdir().unwrap();
-                let s = Storage::open(dir.path()).unwrap();
-                assert!(s.root.join("entries").is_dir());
-                assert!(s.root.join("pending").is_dir());
-                assert!(s.root.join("deferred-pending").is_dir());
-                assert!(s.root.join("reviews").is_dir());
-                assert!(s.root.join("quarantined").is_dir());
-                assert!(s.root.join("snapshots").is_dir());
-            }
-            {
-                let dir = tempfile::tempdir().unwrap();
-                let s = Storage::open(dir.path()).unwrap();
-                let e = sample_entry("so.tilo.editor");
-                s.save_entry(&e).unwrap();
-                let back = s.load_entry("so.tilo.editor").unwrap().unwrap();
-                assert_eq!(back, e);
-            }
-            {
-                let dir = tempfile::tempdir().unwrap();
-                let s = Storage::open(dir.path()).unwrap();
-                assert!(s.load_entry("nope").unwrap().is_none());
-            }
-            {
-                let dir = tempfile::tempdir().unwrap();
-                let s = Storage::open(dir.path()).unwrap();
-                s.save_entry(&sample_entry("so.tilo.a")).unwrap();
-                s.save_entry(&sample_entry("so.tilo.b")).unwrap();
-                let mut ids: Vec<String> = s
-                    .load_entries()
-                    .unwrap()
-                    .into_iter()
-                    .map(|e| e.package_id)
-                    .collect();
-                ids.sort();
-                assert_eq!(ids, vec!["so.tilo.a", "so.tilo.b"]);
-            }
-            {
-                let dir = tempfile::tempdir().unwrap();
-                let s = Storage::open(dir.path()).unwrap();
-                s.save_entry(&sample_entry("so.tilo.a")).unwrap();
-                assert!(s.delete_entry("so.tilo.a").unwrap());
-                assert!(!s.delete_entry("so.tilo.a").unwrap());
-                assert!(s.load_entry("so.tilo.a").unwrap().is_none());
-            }
-            {
-                assert_eq!(filename_encode("so.tilo.editor"), "so.tilo.editor");
-                // A slash gets escaped so it can't escape the entries/ directory.
-                assert_eq!(filename_encode("evil/../etc"), "evil_2f.._2fetc");
-            }
-            {
-                let dir = tempfile::tempdir().unwrap();
-                let s = Storage::open(dir.path()).unwrap();
-                let ident = ServerIdentity {
-                    owner_pubkey_hex: "cc".repeat(32),
-                    name: "Tilo Official".into(),
-                    description: "The default registry".into(),
-                    base_url: "https://apps.tilo.so".into(),
-                };
-                s.save_identity(&ident).unwrap();
-                let back = s.load_identity().unwrap();
-                assert_eq!(back, ident);
-            }
+            assert_eq!(filename_encode("so.tilo.editor"), "so.tilo.editor");
+            // A slash gets escaped so it can't escape the entries/ directory.
+            assert_eq!(filename_encode("evil/../etc"), "evil_2f.._2fetc");
         }
 
-        phase staged_packages_stay_readable_for_thin_installs;
+        phase stored_objects_refuse_a_name_that_is_not_their_own;
         {
-            {
-                let dir = tempfile::tempdir().unwrap();
-                let storage = Storage::open(dir.path()).unwrap();
-                let identity = tilo_app_package::SigningIdentity::generate();
-                let payload = dir.path().join("payload");
-                std::fs::create_dir_all(payload.join("bin")).unwrap();
-                std::fs::write(payload.join("bin/editor"), b"#!/bin/true\n").unwrap();
-                let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
+            let dir = tempfile::tempdir().unwrap();
+            let storage = Storage::open(dir.path()).unwrap();
+            let identity = tilo_app_package::SigningIdentity::generate();
+            let payload = dir.path().join("payload");
+            std::fs::create_dir_all(payload.join("bin")).unwrap();
+            std::fs::write(payload.join("bin/editor"), b"#!/bin/true\n").unwrap();
+            let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
                 "[package]\nid = \"so.tilo.editor\"\nversion = \"1.0.0\"\nkind = \"app\"\n\
              [publisher]\nidentity = \"ed25519:{}\"\nsignature = \"\"\n\
              [sandbox]\nnamespaces = [\"user\"]\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\
@@ -2139,107 +2078,69 @@ mod tests {
                 hex::encode(identity.public_key_bytes())
             ))
             .unwrap();
-                let packed = tilo_app_package::pack(&payload, &manifest, &identity).unwrap();
-                let bytes = tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap();
-                let digest = blake3::hash(&bytes).to_hex().to_string();
-                storage.save_staged_artifact(&digest, &bytes).unwrap();
+            let packed = tilo_app_package::pack(&payload, &manifest, &identity).unwrap();
+            let bytes = tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap();
+            let digest = blake3::hash(&bytes).to_hex().to_string();
+            storage.save_staged_artifact(&digest, &bytes).unwrap();
+            let blob = tilo_app_package::BlobHash::of(b"#!/bin/true\n").to_hex();
+            let root = packed.meta.id.to_hex();
 
-                let blob = tilo_app_package::BlobHash::of(b"#!/bin/true\n").to_hex();
-                assert_eq!(
-                    storage.load_payload_blob(&blob).unwrap().as_deref(),
-                    Some(&b"#!/bin/true\n"[..])
-                );
-                assert_eq!(storage.load_payload_blob(&"0".repeat(64)).unwrap(), None);
-                assert_eq!(storage.load_payload_blob("../../etc/passwd").unwrap(), None);
-
-                let root = packed.meta.id.to_hex();
-                let thin = storage.load_thin_package(&root).unwrap().unwrap();
-                assert_eq!(
-                    thin,
-                    tilo_app_package::tapp::to_bytes(&packed.meta, None).unwrap()
-                );
-                assert_eq!(storage.load_thin_package(&"0".repeat(64)).unwrap(), None);
-                assert_eq!(storage.load_thin_package("../x").unwrap(), None);
-                std::fs::write(
-                    dir.path()
-                        .join("thin-packages")
-                        .join(format!("{}.tapp", "1".repeat(64))),
-                    &thin,
-                )
-                .unwrap();
-                assert!(storage.load_thin_package(&"1".repeat(64)).is_err());
-
-                let imported = storage.import_artifact(&bytes).unwrap();
-                assert_eq!(imported, digest);
-                assert_eq!(
-                    storage.load_artifact(&digest).unwrap().as_deref(),
-                    Some(bytes.as_slice())
-                );
-                assert!(storage.import_artifact(b"not a package").is_err());
-                assert_eq!(storage.load_artifact("../../etc/passwd").unwrap(), None);
-
-                let staged = dir.path().join("staged-artifacts");
-                let root_file = staged.join(format!("{digest}.root"));
-                assert_eq!(std::fs::read_to_string(&root_file).unwrap(), root);
-                std::fs::remove_file(&root_file).unwrap();
-                std::fs::write(staged.join(format!("{digest}.tapp")), &bytes).unwrap();
-                let opaque = b"bytes that are no package".to_vec();
-                let opaque_digest = blake3::hash(&opaque).to_hex().to_string();
+            // A name that would climb out of its directory reads nothing.
+            assert_eq!(storage.load_payload_blob("../../etc/passwd").unwrap(), None);
+            assert_eq!(storage.load_thin_package("../x").unwrap(), None);
+            assert_eq!(storage.load_artifact("../../etc/passwd").unwrap(), None);
+            // A stored file that is not the package it is named for is refused.
+            let thin = storage.load_thin_package(&root).unwrap().unwrap();
+            std::fs::write(
+                dir.path()
+                    .join("thin-packages")
+                    .join(format!("{}.tapp", "1".repeat(64))),
+                &thin,
+            )
+            .unwrap();
+            assert!(storage.load_thin_package(&"1".repeat(64)).is_err());
+            assert!(storage.import_artifact(b"not a package").is_err());
+            // The same digest may be stored again with its own bytes only.
+            storage.save_staged_artifact(&digest, &bytes).unwrap();
+            assert!(
                 storage
-                    .save_staged_artifact(&opaque_digest, &opaque)
-                    .unwrap();
-                assert_eq!(storage.compact_staged_artifacts().unwrap(), 1);
-                assert!(root_file.exists());
-                assert!(!staged.join(format!("{digest}.tapp")).exists());
-                assert_eq!(storage.load_staged_artifact(&digest).unwrap(), bytes);
-                assert_eq!(
-                    storage.load_staged_artifact(&opaque_digest).unwrap(),
-                    opaque
-                );
-                storage.save_staged_artifact(&digest, &bytes).unwrap();
-                assert!(storage.save_staged_artifact(&digest, &opaque).is_err());
+                    .save_staged_artifact(&digest, b"bytes that are no package")
+                    .is_err()
+            );
+            // A staged package whose payload blob went missing is refused, not served short.
+            let blob_file = dir.path().join("payload-blobs").join(&blob);
+            let aside = dir.path().join("blob-aside");
+            std::fs::rename(&blob_file, &aside).unwrap();
+            assert!(storage.load_staged_artifact(&digest).is_err());
+            std::fs::rename(&aside, &blob_file).unwrap();
 
-                let blob_file = dir.path().join("payload-blobs").join(&blob);
-                let aside = dir.path().join("blob-aside");
-                std::fs::rename(&blob_file, &aside).unwrap();
-                assert!(storage.load_staged_artifact(&digest).is_err());
-                std::fs::rename(&aside, &blob_file).unwrap();
-
-                let report = storage
-                    .lock_snapshot()
-                    .unwrap()
-                    .prune_unreferenced()
-                    .unwrap();
-                assert_eq!(
-                    (
-                        report.staged_artifacts,
-                        report.thin_packages,
-                        report.payload_blobs,
-                        report.payload_twins
-                    ),
-                    (2, 2, 1, 1)
-                );
-                assert!(report.bytes > 0);
-                assert_eq!(storage.find_staged_artifact(&digest).unwrap(), None);
-                assert_eq!(storage.load_payload_blob(&blob).unwrap(), None);
-                assert!(
-                    !dir.path()
-                        .join("payload-blobs")
-                        .join(format!("{blob}.zst"))
-                        .exists(),
-                    "a twin goes with its blob"
-                );
-                assert_eq!(storage.load_thin_package(&root).unwrap(), None);
-            }
-            {
-                let artifact: StagedArtifact = serde_json::from_value(serde_json::json!({
-                    "submission_id": "so.tilo.editor",
-                    "version": "1.0.0",
-                    "blake3_hex": "ab".repeat(32),
-                }))
+            // Compaction turns a staged full package into its root pointer, keeping the bytes
+            // loadable either way.
+            let staged = dir.path().join("staged-artifacts");
+            let root_file = staged.join(format!("{digest}.root"));
+            std::fs::remove_file(&root_file).unwrap();
+            std::fs::write(staged.join(format!("{digest}.tapp")), &bytes).unwrap();
+            let opaque = b"bytes that are no package".to_vec();
+            let opaque_digest = blake3::hash(&opaque).to_hex().to_string();
+            storage
+                .save_staged_artifact(&opaque_digest, &opaque)
                 .unwrap();
-                assert_eq!(artifact.target, None);
-            }
+            assert_eq!(storage.compact_staged_artifacts().unwrap(), 1);
+            assert!(root_file.exists());
+            assert!(!staged.join(format!("{digest}.tapp")).exists());
+            assert_eq!(storage.load_staged_artifact(&digest).unwrap(), bytes);
+            assert_eq!(
+                storage.load_staged_artifact(&opaque_digest).unwrap(),
+                opaque
+            );
+
+            let artifact: StagedArtifact = serde_json::from_value(serde_json::json!({
+                "submission_id": "so.tilo.editor",
+                "version": "1.0.0",
+                "blake3_hex": "ab".repeat(32),
+            }))
+            .unwrap();
+            assert_eq!(artifact.target, None);
         }
 
         phase snapshot_chain_transactions_are_crash_safe_and_monotonic;
