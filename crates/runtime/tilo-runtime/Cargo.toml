@@ -37,11 +37,7 @@ path = "src/bin/tilo-runtime.rs"
 name = "it"
 path = "tests/it.rs"
 
-# The Windows build is the daemon's command line and its refusal for now: the
-# services it hosts here reach a profile over Unix sockets and inherited
-# descriptors, and named pipes and handle passing are not in yet. Each joins
-# this table when its Windows body exists, behind the same functions.
-[target.'cfg(not(windows))'.dependencies]
+[dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-paths.workspace = true
@@ -68,10 +64,6 @@ iroh.workspace = true
 # something needs this device reachable.
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
 iroh-blobs.workspace = true
-# The launcher's manifest view, service names and developer-override check;
-# its binary builds every Linux app sandbox.
-launcher = { path = "../../packaging/launcher" }
-libc.workspace = true
 package-store = { path = "../../packaging/package-store" }
 # The tilolang hosts this device runs: the link each is handed (which the
 # process-boundary tests also drive as an app inside a login does), the sealed
@@ -112,15 +104,13 @@ tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 # The neighbour wire messages joined workspaces exchange.
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 # The workspace host every device runs, which the profile's own workspace is placed on.
-tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["agents", "apps", "device-keys", "files"] }
+tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["apps", "device-keys", "files"] }
 # The person's saved chords, which a shortcut's keyboard trigger may not take.
 settings-store = { path = "../../system/settings-store" }
 # The groups a device's key service settles, and what their members seal is checked against.
 tilo-workspace-keys = { path = "../../collab/workspace-keys" }
 # This computer's login, the daemon's place, and Tilo's API the daemon serves as the device.
 tilo-api = { path = "../../server/tilo-api" }
-# The log a daemon keeps trims, and the socket it stops taking connections at.
-rustix = { workspace = true, features = ["fs", "net", "std"] }
 rand.workspace = true
 # The content store app surfaces are read from.
 # The apps' store: the device content store when the launcher handed one over.
@@ -150,18 +140,24 @@ tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-ide
 # The toolkit the Unix launch edge and its surface files are read with.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 
+# Agents run Rust apps' components in process, which a Windows device builds without; this
+# selection goes when the agent host stops linking the apps.
+[target.'cfg(not(windows))'.dependencies]
+tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["agents"] }
+
+# What only a Unix host's sandboxes, sockets and descriptors use.
+[target.'cfg(unix)'.dependencies]
+# The launcher's manifest view, service names and developer-override check;
+# its binary builds every Linux app sandbox.
+launcher = { path = "../../packaging/launcher" }
+libc.workspace = true
+# The log a daemon keeps trims, and the socket it stops taking connections at.
+rustix = { workspace = true, features = ["fs", "net", "std"] }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
-# What the daemon's command line needs on Windows: the private profile it names and the
-# MCP projection it can answer without a daemon.
-[target.'cfg(windows)'.dependencies]
-tilo-mcp = { path = "../tilo-mcp" }
-tilo-files = { path = "../../platform/tilo-files" }
-tilo-paths.workspace = true
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
-uuid.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 fuser.workspace = true
 # The member that takes work runs its workspaces' shells: ush's own commands

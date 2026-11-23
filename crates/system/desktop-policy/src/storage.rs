@@ -6,7 +6,6 @@
 //! removal.
 
 use std::collections::BTreeMap;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -239,10 +238,50 @@ pub struct CleanupItem {
     pub bytes: u64,
     pub files: u64,
     pub kind: CleanupKind,
+    stamp: Stamp,
+}
+
+/// What a cleanup checks an item against before removing it: which entry it is and when it
+/// last changed, in nanoseconds. Windows' standard metadata has neither an inode nor a change
+/// time, so there the modified time stands alone, beside the measured contents.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Stamp {
     device: u64,
     inode: u64,
     modified_ns: i128,
     changed_ns: i128,
+}
+
+impl Stamp {
+    #[cfg(unix)]
+    fn of(meta: &std::fs::Metadata) -> Self {
+        use std::os::unix::fs::MetadataExt as _;
+        let ns = |s: i64, n: i64| {
+            i128::from(s)
+                .saturating_mul(1_000_000_000)
+                .saturating_add(i128::from(n))
+        };
+        Self {
+            device: meta.dev(),
+            inode: meta.ino(),
+            modified_ns: ns(meta.mtime(), meta.mtime_nsec()),
+            changed_ns: ns(meta.ctime(), meta.ctime_nsec()),
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn of(meta: &std::fs::Metadata) -> Self {
+        let modified = meta
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok());
+        Self {
+            modified_ns: modified.map_or(0, |since| {
+                i128::try_from(since.as_nanos()).unwrap_or(i128::MAX)
+            }),
+            ..Self::default()
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -268,10 +307,7 @@ impl CleanupPreview {
                 bytes,
                 files: 1,
                 kind: CleanupKind::File,
-                device: 0,
-                inode: 0,
-                modified_ns: 0,
-                changed_ns: 0,
+                stamp: Stamp::default(),
             })
             .collect();
         let total_bytes = items.iter().map(|item| item.bytes).sum();
@@ -345,14 +381,7 @@ pub fn preview_cache_cleanup(cache_root: &Path) -> Result<CleanupPreview, Cleanu
             bytes,
             files,
             kind,
-            device: meta.dev(),
-            inode: meta.ino(),
-            modified_ns: i128::from(meta.mtime())
-                .saturating_mul(1_000_000_000)
-                .saturating_add(i128::from(meta.mtime_nsec())),
-            changed_ns: i128::from(meta.ctime())
-                .saturating_mul(1_000_000_000)
-                .saturating_add(i128::from(meta.ctime_nsec())),
+            stamp: Stamp::of(&meta),
         });
     }
     items.sort_by(|a, b| b.bytes.cmp(&a.bytes).then_with(|| a.path.cmp(&b.path)));
@@ -395,17 +424,8 @@ pub fn apply_cleanup(
         }
         let meta = std::fs::symlink_metadata(&item.path)
             .map_err(|_| CleanupError::Changed(item.path.clone()))?;
-        let modified_ns = i128::from(meta.mtime())
-            .saturating_mul(1_000_000_000)
-            .saturating_add(i128::from(meta.mtime_nsec()));
-        let changed_ns = i128::from(meta.ctime())
-            .saturating_mul(1_000_000_000)
-            .saturating_add(i128::from(meta.ctime_nsec()));
         let (bytes, files) = measure(&item.path);
-        if meta.dev() != item.device
-            || meta.ino() != item.inode
-            || modified_ns != item.modified_ns
-            || changed_ns != item.changed_ns
+        if Stamp::of(&meta) != item.stamp
             || (meta.is_dir()) != (item.kind == CleanupKind::Directory)
             || bytes != item.bytes
             || files != item.files

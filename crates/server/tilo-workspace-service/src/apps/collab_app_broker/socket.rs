@@ -378,7 +378,7 @@ pub(super) async fn has_collab_launch_marker(
         match stream.try_io(tokio::io::Interest::READABLE, || {
             peek_launch_marker(stream, &mut partial)
         }) {
-            Ok(marker) => return Ok(marker == launcher::services::COLLAB_LAUNCH_MAGIC),
+            Ok(marker) => return Ok(marker == runtime_portal::launch_handoff::MAGIC),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 if partial {
                     if ready.is_read_closed() {
@@ -413,8 +413,8 @@ pub(super) async fn has_collab_launch_marker(
 pub(super) fn peek_launch_marker(
     stream: &tokio::net::UnixStream,
     partial: &mut bool,
-) -> std::io::Result<[u8; launcher::services::COLLAB_LAUNCH_MAGIC.len()]> {
-    let mut marker = [0_u8; launcher::services::COLLAB_LAUNCH_MAGIC.len()];
+) -> std::io::Result<[u8; runtime_portal::launch_handoff::MAGIC.len()]> {
+    let mut marker = [0_u8; runtime_portal::launch_handoff::MAGIC.len()];
     // SAFETY: `marker` is a writable fixed-size buffer and `stream` owns
     // the live socket for this entire call. MSG_PEEK leaves the Cap'n
     // Proto header untouched for legacy/raw clients.
@@ -482,7 +482,7 @@ pub(super) async fn authenticate_launcher_handoff(
         "pid {pid} launching {} in workspace {}",
         handoff.app_id, handoff.workspace_id
     );
-    if handoff.protocol != launcher::services::COLLAB_LAUNCH_PROTOCOL_VERSION
+    if handoff.protocol != runtime_portal::launch_handoff::PROTOCOL_VERSION
         || handoff.app_id.trim().is_empty()
         || handoff.workspace_id.trim().is_empty()
     {

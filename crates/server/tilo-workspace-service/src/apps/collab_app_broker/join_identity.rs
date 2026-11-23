@@ -13,7 +13,7 @@ pub(super) struct CollabLaunchHandoff {
     #[serde(default)]
     pub(super) executing_peer: bool,
     /// The window a connection the session makes for one of its own windows
-    /// is for (`launcher::services::write_collab_window_handoff`).
+    /// is for (the launcher's `services::write_collab_window_handoff`).
     #[serde(default)]
     pub(super) window_instance: Option<u64>,
 }
