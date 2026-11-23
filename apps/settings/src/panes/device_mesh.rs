@@ -1,6 +1,9 @@
 //! Sync between devices — configure seamless continuation and always-on sync.
-//! The pane reads and writes the same `ServerConfig` consumed by `tilo-server`
-//! and reads the daemon's once-per-second metrics snapshot for live status.
+//! The pane shows this device's server settings as the daemon publishes them
+//! (`device:server`), changes them through that resource's actions, and reads
+//! the daemon's once-per-second metrics snapshot for live status. It never
+//! writes the configuration itself: the daemon that keeps the machine's server
+//! does.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -10,7 +13,10 @@ use std::sync::{Arc, Mutex};
 use ui::time::{Duration, Instant, SystemTime};
 
 use provider_settings_ui::bound::SettingRows as _;
-use tilo_server_protocol::{ServerConfig, WorkFrom, WorkSetting, WorkWhen};
+use tilo_server_protocol::ServerConfig;
+use tilo_system_resources::device_settings::{
+    ROOM, SERVER as SERVER_SETTINGS, ServerSettings, Work, WorkFrom,
+};
 use ui::LocalState;
 use ui::framework::{Actions, EffectAnswer, EffectCx, Effected, LiveRow, ViewCx};
 use ui::tilo_resource;
@@ -59,7 +65,6 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&DeviceMeshArea> {
     app.areas().find()
 }
 
-const DEFAULT_CONFIG: &str = "/etc/tilo/server.toml";
 const CONTINUITY_ENABLED_KEY: &str = "device_mesh.continuity.enabled";
 const AGENTS_ACCEPT_KEY: &str = "device_mesh.agents.accept_other_devices";
 const AGENTS_ACT_KEY: &str = "device_mesh.agents.act_without_asking";
@@ -70,12 +75,11 @@ const STATUS_FRESHNESS: Duration = Duration::from_secs(5);
 const WORK_FROM: [&str; 3] = ["mesh-work-nothing", "mesh-work-own", "mesh-work-anyone"];
 
 /// The message naming the work a setting takes.
-fn work_key(from: &WorkFrom) -> &'static str {
+fn work_key(from: WorkFrom) -> &'static str {
     match from {
         WorkFrom::Nobody => "mesh-work-nothing",
         WorkFrom::OwnDevices => "mesh-work-own",
         WorkFrom::Anyone => "mesh-work-anyone",
-        WorkFrom::Workspaces(_) => "mesh-work-some",
     }
 }
 
@@ -83,25 +87,11 @@ fn work_key(from: &WorkFrom) -> &'static str {
 fn work_from_key(key: &str) -> Option<WorkFrom> {
     [WorkFrom::Nobody, WorkFrom::OwnDevices, WorkFrom::Anyone]
         .into_iter()
-        .find(|from| work_key(from) == key)
-}
-
-/// The work setting a person picked: every kind of work when it takes any, and none when it takes
-/// nobody's, in the states `when` the device took work in before.
-fn work_from(from: WorkFrom, when: WorkWhen) -> WorkSetting {
-    WorkSetting {
-        kinds: if from == WorkFrom::Nobody {
-            tilo_server_protocol::WorkKinds::NONE
-        } else {
-            tilo_server_protocol::WorkKinds::ALL
-        },
-        from,
-        when,
-    }
+        .find(|from| work_key(*from) == key)
 }
 
 /// The shares of the processors or memory a person may keep free from work.
-const ROOM: [u8; 3] = [0, 20, 50];
+const ROOM_CHOICES: [u8; 3] = ROOM;
 
 /// How a share of the machine kept free is shown.
 fn room_shown(percent: u8) -> String {
@@ -116,12 +106,13 @@ fn room_shown(percent: u8) -> String {
 }
 
 fn room_from_label(label: &str) -> Option<u8> {
-    ROOM.into_iter()
+    ROOM_CHOICES
+        .into_iter()
         .find(|percent| room_shown(*percent) == label)
 }
 
-fn takes_work(work: &WorkSetting) -> bool {
-    !work.takes_nothing()
+fn takes_work(work: Work) -> bool {
+    work.from != WorkFrom::Nobody
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -135,19 +126,13 @@ enum ServerRuntimeStatus {
 }
 
 impl ServerRuntimeStatus {
-    fn read(config: &ServerConfig, now: SystemTime) -> Self {
+    fn read(state_root: &std::path::Path, now: SystemTime) -> Self {
         // The state directory's parent always exists on a device; when it is
         // not visible the server cannot be observed, not "offline".
-        if config
-            .state_root
-            .parent()
-            .is_some_and(|parent| !parent.is_dir())
-        {
+        if state_root.parent().is_some_and(|parent| !parent.is_dir()) {
             return Self::Unreadable;
         }
-        let metrics_path = config
-            .state_root
-            .join(tilo_server_protocol::metrics::METRICS_FILE);
+        let metrics_path = state_root.join(tilo_server_protocol::metrics::METRICS_FILE);
         let modified =
             match std::fs::metadata(metrics_path).and_then(|metadata| metadata.modified()) {
                 Ok(modified) => modified,
@@ -157,7 +142,7 @@ impl ServerRuntimeStatus {
         if now.duration_since(modified).unwrap_or(Duration::ZERO) > STATUS_FRESHNESS {
             return Self::Offline;
         }
-        match tilo_server_protocol::metrics::load_metrics(&config.state_root) {
+        match tilo_server_protocol::metrics::load_metrics(state_root) {
             Ok(Some(_)) => Self::Online,
             Ok(None) => Self::Offline,
             Err(_) => Self::Unreadable,
@@ -194,23 +179,25 @@ struct MeshFollow {
 }
 
 impl MeshFollow {
-    fn start(config: &ServerConfig) -> Option<Self> {
-        Self::start_at(config, Arc::new(ui::time::wall))
+    fn start(state_root: &std::path::Path) -> Option<Self> {
+        Self::start_at(state_root, Arc::new(ui::time::wall))
     }
 
-    fn start_at(config: &ServerConfig, now: StatusClock) -> Option<Self> {
+    fn start_at(state_root: &std::path::Path, now: StatusClock) -> Option<Self> {
         let status = Arc::new(Mutex::new(None));
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (poke, events) = std::sync::mpsc::channel();
         let follow = {
-            let (config, latest, stop, poke) = (
-                config.clone(),
+            let (state_root, latest, stop, poke) = (
+                state_root.to_path_buf(),
                 Arc::clone(&status),
                 Arc::clone(&stop),
                 poke.clone(),
             );
             let wake = ui::WakeHandle::new();
-            Box::new(move || follow_server(&config, &latest, &stop, poke, &events, &wake, &*now))
+            Box::new(move || {
+                follow_server(&state_root, &latest, &stop, poke, &events, &wake, &*now)
+            })
         };
         crate::device_read::thread("settings-server-status", follow).ok()?;
         Some(Self { status, stop, poke })
@@ -238,7 +225,7 @@ impl Drop for MeshFollow {
 }
 
 fn follow_server(
-    config: &ServerConfig,
+    state_root: &std::path::Path,
     latest: &Mutex<Option<ServerRuntimeStatus>>,
     stop: &std::sync::atomic::AtomicBool,
     poke: std::sync::mpsc::Sender<()>,
@@ -247,15 +234,13 @@ fn follow_server(
     now: &(dyn Fn() -> SystemTime + Send + Sync),
 ) {
     use std::sync::mpsc::RecvTimeoutError;
-    let heartbeat = [config
-        .state_root
-        .join(tilo_server_protocol::metrics::METRICS_FILE)];
+    let heartbeat = [state_root.join(tilo_server_protocol::metrics::METRICS_FILE)];
     let on_change: crate::watch::OnChange = Arc::new(move || {
         let _ = poke.send(());
     });
     let mut watch = crate::watch::Watched::calling(&heartbeat, &on_change);
     while !stop.load(std::sync::atomic::Ordering::Acquire) {
-        let status = ServerRuntimeStatus::read(config, now());
+        let status = ServerRuntimeStatus::read(state_root, now());
         if latest
             .lock()
             .is_ok_and(|mut latest| latest.replace(status) != Some(status))
@@ -429,20 +414,20 @@ impl DeviceMeshArea {
         self.remote.clone()
     }
 
-    fn source(&self) -> PathBuf {
-        if self.devices {
-            PathBuf::from(DEFAULT_CONFIG)
-        } else {
-            PathBuf::from("/nonexistent/tilo/server.toml")
-        }
+    /// The configuration a pane that reaches no device reads its stand-in from.
+    fn source() -> PathBuf {
+        PathBuf::from("/nonexistent/tilo/server.toml")
     }
 
     pub fn model(&self) -> &Rc<RefCell<DeviceMeshModel>> {
         self.model.get_or_init(|| {
-            let read = self
-                .read
-                .take()
-                .unwrap_or_else(|| MeshRead::of(self.source(), ui::time::wall()));
+            let read = self.read.take().unwrap_or_else(|| {
+                if self.devices {
+                    MeshRead::following()
+                } else {
+                    MeshRead::of(&Self::source(), ui::time::wall())
+                }
+            });
             let mut model = DeviceMeshModel::from_read(self.devices, read);
             model.remote = self.remote.clone();
             if self.devices {
@@ -463,9 +448,13 @@ impl DeviceMeshArea {
         if self.is_open() {
             return false;
         }
-        let path = self.source();
-        let now = ui::time::wall();
-        self.read.start(move || MeshRead::of(path, now))
+        if self.devices {
+            self.read.start(MeshRead::following)
+        } else {
+            let path = Self::source();
+            let now = ui::time::wall();
+            self.read.start(move || MeshRead::of(&path, now))
+        }
     }
 
     pub(crate) fn poll(&self) {
@@ -554,6 +543,8 @@ pub(super) enum MeshStatus {
     NotConfigured,
     ConfigUnreadable,
     NotSaved,
+    /// A change to this device's settings is on its way to the daemon.
+    Saving,
     /// Asking this computer for a code a new computer joins with.
     Issuing,
     /// A code is ready: it works once, for ten minutes.
@@ -576,7 +567,11 @@ impl MeshStatus {
             Self::Copied => t("mesh-code-copied"),
             Self::CopyFailed => t("mesh-code-copy-failed"),
             Self::IssueFailed => t("mesh-code-failed"),
-            Self::Ready | Self::NotConfigured | Self::ConfigUnreadable | Self::NotSaved => {
+            Self::Ready
+            | Self::NotConfigured
+            | Self::ConfigUnreadable
+            | Self::NotSaved
+            | Self::Saving => {
                 return None;
             }
         })
@@ -592,8 +587,15 @@ impl MeshStatus {
 }
 
 pub struct DeviceMeshModel {
-    config_path: PathBuf,
-    config: ServerConfig,
+    /// This device's server settings, as the daemon publishes them: the work
+    /// the device takes and the services it offers.
+    settings: ServerSettings,
+    /// The resource those settings are read from and changed through, when a
+    /// session serves it: each reading wakes the window, and every change
+    /// leaves as one of its actions.
+    server: Option<ui::collaboration::SessionResource>,
+    /// The change last asked of the resource, while it is on its way.
+    changing: Option<crate::device_read::Landing>,
     status: MeshStatus,
     devices: bool,
     changed: bool,
@@ -715,8 +717,10 @@ fn peer_health_detail(health: HomePeerHealth) -> String {
 }
 
 pub(crate) struct MeshRead {
-    config_path: PathBuf,
-    config: ServerConfig,
+    settings: ServerSettings,
+    /// The resource the settings are read from, when a session publishes it:
+    /// the pane follows it for each later reading.
+    server: Option<ui::collaboration::SessionResource>,
     status: MeshStatus,
     runtime_status: ServerRuntimeStatus,
     home_peer_last_seen: HashMap<String, u64>,
@@ -780,20 +784,71 @@ fn devices_in(reading: &str) -> Option<Vec<PersonalDevice>> {
 }
 
 impl MeshRead {
-    fn of(config_path: PathBuf, now: SystemTime) -> Self {
-        let (config, status) = match ServerConfig::load(&config_path) {
-            Ok(config) => (config, MeshStatus::Ready),
+    /// This device's server settings, as the session's services publish them:
+    /// the reading that resource stands at now, followed for each later one.
+    /// Blocking: it runs on the read Settings started off the frame thread.
+    ///
+    /// A device whose session serves no such resource has no settings this
+    /// pane can change, and says what to ask: the daemon that keeps them runs
+    /// on the machine.
+    fn following() -> Self {
+        let now = ui::time::wall();
+        match ui::collaboration::SessionResource::open(SERVER_SETTINGS) {
+            Ok(server) => {
+                let settings = server
+                    .latest()
+                    .and_then(Result::ok)
+                    .and_then(|text| decode_settings(&text));
+                let mut read = Self::unconfigured(now);
+                read.server = Some(server);
+                if let Some(settings) = settings {
+                    read.status = status_of(&settings);
+                    read.runtime_status = runtime_status_of(&settings, now);
+                    read.settings = settings;
+                }
+                read
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "tilo::settings",
+                    %error,
+                    "this device's server settings are not published"
+                );
+                let mut read = Self::unconfigured(now);
+                read.status = MeshStatus::ConfigUnreadable;
+                read
+            }
+        }
+    }
+
+    /// The settings a pane not shown a session reads: a stand-in device that
+    /// takes no work, as one of its own configuration keeps it.
+    fn unconfigured(now: SystemTime) -> Self {
+        let settings = ServerSettings::default();
+        Self {
+            runtime_status: runtime_status_of(&settings, now),
+            settings,
+            server: None,
+            status: MeshStatus::NotConfigured,
+            home_peer_last_seen: HashMap::new(),
+        }
+    }
+
+    /// The settings a device keeps in the configuration at `config_path`, read
+    /// where a pane reaches no session: a capture's or a test's stand-in.
+    fn of(config_path: &std::path::Path, now: SystemTime) -> Self {
+        let (settings, status) = match ServerConfig::load(config_path) {
+            Ok(config) => {
+                let settings = settings_of(&config, true, None);
+                let status = status_of(&settings);
+                (settings, status)
+            }
             // No sync settings file: this device was never set up to sync, whether or not the
             // directory that would hold it exists.
             Err(tilo_server_protocol::config::ConfigError::Io(error))
                 if error.kind() == std::io::ErrorKind::NotFound =>
             {
-                let config = ServerConfig {
-                    work: WorkSetting::none(),
-                    services: tilo_server_protocol::ServiceCapabilities::default(),
-                    ..ServerConfig::default()
-                };
-                (config, MeshStatus::NotConfigured)
+                (ServerSettings::default(), MeshStatus::NotConfigured)
             }
             Err(error) => {
                 tracing::warn!(
@@ -802,13 +857,18 @@ impl MeshRead {
                     config = %config_path.display(),
                     "this device's sync settings could not be read"
                 );
-                (ServerConfig::default(), MeshStatus::ConfigUnreadable)
+                let settings = ServerSettings {
+                    problem: Some(t("mesh-status-config-unreadable")),
+                    ..ServerSettings::default()
+                };
+                let status = status_of(&settings);
+                (settings, status)
             }
         };
-        let runtime_status = ServerRuntimeStatus::read(&config, now);
+        let runtime_status = runtime_status_of(&settings, now);
         Self {
-            config_path,
-            config,
+            settings,
+            server: None,
             status,
             runtime_status,
             home_peer_last_seen: HashMap::new(),
@@ -816,16 +876,136 @@ impl MeshRead {
     }
 }
 
+/// A change applied to a stand-in's settings: the pane reaching no session shows
+/// what the daemon would have saved.
+fn apply_here(
+    settings: &mut ServerSettings,
+    action: &str,
+    change: &serde_json::Value,
+) -> Result<(), String> {
+    let text = |name: &str| {
+        change
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| format!("the change names no {name}"))
+    };
+    match action {
+        "set-work" => {
+            let name = text("work")?;
+            let from = WorkFrom::named(&name)
+                .ok_or_else(|| format!("{name} is no work this device takes"))?;
+            let was_taking = settings.work.from != WorkFrom::Nobody;
+            settings.set_work(from);
+            let takes = from != WorkFrom::Nobody;
+            if takes != was_taking {
+                settings.services.workspace_replication = takes;
+                settings.services.inbound_server = takes;
+            }
+        }
+        "set-work-while-charging" => {
+            let on = change
+                .get("on")
+                .and_then(serde_json::Value::as_bool)
+                .ok_or_else(|| "the change says no on".to_owned())?;
+            settings.set_work_while_charging(on);
+        }
+        "set-work-room" => {
+            let part = text("part")?;
+            let percent = change
+                .get("percent")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|percent| u8::try_from(percent).ok())
+                .ok_or_else(|| "the change names no share".to_owned())?;
+            settings.set_work_room(&part, percent)?;
+        }
+        "set-service" => {
+            let service = text("service")?;
+            let on = change
+                .get("on")
+                .and_then(serde_json::Value::as_bool)
+                .ok_or_else(|| "the change says no on".to_owned())?;
+            settings.services.set(&service, on)?;
+        }
+        _ => return Err(format!("there is no change {action}")),
+    }
+    settings.configured = true;
+    Ok(())
+}
+
+/// The reading `text` carries, when it reads.
+fn decode_settings(text: &str) -> Option<ServerSettings> {
+    serde_json::from_str(text)
+        .inspect_err(|error| {
+            tracing::warn!(
+                target: "tilo::settings",
+                %error,
+                "this device's server settings do not read"
+            );
+        })
+        .ok()
+}
+
+/// What the pane says of a device in `settings`'s state.
+fn status_of(settings: &ServerSettings) -> MeshStatus {
+    if settings.problem.is_some() {
+        MeshStatus::ConfigUnreadable
+    } else if settings.configured {
+        MeshStatus::Ready
+    } else {
+        MeshStatus::NotConfigured
+    }
+}
+
+/// The server's runtime status as `settings` place its state.
+fn runtime_status_of(settings: &ServerSettings, now: SystemTime) -> ServerRuntimeStatus {
+    if settings.state_root.is_empty() {
+        return ServerRuntimeStatus::Offline;
+    }
+    ServerRuntimeStatus::read(std::path::Path::new(&settings.state_root), now)
+}
+
+/// The settings a device's configuration `config` keeps: the reading the daemon
+/// publishes, read from the file a stand-in pane shows.
+fn settings_of(config: &ServerConfig, configured: bool, problem: Option<String>) -> ServerSettings {
+    ServerSettings {
+        configured,
+        problem,
+        state_root: config.state_root.display().to_string(),
+        work: Work {
+            from: match config.work.from {
+                tilo_server_protocol::WorkFrom::Nobody => WorkFrom::Nobody,
+                tilo_server_protocol::WorkFrom::OwnDevices => WorkFrom::OwnDevices,
+                tilo_server_protocol::WorkFrom::Workspaces(_)
+                | tilo_server_protocol::WorkFrom::Anyone => WorkFrom::Anyone,
+            },
+            when: tilo_system_resources::device_settings::WorkWhen {
+                charging_only: config.work.when.charging_only,
+                free_cpu_percent: config.work.when.free_cpu_percent,
+                free_memory_percent: config.work.when.free_memory_percent,
+            },
+        },
+        services: tilo_system_resources::device_settings::Services {
+            workspace_replication: config.services.workspace_replication,
+            inbound_server: config.services.inbound_server,
+            remote_control_server: config.services.remote_control_server,
+            app_serving: config.services.app_serving,
+            compute: config.services.compute,
+        },
+    }
+}
+
 impl DeviceMeshModel {
     #[cfg(test)]
-    fn from_path(config_path: PathBuf, devices: bool) -> Self {
+    fn from_path(config_path: &std::path::Path, devices: bool) -> Self {
         Self::from_read(devices, MeshRead::of(config_path, ui::time::wall()))
     }
 
     fn from_read(devices: bool, read: MeshRead) -> Self {
         Self {
-            config_path: read.config_path,
-            config: read.config,
+            settings: read.settings,
+            server: read.server,
+            changing: None,
             status: read.status,
             devices,
             changed: false,
@@ -858,7 +1038,7 @@ impl DeviceMeshModel {
 
     #[cfg(test)]
     fn with_path(path: &std::path::Path) -> Self {
-        let mut pane = Self::from_path(path.to_path_buf(), false);
+        let mut pane = Self::from_path(path, false);
         pane.changed = false;
         pane.next_status_refresh = ui::time::now() + Duration::from_secs(24 * 60 * 60);
         pane
@@ -866,46 +1046,44 @@ impl DeviceMeshModel {
 
     fn apply(&mut self, effect: &DeviceMeshEffect) -> Result<(), String> {
         self.follow_removal(effect);
-        let configured = match effect {
+        let change = match effect {
             DeviceMeshEffect::SetWork { work } => {
                 let from =
                     work_from_key(work).ok_or_else(|| "unsupported work setting".to_string())?;
-                self.apply_work(work_from(from, self.config.work.when));
-                true
+                Some(("set-work", serde_json::json!({ "work": from.name() })))
             }
             DeviceMeshEffect::SetWorkWhileCharging { on } => {
-                self.config.work.when.charging_only = *on;
-                true
+                Some(("set-work-while-charging", serde_json::json!({ "on": on })))
             }
             DeviceMeshEffect::SetWorkRoom { part, percent } => {
                 let percent = room_from_label(percent)
                     .or_else(|| percent.trim_end_matches('%').trim().parse().ok())
                     .filter(|percent| ROOM.contains(percent))
                     .ok_or_else(|| "unsupported share to keep free".to_string())?;
-                match part.as_str() {
-                    "processors" => self.config.work.when.free_cpu_percent = percent,
-                    "memory" => self.config.work.when.free_memory_percent = percent,
-                    _ => return Err("unsupported part of the machine".into()),
+                if !tilo_system_resources::device_settings::ROOM_PARTS.contains(&part.as_str()) {
+                    return Err("unsupported part of the machine".into());
                 }
-                true
+                Some((
+                    "set-work-room",
+                    serde_json::json!({ "part": part, "percent": percent }),
+                ))
             }
             DeviceMeshEffect::SetDeviceService { service, on } => {
-                match service.as_str() {
-                    "inbound_server" => self.config.services.inbound_server = *on,
-                    "remote_control_server" => self.config.services.remote_control_server = *on,
-                    "app_serving" => self.config.services.app_serving = *on,
-                    "compute" => self.config.services.compute = *on,
-                    _ => return Err("unsupported device service".into()),
+                if !tilo_system_resources::device_settings::SERVICES.contains(&service.as_str()) {
+                    return Err("unsupported device service".into());
                 }
-                true
+                Some((
+                    "set-service",
+                    serde_json::json!({ "service": service, "on": on }),
+                ))
             }
             DeviceMeshEffect::AddDevice => {
                 self.issue_ticket();
-                false
+                None
             }
             DeviceMeshEffect::CopyCode { code } => {
                 self.copy_code(code);
-                false
+                None
             }
             DeviceMeshEffect::RenameHomeServer { device, name } => {
                 let peer = self.home_peer(device)?;
@@ -914,34 +1092,104 @@ impl DeviceMeshModel {
                 }
                 let managing = Managing::Rename(peer.device.clone(), name.trim().into());
                 self.ask_server(&peer, "server.rename", [("name", name.trim())], managing);
-                false
+                None
             }
             DeviceMeshEffect::RemoveHomeServer { device } => {
                 let peer = self.home_peer(device)?;
                 self.start_home_peer_removal(&peer);
-                false
+                None
             }
-            DeviceMeshEffect::ReviewRemoval { .. } | DeviceMeshEffect::CancelRemoval => false,
+            DeviceMeshEffect::ReviewRemoval { .. } | DeviceMeshEffect::CancelRemoval => None,
             DeviceMeshEffect::SetAcceptOtherDeviceAgents { on } => {
                 self.set_other_device_agents(
                     ui::tilo_actions::remote::session_actions::SET_ACCEPT_OTHER_DEVICE_AGENTS,
                     *on,
                 );
-                false
+                None
             }
             DeviceMeshEffect::SetOtherDeviceAgentsUnasked { on } => {
                 self.set_other_device_agents(
                     ui::tilo_actions::remote::session_actions::SET_OTHER_DEVICE_AGENTS_UNASKED,
                     *on,
                 );
-                false
+                None
             }
         };
-        if configured {
-            self.persist();
+        if let Some((action, arguments)) = change {
+            self.change(action, &arguments)?;
         }
         self.changed = true;
         Ok(())
+    }
+
+    /// Change `action` of this device's server settings to `arguments`. A pane
+    /// following the daemon's resource asks it, and shows the reading it
+    /// publishes next; one reaching no session (a capture's or a test's
+    /// stand-in) shows the change here, with no configuration to save it to.
+    fn change(&mut self, action: &str, arguments: &serde_json::Value) -> Result<(), String> {
+        let Some(server) = self.server.clone() else {
+            apply_here(&mut self.settings, action, arguments)?;
+            self.changed = true;
+            return Ok(());
+        };
+        let action = action.to_owned();
+        let arguments = arguments
+            .as_object()
+            .cloned()
+            .unwrap_or_else(serde_json::Map::new);
+        self.status = MeshStatus::Saving;
+        self.changing = Some(crate::device_read::Landing::start(move || {
+            server.invoke(&action, &arguments)
+        }));
+        Ok(())
+    }
+
+    /// Take the answer to the change asked of the resource, once it lands.
+    fn take_change(&mut self) {
+        let Some(changing) = self.changing.as_ref() else {
+            return;
+        };
+        let answer = match changing.poll() {
+            crate::device_read::Landed::Pending => return,
+            crate::device_read::Landed::Done(answer) => answer,
+            crate::device_read::Landed::Lost => Err("the device did not answer".to_owned()),
+        };
+        self.changing = None;
+        self.changed = true;
+        match answer {
+            Ok(()) => self.status = status_of(&self.settings),
+            Err(error) => {
+                tracing::warn!(
+                    target: "tilo::settings",
+                    %error,
+                    "this device's settings were not changed"
+                );
+                self.status = MeshStatus::NotSaved;
+            }
+        }
+    }
+
+    /// Take in the daemon's newest reading of this device's server settings.
+    fn take_settings(&mut self) {
+        let Some(server) = self.server.as_ref() else {
+            return;
+        };
+        let Some(reading) = server.latest() else {
+            return;
+        };
+        if let Some(settings) = reading.ok().as_deref().and_then(decode_settings) {
+            if settings != self.settings {
+                self.settings = settings;
+                if self.changing.is_none() {
+                    self.status = status_of(&self.settings);
+                }
+                self.runtime_status = runtime_status_of(&self.settings, ui::time::wall());
+                self.changed = true;
+            }
+        } else {
+            self.changed |= self.status != MeshStatus::ConfigUnreadable;
+            self.status = MeshStatus::ConfigUnreadable;
+        }
     }
 
     fn follow_removal(&mut self, effect: &DeviceMeshEffect) {
@@ -1262,28 +1510,12 @@ impl DeviceMeshModel {
     }
 
     fn refresh_runtime_status(&mut self) {
-        let status = ServerRuntimeStatus::read(&self.config, ui::time::wall());
+        let status = runtime_status_of(&self.settings, ui::time::wall());
         if status != self.runtime_status {
             self.runtime_status = status;
             self.changed = true;
         }
         self.next_status_refresh = ui::time::now() + STATUS_REFRESH_INTERVAL;
-    }
-
-    fn apply_work(&mut self, work: WorkSetting) -> bool {
-        if work == self.config.work {
-            return false;
-        }
-        let takes = takes_work(&work);
-        if takes != takes_work(&self.config.work) {
-            self.changed = true;
-        }
-        self.config.work = work;
-        // A device that takes no work runs no service for others.
-        self.config.services.workspace_replication = takes;
-        self.config.services.inbound_server = takes;
-        self.next_status_refresh = ui::time::now();
-        true
     }
 }
 
@@ -1492,21 +1724,6 @@ fn activity_section(continuity: &ContinuityPrivacy) -> SettingsSection {
 }
 
 impl DeviceMeshModel {
-    fn persist(&mut self) {
-        self.status = match self.config.save(&self.config_path) {
-            Ok(()) => MeshStatus::Ready,
-            Err(error) => {
-                tracing::warn!(
-                    target: "tilo::settings",
-                    %error,
-                    config = %self.config_path.display(),
-                    "this device's sync settings could not be saved"
-                );
-                MeshStatus::NotSaved
-            }
-        };
-    }
-
     /// Ask this computer for a code a new computer joins with, one at a time.
     fn issue_ticket(&mut self) {
         use ui::tilo_actions::remote::{InvokeArgument, device_tickets};
@@ -1621,6 +1838,8 @@ impl DeviceMeshModel {
 
     fn poll(&mut self) -> bool {
         self.poll_background_tasks();
+        self.take_settings();
+        self.take_change();
         self.take_personal_devices();
         if let Some(follow) = self.following.upgrade() {
             self.take_followed(&follow);
@@ -1632,11 +1851,11 @@ impl DeviceMeshModel {
     }
 
     fn busy(&self) -> bool {
-        self.ticket_call.is_some()
+        self.ticket_call.is_some() || self.changing.is_some()
     }
 
     fn next_wake(&self) -> Option<Instant> {
-        if !takes_work(&self.config.work) {
+        if !takes_work(self.settings.work) {
             return None;
         }
         match self.following.upgrade() {
@@ -1646,13 +1865,14 @@ impl DeviceMeshModel {
     }
 
     fn follow(&mut self) -> Option<Rc<MeshFollow>> {
-        if !self.devices || !takes_work(&self.config.work) {
+        if !self.devices || !takes_work(self.settings.work) {
             return None;
         }
         if let Some(follow) = self.following.upgrade() {
             return Some(follow);
         }
-        let follow = Rc::new(MeshFollow::start(&self.config)?);
+        let state_root = PathBuf::from(&self.settings.state_root);
+        let follow = Rc::new(MeshFollow::start(&state_root)?);
         self.following = Rc::downgrade(&follow);
         self.health_round = self.servers.len().max(1);
         self.next_status_refresh = ui::time::now();
@@ -1755,7 +1975,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn the_device_mesh_model_reads_and_edits_the_server_configuration;
+        fn the_device_mesh_model_reads_and_edits_the_server_settings_it_shows;
 
         phase a_device_without_sync_settings_is_unconfigured_not_unreadable;
         {
@@ -1763,21 +1983,17 @@ mod tests {
             let absent = dir.path().join("etc-tilo").join("server.toml");
             let pane = DeviceMeshModel::with_path(&absent);
             assert_eq!(pane.status, MeshStatus::NotConfigured);
+            assert!(!pane.settings.configured);
             assert!(pane.status.settings_trouble_shown().is_none());
-            let config = ServerConfig {
-                state_root: dir.path().join("missing").join("tilo-server"),
-                ..ServerConfig::default()
-            };
             assert_eq!(
-                ServerRuntimeStatus::read(&config, ui::time::wall()),
+                ServerRuntimeStatus::read(
+                    &dir.path().join("missing").join("tilo-server"),
+                    ui::time::wall()
+                ),
                 ServerRuntimeStatus::Unreadable
             );
-            let config = ServerConfig {
-                state_root: dir.path().join("tilo-server"),
-                ..ServerConfig::default()
-            };
             assert_eq!(
-                ServerRuntimeStatus::read(&config, ui::time::wall()),
+                ServerRuntimeStatus::read(&dir.path().join("tilo-server"), ui::time::wall()),
                 ServerRuntimeStatus::Offline
             );
         }
@@ -1788,7 +2004,7 @@ mod tests {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("TILO_IDENTITY_ROOT", dir.path());
             let mut pane = DeviceMeshModel::with_path(&dir.path().join("server.toml"));
-            pane.config.work = WorkSetting::own_person();
+            pane.settings.work.from = WorkFrom::OwnDevices;
             let follow = Rc::new(MeshFollow::by_hand());
             pane.following = Rc::downgrade(&follow);
             let _ = pane.poll();
@@ -1800,7 +2016,7 @@ mod tests {
             assert!(!pane.poll(), "once");
         }
 
-        phase server_config_edits_are_real_honest_and_coalesced;
+        phase settings_edits_are_real_honest_and_coalesced;
         {
             {
                 let dir = tempfile::tempdir().unwrap();
@@ -1824,29 +2040,31 @@ mod tests {
                 })
                 .unwrap();
 
-                let saved = ServerConfig::load(&path).unwrap();
-                assert_eq!(saved.work.from, WorkFrom::Anyone);
-                assert!(saved.services.compute);
-                assert!(!saved.services.remote_control_server);
+                assert_eq!(pane.settings.work.from, WorkFrom::Anyone);
+                assert!(pane.settings.services.compute);
+                assert!(!pane.settings.services.remote_control_server);
             }
 
             {
+                // A pane with no configuration keeps its changes in the reading it
+                // shows, and writes no file: the daemon that owns the configuration
+                // is the one that saves it.
                 let dir = tempfile::tempdir().unwrap();
                 let path = dir.path().join("server.toml");
                 let mut pane = DeviceMeshModel::with_path(&path);
                 assert_eq!(pane.status, MeshStatus::NotConfigured);
-                assert!(pane.config.work.takes_nothing());
+                assert_eq!(pane.settings.work.from, WorkFrom::Nobody);
                 assert_eq!(
-                    pane.config.services,
-                    tilo_server_protocol::ServiceCapabilities::default()
+                    pane.settings.services,
+                    tilo_system_resources::device_settings::Services::default()
                 );
                 let _ = pane.poll();
-                assert!(!path.exists());
                 pane.apply(&DeviceMeshEffect::SetWork {
                     work: "mesh-work-own".into(),
                 })
                 .unwrap();
-                assert!(path.exists());
+                assert!(!path.exists(), "the app writes no configuration");
+                assert_eq!(pane.settings.work.from, WorkFrom::OwnDevices);
             }
 
             {
@@ -1855,13 +2073,16 @@ mod tests {
                 assert_eq!(work_from_key("mesh-work-own"), Some(WorkFrom::OwnDevices));
                 assert_eq!(work_from_key("mesh-work-anyone"), Some(WorkFrom::Anyone));
                 assert_eq!(work_from_key(&t("mesh-work-some")), None);
-                assert!(work_from(WorkFrom::Nobody, WorkWhen::always()).takes_nothing());
-                assert!(!work_from(WorkFrom::OwnDevices, WorkWhen::always()).takes_nothing());
+                assert!(!takes_work(Work::default()));
+                assert!(takes_work(Work {
+                    from: WorkFrom::OwnDevices,
+                    ..Work::default()
+                }));
             }
         }
 
         phase the_states_a_device_takes_work_in_are_kept;
-        // The states a device takes work in are saved as the page sets them, and picking whose work
+        // The states a device takes work in are shown as the page sets them, and picking whose work
         // it takes keeps them.
         {
             let dir = tempfile::tempdir().unwrap();
@@ -1894,10 +2115,9 @@ mod tests {
                 work: "mesh-work-own".into(),
             })
             .unwrap();
-            let saved = ServerConfig::load(&path).unwrap();
             assert_eq!(
-                saved.work.when,
-                WorkWhen {
+                pane.settings.work.when,
+                tilo_system_resources::device_settings::WorkWhen {
                     charging_only: true,
                     free_cpu_percent: 20,
                     free_memory_percent: 50,
@@ -1909,15 +2129,18 @@ mod tests {
         phase the_work_a_device_takes_and_its_services_stay_local;
         {
             {
-                assert!(!takes_work(&WorkSetting::none()));
-                assert!(takes_work(&WorkSetting::own_person()));
+                assert!(!takes_work(Work::default()));
+                assert!(takes_work(Work {
+                    from: WorkFrom::OwnDevices,
+                    ..Work::default()
+                }));
             }
 
             {
                 let dir = tempfile::tempdir().unwrap();
                 let path = dir.path().join("server.toml");
                 let config = ServerConfig {
-                    work: WorkSetting::none(),
+                    work: tilo_server_protocol::WorkSetting::none(),
                     ..ServerConfig::default()
                 };
                 config.save(&path).unwrap();
@@ -1931,14 +2154,14 @@ mod tests {
                 .unwrap();
 
                 assert!(pane.poll());
-                assert_eq!(pane.config.work.from, WorkFrom::OwnDevices);
+                assert_eq!(pane.settings.work.from, WorkFrom::OwnDevices);
             }
 
             {
                 let dir = tempfile::tempdir().unwrap();
                 let path = dir.path().join("server.toml");
                 let config = ServerConfig {
-                    work: WorkSetting::none(),
+                    work: tilo_server_protocol::WorkSetting::none(),
                     services: tilo_server_protocol::ServiceCapabilities::default(),
                     ..ServerConfig::default()
                 };
@@ -1950,10 +2173,9 @@ mod tests {
                     work: "mesh-work-anyone".into(),
                 })
                 .unwrap();
-                let saved = ServerConfig::load(&path).unwrap();
-                assert_eq!(saved.work.from, WorkFrom::Anyone);
-                assert!(saved.services.workspace_replication);
-                assert!(saved.services.inbound_server);
+                assert_eq!(pane.settings.work.from, WorkFrom::Anyone);
+                assert!(pane.settings.services.workspace_replication);
+                assert!(pane.settings.services.inbound_server);
             }
         }
 
@@ -1973,7 +2195,7 @@ mod tests {
                 let dir = tempfile::tempdir().unwrap();
                 let config = ServerConfig {
                     state_root: dir.path().to_path_buf(),
-                    work: WorkSetting::own_person(),
+                    work: tilo_server_protocol::WorkSetting::own_person(),
                     ..ServerConfig::default()
                 };
                 let metrics = tilo_server_protocol::metrics::MetricsSnapshot {
@@ -1991,12 +2213,15 @@ mod tests {
                 .unwrap();
 
                 assert_eq!(
-                    ServerRuntimeStatus::read(&config, modified + Duration::from_secs(1)),
+                    ServerRuntimeStatus::read(
+                        &config.state_root,
+                        modified + Duration::from_secs(1)
+                    ),
                     ServerRuntimeStatus::Online
                 );
                 assert_eq!(
                     ServerRuntimeStatus::read(
-                        &config,
+                        &config.state_root,
                         modified + STATUS_FRESHNESS + Duration::from_secs(1)
                     ),
                     ServerRuntimeStatus::Offline
@@ -2015,9 +2240,8 @@ mod tests {
             until_finished(|| area.read.is_finished());
             let model = area.model().borrow();
             assert!(area.is_open());
-            assert_eq!(
-                model.config_path,
-                PathBuf::from("/nonexistent/tilo/server.toml"),
+            assert!(
+                !model.settings.configured,
                 "a test reads the stand-in configuration"
             );
             assert_eq!(model.personal_devices, Some(Vec::new()));
@@ -2031,12 +2255,11 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("server.toml");
             std::fs::write(&path, "iroh_listen = \"0.0.0.0:1234\"\n").unwrap();
-            let here = DeviceMeshModel::from_path(path.clone(), false);
-            let read = MeshRead::of(path, ui::time::wall());
+            let here = DeviceMeshModel::from_path(&path, false);
+            let read = MeshRead::of(&path, ui::time::wall());
             let there = DeviceMeshModel::from_read(false, read);
-            assert_eq!(here.config_path, there.config_path);
             assert_eq!(here.status, there.status);
-            assert_eq!(here.config.work, there.config.work);
+            assert_eq!(here.settings.work, there.settings.work);
             assert_eq!(here.runtime_status, there.runtime_status);
         }
     }
@@ -2056,10 +2279,11 @@ mod tests {
         std::fs::create_dir_all(&state_root).unwrap();
         let config = ServerConfig {
             state_root,
-            work: WorkSetting::own_person(),
+            work: tilo_server_protocol::WorkSetting::own_person(),
             ..ServerConfig::default()
         };
-        let follow = MeshFollow::start_at(&config, clock).expect("the status thread starts");
+        let follow =
+            MeshFollow::start_at(&config.state_root, clock).expect("the status thread starts");
         tilo_test_env::wait_until("the first read", || {
             follow.status() == Some(ServerRuntimeStatus::Offline)
         });

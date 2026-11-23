@@ -1,5 +1,9 @@
 ## Actions
 
+so-tilo-device-server-set-service = Offer or withdraw a service
+so-tilo-device-server-set-work = Whose work this device takes
+so-tilo-device-server-set-work-room = Keep part of the machine free
+so-tilo-device-server-set-work-while-charging = Take work only while charging
 so-tilo-system-keyboard-backlight-brighter = Brighter keyboard
 so-tilo-system-keyboard-backlight-dimmer = Dimmer keyboard
 so-tilo-system-keyboard-backlight-set-level = Keyboard light

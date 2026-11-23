@@ -27,7 +27,7 @@ default = ["tilo-os"]
 # programs, files, sockets and system bus. A browser tab has none of them,
 # so the web build (and the agent host, which has no device to administer)
 # leaves the feature off: those panes are compiled out, not shown broken.
-tilo-os = ["dep:bounded-command", "dep:desktop-entry", "dep:os-actions", "dep:tilo-ntfs-mount", "dep:runtime-fs", "dep:tilo-bluez", "dep:account-credentials", "dep:media", "dep:tilo-audio-service", "dep:tilo-dav", "dep:tilo-account-probe", "dep:tilo-capture", "dep:tilo-system-resources", "tilo-keyboard-map/native"]
+tilo-os = ["dep:bounded-command", "dep:desktop-entry", "dep:os-actions", "dep:tilo-ntfs-mount", "dep:runtime-fs", "dep:tilo-bluez", "dep:account-credentials", "dep:media", "dep:tilo-audio-service", "dep:tilo-dav", "dep:tilo-account-probe", "dep:tilo-capture", "tilo-keyboard-map/native"]
 thin = ["dep:runtime-dylib"]
 # Run the app from the Settings engine library in the runtime bundle
 # (libtilo_settings_engine.so, crates/engines/loadable/settings), which carries
@@ -89,9 +89,9 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # `shell` and the Settings app drive the same hardware bindings without
 # this app depending on the compositor crate.
 os-actions = { path = "../../crates/os/os-actions", optional = true }
-# The session's `system-update` resource: the reading the Updates pane shows and the names of
-# its actions.
-tilo-system-resources = { path = "../../crates/desktop/tilo-system-resources", optional = true }
+# The session's `system-update` resource, and this device's `device:server`
+# settings the Sync pane reads and changes.
+tilo-system-resources = { path = "../../crates/desktop/tilo-system-resources" }
 # Remembered NTFS drives: the mount service's protocol (panes::drives).
 tilo-ntfs-mount = { path = "../../crates/os/ntfs-mount", default-features = false, optional = true }
 # Public identity summaries, as the host's identity actions answer them. The

@@ -2,13 +2,6 @@
 //! settings open under it, renaming a home server in place, and removing a
 //! device after asking.
 
-use tilo_server_protocol::WorkFrom;
-use ui::icons::Icon;
-use ui::tokens::{Rhythm, TextRole};
-use ui::widget::{
-    Button, ButtonRole, Column, DisclosureRow, Dropdown, EditableLabel, Row, Spacer, Text, Widget,
-};
-
 use super::{
     DeviceMeshEffect, HomePeerHealth, Page, ROOM, ServerRuntimeStatus, WORK_FROM, home_server_row,
     last_seen_label, peer_health_badge, peer_health_detail, peer_key, personal_device_key,
@@ -16,6 +9,13 @@ use super::{
 };
 use crate::effects::effect;
 use crate::i18n::{t, t_args};
+use tilo_system_resources::device_settings::WorkFrom;
+use ui::icons::Icon;
+use ui::tokens::{Rhythm, TextRole};
+use ui::widget::{
+    Button, ButtonRole, Column, DisclosureRow, Dropdown, EditableLabel, Row, Spacer, Text, Widget,
+};
+
 use provider_settings_ui::widgets::{
     SettingsSection, StatusTone, block, error_caption, note, row, rows, section_with,
     semantic_status_pill, setting_row_described,
@@ -198,7 +198,7 @@ impl Page<'_> {
 
     fn this_device_rows(&self) -> Vec<provider_settings_ui::widgets::Item> {
         // Work the page cannot set (some workspaces) shows as the placeholder.
-        let chosen = work_key(&self.config.work.from);
+        let chosen = work_key(self.settings.work.from);
         let selected = WORK_FROM.contains(&chosen).then(|| chosen.to_owned());
         let state = ui::LocalState::new(selected.unwrap_or_default());
         let mut work = Dropdown::from_state(Vec::new(), &state)
@@ -211,7 +211,7 @@ impl Page<'_> {
             &t("mesh-this-device-desc"),
             Box::new(work),
         )];
-        let taking = takes_work(&self.config.work);
+        let taking = takes_work(self.settings.work);
         if taking {
             let home_desc = t(match self.runtime_status {
                 ServerRuntimeStatus::Online => "mesh-home-online",
@@ -229,10 +229,10 @@ impl Page<'_> {
             out.extend(self.when_rows());
             out.extend(self.service_rows());
         }
-        out.push(note(&t(match self.config.work.from {
+        out.push(note(&t(match self.settings.work.from {
             WorkFrom::Nobody => "mesh-work-hint-nothing",
             WorkFrom::OwnDevices => "mesh-work-hint-own",
-            WorkFrom::Anyone | WorkFrom::Workspaces(_) => "mesh-work-hint-anyone",
+            WorkFrom::Anyone => "mesh-work-hint-anyone",
         })));
         out
     }
@@ -240,7 +240,7 @@ impl Page<'_> {
     /// The states this device takes work in: only while charging, and how much of the processors
     /// and memory it leaves to the people at it.
     fn when_rows(&self) -> [provider_settings_ui::widgets::Item; 3] {
-        let when = self.config.work.when;
+        let when = self.settings.work.when;
         let room = |part: &'static str, label: &str, desc: &str, percent: u8| {
             let shown = room_shown(percent);
             let state = ui::LocalState::new(shown.clone());
@@ -284,28 +284,28 @@ impl Page<'_> {
                 "mesh-svc-server-desc",
                 "inbound_server",
                 "device_mesh.inbound_server",
-                self.config.services.inbound_server,
+                self.settings.services.inbound_server,
             ),
             self.service_row(
                 "mesh-svc-remote",
                 "mesh-svc-remote-desc",
                 "remote_control_server",
                 "device_mesh.remote_server",
-                self.config.services.remote_control_server,
+                self.settings.services.remote_control_server,
             ),
             self.service_row(
                 "mesh-svc-apps",
                 "mesh-svc-apps-desc",
                 "app_serving",
                 "device_mesh.app_serving",
-                self.config.services.app_serving,
+                self.settings.services.app_serving,
             ),
             self.service_row(
                 "mesh-svc-jobs",
                 "mesh-svc-jobs-desc",
                 "compute",
                 "device_mesh.compute",
-                self.config.services.compute,
+                self.settings.services.compute,
             ),
         ]
     }

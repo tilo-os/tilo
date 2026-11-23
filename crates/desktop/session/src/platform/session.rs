@@ -1650,6 +1650,12 @@ impl Session {
         services
             .borrow_mut()
             .add(Box::new(crate::quick_settings::QuickSettingsService::new()));
+        // This device's server settings, the same resource the daemon publishes on a machine it
+        // hosts: the work the device takes and the services it offers, which Settings shows and
+        // changes, and which are saved to the configuration the device's daemon reads.
+        services.borrow_mut().add(Box::new(
+            tilo_runtime::device::server_settings::Served::this_device(),
+        ));
         // Dictation joins the services: its recognizer, microphone and
         // consent are only the session's, and the sheet asks about them.
         let dictation = crate::dictation::Dictation::mount(

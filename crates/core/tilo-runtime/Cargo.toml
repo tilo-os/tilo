@@ -85,6 +85,15 @@ tilo-identity-client = { path = "../tilo-identity-client" }
 serde.workspace = true
 serde_json.workspace = true
 tilo-actions = { path = "../actions" }
+# The app id of the one app this device's server settings are read and changed for.
+tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
+# The resource layer: this device's server settings are published as one of this device's typed
+# resources, with the actions that change them.
+tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
+# This device's server settings are published as a resource, as every service
+# publishes its readings and the actions that change them.
+tilo-service = { path = "../../desktop/service" }
+tilo-system-resources = { path = "../../desktop/tilo-system-resources" }
 tilo-automerge-isolate.workspace = true
 tilo-desktop-model = { path = "../../desktop/desktop-model" }
 # The document-media capability over the content store, and the workspace

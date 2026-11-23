@@ -1089,6 +1089,12 @@ fn broker_services(
             parts.workspaces.device_cert().clone(),
             parts.workspaces.signer(),
         )?) as Arc<dyn ShortcutLibraryServices>),
+        // This device's server settings, as the apps attached to this daemon read and change them:
+        // the work its machine takes and the services it offers, saved to the configuration the
+        // daemon keeps.
+        published: Some(Arc::new(super::server_settings::Published::new(
+            super::server_settings::Served::this_device(),
+        ))),
         // The service the identity service answers key requests from:
         // endpoints ask again when it says a channel changed.
         group_keys: Some(parts.keys.clone()),

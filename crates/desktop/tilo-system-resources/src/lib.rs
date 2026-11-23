@@ -6,7 +6,11 @@
 //! is the session's system service; this crate holds only the contract, so
 //! an app that shows or drives these resources depends on it and not on the
 //! session.
+//!
+//! [`device_settings`] is the exception: the device's server settings are the
+//! daemon's, which keeps the configuration they change.
 
+pub mod device_settings;
 pub mod effects;
 pub mod model;
 pub mod codec_pack;
