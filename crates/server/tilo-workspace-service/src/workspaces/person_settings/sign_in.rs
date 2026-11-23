@@ -176,12 +176,15 @@ impl Workspaces {
         }
         let parsed = nextcloud::server_url(&server).map_err(|error| error.to_string())?;
         let named = named_by(&parsed)?;
-        if !reach.takes(&named) {
-            return Err("That server's address is not one this server may call".into());
-        }
         let flow = tokio::task::spawn_blocking({
             let server = server.clone();
-            move || nextcloud::begin(&server).map_err(|error| error.to_string())
+            let reach = reach.clone();
+            move || {
+                if !reach.takes(&named) {
+                    return Err("That server's address is not one this server may call".into());
+                }
+                nextcloud::begin_looking(&server, reach.lookup()).map_err(|error| error.to_string())
+            }
         })
         .await
         .map_err(|_| "the Nextcloud server was not asked to the end".to_string())??;
@@ -459,19 +462,212 @@ async fn keep_nextcloud_calendar(
 /// The name a server's address answers to, without its scheme, port or
 /// path: what a reach judges.
 fn named_by(url: &Url) -> Result<String, String> {
-    if let Some(domain) = url.domain() {
-        return Ok(domain.to_owned());
+    if let Some(address) = tilo_net::address::written_out(url) {
+        return Ok(address.to_string());
     }
-    let authority = url
-        .as_str()
-        .split_once("://")
-        .map_or("", |(_, authority)| authority);
-    let name = authority
-        .split(['/', ':', '?', '#'])
-        .next()
-        .unwrap_or_default();
-    if name.is_empty() {
-        return Err("The server's address does not read".into());
+    url.domain()
+        .map(str::to_owned)
+        .ok_or_else(|| "The server's address does not read".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr, TcpListener, TcpStream};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    use tilo_account_probe::imap::Reach;
+
+    use super::*;
+    use crate::workspaces::tests::{governor, test_host};
+
+    /// A loopback TCP listener that counts every accepted connection and closes
+    /// it immediately, so a client never waits out a read timeout.
+    struct CountingListener {
+        port: u16,
+        accepted: Arc<AtomicUsize>,
+        stop: Arc<AtomicBool>,
+        worker: Option<std::thread::JoinHandle<()>>,
     }
-    Ok(name.to_owned())
+
+    impl CountingListener {
+        fn start() -> Self {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("a port here");
+            let port = listener.local_addr().expect("its address").port();
+            let accepted = Arc::new(AtomicUsize::new(0));
+            let stop = Arc::new(AtomicBool::new(false));
+            let count = Arc::clone(&accepted);
+            let stopping = Arc::clone(&stop);
+            let worker = std::thread::spawn(move || {
+                while let Ok((stream, _)) = listener.accept() {
+                    if stopping.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    count.fetch_add(1, Ordering::SeqCst);
+                    drop(stream);
+                }
+            });
+            Self {
+                port,
+                accepted,
+                stop,
+                worker: Some(worker),
+            }
+        }
+
+        fn count(&self) -> usize {
+            self.accepted.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Drop for CountingListener {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            let _ = TcpStream::connect((Ipv4Addr::LOCALHOST, self.port));
+            if let Some(worker) = self.worker.take() {
+                let _ = worker.join();
+            }
+        }
+    }
+
+    /// A look-up that answers with a public address on its first asking and
+    /// `127.0.0.1` afterwards, counting every call.
+    fn turning(asked: &Arc<AtomicUsize>) -> tilo_net::address::Lookup {
+        let asked = Arc::clone(asked);
+        Arc::new(move |_name: String| {
+            let nth = asked.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                Ok(vec![if nth == 0 {
+                    IpAddr::from([93, 184, 216, 34])
+                } else {
+                    IpAddr::from(Ipv4Addr::LOCALHOST)
+                }])
+            })
+        })
+    }
+
+    fn nextcloud_asking(server: String) -> BeginSignIn {
+        BeginSignIn {
+            provider: Provider::Nextcloud,
+            server,
+            services: Services::default(),
+            account: String::new(),
+        }
+    }
+
+    #[test]
+    fn named_by_reads_parsed_hosts_and_judges_written_out_addresses() {
+        let public = Reach::public();
+        for (input, expected) in [
+            ("https://[2606:4700:4700::1111]", "2606:4700:4700::1111"),
+            (
+                "https://[2606:4700:4700::1111]:8443/nextcloud",
+                "2606:4700:4700::1111",
+            ),
+        ] {
+            let url = Url::parse(input).unwrap();
+            let named = named_by(&url).unwrap();
+            assert_eq!(named, expected, "{input}");
+            assert!(
+                public.takes(&named),
+                "public IPv6 literal {input} is judged public"
+            );
+        }
+
+        for (input, expected) in [
+            ("https://[::1]", "::1"),
+            ("https://10.0.0.7", "10.0.0.7"),
+            ("https://2130706433", "127.0.0.1"),
+        ] {
+            let url = Url::parse(input).unwrap();
+            let named = named_by(&url).unwrap();
+            assert_eq!(named, expected, "{input}");
+            assert!(
+                !public.takes(&named),
+                "inside address {input} is refused under public-only reach"
+            );
+        }
+
+        for (input, expected) in [
+            ("https://cloud.example.test/nextcloud", "cloud.example.test"),
+            (
+                "https://cloud.example.test:8443/nextcloud",
+                "cloud.example.test",
+            ),
+        ] {
+            let url = Url::parse(input).unwrap();
+            assert_eq!(named_by(&url).unwrap(), expected, "{input}");
+        }
+
+        assert_eq!(
+            named_by(&Url::parse("mailto:ada@example.test").unwrap()),
+            Err("The server's address does not read".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_nextcloud_sign_in_whose_name_turns_inside_connects_to_nobody() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = governor();
+        let host = test_host(dir.path(), &key, &owner).await;
+        let workspaces = host.workspaces();
+        let listener = CountingListener::start();
+        let server = format!("https://localhost:{}", listener.port);
+        let asking = nextcloud_asking(server);
+
+        let asked = Arc::new(AtomicUsize::new(0));
+        let public = Reach::public().looked_up_by(turning(&asked));
+        let refused = workspaces
+            .begin_sign_in(([1; 32], "workspace-a"), &asking, &public)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            refused,
+            "could not reach the server: localhost answers with an address of this machine or its network"
+        );
+        assert_eq!(listener.count(), 0, "nothing is connected to");
+        assert_eq!(
+            asked.load(Ordering::SeqCst),
+            2,
+            "judged once before sending and once at the connection"
+        );
+
+        // Inside written-out literals are refused before anything is sent.
+        let strict = Reach::public();
+        for inside in [
+            "https://[::1]",
+            "https://10.0.0.7",
+            "https://2130706433",
+            &format!("http://127.0.0.1:{}", listener.port),
+        ] {
+            let err = workspaces
+                .begin_sign_in(
+                    ([1; 32], "workspace-a"),
+                    &nextcloud_asking(inside.to_owned()),
+                    &strict,
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(
+                err, "That server's address is not one this server may call",
+                "{inside}"
+            );
+        }
+        assert_eq!(listener.count(), 0, "inside literals reach nobody");
+
+        // Where the operator lets the server call its own network, it connects
+        // as on main, proving the listener counts connections.
+        let open = workspaces
+            .begin_sign_in(([1; 32], "workspace-a"), &asking, &Reach::any())
+            .await;
+        assert!(
+            open.is_err(),
+            "a closing listener is not a Nextcloud server"
+        );
+        assert_eq!(
+            listener.count(),
+            1,
+            "an open reach connects to the server's own network"
+        );
+    }
 }

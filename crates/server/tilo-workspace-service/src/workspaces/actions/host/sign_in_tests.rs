@@ -213,3 +213,45 @@ async fn a_nextcloud_login_flow_keeps_the_account_and_its_calendar() {
     );
     assert!(stopped.signing_in.is_empty());
 }
+
+/// Under the default public-only reach, beginning a Nextcloud sign-in to an
+/// address of this machine or its network is refused before anything is sent.
+#[tokio::test]
+async fn a_nextcloud_sign_in_to_an_inside_address_is_refused_and_touches_nobody() {
+    let silent = test_http::Responder::silent();
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let device = admit(workspaces, &workspace, &owner, 1).await;
+    let page = actions.in_workspace_as(workspace_id, &device);
+    let ada = caller(&device);
+
+    for inside in [
+        silent.url(),
+        format!("http://localhost:{}", silent.port()),
+        "https://[::1]".into(),
+        "https://10.0.0.7".into(),
+        "https://2130706433".into(),
+    ] {
+        let refused = settled(page.invoke(
+            &ada,
+            asking(
+                person_accounts::BEGIN_SIGN_IN,
+                json!({"provider": "nextcloud", "server": inside}),
+            ),
+        ))
+        .await
+        .unwrap_err();
+        assert_eq!(
+            refused,
+            tilo_actions::remote::ActionCallError::Refused {
+                reason: "That server's address is not one this server may call".into(),
+            },
+            "{inside}"
+        );
+    }
+    silent.assert_untouched();
+}
