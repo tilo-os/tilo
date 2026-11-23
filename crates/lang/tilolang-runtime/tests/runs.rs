@@ -157,7 +157,7 @@ mod cases {
             let InvokeOutcome::Waits { run, .. } = run(&w, "ask", vec![Value::resource(&c)]) else {
                 panic!("expected a wait");
             };
-            let error = w.dispatch.decline(&w.rt, &run);
+            let error = decline(&w.rt, &run);
             assert!(
                 matches!(error, tilolang_runtime::RuntimeError::Denied(_)),
                 "{error}"
