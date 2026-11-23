@@ -975,7 +975,7 @@ impl Initiative {
     fn tracker(&self, asked: &Asked<'_>) -> Option<tracker::Tracker> {
         let actions = self.inner.actions.clone()?;
         Some(tracker::Tracker {
-            actions,
+            actions: actions.into(),
             workspace_id: asked.workspace_id,
             workspace: asked.workspace.clone(),
             caller: asked.caller.clone(),

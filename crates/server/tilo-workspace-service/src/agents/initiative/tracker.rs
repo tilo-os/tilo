@@ -9,16 +9,13 @@
 //! actions, as whoever asked for it, and reads what its person did there
 //! through the store, as that person may read it.
 
-use std::sync::Arc;
-
 use serde_json::{Map, Value, json};
+use tilo_actions::remote::Caller;
 use tilo_actions::remote::workspace_initiative::ProposedTask;
-use tilo_actions::remote::{Caller, ResourceReads};
-use tilo_agent_session::workspace_actions::WorkspaceActions;
 
 use super::proposals::InTracker;
-use crate::agents::WorkspaceActionProvider;
 use crate::agents::tl_tasks::{self, Reader, Task};
+use crate::agents::{EngineActions, WorkspaceActionProvider};
 use crate::workspaces::Workspaces;
 use tilo_server_protocol::WorkspaceId;
 
@@ -29,7 +26,9 @@ fn stands(task: &Task) -> InTracker {
         .assigned_by
         .as_deref()
         .and_then(tl_tasks::actor_of)
-        .is_some_and(|by| by.person_id().is_some());
+        .is_some_and(
+            |by| matches!(by, tilo_actions::Actor::Member(member) if member.person_id().is_some()),
+        );
     match task.status.as_str() {
         "cancelled" => InTracker::Dropped,
         "in_progress" | "in_review" | "done" => InTracker::Given,
@@ -74,7 +73,7 @@ pub(super) fn in_tracker(issues: &[(String, InTracker)], address: &str) -> InTra
 
 /// Tasks' actions, taken for one caller in one workspace.
 pub(super) struct Tracker {
-    pub actions: WorkspaceActions,
+    pub actions: EngineActions,
     pub workspace_id: WorkspaceId,
     pub workspace: String,
     pub caller: Caller,
@@ -85,17 +84,18 @@ impl Tracker {
         WorkspaceActionProvider::new(self.actions.clone(), self.workspace_id)
     }
 
-    fn reader(&self) -> Reader<'_> {
-        Reader::Turn {
-            reads: Arc::new(self.actions.clone()) as Arc<dyn ResourceReads>,
-            caller: &self.caller,
-        }
-    }
-
     /// The task at `address`, as the caller reads it now.
     async fn task(&self, address: &str) -> Result<Task, String> {
         let id = tl_tasks::task_of(address).ok_or("the proposal stands as no task")?;
-        self.reader()
+        let reads = self
+            .actions
+            .resource_reads()
+            .ok_or("this device reads no task for an agent")?;
+        let reader = Reader::Turn {
+            reads,
+            caller: &self.caller,
+        };
+        reader
             .task(&self.workspace, id)
             .await?
             .ok_or_else(|| "the task is no longer in Tasks".to_owned())
@@ -179,7 +179,10 @@ impl Tracker {
             .assignee
             .as_deref()
             .and_then(tl_tasks::actor_of)
-            .and_then(|actor| actor.agent_id().map(str::to_owned))
+            .and_then(|actor| match actor {
+                tilo_actions::Actor::Member(member) => member.agent_id().map(str::to_owned),
+                _ => None,
+            })
             .ok_or_else(|| "the task is no longer the assistant's in Tasks".to_owned())?;
         let mut taken = Map::new();
         taken.insert("who".to_owned(), Value::Null);
@@ -198,5 +201,142 @@ impl Tracker {
         let mut cancelled = Map::new();
         cancelled.insert("status".to_owned(), json!("cancelled"));
         self.on(address, "set_status", cancelled).await
+    }
+}
+
+#[cfg(all(test, feature = "apps"))]
+mod tests {
+    use tilo_resource_store::Value as Stored;
+
+    use super::*;
+    use crate::agents::tl_tasks::testing::Host;
+
+    /// A proposed piece of work is filed as a task of Tasks, by the assistant, its why said on
+    /// it; its person's nod gives it to the assistant, and turning it down cancels it. What the
+    /// person did there is read back through the store.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_proposal_is_filed_as_a_task_and_decided_there() {
+        let host = Host::new().await;
+        let broker = host.broker(&[]);
+        let tracker = Tracker {
+            actions: host.service(&broker).actions.clone(),
+            workspace_id: WorkspaceId::parse(&host.workspace).unwrap(),
+            workspace: host.workspace.clone(),
+            caller: host.caller(),
+        };
+        // Tasks gives the new task its id and number.
+        host.put(
+            tl_tasks::TASK,
+            "t-3",
+            vec![
+                ("number", Stored::Int(3)),
+                ("title", Stored::Text("Tidy the shared folder".into())),
+                ("status", Stored::Text("backlog".into())),
+                ("assignee", Stored::Text(tl_tasks::agent("scout"))),
+            ],
+        )
+        .await;
+        broker.made("new_task", "tl:so.tilo.tasks:t-3");
+        let filed = tracker
+            .file(
+                "scout",
+                "Tidy the shared folder",
+                "It holds 40 copies of one file.",
+            )
+            .await
+            .unwrap();
+        assert_eq!(filed.issue, tl_tasks::resource("t-3"));
+        assert_eq!(filed.number, Some(3));
+        let asked = broker.asked.lock().unwrap().clone();
+        assert_eq!(asked[0].1, tl_tasks::tracker());
+        assert_eq!(asked[0].2, "new_task");
+        assert_eq!(asked[0].3["title"], "Tidy the shared folder");
+        assert_eq!(asked[0].3["assignee"], json!({"agent": "scout"}));
+        assert_eq!(asked[1].2, "comment");
+        assert_eq!(asked[1].3["text"], "It holds 40 copies of one file.");
+
+        tracker.give(&filed.issue).await.unwrap();
+        tracker.cancel(&filed.issue).await.unwrap();
+        let asked = broker.asked.lock().unwrap().clone();
+        let tail: Vec<_> = asked[2..]
+            .iter()
+            .map(|(_, resource, action, arguments)| {
+                (resource.as_str(), action.as_str(), arguments.clone())
+            })
+            .collect();
+        let task = tl_tasks::resource("t-3");
+        assert_eq!(
+            tail,
+            [
+                (
+                    task.as_str(),
+                    "assign",
+                    json!({"who": null}).as_object().cloned().unwrap()
+                ),
+                (
+                    task.as_str(),
+                    "assign",
+                    json!({"who": {"agent": "scout"}})
+                        .as_object()
+                        .cloned()
+                        .unwrap()
+                ),
+                (
+                    task.as_str(),
+                    "set_status",
+                    json!({"status": "cancelled"}).as_object().cloned().unwrap()
+                ),
+            ]
+        );
+
+        // What its person did is read where they did it.
+        let read = |status: &'static str, by: Option<String>| {
+            let mut fields = vec![
+                ("number", Stored::Int(3)),
+                ("title", Stored::Text("Tidy the shared folder".into())),
+                ("status", Stored::Text(status.into())),
+                ("assignee", Stored::Text(tl_tasks::agent("scout"))),
+            ];
+            if let Some(by) = by {
+                fields.push(("assigned_by", Stored::Text(by)));
+            }
+            fields
+        };
+        let decided = async |fields| {
+            host.put(tl_tasks::TASK, "t-3", fields).await;
+            let read = issues(
+                &host.workspaces,
+                &host.workspace,
+                &host.person,
+                &[task.clone()],
+            )
+            .await
+            .unwrap();
+            in_tracker(&read, &task)
+        };
+        assert_eq!(decided(read("backlog", None)).await, InTracker::Waits);
+        assert_eq!(
+            decided(read("backlog", Some(tl_tasks::agent("scout")))).await,
+            InTracker::Waits,
+            "the assistant giving it to itself is no nod"
+        );
+        assert_eq!(
+            decided(read("todo", Some(tl_tasks::person(&host.person)))).await,
+            InTracker::Given
+        );
+        assert_eq!(decided(read("cancelled", None)).await, InTracker::Dropped);
+        let gone = issues(
+            &host.workspaces,
+            &host.workspace,
+            &host.person,
+            &[tl_tasks::resource("t-9")],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            in_tracker(&gone, &tl_tasks::resource("t-9")),
+            InTracker::Dropped
+        );
+        host.end().await;
     }
 }

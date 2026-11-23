@@ -359,6 +359,293 @@ pub(super) fn tracker() -> String {
     format!("tl:{APP}")
 }
 
+/// What the engine's tests of Tasks stand on: a workspace whose store they fill, and a broker
+/// standing where the device's would.
+#[cfg(all(test, feature = "apps"))]
+pub(super) mod testing {
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+
+    use serde_json::{Map, Value};
+    use tilo_actions::remote::{
+        ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+        InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus, ResourceReads,
+    };
+    use tilo_resource_store::wire::Command;
+    use tilo_resource_store::{Cell, Resource, Stamp, Value as Stored};
+    use tilo_server_protocol::WorkspaceId;
+
+    use crate::workspaces::Workspaces;
+    use crate::workspaces::fixtures::{TestGroupKeys, TestHost, governor, test_host_holding};
+
+    /// The device's broker as a turn's calls reach it: it decides each call, Tasks' rules
+    /// standing behind it (`refuses` names the actions it refuses, with Tasks' words), and keeps
+    /// who asked what. Reads are the workspace's store, as the turn's person may read it.
+    pub(in crate::agents) struct Broker {
+        workspaces: Workspaces,
+        workspace: String,
+        person: String,
+        refuses: BTreeMap<&'static str, &'static str>,
+        pub asked: Mutex<Vec<(Caller, String, String, Map<String, Value>)>>,
+        /// The resource each action answers it made, by the action.
+        makes: Mutex<BTreeMap<String, String>>,
+    }
+
+    impl Broker {
+        /// Answer `action` with `resource` as what it made.
+        pub fn made(&self, action: &str, resource: &str) {
+            self.makes
+                .lock()
+                .unwrap()
+                .insert(action.to_owned(), resource.to_owned());
+        }
+    }
+
+    impl ResourceReads for Broker {
+        fn answer_read(
+            self: Arc<Self>,
+            caller: &Caller,
+            correlation: u64,
+            read: tilo_actions::remote::ResourceReadRequest,
+        ) -> Pending<tilo_actions::remote::RemoteActionMessage> {
+            tilo_actions::remote::answer_read(self, caller, correlation, read)
+        }
+
+        fn read(
+            &self,
+            _: &Caller,
+            _: &tilo_actions::remote::ResourceAddress,
+        ) -> Result<tilo_actions::remote::ResourceCopy, ActionCallError> {
+            Err(ActionCallError::UnknownAction)
+        }
+
+        fn store_read(
+            &self,
+            _: &Caller,
+            address: &tilo_actions::remote::ResourceAddress,
+            read: Value,
+        ) -> Result<Value, ActionCallError> {
+            assert_eq!(address.app, super::APP);
+            let command: Command = serde_json::from_value(read).unwrap();
+            let reply = tokio::runtime::Handle::current()
+                .block_on(
+                    self.workspaces
+                        .read_store_as(&self.workspace, &self.person, &command),
+                )
+                .unwrap();
+            Ok(serde_json::to_value(reply).unwrap())
+        }
+
+        fn watch(
+            &self,
+            _: &Caller,
+            _: &tilo_actions::remote::ResourceAddress,
+            _: &tilo_actions::remote::ResourceWake,
+        ) -> Result<(), ActionCallError> {
+            Err(ActionCallError::UnknownAction)
+        }
+    }
+
+    struct Provider(Arc<Broker>);
+
+    impl ActionProvider for Provider {
+        fn query(
+            &self,
+            _: &Caller,
+            _: CatalogueQuery,
+        ) -> Pending<Result<CataloguePage, ActionCallError>> {
+            Pending::ready(Err(ActionCallError::UnknownAction))
+        }
+
+        fn invoke(
+            &self,
+            caller: &Caller,
+            request: InvokeRequest,
+        ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+            let action = request.target.address.action.clone();
+            let arguments = match &request.argument {
+                InvokeArgument::Json(arguments) => arguments.clone(),
+                _ => Map::new(),
+            };
+            self.0.asked.lock().unwrap().push((
+                caller.clone(),
+                request.target.address.resource.clone(),
+                action.clone(),
+                arguments,
+            ));
+            if let Some(words) = self.0.refuses.get(action.as_str()) {
+                return Pending::ready(Err(ActionCallError::Refused {
+                    reason: (*words).to_owned(),
+                }));
+            }
+            let resources = self
+                .0
+                .makes
+                .lock()
+                .unwrap()
+                .get(action.as_str())
+                .cloned()
+                .into_iter()
+                .collect();
+            Pending::ready(Ok(InvocationReceipt {
+                invocation: request.invocation,
+                status: ReceiptStatus::Completed {
+                    output: tilo_actions::ActionOutput {
+                        value: None,
+                        resources,
+                    },
+                },
+            }))
+        }
+
+        fn observe(&self, _: &Caller, _: &tilo_actions::InvocationId) -> Option<InvocationState> {
+            None
+        }
+
+        fn next_change(&self, _: &Caller, _: &tilo_actions::InvocationId) -> Option<Pending<()>> {
+            None
+        }
+
+        fn cancel(
+            &self,
+            _: &Caller,
+            _: &tilo_actions::InvocationId,
+        ) -> Pending<Result<(), ActionCallError>> {
+            Pending::ready(Ok(()))
+        }
+
+        fn resource_reads(&self) -> Option<Arc<dyn ResourceReads>> {
+            Some(Arc::clone(&self.0) as Arc<dyn ResourceReads>)
+        }
+    }
+
+    struct Keys;
+
+    impl super::super::agent_keys::AgentKeys for Keys {
+        fn grant(&self, _: WorkspaceId, _: &str, _: &str, _: [u8; 32]) -> Result<[u8; 32], String> {
+            Ok([7; 32])
+        }
+
+        fn sign(&self, _: WorkspaceId, _: &[u8; 32], _: &mut InvokeRequest) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// A workspace of a test host, its person and the store Tasks keeps there.
+    pub(in crate::agents) struct Host {
+        host: TestHost,
+        _dir: tempfile::TempDir,
+        pub workspaces: Workspaces,
+        pub workspace: String,
+        /// The person, by their root in hex.
+        pub person: String,
+    }
+
+    impl Host {
+        pub async fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let (key, cert) = governor();
+            let host =
+                test_host_holding(dir.path(), &key, &cert, Arc::new(TestGroupKeys::default()))
+                    .await;
+            let workspaces = host.workspaces().clone();
+            workspaces.set_member_device(Arc::new(crate::workspaces::MemberDevice {
+                cert: cert.clone(),
+                signer: Arc::new(key.clone()),
+            }));
+            let workspace = workspaces.create("Tasks").await.unwrap().workspace;
+            let route = tilo_peer_state::document_frame::DocumentRoute {
+                app_id: super::APP.into(),
+                cluster_id: workspace.clone(),
+                document: String::new(),
+            };
+            let _ = workspaces.own_route_keys(&route, true).await.unwrap();
+            Self {
+                host,
+                _dir: dir,
+                workspaces,
+                workspace,
+                person: hex::encode(cert.user_public_key),
+            }
+        }
+
+        /// Put the resource `id` of `kind`, every member reading it, with `fields`.
+        pub async fn put(&self, kind: &str, id: &str, fields: Vec<(&str, Stored)>) {
+            self.put_for(kind, id, "*", fields).await;
+        }
+
+        /// Put the resource `id` of `kind`, read by `readers`, with `fields`.
+        pub async fn put_for(
+            &self,
+            kind: &str,
+            id: &str,
+            readers: &str,
+            fields: Vec<(&str, Stored)>,
+        ) {
+            self.workspaces
+                .own_resource_command(
+                    &self.workspace,
+                    super::APP,
+                    Command::Put {
+                        kind: kind.into(),
+                        id: id.into(),
+                        resource: Resource {
+                            readers: readers.into(),
+                            parent: None,
+                            order: None,
+                            fields: fields
+                                .into_iter()
+                                .map(|(name, value)| (name.to_owned(), Cell::One(value)))
+                                .collect(),
+                        },
+                        stamp: Stamp {
+                            verb: "new_task".into(),
+                            invoker: self.person.clone(),
+                            invocation: id.into(),
+                            ..Stamp::default()
+                        },
+                    },
+                )
+                .await
+                .unwrap();
+        }
+
+        /// A broker over this workspace that refuses `refuses`, with Tasks' words.
+        pub fn broker(&self, refuses: &[(&'static str, &'static str)]) -> Arc<Broker> {
+            Arc::new(Broker {
+                workspaces: self.workspaces.clone(),
+                workspace: self.workspace.clone(),
+                person: self.person.clone(),
+                refuses: refuses.iter().copied().collect(),
+                asked: Mutex::default(),
+                makes: Mutex::new(BTreeMap::from([(
+                    "write_note".to_owned(),
+                    "tl:so.tilo.notes:n-1".to_owned(),
+                )])),
+            })
+        }
+
+        /// The engine's actions through `broker`.
+        pub fn service(&self, broker: &Arc<Broker>) -> super::super::WorkspaceActionProvider {
+            let provider: Arc<dyn ActionProvider + Send + Sync> =
+                Arc::new(Provider(Arc::clone(broker)));
+            super::super::WorkspaceActionProvider::new(
+                super::super::EngineActions::Device(provider, Arc::new(Keys)),
+                WorkspaceId::parse(&self.workspace).unwrap(),
+            )
+        }
+
+        /// The turn's agent, as its calls name it.
+        pub fn caller(&self) -> Caller {
+            Caller::authenticated([9; 32], [7; 32]).in_workspace(self.workspace.clone())
+        }
+
+        pub async fn end(self) {
+            self.host.shutdown().await;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

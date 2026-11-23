@@ -711,3 +711,181 @@ fn told(request: &str, work: &Before, place: &Place) -> String {
     request.push_str(HOW_TO_WORK);
     request
 }
+
+#[cfg(all(test, feature = "apps"))]
+mod tests {
+    use tilo_actions::remote::ActionProvider as _;
+    use tilo_resource_store::Value as Stored;
+
+    use super::*;
+    use crate::agents::tl_tasks::testing::{Broker, Host};
+
+    /// A workspace whose store holds the task `t-7`, "Book the venue", its work (`work`, the
+    /// fields of its `Work`) and what made it go on (`resumed`), and a turn of the agent on it
+    /// through a broker that refuses `refuses`.
+    async fn worked(
+        work: &[(&str, Stored)],
+        resumed: Option<&str>,
+        refuses: &[(&'static str, &'static str)],
+    ) -> (Host, TaskWork, Arc<Broker>) {
+        let host = Host::new().await;
+        let mut work: Vec<(&str, Stored)> = work.to_vec();
+        if let Some(cause) = resumed {
+            host.put(
+                "tl.so.tilo.tasks.Resumed",
+                "r-1",
+                vec![("cause", Stored::Text(cause.into()))],
+            )
+            .await;
+            work.push(("resumed", Stored::Text("r-1".into())));
+        }
+        host.put("tl.so.tilo.tasks.Work", "w-1", work).await;
+        host.put(
+            tl_tasks::TASK,
+            "t-7",
+            vec![
+                ("number", Stored::Int(7)),
+                ("title", Stored::Text("Book the venue".into())),
+                ("status", Stored::Text("todo".into())),
+                ("work", Stored::Text("w-1".into())),
+            ],
+        )
+        .await;
+        let broker = host.broker(refuses);
+        let service = host.service(&broker);
+        let task = TaskWork {
+            reads: service.resource_reads().unwrap(),
+            service,
+            caller: host.caller(),
+            workspace: host.workspace.clone(),
+            task: "t-7".into(),
+        };
+        (host, task, broker)
+    }
+
+    /// Which actions were asked, in order.
+    fn actions(broker: &Broker) -> Vec<String> {
+        broker
+            .asked
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, _, action, _)| action.clone())
+            .collect()
+    }
+
+    /// A session Tasks refuses (the task's budget is spent) does not begin: the turn ends with
+    /// Tasks' words, which stop the task's work, and no place is made for it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_session_tasks_refuses_ends_with_its_words_and_makes_nothing() {
+        const SPENT: &str = "I stopped: this task's budget is spent. Raise it to let me go on.";
+        let (host, task, broker) = worked(
+            &[
+                ("budget_micros", Stored::Int(10)),
+                ("spent_micros", Stored::Int(10)),
+            ],
+            None,
+            &[("session_began", SPENT)],
+        )
+        .await;
+        let mut request = "Book the venue".to_owned();
+        let refused = task.begin(&mut request).await.unwrap_err();
+        assert!(refused.contains(SPENT), "{refused}");
+        assert_eq!(request, "Book the venue", "the turn is told nothing more");
+        assert_eq!(actions(&broker), ["session_began", "stop"]);
+        let stop = broker.asked.lock().unwrap()[1].3.clone();
+        assert_eq!(stop["why"], "failed");
+        assert!(stop["words"].as_str().unwrap().contains(SPENT));
+        host.end().await;
+    }
+
+    /// A session that begins is told what made its task go on, that sessions came before, what
+    /// is left of its budget and where its material is, made for it through Tasks and Files as
+    /// the agent; one that runs out of the task's money stops the task's work as spent.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_session_is_told_its_tasks_work_and_counted_when_it_ends() {
+        let (host, task, broker) = worked(
+            &[
+                ("budget_micros", Stored::Int(1_000_000)),
+                ("spent_micros", Stored::Int(250_000)),
+                ("sessions", Stored::Int(2)),
+            ],
+            Some("the pieces are through"),
+            &[],
+        )
+        .await;
+        let mut request = "Book the venue".to_owned();
+        let before = task.begin(&mut request).await.unwrap().unwrap();
+        assert_eq!(before.money_left, Some(750_000));
+        assert!(
+            request.contains("goes on now: the pieces are through."),
+            "{request}"
+        );
+        assert!(request.contains("not your first session"), "{request}");
+        assert!(request.contains("$0.75 of $1.00 is left"), "{request}");
+        assert!(request.contains("`tl:so.tilo.notes:n-1`"), "{request}");
+        assert!(request.contains("`Tasks/7 Book the venue`"), "{request}");
+        assert_eq!(
+            actions(&broker),
+            ["session_began", "write_note", "set_place", "new-folder"]
+        );
+        let ended = task
+            .ended_as(
+                Outcome::Stopped("the model ran out".into()),
+                750_000,
+                Duration::from_secs(3),
+                &before,
+            )
+            .await;
+        assert!(
+            matches!(&ended, Outcome::Stopped(words) if words.contains("budget of $1.00 is spent")),
+            "{ended:?}"
+        );
+        let asked = broker.asked.lock().unwrap().clone();
+        let (_, counted, stop) = (&asked[4], &asked[4].3, &asked[5].3);
+        assert_eq!(asked[4].2, "session_ended");
+        assert_eq!(counted["spent_micros"], 750_000);
+        assert_eq!(counted["worked_ms"], 3_000);
+        assert_eq!(asked[5].2, "stop");
+        assert_eq!(stop["why"], "budget");
+        // Every write is the agent's own, on the task it works.
+        for (caller, resource, action, _) in &asked {
+            assert_eq!(caller, &task.caller, "{action}");
+            if action != "new-folder" {
+                assert_eq!(resource, &tl_tasks::resource("t-7"), "{action}");
+            }
+        }
+        host.end().await;
+    }
+
+    /// An agent the broker lets write nothing on the task begins no session on it, and nothing
+    /// is asked as anyone else: the turn ends with the broker's refusal.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_agent_without_a_grant_on_the_task_writes_nothing_to_it() {
+        const DENIED: &str = "the agent may not change this task";
+        let (host, task, broker) = worked(
+            &[],
+            None,
+            &[
+                ("session_began", DENIED),
+                ("stop", DENIED),
+                ("write_note", DENIED),
+                ("set_place", DENIED),
+            ],
+        )
+        .await;
+        let mut request = "Book the venue".to_owned();
+        let refused = task.begin(&mut request).await.unwrap_err();
+        assert!(refused.contains(DENIED), "{refused}");
+        assert_eq!(actions(&broker), ["session_began", "stop"]);
+        assert!(
+            broker
+                .asked
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(caller, ..)| caller == &task.caller)
+        );
+        host.end().await;
+    }
+}

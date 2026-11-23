@@ -306,3 +306,169 @@ fn tasks_in(
         next.due.insert(said);
     }
 }
+
+#[cfg(all(test, feature = "apps"))]
+mod tests {
+    use std::sync::Arc;
+
+    use tilo_resource_store::wire::Command;
+    use tilo_resource_store::{Cell, Resource, Stamp, Value as Stored};
+
+    use super::*;
+    use crate::workspaces::fixtures::{TestGroupKeys, governor, test_host_holding};
+
+    /// The tasks Tasks keeps are read through the store, as the person the look is for may read
+    /// them: open ones that are theirs or their assistant's are counted, one that became due is
+    /// named once, and a finished one, another's or one they may not read is left out.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_look_finds_the_due_and_open_tasks_through_the_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, cert) = governor();
+        let host =
+            test_host_holding(dir.path(), &key, &cert, Arc::new(TestGroupKeys::default())).await;
+        let workspaces = host.workspaces();
+        workspaces.set_member_device(Arc::new(crate::workspaces::MemberDevice {
+            cert: cert.clone(),
+            signer: Arc::new(key.clone()),
+        }));
+        let workspace = workspaces.create("Tasks").await.unwrap().workspace;
+        let route = tilo_peer_state::document_frame::DocumentRoute {
+            app_id: tl_tasks::APP.into(),
+            cluster_id: workspace.clone(),
+            document: String::new(),
+        };
+        let _ = workspaces.own_route_keys(&route, true).await.unwrap();
+        let person = hex::encode(cert.user_public_key);
+        let now_ms = 1_795_392_000_000; // 2026-11-23, midnight
+        let text = |value: &str| Cell::One(Stored::Text(value.to_owned()));
+        let tasks = [
+            (
+                "call",
+                1,
+                "Call the venue",
+                "todo",
+                Some(tl_tasks::person(&person)),
+                Some("2026-11-23"),
+                "*",
+            ),
+            (
+                "plan",
+                2,
+                "Plan the week",
+                "in_progress",
+                Some(tl_tasks::agent("scout")),
+                None,
+                "*",
+            ),
+            (
+                "old",
+                3,
+                "Old errand",
+                "done",
+                Some(tl_tasks::person(&person)),
+                Some("2026-11-20"),
+                "*",
+            ),
+            (
+                "bo",
+                4,
+                "Bo's task",
+                "todo",
+                Some(tl_tasks::person("b0")),
+                Some("2026-12-30"),
+                "*",
+            ),
+            (
+                "hidden",
+                5,
+                "Not theirs to read",
+                "todo",
+                Some(tl_tasks::person(&person)),
+                Some("2026-11-23"),
+                "b0",
+            ),
+        ];
+        for (id, number, title, status, assignee, due, readers) in tasks {
+            let mut fields = std::collections::BTreeMap::from([
+                ("number".to_owned(), Cell::One(Stored::Int(number))),
+                ("title".to_owned(), text(title)),
+                ("status".to_owned(), text(status)),
+            ]);
+            if let Some(assignee) = assignee {
+                fields.insert("assignee".to_owned(), text(&assignee));
+            }
+            if let Some(due) = due {
+                fields.insert("due".to_owned(), text(due));
+            }
+            workspaces
+                .own_resource_command(
+                    &workspace,
+                    tl_tasks::APP,
+                    Command::Put {
+                        kind: tl_tasks::TASK.into(),
+                        id: id.into(),
+                        resource: Resource {
+                            readers: readers.into(),
+                            parent: None,
+                            order: None,
+                            fields,
+                        },
+                        stamp: Stamp {
+                            verb: "new_task".into(),
+                            invoker: person.clone(),
+                            invocation: id.into(),
+                            ..Stamp::default()
+                        },
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        let own = Own {
+            person: person.clone(),
+            assistant: Some("scout".to_owned()),
+            event: "look-round".to_owned(),
+            thread: None,
+        };
+        let seen = Seen {
+            looked: true,
+            ..Seen::default()
+        };
+        let gathered = gather(
+            workspaces,
+            &workspace,
+            &cert.user_public_key,
+            &own,
+            &seen,
+            now_ms,
+        )
+        .await
+        .unwrap();
+        assert_eq!(gathered.found.open, 2, "{:?}", gathered.findings);
+        assert_eq!(gathered.found.due, 1, "{:?}", gathered.findings);
+        assert_eq!(
+            gathered.findings["due"]["named"],
+            json!([{
+                "task": tl_tasks::resource("call"),
+                "number": 1,
+                "title": "Call the venue",
+                "dueMs": now_ms,
+                "overdue": false,
+            }])
+        );
+        // The next look names it no more, until its day moves.
+        let again = gather(
+            workspaces,
+            &workspace,
+            &cert.user_public_key,
+            &own,
+            &gathered.seen,
+            now_ms,
+        )
+        .await
+        .unwrap();
+        assert_eq!(again.found.due, 0);
+        assert_eq!(again.found.open, 2);
+        host.shutdown().await;
+    }
+}
