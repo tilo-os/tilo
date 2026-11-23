@@ -50,8 +50,7 @@ use tilo_agent_session::resource_provider;
 use tilo_lock::MutexRecover as _;
 use tilo_mcp::McpServer;
 use tilo_model_gateway::host_backend::protocol::{
-    Content, Message, ModelError, ModelRequest, ModelResponse, StreamEvent, ToolCall,
-    ToolDefinition,
+    Message, ModelError, ModelRequest, ModelResponse, StreamEvent, ToolCall,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_resource::Resource as _;
@@ -2546,7 +2545,7 @@ impl tilo_agent_turn::Doing<McpServer<WorkspaceActionProvider>> for Answering<'_
     where
         W: Future<Output = tilo_agent_turn::Answer> + Send,
     {
-        let timed = steps::Step::begin(&call.name, (step.nth, step.of), steps::Note::Nowhere);
+        let timed = steps::Step::begin(&call.name, (step.nth, step.of));
         let answer = Box::pin(timed.carried_out(work)).await;
         timed.say(answer.text.len(), answer.is_error);
         // A line of the log names the call's tool and each argument by its name and the bytes

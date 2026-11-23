@@ -42,18 +42,14 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
 
-use serde_json::{Map, Value, json};
-use tilo_actions::policy::MemberId;
+use serde_json::Value;
 use tilo_actions::remote::person_vault::{FillField, FillPage};
 use tilo_actions::remote::{
     ActionCallError, Caller, CatalogueProvider, CatalogueQuery, CatalogueRow, InvokeArgument,
     InvokeRequest, Pending, RemoteActionTarget, person_vault,
 };
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
-use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_resource::Resource as _;
 use tilo_workspace_agent::Agent;
 use zeroize::Zeroizing;
 
@@ -61,17 +57,13 @@ use super::asks::{Answered, asked_in};
 use super::calendar_connect::{PutAsk, Typed, ask_for_password};
 use super::turn_provider::{Ending, Rows};
 use super::windows::{Release, Releasing, TurnFill};
-use super::{
-    Ask, CHAT, Reply, ServerAgents, Turn, TurnProvider, WorkspaceActionProvider, WorkspaceId,
-    invoke_named,
-};
-use crate::workspaces::Workspaces;
+use super::{Reply, ServerAgents, Turn, TurnProvider, WorkspaceId};
 use crate::workspaces::hosted_use::{HostedTurn, OpenAsk, TurnRelease, TurnUse, UseAnswer};
 
 /// What an agent is told when its person is asked first: nothing ran, and
 /// it neither waits nor asks again.
-const ASKED: &str = "Your person is asked in the conversation whether you may use this vault item \
-     here. Nothing was used yet. It is used when they allow it there: tell them it waits for their \
+const ASKED: &str = "Your person is asked on their own devices whether you may use this vault item \
+     here. Nothing was used yet. It is used when they allow it: tell them it waits for their \
      answer, and do not make this call again.";
 
 /// The failure code of a use that was not made because its person is asked
@@ -82,7 +74,7 @@ const ASKED_FIRST: &str = "asked_person_first";
 
 /// What an agent is told when its person is asked first about a web call:
 /// nothing was sent, and the same call goes through once they allowed it.
-const CALL_ASKED: &str = "Your person is asked in the conversation whether you may make this call \
+const CALL_ASKED: &str = "Your person is asked on their own devices whether you may make this call \
      with the vault item. Nothing was sent yet. Tell them it waits for their answer. Once they \
      allowed it, make the same call again with the same arguments: it is sent once.";
 
@@ -96,19 +88,12 @@ fn asked_words(target: &RemoteActionTarget) -> &'static str {
     }
 }
 
-/// What the question says of an answer that let one use through and carried
-/// nothing out by itself: `agent` does it when it asks for the same again.
-fn allowed_once(done: &Value, agent: &str) -> Option<String> {
-    (done.get("allowed").and_then(Value::as_str) == Some("once"))
-        .then(|| format!("Allowed once. It is done when {agent} next asks for the same."))
-}
-
 /// What the question says when the agent gave no reason of its own.
 const NO_REASON: &str = "May I use this item from your vault here?";
 
 /// What an agent is told when its person is asked first about a field of a page: nothing was
 /// filled, and their allow fills nothing by itself.
-const ASKED_PAGE: &str = "Your person is asked in the conversation whether you may fill this \
+const ASKED_PAGE: &str = "Your person is asked on their own devices whether you may fill this \
      vault item into this site's page. Nothing was filled yet, and their answer fills nothing by \
      itself: tell them it waits for their answer, and make this call again once they allowed it.";
 
@@ -122,12 +107,8 @@ pub(super) struct TurnUses {
     agent: Agent,
     /// The person the turn acts for, by their person id.
     person: String,
-    /// The ask the turn began with: its conversation is where a question goes.
-    ask: Ask,
     /// The uses this turn is offered: none for a turn the entry refuses.
     offered: Vec<CatalogueRow>,
-    /// The workspace's own actions, through which the question is put.
-    service: WorkspaceActionProvider,
 }
 
 impl TurnUses {
@@ -157,9 +138,7 @@ impl TurnUses {
             workspace_id,
             agent: turn.agent.clone(),
             person: turn.person.clone(),
-            ask: turn.ask.clone(),
             offered,
-            service: reply.provider.clone(),
         })
     }
 

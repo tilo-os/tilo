@@ -23,12 +23,8 @@
 //! it waits until the turns going ended ([`Turns::idle`]) before it stops, so a restart never
 //! cuts a turn off halfway. What was asked meanwhile stays in the workspace, and the next start
 //! answers it.
-//!
-//! Beside its turns a server keeps which conversations have their summary being written
-//! ([`Turns::summarise`]), for as long as that takes: a summary is written once its turn gave
-//! the place back, so the next turn there may end while it is still under way.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -238,25 +234,8 @@ pub(super) struct Turns {
     going: Mutex<BTreeMap<Place, Arc<Going>>>,
     /// How often a turn of this server began, or went on with what its person wrote since.
     moves: Arc<AtomicU64>,
-    /// The conversations whose summary is being written now, each with its workspace.
-    summarised: Mutex<BTreeSet<(String, String)>>,
     /// Set once the server stops: no turn begins any more.
     closed: AtomicBool,
-}
-
-/// A conversation's summary being written: dropping it lets the next one be written.
-pub(super) struct Summarised {
-    turns: Arc<Turns>,
-    conversation: (String, String),
-}
-
-impl Drop for Summarised {
-    fn drop(&mut self) {
-        self.turns
-            .summarised
-            .lock_recover()
-            .remove(&self.conversation);
-    }
 }
 
 impl Turns {
@@ -264,22 +243,6 @@ impl Turns {
     /// begins or goes on after it takes nothing that look read ([`Going::reach_read`]).
     pub(super) fn reading(&self) -> Reading {
         Reading(self.moves.load(Ordering::SeqCst))
-    }
-
-    /// Begin writing the summary of `conversation` in `workspace`: none while one of it is
-    /// being written, so two turns that end close together never ask a model for the same
-    /// messages twice.
-    pub(super) fn summarise(
-        self: &Arc<Self>,
-        workspace: &str,
-        conversation: &str,
-    ) -> Option<Summarised> {
-        let conversation = (workspace.to_owned(), conversation.to_owned());
-        let begins = self.summarised.lock_recover().insert(conversation.clone());
-        begins.then(|| Summarised {
-            turns: Arc::clone(self),
-            conversation,
-        })
     }
 
     /// Begin no turn from now on: the server is stopping.
@@ -292,9 +255,9 @@ impl Turns {
         self.going.lock_recover().len()
     }
 
-    /// Whether no turn goes, and none writes its conversation's summary.
+    /// Whether no turn goes.
     pub(super) fn idle(&self) -> bool {
-        self.going() == 0 && self.summarised.lock_recover().is_empty()
+        self.going() == 0
     }
 
     /// Begin `turn` in `workspace`, unless a turn of its agent goes in its place already.
@@ -476,31 +439,6 @@ mod tests {
         assert_eq!(
             held.reach_read(wrote("third"), turns.reading()),
             Handed::Taken
-        );
-    }
-
-    /// One summary of a conversation is written at a time, and the next once that one ended.
-    #[test]
-    fn one_summary_of_a_conversation_is_written_at_a_time() {
-        let turns = Arc::new(Turns::default());
-        let first = turns.summarise("w", "ada with scout");
-        assert!(first.is_some());
-        assert!(
-            turns.summarise("w", "ada with scout").is_none(),
-            "one of it is being written"
-        );
-        assert!(
-            turns.summarise("w", "ada with rover").is_some(),
-            "another conversation's is its own"
-        );
-        assert!(
-            turns.summarise("v", "ada with scout").is_some(),
-            "and so is another workspace's"
-        );
-        drop(first);
-        assert!(
-            turns.summarise("w", "ada with scout").is_some(),
-            "the one before it ended"
         );
     }
 
