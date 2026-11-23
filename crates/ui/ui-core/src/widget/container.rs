@@ -1,10 +1,10 @@
-use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::ModelPath;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use ::collaboration::permissions::PermissionScope;
 use std::any::Any;
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Style, TaffyTree};
@@ -408,7 +408,7 @@ impl Container {
 impl Widget for Container {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::permissions::capability::PermissionGuarded,
+        dyn crate::widget::permission::PermissionGuarded,
         dyn crate::presence::capability::PublishesPresence
     );
 
@@ -560,25 +560,26 @@ impl Widget for Container {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.paint_surface(scene, transform, theme);
 
         if let Some(child) = &mut self.child {
-            crate::widget::draw_child(
-                child.as_mut(),
-                scene,
-                transform,
-                text_renderer,
-                theme,&env,
-            );
+            crate::widget::draw_child(child.as_mut(), scene, transform, text_renderer, theme, &env);
         }
 
         self.ghosts.retain_drawn();
         let shifts = self.ghosts.shift(None, usize::from(self.child.is_some()));
         self.ghosts.draw(scene, transform, shifts.as_deref());
 
-        crate::widget::draw_over(self, &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        crate::widget::draw_over(
+            self,
+            &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+        );
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -746,7 +747,7 @@ impl crate::presence::capability::PublishesPresence for Container {
     }
 }
 
-impl crate::permissions::capability::PermissionGuarded for Container {
+impl crate::widget::permission::PermissionGuarded for Container {
     fn permission_scope(&self) -> Option<PermissionScope> {
         self.permission_scope.clone()
     }

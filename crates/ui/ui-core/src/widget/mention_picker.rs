@@ -7,7 +7,7 @@ use crate::i18n::widget_text;
 use tilo_sort::CompactSort as _;
 
 use crate::presence::PresenceCtx;
-use crate::search::FieldWeight;
+use crate::text_match::FieldWeight;
 use crate::tokens::PresenceHue;
 use crate::widget::autocomplete::Suggestion;
 use collab_types::{Member, MemberId};
@@ -110,12 +110,12 @@ pub fn query_at_caret(text: &str, caret: usize) -> Option<MentionQuery> {
 }
 
 /// The candidates worth offering for `query`, best first, ranked as every list search ranks
-/// ([`crate::search::ranked_rows`]): a prefix of the whole name, then of a later word
+/// ([`crate::text_match::ranked_rows`]): a prefix of the whole name, then of a later word
 /// ("lov" finds "Ada Lovelace"), then the member id.
 #[must_use]
 pub fn rank<'a>(candidates: &'a [MentionCandidate], query: &str) -> Vec<&'a MentionCandidate> {
-    let index = crate::search::ListIndex::default();
-    crate::search::ranked_rows(
+    let index = crate::text_match::ListIndex::default();
+    crate::text_match::ranked_rows(
         &index,
         query.trim(),
         candidates.iter().map(|candidate| {
@@ -232,7 +232,7 @@ mod tests {
             let mut presence = PresenceCtx::empty();
             presence.set_display_name(MemberId::person("u_ada"), "Ada");
             presence.set_presence_hue(MemberId::person("u_ada"), PresenceHue::Violet);
-            let announced = presence.hue_for(&crate::permissions::MemberId::person("u_ada"));
+            let announced = presence.hue_for(&::collaboration::permissions::MemberId::person("u_ada"));
             assert_ne!(
                 announced,
                 PresenceHue::of_identity("u_ada"),
@@ -278,7 +278,7 @@ mod tests {
 #[cfg(test)]
 mod roster_tests {
     use super::*;
-    use crate::permissions::MemberId;
+    use ::collaboration::permissions::MemberId;
 
     #[test]
     fn the_workspace_and_an_owners_candidates_merge_once_by_id_sorted_by_name() {

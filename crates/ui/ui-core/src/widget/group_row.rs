@@ -3611,36 +3611,32 @@ impl FloatingSurfaceProvider for GroupRow {
     }
 
     fn draw_floating_surfaces(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         for group in &mut self.groups {
             FloatingSurfaceProvider::draw_floating_surfaces(
                 group,
-                &mut crate::draw::DrawCtx::new(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    env.clone(),
-                ),
+                &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
             );
         }
     }
 
     fn draw_floating_surface(&mut self, id: &str, ctx: &mut crate::draw::DrawCtx<'_>) -> bool {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.groups.iter_mut().any(|group| {
             FloatingSurfaceProvider::draw_floating_surface(
                 group,
                 id,
-                &mut crate::draw::DrawCtx::new(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    env.clone(),
-                ),
+                &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
             )
         })
     }
@@ -3988,7 +3984,7 @@ impl GroupRow {
 impl Widget for GroupRow {
     crate::provides!(
         dyn crate::widget::FloatingSurfaceProvider,
-        dyn crate::collaboration::presences::CollaborationTopology,
+        dyn crate::widget::presence_topology::CollaborationTopology,
         dyn crate::component_lifecycle::ComponentLifecycle
     );
 
@@ -4078,7 +4074,11 @@ impl Widget for GroupRow {
     }
 
     fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         fn drawn(scene: &Scene) -> (usize, usize) {
             let encoding = scene.encoding();
@@ -4088,7 +4088,13 @@ impl Widget for GroupRow {
         for index in self.shown_group_indices() {
             let before = drawn(scene);
             let group = &mut self.groups[index];
-            group.draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+            group.draw_overlay(&mut crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ));
             if drawn(scene) != before {
                 self.overlay_groups.push(group.id);
             }
@@ -4399,7 +4405,11 @@ impl Widget for GroupRow {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         // Drawings are replayed only into the frame right after the one
         // that drew or replayed them, and only while frames only pan: any
@@ -4524,10 +4534,18 @@ impl Widget for GroupRow {
                     &clip,
                 );
             }
-            self.draw_groups(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()), maximized_idx, &in_run);
+            self.draw_groups(
+                &mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()),
+                maximized_idx,
+                &in_run,
+            );
             crate::window_pictures::unseen(self.culled_groups.iter());
             crate::window_pictures::settled(self.groups.iter().map(|group| &group.id));
-            self.draw_handles(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()), maximized_idx, &in_run);
+            self.draw_handles(
+                &mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()),
+                maximized_idx,
+                &in_run,
+            );
             if clipped {
                 scene.pop_layer();
                 crate::scene_parts::end(scene, vec![transform.transform_rect_bbox(clip)]);
@@ -4547,7 +4565,13 @@ impl Widget for GroupRow {
         self.pan_drawings
             .retain(|drawing| kept.contains(&drawing.id));
         self.draw_floats(scene, transform, (tr, theme, env));
-        self.draw_group_drag_preview(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()));
+        self.draw_group_drag_preview(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            tr,
+            theme,
+            env.clone(),
+        ));
         self.draw_reorder_capsule(scene, transform, theme);
     }
 
@@ -4933,7 +4957,7 @@ impl crate::component_lifecycle::ComponentLifecycle for GroupRow {
     }
 }
 
-impl crate::collaboration::presences::CollaborationTopology for GroupRow {
+impl crate::widget::presence_topology::CollaborationTopology for GroupRow {
     fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.groups
             .iter_mut()
@@ -5020,8 +5044,17 @@ impl GroupRow {
         }
     }
 
-    fn draw_groups(&mut self, ctx: &mut crate::draw::DrawCtx<'_>, maximized_idx: Option<usize>, in_run: &[bool]) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+    fn draw_groups(
+        &mut self,
+        ctx: &mut crate::draw::DrawCtx<'_>,
+        maximized_idx: Option<usize>,
+        in_run: &[bool],
+    ) {
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         self.culled_groups.clear();
         if let Some(max_i) = maximized_idx {
@@ -5044,7 +5077,7 @@ impl GroupRow {
                         transform,
                         &rect.inflate(16.0, 16.0),
                     );
-                    sibling.draw_child(scene, transform, tr, theme,&env);
+                    sibling.draw_child(scene, transform, tr, theme, &env);
                     scene.pop_layer();
                 }
             }
@@ -5396,7 +5429,11 @@ impl GroupRow {
     }
 
     fn draw_group_drag_preview(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         let Some(lift) = self.group_drag_lift(theme) else {
             return;
@@ -5416,7 +5453,13 @@ impl GroupRow {
             reason = "Affine multiplication composes finite floating-point transforms"
         )]
         let preview_transform = transform * lift;
-        group.draw_group_drag_visual(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()));
+        group.draw_group_drag_visual(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            tr,
+            theme,
+            env.clone(),
+        ));
     }
 
     fn group_drag_lift(&self, theme: &Theme) -> Option<Affine> {
@@ -5452,8 +5495,17 @@ impl GroupRow {
     /// make-space slide, each handle travels with the group on its
     /// right — otherwise two adjacent white cards read as one wide
     /// window mid-slide.
-    fn draw_handles(&mut self, ctx: &mut crate::draw::DrawCtx<'_>, maximized_idx: Option<usize>, in_run: &[bool]) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+    fn draw_handles(
+        &mut self,
+        ctx: &mut crate::draw::DrawCtx<'_>,
+        maximized_idx: Option<usize>,
+        in_run: &[bool],
+    ) {
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         let any_drag = self
             .groups
@@ -5487,7 +5539,7 @@ impl GroupRow {
             } else {
                 transform
             };
-            h.draw_child(scene, t, tr, theme,&env);
+            h.draw_child(scene, t, tr, theme, &env);
         }
     }
 

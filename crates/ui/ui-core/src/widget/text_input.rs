@@ -371,7 +371,7 @@ pub struct TextInput {
     /// record's own), as an action's text anchor names it ([`Self::set_edits`]).
     edits: Option<(String, String)>,
     adopted: Option<preparation::Adopted>,
-    local_author: Option<crate::permissions::MemberId>,
+    local_author: Option<::collaboration::permissions::MemberId>,
     align: TextAlign,
     secret: bool,
     disabled: bool,
@@ -808,7 +808,7 @@ impl TextInput {
         self.align
     }
 
-    pub fn set_local_author(&mut self, author: Option<crate::permissions::MemberId>) {
+    pub fn set_local_author(&mut self, author: Option<::collaboration::permissions::MemberId>) {
         self.repaint = true;
         self.local_author = author;
     }
@@ -5029,7 +5029,11 @@ impl Widget for TextInput {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let fallback_presence = Default::default();
         let presence = env.presence.unwrap_or(&fallback_presence);
@@ -5083,7 +5087,13 @@ impl Widget for TextInput {
             self.draw_pending_token(scene, transform, theme);
             self.draw_autocorrection(scene, transform, theme);
             self.draw_autocorrection_preview(scene, transform, text_renderer, theme);
-            self.draw_peers_and_permission_scrim(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+            self.draw_peers_and_permission_scrim(&mut crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ));
             #[cfg(test)]
             let _probe = crate::profiling::frame_probe::span("text.note");
             self.note_shown(transform, theme, text_renderer);
@@ -5170,7 +5180,7 @@ impl Widget for TextInput {
         if self.has_reveal_control() {
             self.refresh_reveal_control();
             self.reveal
-                .draw_child(scene, transform, text_renderer, theme,&env);
+                .draw_child(scene, transform, text_renderer, theme, &env);
         }
         if own_text {
             #[cfg(test)]
@@ -5182,7 +5192,13 @@ impl Widget for TextInput {
             self.draw_autocorrection(scene, transform, theme);
             self.draw_autocorrection_preview(scene, transform, text_renderer, theme);
         }
-        self.draw_peers_and_permission_scrim(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        self.draw_peers_and_permission_scrim(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            env.clone(),
+        ));
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -5832,10 +5848,23 @@ impl Widget for TextInput {
     }
 
     fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
-        Widget::draw_overlay(&mut *self.context_menu, &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
-        self.paint_completion(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        Widget::draw_overlay(
+            &mut *self.context_menu,
+            &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+        );
+        self.paint_completion(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            env.clone(),
+        ));
     }
 }
 
@@ -5883,17 +5912,17 @@ impl crate::presence::capability::PublishesPresence for TextInput {
         })
     }
 
-    fn presence_payload(&self) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
+    fn presence_payload(&self) -> Option<(PresenceKey, ::collaboration::PresencePayload)> {
         if !self.is_focused || self.holds_secret() {
             return None;
         }
         let key = self.presence_key()?;
         let payload = match self.core.selected_range() {
-            Some(range) => crate::collaboration::PresencePayload::Selection {
+            Some(range) => ::collaboration::PresencePayload::Selection {
                 start: range.start,
                 end: range.end,
             },
-            None => crate::collaboration::PresencePayload::Caret {
+            None => ::collaboration::PresencePayload::Caret {
                 pos: self.core.caret(),
             },
         };
@@ -5961,8 +5990,14 @@ impl crate::presence::capability::PublishesPresence for TextInput {
                 (
                     self.selection_rects(theme, start, end),
                     Some(
-                        crate::presence::LabeledCaret::within(self.caret_rect(theme, end), self.rect.y0)
-                            .among(self.selection_rects(theme, 0, self.text.len()), self.rect.x1),
+                        crate::presence::LabeledCaret::within(
+                            self.caret_rect(theme, end),
+                            self.rect.y0,
+                        )
+                        .among(
+                            self.selection_rects(theme, 0, self.text.len()),
+                            self.rect.x1,
+                        ),
                     ),
                 )
             }),
@@ -6019,7 +6054,7 @@ impl TextInput {
     /// it made of the field asks before keeping it.
 
     fn draw_peers_and_permission_scrim(&self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        if let Some(scope) = crate::permissions::capability::permission_scope(self)
+        if let Some(scope) = crate::widget::permission::permission_scope(self)
             && !ctx.env.permits(&scope)
         {
             let r = self.rect;

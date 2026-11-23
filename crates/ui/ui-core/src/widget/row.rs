@@ -139,7 +139,7 @@ impl Row {
 
 impl Widget for Row {
     crate::provides!(
-        dyn crate::permissions::capability::PermissionGuarded,
+        dyn crate::widget::permission::PermissionGuarded,
         dyn crate::presence::capability::PublishesPresence
     );
 

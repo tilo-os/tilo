@@ -89,17 +89,17 @@ pub struct OperationRequest<'a> {
 /// These are neither a certificate nor permission to execute a host job.
 #[derive(Clone, Debug)]
 pub struct OperationTarget {
-    route: crate::collaboration::RouteSpec,
+    route: ::collaboration::RouteSpec,
     address: tilo_actions::ActionAddress,
 }
 impl OperationTarget {
     pub(crate) fn new(
-        route: crate::collaboration::RouteSpec,
+        route: ::collaboration::RouteSpec,
         address: tilo_actions::ActionAddress,
     ) -> Self {
         Self { route, address }
     }
-    pub fn route(&self) -> &crate::collaboration::RouteSpec {
+    pub fn route(&self) -> &::collaboration::RouteSpec {
         &self.route
     }
     pub fn address(&self) -> &tilo_actions::ActionAddress {
@@ -127,7 +127,7 @@ impl OperationTarget {
         }
         #[cfg(feature = "broker-transport")]
         {
-            let receive = crate::collaboration::external_moderation::enqueue(
+            let receive = ::collaboration::external_moderation::enqueue(
                 &self.route.channel_id(),
                 invocation,
                 operation,
@@ -169,7 +169,7 @@ impl OperationTarget {
                 check_id: check_id.into(),
             };
             let receive =
-                crate::collaboration::approved_checks::enqueue(&self.route.channel_id(), request)?;
+                ::collaboration::approved_checks::enqueue(&self.route.channel_id(), request)?;
             Ok(Box::pin(async move {
                 receive
                     .await

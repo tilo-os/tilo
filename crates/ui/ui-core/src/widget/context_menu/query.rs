@@ -4,7 +4,7 @@
 //! the Menu key: [`super::note_input`]) takes typing when it has many rows or
 //! when a sentence can be asked of something: a query field at its top
 //! narrows its entries with the ranking every filtered list shares
-//! (`crate::search::ranked_rows`), and Enter runs the best match. Its last
+//! (`crate::text_match::ranked_rows`), and Enter runs the best match. Its last
 //! row, "Send to…", stands there before anything is typed: it opens the
 //! send-to box in the menu's place ([`crate::widget::SendToBox`]), carrying what
 //! was typed into its message, and the box sends it to whom the person names.
@@ -34,7 +34,7 @@ pub(super) struct MenuQuery {
     pub(super) selection: Selection,
     pub(super) composition: QueryComposition,
     /// The search index the rows are ranked with.
-    pub(super) index: crate::search::ListIndex,
+    pub(super) index: crate::text_match::ListIndex,
 }
 
 impl ContextMenu {
@@ -205,7 +205,7 @@ impl ContextMenu {
         };
         // Ranked as every list search ranks; separators and captions are
         // never a match.
-        self.shown = crate::search::ranked_rows(
+        self.shown = crate::text_match::ranked_rows(
             &query.index,
             query.text.trim(),
             self.items.iter().take(owned).map(|item| {
@@ -215,7 +215,7 @@ impl ContextMenu {
                 };
                 label
                     .into_iter()
-                    .map(|label| (label, crate::search::FieldWeight::TITLE))
+                    .map(|label| (label, crate::text_match::FieldWeight::TITLE))
             }),
         );
         if let Some(ask) = self.ask_row() {

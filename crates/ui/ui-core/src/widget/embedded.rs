@@ -199,15 +199,18 @@ impl<W: Widget + 'static> Embedded<W> {
 
     /// Paint the widget where it was last laid out.
     pub fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         let recoloured = self.recoloured(theme);
         let theme = recoloured.as_ref().unwrap_or(theme);
         let owner = self.child_viewport(env.viewport);
         let mut child_env = env.clone();
-        child_env.viewport = owner.map(|viewport| {
-            self.transform.inverse().transform_rect_bbox(viewport)
-        });
+        child_env.viewport =
+            owner.map(|viewport| self.transform.inverse().transform_rect_bbox(viewport));
         self.widget
             .draw_child(scene, transform * self.transform, text, theme, &child_env);
         self.widget.mark_drawn();
@@ -222,7 +225,11 @@ impl<W: Widget + 'static> Embedded<W> {
 
     /// Paint what the widget floats over everything (its menus, a link's popover).
     pub fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         // What floats over everything (a menu, a popover) stands on its own
         // panel in the owner's inks: the words' own colour
@@ -230,15 +237,10 @@ impl<W: Widget + 'static> Embedded<W> {
         // light slide must never become a dark menu's labels.
         let owner = self.child_viewport(env.viewport);
         let mut child_env = env.clone();
-        child_env.viewport = owner.map(|viewport| {
-            self.transform.inverse().transform_rect_bbox(viewport)
-        });
+        child_env.viewport =
+            owner.map(|viewport| self.transform.inverse().transform_rect_bbox(viewport));
         self.widget.draw_overlay(&mut crate::draw::DrawCtx::new(
-            scene,
-            transform,
-            text,
-            theme,
-            child_env,
+            scene, transform, text, theme, child_env,
         ));
     }
 
@@ -440,7 +442,7 @@ impl<W: Widget + 'static> Embedded<W> {
         &self,
     ) -> Option<(
         crate::presence::PresenceKey,
-        crate::collaboration::PresencePayload,
+        ::collaboration::PresencePayload,
     )> {
         crate::presence::capability::presence_payload(&*self.widget)
     }

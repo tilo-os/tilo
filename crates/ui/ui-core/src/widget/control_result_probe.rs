@@ -59,7 +59,7 @@ impl Probe {
 impl Widget for Probe {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn crate::widget::ResourceOperations
     );
 
@@ -135,7 +135,7 @@ impl crate::widget::ResourceOperations for Probe {
     }
 }
 
-impl crate::resources::PublishesResources for Probe {
+impl crate::widget::resources::PublishesResources for Probe {
     fn resources(&self, _: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         let mut contract = tilo_actions::ActionContract::default();
         if self.accepted {

@@ -1,9 +1,9 @@
 use crate::color_compat::ColorCompat;
 use crate::dnd::{DRAG_START_THRESHOLD_PX, DragPayload};
+use crate::draw::{DrawEnv, MemberFace};
 use crate::i18n::widget_text;
 use crate::icons;
 use crate::paint::PaintCtx;
-use crate::draw::{DrawEnv, MemberFace};
 use crate::presence::PresenceKey;
 use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
@@ -1745,12 +1745,7 @@ impl TabBar {
 
     /// Small faces of the peers on this tab at the trailing end of the title zone: initials in each
     /// person's presence colour, agents in the agent mark, ringed so overlaps stay separate.
-    fn draw_pill_faces(
-        &self,
-        ctx: &mut PaintCtx<'_>,
-        env: &DrawEnv<'_>,
-        pill: &PillPaint<'_>,
-    ) {
+    fn draw_pill_faces(&self, ctx: &mut PaintCtx<'_>, env: &DrawEnv<'_>, pill: &PillPaint<'_>) {
         let faces = self.pill_faces.get(pill.i).copied().unwrap_or_default();
         if faces.slots() == 0 {
             return;
@@ -1803,7 +1798,8 @@ impl TabBar {
                 );
             }
             if !face.agent {
-                let colour = vello::peniko::Color::from_rgb8(face.colour.0, face.colour.1, face.colour.2);
+                let colour =
+                    vello::peniko::Color::from_rgb8(face.colour.0, face.colour.1, face.colour.2);
                 paint_tab_face(ctx, rect, &face.name, colour, false, ring);
             } else {
                 let colour = ctx.theme.tokens.colors.presence.of_rgb(face.colour);
@@ -3982,9 +3978,19 @@ impl Widget for TabBar {
     /// its tabs are as when it was last drawn shows that drawing again
     /// (`TabBar::replays`); anything else draws it afresh.
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
-        self.paint_or_replay(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()));
+        self.paint_or_replay(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            tr,
+            theme,
+            env.clone(),
+        ));
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -4073,10 +4079,20 @@ impl Widget for TabBar {
     /// The parts' menus (overflow, suggestions) float in the window's top
     /// layer, over the content.
     fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.toolbar_row
-            .paint_popups(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+            .paint_popups(&mut crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ));
     }
     fn test_id(&self) -> Option<&str> {
         Some("tabs")
@@ -4661,8 +4677,17 @@ impl TabBar {
 
     /// One row of tab pills, each springing from its previous layout rect and fading in if
     /// freshly inserted or dimming if it's the drag source.
-    fn draw_pills(&self, ctx: &mut crate::draw::DrawCtx<'_>, layout_t: Option<f64>, fade_window: Duration) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+    fn draw_pills(
+        &self,
+        ctx: &mut crate::draw::DrawCtx<'_>,
+        layout_t: Option<f64>,
+        fade_window: Duration,
+    ) {
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         // `None` if no drag, or the tab was removed mid-drag (avoids a panic).
         let drag_source_idx: Option<usize> = match &self.pending_drag {
@@ -4944,7 +4969,11 @@ impl TabBar {
     /// The dragged pill's cursor-following ghost, painted LAST so it composites over
     /// everything.
     pub(crate) fn draw_drag_ghost(&self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         let Some(ghost_rect) = self.compute_ghost_rect() else {
             return;
@@ -7119,7 +7148,7 @@ mod tests {
                     let mut presence = PresenceCtx::default();
                     if with_peer {
                         presence.register_peer_at(
-                            crate::permissions::MemberId::person("ada"),
+                            ::collaboration::permissions::MemberId::person("ada"),
                             &PresenceKey::Tab {
                                 id: "2".to_string(),
                             },
@@ -7167,7 +7196,7 @@ mod tests {
                     let mut presence = PresenceCtx::default();
                     for peer in ["ada", "bot", "cy", "dee", "eve"] {
                         presence.register_peer_at(
-                            crate::permissions::MemberId::person(peer),
+                            ::collaboration::permissions::MemberId::person(peer),
                             &PresenceKey::Tab {
                                 id: "2".to_string(),
                             },
@@ -7221,7 +7250,7 @@ mod tests {
                 );
                 let mut presence = PresenceCtx::default();
                 presence.register_peer_at(
-                            crate::permissions::MemberId::person("ada"),
+                            ::collaboration::permissions::MemberId::person("ada"),
                             &PresenceKey::Tab {
                                 id: "2".to_string(),
                             },
@@ -7272,7 +7301,7 @@ mod tests {
                 let content = PILL_PAD_X + b.leading_zone(1) + b.shaped_title_width(1) + reserve;
                 let mut presence = PresenceCtx::default();
                 presence.register_peer_at(
-                            crate::permissions::MemberId::person("ada"),
+                            ::collaboration::permissions::MemberId::person("ada"),
                             &PresenceKey::Tab {
                                 id: "2".to_string(),
                             },
@@ -7895,7 +7924,13 @@ mod tests {
                 let mut tr = TextRenderer::new();
                 let presence = PresenceCtx::default();
                 let mut scene = Scene::new();
-                b.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
+                b.draw(&mut crate::draw::DrawCtx::new(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut tr,
+                    &theme,
+                    presence.draw_env(),
+                ));
                 scene
                     .encoding()
                     .draw_tags

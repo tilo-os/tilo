@@ -298,7 +298,7 @@ impl Folded {
         let mut text = String::with_capacity(raw.len());
         let mut origin = Vec::with_capacity(raw.len().saturating_add(1));
         for (offset, scalar) in raw.char_indices() {
-            crate::search::fold_char(scalar, &mut |part| {
+            crate::text_match::fold_char(scalar, &mut |part| {
                 text.push(part);
                 origin.resize(text.len(), offset);
             });
@@ -471,7 +471,7 @@ impl PreparedSource {
 
 #[must_use]
 pub fn rows(source: &PreparedSource, query: &str) -> Vec<Entry> {
-    let folded = crate::search::fold_search_text(query.trim_start());
+    let folded = crate::text_match::fold_search_text(query.trim_start());
     let folded = folded.trim_end();
     let mut out = Vec::new();
     if folded.is_empty() {

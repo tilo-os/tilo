@@ -1,10 +1,10 @@
-use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::{AppModel, ModelPath};
+use ::collaboration::permissions::PermissionScope;
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
@@ -58,7 +58,7 @@ impl Stack {
 
 impl Widget for Stack {
     crate::provides!(
-        dyn crate::permissions::capability::PermissionGuarded,
+        dyn crate::widget::permission::PermissionGuarded,
         dyn crate::presence::capability::PublishesPresence
     );
 
@@ -113,19 +113,20 @@ impl Widget for Stack {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         for child in &mut self.children {
-            crate::widget::draw_child(
-                child.as_mut(),
-                scene,
-                transform,
-                text_renderer,
-                theme,&env,
-            );
+            crate::widget::draw_child(child.as_mut(), scene, transform, text_renderer, theme, &env);
         }
 
-        crate::widget::draw_over(self, &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        crate::widget::draw_over(
+            self,
+            &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+        );
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -214,7 +215,7 @@ impl crate::presence::capability::PublishesPresence for Stack {
     }
 }
 
-impl crate::permissions::capability::PermissionGuarded for Stack {
+impl crate::widget::permission::PermissionGuarded for Stack {
     fn permission_scope(&self) -> Option<PermissionScope> {
         self.permission_scope.clone()
     }

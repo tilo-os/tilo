@@ -4,9 +4,9 @@ use crate::application::{
 };
 use crate::application_view::InstanceViewStore;
 use crate::bound_dispatch::CallbackBinding;
-use crate::permissions::{MemberId, PermissionContext};
 use crate::resource::{ResourceOwners, ResourceType};
 use crate::widget::{IconDescriptor, Text};
+use ::collaboration::permissions::{MemberId, PermissionContext};
 use std::cell::RefCell;
 struct BoundRoot {
     parts: Parts,
@@ -28,9 +28,19 @@ impl Widget for BoundRoot {
         node
     }
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.parts.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        self.parts.draw(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text,
+            theme,
+            env.clone(),
+        ));
     }
 }
 #[test]
@@ -59,7 +69,7 @@ fn owner_execution_scope_spans_probes_and_closed_or_cross_record_policies_never_
                 views: views.clone(),
                 device_id: "D".into(),
                 instance_id: instance,
-                permissions: crate::permissions::SharedPermissions::new(
+                permissions: ::collaboration::permissions::SharedPermissions::new(
                     PermissionContext::permissive(),
                 ),
                 author: MemberId::person("tester"),

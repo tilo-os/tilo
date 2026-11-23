@@ -1,15 +1,4 @@
-//! Widgets guarded by a permission scope.
+//! Widgets guarded by a permission scope; the toolkit's own capability, reached
+//! here for callers that already import the permission module.
 
-use crate::widget::Widget;
-use crate::widget::capability::capability;
-
-/// A widget whose input and actions are guarded by a permission scope.
-pub trait PermissionGuarded: Widget {
-    fn permission_scope(&self) -> Option<super::PermissionScope> {
-        None
-    }
-}
-
-pub fn permission_scope(widget: &(impl Widget + ?Sized)) -> Option<super::PermissionScope> {
-    capability::<dyn PermissionGuarded>(widget)?.permission_scope()
-}
+pub use crate::widget::permission::{PermissionGuarded, permission_scope};

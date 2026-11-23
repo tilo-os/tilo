@@ -265,7 +265,11 @@ impl WindowGroup {
     /// handle remains half-transparent and the app pixels recede further,
     /// matching the tab-drag visual without duplicating layout state.
     pub(crate) fn draw_group_drag_visual(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         crate::surface::shadow(
             scene,
@@ -282,7 +286,7 @@ impl WindowGroup {
                 transform,
                 &self.bar_rect().inflate(32.0, 32.0),
             );
-            self.bar.draw_child(scene, transform, tr, theme,&env);
+            self.bar.draw_child(scene, transform, tr, theme, &env);
             scene.pop_layer();
         }
         if let Some((_, host)) = self
@@ -299,7 +303,7 @@ impl WindowGroup {
             );
             let was_focused = host.focused;
             host.set_focused(false);
-            host.draw_child(scene, transform, tr, theme,&env);
+            host.draw_child(scene, transform, tr, theme, &env);
             host.set_focused(was_focused);
             scene.pop_layer();
         }
@@ -713,16 +717,19 @@ impl WindowGroup {
     }
 
     fn draw_bar(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         self.bar.set_resize(self.resize());
         self.bar
             .set_group_focused(self.focused || self.search_active);
         self.bar.set_popup_area(self.rect);
-        self.bar.draw_child(scene, transform, tr, theme,&env);
+        self.bar.draw_child(scene, transform, tr, theme, &env);
         self.search.set_ground(self.bar.ground_color(theme));
-        self.search
-            .draw_child(scene, transform, tr, theme,&env);
+        self.search.draw_child(scene, transform, tr, theme, &env);
     }
 
     fn top_slide_now(&self) -> f64 {
@@ -1816,15 +1823,29 @@ impl WindowGroup {
     }
 
     pub fn draw_bar_popups(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if self.navigation_bar_visible() {
-            self.bar
-                .draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+            self.bar.draw_overlay(&mut crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ));
         }
         if self.shows_its_bar() {
-            self.search
-                .draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+            self.search.draw_overlay(&mut crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ));
         }
     }
 
@@ -2311,13 +2332,17 @@ impl WindowGroup {
     }
 
     fn draw_closing_hosts(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         if self.is_closing() {
             let ids: Vec<u64> = self.closing_hosts.keys().copied().collect();
             for id in ids {
                 if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == id) {
-                    h.draw_child(scene, transform, tr, theme,&env);
+                    h.draw_child(scene, transform, tr, theme, &env);
                 }
             }
             return;
@@ -2367,7 +2392,7 @@ impl WindowGroup {
                     * Affine::translate((centre.x, centre.y))
                     * Affine::scale(scale)
                     * Affine::translate((-centre.x, -centre.y));
-                h.draw_child(scene, close_transform, tr, theme,&env);
+                h.draw_child(scene, close_transform, tr, theme, &env);
                 scene.pop_layer();
             }
         }
@@ -2481,22 +2506,36 @@ impl WindowGroup {
     /// so the preview can cross group and strip clips without changing hit-test
     /// geometry or client configure sizes.
     fn draw_tab_drag_visual(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         let Some(visual) = self.bar.drag_visual(theme) else {
             return;
         };
         let Some((_, host)) = self.hosts.iter_mut().find(|(id, _)| *id == visual.tab_id) else {
-            self.bar
-                .draw_drag_ghost(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()));
+            self.bar.draw_drag_ghost(&mut crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                tr,
+                theme,
+                env.clone(),
+            ));
             return;
         };
         let source = host.get_rect();
         if source.width() <= 0.0 || source.height() <= 0.0 {
             // Inactive hosts intentionally have no layout until selected.
             // Keep the carried handle visible without waking/rendering them.
-            self.bar
-                .draw_drag_ghost(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()));
+            self.bar.draw_drag_ghost(&mut crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                tr,
+                theme,
+                env.clone(),
+            ));
             return;
         }
 
@@ -2531,12 +2570,17 @@ impl WindowGroup {
         );
         let was_focused = host.focused;
         host.set_focused(false);
-        host.draw_child(scene, preview_transform, tr, theme,&env);
+        host.draw_child(scene, preview_transform, tr, theme, &env);
         host.set_focused(was_focused);
         scene.pop_layer();
 
-        self.bar
-            .draw_drag_ghost(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()));
+        self.bar.draw_drag_ghost(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            tr,
+            theme,
+            env.clone(),
+        ));
     }
 }
 
@@ -2627,37 +2671,39 @@ impl FloatingSurfaceProvider for WindowGroup {
     }
 
     fn draw_floating_surfaces(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         for (_, host) in &mut self.hosts {
             FloatingSurfaceProvider::draw_floating_surfaces(
                 &mut **host,
-                &mut crate::draw::DrawCtx::new(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    env.clone(),
-                ),
+                &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
             );
         }
-        self.draw_tab_drag_visual(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        self.draw_tab_drag_visual(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            env.clone(),
+        ));
     }
 
     fn draw_floating_surface(&mut self, id: &str, ctx: &mut crate::draw::DrawCtx<'_>) -> bool {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.hosts.iter_mut().any(|(_, host)| {
             FloatingSurfaceProvider::draw_floating_surface(
                 &mut **host,
                 id,
-                &mut crate::draw::DrawCtx::new(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    env.clone(),
-                ),
+                &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
             )
         })
     }
@@ -2697,7 +2743,7 @@ impl FloatingSurfaceProvider for WindowGroup {
 impl Widget for WindowGroup {
     crate::provides!(
         dyn crate::widget::FloatingSurfaceProvider,
-        dyn crate::collaboration::presences::CollaborationTopology,
+        dyn crate::widget::presence_topology::CollaborationTopology,
         dyn crate::history_mode::capability::FrameworkHistoryTopology,
         dyn crate::widget::controls::ActionControls,
         dyn crate::component_lifecycle::ComponentLifecycle
@@ -2830,19 +2876,39 @@ impl Widget for WindowGroup {
         children
     }
     fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let active = self.bar.active_id();
         if let Some((_, host)) = self.hosts.iter_mut().find(|(id, _)| *id == active) {
-            host.draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+            host.draw_overlay(&mut crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ));
         }
         if self.shows_its_bar() {
-            self.search
-                .draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+            self.search.draw_overlay(&mut crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ));
         }
         if self.navigation_bar_visible() {
-            self.bar
-                .draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+            self.bar.draw_overlay(&mut crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ));
         }
     }
 
@@ -3011,7 +3077,11 @@ impl Widget for WindowGroup {
         self.sync_host_keyboard();
     }
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         self.reduce_motion = theme.reduce_motion;
         self.bar.set_opened_by_focused(self.opened_by.focused());
@@ -3080,7 +3150,13 @@ impl Widget for WindowGroup {
         }
         let bar_over = self.bar_over_content();
         if self.navigation_bar_visible() && !bar_over {
-            self.draw_bar(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()));
+            self.draw_bar(&mut crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                tr,
+                theme,
+                env.clone(),
+            ));
         }
         let active_id = self.bar.active_id();
         let focused = self.focused || self.search_active;
@@ -3100,11 +3176,11 @@ impl Widget for WindowGroup {
         if let Some(out_id) = outgoing
             && let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == out_id)
         {
-            h.draw_child(scene, transform, tr, theme,&env);
+            h.draw_child(scene, transform, tr, theme, &env);
         }
         if let Some(stand_in) = self.stand_in_tab() {
             if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == stand_in) {
-                h.draw_child(scene, transform, tr, theme,&env);
+                h.draw_child(scene, transform, tr, theme, &env);
             }
         } else if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == active_id) {
             h.set_focused(focused);
@@ -3129,7 +3205,7 @@ impl Widget for WindowGroup {
                     &h.get_rect(),
                 );
             }
-            h.draw_child(scene, transform, tr, theme,&env);
+            h.draw_child(scene, transform, tr, theme, &env);
             if incoming.is_some() {
                 scene.pop_layer();
             }
@@ -3137,13 +3213,37 @@ impl Widget for WindowGroup {
                 scene.pop_layer();
             }
         }
-        self.draw_held_furniture(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()));
-        self.draw_closing_hosts(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()));
+        self.draw_held_furniture(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            tr,
+            theme,
+            env.clone(),
+        ));
+        self.draw_closing_hosts(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            tr,
+            theme,
+            env.clone(),
+        ));
         if bar_over {
-            self.draw_bar_over_content(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()));
+            self.draw_bar_over_content(&mut crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                tr,
+                theme,
+                env.clone(),
+            ));
         }
         if self.navigation_bar_visible() {
-            self.draw_bar_tips(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()));
+            self.draw_bar_tips(&mut crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                tr,
+                theme,
+                env.clone(),
+            ));
         }
         if !self.maximized && !self.fullscreen_presentation {
             self.draw_lit_edge(scene, transform, theme);
@@ -3515,7 +3615,7 @@ impl crate::history_mode::capability::FrameworkHistoryTopology for WindowGroup {
     }
 }
 
-impl crate::collaboration::presences::CollaborationTopology for WindowGroup {
+impl crate::widget::presence_topology::CollaborationTopology for WindowGroup {
     fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.hosts
             .iter_mut()

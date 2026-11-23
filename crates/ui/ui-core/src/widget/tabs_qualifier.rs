@@ -26,7 +26,7 @@ impl TabBar {
             .as_deref()
             .map(str::trim)
             .filter(|app| !app.is_empty())?;
-        let reads = |text: &str| crate::search::fold_search_text(text.trim());
+        let reads = |text: &str| crate::text_match::fold_search_text(text.trim());
         let title = reads(&tab.title);
         if title.is_empty() || title == reads(app) {
             return None;

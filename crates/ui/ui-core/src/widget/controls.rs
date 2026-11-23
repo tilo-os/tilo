@@ -301,7 +301,7 @@ pub(crate) fn published_action(
     doc: &automerge::AutoCommit,
     address: &tilo_actions::ActionAddress,
 ) -> Option<tilo_actions::ActionSpec> {
-    for resource in crate::resources::resources(widget, doc) {
+    for resource in crate::widget::resources::resources(widget, doc) {
         if let Some(spec) = resource.actions.iter().find(|spec| {
             address == &tilo_actions::ActionAddress::new(resource.id.as_str(), spec.id.as_str())
         }) {

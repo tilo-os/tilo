@@ -58,7 +58,11 @@ impl Widget for Probe {
     crate::rect_geometry!();
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (_scene, _transform, _text, _theme, mut env) = ctx.parts();
         self.animating = false;
     }
@@ -804,7 +808,7 @@ tilo_test_env::scenario! {
         settle(&mut h, 1280, 800);
         assert_eq!(name(&h).as_deref(), Some("Show sidebar"));
         let doc = automerge::AutoCommit::new();
-        let resources = crate::resources::resources(&*h.root::<NavShell>().toggle, &doc);
+        let resources = crate::widget::resources::resources(&*h.root::<NavShell>().toggle, &doc);
         assert!(
             resources
                 .iter()
@@ -2412,8 +2416,20 @@ fn present_shell(
     let mut scene = Scene::new();
     let presence = PresenceCtx::empty();
     let transform = Affine::scale(scale);
-    shell.draw(&mut crate::draw::DrawCtx::new(&mut scene, transform, text, theme, presence.draw_env()));
-    shell.draw_overlay(&mut crate::draw::DrawCtx::new(&mut scene, transform, text, theme, presence.draw_env()));
+    shell.draw(&mut crate::draw::DrawCtx::new(
+        &mut scene,
+        transform,
+        text,
+        theme,
+        presence.draw_env(),
+    ));
+    shell.draw_overlay(&mut crate::draw::DrawCtx::new(
+        &mut scene,
+        transform,
+        text,
+        theme,
+        presence.draw_env(),
+    ));
     let mut damage = Vec::new();
     shell.collect_damage(&mut damage);
     shell.mark_drawn();
@@ -2624,8 +2640,8 @@ impl crate::widget::Continuable for ResumableContent {
         &self,
         _state: &automerge::AutoCommit,
         _path: &automerge::ObjId,
-    ) -> Option<crate::collaboration::ContinuationMetadata> {
-        Some(crate::collaboration::ContinuationMetadata {
+    ) -> Option<::collaboration::ContinuationMetadata> {
+        Some(::collaboration::ContinuationMetadata {
             schema_version: 1,
             bytes: b"line 3".to_vec(),
         })
@@ -2633,7 +2649,7 @@ impl crate::widget::Continuable for ResumableContent {
 
     fn restore_continuation_metadata(
         &mut self,
-        _metadata: &crate::collaboration::ContinuationMetadata,
+        _metadata: &::collaboration::ContinuationMetadata,
         _state: &mut crate::widget::Edits<'_>,
         _path: &automerge::ObjId,
     ) -> bool {
@@ -2663,7 +2679,11 @@ impl Widget for Remounting {
     }
     crate::rect_geometry!();
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (_scene, _transform, _text, _theme, mut env) = ctx.parts();
     }
     fn sync(&mut self, _state: &crate::widget::AppModel, _path: &crate::widget::ModelPath) {

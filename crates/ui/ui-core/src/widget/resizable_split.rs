@@ -493,7 +493,11 @@ impl Widget for SplitHandle {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, _text_renderer, theme, mut env) = ctx.parts();
         self.paint(
             scene,
@@ -1026,21 +1030,26 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
     /// the first clipped at the drawn divider and the second sliding with
     /// it, clipped at the split's end; the divider drawn where it is.
     fn draw_gliding(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let (first, second, offset) = self.drawn_panes();
         let fill = vello::peniko::Fill::NonZero;
         let blend = vello::peniko::BlendMode::default();
         scene.push_layer(fill, blend, 1.0, transform, &first);
         self.left
-            .draw_child(scene, transform, text_renderer, theme,&env);
+            .draw_child(scene, transform, text_renderer, theme, &env);
         scene.pop_layer();
         scene.push_layer(fill, blend, 1.0, transform, &second);
         self.right.draw_child(
             scene,
             transform * Affine::translate(offset),
             text_renderer,
-            theme,&env,
+            theme,
+            &env,
         );
         scene.pop_layer();
         let rest = self.handle.hit_rect().center();
@@ -1095,7 +1104,7 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
 
 impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
     crate::provides!(
-        dyn crate::permissions::capability::PermissionGuarded,
+        dyn crate::widget::permission::PermissionGuarded,
         dyn crate::presence::capability::PublishesPresence
     );
 
@@ -1223,27 +1232,32 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         use crate::widget::draw_child;
         self.motion = theme.motion();
         if self.glide_laid && self.glide.is_some() {
-            self.draw_gliding(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+            self.draw_gliding(&mut crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ));
             return;
         }
-        draw_child(
-            &mut self.left,
-            scene,
-            transform,
-            text_renderer,
-            theme,&env,
-        );
+        draw_child(&mut self.left, scene, transform, text_renderer, theme, &env);
         draw_child(
             &mut self.right,
             scene,
             transform,
             text_renderer,
-            theme,&env,
+            theme,
+            &env,
         );
         self.handle.paint(
             scene,
@@ -1424,7 +1438,7 @@ impl<L: Widget + 'static, R: Widget + 'static> crate::presence::capability::Publ
 {
 }
 
-impl<L: Widget + 'static, R: Widget + 'static> crate::permissions::capability::PermissionGuarded
+impl<L: Widget + 'static, R: Widget + 'static> crate::widget::permission::PermissionGuarded
     for ResizableSplit<L, R>
 {
 }

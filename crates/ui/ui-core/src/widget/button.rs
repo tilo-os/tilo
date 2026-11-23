@@ -2,7 +2,6 @@ use crate::component::Person;
 use crate::i18n::widget_text;
 use crate::num::f32_of_f64;
 use crate::paint::PaintCtx;
-use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
@@ -14,6 +13,7 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::badge::{BadgeMetrics, CountBadge};
 use crate::widget::{AppModel, ModelPath, Tone};
+use ::collaboration::permissions::PermissionScope;
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -2127,7 +2127,7 @@ impl Button {
 impl Widget for Button {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::permissions::capability::PermissionGuarded,
+        dyn crate::widget::permission::PermissionGuarded,
         dyn crate::presence::capability::PublishesPresence,
     );
 
@@ -2669,7 +2669,7 @@ impl crate::presence::capability::PublishesPresence for Button {
     }
 }
 
-impl crate::permissions::capability::PermissionGuarded for Button {
+impl crate::widget::permission::PermissionGuarded for Button {
     fn permission_scope(&self) -> Option<PermissionScope> {
         self.permission_scope.clone()
     }

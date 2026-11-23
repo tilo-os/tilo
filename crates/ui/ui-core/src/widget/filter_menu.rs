@@ -1,6 +1,6 @@
 //! `FilterMenu` — a compact picker anchored at the caret: a [`SuggestionList`] of rows
 //! narrowed by a query, ranked the way every list search ranks
-//! ([`crate::search::ranked_rows`]). The [`SlashMenu`](crate::widget::SlashMenu) (block
+//! ([`crate::text_match::ranked_rows`]). The [`SlashMenu`](crate::widget::SlashMenu) (block
 //! kinds and commands) and the [`LinkPopover`](crate::widget::LinkPopover) (page links) are
 //! this menu over their own row values.
 
@@ -16,7 +16,7 @@ use winit::keyboard::{Key, NamedKey};
 use crate::icons::Icon;
 use crate::paint::PaintCtx;
 use crate::query_text::{QueryComposition, QueryEventChange, QueryInk, QueryView};
-use crate::search::{FieldWeight, ListIndex};
+use crate::text_match::{FieldWeight, ListIndex};
 use crate::text_render::TextRenderer;
 use crate::text_selection::Selection;
 use crate::theme::Theme;
@@ -317,7 +317,7 @@ impl<T: Clone> FilterMenu<T> {
 
     fn rebuild_visible(&mut self) {
         self.visible = if self.narrows_itself {
-            crate::search::ranked_rows(
+            crate::text_match::ranked_rows(
                 &self.index,
                 self.filter.trim(),
                 self.entries.iter().map(|entry| {

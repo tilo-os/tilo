@@ -101,7 +101,7 @@ impl NavRowKind {
 /// The sections as the filter `query` shows them: filterable sections
 /// narrowed, the others whole.
 pub(crate) fn filtered(sections: &[NavSection], query: &str) -> Vec<NavSection> {
-    let query = crate::search::normalize_search_text(query.trim());
+    let query = crate::text_match::normalize_search_text(query.trim());
     if query.is_empty() {
         return sections.to_vec();
     }
@@ -127,7 +127,7 @@ pub(super) fn narrow(items: &[NavItem], query: &str) -> Vec<NavItem> {
         .iter()
         .filter_map(|item| {
             let children = narrow(&item.children, query);
-            let by_label = crate::search::normalize_search_text(&item.label).contains(query);
+            let by_label = crate::text_match::normalize_search_text(&item.label).contains(query);
             let by_term = if by_label {
                 None
             } else {
@@ -386,7 +386,7 @@ impl NavState {
 pub(crate) fn build(sections: &[NavSection], query: &str, state: &NavState) -> NavModel {
     let shown = filtered(sections, query);
     let mut model = NavModel::default();
-    let filtering = !crate::search::normalize_search_text(query.trim()).is_empty();
+    let filtering = !crate::text_match::normalize_search_text(query.trim()).is_empty();
     for section in &shown {
         let badges: Rc<Vec<String>> = Rc::new(
             section

@@ -1569,7 +1569,7 @@ impl Widget for EmptyState {
 
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn crate::widget::ResourceOperations
     );
 
@@ -2016,11 +2016,11 @@ impl crate::widget::ResourceOperations for EmptyState {
     }
 }
 
-impl crate::resources::PublishesResources for EmptyState {
+impl crate::widget::resources::PublishesResources for EmptyState {
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         self.engine
             .as_ref()
-            .map(|engine| crate::resources::PublishesResources::resources(engine, doc))
+            .map(|engine| crate::widget::resources::PublishesResources::resources(engine, doc))
             .unwrap_or_default()
     }
 }

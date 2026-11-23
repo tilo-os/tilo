@@ -40,9 +40,16 @@ impl crate::widget::Decorator for Field {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        crate::widget::Widget::draw(&mut self.input, &mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        crate::widget::Widget::draw(
+            &mut self.input,
+            &mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()),
+        );
         self.drawn.set(self.input.caret_rect(theme, 0));
     }
 }
@@ -110,7 +117,13 @@ fn frame(
     });
     let _frame = PanReplay::begin(kind, number);
     let mut scene = Scene::new();
-    row.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, text, &Theme::dark(), presence.draw_env()));
+    row.draw(&mut crate::draw::DrawCtx::new(
+        &mut scene,
+        Affine::IDENTITY,
+        text,
+        &Theme::dark(),
+        presence.draw_env(),
+    ));
     row.mark_drawn();
 }
 
@@ -131,7 +144,7 @@ fn close(a: Rect, b: Rect) -> bool {
 fn a_window_replayed_through_a_pan_tells_a_reader_where_its_caret_moved_to() {
     let drawn = Rc::new(Cell::new(Rect::ZERO));
     let mut row = strip(2, "second", Rc::clone(&drawn));
-    let peer = crate::permissions::MemberId::person("claude");
+    let peer = ::collaboration::permissions::MemberId::person("claude");
     let mut presence = crate::presence::PresenceCtx::empty();
     presence.set_display_name(peer.clone(), "Claude Code");
     presence.set_caret(&Field::key("second"), peer, 0);
@@ -193,7 +206,7 @@ fn a_peers_caret_in_a_panned_window_is_a_node_where_the_window_drew_it() {
         window(200, "second", Rc::clone(&second)),
     ]);
     let mut frame = FrameHarness::for_root(crate::State::new(), row, (390, 844), Theme::default());
-    let peer = crate::permissions::MemberId::person("claude");
+    let peer = ::collaboration::permissions::MemberId::person("claude");
     frame
         .presence_mut()
         .set_display_name(peer.clone(), "Claude Code");

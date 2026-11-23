@@ -219,7 +219,7 @@ impl NavSearchTerm {
 
 /// Whether `query` occurs in `text` (both folded) where a word starts.
 fn matches_word_start(text: &str, query: &str) -> bool {
-    let text = crate::search::normalize_search_text(text);
+    let text = crate::text_match::normalize_search_text(text);
     let mut before: Option<char> = None;
     text.char_indices().any(|(at, here)| {
         let starts_word = before.is_none_or(|before| !before.is_alphanumeric());
@@ -2210,7 +2210,11 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         let width = crate::widget::Widget::get_rect(&*self.list).width();
         self.sync_paint();
@@ -2223,7 +2227,7 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
         if rail {
             self.list.update_model(|_| ());
         }
-        DrawChild::draw_child(&mut *self.list, scene, transform, text, theme,&env);
+        DrawChild::draw_child(&mut *self.list, scene, transform, text, theme, &env);
         if let Some(feed) = &self.feed {
             let model = self.list.model();
             let rows = (0..model.len())

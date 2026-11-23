@@ -3,7 +3,7 @@
 //! Apps never draw a search field of their own. A control that starts a
 //! search — the toolbar's magnifier, a "Search everywhere" escalation, `/` or
 //! Ctrl+K — asks the platform to open its one search surface, over this app
-//! ([`Scope::InApp`](crate::search::Scope::InApp)) or over one of its
+//! (`Scope::InApp`) or over one of its
 //! resources:
 //!
 //! ```

@@ -5,12 +5,12 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 
-use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use ::collaboration::permissions::PermissionScope;
 
 #[path = "progress_bar_component.rs"]
 mod component;
@@ -377,7 +377,7 @@ impl Widget for ProgressBar {
     crate::described!();
 
     crate::provides!(
-        dyn crate::permissions::capability::PermissionGuarded,
+        dyn crate::widget::permission::PermissionGuarded,
         dyn crate::presence::capability::PublishesPresence
     );
 
@@ -434,7 +434,11 @@ impl Widget for ProgressBar {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.reduce_motion = theme.reduce_motion || crate::time::wall_frozen();
         let segment_width = self.rect.width() * INDETERMINATE_SEGMENT_FRAC;
@@ -480,7 +484,10 @@ impl Widget for ProgressBar {
             };
             self.last_segment = current_segment;
         }
-        crate::widget::draw_over(self, &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        crate::widget::draw_over(
+            self,
+            &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+        );
     }
 
     fn name(&self) -> &'static str {
@@ -553,7 +560,7 @@ impl crate::presence::capability::PublishesPresence for ProgressBar {
     }
 }
 
-impl crate::permissions::capability::PermissionGuarded for ProgressBar {
+impl crate::widget::permission::PermissionGuarded for ProgressBar {
     fn permission_scope(&self) -> Option<PermissionScope> {
         self.permission_scope.clone()
     }
@@ -595,7 +602,13 @@ mod tests {
         let mut tr = TextRenderer::new();
         let presence = PresenceCtx::default();
         let mut scene = Scene::new();
-        bar.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
+        bar.draw(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            presence.draw_env(),
+        ));
         scene
     }
 

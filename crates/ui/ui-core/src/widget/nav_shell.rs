@@ -49,6 +49,7 @@ mod swap;
 mod window_header;
 mod window_toolbar;
 use crate::widget::OverflowButton;
+pub use crate::widget::content_kind::ContentKind;
 #[cfg(test)]
 use crate::widget::toast::ToastKind;
 use band::plan;
@@ -71,67 +72,6 @@ pub enum NavMode {
     /// Always docked: a compact icon rail (`NavList::rail`) that fits beside
     /// the content at every width.
     Docked,
-}
-
-/// What the shell's content is, so it knows the narrowest the content still works at; below that
-/// the window shows one column at a time. Apps say what their content is, never how wide it is.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ContentKind {
-    /// A list or table of items: files, messages, tracks, events
-    /// (`metrics.list_min_width`).
-    List,
-    /// A reading column: a message, an article, a forecast
-    /// (`metrics.reading_min_width`).
-    Reading,
-    /// A page of settings, a form or a page of facts
-    /// (`metrics.page_min_width`). The default.
-    #[default]
-    Page,
-    /// A grid of media tiles: albums, photos, videos
-    /// (`metrics.grid_min_width`).
-    Grid,
-    /// A document or editor the window is for, whose sidebar (an outline, the list of documents) is
-    /// visited now and then: docking needs a reading column, so narrower it floats as a drawer
-    /// rather than taking turns.
-    Document,
-    /// A surface drawn on, zoomed and panned: as narrow as a grid of tiles works, so its inspector
-    /// docks sooner and the surface stays in view.
-    Canvas,
-}
-
-impl ContentKind {
-    /// The narrowest this kind of content still works at, from `metrics`
-    /// (`theme.tokens.metrics`, or [`crate::tokens::Metrics::BASE`] at 1×).
-    #[must_use]
-    pub fn min_width(self, metrics: &crate::tokens::Metrics) -> f32 {
-        match self {
-            Self::List => metrics.list_min_width,
-            Self::Reading | Self::Document => metrics.reading_min_width,
-            Self::Page => metrics.page_min_width,
-            Self::Grid | Self::Canvas => metrics.grid_min_width,
-        }
-    }
-
-    /// The width class content of this kind is in at the least beside a sidebar: a list, a page, a
-    /// reading column or a document is a column of text, so it is no phone's screen there; a grid
-    /// of tiles or a surface drawn on works narrower than a column, which is what its own minimum
-    /// states.
-    #[must_use]
-    pub fn beside_sidebar_class(self) -> crate::widget::arrange::WidthClass {
-        match self {
-            Self::List | Self::Reading | Self::Page | Self::Document => {
-                crate::widget::arrange::WidthClass::Medium
-            }
-            Self::Grid | Self::Canvas => crate::widget::arrange::WidthClass::Compact,
-        }
-    }
-
-    /// Whether the content is the window's point and its sidebar an
-    /// occasional visit: too narrow to dock, the sidebar floats over it.
-    #[must_use]
-    pub fn is_content_primary(self) -> bool {
-        matches!(self, Self::Document | Self::Canvas)
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -2805,8 +2745,8 @@ impl Widget for NavShell {
             request.provide::<dyn crate::widget::controls::ActionControls>(self);
         } else if request.wants::<dyn WindowHeader>() {
             request.provide::<dyn WindowHeader>(self);
-        } else if request.wants::<dyn crate::resources::PublishesResources>() {
-            request.provide::<dyn crate::resources::PublishesResources>(self);
+        } else if request.wants::<dyn crate::widget::resources::PublishesResources>() {
+            request.provide::<dyn crate::widget::resources::PublishesResources>(self);
         } else if request.wants::<dyn crate::widget::ResourceOperations>() {
             request.provide::<dyn crate::widget::ResourceOperations>(self);
         } else if self.sidebar_search
@@ -2824,8 +2764,8 @@ impl Widget for NavShell {
             request.provide::<dyn crate::widget::controls::ActionControls>(self);
         } else if request.wants::<dyn WindowHeader>() {
             request.provide::<dyn WindowHeader>(self);
-        } else if request.wants::<dyn crate::resources::PublishesResources>() {
-            request.provide::<dyn crate::resources::PublishesResources>(self);
+        } else if request.wants::<dyn crate::widget::resources::PublishesResources>() {
+            request.provide::<dyn crate::widget::resources::PublishesResources>(self);
         } else if request.wants::<dyn crate::widget::ResourceOperations>() {
             request.provide::<dyn crate::widget::ResourceOperations>(self);
         } else if self.sidebar_search
@@ -3016,7 +2956,11 @@ impl Widget for NavShell {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.paint(&mut Frame {
             scene,
@@ -3029,10 +2973,20 @@ impl Widget for NavShell {
     }
 
     fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         for child in self.children_mut() {
-            child.draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+            child.draw_overlay(&mut crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ));
         }
     }
 
@@ -3629,7 +3583,7 @@ fn same_words(a: &str, b: &str) -> bool {
 /// Controls in a column the shell is not showing (a hidden sidebar, a closed drawer, a
 /// pushed-away screen) still belong to the window: ownership, invocations and availability reach
 /// every part the shell owns.
-impl crate::resources::PublishesResources for NavShell {}
+impl crate::widget::resources::PublishesResources for NavShell {}
 
 impl crate::widget::ResourceOperations for NavShell {}
 

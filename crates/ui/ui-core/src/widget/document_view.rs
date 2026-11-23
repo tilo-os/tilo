@@ -272,7 +272,7 @@ where
         dyn crate::widget::FullscreenProvider,
         dyn crate::undo::CommittedActions,
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn crate::search::capability::SearchSource,
         dyn crate::resource::capability::ResourceScoped,
         dyn crate::view::capability::ViewState
@@ -426,7 +426,7 @@ where
     }
 }
 
-impl<K> crate::resources::PublishesResources for ModelView<K>
+impl<K> crate::widget::resources::PublishesResources for ModelView<K>
 where
     K: PartialEq + 'static,
 {
@@ -436,7 +436,7 @@ where
         address: &tilo_actions::ActionAddress,
         changes: &[automerge::Patch],
     ) -> Option<serde_json::Value> {
-        crate::resources::document_action_result(self.child.as_ref(), doc, address, changes)
+        crate::widget::resources::document_action_result(self.child.as_ref(), doc, address, changes)
     }
 }
 

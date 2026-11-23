@@ -26,9 +26,9 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
-use crate::presence::{PathSegment, PresenceKey};
 #[cfg(test)]
 use crate::presence::PresenceCtx;
+use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::DrawChild;
@@ -337,7 +337,7 @@ impl CodeEditor {
     }
 
     /// Stamps inserted runs with this author id (peer-attribution highlight).
-    pub fn set_local_author(&mut self, author: Option<crate::permissions::MemberId>) {
+    pub fn set_local_author(&mut self, author: Option<::collaboration::permissions::MemberId>) {
         self.inner.set_local_author(author);
     }
 
@@ -452,10 +452,14 @@ impl CodeEditor {
     /// with the presence it draws for: `presence` names the person, so their own writes are not
     /// tinted as someone else's.
     pub fn draw_embedded(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.inner
-            .draw_child(scene, transform, text_renderer, theme,&env);
+            .draw_child(scene, transform, text_renderer, theme, &env);
         self.draw_diagnostics(scene, transform, theme);
     }
 
@@ -597,19 +601,38 @@ impl Widget for CodeEditor {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.inner
-            .draw_child(scene, transform, text_renderer, theme,&env);
+            .draw_child(scene, transform, text_renderer, theme, &env);
         self.draw_diagnostics(scene, transform, theme);
     }
 
     fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
-        self.inner
-            .draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
-        self.draw_diagnostic_hover(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        self.inner.draw_overlay(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            env.clone(),
+        ));
+        self.draw_diagnostic_hover(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            env.clone(),
+        ));
     }
 
     /// The field's: the editor is its field and the diagnostics it marks.
@@ -783,7 +806,11 @@ impl CodeEditor {
     /// The message of the diagnostic under the pointer, on a floating surface just below its line, in
     /// the window's top layer.
     fn draw_diagnostic_hover(&self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let Some(point) = self.hover else { return };
         let Some(d) = self.diagnostic_at(point) else {
@@ -1428,7 +1455,7 @@ mod tests {
         // someone is writing now, so a run the document records as theirs is
         // drawn plain.
         {
-            use crate::permissions::MemberId;
+            use ::collaboration::permissions::MemberId;
             use automerge::ObjType;
             use automerge::marks::{ExpandMark, Mark};
             use automerge::transaction::Transactable as _;
@@ -1498,7 +1525,16 @@ mod tests {
         let presence = PresenceCtx::default();
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
-        Widget::draw(ed, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, theme, presence.draw_env()));
+        Widget::draw(
+            ed,
+            &mut crate::draw::DrawCtx::new(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                theme,
+                presence.draw_env(),
+            ),
+        );
     }
 
     fn lay_out_and_draw(
@@ -1530,7 +1566,16 @@ mod tests {
         Widget::apply_layout(ed, &taffy, node, Point::ZERO);
         let presence = PresenceCtx::default();
         let mut scene = Scene::new();
-        Widget::draw(ed, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, renderer, theme, presence.draw_env()));
+        Widget::draw(
+            ed,
+            &mut crate::draw::DrawCtx::new(
+                &mut scene,
+                Affine::IDENTITY,
+                renderer,
+                theme,
+                presence.draw_env(),
+            ),
+        );
         height
     }
 

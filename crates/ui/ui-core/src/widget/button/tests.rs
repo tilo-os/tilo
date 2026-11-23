@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// `a_guests_send_is_asked_in_the_window_saying_who_decides`.)
 #[test]
 fn own_device_effects_run_for_guests_and_refusals_are_said() {
-    use crate::permissions::{PermissionContext, Role};
+    use ::collaboration::permissions::{PermissionContext, Role};
     let click = |button: Button, role: Role| {
         let mut harness = crate::headless::FrameHarness::new_with_theme(
             crate::State::new(),
@@ -21,7 +21,7 @@ fn own_device_effects_run_for_guests_and_refusals_are_said() {
             Theme::dark(),
         );
         harness.set_permission_ctx(PermissionContext::member(
-            &crate::permissions::MemberId::person("ada"),
+            &::collaboration::permissions::MemberId::person("ada"),
             role,
         ));
         harness.relayout();
@@ -1324,7 +1324,7 @@ tilo_test_env::scenario! {
                 .on_click(|| {})
                 .tooltip("Search");
             for (button, name) in [(named, "New Private Window"), (tooltip_after, "Search")] {
-                let resources = crate::resources::resources(&button, &doc);
+                let resources = crate::widget::resources::resources(&button, &doc);
                 assert_eq!(resources.len(), 1);
                 assert_eq!(resources[0].label, name);
                 assert!(

@@ -21,7 +21,13 @@ fn opened(title: &str) -> OpenedBy {
 }
 
 fn draw(bar: &mut TabBar, tr: &mut TextRenderer, theme: &Theme) {
-    bar.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, tr, theme, PresenceCtx::default().draw_env()));
+    bar.draw(&mut crate::draw::DrawCtx::new(
+        &mut Scene::new(),
+        Affine::IDENTITY,
+        tr,
+        theme,
+        PresenceCtx::default().draw_env(),
+    ));
 }
 
 tilo_test_env::scenario! {
@@ -218,7 +224,7 @@ tilo_test_env::scenario! {
     // One agent is one colour: its mark beside a window is drawn as its face is,
     // from the agent, never from the session that happened to open the window.
     {
-        let face = crate::presence::member_color(&crate::permissions::MemberId::agent("scribe"));
+        let face = crate::presence::member_color(&::collaboration::permissions::MemberId::agent("scribe"));
         let face = vello::peniko::Color::from_rgb8(face.0, face.1, face.2);
         assert_eq!(super::agent_colour(&opened("")), face);
     }

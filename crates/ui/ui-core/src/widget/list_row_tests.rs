@@ -796,7 +796,7 @@ tilo_test_env::scenario! {
         let bindings = crate::widget::controls::ActionControls::control_action_bindings(&row);
         assert_eq!(bindings.len(), 1);
         let doc = automerge::AutoCommit::new();
-        let resources = crate::resources::PublishesResources::resources(&row, &doc);
+        let resources = crate::widget::resources::PublishesResources::resources(&row, &doc);
         assert_eq!(resources.len(), 1);
         assert_eq!(resources[0].label, "Ada Lovelace");
         assert!(

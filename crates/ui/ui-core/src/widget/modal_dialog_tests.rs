@@ -124,8 +124,20 @@ fn present<C: Widget + 'static>(d: &mut ModalDialog<C>, window: Rect, theme: &Th
     let mut scene = Scene::new();
     let mut tr = TextRenderer::new();
     tr.set_text_scale(theme.text_scale);
-    d.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, theme, presence.draw_env()));
-    d.draw_overlay(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, theme, presence.draw_env()));
+    d.draw(&mut crate::draw::DrawCtx::new(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        theme,
+        presence.draw_env(),
+    ));
+    d.draw_overlay(&mut crate::draw::DrawCtx::new(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        theme,
+        presence.draw_env(),
+    ));
     presence.pop_viewport(previous);
     scene
 }
@@ -1392,11 +1404,11 @@ tilo_test_env::scenario! {
             .with_test_id("firewall-delete");
         let doc = AutoCommit::new();
         assert!(
-            crate::resources::resources(&d, &doc).is_empty(),
+            crate::widget::resources::resources(&d, &doc).is_empty(),
             "a closed dialog offers no way to close it"
         );
         d.set_open(true);
-        let resources = crate::resources::resources(&d, &doc);
+        let resources = crate::widget::resources::resources(&d, &doc);
         let [close] = resources.as_slice() else {
             panic!("one close control, not {}", resources.len());
         };

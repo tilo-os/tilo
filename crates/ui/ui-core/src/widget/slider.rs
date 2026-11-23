@@ -1,7 +1,7 @@
-use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use ::collaboration::permissions::PermissionScope;
 #[path = "slider_component.rs"]
 mod component;
 use crate::widget::TaffyTreeExt;
@@ -989,7 +989,7 @@ impl Widget for Slider {
 
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::permissions::capability::PermissionGuarded,
+        dyn crate::widget::permission::PermissionGuarded,
         dyn crate::presence::capability::PublishesPresence
     );
 
@@ -1093,7 +1093,11 @@ impl Widget for Slider {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if self.shows_value {
             let style = theme.text(crate::tokens::TextRole::Body).numeric();
@@ -1157,11 +1161,18 @@ impl Widget for Slider {
                 .focused(self.is_focused)
                 .disabled(!self.effectively_enabled()),
         );
-        crate::widget::draw_over(self, &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        crate::widget::draw_over(
+            self,
+            &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+        );
     }
 
     fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.readout_drawn = self.reads_out && self.is_held() && self.effectively_enabled();
         if self.readout_drawn {
@@ -1363,7 +1374,7 @@ impl crate::presence::capability::PublishesPresence for Slider {
     }
 }
 
-impl crate::permissions::capability::PermissionGuarded for Slider {
+impl crate::widget::permission::PermissionGuarded for Slider {
     fn permission_scope(&self) -> Option<PermissionScope> {
         self.permission_scope.clone()
     }
@@ -2170,7 +2181,13 @@ mod tests {
         }
     }
     fn present(s: &mut Slider, theme: &Theme) {
-        s.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), theme, crate::presence::PresenceCtx::empty().draw_env()));
+        s.draw(&mut crate::draw::DrawCtx::new(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            theme,
+            crate::presence::PresenceCtx::empty().draw_env(),
+        ));
         s.mark_drawn();
     }
 

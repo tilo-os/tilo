@@ -15,12 +15,12 @@ use winit::keyboard::{Key, NamedKey};
 use crate::icons::Icon;
 use crate::platform::PlatformConventions;
 use crate::presence::PresenceCtx;
-use crate::search::{ScopeDecl, SearchOpener, SearchRequest};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::DrawChild;
 use crate::widget::capability::capability_mut;
+use crate::widget::search_request::{ScopeDecl, SearchOpener, SearchRequest};
 use crate::widget::text::centered_text_top;
 use crate::widget::{ControlSize, TaffyTreeExt};
 use crate::widget::{TextInput, TextInputKind, Widget};
@@ -58,7 +58,7 @@ impl FilterCount {
 /// A view a [`SearchField`] can narrow: a list, a table, a grid of cards.
 pub trait Filterable {
     /// Show only what matches `query`; an empty query shows everything.
-    /// Match the way search does ([`crate::search::ListIndex`]) so a filter
+    /// Match the way search does ([`crate::text_match::ListIndex`]) so a filter
     /// and the platform search agree on what "matches" means.
     fn set_filter(&mut self, query: &str);
 
@@ -983,7 +983,11 @@ impl Widget for SearchField {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if self.rect.width() <= 0.0 {
             return;
@@ -1041,7 +1045,7 @@ impl Widget for SearchField {
         self.paint_scope_token(scene, transform, text_renderer, theme);
         self.paint_prompt(scene, transform, text_renderer, theme);
         self.input
-            .draw_child(scene, transform, text_renderer, theme,&env);
+            .draw_child(scene, transform, text_renderer, theme, &env);
 
         self.paint_trailing_slot(scene, transform, text_renderer, theme);
         if self.clear_visible() && !self.clear_rect.is_zero_area() {
@@ -1337,12 +1341,16 @@ impl Widget for Filtered {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.field
-            .draw_child(scene, transform, text_renderer, theme,&env);
+            .draw_child(scene, transform, text_renderer, theme, &env);
         self.content
-            .draw_child(scene, transform, text_renderer, theme,&env);
+            .draw_child(scene, transform, text_renderer, theme, &env);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -1485,7 +1493,13 @@ mod tests {
         let mut tr = TextRenderer::new();
         let presence = PresenceCtx::default();
         let mut scene = Scene::new();
-        w.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
+        w.draw(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            presence.draw_env(),
+        ));
         scene
     }
 

@@ -3,13 +3,13 @@
 //! permission bindings, the theme-resolved spacing, and the subtree scene cache that
 //! replays a stable subtree as one append.
 
-use crate::permissions::PermissionScope;
 use crate::presence::PathSegment;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::Rhythm;
 use crate::widget::DrawChild;
 use crate::widget::Widget;
+use ::collaboration::permissions::PermissionScope;
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -416,12 +416,22 @@ impl Flow {
 
     /// Draw the children through the subtree cache.
     pub fn draw_cached(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) -> bool {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if env.should_cull(self.paint_rect) {
             return false;
         }
-        if self.draw_near_view(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone())) {
+        if self.draw_near_view(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            env.clone(),
+        )) {
             return true;
         }
 
@@ -486,7 +496,8 @@ impl Flow {
                     scene,
                     transform,
                     text_renderer,
-                    theme,&env,
+                    theme,
+                    &env,
                 );
             }
             crate::outside_paint::end(enclosing);
@@ -537,7 +548,7 @@ impl Flow {
                         Some(index),
                         child_transform,
                     );
-                    child.draw_child(local, child_transform, text_renderer, theme,&env);
+                    child.draw_child(local, child_transform, text_renderer, theme, &env);
                     crate::scene_parts::end_widget(local, begun);
                 }
                 ghosts.draw(local, Affine::IDENTITY, shifts.as_deref());
@@ -619,7 +630,11 @@ impl Flow {
     /// drew so; a column shown whole, or with a band moving, draws through
     /// the cache.
     fn draw_near_view(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) -> bool {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let Some(view) = env.viewport() else {
             return false;
@@ -660,7 +675,8 @@ impl Flow {
                 scene,
                 transform,
                 text_renderer,
-                theme,&env,
+                theme,
+                &env,
             );
             self.reach = self.reach.max(paint_reach(child.as_ref()));
         }
@@ -748,7 +764,7 @@ macro_rules! flow_builders {
         #[must_use]
         pub fn with_permission_scope(
             mut self,
-            scope: $crate::permissions::PermissionScope,
+            scope: ::collaboration::permissions::PermissionScope,
         ) -> Self {
             self.flow.permission_scope = Some(scope);
             self
@@ -938,8 +954,8 @@ macro_rules! flow_capabilities {
             }
         }
 
-        impl $crate::permissions::capability::PermissionGuarded for $ty {
-            fn permission_scope(&self) -> Option<$crate::permissions::PermissionScope> {
+        impl $crate::widget::permission::PermissionGuarded for $ty {
+            fn permission_scope(&self) -> Option<::collaboration::permissions::PermissionScope> {
                 self.flow.permission_scope.clone()
             }
         }

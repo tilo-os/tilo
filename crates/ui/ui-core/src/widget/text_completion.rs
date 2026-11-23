@@ -661,7 +661,7 @@ mod tests {
 
     fn ada() -> Vec<MentionCandidate> {
         vec![MentionCandidate::new(
-            crate::permissions::MemberId::person("u_ada"),
+            ::collaboration::permissions::MemberId::person("u_ada"),
             "Ada Lovelace",
             crate::tokens::PresenceHue::of_identity("u_ada"),
         )]

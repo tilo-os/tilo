@@ -355,6 +355,7 @@ pub mod sysdirs;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 pub mod text_edit;
+pub mod text_match;
 pub mod text_metrics;
 pub mod text_position;
 pub mod text_render;
@@ -511,12 +512,12 @@ pub mod autocorrect {
     pub use spellcheck::contraction;
 }
 pub use action_palette::{ArgumentKind, ArgumentSpec, CommandEntry, CommandOutcome, RowFace};
+pub use draw::{DrawCtx, DrawEnv, WidgetOverlay, draw_widget};
 pub use widget::ModelView;
 pub use widget::{AppCommand, AppKind, AppWidget, IconDescriptor};
 pub use widget::{Card, CardGrid, Section, card_column_width, card_columns};
 pub use widget::{ContentKind, NavItem, NavList, NavMode, NavPane, NavSection, NavShell};
 pub use widget::{EditOutcome, EditableLabel};
-pub use draw::{DrawCtx, DrawEnv, WidgetOverlay, draw_widget};
 pub use widget::{Element, Widget};
 pub use widget::{
     NativeView, NativeViewAccessibility, NativeViewBackend, NativeViewGeometry, NativeViewHost,

@@ -18,7 +18,13 @@ fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
         let theme = Theme::default();
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
-        host.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, PresenceCtx::empty().draw_env()));
+        host.draw(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            PresenceCtx::empty().draw_env(),
+        ));
 
         let mut r = OffscreenRenderer::new(w, h);
         let rgba = r.render(&scene, vello::peniko::Color::from_rgb8(0, 0, 0xFF));
@@ -102,7 +108,13 @@ fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
             host.rect = rect;
             let mut tr = TextRenderer::new();
             let mut scene = Scene::new();
-            host.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, PresenceCtx::empty().draw_env()));
+            host.draw(&mut crate::draw::DrawCtx::new(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                PresenceCtx::empty().draw_env(),
+            ));
             let mut renderer = OffscreenRenderer::new(w, h);
             let rgba = renderer.render(&scene, vello::peniko::Color::from_rgb8(0, 0, 0xFF));
 
@@ -165,7 +177,13 @@ fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
                 host.set_focused(focused);
                 let mut tr = TextRenderer::new();
                 let mut scene = Scene::new();
-                host.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, PresenceCtx::empty().draw_env()));
+                host.draw(&mut crate::draw::DrawCtx::new(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut tr,
+                    &theme,
+                    PresenceCtx::empty().draw_env(),
+                ));
                 let mut renderer = OffscreenRenderer::new(width, height);
                 renderer.render(&scene, ground)
             };
@@ -283,7 +301,13 @@ fn a_full_bleed_tile_draws_its_content_last_and_unclipped() {
         host.rect = rect;
         host.set_full_bleed(full_bleed);
         let mut scene = Scene::new();
-        host.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::default(), PresenceCtx::empty().draw_env()));
+        host.draw(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::default(),
+            PresenceCtx::empty().draw_env(),
+        ));
         scene
     };
     let framed = draw(false);
@@ -662,7 +686,11 @@ impl Widget for FloodFill {
         taffy.widget_leaf(Style::default(), node_map, self)
     }
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, _tr, _th, mut env) = ctx.parts();
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -707,7 +735,11 @@ impl Widget for Flood {
         taffy.widget_leaf(Style::default(), node_map, self)
     }
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, _tr, _th, mut env) = ctx.parts();
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -756,7 +788,11 @@ impl Widget for Starting {
         taffy.leaf_node(Style::default())
     }
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, _tr, _th, mut env) = ctx.parts();
         self.drawn.set(true);
         scene.fill(
@@ -805,7 +841,11 @@ impl Widget for TransformProbe {
         taffy.leaf_node(Style::default())
     }
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (_scene, transform, _tr, _th, mut env) = ctx.parts();
         self.drawn_with.set(Some(transform));
     }
@@ -876,7 +916,13 @@ pub(super) fn starting_host(presented: bool) -> (TileHost, std::rc::Rc<std::cell
 pub(super) fn paint(host: &mut TileHost, theme: &Theme) -> Scene {
     let mut tr = TextRenderer::new();
     let mut scene = Scene::new();
-    host.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, theme, PresenceCtx::empty().draw_env()));
+    host.draw(&mut crate::draw::DrawCtx::new(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        theme,
+        PresenceCtx::empty().draw_env(),
+    ));
     scene
 }
 
@@ -1249,7 +1295,13 @@ fn focus_reaches_a_pixel_further_out_and_leaves_the_card_where_it_was() {
             host.rect = rect;
             host.set_focused(focused);
             let mut scene = Scene::new();
-            host.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::scale(scale), &mut TextRenderer::new(), &theme, PresenceCtx::empty().draw_env()));
+            host.draw(&mut crate::draw::DrawCtx::new(
+                &mut scene,
+                Affine::scale(scale),
+                &mut TextRenderer::new(),
+                &theme,
+                PresenceCtx::empty().draw_env(),
+            ));
             renderer.render(&scene, ground)
         };
         let (lit, plain) = (shot(true), shot(false));
@@ -1298,7 +1350,7 @@ fn harness(root: Box<dyn Widget>) -> crate::headless::FrameHarness {
         (900, 600),
         Theme::dark(),
         crate::font_catalog::fixture_renderer(),
-        crate::permissions::MemberId::person("reader"),
+        ::collaboration::permissions::MemberId::person("reader"),
     )
 }
 
@@ -1452,7 +1504,11 @@ impl Widget for Restless {
         taffy.widget_leaf(Style::default(), node_map, self)
     }
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (_scene, _transform, _tr, _th, mut env) = ctx.parts();
     }
     fn name(&self) -> &'static str {

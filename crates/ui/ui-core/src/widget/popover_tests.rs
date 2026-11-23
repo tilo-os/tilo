@@ -47,8 +47,20 @@ fn present<C: Widget + 'static>(p: &mut Popover<C>, theme: &Theme) -> Scene {
     let previous = presence.push_viewport(WINDOW);
     let mut scene = Scene::new();
     let mut tr = TextRenderer::new();
-    p.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, theme, presence.draw_env()));
-    p.draw_overlay(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, theme, presence.draw_env()));
+    p.draw(&mut crate::draw::DrawCtx::new(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        theme,
+        presence.draw_env(),
+    ));
+    p.draw_overlay(&mut crate::draw::DrawCtx::new(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        theme,
+        presence.draw_env(),
+    ));
     presence.pop_viewport(previous);
     scene
 }
@@ -168,7 +180,7 @@ tilo_test_env::scenario! {
         assert!(!p.is_open());
         let doc = automerge::AutoCommit::new();
         assert!(
-            crate::resources::resources(&p, &doc).is_empty(),
+            crate::widget::resources::resources(&p, &doc).is_empty(),
             "a closed popover offers no way to close it"
         );
         assert!(dismissed.get());

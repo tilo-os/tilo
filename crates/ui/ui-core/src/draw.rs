@@ -3,10 +3,10 @@
 //! workspace: the host paints members' carets, selections and other marks over
 //! the widgets through [`WidgetOverlay`].
 
-use crate::permissions::{MemberId, PermissionContext, PermissionScope};
 use crate::presence::PresenceKey;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use ::collaboration::permissions::{MemberId, PermissionContext, PermissionScope};
 use std::collections::HashMap;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
@@ -133,7 +133,15 @@ impl<'a> DrawCtx<'a> {
     /// names it uses. The environment comes back by value so a container can
     /// scope a tighter viewport for its children.
     #[allow(unused_variables, reason = "a body binds only the parts it draws with")]
-    pub fn parts(&mut self) -> (&mut Scene, Affine, &mut TextRenderer, &'a Theme, DrawEnv<'a>) {
+    pub fn parts(
+        &mut self,
+    ) -> (
+        &mut Scene,
+        Affine,
+        &mut TextRenderer,
+        &'a Theme,
+        DrawEnv<'a>,
+    ) {
         (
             &mut *self.scene,
             self.transform,

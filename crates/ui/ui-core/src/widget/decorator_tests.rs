@@ -87,7 +87,7 @@ tilo_test_env::scenario! {
                 .doc(&mut doc)
                 .layout(&_taffy, node)
                 .send(widget, &WindowEvent::Focused(true));
-            assert_eq!(crate::resources::resources(widget, &doc).len(), 1);
+            assert_eq!(crate::widget::resources::resources(widget, &doc).len(), 1);
             assert!(crate::widget::controls::take_control_invocation(widget).is_none());
             assert_eq!(
                 start(widget, &mut doc),
@@ -278,7 +278,13 @@ fn lay_and_draw(
     widget.sync(doc, &automerge::ROOT);
     let node = widget.build_layout(&mut taffy, theme, &mut nodes);
     widget.apply_layout(&taffy, node, Point::ORIGIN);
-    widget.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), theme, PresenceCtx::empty().draw_env()));
+    widget.draw(&mut crate::draw::DrawCtx::new(
+        &mut Scene::new(),
+        Affine::IDENTITY,
+        &mut TextRenderer::new(),
+        theme,
+        PresenceCtx::empty().draw_env(),
+    ));
     (taffy, node, nodes)
 }
 
@@ -315,7 +321,7 @@ impl Widget for Recorder {
 
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn crate::widget::ResourceOperations
     );
 
@@ -338,7 +344,11 @@ impl Widget for Recorder {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (_scene, _transform, _text_renderer, _theme, mut env) = ctx.parts();
         self.note("draw");
     }
@@ -376,7 +386,7 @@ impl crate::widget::ResourceOperations for Recorder {
     }
 }
 
-impl crate::resources::PublishesResources for Recorder {
+impl crate::widget::resources::PublishesResources for Recorder {
     fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         self.note("resources");
         vec![tilo_actions::ResourceSpec::new(

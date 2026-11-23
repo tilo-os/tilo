@@ -1,6 +1,5 @@
 use crate::i18n::ArgValue;
 use crate::i18n::widget_text;
-use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::{
     FIGURE_TAGS, FontChoice, HangingPunctuation, Hyphenation, NumericStyle, OpenTypeTag,
@@ -12,6 +11,7 @@ use crate::tokens::{TextRole, Typography};
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::{AppModel, ModelPath};
+use ::collaboration::permissions::PermissionScope;
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -838,9 +838,7 @@ impl Text {
     }
 }
 
-impl Text {
-
-}
+impl Text {}
 
 impl Widget for Text {
     fn as_any(&self) -> Option<&dyn std::any::Any> {
@@ -852,7 +850,7 @@ impl Widget for Text {
     }
 
     crate::provides!(
-        dyn crate::permissions::capability::PermissionGuarded,
+        dyn crate::widget::permission::PermissionGuarded,
         dyn crate::presence::capability::PublishesPresence
     );
 
@@ -1010,7 +1008,11 @@ impl Widget for Text {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         // What a draw observes repaints the text; its size is the layout's to answer, where it
         // measures (a draw that sees another renderer than the one it was measured with must not
@@ -1121,7 +1123,10 @@ impl Widget for Text {
         if !crate::text_render::words_left_out() {
             self.face.append(scene, transform, self.rect);
         }
-        crate::widget::draw_over(self, &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        crate::widget::draw_over(
+            self,
+            &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+        );
     }
 
     fn name(&self) -> &'static str {
@@ -1238,7 +1243,7 @@ impl crate::presence::capability::PublishesPresence for Text {
     }
 }
 
-impl crate::permissions::capability::PermissionGuarded for Text {
+impl crate::widget::permission::PermissionGuarded for Text {
     fn permission_scope(&self) -> Option<PermissionScope> {
         self.permission_scope.clone()
     }
@@ -1957,7 +1962,13 @@ mod tests {
 
     fn drawn_glyph_runs(w: &mut dyn Widget, renderer: &mut TextRenderer) -> Vec<u32> {
         let mut scene = Scene::new();
-        w.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, renderer, &Theme::dark(), crate::presence::PresenceCtx::default().draw_env()));
+        w.draw(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            renderer,
+            &Theme::dark(),
+            crate::presence::PresenceCtx::default().draw_env(),
+        ));
         let encoding = scene.encoding();
         encoding
             .resources
@@ -2051,7 +2062,16 @@ mod tests {
         );
         text.apply_layout_external(vello::kurbo::Rect::new(0.0, 0.0, 800.0, 200.0));
         let mut scene = Scene::new();
-        Widget::draw(text, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, renderer, theme, crate::presence::PresenceCtx::empty().draw_env()));
+        Widget::draw(
+            text,
+            &mut crate::draw::DrawCtx::new(
+                &mut scene,
+                Affine::IDENTITY,
+                renderer,
+                theme,
+                crate::presence::PresenceCtx::empty().draw_env(),
+            ),
+        );
         (measured, scene)
     }
 
@@ -2202,7 +2222,7 @@ mod tests {
                     (700, 300),
                     Theme::dark(),
                     crate::font_catalog::fixture_renderer(),
-                    crate::permissions::MemberId::person("text-widget-locale-fixture"),
+                    ::collaboration::permissions::MemberId::person("text-widget-locale-fixture"),
                 );
 
                 let before = driver.inspection();

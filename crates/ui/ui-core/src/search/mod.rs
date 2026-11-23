@@ -40,12 +40,18 @@ mod provider;
 mod query;
 pub mod rank;
 mod registry;
-pub(crate) mod request;
 mod row;
 pub mod scope;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 
+pub use crate::text_match::{normalize_search_text, ranked_rows};
+pub(crate) use crate::widget::search_request as request;
+pub use crate::widget::search_request::{
+    APP_SEARCH_BUTTON_ID, Anchor, ScopeDecl, SearchOffer, SearchOpener, SearchRequest,
+    is_search_address, open_search_binding, open_search_invocation, scope_contains, search_button,
+};
+pub(crate) use crate::widget::search_request::{search_address, search_resource};
 pub use body::{BodyPiece, SearchBody, SearchBodySource};
 pub use button_component::{SearchButton, SearchButtonProps};
 pub use preview::{PREVIEW_BODY_LINES, PREVIEW_LINES, SearchPreview};
@@ -53,41 +59,14 @@ pub use provider::{
     CatalogSearchProvider, DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT,
     MAX_SEARCH_QUERY_SCALARS, OpenResourceSearch, PagePoll, PendingToken, SearchCatalog,
     SearchCatalogError, SearchCatalogStats, SearchCursor, SearchItem, SearchPage, SearchProvider,
-    SearchResult, normalize_search_text,
+    SearchResult,
 };
 pub use query::{Facet, FacetFilter, FacetValue, SearchQuery};
 pub use rank::{FieldWeight, MatchTier, result_relevance};
 pub use registry::{FnProvider, SearchGroup, SearchRegistry, group_results, rank_results};
-pub use request::{
-    APP_SEARCH_BUTTON_ID, Anchor, ScopeDecl, SearchOffer, SearchOpener, SearchRequest,
-    is_search_address, open_search_binding, open_search_invocation, scope_contains, search_button,
-};
-pub(crate) use request::{search_address, search_resource};
 pub use row::{ActivationModifier, Alternate, CommandRow, RowFace, SearchRow};
 pub use scope::{AppScope, Scope, WindowGroupId};
 pub use tilo_search::fold as fold_search_text;
 pub use tilo_search::{Frecency, ListIndex, MAX_FIELD_RANK, Matching, fold_char, initials, locate};
-
-/// The rows of a short list that answer `query`, best first, ranked by `index` the way
-/// every list search ranks; rows that rank alike keep the list's order, so a list does
-/// not reshuffle while a word is typed.
-pub fn ranked_rows<'a, R>(
-    index: &ListIndex,
-    query: &str,
-    rows: impl IntoIterator<Item = R>,
-) -> Vec<usize>
-where
-    R: IntoIterator<Item = (&'a str, FieldWeight)>,
-{
-    use tilo_sort::CompactSort as _;
-    let mut ranked: Vec<(i32, usize)> = index
-        .ranks(query, rows)
-        .into_iter()
-        .enumerate()
-        .filter_map(|(at, rank)| rank.map(|rank| (rank, at)))
-        .collect();
-    ranked.compact_sort_by_key(|&(rank, _)| std::cmp::Reverse(rank));
-    ranked.into_iter().map(|(_, at)| at).collect()
-}
 
 pub mod system;

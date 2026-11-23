@@ -224,9 +224,16 @@ impl crate::widget::Decorator for MenuButton {
     }
 
     fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
-        Widget::draw_overlay(&mut self.button, &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        Widget::draw_overlay(
+            &mut self.button,
+            &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+        );
         if let Some(window) = env.viewport {
             self.window = Some(window);
         }
@@ -235,8 +242,13 @@ impl crate::widget::Decorator for MenuButton {
         {
             self.menu.reanchor(Widget::get_rect(&self.button), window);
         }
-        self.menu
-            .draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        self.menu.draw_overlay(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            env.clone(),
+        ));
     }
 
     // A host reaches its menu button in a tree it does not own (a shell
@@ -291,8 +303,8 @@ impl crate::widget::Decorator for MenuButton {
     fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
         if request.wants::<dyn crate::widget::controls::ActionControls>() {
             request.provide::<dyn crate::widget::controls::ActionControls>(self);
-        } else if request.wants::<dyn crate::resources::PublishesResources>() {
-            request.provide::<dyn crate::resources::PublishesResources>(self);
+        } else if request.wants::<dyn crate::widget::resources::PublishesResources>() {
+            request.provide::<dyn crate::widget::resources::PublishesResources>(self);
         } else {
             Widget::provide(&self.button, request);
         }
@@ -301,8 +313,8 @@ impl crate::widget::Decorator for MenuButton {
     fn provide_mut<'a>(&'a mut self, request: &mut crate::widget::capability::RequestMut<'a, '_>) {
         if request.wants::<dyn crate::widget::controls::ActionControls>() {
             request.provide::<dyn crate::widget::controls::ActionControls>(self);
-        } else if request.wants::<dyn crate::resources::PublishesResources>() {
-            request.provide::<dyn crate::resources::PublishesResources>(self);
+        } else if request.wants::<dyn crate::widget::resources::PublishesResources>() {
+            request.provide::<dyn crate::widget::resources::PublishesResources>(self);
         } else if request.wants::<dyn crate::widget::ResourceOperations>() {
             request.provide::<dyn crate::widget::ResourceOperations>(self);
         } else {
@@ -314,10 +326,10 @@ impl crate::widget::Decorator for MenuButton {
 /// The menu is drawn over the button and stands against it, not in the button's subtree, so
 /// the rows it publishes are the button's to publish and its rows' operations the button's to
 /// start.
-impl crate::resources::PublishesResources for MenuButton {
+impl crate::widget::resources::PublishesResources for MenuButton {
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        let mut resources = crate::resources::resources(&self.button, doc);
-        resources.extend(crate::resources::resources(&self.menu, doc));
+        let mut resources = crate::widget::resources::resources(&self.button, doc);
+        resources.extend(crate::widget::resources::resources(&self.menu, doc));
         resources
     }
 }

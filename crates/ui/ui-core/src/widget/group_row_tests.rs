@@ -1239,7 +1239,13 @@ fn panning_a_strip_drawn_in_canvas_coordinates_does_not_change_its_scene() {
         row.set_scroll_x_for_test(scroll);
         row.apply_layout(&taffy, root, Point::ORIGIN);
         let mut scene = Scene::new();
-        row.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme, PresenceCtx::empty().draw_env()));
+        row.draw(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            PresenceCtx::empty().draw_env(),
+        ));
         scene
     };
     row.reduce_motion = true;
@@ -1404,7 +1410,11 @@ impl Widget for PaintedDeadline {
     }
     crate::rect_geometry!();
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (_, _, _, _, mut env) = ctx.parts();
         self.deadline.set(None);
     }
@@ -1552,7 +1562,13 @@ pub(super) fn drawn_strip(windows: u64) -> (GroupRow, Scene) {
     let specs: Vec<&[u64]> = specs.iter().map(Vec::as_slice).collect();
     let (mut row, _, _) = make_row_with_groups_on_display(&specs, FIXTURE_USABLE_PX, 2000.0);
     let mut scene = Scene::new();
-    row.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::empty().draw_env()));
+    row.draw(&mut crate::draw::DrawCtx::new(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut TextRenderer::new(),
+        &Theme::dark(),
+        PresenceCtx::empty().draw_env(),
+    ));
     (row, scene)
 }
 
@@ -3081,7 +3097,13 @@ fn a_device_pixel_quantum_puts_pan_and_canvas_shift_on_device_pixels() {
 fn a_panned_strip_replays_groups_off_screen_and_draws_those_on_it() {
     fn draw(row: &mut GroupRow, text: &mut TextRenderer) -> Scene {
         let mut scene = Scene::new();
-        row.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, text, &Theme::dark(), PresenceCtx::empty().draw_env()));
+        row.draw(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            text,
+            &Theme::dark(),
+            PresenceCtx::empty().draw_env(),
+        ));
         scene
     }
     let text = &mut TextRenderer::new();
@@ -3147,7 +3169,13 @@ fn a_frame_that_only_moved_replays_groups_on_screen_at_rest() {
         });
         let _frame = PanReplay::begin(frame, number);
         let mut scene = Scene::new();
-        row.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, text, &Theme::dark(), PresenceCtx::empty().draw_env()));
+        row.draw(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            text,
+            &Theme::dark(),
+            PresenceCtx::empty().draw_env(),
+        ));
         row.mark_drawn();
         scene
     }
@@ -3237,7 +3265,13 @@ fn a_pan_frame_replays_windows_at_rest_and_renders_as_a_drawn_frame() {
         let mut scene = Scene::new();
         let presence = PresenceCtx::empty();
         let previous = presence.push_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
-        row.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, text, theme, presence.draw_env()));
+        row.draw(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            text,
+            theme,
+            presence.draw_env(),
+        ));
         presence.pop_viewport(previous);
         row.mark_drawn();
         scene
@@ -3321,7 +3355,13 @@ fn each_group_of_a_strip_drawn_in_canvas_coordinates_is_a_damage_part() {
     ) -> (Scene, crate::scene_parts::SectionParts) {
         let mut scene = Scene::new();
         let ((), parts) = crate::scene_parts::record(&mut scene, |scene| {
-            row.draw(&mut crate::draw::DrawCtx::new(scene, Affine::IDENTITY, text, &Theme::dark(), PresenceCtx::empty().draw_env()));
+            row.draw(&mut crate::draw::DrawCtx::new(
+                scene,
+                Affine::IDENTITY,
+                text,
+                &Theme::dark(),
+                PresenceCtx::empty().draw_env(),
+            ));
         });
         (scene, parts.expect("the strip's parts are well nested"))
     }
@@ -4424,7 +4464,7 @@ tilo_test_env::scenario! {
 
         crate::widget::handle_collab_event(
             &mut row,
-            &crate::collaboration::CollabEvent::FollowChanged { peer_id: None },
+            &::collaboration::CollabEvent::FollowChanged { peer_id: None },
         );
         assert_eq!(first_events.get(), 1);
         assert_eq!(second_events.get(), 1);
@@ -4503,7 +4543,13 @@ fn maximize_fades_siblings_on_the_fast_curve_and_keeps_velocity() {
 fn maximized_window_paints_alone_and_the_sibling_fade_redraws_to_rest() {
     fn encoded(row: &mut GroupRow) -> Vec<u32> {
         let mut scene = Scene::new();
-        row.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::empty().draw_env()));
+        row.draw(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            PresenceCtx::empty().draw_env(),
+        ));
         row.mark_drawn();
         scene.encoding().draw_tags.iter().map(|tag| tag.0).collect()
     }

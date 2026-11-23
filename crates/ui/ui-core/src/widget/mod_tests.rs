@@ -10,11 +10,11 @@ struct CollabProbe {
 }
 
 impl Collaborative for CollabProbe {
-    fn take_collab_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
-        vec![crate::collaboration::CollabRequest::ClearContinuation]
+    fn take_collab_requests(&mut self) -> Vec<::collaboration::CollabRequest> {
+        vec![::collaboration::CollabRequest::ClearContinuation]
     }
 
-    fn handle_collab_event(&mut self, _: &crate::collaboration::CollabEvent) {
+    fn handle_collab_event(&mut self, _: &::collaboration::CollabEvent) {
         self.events.set(self.events.get().saturating_add(1));
     }
 }
@@ -170,7 +170,7 @@ tilo_test_env::scenario! {
             assert_eq!(take_collab_requests(&mut root).len(), 2);
             handle_collab_event(
                 &mut root,
-                &crate::collaboration::CollabEvent::FollowChanged { peer_id: None },
+                &::collaboration::CollabEvent::FollowChanged { peer_id: None },
             );
             assert_eq!(events.get(), 2);
         }

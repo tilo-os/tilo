@@ -243,8 +243,8 @@ mod component_adapter {
         AudiencePresentationWidgetExt, AutoCommit, CompleteContentProvider,
         CompleteContentWidgetExt, Continuable, ControlBindingMetadata, FloatingSurfaceProvider,
         FloatingSurfaceWidgetExt, FullscreenProvider, FullscreenWidgetExt, HashMap, HashSet,
-        Instant, NodeId, ObjId, PermissionScope, PresenceKey, ResourceOperationStart,
-        Scene, TaffyTree, TaffyTreeExt, TextRenderer, Theme, WindowEvent,
+        Instant, NodeId, ObjId, PermissionScope, PresenceKey, ResourceOperationStart, Scene,
+        TaffyTree, TaffyTreeExt, TextRenderer, Theme, WindowEvent,
     };
 
     pub(crate) struct BoundAppWidget {
@@ -581,7 +581,7 @@ mod component_adapter {
             &self,
             state: &AutoCommit,
             _path: &ObjId,
-        ) -> Option<crate::collaboration::ContinuationMetadata> {
+        ) -> Option<::collaboration::ContinuationMetadata> {
             let binding = self.component.callback_binding();
             binding
                 .read_document(state, |document, resource_root| {
@@ -594,7 +594,7 @@ mod component_adapter {
 
         fn restore_continuation_metadata(
             &mut self,
-            metadata: &crate::collaboration::ContinuationMetadata,
+            metadata: &::collaboration::ContinuationMetadata,
             state: &mut crate::widget::Edits<'_>,
             _path: &ObjId,
         ) -> bool {
@@ -610,7 +610,7 @@ mod component_adapter {
 
         fn restore_live_continuation_metadata(
             &mut self,
-            metadata: &crate::collaboration::ContinuationMetadata,
+            metadata: &::collaboration::ContinuationMetadata,
             state: &AutoCommit,
             _path: &ObjId,
         ) -> bool {
@@ -640,8 +640,12 @@ mod component_adapter {
         }
 
         fn draw_floating_surface(&mut self, id: &str, ctx: &mut crate::draw::DrawCtx<'_>) -> bool {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
-        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
+            #[allow(
+                unused_variables,
+                unused_mut,
+                reason = "a draw binds only the parts it uses"
+            )]
+            let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
             self.in_root_mut(|root| {
                 root.draw_floating_surface(
                     id,
@@ -727,10 +731,20 @@ mod component_adapter {
         }
 
         fn draw_floating_surfaces(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
-        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
+            #[allow(
+                unused_variables,
+                unused_mut,
+                reason = "a draw binds only the parts it uses"
+            )]
+            let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
             self.in_root_mut(|root| {
-                root.draw_floating_surfaces(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env))
+                root.draw_floating_surfaces(&mut crate::draw::DrawCtx::new(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    env,
+                ))
             });
         }
 
@@ -842,9 +856,17 @@ mod component_adapter {
             .flatten()
         }
 
-        fn draw_complete_content(&mut self, bounds: vello::kurbo::Rect, ctx: &mut crate::draw::DrawCtx<'_>) -> bool {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
-        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
+        fn draw_complete_content(
+            &mut self,
+            bounds: vello::kurbo::Rect,
+            ctx: &mut crate::draw::DrawCtx<'_>,
+        ) -> bool {
+            #[allow(
+                unused_variables,
+                unused_mut,
+                reason = "a draw binds only the parts it uses"
+            )]
+            let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
             if self.component.behaviour.capture_protected {
                 crate::secret_paint::note_secret_painted();
             }
@@ -856,7 +878,16 @@ mod component_adapter {
                 return false;
             };
             if root.complete_content_size().is_some() {
-                return root.draw_complete_content(bounds, &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+                return root.draw_complete_content(
+                    bounds,
+                    &mut crate::draw::DrawCtx::new(
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        env.clone(),
+                    ),
+                );
             }
             if unrolled_height(root).is_none() || bounds.area() <= 0.0 {
                 return false;
@@ -872,7 +903,7 @@ mod component_adapter {
             let permissions = binding.permissions.borrow().clone();
             let mut inner = env.clone();
             inner.permissions = Some(permissions);
-            inner.paint_permissions = crate::permissions::shared_revision();
+            inner.paint_permissions = ::collaboration::permissions::shared_revision();
             root.draw_child(scene, transform, text_renderer, theme, &inner);
             let _ = crate::widget::layout::lay_out_detached(root, live, theme, text_renderer);
             if let Some(offset) = offset {
@@ -900,15 +931,15 @@ mod component_adapter {
             dyn crate::widget::Continuable,
             dyn crate::widget::FloatingSurfaceProvider,
             dyn crate::widget::AudiencePresentationProvider,
-            dyn crate::collaboration::presences::Presences,
+            dyn crate::widget::presence_topology::Presences,
             dyn crate::undo::CommittedActions,
             dyn crate::undo::UndoControl,
             dyn crate::undo::LocalUndo,
             dyn crate::history_mode::capability::DocumentHistory,
             dyn crate::widget::controls::ActionControls,
-            dyn crate::resources::PublishesResources,
+            dyn crate::widget::resources::PublishesResources,
             dyn crate::search::capability::SearchSource,
-            dyn crate::permissions::capability::PermissionGuarded,
+            dyn crate::widget::permission::PermissionGuarded,
             dyn crate::presence::capability::PublishesPresence,
             dyn crate::resource::capability::ResourceScoped,
             dyn crate::view::capability::ViewState,
@@ -1176,8 +1207,12 @@ mod component_adapter {
             });
         }
         fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
-        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
+            #[allow(
+                unused_variables,
+                unused_mut,
+                reason = "a draw binds only the parts it uses"
+            )]
+            let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {
                 return;
@@ -1193,7 +1228,7 @@ mod component_adapter {
             let permissions = binding.permissions.borrow().clone();
             let mut inner = env.clone();
             inner.permissions = Some(permissions);
-            inner.paint_permissions = crate::permissions::shared_revision();
+            inner.paint_permissions = ::collaboration::permissions::shared_revision();
             root.draw_child(scene, transform, text_renderer, theme, &inner);
         }
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -1571,13 +1606,23 @@ mod component_adapter {
                 .unwrap_or_default()
         }
         fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
-        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
+            #[allow(
+                unused_variables,
+                unused_mut,
+                reason = "a draw binds only the parts it uses"
+            )]
+            let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
             if self.component.behaviour.capture_protected {
                 crate::secret_paint::note_secret_painted();
             }
             self.in_root_mut(|root| {
-                root.draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env))
+                root.draw_overlay(&mut crate::draw::DrawCtx::new(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    env,
+                ))
             });
         }
     }
@@ -1777,15 +1822,15 @@ mod component_adapter {
             self.in_root(|root| crate::presence::capability::presence_key(root))
                 .flatten()
         }
-        fn presence_payload(&self) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
+        fn presence_payload(&self) -> Option<(PresenceKey, ::collaboration::PresencePayload)> {
             self.in_root(|root| crate::presence::capability::presence_payload(root))
                 .flatten()
         }
     }
 
-    impl crate::permissions::capability::PermissionGuarded for BoundAppWidget {
+    impl crate::widget::permission::PermissionGuarded for BoundAppWidget {
         fn permission_scope(&self) -> Option<PermissionScope> {
-            self.in_root(|root| crate::permissions::capability::permission_scope(root))
+            self.in_root(|root| crate::widget::permission::permission_scope(root))
                 .flatten()
         }
     }
@@ -1826,7 +1871,7 @@ mod component_adapter {
         }
     }
 
-    impl crate::resources::PublishesResources for BoundAppWidget {
+    impl crate::widget::resources::PublishesResources for BoundAppWidget {
         fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
             let binding = self.component.callback_binding();
             binding
@@ -1834,7 +1879,7 @@ mod component_adapter {
                     let Some(root) = self.component.root.as_deref() else {
                         return Vec::new();
                     };
-                    crate::resources::resources(root, document)
+                    crate::widget::resources::resources(root, document)
                 })
                 .unwrap_or_else(|_| Vec::new())
         }
@@ -1848,7 +1893,7 @@ mod component_adapter {
             binding
                 .read_document(doc, |document, _resource_root| {
                     let root = self.component.root.as_deref()?;
-                    crate::resources::action_directory_resource_page(
+                    crate::widget::resources::action_directory_resource_page(
                         root,
                         document,
                         cursor,
@@ -1862,7 +1907,7 @@ mod component_adapter {
             binding
                 .read_document(doc, |document, _resource_root| {
                     let root = self.component.root.as_deref()?;
-                    crate::resources::action_directory_revision(root, document)
+                    crate::widget::resources::action_directory_revision(root, document)
                 })
                 .unwrap_or(None)
         }
@@ -1877,7 +1922,9 @@ mod component_adapter {
                         .root
                         .as_deref()
                         .map(|root| {
-                            crate::resources::action_directory_invocation_domain(root, document)
+                            crate::widget::resources::action_directory_invocation_domain(
+                                root, document,
+                            )
                         })
                         .unwrap_or_default()
                 })
@@ -1888,7 +1935,7 @@ mod component_adapter {
             binding
                 .read_document(doc, |document, _resource_root| {
                     let root = self.component.root.as_deref()?;
-                    crate::resources::resource(root, document, id)
+                    crate::widget::resources::resource(root, document, id)
                 })
                 .unwrap_or(None)
         }
@@ -1906,7 +1953,7 @@ mod component_adapter {
                     let Some(root) = self.component.root.as_deref() else {
                         return Vec::new();
                     };
-                    crate::resources::resources_for(root, presence, document)
+                    crate::widget::resources::resources_for(root, presence, document)
                 })
                 .unwrap_or_else(|_| Vec::new())
         }
@@ -1920,7 +1967,7 @@ mod component_adapter {
             binding
                 .read_document(doc, |document, _resource_root| {
                     let root = self.component.root.as_deref()?;
-                    crate::resources::resource_for(root, presence, document, id)
+                    crate::widget::resources::resource_for(root, presence, document, id)
                 })
                 .unwrap_or(None)
         }
@@ -1933,7 +1980,11 @@ mod component_adapter {
             binding
                 .read_document(doc, |document, _resource_root| {
                     let root = self.component.root.as_deref()?;
-                    crate::resources::action_directory_visibility(root, document, resource_id)
+                    crate::widget::resources::action_directory_visibility(
+                        root,
+                        document,
+                        resource_id,
+                    )
                 })
                 .unwrap_or(None)
         }
@@ -2057,18 +2108,18 @@ mod component_adapter {
         }
     }
 
-    impl crate::collaboration::presences::Presences for BoundAppWidget {
+    impl crate::widget::presence_topology::Presences for BoundAppWidget {
         fn join_presence(&mut self, presence: &tilo_actions::PresenceId) -> bool {
-            crate::collaboration::presences::join_presence_in_children(self, presence)
+            crate::widget::presence_topology::join_presence_in_children(self, presence)
         }
         fn leave_presence(&mut self, presence: &tilo_actions::PresenceId) {
-            crate::collaboration::presences::leave_presence_in_children(self, presence);
+            crate::widget::presence_topology::leave_presence_in_children(self, presence);
         }
         fn set_presence_label(&mut self, presence: &tilo_actions::PresenceId, label: &str) {
-            crate::collaboration::presences::set_presence_label_in_children(self, presence, label);
+            crate::widget::presence_topology::set_presence_label_in_children(self, presence, label);
         }
         fn set_remote_only(&mut self, host: bool) {
-            crate::collaboration::presences::set_remote_only_in_children(self, host);
+            crate::widget::presence_topology::set_remote_only_in_children(self, host);
         }
         /// Presence views (agent carets) live against the component's own record document, the one
         /// `sync` hands the app, never the outer App document: resolved against the outer document a Writer
@@ -2080,7 +2131,7 @@ mod component_adapter {
                     self.component
                         .root
                         .as_deref()
-                        .map(|root| crate::collaboration::presences::presences(root, document))
+                        .map(|root| crate::widget::presence_topology::presences(root, document))
                         .unwrap_or_default()
                 })
                 .unwrap_or_default()

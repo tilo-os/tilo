@@ -24,11 +24,11 @@ pub(crate) use resource_operation::{
     start_operation_refused,
 };
 
-use crate::permissions::PermissionScope;
 use crate::draw::{DrawCtx, DrawEnv};
 use crate::presence::PresenceKey;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use ::collaboration::permissions::PermissionScope;
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
@@ -545,7 +545,7 @@ draw_child_of_dyn!(Widget, AppWidget,);
 /// publishes the geometry for them.
 pub fn draw_over(widget: &dyn Widget, ctx: &mut DrawCtx<'_>) {
     let rect = widget.get_rect();
-    if let Some(scope) = crate::permissions::capability::permission_scope(widget)
+    if let Some(scope) = crate::widget::permission::permission_scope(widget)
         && !ctx.env.permits(&scope)
     {
         ctx.scene.fill(
@@ -557,7 +557,13 @@ pub fn draw_over(widget: &dyn Widget, ctx: &mut DrawCtx<'_>) {
         );
     }
     if let Some(overlay) = ctx.env.overlay {
-        overlay.paint_over(widget, ctx.scene, ctx.transform, ctx.text_renderer, ctx.theme);
+        overlay.paint_over(
+            widget,
+            ctx.scene,
+            ctx.transform,
+            ctx.text_renderer,
+            ctx.theme,
+        );
     }
 }
 
@@ -1155,13 +1161,13 @@ pub trait Continuable {
         &self,
         state: &AutoCommit,
         path: &ObjId,
-    ) -> Option<crate::collaboration::ContinuationMetadata>;
+    ) -> Option<::collaboration::ContinuationMetadata>;
 
     /// Apply a continuation projection after launch. Implementations must not
     /// change focus or start media; malformed or unknown metadata is ignored.
     fn restore_continuation_metadata(
         &mut self,
-        metadata: &crate::collaboration::ContinuationMetadata,
+        metadata: &::collaboration::ContinuationMetadata,
         state: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> bool;
@@ -1172,7 +1178,7 @@ pub trait Continuable {
     /// cancel the projection when its authenticated source disappears.
     fn restore_live_continuation_metadata(
         &mut self,
-        _metadata: &crate::collaboration::ContinuationMetadata,
+        _metadata: &::collaboration::ContinuationMetadata,
         _state: &AutoCommit,
         _path: &ObjId,
     ) -> bool {
@@ -1183,11 +1189,11 @@ pub trait Continuable {
 /// Optional session collaboration capability for widgets that own live broker-backed
 /// activity.
 pub trait Collaborative {
-    fn take_collab_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
+    fn take_collab_requests(&mut self) -> Vec<::collaboration::CollabRequest> {
         Vec::new()
     }
 
-    fn handle_collab_event(&mut self, _event: &crate::collaboration::CollabEvent) {}
+    fn handle_collab_event(&mut self, _event: &::collaboration::CollabEvent) {}
 }
 
 /// Optional lifecycle for widgets backed by a platform-native child view.
@@ -1573,7 +1579,7 @@ pub struct ViewPresence {
     pub presence: tilo_actions::PresenceId,
     pub label: Option<String>,
     pub key: PresenceKey,
-    pub payload: crate::collaboration::PresencePayload,
+    pub payload: ::collaboration::PresencePayload,
 }
 
 /// Identity of one live node-map widget for once-per-widget host sweeps.
@@ -1868,23 +1874,20 @@ impl<T: Widget + ?Sized> CompleteContentWidgetExt for T {
             .and_then(CompleteContentProvider::complete_content_size)
     }
 
-    fn draw_complete_content(&mut self, bounds: vello::kurbo::Rect, ctx: &mut DrawCtx<'_>)
-    -> bool {
+    fn draw_complete_content(&mut self, bounds: vello::kurbo::Rect, ctx: &mut DrawCtx<'_>) -> bool {
         capability::capability_mut::<dyn CompleteContentProvider>(self)
             .is_some_and(|provider| provider.draw_complete_content(bounds, ctx))
     }
 }
 
 /// Drain collaboration capabilities throughout a retained widget tree.
-pub(crate) fn take_collab_requests(
-    widget: &mut dyn Widget,
-) -> Vec<crate::collaboration::CollabRequest> {
+pub(crate) fn take_collab_requests(widget: &mut dyn Widget) -> Vec<::collaboration::CollabRequest> {
     let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
         return Vec::new();
     };
     let mut requests = capability::capability_mut::<dyn Collaborative>(&mut *widget)
         .map_or_else(Vec::new, Collaborative::take_collab_requests);
-    for child in crate::collaboration::presences::collaboration_children(widget) {
+    for child in crate::widget::presence_topology::collaboration_children(widget) {
         requests.extend(take_collab_requests(child));
     }
     requests
@@ -1892,17 +1895,14 @@ pub(crate) fn take_collab_requests(
 
 /// Deliver one session event to each explicit collaboration capability once.
 /// Bound callback context remains entered for the complete descendant walk.
-pub(crate) fn handle_collab_event(
-    widget: &mut dyn Widget,
-    event: &crate::collaboration::CollabEvent,
-) {
+pub(crate) fn handle_collab_event(widget: &mut dyn Widget, event: &::collaboration::CollabEvent) {
     let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
         return;
     };
     if let Some(collaborative) = capability::capability_mut::<dyn Collaborative>(&mut *widget) {
         collaborative.handle_collab_event(event);
     }
-    for child in crate::collaboration::presences::collaboration_children(widget) {
+    for child in crate::widget::presence_topology::collaboration_children(widget) {
         handle_collab_event(child, event);
     }
 }
@@ -2016,6 +2016,13 @@ pub use action_proposal::{
 };
 pub mod binding;
 pub mod capability;
+mod content_kind;
+pub mod input_provenance;
+pub mod permission;
+pub mod presence_topology;
+pub mod resources;
+pub mod search_request;
+pub use content_kind::ContentKind;
 mod composed;
 pub use composed::Composed;
 pub mod controls;
@@ -2168,9 +2175,9 @@ pub mod window_controls;
 pub mod window_header;
 pub(crate) mod window_toolbar_row;
 pub use nav_shell::{
-    ContentKind, HeldNotice, InspectorFrame, InspectorLink, InspectorPlacement, NavGeometry,
-    NavMode, NavPane, NavShell, NavShellProps, OverviewPlacement, SidebarPlacement, WINDOW_BACK,
-    WINDOW_SIDEBAR, WindowBarLink,
+    HeldNotice, InspectorFrame, InspectorLink, InspectorPlacement, NavGeometry, NavMode, NavPane,
+    NavShell, NavShellProps, OverviewPlacement, SidebarPlacement, WINDOW_BACK, WINDOW_SIDEBAR,
+    WindowBarLink,
 };
 pub use window_header::{
     ColumnFrame, HISTORY_CONTROL_ID, HeaderStatus, HistoryControl, HistoryOpener, STATUS_ACTION_ID,
