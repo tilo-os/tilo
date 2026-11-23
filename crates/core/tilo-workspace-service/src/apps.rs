@@ -6,6 +6,9 @@ pub mod app_actions;
 pub mod automation;
 mod broker_error;
 pub mod certificate_authority;
+/// What starts a saved shortcut without anyone invoking it: a firing is a turn of work, so the
+/// runner is an agents build's.
+#[cfg(feature = "agents")]
 pub mod triggers;
 pub mod webhooks;
 /// The channel engine every host runs: its groups, the governance that settles them, and the
