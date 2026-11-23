@@ -43,6 +43,8 @@ __all__ = [
     "SetAgentModelArgs",
     "SetAgentInstructionArgs",
     "SetAgentBoundArgs",
+    "PauseAgentArgs",
+    "ResumeAgentArgs",
     "RetireAgentArgs",
     "StartSubAgentArgs",
     "NoteSubAgentArgs",
@@ -69,7 +71,7 @@ class Agent(TypedDict):
     sub_depth: int | None
     sub_at_once: int | None
 
-AgentState = Literal["active", "retired"]
+AgentState = Literal["active", "retired", "paused"]
 
 class Bound(TypedDict):
     node: str
@@ -201,6 +203,16 @@ SetAgentBoundArgs = TypedDict("SetAgentBoundArgs", {
 })
 """The arguments of `set-agent-bound`."""
 
+PauseAgentArgs = TypedDict("PauseAgentArgs", {
+    "agent": "str",
+})
+"""The arguments of `pause-agent`."""
+
+ResumeAgentArgs = TypedDict("ResumeAgentArgs", {
+    "agent": "str",
+})
+"""The arguments of `resume-agent`."""
+
 RetireAgentArgs = TypedDict("RetireAgentArgs", {
     "agent": "str",
 })
@@ -264,11 +276,11 @@ SetSubAgentLimitsArgs = TypedDict("SetSubAgentLimitsArgs", {
 
 class Window(Resource):
     """Assistant window — `assistant.window`."""
-    __surface__ = "so.tilo.assistant@d9ef43cc043097e2"
+    __surface__ = "so.tilo.assistant@c3bd648922f68234"
 
 class WorkspaceAgent(Resource):
     """Agents — `tilo.workspace.agent`."""
-    __surface__ = "so.tilo.assistant@d9ef43cc043097e2"
+    __surface__ = "so.tilo.assistant@c3bd648922f68234"
     agents: list[Entry[Agent]]
 
     def create_agent(self,
@@ -377,6 +389,22 @@ class WorkspaceAgent(Resource):
     def set_agent_bound_many(self, items: list[SetAgentBoundArgs]) -> list[dict[str, Any]]:
         """Runs `set-agent-bound` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-agent-bound", items)
+
+    def pause_agent(self, *, agent: str) -> None:
+        """Runs the app's action."""
+        return self.action("pause-agent", agent=agent)
+
+    def pause_agent_many(self, items: list[PauseAgentArgs]) -> list[dict[str, Any]]:
+        """Runs `pause-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("pause-agent", items)
+
+    def resume_agent(self, *, agent: str) -> None:
+        """Runs the app's action."""
+        return self.action("resume-agent", agent=agent)
+
+    def resume_agent_many(self, items: list[ResumeAgentArgs]) -> list[dict[str, Any]]:
+        """Runs `resume-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("resume-agent", items)
 
     def retire_agent(self, *, agent: str) -> None:
         """Runs the app's action."""
@@ -529,6 +557,6 @@ class WorkspaceAgent(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"create_agent", "create_agent_many", "set_agent_spend_limit", "set_agent_spend_limit_many", "record_agent_spend", "record_agent_spend_many", "rename_agent", "rename_agent_many", "set_agent_model", "set_agent_model_many", "set_agent_instruction", "set_agent_instruction_many", "set_agent_bound", "set_agent_bound_many", "retire_agent", "retire_agent_many", "start_sub_agent", "start_sub_agent_many", "note_sub_agent", "note_sub_agent_many", "stop_sub_agent", "stop_sub_agent_many", "sub_agent_stands", "sub_agent_stands_many", "sub_agent_produced", "sub_agent_produced_many", "sub_agent_coding", "sub_agent_coding_many", "set_sub_agent_limits", "set_sub_agent_limits_many"})
+    __actions__ = frozenset({"create_agent", "create_agent_many", "set_agent_spend_limit", "set_agent_spend_limit_many", "record_agent_spend", "record_agent_spend_many", "rename_agent", "rename_agent_many", "set_agent_model", "set_agent_model_many", "set_agent_instruction", "set_agent_instruction_many", "set_agent_bound", "set_agent_bound_many", "pause_agent", "pause_agent_many", "resume_agent", "resume_agent_many", "retire_agent", "retire_agent_many", "start_sub_agent", "start_sub_agent_many", "note_sub_agent", "note_sub_agent_many", "stop_sub_agent", "stop_sub_agent_many", "sub_agent_stands", "sub_agent_stands_many", "sub_agent_produced", "sub_agent_produced_many", "sub_agent_coding", "sub_agent_coding_many", "set_sub_agent_limits", "set_sub_agent_limits_many"})
 
 

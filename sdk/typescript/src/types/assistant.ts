@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.assistant@d9ef43cc043097e2";
+export const SURFACE = "so.tilo.assistant@c3bd648922f68234";
 
 export interface Agent {
   id: string;
@@ -41,8 +41,8 @@ export interface Agent {
   sub_at_once: number | null;
 }
 
-/** One of "active", "retired". */
-export type AgentState = "active" | "retired";
+/** One of "active", "retired", "paused". */
+export type AgentState = "active" | "retired" | "paused";
 
 export interface Bound {
   node: string;
@@ -186,6 +186,16 @@ export interface SetAgentBoundArgs {
   bound: Bound[];
 }
 
+/** The arguments of `pause-agent`. */
+export interface PauseAgentArgs {
+  agent: string;
+}
+
+/** The arguments of `resume-agent`. */
+export interface ResumeAgentArgs {
+  agent: string;
+}
+
 /** The arguments of `retire-agent`. */
 export interface RetireAgentArgs {
   agent: string;
@@ -308,6 +318,16 @@ export interface WorkspaceAgent extends tilo.Resource {
   }): Promise<void>;
   /** Runs `set-agent-bound` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setAgentBoundMany(items: SetAgentBoundArgs[]): Promise<tilo.ActionAnswer[]>;
+  pauseAgent(args: {
+    agent: string;
+  }): Promise<void>;
+  /** Runs `pause-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  pauseAgentMany(items: PauseAgentArgs[]): Promise<tilo.ActionAnswer[]>;
+  resumeAgent(args: {
+    agent: string;
+  }): Promise<void>;
+  /** Runs `resume-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  resumeAgentMany(items: ResumeAgentArgs[]): Promise<tilo.ActionAnswer[]>;
   retireAgent(args: {
     agent: string;
   }): Promise<void>;
@@ -373,7 +393,7 @@ export interface WorkspaceAgent extends tilo.Resource {
 
 /** The actions `WorkspaceAgent` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const WORKSPACEAGENT_ACTIONS = ["createAgent", "createAgentMany", "setAgentSpendLimit", "setAgentSpendLimitMany", "recordAgentSpend", "recordAgentSpendMany", "renameAgent", "renameAgentMany", "setAgentModel", "setAgentModelMany", "setAgentInstruction", "setAgentInstructionMany", "setAgentBound", "setAgentBoundMany", "retireAgent", "retireAgentMany", "startSubAgent", "startSubAgentMany", "noteSubAgent", "noteSubAgentMany", "stopSubAgent", "stopSubAgentMany", "subAgentStands", "subAgentStandsMany", "subAgentProduced", "subAgentProducedMany", "subAgentCoding", "subAgentCodingMany", "setSubAgentLimits", "setSubAgentLimitsMany"] as const;
+export const WORKSPACEAGENT_ACTIONS = ["createAgent", "createAgentMany", "setAgentSpendLimit", "setAgentSpendLimitMany", "recordAgentSpend", "recordAgentSpendMany", "renameAgent", "renameAgentMany", "setAgentModel", "setAgentModelMany", "setAgentInstruction", "setAgentInstructionMany", "setAgentBound", "setAgentBoundMany", "pauseAgent", "pauseAgentMany", "resumeAgent", "resumeAgentMany", "retireAgent", "retireAgentMany", "startSubAgent", "startSubAgentMany", "noteSubAgent", "noteSubAgentMany", "stopSubAgent", "stopSubAgentMany", "subAgentStands", "subAgentStandsMany", "subAgentProduced", "subAgentProducedMany", "subAgentCoding", "subAgentCodingMany", "setSubAgentLimits", "setSubAgentLimitsMany"] as const;
 
 /** The `tilo.workspace.agent` kind at `path`. */
 export function workspaceAgent(ws: tilo.Workspace, path: string): WorkspaceAgent {

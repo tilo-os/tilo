@@ -2444,6 +2444,30 @@
         ],
         "description": ""
       },
+      "tilo.workspace.agent.pause-agent.Arguments": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent"
+        ],
+        "description": ""
+      },
+      "tilo.workspace.agent.resume-agent.Arguments": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent"
+        ],
+        "description": ""
+      },
       "tilo.workspace.agent.retire-agent.Arguments": {
         "type": "object",
         "properties": {
@@ -37494,6 +37518,18 @@
       "resource": "tilo.workspace.agent",
       "action": "set-agent-bound",
       "arguments": "#/components/schemas/tilo.workspace.agent.set-agent-bound.Arguments"
+    },
+    {
+      "app": "so.tilo.assistant",
+      "resource": "tilo.workspace.agent",
+      "action": "pause-agent",
+      "arguments": "#/components/schemas/tilo.workspace.agent.pause-agent.Arguments"
+    },
+    {
+      "app": "so.tilo.assistant",
+      "resource": "tilo.workspace.agent",
+      "action": "resume-agent",
+      "arguments": "#/components/schemas/tilo.workspace.agent.resume-agent.Arguments"
     },
     {
       "app": "so.tilo.assistant",
