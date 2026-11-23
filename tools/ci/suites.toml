@@ -2185,16 +2185,10 @@ inputs = ["os/components.toml"]
 readers = ["crates/system/tilo-cli/src/aliases.rs"]
 
 # The Python SDK's suite runs as `uv run --frozen --offline pytest` in the ci-sdk image by the
-# sdk-python check, which carries uv and the SDK's locked dependencies. The integration test is
-# guarded with it and skips unless an API server is named by TILO_TEST_API_URL and TILO_TEST_KEY.
-# test_openapi.py checks the fake against docs/api/openapi.json, as every exchange the fake
-# answers is checked in the suite.
+# sdk-python check, which carries uv and the SDK's locked dependencies. test_openapi.py checks the
+# fake against docs/api/openapi.json, as every exchange the fake answers is checked in the suite.
 [[covered]]
 suite = "sdk/python/tests/test_host.py"
-check = "sdk-python"
-
-[[covered]]
-suite = "sdk/python/tests/test_integration.py"
 check = "sdk-python"
 
 [[covered]]

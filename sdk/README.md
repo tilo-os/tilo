@@ -46,6 +46,5 @@ cd python && uv run --extra dev pytest          # against an in-process fake /v1
 cd typescript && bun test && bunx tsc --noEmit
 ```
 
-Both suites also take a real API server: set `TILO_TEST_API_URL` and
-`TILO_TEST_KEY` to run `tests/test_integration.py` or
-`test/integration.test.ts` against it.
+The developer docs' examples run both SDKs against a real API server
+(`t test docs-examples`): every round trip shown there is a whole program's.

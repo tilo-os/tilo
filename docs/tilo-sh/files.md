@@ -173,30 +173,6 @@ const bytes = await workspace.files.download(String(letter));
 console.log("the letter is", bytes.length, "bytes, a Word file:", bytes[0] === 0x50 && bytes[1] === 0x4b);
 ```
 
-```curl example=upload-and-export
-api=$TILO_API_URL/v1
-auth="Authorization: Bearer $TILO_API_KEY"
-workspace=$(curl -sS --fail-with-body "$api/resources/account/workspaces/actions/create" -H "$auth" -H "Content-Type: application/json" \
-  -d '{"name": "Files and letters"}' | jq -r .result.workspace.id)
-base=$api/workspaces/$workspace
-
-# Bytes go up once, and the reference is what the apps take.
-reference=$(printf 'passport scan, in bytes' | curl -sS --fail-with-body "$base/uploads" -H "$auth" \
-  -H "Content-Type: application/octet-stream" --data-binary @- | jq -r .content)
-echo "uploaded: $reference"
-
-# An action that makes a file answers a reference to it.
-curl -sS --fail-with-body "$base/resources/word-processor/actions/append-paragraph" -H "$auth" \
-  -H "Content-Type: application/json" -d '{"text": "Dear Visa Officer,"}' > /dev/null
-letter=$(curl -sS --fail-with-body "$base/resources/word-processor/actions/export-content" -H "$auth" \
-  -H "Content-Type: application/json" -d '{"format": "docx"}' \
-  | jq -r '[.. | strings | select(startswith("tilo.content:"))][0]')
-
-# And the bytes come back out.
-curl -sS --fail-with-body "$base/content/$letter" -H "$auth" -o letter.docx
-echo "the letter is $(wc -c < letter.docx) bytes, a Word file: $([[ $(head -c 2 letter.docx) == PK ]] && echo yes)"
-```
-
 ## From a shell
 
 `tilo files put` uploads the bytes and writes each file into the workspace's folder. Each line it prints
@@ -222,6 +198,6 @@ yourself. Folders keep their names from the folder you gave: `tilo files put not
 A member who may change the workspace's records puts files and takes them out; a viewer only reads. An
 agent is held to the same line: its key reaches the one workspace, and its role there decides.
 
-Under the covers an upload is one `POST /v1/workspaces/<workspace>/uploads`, which answers the reference;
-a download is `GET /v1/workspaces/<workspace>/content/<reference>`. Both SDKs and the command do that for
-you.
+Under the covers a put is `PUT /v1/workspaces/<workspace>/contents/<hash>`, the lowercase BLAKE3
+hash of the bytes, one request or, for a large file, pieces with `Content-Range`; a download is
+`GET` of the same route, with `Range`. Both SDKs and the command do that for you.

@@ -87,6 +87,13 @@ nav = "The hosted Browser"
 description = "An agent fills a web form in a workspace's own Browser, and a person approves the submission."
 
 [[page]]
+slug = "workspace-per-customer"
+source = "docs/developers/one-workspace-per-customer.md"
+section = "Guides"
+nav = "One workspace per customer"
+description = "A backend that gives each customer a workspace of their own: labels to find them, a key per workspace, Browser use and review, and deleting one for good."
+
+[[page]]
 slug = "files"
 source = "docs/tilo-sh/files.md"
 section = "Guides"
@@ -113,6 +120,13 @@ source = "docs/tilo-sh/errors.md"
 section = "Reference"
 nav = "Errors"
 description = "Refused, AskPending and ProtocolError, the codes a host answers with, and keys that are turned away."
+
+[[page]]
+slug = "api"
+source = "docs/developers/api.md"
+section = "Reference"
+nav = "The API"
+description = "Every route under /v1: paths, errors, idempotency, invocations and undo, the account, resources, actions, events, the person's model, webhooks, files and programs."
 
 [[page]]
 slug = "rest-api"
