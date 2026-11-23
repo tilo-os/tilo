@@ -22,7 +22,8 @@ use crate::value::Value;
 use Imp::{
     Abort, ActCall, ActChoose, ActMadeFrom, ActMany, ActOpen, ActRef, ActRunLine, ActSave, ActSet,
     ActThen, ActUndo, Actions, ActorEq, ActorKind, ActorName, ActorRole, AgentNamed, ArgAt,
-    Base64Decode, BytesLength, CallFn, CallMembers, ChangeView, ClipboardCopyImage,
+    Base64Decode, BytesLength, CallFn, CallMembers, CanvasExport, CanvasGrade, CanvasLook,
+    CanvasOpen, CanvasSave, CanvasSvg, CanvasSvgImport, CanvasWand, ChangeView, ClipboardCopyImage,
     ClipboardCopyText, ClipboardPasteImage, ClipboardPasteText, CollCount, CollCounted, CollEmpty,
     CollInsert, CollInsertAs, CollInsertKeyed, CollMove, CollMoveAmong, CollMoveTo, CollOrdered,
     CollPlace, CollRelatives, CollRemove, CollWhere, CollWhereWith, CountBy, DateShow, DayParse,
@@ -33,6 +34,7 @@ use Imp::{
     FileMove, FileOfBytes, FileOfDocument, FileOfText, FileOpen, FileOpenPath, FilePart,
     FileReadPath, FileRemove, FileRename, FileResize, FileRestore, FileSize, FileStat, FileText,
     FileThumbnail, FileTrash, FileTrashEntries, FileTurn, FileWatch, FileWrite, FileZip, FilterLit,
+    PdfFields, PdfImport, PdfLinks, PdfMarkup, PdfOutline, PdfPages, PdfPicture, PdfSave, PdfText,
     Filters, Find, FirstUnseen, FloatAbs, FloatAcos, FloatAsin, FloatAtan, FloatCbrt, FloatCeil,
     FloatCeilTo, FloatClamp, FloatCos, FloatCosh, FloatExp, FloatFloor, FloatFloorTo, FloatFract,
     FloatGamma, FloatIsFinite, FloatIsNan, FloatLn, FloatLog2, FloatLog10, FloatMax, FloatMin,

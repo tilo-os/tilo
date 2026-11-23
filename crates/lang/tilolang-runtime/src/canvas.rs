@@ -244,18 +244,23 @@ impl Core {
             .or_else(trap)?;
         items
             .iter()
-            .map(|item| -> HResult<(String, Vec<u8>)> match item {
-                Value::Text(address) => {
-                    let bare = hash_of(address)
-                        .ok_or_else(|| format!("{address} names no picture"))
-                        .or_else(trap)?;
-                    let bytes = host
-                        .read(bare)
-                        .ok_or_else(|| format!("the picture {address} is not on this device"))
-                        .or_else(trap)?;
-                    Ok((address.clone(), bytes))
+            .map(|item| -> HResult<(String, Vec<u8>)> {
+                match item {
+                    Value::Text(address) => {
+                        let bare = hash_of(address)
+                            .ok_or_else(|| format!("{address} names no picture"))
+                            .or_else(trap)?;
+                        let bytes = host
+                            .read(bare)
+                            .ok_or_else(|| format!("the picture {address} is not on this device"))
+                            .or_else(trap)?;
+                        Ok((address.clone(), bytes))
+                    }
+                    other => trap(format!(
+                        "expected a picture address, got {}",
+                        other.kind_name()
+                    )),
                 }
-                other => trap(format!("expected a picture address, got {}", other.kind_name())),
             })
             .collect()
     }

@@ -167,11 +167,9 @@ impl Core {
                 let sources: Vec<&[u8]> = files.iter().map(Vec::as_slice).collect();
                 match self.pdf.borrow().save(&sources, &request) {
                     Ok(bytes) => {
-                        let name = files.first().map_or_else(
-                            || "annotated.pdf".to_owned(),
-                            |source| annotated_name(&source.name),
-                        );
-                        let file = self.keep_bytes(&name, "application/pdf", &bytes).or_else(trap)?;
+                        let file = self
+                            .keep_bytes("annotated.pdf", "application/pdf", &bytes)
+                            .or_else(trap)?;
                         self.ret_h(Value::file(file))
                     }
                     Err(why) => self.result(Err(why)),
@@ -205,7 +203,7 @@ impl Core {
                     Imp::PdfFields => host.fields(&bytes),
                     Imp::PdfMarkup => host.markup(&bytes),
                     Imp::PdfImport => host.import(&bytes),
-                    _ => trap("not a pdf import"),
+                    _ => return trap("not a pdf import"),
                 };
                 drop(host);
                 self.result(answer.map(Value::text))
@@ -233,14 +231,4 @@ impl Core {
             })
             .collect()
     }
-}
-
-/// What a copy with the reader's markup in it is called: the document's own name, saying what
-/// it now carries.
-fn annotated_name(source: &str) -> String {
-    let stem = source
-        .strip_suffix(".pdf")
-        .or_else(|| source.strip_suffix(".PDF"))
-        .unwrap_or(source);
-    format!("{stem} (annotated).pdf")
 }
