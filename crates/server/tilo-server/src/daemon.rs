@@ -664,7 +664,7 @@ impl Server {
             #[cfg(feature = "agents")]
             closed_apps: Arc::default(),
         });
-        let mut protocols: Protocols = vec![(
+        let protocols: Protocols = vec![(
             crate::certify::CERTIFY_ALPN.to_vec(),
             Box::new(certification) as Box<dyn DynProtocolHandler>,
         )];
@@ -673,15 +673,22 @@ impl Server {
         #[cfg(feature = "agents")]
         let terminal_shells = crate::agents::TerminalShells::default();
         #[cfg(feature = "agents")]
-        protocols.push((
-            ush::environment_terminals::ALPN.to_vec(),
-            Box::new(terminal_shells.route()),
-        ));
+        let protocols = {
+            let mut protocols = protocols;
+            protocols.push((
+                ush::environment_terminals::ALPN.to_vec(),
+                Box::new(terminal_shells.route()),
+            ));
+            protocols
+        };
         #[cfg(feature = "web")]
-        if let Some(origin) = live_origin.as_ref() {
-            let (alpn, handler) = origin.protocol();
-            protocols.push((alpn, handler));
-        }
+        let protocols = {
+            let mut protocols = protocols;
+            if let Some(origin) = live_origin.as_ref() {
+                protocols.push(origin.protocol());
+            }
+            protocols
+        };
         let background_tasks = spawn_background_tasks(&cfg, &metrics);
         #[cfg(feature = "web")]
         if let Some(origin) = live_origin.as_mut() {
