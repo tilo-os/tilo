@@ -199,6 +199,11 @@ fn key_of(v: &Value) -> Result<String, String> {
         Value::Float(f) => Ok(f.to_string()),
         Value::Ref(r) => Ok(r.target.id_string()),
         Value::Actor(p) => Ok(crate::ids::actor_text(p)),
+        // A case is kept by its declaration id, which a rename of the case keeps.
+        Value::Enum(e) if e.fields.is_empty() => Ok(e.variant.clone()),
+        Value::Enum(_) => {
+            Err("a case that carries values cannot be a set element or map key".to_owned())
+        }
         other => Err(format!(
             "a {} cannot be a set element or map key",
             other.kind_name()
@@ -574,6 +579,7 @@ impl Core {
                         author: author.cloned(),
                     }))
                 }
+                Some(Ty::Enum(key)) => self.registry.borrow().enum_value(key, &k).map(Value::Enum),
                 _ => Ok(Value::Text(k)),
             })
             .collect::<Result<Vec<_>, String>>()?;
