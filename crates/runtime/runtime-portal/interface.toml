@@ -7,7 +7,7 @@
 # broker, shell-owned tools), one number for all of them. The app host is an
 # interface of its own (crates/packaging/package-service/interface.toml).
 name = "runtime"
-version = 36
+version = 37
 version_const = "crates/runtime/runtime-portal/src/lib.rs:RUNTIME_INTERFACE_VERSION"
 encoding = "postcard"
 served_to_apps = true
@@ -23,6 +23,7 @@ sources = [
     "crates/runtime/runtime-collab/src/workspace_status.rs",
     "crates/collab/collab-types/src/artifact.rs",
     "crates/collab/collab-types/src/presence/payload.rs",
+    "crates/collab/collab-types/src/presence/bridged.rs",
     "crates/collab/collab-types/src/inbound.rs",
     "crates/collab/collab-types/src/peer.rs",
     "crates/collab/collab-types/src/history.rs",
@@ -150,6 +151,12 @@ EntryName = "one native filename component, serialized as its raw bytes"
 "BlobRef.hash" = "#0 String"
 "BlobRef.len" = "#1 u64"
 "BlobRef.mime" = "#2 String"
+"Bridged" = "struct"
+"Bridged.account" = "#1 String"
+"Bridged.avatar" = "#3 Option<String>"
+"Bridged.linked" = "#4 Option<String>"
+"Bridged.name" = "#2 String"
+"Bridged.service" = "#0 String"
 "Call" = "struct"
 "Call.id" = "#0 u64"
 "Call.request" = "#1 Operation"
@@ -623,6 +630,7 @@ EntryName = "one native filename component, serialized as its raw bytes"
 "PeerPresencePayload::Availability.camera" = "#2 bool"
 "PeerPresencePayload::Availability.screen" = "#3 bool"
 "PeerPresencePayload::Availability.state" = "#0 String"
+"PeerPresencePayload::Bridged" = "#17 tuple(Bridged)"
 "PeerPresencePayload::Caret" = "#1 struct"
 "PeerPresencePayload::Caret.pos" = "#0 u64"
 "PeerPresencePayload::Chat" = "#10 struct"
