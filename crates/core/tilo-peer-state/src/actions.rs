@@ -742,7 +742,7 @@ impl ActionService {
         workspace: &str,
         target: [u8; 32],
     ) -> RemoteDevice {
-        RemoteDevice(self.device_at(endpoint, addr, workspace, None, None, Some(target)))
+        RemoteDevice(self.device_at(endpoint, addr, workspace, None, Some(target)))
     }
 
     /// The devices of `workspace` that may be asked to take work, other than this

@@ -120,8 +120,8 @@ impl StatePeer {
     }
 
     /// The person behind `caller`, when the workspace lets them choose the
-    /// packages it trusts.
-    fn check_install_grant(&self, caller: &DeviceCert, now: SystemTime) -> Result<String, String> {
+    /// packages it trusts or the registries it installs from.
+    pub(super) fn check_install_grant(&self, caller: &DeviceCert, now: SystemTime) -> Result<String, String> {
         let member = self.membership(caller.device_public_key, now)?;
         member
             .policy

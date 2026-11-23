@@ -10,12 +10,11 @@
 
 use automerge::{ROOT, ReadDoc, transaction::Transactable};
 use collab_types::signer::DeviceSigner;
-use tilo_action_policy::roles::governance;
 use tilo_user_identity::DeviceCert;
 
 use super::facades::PeerGovernance;
 use super::package_trust::valid_pubkey;
-use super::{StatePeer, SystemTime, err, governed_map, person_of};
+use super::{StatePeer, SystemTime, err, governed_map};
 use crate::workspace_membership::WorkspaceMembershipCommand;
 
 /// The map of the registries, by name.
@@ -133,22 +132,6 @@ impl StatePeer {
         }
         let bytes = serde_json::to_vec(&row).map_err(err)?;
         self.put_registry_row(name, Some(bytes), key, now)
-    }
-
-    /// The person behind `caller`, when the workspace lets them choose its
-    /// registries.
-    fn check_install_grant(&self, caller: &DeviceCert, now: SystemTime) -> Result<String, String> {
-        let member = self.membership(caller.device_public_key, now)?;
-        member
-            .policy
-            .check_action(
-                &member.authority(),
-                governance::INSTALL_APP,
-                &tilo_action_policy::Context::at_time(now),
-                false,
-            )
-            .map_err(|refusal| refusal.to_string())?;
-        Ok(person_of(&member)?.to_owned())
     }
 
     /// Write or remove the registry `name` in one commit.

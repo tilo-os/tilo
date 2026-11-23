@@ -51,7 +51,6 @@ mod cached_document;
 pub mod direct;
 pub mod document;
 pub mod document_frame;
-pub mod installation;
 /// The one call a computer with no certificate makes: asking the device that issued its ticket
 /// to have it certified.
 #[cfg(not(target_arch = "wasm32"))]
@@ -74,7 +73,6 @@ mod state;
 pub mod store;
 pub mod transport;
 pub mod workspace;
-pub use installation::{AppearancePolicy, ArmedRecord, DirectoryRef, Installation, InstallationId};
 mod verified_certificate;
 /// The person's answers about the devices of their machines, kept in their own workspace.
 pub use device_answers::{
@@ -93,12 +91,12 @@ pub use state::{CHANNELS as REGISTRY_CHANNELS, PackageRegistry, RevokedPublisher
 pub use state::{
     CLOCK_SKEW_NS, COPY_POLICY_KEY, CopyPolicy, CopyRole, CopyStatus, DONE_KEY, DelegateInactive,
     DocumentRow, Done, GovernedAccess, GovernedAgent, GovernedDelegateRow, HELD_COPIES_KEY,
-    HeldCopy, HeldDocument, HolderCopy, InstalledApp, InstalledBot, KeptDocument, LEASES_KEY,
+    HeldCopy, HeldDocument, HolderCopy, InstalledApp, KeptDocument, LEASES_KEY,
     Lease, LeaseClaim, MAX_HELD_BYTES, MAX_HELD_FOR_GOVERNANCE_PER_WRITER, MAX_HELD_INPUTS, Member,
     MemberId, MemberList, MembershipError, MergedDocument, Missing, NotAdmitted, OpenedDocument,
     OpenedHistory, OpenedWrite, PeerDocumentCapture, PeerDocumentReadError, PeerGovernance,
     PeerGovernanceMut, PeerOutbox, PeerOutboxMut, PeerPublication, PeerPublicationMut,
-    PeerWorkspace, PeerWorkspaceMut, ReceiveOutcome, RequestedBot, Reseal, RowError, SCHEDULES_KEY,
+    PeerWorkspace, PeerWorkspaceMut, ReceiveOutcome, Reseal, RowError, SCHEDULES_KEY,
     SealCheckpoint, SeedDocument, SeedState, Shortfall, StatePeer, TransportOrigin, UnmergedReason,
     UnmergedWrite, WORKSPACE_KEEPING_DEVICES_KEY, WaitingForUpdate, committed_document_revision,
     decide_with_surfaces, default_surfaces, holder_role, keeping_devices_of, peer_handle,

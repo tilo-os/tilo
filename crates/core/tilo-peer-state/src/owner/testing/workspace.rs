@@ -112,7 +112,7 @@ impl TestWorkspace {
             &mut chat,
             "chat",
             "channels",
-            &governor.user_public_key,
+            &device.user_public_key,
         );
         peer.install_seed(
             SeedState {

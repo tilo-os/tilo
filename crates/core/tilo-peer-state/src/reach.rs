@@ -165,7 +165,7 @@ impl Ledger {
     /// Take `entry` in, as the log holds it.
     fn apply(&mut self, entry: Entry) {
         match entry {
-            Entry::Noted(noted) => {
+            Entry::Noted(mut noted) => {
                 // A later write of a record is built on what an earlier pending write of it
                 // carried: the record keeps one entry, whose changes name theirs, so a view of
                 // one of its items still reads pending. The later write stands for the record,
