@@ -635,7 +635,10 @@ pub fn printers_surface() -> tilo_resource::surface::Surface {
 /// machine booted, what waits for a restart, and the actions that update it.
 #[must_use]
 pub fn update_surface() -> tilo_resource::surface::Surface {
-    tilo_resource::surface::reading_surface::<Update, UpdateAction>(SYSTEM_UPDATE, "System update")
+    tilo_resource::surface::reading_surface::<Update, UpdateAction>(
+        SYSTEM_UPDATE,
+        "System update",
+    )
 }
 
 /// The `time-zone` resource's surface: the zone the device keeps and whether it follows the
