@@ -157,7 +157,7 @@ pub mod migration_store;
 pub mod migration_worker;
 pub mod nofollow;
 pub mod portable_transfer;
-#[cfg(any(test, all(feature = "test-support", target_os = "linux")))]
+#[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub mod user_transfer;
 
