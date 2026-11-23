@@ -588,7 +588,11 @@ and screen share only, never documents, and stays as it is.
 - **One dispatch**: the daemon's, which admits a call, hands it to whatever
   runs it (an app's process, a system service, another device) and returns
   its progress and result. `broker-core` and `collab_app_broker` fold into
-  it, and the word "broker" goes with them.
+  it, and the word "broker" goes with them. A hosted page is a view the
+  daemon opens on the app's process for that visitor: opening and acting are
+  dispatched calls, the answer is the view's HTML, and the visitor's writes
+  are the app's actions under their own identity. There is no page replica
+  and no per-person check beside the dispatch.
 - **Files are resources.** The tree syncs as ordinary records through
   `tree_sync` only. Bytes go through one content store, moved by
   `RouteContent`, with keys from `workspace-keys`. A person sees it as one
