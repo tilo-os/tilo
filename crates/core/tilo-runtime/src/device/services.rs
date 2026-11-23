@@ -2232,6 +2232,150 @@ fn stop_session(
     })
 }
 
+/// The record reader of a device's dispatch. The workspace's invocations
+/// ([`tilo_actions::remote::workspace_invocations::PROVIDER`]) are a resource the dispatch
+/// publishes itself: read whole (an empty record) or one by its id, as the caller's grants let
+/// them read each call, and followed by watching for the next one recorded or the next change
+/// of one still going. Every other record is the broker's to read.
+struct DispatchReads {
+    broker: AppActionBroker,
+    workspace: String,
+    workspaces: Arc<ServiceWorkspaces>,
+    session: Option<Arc<AdmittedRuntimeSession>>,
+    invocations: Arc<Invocations>,
+    records: Option<Arc<dyn tilo_actions::remote::ResourceReads>>,
+}
+
+impl DispatchReads {
+    fn publishes(address: &tilo_actions::remote::ResourceAddress) -> bool {
+        address.app == tilo_actions::remote::workspace_invocations::PROVIDER
+    }
+
+    fn records(&self) -> Result<&Arc<dyn tilo_actions::remote::ResourceReads>, ActionCallError> {
+        self.records
+            .as_ref()
+            .ok_or_else(|| ActionCallError::Unavailable {
+                reason: tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.into(),
+            })
+    }
+
+    /// Whether `caller` reads `workspace`'s invocations here: this dispatch's workspace, as the
+    /// session it admitted.
+    fn admit(&self, caller: &Caller, workspace: &str) -> Result<(), ActionCallError> {
+        if workspace != self.workspace {
+            return Err(ActionCallError::Refused {
+                reason: tilo_actions::remote::RESOURCE_READ_REFUSED.into(),
+            });
+        }
+        if let Some(session) = &self.session {
+            session.check(caller, &self.workspaces)?;
+        }
+        Ok(())
+    }
+
+    /// Every invocation of the workspace `caller` may read, newest first.
+    fn listed(
+        &self,
+        caller: &Caller,
+        invocation: Option<String>,
+    ) -> Result<Vec<tilo_actions::remote::workspace_invocations::Invocation>, ActionCallError> {
+        let mut items = Vec::new();
+        let mut cursor = None;
+        loop {
+            let page = self.broker.state().invocation_listing(
+                &self.workspace,
+                caller,
+                &WorkspaceInvocationsQuery {
+                    limit: tilo_actions::remote::workspace_invocations::MOST,
+                    cursor: cursor.take(),
+                    invocation: invocation.clone(),
+                    ..WorkspaceInvocationsQuery::default()
+                },
+            )?;
+            items.extend(page.items);
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => return Ok(items),
+            }
+        }
+    }
+}
+
+impl tilo_actions::remote::ResourceReads for DispatchReads {
+    fn read(
+        &self,
+        caller: &Caller,
+        address: &tilo_actions::remote::ResourceAddress,
+    ) -> Result<tilo_actions::remote::ResourceCopy, ActionCallError> {
+        use tilo_actions::remote::ResourceCopy;
+        if !Self::publishes(address) {
+            return self.records()?.read(caller, address);
+        }
+        self.admit(caller, &address.workspace)?;
+        if address.record.is_empty() {
+            let items = self.listed(caller, None)?;
+            let total = items.len();
+            return Ok(ResourceCopy::reading(
+                serde_json::json!({ "items": items, "total": total }),
+                None,
+            ));
+        }
+        let mut one = self.listed(caller, Some(address.record.clone()))?;
+        Ok(match one.pop() {
+            Some(invocation) => ResourceCopy::reading(
+                serde_json::to_value(invocation).map_err(|error| ActionCallError::Unavailable {
+                    reason: error.to_string(),
+                })?,
+                None,
+            ),
+            None => ResourceCopy::Absent,
+        })
+    }
+
+    fn answer_read(
+        self: Arc<Self>,
+        caller: &Caller,
+        correlation: u64,
+        read: tilo_actions::remote::ResourceReadRequest,
+    ) -> Pending<RemoteActionMessage> {
+        if read.app != tilo_actions::remote::workspace_invocations::PROVIDER
+            && let Some(records) = &self.records
+        {
+            return Arc::clone(records).answer_read(caller, correlation, read);
+        }
+        tilo_actions::remote::answer_read(self, caller, correlation, read)
+    }
+
+    fn watch(
+        &self,
+        caller: &Caller,
+        address: &tilo_actions::remote::ResourceAddress,
+        wake: &tilo_actions::remote::ResourceWake,
+    ) -> Result<(), ActionCallError> {
+        if !Self::publishes(address) {
+            return self.records()?.watch(caller, address, wake);
+        }
+        self.admit(caller, &address.workspace)?;
+        self.invocations.watch(&self.workspace, wake);
+        Ok(())
+    }
+
+    fn store_read(
+        &self,
+        caller: &Caller,
+        address: &tilo_actions::remote::ResourceAddress,
+        read: serde_json::Value,
+    ) -> Result<serde_json::Value, ActionCallError> {
+        if Self::publishes(address) {
+            return Err(ActionCallError::Unavailable {
+                reason: "a workspace's invocations are read whole or one by one, not from a store"
+                    .into(),
+            });
+        }
+        self.records()?.store_read(caller, address, read)
+    }
+}
+
 impl ActionProvider for RuntimeActionProvider {
     fn installed_surface(&self, app_id: &str) -> tilo_actions::remote::Pending<Option<Vec<u8>>> {
         tilo_actions::remote::Pending::ready(
@@ -2588,6 +2732,20 @@ impl ActionProvider for RuntimeActionProvider {
             session: Arc::clone(self.session.as_ref()?),
             workspaces: Arc::clone(&self.workspaces),
             content: self.broker.state().content_puts()?,
+        }))
+    }
+
+    /// Records read through the one record API: the workspace's invocations, which this
+    /// dispatch publishes itself ([`DispatchReads`]), and every app's record by the broker's
+    /// reader.
+    fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
+        Some(Arc::new(DispatchReads {
+            broker: self.broker.clone(),
+            workspace: self.workspace.clone(),
+            workspaces: Arc::clone(&self.workspaces),
+            session: self.session.clone(),
+            invocations: Arc::clone(&self.invocations),
+            records: self.broker.state().resource_reads(),
         }))
     }
 

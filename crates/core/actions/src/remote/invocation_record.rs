@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use super::workspace_invocations::{CANCEL, GET, PROVIDER, RETRY};
 use super::{
     ActionCallError, ActionProvider, Caller, InvocationReceipt, InvocationState, InvokeRequest,
-    Pending, ReceiptStatus,
+    Pending, ReceiptStatus, ResourceWake,
 };
 use crate::InvocationId;
 
@@ -58,6 +58,9 @@ pub struct Invocations(Mutex<Kept>);
 struct Kept {
     by_id: HashMap<InvocationId, Recorded>,
     order: VecDeque<InvocationId>,
+    /// Readers of a workspace's invocations, by the workspace: each woken once by the next
+    /// invocation recorded there ([`Invocations::watch`]).
+    watching: Vec<(String, ResourceWake)>,
 }
 
 impl Invocations {
@@ -101,7 +104,45 @@ impl Invocations {
                 kept.by_id.remove(&oldest);
             }
         }
+        let woken: Vec<ResourceWake> = match workspace {
+            Some(workspace) => {
+                let (woken, still) = std::mem::take(&mut kept.watching)
+                    .into_iter()
+                    .partition(|(watched, _)| watched == workspace);
+                kept.watching = still;
+                woken.into_iter().map(|(_, wake)| wake).collect()
+            }
+            None => Vec::new(),
+        };
         drop(kept);
+        for wake in woken {
+            wake.wake();
+        }
+    }
+
+    /// Wake `wake` once `workspace`'s invocations next change: another is recorded there, or
+    /// one that has not ended changes at the provider it runs at. What a reader that follows a
+    /// workspace's invocations waits on before it reads them again; watched before that read,
+    /// so nothing recorded between the two is missed.
+    pub fn watch(&self, workspace: &str, wake: &ResourceWake) {
+        let going: Vec<(InvocationId, Route)> = {
+            let mut kept = self.kept();
+            kept.watching.retain(|(_, waiting)| waiting.waiting());
+            kept.watching.push((workspace.to_owned(), wake.clone()));
+            kept.by_id
+                .iter()
+                .filter(|(_, recorded)| {
+                    recorded.workspace.as_deref() == Some(workspace) && recorded.ended_ms.is_none()
+                })
+                .map(|(id, recorded)| (*id, recorded.route.clone()))
+                .collect()
+        };
+        for (id, (provider, runs_as)) in going {
+            if let Some(changed) = provider.next_change(&runs_as, &id) {
+                let wake = wake.clone();
+                changed.then(move |_| wake.wake());
+            }
+        }
     }
 
     /// The record of `id`, as `caller` may read it: `None` when the device was not asked for it,

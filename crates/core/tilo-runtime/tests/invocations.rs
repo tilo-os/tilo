@@ -242,3 +242,70 @@ fn the_workspace_publishes_its_invocations_beside_its_apps() {
         );
     });
 }
+
+/// The workspace's invocations are a resource read through the one record API, as every record
+/// is: whole, or one by its id, and followed, the next call waking a reader that watches them. A
+/// reader names the workspace the record is in, and another workspace's are not read here.
+#[test]
+fn the_workspaces_invocations_are_read_and_followed_through_the_record_api() {
+    use tilo_actions::remote::workspace_invocations::PROVIDER;
+    use tilo_actions::remote::{ResourceAddress, ResourceCopy, ResourceWake};
+    host::run(|host| async move {
+        let workspace = host.workspace().to_owned();
+        let key = host.key("Visa backend");
+        let path = format!("/v1/workspaces/{workspace}/resources/devices/actions/info");
+        let first = ran(&key, &path).await;
+        let reads = host
+            .dispatch()
+            .resource_reads()
+            .expect("the dispatch reads records");
+        let caller = host.caller();
+        let address = |workspace: &str, record: &str| ResourceAddress {
+            workspace: workspace.to_owned(),
+            app: PROVIDER.to_owned(),
+            record: record.to_owned(),
+        };
+        let read = {
+            let (reads, caller) = (reads.clone(), caller.clone());
+            move |address: ResourceAddress| {
+                let (reads, caller) = (reads.clone(), caller.clone());
+                tokio::task::spawn_blocking(move || reads.read(&caller, &address))
+            }
+        };
+        let reading = |copy: ResourceCopy| match copy {
+            ResourceCopy::Reading { value, .. } => value,
+            other => panic!("the invocations are a reading, not {other:?}"),
+        };
+
+        let whole = reading(read(address(&workspace, "")).await.unwrap().unwrap());
+        assert_eq!(whole["total"], 1, "{whole}");
+        assert_eq!(whole["items"][0]["id"], first.as_str(), "{whole}");
+        let one = reading(read(address(&workspace, &first)).await.unwrap().unwrap());
+        assert_eq!(one["id"], first.as_str(), "one invocation by its id: {one}");
+        assert_eq!(one["status"], "ended", "{one}");
+        let unknown = read(address(&workspace, "00000000-0000-0000-0000-000000000000"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(unknown, ResourceCopy::Absent, "no such call is absent");
+
+        // A reader that follows them is woken by the next call, and reads it there.
+        let (wake, woken) = ResourceWake::new();
+        reads
+            .watch(&caller, &address(&workspace, ""), &wake)
+            .expect("the invocations can be followed");
+        let second = ran(&key, &path).await;
+        tilo_test_env::within("the next call wakes the reader", woken)
+            .await
+            .expect("the reader is woken");
+        let whole = reading(read(address(&workspace, "")).await.unwrap().unwrap());
+        assert_eq!(whole["total"], 2, "{whole}");
+        assert_eq!(whole["items"][0]["id"], second.as_str(), "newest first: {whole}");
+
+        let elsewhere = read(address("elsewhere", "")).await.unwrap();
+        assert!(
+            matches!(elsewhere, Err(ActionCallError::Refused { .. })),
+            "another workspace's invocations are not read here: {elsewhere:?}"
+        );
+    });
+}

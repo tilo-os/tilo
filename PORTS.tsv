@@ -460,7 +460,7 @@ gap B: the daemon's own agent invokes nothing (session provider tickets: None)	-
 gap C: the daemon serves no presence (tilo_watch presence [])	-	one-dispatch	presence on the daemon
 gap D: no workspace agent roster on the daemon	-	one-dispatch	roster from the workspace's agent members
 gap F: member_own needs the Discord app, daemon has no workspace bots	-	app-features	Discord row of the bots inventory
-gap list: tilo.invocations#list had its only implementation in agent-session invocations.rs (898c8e18496)	-	one-dispatch	workspaces/invocations.rs in tilo-workspace-service; asks' waiting#list filters it
+gap list: tilo.invocations#list had its only implementation in agent-session invocations.rs (898c8e18496)	ok	one-dispatch	invocations::the_workspaces_invocations_are_read_and_followed_through_the_record_api: tilo.invocations read whole and by id through ResourceReads, followed by watch; the invocations#list action and its callers (tilo-mcp, tilo-cli hosted) still to move onto the record read
 tilo-server tests/linux_terminal.rs (deleted by daemon-shells af669dd3a7d): stream refused to another device; attach to a kept session; typed lines recorded on the session	ok	daemon-shells	tilo-runtime tests/terminal_streams.rs (aa1de2fa4dc)
 gap shells a: a workspace shared with other people runs no program on the daemon's machine (no VM): a refusal	-	daemon-shells	deliberate refusal, tested (shared_workspace.rs, aa1de2fa4dc)
 gap shells b: record:<app>:<record> on a member copy refused, not forwarded to the hosting device	-	daemon-shells	forward through the dispatch
@@ -471,7 +471,7 @@ gap admission: registry providers admit by device; an agent's own scope (its gra
 gap G: no account surface on a device daemon (account/workspaces#create, keys#mint, delete-workspace by a server key, workspace plus key in one call per customer)	-	one-dispatch	serve account actions from the daemon's dispatch
 gap H: a key minted on a personal daemon acts as its person; it must act with its own scoped grant and be refused owner-only changes	-	one-dispatch	in the one admission; before landing
 turn and asking flows (126 + 14 + 7; hosted_agent_turns/questions/asks, hosted_turn_*, hosted_secret_use, api_asks/questions, packaged_model)	ok	daemon-turns	to port on start_turn (daemon-turns 910b2d083c2): wait on tl Chat replacing Rust Chat and on asked records
-gap H2: Here::enter admits any key as the person (an unknown root's key got 200 on /v1/workspaces/{ws}/resources)	-	one-dispatch	the caller comes from the key's certificate; unknown root refused; test
+gap H2: Here::enter admits any key as the person (an unknown root's key got 200 on /v1/workspaces/{ws}/resources)	ok	one-dispatch	workspace_list::a_key_of_a_root_this_computer_does_not_know_reaches_nothing
 gap I: content puts/gets on the device's dispatch (RuntimeActionProvider leaves them None)	-	one-dispatch	wire to daemon-fold's workspace-service content/put.rs after it lands; no second copy
 gap J: per-turn MCP session bound to a delegated caller's rules (McpServer::for_turn)	-	daemon-turns	turn engine
 gap K: document-read count for import/refresh cost tests	-	one-dispatch	a production metric the daemon exposes
@@ -484,7 +484,7 @@ gap Q: a webhook is kept but not delivered without an app event	-	one-dispatch	f
 gap R: the fixture's daemon has no held login session and no server list	-	daemon-host-fixture	fixture, with ticket sign-in helpers
 gap S: a daemon cannot redeem an invitation; a second person cannot join from their own computer's daemon	-	one-dispatch	with the account surface (G)
 main 67541d0852a, 115fa702c49, e93e461613c, babde88be75: tree and file actions naming another workspace are refused (through the deleted WorkspaceActions::serve)	ok	one-dispatch	port: a caller in workspace A naming workspace B is refused at the one admission, through the dispatch
-gap view: a view of a real installed app opened through open_view draws its real tilolang window	-	one-dispatch	daemon-host fixture with signed runtime bundles; api_programs moves onto the fixture
+gap view: a view of a real installed app opened through open_view draws its real tilolang window	ok	one-dispatch	app_views::a_view_of_an_installed_app_is_laid_out_by_its_own_window, app_views::a_page_that_narrows_lays_its_view_out_again_through_the_daemon
 main faff1472c2f: Direct refuses a second signed-in person on the API socket (serves the device or the key's own person only)	-	one-dispatch	after the rebase Direct admits through admit_key; test: a second signed-in person on the same computer acts as themselves and reaches only their own workspaces
 main e413179874b: workspace_actions::computer_agent::a_computers_agent_that_starts_the_workspaces_agents_leaves_them_open_to_every_reader	ok	port-agents	port through the daemon fixture: the agent roster founded with its genesis identity
 main 404449a5e24: workspace_actions::jobs_tests::a_stop_ends_the_threads_after_the_request_in_flight_and_before_the_runtime_does	ok	internal	WorkspaceActions jobs threads are deleted with it
