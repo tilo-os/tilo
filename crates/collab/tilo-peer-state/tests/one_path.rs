@@ -673,8 +673,10 @@ fn read(
 /// range the compaction folded is retired on both.
 #[tokio::test]
 async fn two_devices_converge_on_a_sealed_record_one_compacted_offline() {
-    // Past this crate's bound of sealed writes per record.
-    const OFFLINE: usize = 300;
+    // Past this build's bound of sealed writes per record: a test build keeps
+    // 256 and a device compacts at three quarters of them, a build 4096 (and
+    // compacts at 3072), so a device's own history crosses its bound only here.
+    const OFFLINE: usize = 3100;
     let directory = tempfile::tempdir().unwrap();
     let (owner_a, fixture, a_key, b_key) = held(directory.path());
     let workspace = fixture.workspace_id();
