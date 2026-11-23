@@ -200,6 +200,7 @@ mod tests {
                         actions: vec!["post".into()],
                         fields: Vec::new(),
                         by: crate::ActorFilter::default(),
+                        filter: crate::shortcut::ChangeFilter::default(),
                     },
                 ],
             );

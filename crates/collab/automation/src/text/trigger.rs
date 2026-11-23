@@ -65,6 +65,7 @@ pub(super) fn trigger_text(trigger: &TriggerSpec) -> String {
             actions,
             fields,
             by,
+            filter,
         } => {
             let mut line = format!("when a {} changes", quoted(kind));
             if !actions.is_empty() {
@@ -78,6 +79,7 @@ pub(super) fn trigger_text(trigger: &TriggerSpec) -> String {
                 crate::shortcut::ActorFilter::People => " by people",
                 crate::shortcut::ActorFilter::NotBots => " by anyone but a bot",
             });
+            line.push_str(&filter_text(filter));
             line
         }
         TriggerSpec::Connector {
@@ -562,21 +564,73 @@ fn match_of(text: &str) -> Result<(String, Value, String), String> {
     Ok((field.to_owned(), value, tail.trim_start().to_owned()))
 }
 
+/// A change filter as its `where FIELD is VALUE` clauses, each after a space.
+fn filter_text(filter: &crate::shortcut::ChangeFilter) -> String {
+    let mut text = String::new();
+    for test in &filter.0 {
+        let (verb, value) = match &test.test {
+            crate::shortcut::Test::Is(value) => ("is", value),
+            crate::shortcut::Test::IsNot(value) => ("is not", value),
+            crate::shortcut::Test::Has(value) => ("has", value),
+            crate::shortcut::Test::Lacks(value) => ("lacks", value),
+        };
+        let _ = write!(text, " where {} {verb} {}", test.field, literal_text(value));
+    }
+    text
+}
+
 /// The rest of `when a KIND changes`.
 fn document_change(kind: String, rest: &str) -> Result<TriggerSpec, String> {
-    let (actions, rest) = quoted_or_list(rest.trim_start().strip_prefix("by "), " or ")?;
-    let (fields, rest) = quoted_or_list(rest.trim_start().strip_prefix("in "), " or ")?;
-    let by = match rest.trim() {
+    // Each part is optional, and what it does not read is left for the next.
+    let listed = |rest: &str, prefix: &str| match rest.trim_start().strip_prefix(prefix) {
+        Some(list) if list.trim_start().starts_with('"') => quoted_or_list(Some(list), " or "),
+        _ => Ok((Vec::new(), rest.to_owned())),
+    };
+    let (actions, rest) = listed(rest, "by ")?;
+    let (fields, rest) = listed(&rest, "in ")?;
+    let (who, wheres) = match rest.find("where ") {
+        Some(at) => rest.split_at(at),
+        None => (rest.as_str(), ""),
+    };
+    let by = match who.trim() {
         "" => crate::shortcut::ActorFilter::Anyone,
         "by people" => crate::shortcut::ActorFilter::People,
         "by anyone but a bot" => crate::shortcut::ActorFilter::NotBots,
         other => return Err(format!("`{other}` is not who made the change")),
     };
+    let mut tests = Vec::new();
+    let mut rest = wheres.to_owned();
+    while let Some(matched) = rest.strip_prefix("where ").map(str::to_owned) {
+        let (field, after) = split_word(&matched).unwrap_or((&matched, ""));
+        let after = after.trim_start();
+        let (test, after): (fn(Value) -> crate::shortcut::Test, &str) =
+            if let Some(after) = after.strip_prefix("is not ") {
+                (crate::shortcut::Test::IsNot, after)
+            } else if let Some(after) = after.strip_prefix("is ") {
+                (crate::shortcut::Test::Is, after)
+            } else if let Some(after) = after.strip_prefix("has ") {
+                (crate::shortcut::Test::Has, after)
+            } else if let Some(after) = after.strip_prefix("lacks ") {
+                (crate::shortcut::Test::Lacks, after)
+            } else {
+                return Err(
+                    "write a test as `where FIELD is VALUE`, `is not`, `has` or `lacks`".to_owned(),
+                );
+            };
+        let (value, tail) = literal_and_rest(after)?;
+        tests.push(crate::shortcut::FieldTest {
+            field: field.to_owned(),
+            test: test(value),
+        });
+        tail.trim_start().clone_into(&mut rest);
+    }
+    require_nothing_after(&rest, "the change")?;
     Ok(TriggerSpec::ResourceChanged {
         kind,
         actions,
         fields,
         by,
+        filter: crate::shortcut::ChangeFilter(tests),
     })
 }
 

@@ -251,8 +251,9 @@ pub fn seen_here(armed: &Armed, trigger: &TriggerSpec, payload: &[(&str, Value)]
     }
 }
 
-/// The changes of `doc` after `since`, in causal order, as events; on a record's first look
-/// (`since` is `None`) only the changes made from `from_s`, seconds since the epoch, on.
+/// The changes of `doc` after `since`, in causal order, as events, each with the item it
+/// changed as it left it; on a record's first look (`since` is `None`) only the changes made
+/// from `from_s`, seconds since the epoch, on.
 #[must_use]
 pub fn record_events(
     (workspace, record, kind): (&str, &str, &str),
@@ -270,13 +271,19 @@ pub fn record_events(
         .filter(|change| since.is_some() || change.timestamp() >= from_s)
         .filter_map(|change| {
             let context = ActionContext::from_change_message(change.message()?)?;
-            Some(event_of(
+            let mut event = event_of(
                 workspace,
                 record,
                 kind,
                 &change.hash().to_string(),
                 &context,
-            ))
+            );
+            // What a trigger's filter reads of the changed item: its fields as the change left
+            // them.
+            event.after = event.item.as_ref().and_then(|item| {
+                tilo_automerge::items::item_json(committed, &[change.hash()], &item.id)
+            });
+            Some(event)
         })
         .collect()
 }
@@ -316,6 +323,10 @@ pub fn store_events(
             let Some(kind) = touch.kind else {
                 continue;
             };
+            // What a trigger's filter reads of the resource: its fields as the change left them.
+            let after =
+                tilo_automerge::items::item_json(committed, &[change.hash()], &format!("r:{id}"))
+                    .and_then(|resource| resource.get("f").cloned());
             events.push(DocumentEvent {
                 workspace: workspace.to_owned(),
                 record: id,
@@ -329,7 +340,8 @@ pub fn store_events(
                 arguments: Map::new(),
                 item: None,
                 before: None,
-                after: None,
+                after,
+                origin: None,
                 caused_by: None,
                 incoming_message: false,
                 housekeeping: false,

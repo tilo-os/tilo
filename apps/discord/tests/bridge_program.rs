@@ -778,12 +778,14 @@ fn triggers() -> Vec<TriggerSpec> {
             actions: Vec::new(),
             fields: Vec::new(),
             by: ActorFilter::Anyone,
+            filter: tilo_automation::ChangeFilter::default(),
         },
         TriggerSpec::ResourceChanged {
             kind: MESSAGES_KIND.into(),
             actions: Vec::new(),
             fields: Vec::new(),
             by: ActorFilter::Anyone,
+            filter: tilo_automation::ChangeFilter::default(),
         },
         // The workspace's own governance: who joined, whose role changed,
         // who was removed or banned.
@@ -792,6 +794,7 @@ fn triggers() -> Vec<TriggerSpec> {
             actions: MEMBER_VERBS.map(str::to_owned).to_vec(),
             fields: Vec::new(),
             by: ActorFilter::Anyone,
+            filter: tilo_automation::ChangeFilter::default(),
         },
         // The workspace's emoji, which the bridge uploads to the server.
         TriggerSpec::ResourceChanged {
@@ -799,12 +802,14 @@ fn triggers() -> Vec<TriggerSpec> {
             actions: Vec::new(),
             fields: Vec::new(),
             by: ActorFilter::Anyone,
+            filter: tilo_automation::ChangeFilter::default(),
         },
         TriggerSpec::ResourceChanged {
             kind: KIND.into(),
             actions: vec!["block-persona".to_owned(), "complete-link".to_owned()],
             fields: Vec::new(),
             by: ActorFilter::Anyone,
+            filter: tilo_automation::ChangeFilter::default(),
         },
     ];
     triggers.extend(

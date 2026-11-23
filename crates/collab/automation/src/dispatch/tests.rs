@@ -1,4 +1,4 @@
-use serde_json::{Map, json};
+use serde_json::{Map, Value, json};
 use tilo_actions::Acting;
 use tilo_actions::ActionKey;
 use tilo_actions::entry::{Did, EditOp, FieldEdit, GroupOf, PathStep, VerbCall};
@@ -49,6 +49,7 @@ fn post(actor: Acting, change: &str, caused_by: Option<Cause>) -> DocumentEvent 
         before: None,
         after: Some(json!({"text": "hi"})),
         caused_by,
+        origin: None,
         incoming_message: true,
         housekeeping: false,
         shortcut: None,
@@ -70,6 +71,7 @@ fn watch_chat(by: ActorFilter) -> TriggerSpec {
         actions: vec![],
         fields: vec![],
         by,
+        filter: crate::shortcut::ChangeFilter::default(),
     }
 }
 
@@ -186,6 +188,7 @@ fn housekeeping_fires_only_a_trigger_that_names_its_action() {
         actions: vec!["mark-read".into()],
         fields: vec![],
         by: ActorFilter::Anyone,
+        filter: crate::shortcut::ChangeFilter::default(),
     }]);
     assert_eq!(
         dispatch(&as_bot("b1", &reads), Event::Record(&read))
@@ -335,6 +338,7 @@ tilo_test_env::scenario! {
             actions: vec!["edit-message".into()],
             fields: vec![],
             by: ActorFilter::Anyone,
+            filter: crate::shortcut::ChangeFilter::default(),
         }]);
         let event = post(person("bob"), &"1".repeat(64), None);
         assert!(
@@ -347,6 +351,7 @@ tilo_test_env::scenario! {
             actions: vec![],
             fields: vec![],
             by: ActorFilter::Anyone,
+            filter: crate::shortcut::ChangeFilter::default(),
         }]);
         assert!(
             dispatch(&as_bot("b1", &other_kind), Event::Record(&event))
@@ -359,6 +364,7 @@ tilo_test_env::scenario! {
             actions: vec![],
             fields: vec!["channels.*.name".into()],
             by: ActorFilter::Anyone,
+            filter: crate::shortcut::ChangeFilter::default(),
         }]);
         let mut renamed = post(person("bob"), &"6".repeat(64), None);
         renamed.did = Did::Edit(FieldEdit {
@@ -657,4 +663,146 @@ tilo_test_env::scenario! {
                 .is_empty()
         );
     }
+}
+
+/// What an agent's own triggers watch, as its person saves them: a message that mentions it, a
+/// message in its direct conversation and a task assigned to it, each a change of the record's
+/// kind narrowed by the change's own fields. Neither its own answers nor a copy another writer
+/// mirrors back of one wakes it, and a message carried in for someone who is no member does.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, end to end, reads as one test"
+)]
+fn a_filter_narrows_a_change_by_what_it_holds_and_where_it_came_from() {
+    use crate::shortcut::{ChangeFilter, Test};
+    let not_its_own = || {
+        [
+            ("by", Test::IsNot(json!("agent:scout"))),
+            ("origin", Test::IsNot(json!("agent:scout"))),
+        ]
+    };
+    let watch = |kind: &str, field: &str, test: Test| TriggerSpec::ResourceChanged {
+        kind: kind.into(),
+        actions: vec![],
+        fields: vec![],
+        by: ActorFilter::Anyone,
+        filter: ChangeFilter::of(not_its_own().into_iter().chain([(field, test)])),
+    };
+    let mention = watch(
+        "chat.workspace",
+        "arguments.body",
+        Test::Has(json!("agent:scout")),
+    );
+    let direct = watch("chat.direct", "item.person", Test::Is(json!("agent:scout")));
+    let assigned = watch(
+        "tasks.issues",
+        "item.assignee",
+        Test::Is(json!("agent:scout")),
+    );
+    let shortcut = program(vec![mention, direct, assigned]);
+    let fired = |event: &DocumentEvent| {
+        dispatch(&as_shortcut(&shortcut), Event::Record(event))
+            .firings
+            .iter()
+            .map(|firing| firing.trigger_index)
+            .collect::<Vec<_>>()
+    };
+    let said = |actor: Acting, kind: &str, body: Value, item: Value| DocumentEvent {
+        kind: kind.into(),
+        arguments: Map::from_iter([("body".to_owned(), body)]),
+        after: Some(item),
+        ..post(actor, &"c".repeat(64), None)
+    };
+
+    let mentioned = said(
+        person("bob"),
+        "chat.workspace",
+        json!({"rich": [{"text": "hi "}, {"mention": "agent:scout"}]}),
+        json!({}),
+    );
+    assert_eq!(fired(&mentioned), [0], "a mention anywhere in the body");
+    let unmentioned = said(person("bob"), "chat.workspace", json!("hi all"), json!({}));
+    assert!(fired(&unmentioned).is_empty(), "a message naming nobody");
+    let in_direct = said(
+        person("bob"),
+        "chat.direct",
+        json!("hi"),
+        json!({"person": "agent:scout"}),
+    );
+    assert_eq!(
+        fired(&in_direct),
+        [1],
+        "a message in its direct conversation"
+    );
+    let others_direct = said(
+        person("bob"),
+        "chat.direct",
+        json!("hi"),
+        json!({"person": "ada"}),
+    );
+    assert!(
+        fired(&others_direct).is_empty(),
+        "someone else's direct message"
+    );
+    let given = said(
+        person("ada"),
+        "tasks.issues",
+        Value::Null,
+        json!({"assignee": "agent:scout", "title": "Tidy"}),
+    );
+    assert_eq!(fired(&given), [2], "a task assigned to it");
+
+    // Its own answer in its direct conversation, and a copy of it mirrored back by whatever
+    // carries the conversation elsewhere, fire nothing.
+    let answer = said(
+        Acting::agent("scout").acting_for(person("bob")),
+        "chat.direct",
+        json!("done: agent:scout here"),
+        json!({"person": "agent:scout"}),
+    );
+    assert!(fired(&answer).is_empty(), "its own answer");
+    let mirrored = DocumentEvent {
+        origin: Some("agent:scout".into()),
+        ..said(
+            Acting::by_app("so.tilo.relay"),
+            "chat.workspace",
+            json!({"rich": [{"mention": "agent:scout"}]}),
+            json!({}),
+        )
+    };
+    assert!(fired(&mirrored).is_empty(), "a copy of its own answer");
+
+    // A message carried in for someone outside the workspace is matched on the record and what
+    // it says, not on a member author.
+    let outside = said(
+        Acting::by_app("so.tilo.relay"),
+        "chat.workspace",
+        json!({"rich": [{"text": "@scout?"}, {"mention": "agent:scout"}], "by": "Visitor"}),
+        json!({}),
+    );
+    assert_eq!(fired(&outside), [0], "an outside author's mention");
+}
+
+#[test]
+fn a_change_filter_reads_back_from_its_text() {
+    use crate::shortcut::{ChangeFilter, Test};
+    let trigger = TriggerSpec::ResourceChanged {
+        kind: "chat.direct".into(),
+        actions: vec!["send".into()],
+        fields: vec![],
+        by: ActorFilter::Anyone,
+        filter: ChangeFilter::of([
+            ("by", Test::IsNot(json!("agent:scout"))),
+            ("item.person", Test::Is(json!("agent:scout"))),
+            ("arguments.body", Test::Has(json!("scout"))),
+            ("origin", Test::Lacks(json!("agent:"))),
+        ]),
+    };
+    let text = crate::text::trigger_line(&trigger);
+    assert_eq!(
+        crate::text::trigger_of_line(&text),
+        Ok(trigger),
+        "the filter reads back from `{text}`"
+    );
 }
