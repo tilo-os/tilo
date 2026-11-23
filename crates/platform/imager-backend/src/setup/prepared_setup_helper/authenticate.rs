@@ -10,7 +10,7 @@ use std::{
     collections::BTreeMap,
     ffi::OsString,
     io::{self, Read, Write},
-    path::{Path, PathBuf},
+    path::Path,
     sync::atomic::AtomicBool,
 };
 use zeroize::Zeroizing;
@@ -107,10 +107,8 @@ pub fn run(
         {
             return Err(failed());
         }
-        let path = PathBuf::from(args.next().ok_or_else(failed)?);
-        if !path.is_absolute() {
-            return Err(failed());
-        }
+        let path =
+            crate::setup::helper_arguments::strict_path(args.next().ok_or_else(failed)?, failed)?;
         values.insert(name.to_owned(), path);
     }
     if values.len() != 3 {
