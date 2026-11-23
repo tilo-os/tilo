@@ -96,11 +96,7 @@ fn job(input: [u8; 32]) -> Job {
 
 /// The person's entry for `device` among their servers, offering compute when
 /// `compute` says so: the Servers workspace founded here, the device enrolled.
-pub(super) async fn offer_compute(
-    host: &super::fixtures::TestHost,
-    device: &DeviceCert,
-    compute: bool,
-) {
+async fn offer_compute(host: &super::fixtures::TestHost, device: &DeviceCert, compute: bool) {
     let workspaces = host.workspaces();
     let admin = person_workspace_id(&device.user_public_key);
     if servers::read(workspaces).await.is_err() {

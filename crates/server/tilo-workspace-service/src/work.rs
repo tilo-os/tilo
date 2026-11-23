@@ -39,15 +39,14 @@
 //! device's job runner ([`HostJobs`]) runs the transform and keeps every input
 //! already, it has room for one more job, the workspace lets this device open
 //! the record the work is about, and it lets the device that asked run the
-//! action. For an agent's turn: the workspace lets this device open the
-//! record the turn is about, and the device runs an agent engine that can run
-//! the agent: it holds the agent's approved key, or it is a device of the
-//! person it acts for (a server of theirs only where its entry offers compute and
-//! is not retired). Who started the turn does not decide where it runs: any
-//! member may start any agent's turn. For an automation's firing: this device
-//! acts for the person who saved the automation. For any other action that
-//! runs once: the workspace lets this device open the record the action acts
-//! on and run the action on it. No caller checks any of this itself.
+//! action. For an action that runs once: the workspace lets this device open
+//! the record it is about, and the device can act as whoever it acts as: for
+//! an agent, its engine holds the agent's approved key or can make it; for a
+//! person (an automation's saver), it acts for them. Who started the turn does
+//! not decide where it runs: any member may start any agent's turn. An action
+//! that acts as nobody named runs where the workspace lets this device open
+//! the resource it acts on and run the action on it. No caller checks any of
+//! this itself.
 //!
 //! A run that needs Linux (a workspace's shell command, its terminal, its
 //! machine, its Browser) is asked the same way ([`Turn::Linux`], on
@@ -221,13 +220,8 @@ pub enum Turn {
 pub enum Actor {
     /// A person, by their person id: a saved automation runs as the person who saved it.
     Person(String),
-    /// An agent acting for the person whose root is `acts_for`.
-    Agent {
-        /// The agent, by its id.
-        agent: String,
-        /// The person it acts for, by their root key.
-        acts_for: [u8; 32],
-    },
+    /// An agent, by its id: its turn acts with its own key.
+    Agent(String),
 }
 
 impl Turn {
@@ -345,9 +339,6 @@ pub enum Ineligible {
     NoRoomForLinux,
     /// The workspace's Linux machine is kept on another device.
     MachineElsewhere,
-    /// This device holds no approved key of the agent and is none of the
-    /// devices of the person it acts for.
-    CannotRunAgent,
     /// This device runs no agent engine.
     RunsNoAgents,
     /// This device does not act for the person the turn acts as.
@@ -367,7 +358,6 @@ impl fmt::Display for Ineligible {
             Self::RunsNoLinux => "this device runs no Linux machines",
             Self::NoRoomForLinux => "this device has no room for another Linux machine",
             Self::MachineElsewhere => "the workspace's Linux machine is kept on another device",
-            Self::CannotRunAgent => "this device cannot run the agent",
             Self::RunsNoAgents => "this device runs no agents",
             Self::CannotActAs => "this device does not act for the person the turn acts as",
         })
@@ -683,14 +673,12 @@ async fn eligibility(
                     }
                     Ok(())
                 }
-                Some(Actor::Agent { agent, acts_for }) => {
-                    let Some(keys) = workspaces.agent_keys() else {
-                        return Err(Ineligible::RunsNoAgents);
-                    };
-                    if keys.holds(workspace, agent, acts_for).await {
-                        return Ok(());
+                Some(Actor::Agent(agent)) => {
+                    let engine = workspaces.agent_keys().ok_or(Ineligible::RunsNoAgents)?;
+                    if !engine.acts_as(workspace, agent).await {
+                        return Err(Ineligible::CannotActAs);
                     }
-                    device_of(workspaces, acts_for).await
+                    Ok(())
                 }
                 None => {
                     let (app, resource, action) =
@@ -729,27 +717,14 @@ pub trait HostLinux: Send + Sync {
     fn runs(&self) -> Arc<dyn ActionProvider + Send + Sync>;
 }
 
-/// Whether this device runs agents for the person whose root is `person`: it
-/// is a device of theirs, and where their servers name it, its entry offers
-/// compute and is not retired.
-async fn device_of(workspaces: &Workspaces, person: &[u8; 32]) -> Result<(), Ineligible> {
-    match server_entry(workspaces, person).await {
-        Some(entry) if entry.compute && !entry.retired => Ok(()),
-        Some(_) => Err(Ineligible::OffersNoCompute),
-        None if workspaces.serving_certificate().user_public_key == *person => Ok(()),
-        None => Err(Ineligible::CannotRunAgent),
-    }
-}
-
 /// The agent engine a device runs, as [`takes_turn`] asks it about an agent.
 pub trait AgentEngine: Send + Sync {
-    /// Whether this device holds an approved key of `agent` of `workspace`,
-    /// acting for the person whose root is `acts_for`.
-    fn holds<'a>(
+    /// Whether this device can act as `agent` of `workspace`: its engine holds the agent's
+    /// approved key, or can make it.
+    fn acts_as<'a>(
         &'a self,
         workspace: &'a str,
         agent: &'a str,
-        acts_for: &'a [u8; 32],
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>>;
 }
 
