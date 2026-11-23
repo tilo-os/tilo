@@ -1940,9 +1940,9 @@ async fn opening_an_app_with_another_uuid_spelling_uses_canonical_workspace_id()
         );
     }
 
-    // An app that keeps one record per workspace opens under the canonical workspace id for both
-    // upper-case and braced UUID spellings, and a later open with the usual spelling returns the
-    // same record without creating a second one.
+    // An app that keeps one record per workspace founds under the canonical workspace id for
+    // upper-case spelling, and later opens in braced and canonical spellings leave the stored
+    // document bytes unchanged, proving they reuse that record instead of founding again.
     let chat_upper = invoke_on_workspace(
         &actions,
         served_id,
@@ -1964,7 +1964,7 @@ async fn opening_an_app_with_another_uuid_spelling_uses_canonical_workspace_id()
         .unwrap()
         .expect("chat record stored under canonical workspace id");
 
-    let chat_braced = invoke_on_workspace(
+    invoke_on_workspace(
         &actions,
         served_id,
         &person,
@@ -1974,9 +1974,16 @@ async fn opening_an_app_with_another_uuid_spelling_uses_canonical_workspace_id()
     )
     .await
     .unwrap();
-    assert_eq!(chat_braced, chat_upper, "{chat_braced}");
+    assert_eq!(
+        workspaces
+            .resource_document(&served, "so.tilo.chat", "")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(chat_bytes.as_slice()),
+    );
 
-    let chat_canonical = invoke_on_workspace(
+    invoke_on_workspace(
         &actions,
         served_id,
         &person,
@@ -1986,7 +1993,6 @@ async fn opening_an_app_with_another_uuid_spelling_uses_canonical_workspace_id()
     )
     .await
     .unwrap();
-    assert_eq!(chat_canonical, chat_upper, "{chat_canonical}");
     assert_eq!(
         workspaces
             .resource_document(&served, "so.tilo.chat", "")
@@ -1995,14 +2001,6 @@ async fn opening_an_app_with_another_uuid_spelling_uses_canonical_workspace_id()
             .as_deref(),
         Some(chat_bytes.as_slice()),
     );
-    let chat_routes: Vec<_> = workspaces
-        .document_routes(&served)
-        .await
-        .unwrap()
-        .into_iter()
-        .filter(|(app, record)| app == "so.tilo.chat" && record.is_empty())
-        .collect();
-    assert_eq!(chat_routes.len(), 1, "{chat_routes:?}");
 
     // Per-record apps also land under the canonical workspace id for upper-case and braced
     // spellings.
@@ -2059,8 +2057,9 @@ async fn opening_an_app_with_another_uuid_spelling_uses_canonical_workspace_id()
             .is_some()
     );
 
-    // Placing a window via an application provider also accepts alternate UUID spellings for the
-    // served workspace without poisoning workspace state, while still refusing another workspace.
+    // Placing a window via an application provider accepts alternate UUID spellings for the
+    // served workspace and writes the asked view to its layout document, while still refusing
+    // another workspace.
     assert_eq!(
         invoke_target(
             &actions,
@@ -2077,6 +2076,18 @@ async fn opening_an_app_with_another_uuid_spelling_uses_canonical_workspace_id()
         .await,
         Err(ActionCallError::UnknownAction)
     );
+    assert!(
+        workspaces
+            .resource_document(
+                &served,
+                tilo_desktop_model::ownership::DESKTOP_APP,
+                tilo_desktop_model::ownership::DESKTOP_DOCUMENT,
+            )
+            .await
+            .unwrap()
+            .is_none(),
+        "no desktop layout document exists before placing a window"
+    );
     invoke_target(
         &actions,
         served_id,
@@ -2091,17 +2102,20 @@ async fn opening_an_app_with_another_uuid_spelling_uses_canonical_workspace_id()
     )
     .await
     .unwrap();
-    assert!(
-        workspaces
-            .resource_document(
-                &served,
-                tilo_desktop_model::ownership::DESKTOP_APP,
-                tilo_desktop_model::ownership::DESKTOP_DOCUMENT,
-            )
-            .await
-            .unwrap()
-            .is_some()
-    );
+    let layout_bytes = workspaces
+        .resource_document(
+            &served,
+            tilo_desktop_model::ownership::DESKTOP_APP,
+            tilo_desktop_model::ownership::DESKTOP_DOCUMENT,
+        )
+        .await
+        .unwrap()
+        .expect("desktop layout document written under canonical workspace id");
+    let layout_doc = automerge::AutoCommit::load(&layout_bytes).unwrap();
+    let asked_views = tilo_desktop_model::asked::asked(&layout_doc);
+    assert_eq!(asked_views.len(), 1, "{asked_views:?}");
+    assert_eq!(asked_views[0].1.app_id, "so.tilo.word-processor");
+    assert_eq!(asked_views[0].1.document, upper_record);
 
     // Every provider advertised by the workspace catalogue carries the lower-case hyphenated id.
     let page = catalogue_page(&actions, served_id, &person, CatalogueQuery::default())
@@ -2130,6 +2144,436 @@ async fn opening_an_app_with_another_uuid_spelling_uses_canonical_workspace_id()
         entry.provider == format!("record:so.tilo.word-processor:{braced_record}")
             && entry.workspace == served
     }));
+}
+
+/// Listing a workspace's own provider with upper-case or braced UUID spellings answers the exact
+/// same page as the lower-case hyphenated spelling, both when the workspace has no records yet and
+/// once it holds records, while another workspace or an unparseable name is refused with
+/// `UnknownAction`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn listing_a_workspace_provider_with_another_uuid_spelling_matches_canonical() {
+    use tilo_actions::remote::{ActionCallError, CatalogueQuery, workspace_provider};
+
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let device = enrol(&root, "tilo-sh", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let (server, actions) = tilo_server::agents::start_serving_documents(
+        crate::harness::hosted::on_this_machine(state.path()),
+        tilo_server::daemon::ServerIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_signing_key: device.key.clone(),
+            device_cert: device.cert.clone(),
+            revocations: tilo_user_identity::RevocationList::new(),
+        },
+        Some(std::sync::Arc::new(crate::common::catalogue)),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let workspaces = server.workspaces().unwrap().clone();
+    let empty_ws = workspaces.create("Empty").await.unwrap().workspace;
+    let populated_ws = workspaces.create("Populated").await.unwrap().workspace;
+    let other = workspaces.create("Other").await.unwrap().workspace;
+    let empty_id = tilo_server_protocol::WorkspaceId::parse(&empty_ws).unwrap();
+    let populated_id = tilo_server_protocol::WorkspaceId::parse(&populated_ws).unwrap();
+
+    // Populate one workspace so both empty and non-empty workspaces are tested.
+    let populated_caller = Caller::authenticated(
+        root.verifying_key().to_bytes(),
+        device.cert.device_public_key,
+    )
+    .in_workspace(&populated_ws);
+    invoke_on_workspace(
+        &actions,
+        populated_id,
+        &populated_caller,
+        &populated_ws,
+        ("app.so.tilo.chat", "open"),
+        json!({}),
+    )
+    .await
+    .unwrap();
+    invoke_on_workspace(
+        &actions,
+        populated_id,
+        &populated_caller,
+        &populated_ws,
+        ("app.so.tilo.word-processor", "open"),
+        json!({}),
+    )
+    .await
+    .unwrap();
+
+    let empty_caller = Caller::authenticated(
+        root.verifying_key().to_bytes(),
+        device.cert.device_public_key,
+    )
+    .in_workspace(&empty_ws);
+
+    for (ws, ws_id, caller) in [
+        (&empty_ws, empty_id, &empty_caller),
+        (&populated_ws, populated_id, &populated_caller),
+    ] {
+        let canonical_provider = workspace_provider(ws);
+        let expected = catalogue_page(
+            &actions,
+            ws_id,
+            caller,
+            CatalogueQuery {
+                provider: Some(canonical_provider.clone()),
+                ..CatalogueQuery::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!expected.rows.is_empty(), "workspace {ws} offers rows");
+        assert!(
+            expected
+                .rows
+                .iter()
+                .all(|row| row.provider == canonical_provider)
+        );
+
+        for spelling in [ws.to_ascii_uppercase(), format!("{{{ws}}}")] {
+            let page = catalogue_page(
+                &actions,
+                ws_id,
+                caller,
+                CatalogueQuery {
+                    provider: Some(workspace_provider(&spelling)),
+                    ..CatalogueQuery::default()
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(page, expected, "spelling {spelling}");
+        }
+
+        for foreign in [
+            other.clone(),
+            other.to_ascii_uppercase(),
+            format!("{{{other}}}"),
+            "not-a-workspace-id".to_owned(),
+        ] {
+            assert_eq!(
+                catalogue_page(
+                    &actions,
+                    ws_id,
+                    caller,
+                    CatalogueQuery {
+                        provider: Some(workspace_provider(&foreign)),
+                        ..CatalogueQuery::default()
+                    },
+                )
+                .await,
+                Err(ActionCallError::UnknownAction),
+                "foreign spelling {foreign}"
+            );
+        }
+    }
+}
+
+/// Host link whose document reads come from a separate empty store while its session and writes
+/// target the server holding the workspace, so `WorkspaceState.workspace` begins as `None`.
+struct UnlistedWorkspaceLink {
+    reads: Workspaces,
+    writes: Workspaces,
+    member: tilo_agent_session::workspace_actions::HostDevice,
+}
+
+impl tilo_agent_session::workspace_actions::WorkspaceDocumentsLink for UnlistedWorkspaceLink {
+    fn user_public_key(&self) -> [u8; 32] {
+        self.member.endpoint.server_cert.user_public_key
+    }
+
+    fn own_device(&self) -> tilo_agent_session::workspace_actions::HostDevice {
+        self.member.clone()
+    }
+
+    fn documents(
+        &self,
+    ) -> Option<std::sync::Arc<dyn tilo_server::workspace_documents::DeviceDocuments>> {
+        Some(std::sync::Arc::new(
+            tilo_server::device_documents::ServiceDocuments::of(self.reads.clone()),
+        ))
+    }
+
+    fn writes(&self) -> Option<std::sync::Arc<dyn tilo_server::workspace_documents::DeviceWrites>> {
+        Some(std::sync::Arc::new(
+            tilo_server::device_documents::ServiceWrites::of(self.writes.clone()),
+        ))
+    }
+}
+
+/// When the worker's document store has no entry for the workspace yet (`state.workspace` is
+/// `None`), listing the workspace's own provider in upper case or braces derives the canonical
+/// lower-case hyphenated id rather than echoing the caller's spelling, while another workspace or
+/// an unparseable name returns an empty page.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unlisted_workspace_catalogue_fallback_uses_canonical_workspace_id() {
+    use tilo_actions::remote::{CataloguePage, CatalogueQuery, workspace_provider};
+
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let device = enrol(&root, "tilo-sh", DeviceCapabilities::member());
+    let server_state = crate::support::scratch_dir();
+    let (server, server_actions) = tilo_server::agents::start_serving_documents(
+        crate::harness::hosted::on_this_machine(server_state.path()),
+        tilo_server::daemon::ServerIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_signing_key: device.key.clone(),
+            device_cert: device.cert.clone(),
+            revocations: tilo_user_identity::RevocationList::new(),
+        },
+        Some(std::sync::Arc::new(crate::common::catalogue)),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    server_actions.shutdown();
+
+    let empty_state = crate::support::scratch_dir();
+    let empty_device = enrol(&root, "empty-store", DeviceCapabilities::member());
+    let (empty_server, empty_actions) = tilo_server::agents::start_serving_documents(
+        crate::harness::hosted::on_this_machine(empty_state.path()),
+        tilo_server::daemon::ServerIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_signing_key: empty_device.key.clone(),
+            device_cert: empty_device.cert.clone(),
+            revocations: tilo_user_identity::RevocationList::new(),
+        },
+        Some(std::sync::Arc::new(crate::common::catalogue)),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    empty_actions.shutdown();
+
+    let workspaces = server.workspaces().unwrap().clone();
+    let served = workspaces.create("Unlisted").await.unwrap().workspace;
+    let other = workspaces.create("Other").await.unwrap().workspace;
+    let served_id = tilo_server_protocol::WorkspaceId::parse(&served).unwrap();
+    let person = Caller::authenticated(
+        root.verifying_key().to_bytes(),
+        device.cert.device_public_key,
+    )
+    .in_workspace(&served);
+
+    let unlisted =
+        tilo_agent_session::WorkspaceActions::new(std::sync::Arc::new(crate::common::catalogue));
+    unlisted
+        .attach(std::sync::Arc::new(UnlistedWorkspaceLink {
+            reads: empty_server.workspaces().unwrap().clone(),
+            writes: workspaces,
+            member: tilo_agent_session::workspace_actions::HostDevice {
+                endpoint: tilo_agent_session::ServerEndpoint::iroh(
+                    server.node_addr(),
+                    device.cert.clone(),
+                ),
+                key: device.key.clone(),
+                runtime: tokio::runtime::Handle::current(),
+                keys: None,
+            },
+        }))
+        .unwrap();
+
+    let canonical_provider = workspace_provider(&served);
+    let expected = catalogue_page(
+        &unlisted,
+        served_id,
+        &person,
+        CatalogueQuery {
+            provider: Some(canonical_provider.clone()),
+            ..CatalogueQuery::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(!expected.rows.is_empty());
+    assert!(
+        expected
+            .rows
+            .iter()
+            .all(|row| row.provider == canonical_provider)
+    );
+
+    for spelling in [served.to_ascii_uppercase(), format!("{{{served}}}")] {
+        let page = catalogue_page(
+            &unlisted,
+            served_id,
+            &person,
+            CatalogueQuery {
+                provider: Some(workspace_provider(&spelling)),
+                ..CatalogueQuery::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(page, expected, "spelling {spelling}");
+    }
+
+    for foreign in [
+        other.clone(),
+        other.to_ascii_uppercase(),
+        format!("{{{other}}}"),
+        "not-a-workspace-id".to_owned(),
+    ] {
+        let query = CatalogueQuery {
+            provider: Some(workspace_provider(&foreign)),
+            ..CatalogueQuery::default()
+        };
+        assert_eq!(
+            catalogue_page(&unlisted, served_id, &person, query.clone()).await,
+            Ok(CataloguePage::from_rows(
+                expected.revision.clone(),
+                Vec::new(),
+                &query,
+            )),
+            "foreign spelling {foreign}"
+        );
+    }
+
+    unlisted.shutdown();
+    empty_server.shutdown().await;
+    server.shutdown().await;
+}
+
+/// When a layout open in upper case is the first operation on a workspace whose documents holder
+/// has not been initialized yet, the holder keeps the canonical lower-case hyphenated workspace id
+/// rather than the caller's spelling.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn first_layout_open_with_another_uuid_spelling_keeps_canonical_workspace_id() {
+    use tilo_actions::remote::{
+        APPLICATION_OPEN_ACTION, CatalogueQuery, application_action_target, provider_workspace,
+        workspace_provider,
+    };
+
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let device = enrol(&root, "tilo-sh", DeviceCapabilities::member());
+    let server_state = crate::support::scratch_dir();
+    let (server, server_actions) = tilo_server::agents::start_serving_documents(
+        crate::harness::hosted::on_this_machine(server_state.path()),
+        tilo_server::daemon::ServerIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_signing_key: device.key.clone(),
+            device_cert: device.cert.clone(),
+            revocations: tilo_user_identity::RevocationList::new(),
+        },
+        Some(std::sync::Arc::new(crate::common::catalogue)),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    server_actions.shutdown();
+
+    let empty_state = crate::support::scratch_dir();
+    let empty_device = enrol(&root, "empty-store", DeviceCapabilities::member());
+    let (empty_server, empty_actions) = tilo_server::agents::start_serving_documents(
+        crate::harness::hosted::on_this_machine(empty_state.path()),
+        tilo_server::daemon::ServerIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_signing_key: empty_device.key.clone(),
+            device_cert: empty_device.cert.clone(),
+            revocations: tilo_user_identity::RevocationList::new(),
+        },
+        Some(std::sync::Arc::new(crate::common::catalogue)),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    empty_actions.shutdown();
+
+    let workspaces = server.workspaces().unwrap().clone();
+    let served = workspaces.create("FirstLayout").await.unwrap().workspace;
+    let served_id = tilo_server_protocol::WorkspaceId::parse(&served).unwrap();
+    let upper = served.to_ascii_uppercase();
+    let person = Caller::authenticated(
+        root.verifying_key().to_bytes(),
+        device.cert.device_public_key,
+    )
+    .in_workspace(&served);
+
+    let unlisted =
+        tilo_agent_session::WorkspaceActions::new(std::sync::Arc::new(crate::common::catalogue));
+    unlisted
+        .attach(std::sync::Arc::new(UnlistedWorkspaceLink {
+            reads: empty_server.workspaces().unwrap().clone(),
+            writes: workspaces.clone(),
+            member: tilo_agent_session::workspace_actions::HostDevice {
+                endpoint: tilo_agent_session::ServerEndpoint::iroh(
+                    server.node_addr(),
+                    device.cert.clone(),
+                ),
+                key: device.key.clone(),
+                runtime: tokio::runtime::Handle::current(),
+                keys: None,
+            },
+        }))
+        .unwrap();
+
+    assert!(
+        workspaces
+            .resource_document(
+                &served,
+                tilo_desktop_model::ownership::DESKTOP_APP,
+                tilo_desktop_model::ownership::DESKTOP_DOCUMENT,
+            )
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    invoke_target(
+        &unlisted,
+        served_id,
+        &person,
+        application_action_target(&upper, "so.tilo.chat", "", APPLICATION_OPEN_ACTION),
+    )
+    .await
+    .unwrap();
+
+    let layout_bytes = workspaces
+        .resource_document(
+            &served,
+            tilo_desktop_model::ownership::DESKTOP_APP,
+            tilo_desktop_model::ownership::DESKTOP_DOCUMENT,
+        )
+        .await
+        .unwrap()
+        .expect("desktop layout document written under canonical workspace id");
+    let layout_doc = automerge::AutoCommit::load(&layout_bytes).unwrap();
+    let asked_views = tilo_desktop_model::asked::asked(&layout_doc);
+    assert_eq!(asked_views.len(), 1, "{asked_views:?}");
+    assert_eq!(asked_views[0].1.app_id, "so.tilo.chat");
+    assert!(asked_views[0].1.document.is_empty());
+
+    // Subsequent listing reads the documents holder initialized by `held_layout`.
+    let page = catalogue_page(&unlisted, served_id, &person, CatalogueQuery::default())
+        .await
+        .unwrap();
+    assert!(!page.providers.is_empty());
+    for entry in &page.providers {
+        assert_eq!(entry.workspace, served, "{entry:?}");
+    }
+    let own = page
+        .providers
+        .iter()
+        .find(|entry| provider_workspace(&entry.provider).is_some())
+        .expect("workspace provider is listed");
+    assert_eq!(own.provider, workspace_provider(&served));
+
+    unlisted.shutdown();
+    empty_server.shutdown().await;
+    server.shutdown().await;
 }
 
 /// What the folder's files say and what the folder lists reach a turn's model labelled as content
