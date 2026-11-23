@@ -213,6 +213,51 @@ pub fn served(name: &str) -> bool {
         .any(|(registered, _)| *registered == name)
 }
 
+/// What an origin's service holds in a sample workspace, taken into the package `app` of `host`
+/// as of the time `now`: a fixture answer of the service, written by the origin's own conversion
+/// of an answer, so it lands as the service's change (`$origin`) exactly as a real answer does.
+pub type Sample = dyn Fn(&Host, &str, &str) -> Result<(), String> + Send + Sync;
+
+static SAMPLES: std::sync::Mutex<Vec<(&'static str, &'static Sample)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Have the origin `name` answer a sample workspace with `sample` from now on: its crate's
+/// fixture of what its service holds. A crate registers its own as [`register_remote`] does.
+pub fn register_sample(name: &'static str, sample: &'static Sample) {
+    let mut samples = SAMPLES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    samples.retain(|(registered, _)| *registered != name);
+    samples.push((name, sample));
+}
+
+/// What the services of `app`'s origins hold in a sample workspace, taken in through each
+/// origin, as of `now`: what the package's first scenario, its seed, stands on. A scenario is no
+/// action of the app's surface and writes only through the app's own actions, so the records an
+/// outside service keeps (a mail account and its mail, a channel and its videos) come in this
+/// way, before it, and its actions act on them. An origin no crate registered a sample for adds
+/// nothing.
+///
+/// # Errors
+/// `app` is not loaded, or a sample could not be taken in whole.
+pub fn take_in_samples(host: &Host, app: &str, now: &str) -> Result<(), String> {
+    let Some(package) = host.package(app) else {
+        return Err(format!("{app} is not loaded"));
+    };
+    let samples: Vec<(&'static str, &'static Sample)> = SAMPLES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .filter(|(name, _)| uses_origin(&package.meta, name))
+        .copied()
+        .collect();
+    for (name, sample) in samples {
+        sample(host, app, now)
+            .map_err(|error| format!("what {name} holds for {app} was not taken in: {error}"))?;
+    }
+    Ok(())
+}
+
 /// Write `message` as one JSON frame under `framing` and flush `to`.
 ///
 /// # Errors

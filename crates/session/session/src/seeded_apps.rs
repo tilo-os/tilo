@@ -56,6 +56,10 @@ pub fn seeded(
     person: &str,
     catalog: &package_store::Catalog,
 ) -> Result<Vec<ResourceService>, String> {
+    // The sample answers of the services the apps' origins stand for, which each seed takes in
+    // before its scenario.
+    tilolang_mail::sample::register();
+    tilolang_youtube::sample::register();
     let installed = installed_apps(catalog)?;
     let mut services = vec![session_document(person)?];
     for app in &installed {
@@ -123,6 +127,16 @@ fn seeded_app(person: &str, app: &InstalledApp) -> Result<ResourceService, Strin
         move |host: &Host| -> Result<(), String> {
             host.root_of(&name)
                 .map_err(|error| format!("{name}'s root: {error}"))?;
+            // What the app's outside services hold (Mail's account and its mail, YouTube's
+            // channels and videos) is the services' to write, never a scenario's: it comes in
+            // through each service's origin first, so the scenario's actions act on it.
+            if scenario.is_some() {
+                tilolang_tilo::origin::take_in_samples(
+                    host,
+                    &name,
+                    &tilolang_tilo::host::system_time(),
+                )?;
+            }
             if let Some(action) = &scenario {
                 host.runtime()
                     .invoke_action(

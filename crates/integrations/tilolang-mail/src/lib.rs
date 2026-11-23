@@ -16,6 +16,7 @@ pub mod html;
 pub mod origin;
 #[cfg(unix)]
 pub mod remote;
+pub mod sample;
 #[cfg(feature = "engine")]
 pub mod serve;
 #[cfg(feature = "engine")]

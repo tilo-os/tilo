@@ -69,6 +69,12 @@ fn seed(replica: &Replica, meta: &Meta, name: &str) {
         .unwrap_or_else(|| panic!("the scenario {name}"))
         .action
         .clone();
+    // The client's first scenario is its seed: what YouTube holds comes in through the YouTube
+    // origin, from the sample YouTube, before the scenario follows, likes and watches it.
+    if meta.scenarios.first().is_some_and(|first| first.name == name) {
+        replica.host.root_of(TUBE).unwrap();
+        tilolang_youtube::sample::take_in(&replica.host, TUBE, "2026-11-22T12:00:00Z").unwrap();
+    }
     replica
         .host
         .runtime()

@@ -217,6 +217,10 @@ impl Staged {
                     .map_err(|error| format!("--state {state}: {error}"))?;
             }
         }
+        // A package's first scenario stands on what its outside services hold, which the
+        // instance takes in from these samples through the services' origins before it runs.
+        tilolang_mail::sample::register();
+        tilolang_youtube::sample::register();
         instance.stage_story(scenario.as_deref());
         // The scenario runs on the frame that takes it: its sample data is what it writes
         // without a time of its own, and what it dates is the story it tells.

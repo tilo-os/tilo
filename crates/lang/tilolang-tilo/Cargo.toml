@@ -79,6 +79,8 @@ passwords = { path = "../../../apps/passwords" }
 # The YouTube connector's service, faked at the boundary where the app hands its effects over:
 # the real origin writes a test's own answers into the client's records. No network, no client.
 tilolang-youtube = { path = "../../integrations/tilolang-youtube", default-features = false }
+# The sample mail server Mail's seed stands on, taken in through the real mail origin.
+tilolang-mail = { path = "../../integrations/tilolang-mail", default-features = false }
 
 [[test]]
 name = "it"

@@ -132,6 +132,16 @@ impl YouTubeOrigin {
         origin
     }
 
+    /// Why YouTube could not be reached the last time it was asked, until it answers.
+    pub(crate) fn unreached(&self) -> Option<&str> {
+        self.unreached.as_deref()
+    }
+
+    /// Whether a question waits for the service's answer, or an answer to be written.
+    pub(crate) fn waits(&self) -> bool {
+        !self.waiting.is_empty()
+    }
+
     /// The kinds and the root's collections, read once: the package's own types.
     fn types_of(host: &Host, app: &str) -> Option<Types> {
         let package = host.package(app)?;

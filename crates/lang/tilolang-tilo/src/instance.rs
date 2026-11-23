@@ -1256,31 +1256,40 @@ impl Instance {
         let Some(name) = self.staged.take() else {
             return;
         };
-        let Some(scenario) = host.package(&self.app).and_then(|package| {
-            package
-                .meta
-                .scenarios
+        let Some((scenario, seed)) = host.package(&self.app).and_then(|package| {
+            let scenarios = &package.meta.scenarios;
+            let found = scenarios
                 .iter()
                 .find(|scenario| scenario.name == name)
-                .cloned()
+                .cloned()?;
+            let seed = scenarios.first().is_some_and(|first| first.name == name);
+            Some((found, seed))
         }) else {
             self.stage_failed = Some(format!("{} has no scenario \"{name}\"", self.app));
             return;
         };
         // What the scenarios write without a time of their own is their sample data, and what
         // they date is the story they tell: the store dates the one before the other.
+        let now = self.platform.now();
         if self.story {
-            host.store().hold_sample(&self.platform.now());
+            host.store().hold_sample(&now);
         }
         // The packages this one points into (a board's apps) are staged first, each with its
-        // first scenario, so a scenario that attaches their roots shows them filled.
+        // first scenario, so a scenario that attaches their roots shows them filled. A first
+        // scenario is a seed: what its outside services hold is taken in through their origins
+        // before it, as a seeded workspace takes it in.
         let mut failed = Vec::new();
         for used in used_packages(host, &self.app) {
-            if let Some(first) = used.meta.scenarios.first()
-                && let Err(why) = self.run_scenario(host, &used.meta.app, &first.action)
-            {
-                failed.push(format!("{} \"{}\": {why}", used.meta.app, first.name));
+            if let Some(first) = used.meta.scenarios.first() {
+                let staged = crate::origin::take_in_samples(host, &used.meta.app, &now)
+                    .and_then(|()| self.run_scenario(host, &used.meta.app, &first.action));
+                if let Err(why) = staged {
+                    failed.push(format!("{} \"{}\": {why}", used.meta.app, first.name));
+                }
             }
+        }
+        if seed && let Err(why) = crate::origin::take_in_samples(host, &self.app, &now) {
+            failed.push(format!("{} \"{name}\": {why}", self.app));
         }
         let shown = match self.run_scenario(host, &self.app.clone(), &scenario.action) {
             Ok(shown) => shown,

@@ -443,6 +443,28 @@ impl ImapOrigin {
         self.reconnected = reconnected;
         self
     }
+
+    /// Why what the connector said is not all in the workspace: the workspace not read, or not
+    /// read whole, no account made, or a step of an account's mail waiting for the next poll.
+    /// `None` once all of it is written.
+    pub(crate) fn not_taken_in(&self) -> Option<String> {
+        let Some(state) = self.state.as_ref() else {
+            return Some("the workspace's mail was not read".to_owned());
+        };
+        if self.accounts_waiting {
+            return Some("the workspace was not read whole, so no account was made".to_owned());
+        }
+        if state.accounts.is_empty() {
+            return Some("no account was made".to_owned());
+        }
+        if let Some(why) = self.unsaved.values().next() {
+            return Some(why.clone());
+        }
+        if !self.unwritten.is_empty() {
+            return Some("a step of the mail waits to be written".to_owned());
+        }
+        None
+    }
 }
 
 fn text(s: &str) -> Value {

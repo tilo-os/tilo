@@ -23,6 +23,7 @@ pub mod connector;
 pub mod origin;
 #[cfg(unix)]
 pub mod remote;
+pub mod sample;
 pub mod service;
 pub mod wire;
 

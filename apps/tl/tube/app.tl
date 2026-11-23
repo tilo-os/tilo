@@ -1692,18 +1692,40 @@ view watch_row(h: WatchEntry) {
     )
 }
 
-/// The client a person first opens: it has asked its subscriptions feed for what it holds, and
-/// waits for YouTube's answer.
+/// A subscriptions feed as a person's first afternoon on the client leaves it: five channels
+/// followed, their newest videos, two videos kept for later, two liked, and three watched.
 ///
-/// What a client shows of the service — its channels, videos, playlists and comments — is written
-/// by YouTube's origin as the app's refreshes ask for it. What the person did with it — the
-/// channels they follow, the videos they liked, kept for later and watched — is recorded by
-/// actions that take the channel or video the service answered with. No action of this app takes
-/// either in from a fixture, so a seeded client holds nothing of the service's and none of the
-/// person's beside its root.
+/// The channels, videos and playlists are YouTube's, which no action of this app writes: a seeded
+/// workspace or a staged window takes them in from the sample YouTube through the app's origin,
+/// as a real answer comes in, before this runs. What the person did with them is theirs, done
+/// here through the app's own actions on what came in.
 scenario "a subscriptions feed" {
     let yt = root YouTube
-    invoke(refresh_feed(yt))
+    for key in ["UCmkbhd", "UCveritasium", "UCcpu", "UCkitchen", "UCbrass"] {
+        if let c = yt.channels.find(x -> x.key == key) {
+            invoke(subscribe(c, true))
+        }
+    }
+    // Two videos on the watch queue, oldest first, two liked, and three the person watched.
+    for key in ["v-rehearsal", "v-bread"] {
+        if let v = yt.videos.find(x -> x.key == key) {
+            invoke(watch_later(v, true))
+        }
+    }
+    for key in ["v-magnet", "v-wires"] {
+        if let v = yt.videos.find(x -> x.key == key) {
+            invoke(like(v, true))
+        }
+    }
+    if let v = yt.videos.find(x -> x.key == "v-phone") {
+        invoke(progress(v, 0.35))
+    }
+    if let v = yt.videos.find(x -> x.key == "v-cache") {
+        invoke(progress(v, 0.0))
+    }
+    if let v = yt.videos.find(x -> x.key == "v-wires") {
+        invoke(progress(v, 0.72))
+    }
     yt
 }
 

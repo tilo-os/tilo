@@ -1344,6 +1344,11 @@ impl Hosted {
     /// stages one: its changes are the person's steps on the instance's document.
     pub fn stage(&mut self, scenario: &str) {
         let _code = self.scope.enter();
+        // A package's first scenario stands on what its outside services hold, which the
+        // instance takes in from these samples through the services' origins before it runs.
+        tilolang_mail::sample::register();
+        #[cfg(feature = "app-launch")]
+        tilolang_youtube::sample::register();
         self.instance.stage(Some(scenario));
     }
 

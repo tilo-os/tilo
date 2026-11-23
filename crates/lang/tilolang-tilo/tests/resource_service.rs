@@ -449,6 +449,9 @@ fn mail_inbox() -> (ResourceService, String) {
     let (ada, loaded) = Replica::new("ada", Workspace::new(), &[MAIL]);
     let meta = loaded.last().unwrap().meta.clone();
     ada.host.root_of(MAIL_APP).unwrap();
+    // The account and its mail are its server's: they come in through the mail origin, from the
+    // sample server, before the scenario opens the launch conversation.
+    tilolang_mail::sample::take_in(&ada.host, MAIL_APP, "2026-06-30T10:41:00Z").unwrap();
     ada.commit();
     let scenario = meta
         .scenarios
