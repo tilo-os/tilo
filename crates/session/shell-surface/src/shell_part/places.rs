@@ -12,8 +12,8 @@
 use serde_json::{Map, Value as Json, json};
 use tilo_service::{Service as _, Started};
 use tilolang_tilo::resource_service::ResourceService;
-use tilolang_tilo::runtime::Actor;
 use tilolang_tilo::runtime::ids::MemberId;
+use tilolang_tilo::runtime::{Actor, ResourceRef, Value};
 
 use super::tests_support::{part_with, reading_with_windows};
 use super::*;

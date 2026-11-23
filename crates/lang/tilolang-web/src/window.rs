@@ -54,6 +54,30 @@ pub struct AppPage {
     theme: ui::Theme,
 }
 
+/// How a host shows an app's view of the workspace's own state on a page ([`AppPage::hosted`]).
+pub struct Hosting<'a> {
+    /// The root the view is of (`layout`) and the view (`frames`).
+    pub root: &'a str,
+    pub view: &'a str,
+    /// Where the resources the view reads come from: the workspace's own state, as a native host
+    /// writes it.
+    pub origin: tilolang_tilo::origin::SharedOrigin,
+    /// The person the page is shown to: their member id and the name they go by.
+    pub me: (&'a str, &'a str),
+    pub viewport: (u32, u32),
+    pub dark: bool,
+}
+
+/// How a page's instance starts: from a scenario, or over a host's origin.
+struct Start<'a> {
+    root: tilolang_tilo::host::RootView,
+    scenario: Option<&'a str>,
+    origin: Option<tilolang_tilo::origin::SharedOrigin>,
+    me: (&'a str, &'a str),
+    viewport: (u32, u32),
+    dark: bool,
+}
+
 impl AppPage {
     /// The app `app` of `packages` (the app last), staged as `staging` says.
     ///
@@ -61,7 +85,53 @@ impl AppPage {
     /// A root the package declares could not be made, its scenario failed, or the window refused
     /// what the app sent.
     pub fn open(app: &str, packages: &Rc<Packages>, staging: &Staging<'_>) -> Result<Self, String> {
-        let mut theme = if staging.dark {
+        Self::start(
+            app,
+            packages,
+            Start {
+                root: tilolang_tilo::host::RootView {
+                    root: staging.root.map(str::to_owned),
+                    view: None,
+                },
+                scenario: staging.scenario,
+                origin: None,
+                me: (ME, MY_NAME),
+                viewport: staging.viewport,
+                dark: staging.dark,
+            },
+        )
+    }
+
+    /// The app `app` of `packages` (the app last) as a host shows it on a page: the view
+    /// `hosting.view` of its root `hosting.root`, over what `hosting.origin` writes there, as a
+    /// native host shows it. Nothing is staged: the page shows the workspace's own state.
+    ///
+    /// # Errors
+    /// A root the package declares could not be made, or the window refused what the app sent.
+    pub fn hosted(
+        app: &str,
+        packages: &Rc<Packages>,
+        hosting: Hosting<'_>,
+    ) -> Result<Self, String> {
+        Self::start(
+            app,
+            packages,
+            Start {
+                root: tilolang_tilo::host::RootView {
+                    root: Some(hosting.root.to_owned()),
+                    view: Some(hosting.view.to_owned()),
+                },
+                scenario: None,
+                origin: Some(hosting.origin),
+                me: hosting.me,
+                viewport: hosting.viewport,
+                dark: hosting.dark,
+            },
+        )
+    }
+
+    fn start(app: &str, packages: &Rc<Packages>, start: Start<'_>) -> Result<Self, String> {
+        let mut theme = if start.dark {
             ui::Theme::dark()
         } else {
             ui::Theme::light()
@@ -69,27 +139,27 @@ impl AppPage {
         theme.reduce_motion = true;
         let (app_end, window_end) = pair();
         let names = Rc::new(tilolang_tilo::names::Told::new(
-            ME.into(),
+            start.me.0.into(),
             Rc::new(tilolang_tilo::names::Installed),
         ));
-        names.tell(MY_NAME.to_owned(), Vec::new(), Vec::new());
+        names.tell(start.me.1.to_owned(), Vec::new(), Vec::new());
         let mut instance = Instance::new(
             Config {
                 app: app.to_owned(),
-                me: ME.into(),
+                me: start.me.0.into(),
                 mode: Mode::Live,
                 device: None,
                 store: ResourceStore::new(Rc::new(LocalPort::in_memory())),
-                root: tilolang_tilo::host::RootView {
-                    root: staging.root.map(str::to_owned),
-                    view: None,
-                },
+                root: start.root,
                 sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
             },
             Rc::clone(packages) as Rc<dyn Platform>,
             names,
             Box::new(app_end),
         );
+        if let Some(origin) = start.origin {
+            instance.add_origin(origin);
+        }
         instance.sync();
         instance.settle_pending();
         // The package's own roots, every layer it has, are made with what each starts with, as a
@@ -107,13 +177,13 @@ impl AppPage {
                     .map_err(|error| format!("a root could not be made: {error}"))?;
             }
         }
-        instance.stage(staging.scenario);
+        instance.stage(start.scenario);
         // The scenario runs with the instance's next frame.
         instance.sync();
         if let Some(why) = instance.take_stage_failure() {
             return Err(format!(
                 "the scenario \"{}\" failed: {why}",
-                staging.scenario.unwrap_or_default()
+                start.scenario.unwrap_or_default()
             ));
         }
         instance.update();
@@ -125,7 +195,7 @@ impl AppPage {
         let harness = FrameHarness::new_with_theme(
             ui::State::new(),
             Box::new(window),
-            staging.viewport,
+            start.viewport,
             theme.clone(),
         );
         let mut page = Self {
@@ -136,6 +206,20 @@ impl AppPage {
         };
         page.exchange();
         Ok(page)
+    }
+
+    /// What the host shows in each of the page's wells, by place ([`Page::wells`]): what stands
+    /// where a native host shows that place's window.
+    pub fn fill_wells(&mut self, wells: std::collections::HashMap<String, String>) {
+        self.page.wells = wells;
+    }
+
+    /// What changed on the page since it was last written, after the instance took in what its
+    /// origins hold now (another member moved a place): the elements to replace.
+    pub fn follow(&mut self) -> Vec<Patch> {
+        self.instance.sync();
+        self.exchange();
+        self.patch()
     }
 
     fn window(&mut self) -> Option<&mut AppWindow> {
@@ -198,7 +282,7 @@ impl AppPage {
             if matches!(node.own, Some(ui::composition::Own::Painted { .. })) {
                 count(&mut gaps.painted);
             }
-            if !node.flows && !node.children.is_empty() && node.own.is_none() {
+            if !node.flows && !node.places && !node.children.is_empty() && node.own.is_none() {
                 count(&mut gaps.placed);
             }
             stack.extend(node.children.iter());

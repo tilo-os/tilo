@@ -30,11 +30,10 @@ use tilo_render_protocol::patch::local::pair;
 use tilolang_tilo::background::Waker;
 use tilolang_tilo::host::{Host, RootView};
 use tilolang_tilo::instance::{Config, Instance, Mode};
-use tilolang_tilo::origin::{Origin, OriginCx, OriginType, Polled, origin_types};
+use tilolang_tilo::origin::{Origin, OriginCx, Polled};
 use tilolang_tilo::platform_apps::platform_packages;
 use tilolang_tilo::resources::{ResourceStore, Watch};
-use tilolang_tilo::runtime::origin::OriginWrite;
-use tilolang_tilo::runtime::{Delivery, ResourceRef, Value};
+use tilolang_tilo::runtime::Delivery;
 use tilolang_tilo::tilolang::Compiled;
 
 use crate::session_platform::{Loads, OnSession};
@@ -51,94 +50,11 @@ pub use tilo_session_core::shell::{
 mod settings;
 mod surface;
 
-/// Every file of the shell's package (`apps/tl/shell`) the session runs, by the name the
-/// package knows it by: a package is a directory of `.tl` files, in path order (the package's
-/// compiler reads them so), and each new one is listed here to ship. Its scenarios
-/// (`scenarios.tl`), which stage the shell over other apps' records for its shots and tests,
-/// are fixtures: the session never runs them, so it compiles the shell without them and needs
-/// no other app's package to do so.
-const SHELL_FILES: &[(&str, &str)] = &[
-    ("app.tl", include_str!("../../../../apps/tl/shell/app.tl")),
-    (
-        "canvas.tl",
-        include_str!("../../../../apps/tl/shell/canvas.tl"),
-    ),
-    (
-        "chrome.tl",
-        include_str!("../../../../apps/tl/shell/chrome.tl"),
-    ),
-    (
-        "docks.tl",
-        include_str!("../../../../apps/tl/shell/docks.tl"),
-    ),
-    (
-        "launcher.tl",
-        include_str!("../../../../apps/tl/shell/launcher.tl"),
-    ),
-    (
-        "layout.tl",
-        include_str!("../../../../apps/tl/shell/layout.tl"),
-    ),
-    (
-        "layout_picker.tl",
-        include_str!("../../../../apps/tl/shell/layout_picker.tl"),
-    ),
-    (
-        "notices.tl",
-        include_str!("../../../../apps/tl/shell/notices.tl"),
-    ),
-    ("osd.tl", include_str!("../../../../apps/tl/shell/osd.tl")),
-    (
-        "overview.tl",
-        include_str!("../../../../apps/tl/shell/overview.tl"),
-    ),
-    (
-        "parts.tl",
-        include_str!("../../../../apps/tl/shell/parts.tl"),
-    ),
-    (
-        "people.tl",
-        include_str!("../../../../apps/tl/shell/people.tl"),
-    ),
-    (
-        "presets.tl",
-        include_str!("../../../../apps/tl/shell/presets.tl"),
-    ),
-    (
-        "quick.tl",
-        include_str!("../../../../apps/tl/shell/quick.tl"),
-    ),
-    (
-        "session.tl",
-        include_str!("../../../../apps/tl/shell/session.tl"),
-    ),
-    (
-        "shell.tl",
-        include_str!("../../../../apps/tl/shell/shell.tl"),
-    ),
-    (
-        "strips.tl",
-        include_str!("../../../../apps/tl/shell/strips.tl"),
-    ),
-    (
-        "style_settings.tl",
-        include_str!("../../../../apps/tl/shell/style_settings.tl"),
-    ),
-    (
-        "switcher.tl",
-        include_str!("../../../../apps/tl/shell/switcher.tl"),
-    ),
-    (
-        "traditional.tl",
-        include_str!("../../../../apps/tl/shell/traditional.tl"),
-    ),
-    (
-        "workspaces.tl",
-        include_str!("../../../../apps/tl/shell/workspaces.tl"),
-    ),
-];
-/// The shell package's ids lock.
-const SHELL_IDS: &str = include_str!("../../../../apps/tl/shell/app.ids");
+use tilolang_tilo::shell::LayoutWriter;
+/// The shell's package, as every host compiles it.
+pub use tilolang_tilo::shell::{
+    catalogues as shell_catalogues, compile as compile_shell, sources as shell_sources,
+};
 
 /// The package id of the session's description.
 pub const SESSION_APP: &str = tilolang_tilo::platform_apps::SESSION_APP;
@@ -166,32 +82,6 @@ fn session_verbs() -> BTreeMap<String, ui::tilo_actions::surface::VerbSurface> {
         tracing::error!(%error, "the session's description does not read");
         BTreeMap::new()
     })
-}
-
-/// Every file of the shell package this build ships, by the name the package knows it by
-/// (`app.tl`, `strips.tl`, …) and its source: the same copy [`compile_shell`] compiles, so
-/// "make it mine" copies exactly the style a person is looking at (`shell.md` §6). Its
-/// scenarios (`scenarios.tl`) are not here: they are fixtures, never part of the package a
-/// session runs.
-#[must_use]
-pub const fn shell_sources() -> &'static [(&'static str, &'static str)] {
-    SHELL_FILES
-}
-
-/// The catalogues the shell package ships, by locale: its words in the languages a window may
-/// read them in, travelling in its module as an installed app's do.
-#[must_use]
-pub const fn shell_catalogues() -> [(&'static str, &'static str); 2] {
-    [
-        (
-            "en-US",
-            include_str!("../../../../apps/tl/shell/locales/en-US.ftl"),
-        ),
-        (
-            "de-DE",
-            include_str!("../../../../apps/tl/shell/locales/de-DE.ftl"),
-        ),
-    ]
 }
 
 /// The shell's whole screen: the `shell_view` view over the person's layout (the package's
@@ -249,49 +139,6 @@ fn compiled_of(wasm: &[u8], meta: &tilolang_tilo::tilolang::PackageMeta, ids: &s
     }
 }
 
-/// The shell package, compiled: what a shell's instance loads, over the session's and the
-/// platform's descriptions. No other app's package is the shell's: the package of each app a
-/// place shows comes from the session when a place shows it ([`SessionLink::publish_packages`]).
-/// `Err` when it does not compile, which every build of the shell is checked against, so a
-/// test that fails to compile here fails loudly.
-///
-/// This is the fallback shell, for a device whose app store holds no `so.tilo.shell` (or one
-/// that does not load): [`installed_shell`] answers with the installed copy first.
-///
-/// # Errors
-/// The package's diagnostics, rendered with their file names.
-pub fn compile_shell() -> Result<Vec<Compiled>, String> {
-    let session = session_package()?;
-    let mut out: Vec<Compiled> = Vec::new();
-    let lock = tilolang_tilo::tilolang::IdsLock::parse(SHELL_IDS).map_err(|e| e.to_string())?;
-    let source = tilolang_tilo::tilolang::PackageSource::new(
-        SHELL_FILES
-            .iter()
-            .map(|(path, text)| (format!("apps/tl/shell/{path}"), (*text).to_owned())),
-    )
-    // The shell's own words travel in its module, as an installed app's do.
-    .with_locales(
-        shell_catalogues()
-            .into_iter()
-            .map(|(locale, text)| (locale.to_owned(), text.to_owned())),
-    );
-    let mut imports: Vec<tilolang_tilo::tilolang::PackageMeta> = platform_packages()?
-        .into_iter()
-        .filter(|meta| meta.app != SESSION_APP)
-        .collect();
-    imports.insert(0, session);
-    let shell = tilolang_tilo::tilolang::compile_package_source(&source, &lock, &imports).map_err(
-        |diagnostics| {
-            diagnostics
-                .iter()
-                .map(|d| d.render(d.file.as_deref().unwrap_or("apps/tl/shell/app.tl")))
-                .collect::<Vec<_>>()
-                .join("\n")
-        },
-    )?;
-    out.push(shell);
-    Ok(out)
-}
 /// How often the instance and its window may answer each other in one frame before the frame
 /// is drawn as it is: a press, the action it ran, the change it committed, the effect settled.
 const EXCHANGES: usize = 8;
@@ -406,79 +253,11 @@ impl SessionLink {
     }
 }
 
-/// What the origin last wrote of an item kept by key (a workspace, a task).
-struct Kept {
-    /// Where the insert made it; `None` until the write that inserts it is applied.
-    at: Option<ResourceRef>,
-    /// The fields it was written with.
-    was: Vec<(String, Value)>,
-    /// When it was inserted, among every item the origin inserted: its collection holds its
-    /// items in that order.
-    seq: u64,
-}
-
-/// What the origin wrote into the shell's resources: the fields of a root and the items of its
-/// collections, by collection and key, and what the writes being applied insert and set.
-#[derive(Default)]
-struct Mirror {
-    kept: BTreeMap<(String, String), Kept>,
-    fields: BTreeMap<String, Value>,
-    inserting: Vec<(String, String)>,
-    setting: Vec<(String, Value)>,
-    inserted: u64,
-}
-
-impl Mirror {
-    /// The write that sets the fields of `root` that changed since they were last written.
-    fn set(
-        &mut self,
-        root: &ResourceRef,
-        now: impl IntoIterator<Item = (String, Value)>,
-    ) -> Option<OriginWrite> {
-        let fields: Vec<(String, Value)> = now
-            .into_iter()
-            .filter(|(id, value)| {
-                self.fields.get(&format!("{}#{id}", root.id_string())) != Some(value)
-            })
-            .collect();
-        self.setting.extend(
-            fields
-                .iter()
-                .map(|(id, value)| (format!("{}#{id}", root.id_string()), value.clone())),
-        );
-        (!fields.is_empty()).then(|| OriginWrite::Set {
-            target: root.clone(),
-            fields,
-        })
-    }
-
-    /// What became of the writes just applied: where each insert made its item (one entry per
-    /// write, `None` for every write but an insert), or `None` when nothing was written.
-    fn made(&mut self, made: Option<Vec<Option<ResourceRef>>>) {
-        let setting = std::mem::take(&mut self.setting);
-        if made.is_some() {
-            self.fields.extend(setting);
-        }
-        let mut made = made.into_iter().flatten().flatten();
-        for item in std::mem::take(&mut self.inserting) {
-            match made.next() {
-                Some(at) => {
-                    if let Some(kept) = self.kept.get_mut(&item) {
-                        kept.at = Some(at);
-                    }
-                }
-                None => {
-                    self.kept.remove(&item);
-                }
-            }
-        }
-    }
-}
-
 /// The session as the origin of a shell's `session.*` resources. See the module docs.
 pub struct SessionOrigin {
     link: Rc<SessionLink>,
-    mirror: Mirror,
+    /// What it wrote of the person's layout into the shell's `Layout` root.
+    layout: LayoutWriter,
     /// The packages of other apps loaded into the shell's runtime, by app id: each the module
     /// the session handed for it.
     loaded: BTreeMap<String, std::sync::Arc<[u8]>>,
@@ -490,106 +269,9 @@ impl SessionOrigin {
         Self {
             loaded: BTreeMap::new(),
             link,
-            mirror: Mirror::default(),
+            layout: LayoutWriter::default(),
         }
     }
-}
-
-impl Mirror {
-    /// The writes that bring the items of `collection` on `root` from what was written to `now`,
-    /// by key: new ones inserted (where, [`Self::made`] keeps), gone ones removed, changed ones
-    /// set. A collection holds its items in the order they were inserted and has no move, so
-    /// where `now` orders them otherwise (a place moved to the end of another strip, a tab ranked
-    /// anew) the items from the first one out of order on are taken out and inserted again.
-    fn sync<T>(
-        &mut self,
-        now: &[T],
-        root: &ResourceRef,
-        collection: Option<&str>,
-        ty: Option<&OriginType>,
-        key: impl Fn(&T) -> String,
-        fields: impl Fn(&T) -> Vec<(&'static str, Value)>,
-    ) -> Vec<OriginWrite> {
-        // A shell whose package declares no such collection is written none of it.
-        let (Some(collection), Some(ty)) = (collection, ty) else {
-            return Vec::new();
-        };
-        let named = |item: &T| -> Vec<(String, Value)> {
-            fields(item)
-                .into_iter()
-                .filter_map(|(name, value)| Some((ty.field(name)?.to_owned(), value)))
-                .collect()
-        };
-        let here = format!("{}#{collection}", root.id_string());
-        let keys: Vec<String> = now.iter().map(&key).collect();
-        let mut held: Vec<(u64, String)> = self
-            .kept
-            .iter()
-            .filter(|((owner, _), _)| *owner == here)
-            .map(|((_, key), item)| (item.seq, key.clone()))
-            .collect();
-        held.sort_unstable();
-        let ordered = keys
-            .iter()
-            .zip(&held)
-            .take_while(|(now, (_, held))| *now == held)
-            .count();
-        // Gone, or out of order: taken out, to be inserted again where it stands now.
-        let mut writes = Vec::new();
-        for (_, gone) in held {
-            let stays = keys.iter().take(ordered).any(|key| *key == gone);
-            if stays {
-                continue;
-            }
-            if let Some(Kept { at: Some(item), .. }) = self.kept.remove(&(here.clone(), gone)) {
-                writes.push(OriginWrite::Remove {
-                    owner: root.clone(),
-                    field: collection.to_owned(),
-                    item,
-                });
-            }
-        }
-        for (item, key) in now.iter().zip(keys) {
-            let fields = named(item);
-            let at = (here.clone(), key);
-            match self.kept.get_mut(&at) {
-                Some(kept) if kept.was == fields => {}
-                Some(kept) => {
-                    if let Some(target) = kept.at.clone() {
-                        writes.push(OriginWrite::Set {
-                            target,
-                            fields: fields.clone(),
-                        });
-                    }
-                    kept.was = fields;
-                }
-                None => {
-                    writes.push(OriginWrite::Insert {
-                        owner: root.clone(),
-                        field: collection.to_owned(),
-                        ty: ty.ty.clone(),
-                        fields: fields.clone(),
-                    });
-                    self.inserted = self.inserted.wrapping_add(1);
-                    self.kept.insert(
-                        at.clone(),
-                        Kept {
-                            at: None,
-                            was: fields,
-                            seq: self.inserted,
-                        },
-                    );
-                    self.inserting.push(at);
-                }
-            }
-        }
-        writes
-    }
-}
-
-/// The field `name` as a text value.
-fn text(s: &str) -> Value {
-    Value::Text(s.to_owned())
 }
 
 impl SessionOrigin {
@@ -602,112 +284,7 @@ impl SessionOrigin {
         let Some(reading) = self.link.layout.borrow().clone() else {
             return false;
         };
-        let Some(types) = cx.host.find_in_packages(|package| {
-            (package.meta.app == cx.app).then(|| origin_types(&package.meta, ORIGIN))
-        }) else {
-            tracing::error!(app = cx.app, "the shell's package is not loaded");
-            return false;
-        };
-        // The root the `Layout` type is: `root-<type id>`, made the first time it is
-        // wanted, as `root layout` reads it.
-        let Some(kind) = types
-            .iter()
-            .find(|ty| ty.kind == format!("{ORIGIN}.layout"))
-        else {
-            // A shell without a layout view keeps its bar alone: nothing to write.
-            return false;
-        };
-        let made = ResourceRef::root(format!("root-{}", kind.ty), kind.ty.clone());
-        let root = if cx.host.store().contains(&made) {
-            made
-        } else {
-            match cx.host.runtime().create_root(&kind.ty) {
-                Ok(root) => root,
-                Err(error) => {
-                    tracing::error!(%error, "the shell has no layout to write");
-                    return false;
-                }
-            }
-        };
-        let writes = self.layout_writes(&reading, &root, &types);
-        match cx
-            .host
-            .runtime()
-            .apply_origin(ORIGIN, writes, Some(cx.now.clone()))
-        {
-            Ok(made) => {
-                self.mirror.made(Some(made));
-                true
-            }
-            Err(error) => {
-                self.mirror.made(None);
-                tracing::error!(%error, "the person's layout could not be written");
-                false
-            }
-        }
-    }
-
-    /// The writes that bring the shell's layout root from what was written to `reading`.
-    fn layout_writes(
-        &mut self,
-        reading: &LayoutReading,
-        root: &ResourceRef,
-        types: &[OriginType],
-    ) -> Vec<OriginWrite> {
-        let find = |name: &str| {
-            types
-                .iter()
-                .find(|ty| ty.kind == format!("{ORIGIN}.{name}"))
-        };
-        let Some(ty) = find("layout") else {
-            return Vec::new();
-        };
-        let person = ty
-            .field("person")
-            .map(|field| (field.to_owned(), text(&reading.person)));
-        // The window in front is this device's, read off its shell: the shell frames that one as
-        // focused, and a press on another asks the session to bring it forward.
-        let front = ty
-            .field("front")
-            .map(|field| (field.to_owned(), text(&reading.front)));
-        let mut writes: Vec<OriginWrite> = self
-            .mirror
-            .set(root, person.into_iter().chain(front))
-            .into_iter()
-            .collect();
-        // Each collection of the root, from the reading's items of its kind.
-        macro_rules! sync {
-            ($items:expr, $field:literal, $kind:literal, $fields:ident) => {
-                writes.extend(self.mirror.sync(
-                    &$items,
-                    root,
-                    ty.field($field),
-                    find($kind),
-                    |item| item.key.clone(),
-                    readings::$fields,
-                ));
-            };
-        }
-        sync!(
-            reading.workspaces,
-            "workspaces",
-            "layout_workspace",
-            workspace_fields
-        );
-        sync!(reading.people, "people", "layout_person", person_fields);
-        sync!(reading.rows, "rows", "layout_row", row_fields);
-        sync!(reading.strips, "strips", "layout_strip", strip_fields);
-        sync!(reading.places, "places", "layout_place", place_fields);
-        // The refs each query found live in their own collection, keyed by their `key`
-        // (as `<query>/<number>`), so a query's rows are the refs that name it.
-        sync!(reading.queries, "queries", "layout_query", query_fields);
-        let refs: Vec<LayoutRefReading> = reading
-            .queries
-            .iter()
-            .flat_map(|query| query.matches.iter().cloned())
-            .collect();
-        sync!(refs, "refs", "layout_ref", ref_fields);
-        writes
+        self.layout.write(cx, &reading)
     }
 }
 

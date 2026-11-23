@@ -30,6 +30,7 @@ pub mod personal;
 pub mod place;
 pub mod present;
 pub mod projection;
+pub mod reading;
 pub mod receipt;
 pub mod serde_ids;
 pub mod shared_resource;

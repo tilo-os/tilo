@@ -39,6 +39,7 @@ pub mod schema;
 pub mod search;
 pub mod seed;
 pub mod share;
+pub mod shell;
 pub mod sink;
 pub mod surface;
 pub mod task;
