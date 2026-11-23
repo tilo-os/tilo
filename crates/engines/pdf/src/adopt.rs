@@ -100,8 +100,7 @@ pub(crate) fn existing(document: &tilo_pdf::Document) -> Result<Existing, Error>
             marks.push(mark(page, &info));
         }
     }
-    let fields = document
-        .fields()
+    let fields = crate::fields_of(document)
         .unwrap_or_default()
         .into_iter()
         .filter(|field: &Field| !field.name.is_empty())

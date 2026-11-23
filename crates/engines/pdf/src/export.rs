@@ -455,5 +455,5 @@ pub fn save(sources: &[&[u8]], request: &SaveRequest) -> Result<Vec<u8>, Error> 
         .collect();
 
     let imports: Vec<&tilo_pdf::Document> = imported.iter().map(|doc| &doc.inner).collect();
-    Ok(document.export(&edits, &imports)?)
+    Ok(document.inner.export(&edits, &imports)?)
 }

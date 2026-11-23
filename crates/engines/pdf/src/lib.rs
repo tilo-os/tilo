@@ -413,35 +413,7 @@ impl Document {
     ///
     /// Why the form cannot be read.
     pub fn fields(&self) -> Result<Vec<Field>, Error> {
-        let fields = self.inner.form_fields()?;
-        Ok(fields
-            .into_iter()
-            .map(|field| {
-                let widget = field.widgets.first();
-                let geometry = widget.and_then(|w| self.inner.page(w.page));
-                let rect = widget.and_then(|w| {
-                    geometry.map(|g| Rect::of(g.rect_to_display(w.rect)))
-                });
-                let kind = match field.kind {
-                    tilo_pdf::FieldKind::Text => FieldKind::Text,
-                    tilo_pdf::FieldKind::CheckBox => FieldKind::Checkbox,
-                    tilo_pdf::FieldKind::RadioButton => FieldKind::Radio,
-                    _ => FieldKind::Choice,
-                };
-                Field {
-                    name: field.name,
-                    kind,
-                    value: field.value,
-                    checked: field.widgets.iter().any(|w| w.checked),
-                    export: widget.map(|w| w.export_value.clone()).unwrap_or_default(),
-                    options: field.options,
-                    page: widget.map(|w| w.page + 1),
-                    rect,
-                    read_only: field.read_only,
-                    required: field.required,
-                }
-            })
-            .collect())
+        fields_of(&self.inner)
     }
 
     /// The markup the bytes already carry, and the form's filled values.
@@ -501,6 +473,43 @@ impl Document {
             .ok_or(Error::NoPage(page))?;
         Ok((size.width, size.height))
     }
+}
+
+/// A document's form fields, each with its widget's page and area: the one mapping from the
+/// engine's fields to a reader's, for the reader's own `fields` and for the fields a save takes
+/// over with the rest of a file's markup.
+///
+/// # Errors
+///
+/// Why the form cannot be read.
+pub(crate) fn fields_of(document: &tilo_pdf::Document) -> Result<Vec<Field>, Error> {
+    let fields = document.form_fields()?;
+    Ok(fields
+        .into_iter()
+        .map(|field| {
+            let widget = field.widgets.first();
+            let geometry = widget.and_then(|w| document.page(w.page));
+            let rect = widget.and_then(|w| geometry.map(|g| Rect::of(g.rect_to_display(w.rect))));
+            let kind = match field.kind {
+                tilo_pdf::FieldKind::Text => FieldKind::Text,
+                tilo_pdf::FieldKind::CheckBox => FieldKind::Checkbox,
+                tilo_pdf::FieldKind::RadioButton => FieldKind::Radio,
+                _ => FieldKind::Choice,
+            };
+            Field {
+                name: field.name,
+                kind,
+                value: field.value,
+                checked: field.widgets.iter().any(|w| w.checked),
+                export: widget.map(|w| w.export_value.clone()).unwrap_or_default(),
+                options: field.options,
+                page: widget.map(|w| w.page + 1),
+                rect,
+                read_only: field.read_only,
+                required: field.required,
+            }
+        })
+        .collect())
 }
 
 /// What a file is, before it is imported: `pdf` or `image`, and the display size of each page
