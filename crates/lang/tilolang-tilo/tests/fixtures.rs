@@ -134,6 +134,23 @@ impl Workspace {
         changed
     }
 
+    /// Take in the documents `docs` of `other`, as a share of those records between two
+    /// workspaces does: nothing else of `other`'s travels. Whether anything changed here.
+    pub fn take_in_docs(&self, other: &Self, docs: &std::collections::BTreeSet<String>) -> bool {
+        let mut changed = false;
+        for doc in other
+            .0
+            .documents()
+            .into_iter()
+            .filter(|doc| docs.contains(doc))
+        {
+            if let Some(bytes) = other.0.save(&doc) {
+                changed |= self.0.merge(&doc, &bytes).unwrap();
+            }
+        }
+        changed
+    }
+
     /// The store answering `command` as this device's person reads it.
     pub fn command(
         &self,
@@ -283,6 +300,15 @@ impl Replica {
     /// on it.
     pub fn send_to(&self, other: &Self) {
         if other.doc.take_in_as(&self.doc, Some(&other.name)) {
+            other.host.store().moved();
+            let _ = other.watch.take();
+        }
+    }
+
+    /// Hand this replica's documents `docs` to `other`, as a share of those records between two
+    /// workspaces does: nothing else of this one's travels.
+    pub fn send_docs_to(&self, other: &Self, docs: &std::collections::BTreeSet<String>) {
+        if other.doc.take_in_docs(&self.doc, docs) {
             other.host.store().moved();
             let _ = other.watch.take();
         }

@@ -126,5 +126,3 @@ mod web;
 mod window_bar;
 #[path = "words.rs"]
 mod words;
-#[path = "written_views.rs"]
-mod written_views;

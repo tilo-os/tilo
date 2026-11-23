@@ -791,7 +791,6 @@ readers = [
   "crates/lang/tilolang-runtime/tests/rich_text.rs",
   "crates/lang/tilolang-runtime/tests/window_bar.rs",
   "crates/lang/tilolang-runtime/tests/view_state_seed.rs",
-  "crates/lang/tilolang-runtime/tests/written_views.rs",
   "crates/lang/tilolang-runtime/tests/common/mod.rs",
 ]
 
@@ -855,6 +854,7 @@ readers = [
   "crates/lang/tilolang-tilo/tests/tasks.rs",
   "crates/lang/tilolang-tilo/tests/tube.rs",
   "crates/lang/tilolang-tilo/tests/words.rs",
+  "crates/lang/tilolang-tilo/tests/written_views.rs",
 ]
 
 [[cargo]]
