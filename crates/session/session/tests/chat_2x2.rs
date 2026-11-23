@@ -217,15 +217,18 @@ fn a_direct_message_is_one_notice_that_names_who_wrote() {
     // second time by the same look.
     let sent = Instant::now();
     studio.ada_laptop.chat().send(&bob_key, "did you see?");
+    let accepted = sent.elapsed();
     // A message in a conversation that is already open is news the other person hears in moments,
     // on every device.
     wait_for_notices(&studio.bob_laptop, &["did you see?"]);
+    let on_laptop = sent.elapsed();
     wait_for_notices(&studio.bob_phone, &["did you see?"]);
     let heard = sent.elapsed();
     assert!(
         heard < MESSAGE_HEARD_WITHIN,
         "Bob is told Ada's second message {heard:?} after she sent it, not within \
-         {MESSAGE_HEARD_WITHIN:?}"
+         {MESSAGE_HEARD_WITHIN:?}: her Chat accepted it after {accepted:?}, his laptop told him \
+         after {on_laptop:?}, his phone after {heard:?}"
     );
     studio
         .bob_laptop
