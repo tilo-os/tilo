@@ -2,6 +2,7 @@
 use super::*;
 pub(super) use crate::home_transfer::seeds::RecoveryBinding;
 use crate::home_transfer::seeds::{Authority, Generated, relative, stamp};
+use std::os::fd::AsFd as _;
 use std::os::unix::fs::MetadataExt as _;
 const SEED_LIMIT: u64 = 4 * 1024 * 1024;
 
@@ -134,26 +135,15 @@ pub(super) fn preserve(
         path.parent()
             .ok_or_else(|| changed("Missing seed parent"))?,
     )?;
-    let source_name = CString::new(
-        path.file_name()
-            .ok_or_else(|| changed("Missing seed name"))?
-            .as_bytes(),
-    )
-    .map_err(io::Error::other)?;
-    let backup_name = CString::new(name.as_bytes()).map_err(io::Error::other)?;
-    // SAFETY: pinned parent FDs and terminated names remain live. No existing backup is replaced.
-    if unsafe {
-        libc::renameat2(
-            directory.file.as_raw_fd(),
-            source_name.as_ptr(),
-            backup.file.as_raw_fd(),
-            backup_name.as_ptr(),
-            libc::RENAME_NOREPLACE,
-        )
-    } != 0
-    {
-        return Err(io::Error::last_os_error());
-    }
+    let source_name = path
+        .file_name()
+        .ok_or_else(|| changed("Missing seed name"))?;
+    host_fs::rename_noreplace_at(
+        directory.file.as_fd(),
+        source_name,
+        backup.file.as_fd(),
+        OsStr::new(&name),
+    )?;
     durable::sync_directory(&directory.file)?;
     durable::sync_directory(&backup.file)?;
     verify_retained(home, proof)

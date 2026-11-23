@@ -7885,6 +7885,7 @@ dependencies = [
  "getrandom 0.4.3",
  "glib",
  "hex",
+ "host-fs",
  "install-profile-model",
  "launcher",
  "leveldb-sys",

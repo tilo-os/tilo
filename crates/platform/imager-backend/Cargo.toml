@@ -109,6 +109,7 @@ libc.workspace = true
 rustix = { workspace = true, features = ["process", "fs"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+host-fs = { path = "../../system/host-fs" }
 block-devices = { path = "../../system/block-devices", features = ["udisks"] }
 glib = "=0.21.5"
 rusqlite = { version = "0.41.1", default-features = false, features = ["bundled"] }
