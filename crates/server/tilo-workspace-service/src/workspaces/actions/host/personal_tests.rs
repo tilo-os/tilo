@@ -785,6 +785,9 @@ async fn a_members_session_marks_its_key_online_as_it_starts() {
             tilo_user_identity::RevocationList::new(),
         )),
         trust_policy: Arc::new(std::sync::RwLock::new(crate::policy::TrustPolicy::AllowAny)),
+        blocked: Arc::new(std::sync::RwLock::new(
+            crate::workspaces::blocked::BlockedKeys::default(),
+        )),
         own_user_public_key: owner.user_public_key,
         own_device_cert: owner.clone(),
         own_device_public_key: owner.device_public_key,

@@ -86,7 +86,7 @@ async fn invoke(
 }
 
 /// What the host offers its person's devices, in the order it lists them.
-const HOST_OPERATIONS: [&str; 23] = [
+const HOST_OPERATIONS: [&str; 25] = [
     CREATE_WORKSPACE,
     tilo_server_session::workspaces::CREATE_OWN_WORKSPACE,
     DELETE_WORKSPACE,
@@ -96,6 +96,8 @@ const HOST_OPERATIONS: [&str; 23] = [
     tilo_server_session::workspaces::KEEP_PERSONAL,
     tilo_server_session::workspaces::PERSONAL_DEVICE_NAME,
     LIST_REVOCATIONS,
+    super::BLOCK,
+    super::UNBLOCK,
     ENTER_WORKSPACE,
     HOST_WORKSPACE,
     UNHOST_WORKSPACE,
@@ -436,4 +438,142 @@ async fn no_one_else_and_nothing_uncertified_runs_the_hosts_operations() {
         receipt.status
     );
     server.shutdown().await;
+}
+
+/// A block is the operator's own `tilo.host` action: it names one key, a device
+/// or a person's root, writes it to the record of their own workspace, and the
+/// host refuses the key from then on. Lifting it writes the record again.
+#[tokio::test]
+async fn the_operator_blocks_and_unblocks_a_device_and_a_person_as_actions() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let host = ServiceWorkspaceActions::new();
+    host.attach(workspaces.clone());
+    let laptop = owners_laptop();
+    // The record the blocks are written to lives in the operator's own
+    // workspace, which their server holds.
+    crate::workspaces::person_workspace::found(workspaces)
+        .await
+        .expect("the operator's own workspace is founded here");
+
+    let (_, guest) = guest_device();
+    let device = hex::encode(guest.device_public_key);
+    let user = hex::encode(guest.user_public_key);
+    let someone_else = [0x77; 32];
+
+    // One key is named: a device's or a person's, never both and never neither.
+    for argument in [
+        json!({}),
+        json!({ "device": device, "user": user }),
+        json!({ "device": "not a key" }),
+    ] {
+        assert!(
+            invoke(&host, &laptop, host_request(super::BLOCK, argument))
+                .await
+                .is_err(),
+            "a block names one key of 32 bytes in lowercase hex"
+        );
+    }
+
+    let blocked = invoke(
+        &host,
+        &laptop,
+        host_request(super::BLOCK, json!({ "device": device })),
+    )
+    .await
+    .unwrap();
+    assert_eq!(blocked["blocked"], json!(true));
+    assert_eq!(blocked["key"], json!(device));
+    assert!(
+        workspaces
+            .blocked_keys()
+            .blocks(&guest.device_public_key, &someone_else),
+        "the host refuses the blocked device"
+    );
+    assert!(
+        !workspaces
+            .blocked_keys()
+            .blocks(&someone_else, &someone_else),
+        "another device is not blocked"
+    );
+
+    // A person's root key refuses every device of theirs.
+    let blocked = invoke(
+        &host,
+        &laptop,
+        host_request(super::BLOCK, json!({ "user": user })),
+    )
+    .await
+    .unwrap();
+    assert_eq!(blocked["blocked"], json!(true));
+    assert!(
+        workspaces
+            .blocked_keys()
+            .blocks(&someone_else, &guest.user_public_key),
+        "every device of the blocked person is refused"
+    );
+
+    // Lifting either refuses nothing of the key any more.
+    let lifted = invoke(
+        &host,
+        &laptop,
+        host_request(super::UNBLOCK, json!({ "user": user })),
+    )
+    .await
+    .unwrap();
+    assert_eq!(lifted["blocked"], json!(false));
+    assert!(
+        !workspaces
+            .blocked_keys()
+            .blocks(&someone_else, &guest.user_public_key),
+        "the person is admitted again"
+    );
+    invoke(
+        &host,
+        &laptop,
+        host_request(super::UNBLOCK, json!({ "device": device })),
+    )
+    .await
+    .unwrap();
+    assert!(
+        !workspaces
+            .blocked_keys()
+            .blocks(&guest.device_public_key, &someone_else),
+        "the device is admitted again"
+    );
+}
+
+/// Only the host's person, on a device of their own, blocks a key: another
+/// person is offered no such operation and invoking it is no operation.
+#[tokio::test]
+async fn a_stranger_cannot_block_a_key_on_the_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let host = ServiceWorkspaceActions::new();
+    host.attach(workspaces.clone());
+    let (_, guest) = guest_device();
+    assert!(
+        !offered(&host, &guest, &caller(&guest))
+            .await
+            .iter()
+            .any(|action| action == super::BLOCK || action == super::UNBLOCK),
+        "a stranger is offered no block"
+    );
+    assert!(
+        invoke(
+            &host,
+            &guest,
+            host_request(
+                super::BLOCK,
+                json!({ "device": hex::encode(guest.device_public_key) }),
+            ),
+        )
+        .await
+        .is_err(),
+        "and invoking one is no operation"
+    );
 }

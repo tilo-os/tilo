@@ -29,6 +29,7 @@ mod appended;
 #[cfg(feature = "agents")]
 mod applications;
 mod authored;
+pub(crate) mod blocked;
 mod authority;
 mod branch;
 mod moderation_history;
@@ -940,6 +941,9 @@ pub(crate) struct WorkspaceServices {
         expect(dead_code, reason = "only a host with agents of its own decides")
     )]
     pub(crate) trust_policy: Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
+    /// The devices and people this host's operator blocks, as the record of
+    /// their own workspace says ([`blocked`]): refused on every protocol here.
+    pub(crate) blocked: Arc<std::sync::RwLock<blocked::BlockedKeys>>,
     /// Agent delegations, for [`crate::workspace_access::decide`] and for
     /// refusing an agent the administration only a person holds.
     pub(crate) agents: crate::peer::AgentRegistry,
@@ -1566,6 +1570,9 @@ impl Workspaces {
         self.follow_missing_surfaces();
         self.follow_personal_changes();
         self.follow_own_address();
+        // The keys the operator blocks are a record of their own workspace, read
+        // again as it changes ([`blocked`]).
+        self.follow_blocked();
         // The servers the person's document names hold the workspaces it
         // says they do, on every device of theirs that holds it.
         self.follow_servers();

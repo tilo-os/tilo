@@ -601,3 +601,221 @@ async fn an_agent_outside_its_grant_is_refused() {
     drop(workspaces);
     server.shutdown().await;
 }
+
+/// A guest's device admitted to `workspace` by its signed membership: a person
+/// the operator's policy does not list, whose certificate the workspace admits
+/// and whose person `settle` adds to what the handshake trusts.
+async fn admitted_guest(
+    workspaces: &Workspaces,
+    workspace: &str,
+    admin_key: &SigningKey,
+    root: &SigningKey,
+    label: &str,
+) -> (DeviceCert, SigningKey) {
+    let (member_key, member) =
+        crate::workspaces::fixtures::device_cert(root, label, DeviceCapabilities::member());
+    crate::workspaces::fixtures::admit_view_reader(workspaces, workspace, admin_key, &member)
+        .await;
+    // What a settled governance decision does: the workspace's members reach
+    // the host's handshake by their roots as well as its policy's own.
+    let state = workspaces.workspace(workspace).await.unwrap();
+    let mut governed = state.lock().await;
+    workspaces
+        .settle(&mut governed)
+        .await
+        .expect("the workspace settles the guest's admission");
+    (member, member_key)
+}
+
+/// The operator's record of blocked keys, which their own workspace holds.
+async fn operator_record(workspaces: &Workspaces) {
+    crate::workspaces::person_workspace::found(workspaces)
+        .await
+        .expect("the operator's own workspace is founded here");
+}
+
+fn blocked_device(device: &[u8; 32]) -> tilo_resource::Invoke<crate::workspaces::blocked::Blocked> {
+    crate::workspaces::blocked::Blocked::BLOCK_DEVICE.with(hex::encode(device))
+}
+
+fn unblocked_device(device: &[u8; 32]) -> tilo_resource::Invoke<crate::workspaces::blocked::Blocked> {
+    crate::workspaces::blocked::Blocked::UNBLOCK_DEVICE.with(hex::encode(device))
+}
+
+fn blocked_user(user: &[u8; 32]) -> tilo_resource::Invoke<crate::workspaces::blocked::Blocked> {
+    crate::workspaces::blocked::Blocked::BLOCK_USER.with(hex::encode(user))
+}
+
+fn unblocked_user(user: &[u8; 32]) -> tilo_resource::Invoke<crate::workspaces::blocked::Blocked> {
+    crate::workspaces::blocked::Blocked::UNBLOCK_USER.with(hex::encode(user))
+}
+
+/// A guest the workspace's membership holds reaches it over the link it dials.
+/// The operator blocks its device: the link ends, refused as this host's, and
+/// the guest's next dial is refused. Lifting the block admits it again. The
+/// same person's other device is refused by blocking the person's root key.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_blocked_guest_link_ends_and_is_refused_until_the_operator_unblocks_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
+    let created = workspaces.create("Team").await.unwrap();
+    operator_record(&workspaces).await;
+
+    let guest_root = SigningKey::from_bytes(&[0x51; 32]);
+    let (guest, guest_key) =
+        admitted_guest(&workspaces, &created.workspace, &key, &guest_root, "guest").await;
+    let (guest_endpoint, guest_link) = dialled_and_running(
+        &server,
+        &workspaces,
+        created.workspace_id,
+        &guest,
+        &guest_key,
+        &cert,
+    )
+    .await;
+    let host = workspaces
+        .direct()
+        .link(created.workspace_id)
+        .expect("the server serves the workspace over a direct link");
+
+    // The operator blocks the guest's device: the record of their own
+    // workspace says so, and the host re-checks what admission reads.
+    workspaces
+        .apply_blocked(blocked_device(&guest.device_public_key))
+        .await
+        .expect("the block is written");
+    tilo_test_env::within("the blocked device's link to end", async {
+        while host.ended_link(guest.device_public_key).is_none() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    let ended = tokio::time::timeout(WAIT, guest_link)
+        .await
+        .expect("the blocked device's link ends")
+        .expect("its task ends with it");
+    match ended {
+        Err(tilo_server_protocol::refusal::Refusal::NotAllowed(reason)) => assert_eq!(
+            reason, "this host refuses this device",
+            "the refusal says the host refuses the device"
+        ),
+        Err(refusal) => panic!("a blocked device's link ends refused: {refusal}"),
+        Ok(()) => panic!("a blocked device's link is ended, not left running"),
+    }
+    guest_endpoint.close().await;
+
+    // Its next dial is refused before it listens.
+    let (again, _link, dialed) = dialed(
+        &server,
+        &workspaces,
+        created.workspace_id,
+        &guest,
+        &guest_key,
+        &cert,
+        guest_key.verifying_key().to_bytes(),
+    )
+    .await;
+    assert!(
+        dialed.is_err(),
+        "the host refuses the blocked device's dial"
+    );
+    again.close().await;
+
+    // Lifted, the host opens the link to the device again and its next dial is
+    // admitted.
+    workspaces
+        .apply_blocked(unblocked_device(&guest.device_public_key))
+        .await
+        .expect("the block is lifted");
+    tilo_test_env::within("the device's link to be opened again", async {
+        while host.ended_link(guest.device_public_key).is_some() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    let (guest_endpoint, guest_link) = dialled_and_running(
+        &server,
+        &workspaces,
+        created.workspace_id,
+        &guest,
+        &guest_key,
+        &cert,
+    )
+    .await;
+
+    // The person's key refuses every device of theirs: the guest's own device
+    // and a second one their root certified, admitted to the workspace.
+    let (second, second_key) =
+        admitted_guest(&workspaces, &created.workspace, &key, &guest_root, "guest-2").await;
+    let (second_endpoint, second_link) = dialled_and_running(
+        &server,
+        &workspaces,
+        created.workspace_id,
+        &second,
+        &second_key,
+        &cert,
+    )
+    .await;
+    workspaces
+        .apply_blocked(blocked_user(&guest.user_public_key))
+        .await
+        .expect("the person is blocked");
+    tilo_test_env::within("the person's blocked devices' links to end", async {
+        while [guest.device_public_key, second.device_public_key]
+            .into_iter()
+            .any(|device| host.ended_link(device).is_none())
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    for device in [guest.device_public_key, second.device_public_key] {
+        assert_eq!(
+            host.ended_link(device),
+            Some(tilo_server_protocol::refusal::Refusal::NotAllowed(
+                "this host refuses this device".into()
+            )),
+            "the person's blocked key ends every device of theirs"
+        );
+    }
+    for link in [guest_link, second_link] {
+        assert!(
+            tokio::time::timeout(WAIT, link)
+                .await
+                .expect("the person's blocked links end")
+                .is_err(),
+            "a device of the blocked person is let go"
+        );
+    }
+    guest_endpoint.close().await;
+    second_endpoint.close().await;
+
+    workspaces
+        .apply_blocked(unblocked_user(&guest.user_public_key))
+        .await
+        .expect("the person is admitted again");
+    tilo_test_env::within("the person's links to be opened again", async {
+        while [guest.device_public_key, second.device_public_key]
+            .into_iter()
+            .any(|device| host.ended_link(device).is_some())
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    let (guest_endpoint, guest_link) = dialled_and_running(
+        &server,
+        &workspaces,
+        created.workspace_id,
+        &guest,
+        &guest_key,
+        &cert,
+    )
+    .await;
+    guest_link.abort();
+    guest_endpoint.close().await;
+    drop(workspaces);
+    server.shutdown().await;
+}

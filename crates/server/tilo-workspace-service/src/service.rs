@@ -243,6 +243,7 @@ impl ServiceSessions {
         let handler = ServerProtocol {
             workspaces: workspaces.clone(),
             trust_policy: handshake_trust.live_policy.clone(),
+            blocked: Arc::default(),
             identity: live.clone(),
             metrics: metrics.clone(),
             app_serving: wrap(&workspaces, own_server.clone()),
@@ -351,6 +352,7 @@ impl ServiceSessions {
                 .max_workspace_grants
                 .unwrap_or(crate::workspaces::DEFAULT_MAX_PRE_ADMISSIONS),
             trust_policy: self.handler.trust_policy.clone(),
+            blocked: self.handler.blocked.clone(),
             agents: self.handler.agents.clone(),
             environments: self.handler.environments.clone(),
             work: cfg.work.clone(),
@@ -1279,6 +1281,9 @@ pub fn validate_service_device_identity(identity: &ServiceIdentity) -> Result<()
 pub struct ServerProtocol {
     pub workspaces: WorkspaceRegistry,
     pub trust_policy: Arc<std::sync::RwLock<TrustPolicy>>,
+    /// The devices and people this host's operator blocks ([`crate::workspaces::blocked`]),
+    /// shared with the workspaces it serves.
+    pub blocked: Arc<std::sync::RwLock<crate::workspaces::blocked::BlockedKeys>>,
     pub identity: LiveIdentity,
     pub metrics: Arc<Metrics>,
     pub(crate) app_serving: Option<Arc<dyn crate::app_serving::AppActionServer>>,
@@ -1306,6 +1311,7 @@ impl ServerProtocol {
         crate::workspace_access::ServerTrust {
             revocations: &self.identity.revocations,
             policy: &self.trust_policy,
+            blocked: &self.blocked,
             own_user: &self.identity.user_public_key,
             agents: &self.agents,
             environments: &self.environments,
@@ -1329,6 +1335,7 @@ impl ServerProtocol {
             workspaces: self.workspaces.clone(),
             revocations: self.identity.revocations.clone(),
             trust_policy: self.trust_policy.clone(),
+            blocked: self.blocked.clone(),
             own_user_public_key: self.identity.user_public_key,
             own_device_cert: self.identity.cert.clone(),
             metrics: self.metrics.clone(),

@@ -795,6 +795,7 @@ impl Workspaces {
         let trust = crate::workspace_access::ServerTrust {
             revocations: &host.revocations,
             policy: &host.trust_policy,
+            blocked: &host.blocked,
             own_user: &host.cert.user_public_key,
             agents: &host.agents,
             environments: &host.environments,

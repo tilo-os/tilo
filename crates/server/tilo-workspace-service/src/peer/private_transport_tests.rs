@@ -84,6 +84,7 @@ impl Holds {
             app_serving: None,
             metrics: &self.metrics,
             trust_policy: &self.trust,
+            blocked: Box::leak(Box::default()),
             disconnect,
             stop: None,
             presence: None,

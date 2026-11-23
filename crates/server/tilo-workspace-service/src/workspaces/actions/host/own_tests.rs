@@ -1969,10 +1969,12 @@ async fn subscribe(
     let policy = std::sync::RwLock::new(crate::policy::TrustPolicy::AllowAny);
     let agents = crate::peer::AgentRegistry::default();
     let environments = crate::environment::EnvironmentRegistry::default();
+    let blocked = std::sync::RwLock::new(crate::workspaces::blocked::BlockedKeys::default());
     let own_user = workspaces.serving_certificate().user_public_key;
     let trust = crate::workspace_access::ServerTrust {
         revocations: &revocations,
         policy: &policy,
+        blocked: &blocked,
         own_user: &own_user,
         agents: &agents,
         environments: &environments,

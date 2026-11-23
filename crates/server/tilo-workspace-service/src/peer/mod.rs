@@ -100,6 +100,9 @@ pub struct PeerContext {
     pub revocations: Arc<std::sync::RwLock<tilo_user_identity::RevocationList>>,
     /// Live signed-workspace-derived member admission policy.
     pub trust_policy: Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
+    /// The devices and people the host's operator blocks, read from the record
+    /// of their own workspace ([`crate::workspaces::blocked`]).
+    pub blocked: Arc<std::sync::RwLock<crate::workspaces::blocked::BlockedKeys>>,
     /// The user pubkey this server itself chains to.
     pub own_user_public_key: [u8; 32],
     /// Exact certified device running this server. Private actions may use this
@@ -150,6 +153,7 @@ struct SessionCtx<'a> {
     own_user_public_key: &'a [u8; 32],
     metrics: &'a Arc<crate::metrics::Metrics>,
     trust_policy: &'a Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
+    blocked: &'a Arc<std::sync::RwLock<crate::workspaces::blocked::BlockedKeys>>,
     disconnect: &'a mpsc::Sender<()>,
     /// Ends this session at once, as the person's MCP server stops an
     /// agent's run; `None` for a session nothing stops.
@@ -187,6 +191,7 @@ impl SessionCtx<'_> {
         ServerTrust {
             revocations: self.revocations,
             policy: self.trust_policy,
+            blocked: self.blocked,
             own_user: self.own_user_public_key,
             agents: self.agents,
             environments: self.environments,

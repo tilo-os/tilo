@@ -35,6 +35,7 @@ fn letter(decision: Decision) -> char {
         Decision::Deny(DenyReason::NotAMember) => 'N',
         Decision::Deny(DenyReason::CertExpired) => 'x',
         Decision::Deny(DenyReason::Revoked) => 'r',
+        Decision::Deny(DenyReason::Blocked) => 'k',
         Decision::Deny(DenyReason::NotTrusted) => 't',
         Decision::Deny(DenyReason::AgentWithdrawn) => 'w',
         Decision::Deny(DenyReason::AgentExpired) => 'e',
@@ -51,6 +52,7 @@ struct Server {
     bob: [u8; 32],
     revocations: RwLock<RevocationList>,
     policy: RwLock<TrustPolicy>,
+    blocked: RwLock<crate::workspaces::blocked::BlockedKeys>,
     agents: AgentRegistry,
     environments: crate::environment::EnvironmentRegistry,
 }
@@ -71,6 +73,7 @@ impl Server {
             bob,
             revocations: RwLock::new(RevocationList::new()),
             policy: RwLock::new(policy),
+            blocked: RwLock::new(crate::workspaces::blocked::BlockedKeys::default()),
             agents: Arc::default(),
             environments: crate::environment::EnvironmentRegistry::default(),
         }
@@ -80,10 +83,27 @@ impl Server {
         ServerTrust {
             revocations: &self.revocations,
             policy: &self.policy,
+            blocked: &self.blocked,
             own_user: &self.owner,
             agents: &self.agents,
             environments: &self.environments,
         }
+    }
+
+    fn block_device(&self, device: [u8; 32]) {
+        let mut state = crate::workspaces::blocked::Blocked::default();
+        state
+            .block_device(hex::encode(device))
+            .expect("a device key blocks");
+        *self.blocked.write().unwrap() = crate::workspaces::blocked::BlockedKeys::of(&state);
+    }
+
+    fn block_user(&self, user: [u8; 32]) {
+        let mut state = crate::workspaces::blocked::Blocked::default();
+        state
+            .block_user(hex::encode(user))
+            .expect("a user key blocks");
+        *self.blocked.write().unwrap() = crate::workspaces::blocked::BlockedKeys::of(&state);
     }
 
     fn revoke(&self, device: [u8; 32]) {
@@ -724,4 +744,68 @@ fn a_tab_a_device_signed_is_a_device_of_the_person() {
     );
     tilo_user_identity::sign_device_cert(&mut stand_in, &root).unwrap();
     assert!(!person_device(&stand_in));
+}
+
+/// The operator's block stands where a workspace's membership admits a person
+/// the live policy does not list: the block is checked before that policy, so
+/// it is never read as the policy's refusal and bypassed. Blocking a person's
+/// root refuses every device of theirs.
+#[test]
+fn a_blocked_device_or_person_is_refused_though_membership_admits_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = Server::new();
+    let guest = [0x4a; 32];
+    let device = [0x4b; 32];
+    // The workspace holds the person and the device; the policy lists neither,
+    // and its refusal alone would not keep the device out of a workspace its
+    // membership holds.
+    let mut runtime = workspace(dir.path());
+    runtime.workspace_authority = Some(served());
+    list_person(&mut runtime, guest);
+    list_device(&mut runtime, device);
+    let peer = peer(guest, device, true, None);
+    let decide = |op| decide_in(&runtime, &server.trust(), &peer, op, NOW);
+    assert_eq!(
+        decide(WorkspaceOperation::Subscribe),
+        Decision::Admit,
+        "the workspace's membership admits the guest's device"
+    );
+
+    server.block_device(device);
+    assert_eq!(
+        decide(WorkspaceOperation::Subscribe),
+        Decision::Deny(DenyReason::Blocked)
+    );
+    assert_eq!(
+        decide(WorkspaceOperation::Publish),
+        Decision::Deny(DenyReason::Blocked)
+    );
+
+    // The person's key refuses every device of theirs, listed or not.
+    let other_dir = tempfile::tempdir().unwrap();
+    let mut other = workspace(other_dir.path());
+    other.workspace_authority = Some(served());
+    let second = [0x4c; 32];
+    list_person(&mut other, guest);
+    list_device(&mut other, second);
+    let second_peer = peer(guest, second, true, None);
+    let server = Server::new();
+    server.block_user(guest);
+    assert_eq!(
+        decide_in(
+            &other,
+            &server.trust(),
+            &second_peer,
+            WorkspaceOperation::Subscribe,
+            NOW
+        ),
+        Decision::Deny(DenyReason::Blocked)
+    );
+
+    assert_eq!(
+        DenyReason::Blocked.refusal(),
+        tilo_server_protocol::refusal::Refusal::NotAllowed(
+            "this host refuses this device".into()
+        )
+    );
 }

@@ -1118,6 +1118,7 @@ mod tests {
         let trust = crate::workspace_access::ServerTrust {
             revocations: &revocations,
             policy: &policy,
+            blocked: Box::leak(Box::default()),
             own_user: &owner,
             agents: &agents,
             environments: Box::leak(Box::default()),
@@ -1154,6 +1155,7 @@ mod tests {
         let trust = crate::workspace_access::ServerTrust {
             revocations: &revocations,
             policy: &policy,
+            blocked: Box::leak(Box::default()),
             own_user: &owner,
             agents: &agents,
             environments: Box::leak(Box::default()),

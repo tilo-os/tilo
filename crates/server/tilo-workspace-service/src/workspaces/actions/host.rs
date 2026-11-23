@@ -38,6 +38,7 @@ use super::{
 };
 use crate::service_authority::ServiceOperation;
 use crate::workspaces::authority::WorkspaceOp;
+use crate::workspaces::blocked::Blocked;
 use crate::workspaces::{IssueInvitationRequest, WorkspaceSummary, Workspaces};
 use tilo_server_protocol::WorkspaceId;
 
@@ -62,7 +63,7 @@ const OWNER_ROLE: &str = "owner";
 
 /// The host's operations in catalogue order, each with the
 /// [`ServiceOperation`] it is.
-pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 23] = [
+pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 25] = [
     (
         Verb {
             id: CREATE_WORKSPACE,
@@ -152,6 +153,26 @@ pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 23] = [
             params: Vec::new,
         },
         ServiceOperation::ListRevocations,
+    ),
+    (
+        Verb {
+            id: BLOCK,
+            label: "Block a device or a person on this host",
+            check: BLOCK,
+            kind: roles::GOVERNANCE_KIND,
+            params: block_params,
+        },
+        ServiceOperation::Block,
+    ),
+    (
+        Verb {
+            id: UNBLOCK,
+            label: "Stop blocking a device or a person on this host",
+            check: UNBLOCK,
+            kind: roles::GOVERNANCE_KIND,
+            params: block_params,
+        },
+        ServiceOperation::Unblock,
     ),
     (
         Verb {
@@ -317,6 +338,26 @@ pub(super) const ADMIT_SERVER: &str = "server.admit";
 pub(super) const KEEP_RECOVERY_KEY: &str = tilo_actions::remote::machines::KEEP_RECOVERY_KEY;
 /// The disk recovery keys of the person's machines.
 pub(super) const RECOVERY_KEYS: &str = tilo_actions::remote::machines::RECOVERY_KEYS;
+/// Block a device, or every device of a person, on this host.
+pub(super) const BLOCK: &str = "host.block";
+/// Lift a block the operator set.
+pub(super) const UNBLOCK: &str = "host.unblock";
+
+fn block_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::optional(
+            "device",
+            ParamType::Text,
+            "The device's public key, 64 lowercase hex characters. Give this or a person's key.",
+        ),
+        ActionParam::optional(
+            "user",
+            ParamType::Text,
+            "A person's root public key, 64 lowercase hex characters: every device of theirs. Give \
+             this or a device's key.",
+        ),
+    ]
+}
 
 fn keep_recovery_key_params() -> Vec<ActionParam> {
     vec![ActionParam::required(
@@ -831,6 +872,11 @@ impl Workspaces {
                 self.enter_invoke(device, &args, request_id, now, local_address)
                     .await
             }
+            ServiceOperation::Block | ServiceOperation::Unblock => {
+                self.authorize(device, None, WorkspaceOp::Host(operation), now)
+                    .map_err(|error| ActionCallError::refused(error.to_string()))?;
+                self.blocking_invoke(operation, &args).await
+            }
             operation if operation.decided_by_its_workspace() => {
                 Box::pin(self.serving_invoke(device, (verb.id, operation), &args, now)).await
             }
@@ -1022,6 +1068,19 @@ impl Workspaces {
                 Err(ActionCallError::UnknownAction)
             };
         }
+        // A block is the operator's own: only their person, on a device of
+        // their own keeps or lifts one. No agent is asked on their behalf, and
+        // a stand-in is no device of theirs.
+        if matches!(verb.id, BLOCK | UNBLOCK) {
+            return if caller.acting().is_person()
+                && !device.capabilities.stand_in
+                && caller.device_public_key() == Some(&device.device_public_key)
+            {
+                Ok(())
+            } else {
+                Err(ActionCallError::UnknownAction)
+            };
+        }
         // A machine's own record, written when the person certified the machine with their root:
         // their device asks it as itself (the session's agent is that device's run), so no agent
         // is asked on their behalf.
@@ -1120,6 +1179,46 @@ impl Workspaces {
                 }
             }
         }
+    }
+
+    /// Block or unblock the key `args` names, as this host's operator: the
+    /// operator's own record of it, which every host they run refuses
+    /// ([`crate::workspaces::blocked`]). One key is named: a device's, or a
+    /// person's root key, whose every device is refused.
+    async fn blocking_invoke(
+        &self,
+        operation: ServiceOperation,
+        args: &Args,
+    ) -> Result<Value, ActionCallError> {
+        let (device, key) = match (args.text("device")?, args.text("user")?) {
+            (Some(device), None) => (true, device),
+            (None, Some(user)) => (false, user),
+            _ => {
+                return Err(ActionCallError::invalid_request(
+                    "name one key to block or unblock: a device or a person's user key",
+                ));
+            }
+        };
+        let key = crate::workspaces::blocked::key_bytes(key).ok_or_else(|| {
+            ActionCallError::invalid_request("a key is 32 bytes in lowercase hex")
+        })?;
+        let key = hex::encode(key);
+        let action = match (operation, device) {
+            (ServiceOperation::Block, true) => Blocked::BLOCK_DEVICE.with(key.clone()),
+            (ServiceOperation::Block, false) => Blocked::BLOCK_USER.with(key.clone()),
+            (ServiceOperation::Unblock, true) => Blocked::UNBLOCK_DEVICE.with(key.clone()),
+            (ServiceOperation::Unblock, false) => Blocked::UNBLOCK_USER.with(key.clone()),
+            _ => return Err(ActionCallError::UnknownAction),
+        };
+        self.apply_blocked(action)
+            .await
+            .map_err(ActionCallError::refused)?;
+        // What the operator asked of the key is its state now; the record of
+        // it, and its history, is the operator's.
+        Ok(serde_json::json!({
+            "blocked": operation == ServiceOperation::Block,
+            "key": key,
+        }))
     }
 
     /// Make the workspace `args` names, as `device`, already permitted to,

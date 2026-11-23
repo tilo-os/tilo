@@ -233,6 +233,7 @@ async fn a_tab_a_member_device_signed_enters_and_comes_back_as_the_person() {
     let trust = ServerTrust {
         revocations: &service.revocations,
         policy: &service.trust_policy,
+        blocked: &service.blocked,
         own_user: &service.cert.user_public_key,
         agents: &service.agents,
         environments: &service.environments,

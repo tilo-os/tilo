@@ -6,7 +6,8 @@
 //! its [`WorkspaceOperation`]. The rule is written once:
 //!
 //! 1. The certificate is current server-wide ([`ServerTrust::cert`]): not
-//!    expired, not revoked, admitted by the live trust policy.
+//!    expired, not revoked, not blocked by the operator, admitted by the live
+//!    trust policy.
 //! 2. An agent device acts only inside its live delegation.
 //! 3. A host this workspace is attached to is admitted on the protocols that carry
 //!    its changes (subscribe, state, publish, replay), listed or not.
@@ -204,6 +205,8 @@ pub enum DenyReason {
     CertExpired,
     /// The device is on the revocation list.
     Revoked,
+    /// The host's operator blocks the device, or the person whose device it is.
+    Blocked,
     /// The live trust policy no longer admits the certificate's user.
     NotTrusted,
     /// The agent was withdrawn.
@@ -234,6 +237,7 @@ impl DenyReason {
         use tilo_server_protocol::refusal::Refusal;
         match self {
             Self::OutOfEnvironmentScope => Refusal::NotAllowed(self.reason().into()),
+            Self::Blocked => Refusal::NotAllowed(self.reason().into()),
             Self::NotTrusted => Refusal::NotAdmitted,
             _ => Refusal::NotAMember(self.reason().into()),
         }
@@ -244,6 +248,7 @@ impl DenyReason {
         match self {
             Self::CertExpired => "device certificate expired",
             Self::Revoked => "authenticated device was revoked",
+            Self::Blocked => "this host refuses this device",
             Self::NotTrusted => "the member was removed from the workspace's signed authority",
             Self::AgentWithdrawn => "the agent was withdrawn",
             Self::AgentExpired => "the agent's delegation expired",
@@ -269,6 +274,10 @@ pub struct ServerTrust<'a> {
     pub revocations: &'a RwLock<RevocationList>,
     /// Live handshake trust policy.
     pub policy: &'a RwLock<TrustPolicy>,
+    /// The devices and people the operator blocks, read from the record of
+    /// their own workspace ([`crate::workspaces::blocked`]). No membership or
+    /// entry rule bypasses it.
+    pub blocked: &'a RwLock<crate::workspaces::blocked::BlockedKeys>,
     /// The user this server chains to.
     pub own_user: &'a [u8; 32],
     /// Agent delegations this server was told about.
@@ -316,6 +325,16 @@ impl ServerTrust<'_> {
             .is_ok_and(|list| !list.refuses(&peer.cert))
         {
             return Err(DenyReason::Revoked);
+        }
+        // The operator's explicit block stands ahead of the policy that gates
+        // who connects here: a workspace's membership admits a member, and this
+        // refuses a key its membership holds. A poisoned list refuses.
+        if !self
+            .blocked
+            .read()
+            .is_ok_and(|blocked| !blocked.blocks(&peer.device_public_key, &peer.user_public_key))
+        {
+            return Err(DenyReason::Blocked);
         }
         if !self
             .policy
@@ -626,8 +645,9 @@ pub(crate) fn decide_in(
         // The operator's handshake policy gates who connects to this host. A workspace's own
         // signed membership admits its members, as its entry does: a device of a person it holds
         // reaches the workspace on that rule, even where the operator's policy would not admit
-        // it. Every other refusal — an expired or revoked certificate, an agent outside its
-        // delegation, a stopped environment — still denies.
+        // it. Every other refusal — an expired or revoked certificate, a blocked key, an agent
+        // outside its delegation, a stopped environment — still denies: in particular a block is
+        // never read as the policy's refusal and bypassed.
         if reason != DenyReason::NotTrusted || !person_device(&peer.cert) {
             return Decision::Deny(reason);
         }

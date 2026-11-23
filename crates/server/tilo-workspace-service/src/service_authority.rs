@@ -135,6 +135,15 @@ pub enum ServiceOperation {
     /// The disk recovery keys of the host's person's machines, as that vault keeps them. Only a
     /// device of the person, never an agent's grant or a stand-in.
     ListRecoveryKeys,
+    /// Block a device, or every device of a person, on this host: an entry in
+    /// the blocked-keys record of the host's person's own workspace, which every
+    /// host they run refuses. Only a device of the person, never an agent's
+    /// grant or a stand-in.
+    Block,
+    /// Lift a block the operator set: the same record's entry removed, and the
+    /// key admitted again where it was refused. Only a device of the person,
+    /// never an agent's grant or a stand-in.
+    Unblock,
 }
 
 impl ServiceOperation {
@@ -169,6 +178,8 @@ impl ServiceOperation {
             Self::ServeWeb => "web.serve",
             Self::KeepRecoveryKey => "machine.keep-recovery-key",
             Self::ListRecoveryKeys => "machine.recovery-keys",
+            Self::Block => "host.block",
+            Self::Unblock => "host.unblock",
         }
     }
 
@@ -260,7 +271,9 @@ impl ServiceOperation {
             | Self::AdmitServer
             | Self::ServeWeb
             | Self::KeepRecoveryKey
-            | Self::ListRecoveryKeys => false,
+            | Self::ListRecoveryKeys
+            | Self::Block
+            | Self::Unblock => false,
         }
     }
 }
@@ -270,7 +283,7 @@ mod tests {
     use super::ServiceOperation;
     use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert};
 
-    const ALL: [ServiceOperation; 27] = [
+    const ALL: [ServiceOperation; 29] = [
         ServiceOperation::CreateWorkspace,
         ServiceOperation::ListWorkspaces,
         ServiceOperation::EnterWorkspace,
@@ -298,6 +311,8 @@ mod tests {
         ServiceOperation::ServeWeb,
         ServiceOperation::KeepRecoveryKey,
         ServiceOperation::ListRecoveryKeys,
+        ServiceOperation::Block,
+        ServiceOperation::Unblock,
     ];
 
     fn device(person: [u8; 32], capabilities: DeviceCapabilities) -> DeviceCert {
