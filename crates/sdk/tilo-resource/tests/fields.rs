@@ -171,6 +171,33 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase an_agent_reads_from_the_descriptor_what_it_can_change;
+    // The field edit's description is the listing an agent reads before it changes anything:
+    // the paths it may address and the operations each field's shape takes.
+    {
+        let published = Replica::<Board>::new().published().unwrap();
+        let schema = field_edit(&published).params()[0]
+            .schema
+            .as_deref()
+            .unwrap()
+            .clone();
+        let description = schema["description"]
+            .as_str()
+            .expect("the field edit says what it edits");
+        for path in ["- `title`", "- `layer`", "- `notes`"] {
+            assert!(
+                description
+                    .lines()
+                    .any(|line| line.starts_with(path)),
+                "{path} is listed: {description}"
+            );
+        }
+        assert!(
+            description.contains("splice {at, delete, insert}"),
+            "a text says how it may be edited: {description}"
+        );
+    }
+
     phase a_skipped_field_reads_as_the_containing_types_default;
     {
         let replica = Replica::<Board>::new();
