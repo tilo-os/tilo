@@ -168,14 +168,14 @@ budget_probe=$(
   die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
   BUDGET_DIR="$REPO/tools/perf/tapp-size-budget" TAPP_ARCH=aarch64 TAPP_BUDGET=enforce
   eval "$(sed -n '/^app_budget() {/,/^for t in "\$PKG_BIN"/p' "$PACK" | sed '$d')"
-  budget=$(app_budget so.tilo.imager aarch64)
+  budget=$(app_budget so.tilo.settings aarch64)
   [ -n "$budget" ] || exit 1
-  check_budget "imager (so.tilo.imager)" so.tilo.imager "$budget" || exit 1
-  if refusal=$(check_budget "imager (so.tilo.imager)" so.tilo.imager "$((budget + 1))"); then exit 1; fi
+  check_budget "settings (so.tilo.settings)" so.tilo.settings "$budget" || exit 1
+  if refusal=$(check_budget "settings (so.tilo.settings)" so.tilo.settings "$((budget + 1))"); then exit 1; fi
   printf '%s\n' "$refusal"
 )
 if [ -n "$budget_probe" ] \
-   && grep -q "so.tilo.imager" <<<"$budget_probe" \
+   && grep -q "so.tilo.settings" <<<"$budget_probe" \
    && grep -q "over its aarch64 budget of" <<<"$budget_probe" \
    && grep -q 'check_budget "\$app (\$id)"' "$PACK" \
    && grep -q 'COPY tools/perf/tapp-size-budget /build/tools/perf/tapp-size-budget' "$CONTAINERFILE"; then

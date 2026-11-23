@@ -37,6 +37,9 @@ required-features = ["capture-worker"]
 test = false
 
 [features]
+# The home-capture worker (tilo-home-export) links the shared runtime library
+# the capture service ships beside it (os/scripts/build-thin-apps.sh, role
+# home-capture), instead of carrying its own copy.
 thin = ["dep:runtime-dylib"]
 # The guided installation of Tilo from another operating system and the
 # migration of that system's data: the guided setup (`--setup`), the later
@@ -48,12 +51,12 @@ thin = ["dep:runtime-dylib"]
 # collection) does not: on Tilo it is the image writer, and the default build
 # is that app. tools/ci/package_features.py tests and lints with it.
 installation = ["dep:launcher", "imager-backend/installation"]
-# Reach account credentials with the WebDAV client, and the FUSE presentation the
-# projection worker serves, through their engine libraries in the runtime
-# bundle (libtilo_accounts_engine.so and libtilo_fuse_engine.so, under
-# crates/runtime/engines/) instead of carrying them in the tapp. The release
-# collection enables it (dist/apps/app-collections.toml); a `thin` build
-# without it (`tilo-app dev`) links them statically, because an engine library
+# The capture worker reaches account credentials with the WebDAV client, and the
+# FUSE presentation the projection worker serves, through their engine
+# libraries in the runtime bundle (libtilo_accounts_engine.so and
+# libtilo_fuse_engine.so, under crates/runtime/engines/) instead of carrying
+# them. The capture service enables it from dist/apps/app-collections.toml; a
+# `thin` build without it links them statically, because an engine library
 # links only through tools/ci/rustc-thin-app-wrapper.sh.
 runtime-engine = ["thin", "tilo-accounts-engine/thin", "tilo-fuse-engine/thin"]
 # The destination side of the guided setup, on the live installer medium:

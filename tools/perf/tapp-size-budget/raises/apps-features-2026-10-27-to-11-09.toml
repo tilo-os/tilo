@@ -21,8 +21,6 @@ x86_64 = 196608
 x86_64 = 327680
 [apps."so.tilo.git-client"]
 x86_64 = 196608
-[apps."so.tilo.imager"]
-x86_64 = 196608
 [apps."so.tilo.logs"]
 x86_64 = 131072
 [apps."so.tilo.monitor"]
