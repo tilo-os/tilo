@@ -267,6 +267,7 @@ impl Invocations {
         let new = again.invocation;
         self.record(
             &recorded.caller,
+            caller,
             &again,
             recorded.workspace.as_deref(),
             (Arc::clone(&provider), runs_as.clone()),
