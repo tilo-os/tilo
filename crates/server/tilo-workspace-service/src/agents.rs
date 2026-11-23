@@ -1254,7 +1254,7 @@ impl ServerAgents {
         let ask = crate::work::Turn::Agent {
             agent: agent.clone(),
             place,
-            keeper,
+            acts_for: keeper,
             app: app.to_owned(),
             record: record.clone(),
         };

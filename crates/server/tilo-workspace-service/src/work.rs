@@ -24,7 +24,7 @@
 //! action. For an agent's turn: the workspace lets this device open the
 //! record the turn is about, and the device runs an agent engine that can run
 //! the agent: it holds the agent's approved key, or it is a device of the
-//! agent's keeper (a server of theirs only where its entry offers compute and
+//! person it acts for (a server of theirs only where its entry offers compute and
 //! is not retired). Who started the turn does not decide where it runs: any
 //! member may start any agent's turn. No caller checks any of this itself.
 //!
@@ -161,8 +161,8 @@ pub enum Turn {
         /// Where the turn was started: the conversation, or the task, it
         /// answers in. One device answers there at a time.
         place: String,
-        /// The person who keeps the agent, by their root key.
-        keeper: [u8; 32],
+        /// The person the agent acts for, by their root key.
+        acts_for: [u8; 32],
         /// The app keeping the record the turn is about.
         app: String,
         /// That record.
@@ -206,8 +206,8 @@ pub enum Ineligible {
     NoRoomForLinux,
     /// The workspace's Linux machine is kept on another device.
     MachineElsewhere,
-    /// This device holds no approved key of the agent and is none of its
-    /// keeper's devices.
+    /// This device holds no approved key of the agent and is none of the
+    /// devices of the person it acts for.
     CannotRunAgent,
     /// This device runs no agent engine.
     RunsNoAgents,
@@ -411,13 +411,13 @@ async fn eligibility(
         Turn::Linux { .. } => {
             let linux = workspaces.host_linux().ok_or(Ineligible::RunsNoLinux)?;
             let device = workspaces.lease_device(workspace).await;
-            let keeper = workspaces
+            let machine_on = workspaces
                 .lease_holder(workspace, &linux.machine_lease())
                 .await
                 .ok()
                 .flatten();
-            match keeper {
-                Some(keeper) if keeper == device => Ok(()),
+            match machine_on {
+                Some(machine_on) if machine_on == device => Ok(()),
                 Some(_) => Err(Ineligible::MachineElsewhere),
                 None if linux.has_room() => Ok(()),
                 None => Err(Ineligible::NoRoomForLinux),
@@ -425,7 +425,7 @@ async fn eligibility(
         }
         Turn::Agent {
             agent,
-            keeper,
+            acts_for,
             app,
             record,
             ..
@@ -439,10 +439,10 @@ async fn eligibility(
             let Some(keys) = workspaces.agent_keys() else {
                 return Err(Ineligible::RunsNoAgents);
             };
-            if keys.holds(workspace, agent, keeper).await {
+            if keys.holds(workspace, agent, acts_for).await {
                 return Ok(());
             }
-            keepers_device(workspaces, keeper).await
+            device_of(workspaces, acts_for).await
         }
     }
 }
@@ -462,14 +462,14 @@ pub trait HostLinux: Send + Sync {
     fn runs(&self) -> Arc<dyn ActionProvider + Send + Sync>;
 }
 
-/// Whether this device runs agents for the person whose root is `keeper`: it
+/// Whether this device runs agents for the person whose root is `person`: it
 /// is a device of theirs, and where their servers name it, its entry offers
 /// compute and is not retired.
-async fn keepers_device(workspaces: &Workspaces, keeper: &[u8; 32]) -> Result<(), Ineligible> {
-    match server_entry(workspaces, keeper).await {
+async fn device_of(workspaces: &Workspaces, person: &[u8; 32]) -> Result<(), Ineligible> {
+    match server_entry(workspaces, person).await {
         Some(entry) if entry.compute && !entry.retired => Ok(()),
         Some(_) => Err(Ineligible::OffersNoCompute),
-        None if workspaces.serving_certificate().user_public_key == *keeper => Ok(()),
+        None if workspaces.serving_certificate().user_public_key == *person => Ok(()),
         None => Err(Ineligible::CannotRunAgent),
     }
 }
@@ -477,12 +477,12 @@ async fn keepers_device(workspaces: &Workspaces, keeper: &[u8; 32]) -> Result<()
 /// The agent engine a device runs, as [`takes_turn`] asks it about an agent.
 pub trait AgentEngine: Send + Sync {
     /// Whether this device holds an approved key of `agent` of `workspace`,
-    /// kept by the person whose root is `keeper`.
+    /// acting for the person whose root is `acts_for`.
     fn holds<'a>(
         &'a self,
         workspace: &'a str,
         agent: &'a str,
-        keeper: &'a [u8; 32],
+        acts_for: &'a [u8; 32],
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>>;
 }
 
