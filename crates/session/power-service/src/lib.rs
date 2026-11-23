@@ -378,12 +378,6 @@ impl PowerLink {
             profiles: self.inner.bridge.profiles(),
         }
     }
-
-    /// Switch to the power profile `profile` names, one of the profiles
-    /// [`Self::sleep`] offers.
-    pub fn set_profile(&self, profile: &str) {
-        self.inner.bridge.set_profile(profile);
-    }
 }
 
 /// `timeout` in whole minutes, rounding up: what a person reads.

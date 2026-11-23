@@ -683,20 +683,6 @@ impl PowerService {
                     self.release_sleep_delay_if_ready();
                 }
                 PowerCommand::UpdatePolicy(policy) => self.policy = policy,
-                PowerCommand::SetProfile(profile) => self.switch_profile(&profile).await,
-            }
-        }
-    }
-
-    async fn switch_profile(&mut self, profile: &str) {
-        let Some(monitor) = self.power_profiles.clone() else {
-            warn!(target: "tilo::power", %profile, "no power profiles here: the profile was not switched");
-            return;
-        };
-        match monitor.set_active_profile(profile).await {
-            Ok(()) => self.apply_active_profile(profile),
-            Err(error) => {
-                warn!(target: "tilo::power", %error, %profile, "the power profile was not switched");
             }
         }
     }
