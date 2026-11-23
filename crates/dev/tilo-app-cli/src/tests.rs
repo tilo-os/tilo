@@ -52,6 +52,16 @@ impl Scaffold {
     }
 }
 
+/// What `tilo-app add` asks for in `start`: nothing forced, and written, not a dry run.
+fn add(start: &Path, artifact: AddArtifact) -> AddRequest {
+    AddRequest {
+        start: start.to_path_buf(),
+        artifact,
+        force: false,
+        dry_run: false,
+    }
+}
+
 fn copy_tree(from: &Path, to: &Path) {
     std::fs::create_dir(to).unwrap();
     for entry in std::fs::read_dir(from).unwrap() {
@@ -79,6 +89,15 @@ fn fixture_sdk(workspace_member: bool) -> AppSdk {
             baseline: standalone::Baseline::embedded().expect("embedded SDK baseline"),
         })
     }
+}
+
+/// A fresh directory holding the app `build` lays out at `name`; the directory goes with the
+/// first value.
+fn app_in_temp(name: &str, build: fn(&Path)) -> (tempfile::TempDir, PathBuf) {
+    let temp = tempfile::tempdir().unwrap();
+    let app = temp.path().join(name);
+    build(&app);
+    (temp, app)
 }
 
 fn minimal_app(root: &Path) {
@@ -122,20 +141,13 @@ tilo_test_env::scenario! {
     phase the_add_wizard_reviews_before_building_screens_and_components;
     {
         {
-            let temp = tempfile::tempdir().unwrap();
-            let app = temp.path().join("demo");
-            minimal_app(&app);
-            add_app_artifact(AddRequest {
-                start: app.clone(),
-                artifact: AddArtifact::Screen {
+            let (_temp, app) = app_in_temp("demo", minimal_app);
+            add_app_artifact(add(&app, AddArtifact::Screen {
                     name: "main".into(),
                     title: Some("Home".into()),
                     template: ScreenTemplate::Blank,
                     link_from: None,
-                },
-                force: false,
-                dry_run: false,
-            })
+                }))
             .unwrap();
             let mut input = std::io::Cursor::new(b"\naccount-settings\n\n3\n\n\n".to_vec());
             let mut output = Vec::new();
@@ -157,9 +169,7 @@ tilo_test_env::scenario! {
         }
 
         {
-            let temp = tempfile::tempdir().unwrap();
-            let app = temp.path().join("demo");
-            minimal_app(&app);
+            let (_temp, app) = app_in_temp("demo", minimal_app);
             let mut input = std::io::Cursor::new(b"3\nde-DE\nno\n".to_vec());
             let mut output = Vec::new();
 
@@ -183,9 +193,7 @@ tilo_test_env::scenario! {
         }
 
         {
-            let temp = tempfile::tempdir().unwrap();
-            let app = temp.path().join("demo");
-            minimal_app(&app);
+            let (_temp, app) = app_in_temp("demo", minimal_app);
             let mut input = std::io::Cursor::new(b"4\nprofile-card\n2\n\n".to_vec());
             let mut output = Vec::new();
 
@@ -198,9 +206,7 @@ tilo_test_env::scenario! {
         }
 
         {
-            let temp = tempfile::tempdir().unwrap();
-            let app = temp.path().join("demo");
-            minimal_generated_graph_app(&app);
+            let (_temp, app) = app_in_temp("demo", minimal_generated_graph_app);
             let mut input = std::io::Cursor::new(b"4\nprofile-card\n1\n\n\n\n\n".to_vec());
             let mut output = Vec::new();
 
@@ -217,9 +223,7 @@ tilo_test_env::scenario! {
         }
 
         {
-            let temp = tempfile::tempdir().unwrap();
-            let app = temp.path().join("demo");
-            minimal_generated_graph_app(&app);
+            let (_temp, app) = app_in_temp("demo", minimal_generated_graph_app);
             let mut input = std::io::Cursor::new(
                 b"4\nprofile-form\n2\n\nprofile-name\nprofile-enabled\n\n".to_vec(),
             );
@@ -247,48 +251,40 @@ tilo_test_env::scenario! {
 )]
 fn components_register_and_mount_only_with_compatible_typed_props() {
     {
-        let temp = tempfile::tempdir().unwrap();
-        let app = temp.path().join("demo");
-        minimal_app(&app);
+        let (_temp, app) = app_in_temp("demo", minimal_app);
 
-        let display = add_app_artifact(AddRequest {
-            start: app.clone(),
-            artifact: AddArtifact::Component {
+        let display = add_app_artifact(add(
+            &app,
+            AddArtifact::Component {
                 name: "activity-card".into(),
                 template: ComponentTemplate::Display,
             },
-            force: false,
-            dry_run: false,
-        })
+        ))
         .unwrap();
         assert_eq!(display.next_command.as_deref(), Some("tilo-app test"));
         let display_source =
             std::fs::read_to_string(app.join("src/components/activity_card.rs")).unwrap();
         syn::parse_file(&display_source).unwrap();
 
-        add_app_artifact(AddRequest {
-            start: app.clone(),
-            artifact: AddArtifact::Component {
+        add_app_artifact(add(
+            &app,
+            AddArtifact::Component {
                 name: "profile-card".into(),
                 template: ComponentTemplate::Form,
             },
-            force: false,
-            dry_run: false,
-        })
+        ))
         .unwrap();
         let form_source =
             std::fs::read_to_string(app.join("src/components/profile_card.rs")).unwrap();
         syn::parse_file(&form_source).unwrap();
 
-        add_app_artifact(AddRequest {
-            start: app.clone(),
-            artifact: AddArtifact::Component {
+        add_app_artifact(add(
+            &app,
+            AddArtifact::Component {
                 name: "project-tree".into(),
                 template: ComponentTemplate::Tree,
             },
-            force: false,
-            dry_run: false,
-        })
+        ))
         .unwrap();
         let tree_source =
             std::fs::read_to_string(app.join("src/components/project_tree.rs")).unwrap();
@@ -302,26 +298,25 @@ fn components_register_and_mount_only_with_compatible_typed_props() {
         let library = std::fs::read_to_string(app.join("src/lib.rs")).unwrap();
         assert_eq!(library.matches("pub mod components;").count(), 1);
 
-        let error = add_app_artifact(AddRequest {
-            start: app.clone(),
-            artifact: AddArtifact::Component {
+        let error = add_app_artifact(add(
+            &app,
+            AddArtifact::Component {
                 name: "profile-card".into(),
                 template: ComponentTemplate::Display,
             },
-            force: false,
-            dry_run: false,
-        })
+        ))
         .unwrap_err();
         assert!(error.to_string().contains("already exists"));
 
         add_app_artifact(AddRequest {
-            start: app.clone(),
-            artifact: AddArtifact::Component {
-                name: "profile-card".into(),
-                template: ComponentTemplate::Display,
-            },
             force: true,
-            dry_run: false,
+            ..add(
+                &app,
+                AddArtifact::Component {
+                    name: "profile-card".into(),
+                    template: ComponentTemplate::Display,
+                },
+            )
         })
         .unwrap();
         let replaced = std::fs::read_to_string(app.join("src/components/profile_card.rs")).unwrap();
@@ -340,9 +335,7 @@ fn components_register_and_mount_only_with_compatible_typed_props() {
     }
 
     {
-        let temp = tempfile::tempdir().unwrap();
-        let app = temp.path().join("graph-app");
-        minimal_generated_graph_app(&app);
+        let (_temp, app) = app_in_temp("graph-app", minimal_generated_graph_app);
         let custom_root =
             "fn custom() { let _ = crate::screens::router(\"main\", &Theme::default()); }\n";
         std::fs::write(
@@ -350,16 +343,14 @@ fn components_register_and_mount_only_with_compatible_typed_props() {
             format!("pub mod screens;\n{custom_root}"),
         )
         .unwrap();
-        let custom_error = add_app_artifact(AddRequest {
-            start: app.clone(),
-            artifact: AddArtifact::GraphComponent {
+        let custom_error = add_app_artifact(add(
+            &app,
+            AddArtifact::GraphComponent {
                 name: "profile-card".into(),
                 template: ComponentTemplate::Display,
                 mount: ComponentMount::display("main", "profile-card"),
             },
-            force: false,
-            dry_run: false,
-        })
+        ))
         .unwrap_err();
         assert!(
             custom_error
@@ -376,14 +367,15 @@ fn components_register_and_mount_only_with_compatible_typed_props() {
         let library_before = std::fs::read(app.join("src/lib.rs")).unwrap();
         let graph_before = std::fs::read(app.join("ui/main.json")).unwrap();
         let dry_run = add_app_artifact(AddRequest {
-            start: app.clone(),
-            artifact: AddArtifact::GraphComponent {
-                name: "profile-card".into(),
-                template: ComponentTemplate::Display,
-                mount: ComponentMount::display("main", "profile-card"),
-            },
-            force: false,
             dry_run: true,
+            ..add(
+                &app,
+                AddArtifact::GraphComponent {
+                    name: "profile-card".into(),
+                    template: ComponentTemplate::Display,
+                    mount: ComponentMount::display("main", "profile-card"),
+                },
+            )
         })
         .unwrap();
         assert!(dry_run.dry_run);
@@ -398,9 +390,9 @@ fn components_register_and_mount_only_with_compatible_typed_props() {
             std::fs::read(app.join("ui/main.json")).unwrap(),
             graph_before
         );
-        let invalid = add_app_artifact(AddRequest {
-            start: app.clone(),
-            artifact: AddArtifact::GraphComponent {
+        let invalid = add_app_artifact(add(
+            &app,
+            AddArtifact::GraphComponent {
                 name: "profile-card".into(),
                 template: ComponentTemplate::Display,
                 mount: ComponentMount {
@@ -408,9 +400,7 @@ fn components_register_and_mount_only_with_compatible_typed_props() {
                     ..ComponentMount::display("main", "profile-card")
                 },
             },
-            force: false,
-            dry_run: false,
-        })
+        ))
         .unwrap_err();
         assert!(invalid.to_string().contains("must be a JSON object"));
         assert!(!app.join("src/components/profile_card.rs").exists());
@@ -425,20 +415,16 @@ fn components_register_and_mount_only_with_compatible_typed_props() {
     }
 
     {
-        let temp = tempfile::tempdir().unwrap();
-        let app = temp.path().join("graph-app");
-        minimal_generated_graph_app(&app);
+        let (_temp, app) = app_in_temp("graph-app", minimal_generated_graph_app);
 
-        let outcome = add_app_artifact(AddRequest {
-            start: app.clone(),
-            artifact: AddArtifact::GraphComponent {
+        let outcome = add_app_artifact(add(
+            &app,
+            AddArtifact::GraphComponent {
                 name: "profile-card".into(),
                 template: ComponentTemplate::Display,
                 mount: ComponentMount::display("main", "profile-card"),
             },
-            force: false,
-            dry_run: false,
-        })
+        ))
         .unwrap();
         assert_eq!(outcome.next_command.as_deref(), Some("tilo-app dev"));
         assert!(
@@ -474,19 +460,15 @@ fn components_register_and_mount_only_with_compatible_typed_props() {
     }
 
     {
-        let temp = tempfile::tempdir().unwrap();
-        let app = temp.path().join("graph-app");
-        minimal_generated_graph_app(&app);
-        add_app_artifact(AddRequest {
-            start: app.clone(),
-            artifact: AddArtifact::GraphComponent {
+        let (_temp, app) = app_in_temp("graph-app", minimal_generated_graph_app);
+        add_app_artifact(add(
+            &app,
+            AddArtifact::GraphComponent {
                 name: "profile-card".into(),
                 template: ComponentTemplate::Display,
                 mount: ComponentMount::display("main", "profile-card"),
             },
-            force: false,
-            dry_run: false,
-        })
+        ))
         .unwrap();
 
         let registry_path = app.join("src/components/mod.rs");
@@ -494,13 +476,14 @@ fn components_register_and_mount_only_with_compatible_typed_props() {
         let component_before = std::fs::read(&component_path).unwrap();
         let registry_before = std::fs::read(&registry_path).unwrap();
         let incompatible = add_app_artifact(AddRequest {
-            start: app.clone(),
-            artifact: AddArtifact::Component {
-                name: "profile-card".into(),
-                template: ComponentTemplate::Form,
-            },
             force: true,
-            dry_run: false,
+            ..add(
+                &app,
+                AddArtifact::Component {
+                    name: "profile-card".into(),
+                    template: ComponentTemplate::Form,
+                },
+            )
         })
         .unwrap_err();
         assert!(
@@ -536,13 +519,14 @@ fn components_register_and_mount_only_with_compatible_typed_props() {
         )
         .unwrap();
         add_app_artifact(AddRequest {
-            start: app,
-            artifact: AddArtifact::Component {
-                name: "profile-card".into(),
-                template: ComponentTemplate::Form,
-            },
             force: true,
-            dry_run: false,
+            ..add(
+                &app,
+                AddArtifact::Component {
+                    name: "profile-card".into(),
+                    template: ComponentTemplate::Form,
+                },
+            )
         })
         .unwrap();
         let registry = std::fs::read_to_string(registry_path).unwrap();
@@ -561,9 +545,9 @@ fn components_register_and_mount_only_with_compatible_typed_props() {
         create_app(new_app).unwrap();
 
         let graph_before = std::fs::read(app.join("ui/main.json")).unwrap();
-        let invalid_mount = add_app_artifact(AddRequest {
-            start: app.clone(),
-            artifact: AddArtifact::GraphComponent {
+        let invalid_mount = add_app_artifact(add(
+            &app,
+            AddArtifact::GraphComponent {
                 name: "broken-form".into(),
                 template: ComponentTemplate::Form,
                 mount: ComponentMount {
@@ -572,9 +556,7 @@ fn components_register_and_mount_only_with_compatible_typed_props() {
                     ..ComponentMount::form("main", "broken-form")
                 },
             },
-            force: false,
-            dry_run: false,
-        })
+        ))
         .unwrap_err();
         assert!(
             invalid_mount
@@ -587,16 +569,14 @@ fn components_register_and_mount_only_with_compatible_typed_props() {
             graph_before
         );
 
-        let outcome = add_app_artifact(AddRequest {
-            start: app.clone(),
-            artifact: AddArtifact::GraphComponent {
+        let outcome = add_app_artifact(add(
+            &app,
+            AddArtifact::GraphComponent {
                 name: "profile-form".into(),
                 template: ComponentTemplate::Form,
                 mount: ComponentMount::form("main", "profile-form"),
             },
-            force: false,
-            dry_run: false,
-        })
+        ))
         .unwrap();
 
         assert_eq!(outcome.next_command.as_deref(), Some("tilo-app dev"));
@@ -703,19 +683,12 @@ tilo_test_env::scenario! {
     phase component_templates_keep_their_generic_model_boundaries;
     {
         {
-            let temp = tempfile::tempdir().unwrap();
-            let app = temp.path().join("demo");
-            minimal_app(&app);
+            let (_temp, app) = app_in_temp("demo", minimal_app);
 
-            add_app_artifact(AddRequest {
-                start: app.clone(),
-                artifact: AddArtifact::Component {
+            add_app_artifact(add(&app, AddArtifact::Component {
                     name: "activity-list".into(),
                     template: ComponentTemplate::List,
-                },
-                force: false,
-                dry_run: false,
-            })
+                }))
             .unwrap();
 
             let source = std::fs::read_to_string(app.join("src/components/activity_list.rs")).unwrap();
@@ -729,19 +702,12 @@ tilo_test_env::scenario! {
         }
 
         {
-            let temp = tempfile::tempdir().unwrap();
-            let app = temp.path().join("demo");
-            minimal_app(&app);
+            let (_temp, app) = app_in_temp("demo", minimal_app);
 
-            add_app_artifact(AddRequest {
-                start: app.clone(),
-                artifact: AddArtifact::Component {
+            add_app_artifact(add(&app, AddArtifact::Component {
                     name: "results-table".into(),
                     template: ComponentTemplate::Table,
-                },
-                force: false,
-                dry_run: false,
-            })
+                }))
             .unwrap();
 
             let source = std::fs::read_to_string(app.join("src/components/results_table.rs")).unwrap();
@@ -755,19 +721,12 @@ tilo_test_env::scenario! {
         }
 
         {
-            let temp = tempfile::tempdir().unwrap();
-            let app = temp.path().join("demo");
-            minimal_app(&app);
+            let (_temp, app) = app_in_temp("demo", minimal_app);
 
-            add_app_artifact(AddRequest {
-                start: app.clone(),
-                artifact: AddArtifact::Component {
+            add_app_artifact(add(&app, AddArtifact::Component {
                     name: "article-body".into(),
                     template: ComponentTemplate::Text,
-                },
-                force: false,
-                dry_run: false,
-            })
+                }))
             .unwrap();
 
             let source = std::fs::read_to_string(app.join("src/components/article_body.rs")).unwrap();
@@ -783,43 +742,31 @@ tilo_test_env::scenario! {
             create_app(request(app.clone())).unwrap();
 
             let dry = add_app_artifact(AddRequest {
-                start: app.clone(),
-                artifact: AddArtifact::Component {
+                dry_run: true,
+                ..add(&app, AddArtifact::Component {
                     name: "profile-card".into(),
                     template: ComponentTemplate::Form,
-                },
-                force: false,
-                dry_run: true,
+                })
             })
             .unwrap();
             assert!(dry.dry_run);
             assert!(!app.join("src/components/profile_card.rs").exists());
             assert!(!app.join("src/components/mod.rs").exists());
 
-            add_app_artifact(AddRequest {
-                start: app.clone(),
-                artifact: AddArtifact::Component {
+            add_app_artifact(add(&app, AddArtifact::Component {
                     name: "profile-card".into(),
                     template: ComponentTemplate::Form,
-                },
-                force: false,
-                dry_run: false,
-            })
+                }))
             .unwrap();
             let catalog = std::fs::read_to_string(app.join("locales/en-US.ftl")).unwrap();
             assert!(catalog.contains("profile-card-value-label ="));
             assert!(catalog.contains("profile-card-value-placeholder ="));
             assert!(catalog.contains("profile-card-enabled-label ="));
 
-            add_app_artifact(AddRequest {
-                start: app.clone(),
-                artifact: AddArtifact::Component {
+            add_app_artifact(add(&app, AddArtifact::Component {
                     name: "project-tree".into(),
                     template: ComponentTemplate::Tree,
-                },
-                force: false,
-                dry_run: false,
-            })
+                }))
             .unwrap();
             let catalog = std::fs::read_to_string(app.join("locales/en-US.ftl")).unwrap();
             assert!(catalog.contains("project-tree-accessible-name ="), "{catalog}");
@@ -828,75 +775,48 @@ tilo_test_env::scenario! {
                 "the tree's placeholders are the framework's, not the app's"
             );
 
-            add_app_artifact(AddRequest {
-                start: app.clone(),
-                artifact: AddArtifact::Component {
+            add_app_artifact(add(&app, AddArtifact::Component {
                     name: "activity-list".into(),
                     template: ComponentTemplate::List,
-                },
-                force: false,
-                dry_run: false,
-            })
+                }))
             .unwrap();
             let catalog = std::fs::read_to_string(app.join("locales/en-US.ftl")).unwrap();
             assert!(catalog.contains("activity-list-accessible-name ="), "{catalog}");
 
-            add_app_artifact(AddRequest {
-                start: app.clone(),
-                artifact: AddArtifact::Component {
+            add_app_artifact(add(&app, AddArtifact::Component {
                     name: "results-table".into(),
                     template: ComponentTemplate::Table,
-                },
-                force: false,
-                dry_run: false,
-            })
+                }))
             .unwrap();
             let catalog = std::fs::read_to_string(app.join("locales/en-US.ftl")).unwrap();
             assert!(catalog.contains("results-table-accessible-name ="), "{catalog}");
 
-            add_app_artifact(AddRequest {
-                start: app.clone(),
-                artifact: AddArtifact::Component {
+            add_app_artifact(add(&app, AddArtifact::Component {
                     name: "article-body".into(),
                     template: ComponentTemplate::Text,
-                },
-                force: false,
-                dry_run: false,
-            })
+                }))
             .unwrap();
             let catalog = std::fs::read_to_string(app.join("locales/en-US.ftl")).unwrap();
             assert!(catalog.contains("article-body-body ="), "{catalog}");
         }
 
         {
-            let temp = tempfile::tempdir().unwrap();
-            let app = temp.path().join("demo");
-            minimal_app(&app);
+            let (_temp, app) = app_in_temp("demo", minimal_app);
             std::fs::create_dir_all(app.join("src/components")).unwrap();
             std::fs::write(app.join("src/components/mod.rs"), "pub mod hand_written;\n").unwrap();
 
-            let owned = add_app_artifact(AddRequest {
-                start: app.clone(),
-                artifact: AddArtifact::Component {
+            let owned = add_app_artifact(add(&app, AddArtifact::Component {
                     name: "profile-card".into(),
                     template: ComponentTemplate::Display,
-                },
-                force: false,
-                dry_run: false,
-            })
+                }))
             .unwrap_err();
             assert!(owned.to_string().contains("app-owned"));
             assert!(!app.join("src/components/profile_card.rs").exists());
 
-            let keyword = add_app_artifact(AddRequest {
-                start: app,
-                artifact: AddArtifact::Component {
+            let keyword = add_app_artifact(add(&app, AddArtifact::Component {
                     name: "type".into(),
                     template: ComponentTemplate::Display,
-                },
-                force: false,
-                dry_run: false,
-            })
+                }))
             .unwrap_err();
             assert!(keyword.to_string().contains("Rust identifier"));
         }
@@ -946,28 +866,24 @@ fn screen_scenarios_scaffold_plan_and_run_isolated_workflows() {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("preferences");
         graph.copy_to(&app);
-        add_app_artifact(AddRequest {
-            start: app.clone(),
-            artifact: AddArtifact::Screen {
+        add_app_artifact(add(
+            &app,
+            AddArtifact::Screen {
                 name: "settings".into(),
                 title: None,
                 template: ScreenTemplate::Settings,
                 link_from: Some("main".into()),
             },
-            force: false,
-            dry_run: false,
-        })
+        ))
         .unwrap();
 
-        let outcome = add_app_artifact(AddRequest {
-            start: app,
-            artifact: AddArtifact::Scenario {
+        let outcome = add_app_artifact(add(
+            &app,
+            AddArtifact::Scenario {
                 name: "settings-smoke".into(),
                 screen: Some("settings".into()),
             },
-            force: false,
-            dry_run: false,
-        })
+        ))
         .unwrap();
         assert_eq!(
             outcome.next_command.as_deref(),
@@ -999,28 +915,24 @@ fn screen_scenarios_scaffold_plan_and_run_isolated_workflows() {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("starter");
         create_app(request(app.clone())).unwrap();
-        add_app_artifact(AddRequest {
-            start: app.clone(),
-            artifact: AddArtifact::Screen {
+        add_app_artifact(add(
+            &app,
+            AddArtifact::Screen {
                 name: "settings".into(),
                 title: None,
                 template: ScreenTemplate::Settings,
                 link_from: None,
             },
-            force: false,
-            dry_run: false,
-        })
+        ))
         .unwrap();
         let scenario = app.join("tests/scenarios/settings-smoke.json");
-        let error = add_app_artifact(AddRequest {
-            start: app,
-            artifact: AddArtifact::Scenario {
+        let error = add_app_artifact(add(
+            &app,
+            AddArtifact::Scenario {
                 name: "settings-smoke".into(),
                 screen: Some("settings".into()),
             },
-            force: false,
-            dry_run: false,
-        })
+        ))
         .unwrap_err();
         assert!(error.to_string().contains("screens::router"), "{error:#}");
         assert!(!scenario.exists());
@@ -1261,20 +1173,13 @@ tilo_test_env::scenario! {
     phase add_screen_emits_valid_accessible_model_bound_graphs_with_their_wiring;
     {
         {
-            let temp = tempfile::tempdir().unwrap();
-            let app = temp.path().join("demo");
-            minimal_app(&app);
-            let outcome = add_app_artifact(AddRequest {
-                start: app.join("src/nested"),
-                artifact: AddArtifact::Screen {
+            let (_temp, app) = app_in_temp("demo", minimal_app);
+            let outcome = add_app_artifact(add(&app.join("src/nested"), AddArtifact::Screen {
                     name: "account-settings".into(),
                     title: None,
                     template: ScreenTemplate::Blank,
                     link_from: None,
-                },
-                force: false,
-                dry_run: false,
-            })
+                }))
             .unwrap();
             assert_eq!(outcome.app_dir, app.canonicalize().unwrap());
             let graph_path = &outcome.files[0];
@@ -1364,39 +1269,24 @@ tilo_test_env::scenario! {
             let temp = tempfile::tempdir().unwrap();
             let app = temp.path().join("reading-list");
             create_app(request(app.clone())).unwrap();
-            add_app_artifact(AddRequest {
-                start: app.clone(),
-                artifact: AddArtifact::Locale {
+            add_app_artifact(add(&app, AddArtifact::Locale {
                     locale: "de-DE".into(),
-                },
-                force: false,
-                dry_run: false,
-            })
+                }))
             .unwrap();
-            add_app_artifact(AddRequest {
-                start: app.clone(),
-                artifact: AddArtifact::Screen {
+            add_app_artifact(add(&app, AddArtifact::Screen {
                     name: "main".into(),
                     title: Some("Home".into()),
                     template: ScreenTemplate::Blank,
                     link_from: None,
-                },
-                force: false,
-                dry_run: false,
-            })
+                }))
             .unwrap();
 
-            let outcome = add_app_artifact(AddRequest {
-                start: app.clone(),
-                artifact: AddArtifact::Screen {
+            let outcome = add_app_artifact(add(&app, AddArtifact::Screen {
                     name: "account-settings".into(),
                     title: Some("Account \"advanced\"\nsettings".into()),
                     template: ScreenTemplate::Settings,
                     link_from: Some("main".into()),
-                },
-                force: false,
-                dry_run: false,
-            })
+                }))
             .unwrap();
             assert!(
                 outcome
@@ -1459,30 +1349,20 @@ tilo_test_env::scenario! {
             let temp = tempfile::tempdir().unwrap();
             let app = temp.path().join("reading-list");
             create_app(request(app.clone())).unwrap();
-            add_app_artifact(AddRequest {
-                start: app.clone(),
-                artifact: AddArtifact::Locale {
+            add_app_artifact(add(&app, AddArtifact::Locale {
                     locale: "de".into(),
-                },
-                force: false,
-                dry_run: false,
-            })
+                }))
             .unwrap();
             std::fs::write(app.join("locales/de.ftl"), "broken = { $value\n").unwrap();
             let source_before = std::fs::read(app.join("locales/en-US.ftl")).unwrap();
             let library_before = std::fs::read(app.join("src/lib.rs")).unwrap();
 
-            let error = add_app_artifact(AddRequest {
-                start: app.clone(),
-                artifact: AddArtifact::Screen {
+            let error = add_app_artifact(add(&app, AddArtifact::Screen {
                     name: "settings".into(),
                     title: None,
                     template: ScreenTemplate::Settings,
                     link_from: None,
-                },
-                force: false,
-                dry_run: false,
-            })
+                }))
             .unwrap_err();
             assert!(error.to_string().contains("de.ftl"), "{error:#}");
             assert!(!app.join("ui/settings.json").exists());
@@ -1498,23 +1378,16 @@ tilo_test_env::scenario! {
         }
 
         {
-            let temp = tempfile::tempdir().unwrap();
-            let app = temp.path().join("demo");
-            minimal_app(&app);
+            let (temp, app) = app_in_temp("demo", minimal_app);
             let mut outcomes = Vec::new();
             for name in ["main", "settings"] {
                 outcomes.push(
-                    add_app_artifact(AddRequest {
-                        start: app.clone(),
-                        artifact: AddArtifact::Screen {
+                    add_app_artifact(add(&app, AddArtifact::Screen {
                             name: name.into(),
                             title: None,
                             template: ScreenTemplate::Blank,
                             link_from: None,
-                        },
-                        force: false,
-                        dry_run: false,
-                    })
+                        }))
                     .unwrap(),
                 );
             }
@@ -1539,17 +1412,12 @@ tilo_test_env::scenario! {
             std::fs::write(custom.join("src/screens.rs"), "pub fn custom() {}\n").unwrap();
             let original_library = std::fs::read(custom.join("src/lib.rs")).unwrap();
             assert!(
-                add_app_artifact(AddRequest {
-                    start: custom.clone(),
-                    artifact: AddArtifact::Screen {
+                add_app_artifact(add(&custom, AddArtifact::Screen {
                         name: "new".into(),
                         title: None,
                         template: ScreenTemplate::Blank,
                         link_from: None,
-                    },
-                    force: false,
-                    dry_run: false,
-                })
+                    }))
                 .unwrap_err()
                 .to_string()
                 .contains("app-owned")
@@ -1562,33 +1430,21 @@ tilo_test_env::scenario! {
         }
 
         {
-            let temp = tempfile::tempdir().unwrap();
-            let app = temp.path().join("demo");
-            minimal_app(&app);
-            add_app_artifact(AddRequest {
-                start: app.clone(),
-                artifact: AddArtifact::Screen {
+            let (_temp, app) = app_in_temp("demo", minimal_app);
+            add_app_artifact(add(&app, AddArtifact::Screen {
                     name: "main".into(),
                     title: Some("Home".into()),
                     template: ScreenTemplate::Blank,
                     link_from: None,
-                },
-                force: false,
-                dry_run: false,
-            })
+                }))
             .unwrap();
 
-            let outcome = add_app_artifact(AddRequest {
-                start: app.clone(),
-                artifact: AddArtifact::Screen {
+            let outcome = add_app_artifact(add(&app, AddArtifact::Screen {
                     name: "account-settings".into(),
                     title: Some("Account settings".into()),
                     template: ScreenTemplate::Blank,
                     link_from: Some("main".into()),
-                },
-                force: false,
-                dry_run: false,
-            })
+                }))
             .unwrap();
             assert!(
                 outcome
@@ -1616,15 +1472,13 @@ tilo_test_env::scenario! {
             let main_before = std::fs::read(app.join("ui/main.json")).unwrap();
             let registry_before = std::fs::read(app.join("src/screens.rs")).unwrap();
             let error = add_app_artifact(AddRequest {
-                start: app.clone(),
-                artifact: AddArtifact::Screen {
+                force: true,
+                ..add(&app, AddArtifact::Screen {
                     name: "account-settings".into(),
                     title: None,
                     template: ScreenTemplate::Blank,
                     link_from: Some("main".into()),
-                },
-                force: true,
-                dry_run: false,
+                })
             })
             .unwrap_err();
             assert!(error.to_string().contains("open-account-settings"));
@@ -1642,18 +1496,11 @@ tilo_test_env::scenario! {
     phase add_artifact_protects_work_and_stays_inside_the_app;
     {
         {
-            let temp = tempfile::tempdir().unwrap();
-            let app = temp.path().join("demo");
-            minimal_app(&app);
-            let scenario = || AddRequest {
-                start: app.clone(),
-                artifact: AddArtifact::Scenario {
+            let (_temp, app) = app_in_temp("demo", minimal_app);
+            let scenario = || add(&app, AddArtifact::Scenario {
                     name: "empty-state".into(),
                     screen: None,
-                },
-                force: false,
-                dry_run: false,
-            };
+                });
             let created = add_app_artifact(scenario()).unwrap();
             let created_path = &created.files[0];
             assert_eq!(std::fs::read_to_string(created_path).unwrap(), "[]\n");
@@ -1669,12 +1516,10 @@ tilo_test_env::scenario! {
             let registry = locale_registry(&["en-US".to_owned()]);
             std::fs::write(app.join("src/locales.rs"), &registry).unwrap();
             let preview = add_app_artifact(AddRequest {
-                start: app.clone(),
-                artifact: AddArtifact::Locale {
-                    locale: "de-DE".into(),
-                },
-                force: false,
                 dry_run: true,
+                ..add(&app, AddArtifact::Locale {
+                    locale: "de-DE".into(),
+                })
             })
             .unwrap();
             assert!(preview.dry_run);
@@ -1687,34 +1532,22 @@ tilo_test_env::scenario! {
         }
 
         {
-            let temp = tempfile::tempdir().unwrap();
-            let app = temp.path().join("demo");
-            minimal_app(&app);
+            let (temp, app) = app_in_temp("demo", minimal_app);
             for name in ["../escape", "BadName", "two--parts", "with space"] {
                 assert!(
-                    add_app_artifact(AddRequest {
-                        start: app.clone(),
-                        artifact: AddArtifact::Scenario {
+                    add_app_artifact(add(&app, AddArtifact::Scenario {
                             name: name.into(),
                             screen: None,
-                        },
-                        force: false,
-                        dry_run: false,
-                    })
+                        }))
                     .is_err(),
                     "accepted {name:?}"
                 );
             }
             for locale in ["../de", "EN_us", "en--GB", "e"] {
                 assert!(
-                    add_app_artifact(AddRequest {
-                        start: app.clone(),
-                        artifact: AddArtifact::Locale {
+                    add_app_artifact(add(&app, AddArtifact::Locale {
                             locale: locale.into(),
-                        },
-                        force: false,
-                        dry_run: false,
-                    })
+                        }))
                     .is_err(),
                     "accepted {locale:?}"
                 );
@@ -1724,15 +1557,10 @@ tilo_test_env::scenario! {
             std::fs::create_dir(&crate_only).unwrap();
             std::fs::write(crate_only.join("Cargo.toml"), "[workspace]\n").unwrap();
             assert!(
-                add_app_artifact(AddRequest {
-                    start: crate_only,
-                    artifact: AddArtifact::Scenario {
+                add_app_artifact(add(&crate_only, AddArtifact::Scenario {
                         name: "test".into(),
                         screen: None,
-                    },
-                    force: false,
-                    dry_run: false,
-                })
+                    }))
                 .unwrap_err()
                 .to_string()
                 .contains("missing tilo-app.toml")
@@ -1753,14 +1581,12 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
         let app = temp.path().join("reading-list");
         starter.copy_to(&app);
 
-        let outcome = add_app_artifact(AddRequest {
-            start: app.clone(),
-            artifact: AddArtifact::Locale {
+        let outcome = add_app_artifact(add(
+            &app,
+            AddArtifact::Locale {
                 locale: "de-DE".into(),
             },
-            force: false,
-            dry_run: false,
-        })
+        ))
         .unwrap();
         assert_eq!(outcome.files.len(), 2);
         assert!(app.join("locales/de-DE.ftl").is_file());
@@ -1790,12 +1616,13 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
         syn::parse_file(&registry).expect("generated locale registry is Rust");
 
         let repeated = add_app_artifact(AddRequest {
-            start: app.clone(),
-            artifact: AddArtifact::Locale {
-                locale: "de-DE".into(),
-            },
             force: true,
-            dry_run: false,
+            ..add(
+                &app,
+                AddArtifact::Locale {
+                    locale: "de-DE".into(),
+                },
+            )
         })
         .unwrap();
         assert_eq!(
@@ -1817,12 +1644,13 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
         let source_before = std::fs::read_to_string(app.join("locales/en-US.ftl")).unwrap();
         for locale in ["en-US", "de-de"] {
             let error = add_app_artifact(AddRequest {
-                start: app.clone(),
-                artifact: AddArtifact::Locale {
-                    locale: locale.into(),
-                },
                 force: true,
-                dry_run: false,
+                ..add(
+                    &app,
+                    AddArtifact::Locale {
+                        locale: locale.into(),
+                    },
+                )
             })
             .unwrap_err();
             assert!(
@@ -1845,14 +1673,12 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
 
         let app_owned = "pub fn install() {}\n";
         std::fs::write(&registry_path, app_owned).unwrap();
-        let error = add_app_artifact(AddRequest {
-            start: app.clone(),
-            artifact: AddArtifact::Locale {
+        let error = add_app_artifact(add(
+            &app,
+            AddArtifact::Locale {
                 locale: "fr".into(),
             },
-            force: false,
-            dry_run: false,
-        })
+        ))
         .unwrap_err();
         assert!(error.to_string().contains("app-owned"), "{error:#}");
         assert!(!app.join("locales/fr.ftl").exists());
@@ -1888,14 +1714,12 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
         let registry_before = std::fs::read(&registry_path).unwrap();
         std::fs::write(app.join("locales/en-US.ftl"), "broken = { $value\n").unwrap();
 
-        let error = add_app_artifact(AddRequest {
-            start: app.clone(),
-            artifact: AddArtifact::Locale {
+        let error = add_app_artifact(add(
+            &app,
+            AddArtifact::Locale {
                 locale: "fr".into(),
             },
-            force: false,
-            dry_run: false,
-        })
+        ))
         .unwrap_err();
         assert!(error.to_string().contains("source catalog"), "{error:#}");
         assert!(!app.join("locales/fr.ftl").exists());
@@ -1906,14 +1730,12 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("reading-list");
         starter.copy_to(&app);
-        add_app_artifact(AddRequest {
-            start: app.clone(),
-            artifact: AddArtifact::Locale {
+        add_app_artifact(add(
+            &app,
+            AddArtifact::Locale {
                 locale: "de-DE".into(),
             },
-            force: false,
-            dry_run: false,
-        })
+        ))
         .unwrap();
 
         let source_path = app.join("locales/en-US.ftl");
@@ -2010,14 +1832,12 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
         let app = temp.path().join("reading-list");
         starter.copy_to(&app);
         for locale in ["de", "fr"] {
-            add_app_artifact(AddRequest {
-                start: app.clone(),
-                artifact: AddArtifact::Locale {
+            add_app_artifact(add(
+                &app,
+                AddArtifact::Locale {
                     locale: locale.into(),
                 },
-                force: false,
-                dry_run: false,
-            })
+            ))
             .unwrap();
         }
         let source_path = app.join("locales/en-US.ftl");
@@ -2054,14 +1874,12 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
         let catalog = app.join("locales/de-DE.ftl");
         let translated = "### Deutsch.\n\nstarter-title = Meine Tilo-App\n";
         std::fs::write(&catalog, translated).unwrap();
-        let outcome = add_app_artifact(AddRequest {
-            start: app.clone(),
-            artifact: AddArtifact::Locale {
+        let outcome = add_app_artifact(add(
+            &app,
+            AddArtifact::Locale {
                 locale: "de-DE".into(),
             },
-            force: false,
-            dry_run: false,
-        })
+        ))
         .unwrap();
         assert_eq!(
             outcome.files.as_slice(),
@@ -2083,14 +1901,12 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
         let library_path = app.join("src/lib.rs");
         std::fs::remove_file(app.join("src/locales.rs")).unwrap();
         let before = std::fs::read_to_string(&library_path).unwrap();
-        let error = add_app_artifact(AddRequest {
-            start: app.clone(),
-            artifact: AddArtifact::Locale {
+        let error = add_app_artifact(add(
+            &app,
+            AddArtifact::Locale {
                 locale: "nl".into(),
             },
-            force: false,
-            dry_run: false,
-        })
+        ))
         .unwrap_err();
         assert!(error.to_string().contains("app-owned"), "{error:#}");
         assert!(!app.join("locales/nl.ftl").exists());
@@ -2787,24 +2603,20 @@ fn doctor_validates_generated_screens_components_and_contracts() {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("project-maker");
         graph.copy_to(&destination);
-        add_app_artifact(AddRequest {
-            start: destination.clone(),
-            artifact: AddArtifact::Locale {
+        add_app_artifact(add(
+            &destination,
+            AddArtifact::Locale {
                 locale: "de-DE".into(),
             },
-            force: false,
-            dry_run: false,
-        })
+        ))
         .unwrap();
-        add_app_artifact(AddRequest {
-            start: destination.clone(),
-            artifact: AddArtifact::Scenario {
+        add_app_artifact(add(
+            &destination,
+            AddArtifact::Scenario {
                 name: "empty-state".into(),
                 screen: None,
             },
-            force: false,
-            dry_run: false,
-        })
+        ))
         .unwrap();
 
         let healthy = doctor_app(&destination).unwrap();
@@ -2865,16 +2677,14 @@ fn doctor_validates_generated_screens_components_and_contracts() {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("component-app");
         graph.copy_to(&destination);
-        add_app_artifact(AddRequest {
-            start: destination.clone(),
-            artifact: AddArtifact::GraphComponent {
+        add_app_artifact(add(
+            &destination,
+            AddArtifact::GraphComponent {
                 name: "profile-card".into(),
                 template: ComponentTemplate::Display,
                 mount: ComponentMount::display("main", "profile-card"),
             },
-            force: false,
-            dry_run: false,
-        })
+        ))
         .unwrap();
 
         let healthy = doctor_app(&destination).unwrap();
@@ -2926,9 +2736,7 @@ fn doctor_validates_generated_screens_components_and_contracts() {
     }
 
     {
-        let temp = tempfile::tempdir().unwrap();
-        let app = temp.path().join("custom-context");
-        minimal_app(&app);
+        let (_temp, app) = app_in_temp("custom-context", minimal_app);
         std::fs::create_dir(app.join("ui")).unwrap();
         let document = tilo_ui_graph::UiDocument::new(tilo_ui_graph::UiNode::Component {
             id: "custom".into(),
