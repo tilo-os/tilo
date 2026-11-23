@@ -3172,6 +3172,20 @@ impl ResourceStore {
             .and_then(|parent| self.left_of(at, parent, entry, &held.change));
         // A change of the resources nested in this one changed the collections that hold them.
         let mut fields: Vec<FieldId> = held.fields.iter().map(|name| field_id(name)).collect();
+        // A rich text is held as the resource's content, which names no field of the index: a
+        // body edit is a change of the content and of no field the store records. The type's
+        // rich text fields are what it may have written, and what each held before and after
+        // the change says which one did (the runtime reads them). Without this a body edit is
+        // a change of no field, and history has nothing to say of it but the action's name.
+        if held.content
+            && let Some(entry) = entry
+        {
+            for (id, field) in &entry.fields {
+                if field.kind == FieldKind::RichText && !fields.contains(id) {
+                    fields.push(id.clone());
+                }
+            }
+        }
         let mut placed = Vec::new();
         for nested in &held.nested {
             let Some(child) = self.entry_of_kind(&nested.kind) else {

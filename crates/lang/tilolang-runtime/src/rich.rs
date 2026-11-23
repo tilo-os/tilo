@@ -205,6 +205,23 @@ impl RichValue {
             .join("\n")
     }
 
+    /// The words a write of this text over `was` took away and the words it put there, each
+    /// as one line: whitespace as a single space, the words outside the change marked off
+    /// with an ellipsis, and a long change cut. What history shows of a body edit, in place
+    /// of the whole body either side of it.
+    #[must_use]
+    pub fn changed_words(&self, was: &Self) -> (String, String) {
+        let before: Vec<char> = was.written_text().chars().collect();
+        let after: Vec<char> = self.written_text().chars().collect();
+        let (prefix, suffix) = tilo_resource::text::common_ends(&before, &after);
+        let span = |text: &[char]| -> String {
+            let end = text.len().saturating_sub(suffix);
+            let words = text.get(prefix..end).unwrap_or_default();
+            one_line(words, prefix > 0, suffix > 0)
+        };
+        (span(&before), span(&after))
+    }
+
     /// The text as one reader reads it, a line per paragraph: each reference as `read` says it
     /// reads for them (a resource they hold by its title now, one they cannot read as
     /// `unshared`), as its chip does (`tilo_reference::embed::read_text`). What search, rows,
@@ -591,3 +608,26 @@ impl RichValue {
         Self { blocks }
     }
 }
+
+/// The words one line of history shows of a change: whitespace as a single space, the words
+/// outside the change marked off with an ellipsis, and past [`CHANGED_WORDS`] the start of
+/// them and an ellipsis, so a large paste reads as a glance rather than as itself.
+fn one_line(words: &[char], before: bool, after: bool) -> String {
+    let text: String = words.iter().collect();
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return collapsed;
+    }
+    let mut out = String::new();
+    if before {
+        out.push('…');
+    }
+    out.extend(collapsed.chars().take(CHANGED_WORDS));
+    if after || collapsed.chars().count() > CHANGED_WORDS {
+        out.push('…');
+    }
+    out
+}
+
+/// How many characters of a change history shows before it cuts the rest.
+const CHANGED_WORDS: usize = 80;

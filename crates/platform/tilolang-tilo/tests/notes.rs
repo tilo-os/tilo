@@ -525,3 +525,76 @@ fn two_people_react_to_a_note_and_its_page_shows_who_reacted() {
     }
     assert_eq!(reacted_field(&ada, &plan), bens);
 }
+
+/// A note's body edit is history's like any other field's: the entry says what happened to the
+/// body, under it stands the words the edit added, and the bound edit's action id never shows.
+#[test]
+fn a_note_body_edit_says_what_changed_in_the_body() {
+    let (ada, notebook) = workspace();
+    let note = note(&ada, &notebook, "Trip to Lisbon");
+    let meta = ada.host.package(NOTES_APP).expect("the notes package").meta;
+    let body = crate::fixtures::field_id(&meta, "Note", "body");
+    ada.edit(
+        &note,
+        &body,
+        &Value::Rich(tilolang_runtime::rich::RichValue::from_text(
+            "Pack the map.",
+        )),
+    );
+    ada.commit();
+    let versions = ada.versions(&note);
+    let last = versions
+        .last()
+        .expect("the body edit is a version of the note");
+    assert_eq!(last.action, "edit-text");
+    assert_eq!(
+        last.fields,
+        vec![body],
+        "the version names the field the edit wrote: {last:#?}"
+    );
+
+    let viewer = ada.host.viewer().clone();
+    let mut history = ada
+        .host
+        .runtime()
+        .open_written_view(
+            &viewer,
+            tilolang_tilo::instance::WINDOW_HISTORY,
+            &viewer,
+            vec![Value::resource(&note)],
+        )
+        .unwrap();
+    history.poll_patches().unwrap();
+    // Ada's changes a moment apart are one step: it opens to each of them.
+    let show = crate::fixtures::nodes(history.tree())
+        .into_iter()
+        .filter(|node| node.kind == "ui.Button")
+        .find(|node| {
+            matches!(
+                node.props.get("label"),
+                Some(Value::Text(label))
+                    if label == "Show changes" || label == "tilolang-history-show"
+            )
+        })
+        .map(|node| node.key.clone());
+    if let Some(key) = show {
+        history.press(&key).unwrap();
+        history.poll_patches().unwrap();
+    }
+    let words = crate::tasks::texts(history.tree());
+    let said = words.join(" ");
+    assert!(
+        !said.contains("edit-text") && !said.contains("Edit-text"),
+        "a history entry never reads the bound edit's action id: {words:?}"
+    );
+    assert!(
+        words
+            .iter()
+            .any(|word| word == "changed body" || word == "tilolang-did-changed"),
+        "the entry says what happened to the body: {words:?}"
+    );
+    assert!(
+        said.contains("Pack the map."),
+        "the words the edit wrote stand under it: {words:?}"
+    );
+}
