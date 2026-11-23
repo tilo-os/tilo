@@ -833,11 +833,14 @@ impl Spawner {
     /// End the launch whose app runs as the process `pid`, as the person's own quit does: the end
     /// is theirs, so no notice says it stopped working. Whether a launch of this session runs it.
     pub fn end_pid(&self, pid: u32) -> bool {
-        let running = running(&self.running);
-        let Some(app) = running.values().find(|app| app.pid == pid) else {
+        let found = running(&self.running)
+            .iter()
+            .find(|(_, app)| app.pid == pid)
+            .map(|(id, _)| *id);
+        let Some(id) = found else {
             return false;
         };
-        app.end(false);
+        self.end_one(id);
         true
     }
 

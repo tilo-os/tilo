@@ -1026,35 +1026,7 @@ impl FilesState {
         let error = outcome.reason().map(str::to_owned);
         match follow {
             OpFollowUp::NewFolder => match error {
-                None => {
-                    let created = outcome.result().iter().find_map(|change| match change {
-                        Change::Created { path } => Some(PathBuf::from(path)),
-                        _ => None,
-                    });
-                    if let Some(i) = created.and_then(|path| {
-                        self.displayed_entries().iter().position(|e| e.path == path)
-                    }) {
-                        self.selection.select_only(i);
-                        self.retain_shown_selection();
-                        self.begin_rename();
-                        self.rename_input
-                            .set_accessible_name(t("files-tree-new-folder-name"));
-                        // The name typed before the row took the field is the one it opens with,
-                        // and Enter pressed before it came makes it now.
-                        if let Some(ahead) = self.naming_ahead.take() {
-                            if !ahead.typed.is_empty() {
-                                self.rename_buffer = ahead.typed;
-                                self.rename_seed_pending = true;
-                                self.rename_select_pending = false;
-                            }
-                            if ahead.commit {
-                                self.commit_rename();
-                            }
-                        }
-                    } else {
-                        self.naming_ahead = None;
-                    }
-                }
+                None => self.follow_new_folder(outcome),
                 Some(error) => {
                     self.naming_ahead = None;
                     self.notify_failure(t("files-new-folder-failed-title"), &error, None);
@@ -3961,6 +3933,42 @@ impl FilesState {
         self.retain_shown_selection();
         self.last_click = None;
         true
+    }
+
+    /// A new folder is on disk: the row it becomes takes the field its name is typed in.
+    fn follow_new_folder(&mut self, outcome: &crate::file_ops::Outcome) {
+        let created = outcome.result().iter().find_map(|change| match change {
+            crate::file_ops::Change::Created { path } => Some(PathBuf::from(path)),
+            _ => None,
+        });
+        let Some(i) =
+            created.and_then(|path| self.displayed_entries().iter().position(|e| e.path == path))
+        else {
+            self.naming_ahead = None;
+            return;
+        };
+        self.selection.select_only(i);
+        self.retain_shown_selection();
+        self.begin_rename();
+        self.rename_input
+            .set_accessible_name(t("files-tree-new-folder-name"));
+        self.follow_naming_ahead();
+    }
+
+    /// The name typed before a new folder's row took the field becomes the name it opens with,
+    /// and Enter pressed with it makes the folder now.
+    fn follow_naming_ahead(&mut self) {
+        let Some(ahead) = self.naming_ahead.take() else {
+            return;
+        };
+        if !ahead.typed.is_empty() {
+            self.rename_buffer = ahead.typed;
+            self.rename_seed_pending = true;
+            self.rename_select_pending = false;
+        }
+        if ahead.commit {
+            self.commit_rename();
+        }
     }
 
     fn apply_new_folder(&mut self) -> bool {

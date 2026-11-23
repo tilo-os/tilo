@@ -364,15 +364,10 @@ fn a_burst_typed_then_its_action_reaches_the_app_before_the_action_runs() {
         .iter()
         .position(|message| matches!(message, ToApp::Invoke { .. }))
         .expect("the save is invoked");
-    let splices: Vec<&ToApp> = messages
-        .iter()
-        .filter(|message| matches!(message, ToApp::Splice { .. }))
-        .collect();
     assert!(
-        !splices.is_empty()
-            && messages[..invoke]
-                .iter()
-                .any(|m| matches!(m, ToApp::Splice { .. })),
+        messages[..invoke]
+            .iter()
+            .any(|m| matches!(m, ToApp::Splice { .. })),
         "the typing goes before the action that reads it: {messages:?}"
     );
     // What the app holds once it took them all is every character typed, in order.
