@@ -15,7 +15,7 @@ use std::time::Instant;
 use serde_json::{Map, Value, json};
 
 /// The action wire's version these frames are written at (`RemoteActionFrame` v2).
-const FRAME_VERSION: u16 = 2;
+const FRAME_VERSION: u16 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConsoleError {
@@ -348,7 +348,7 @@ mod tests {
                 let invoke = &request["message"]["Invoke"];
                 assert_eq!(invoke["target"]["address"]["action"], "begin");
                 assert_eq!(invoke["confirmation"]["Phrase"], "/dev/vdb");
-                let receipt = |invocation: &Value, status: Value| json!({"version": 2, "message": {"Receipt": {"invocation": invocation, "status": status}}});
+                let receipt = |invocation: &Value, status: Value| json!({"version": FRAME_VERSION, "message": {"Receipt": {"invocation": invocation, "status": status}}});
                 vec![
                     receipt(
                         &json!("00000000-0000-4000-8000-000000000000"),
@@ -432,7 +432,7 @@ mod tests {
                 "no",
             ),
         ] {
-            let reply = json!({"version": 2, "message": {"Receipt": {"invocation": "x", "status": status}}});
+            let reply = json!({"version": FRAME_VERSION, "message": {"Receipt": {"invocation": "x", "status": status}}});
             assert_eq!(
                 receipt_value(&reply),
                 Err(ConsoleError::Refused {

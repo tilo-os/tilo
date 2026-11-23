@@ -950,7 +950,7 @@ mod tests {
         {
             assert!(is_control_request(br#"{"op":"state_dump"}"#));
             assert!(is_control_request(
-                br#"{"version":2,"message":{"CatalogueRequest":{"correlation":1}}}"#
+                br#"{"version":3,"message":{"CatalogueRequest":{"correlation":1}}}"#
             ));
             assert!(!is_control_request(
                 br#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#

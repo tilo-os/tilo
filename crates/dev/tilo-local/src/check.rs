@@ -289,7 +289,7 @@ fn control(bin: &Path, socket: &str, runtime: &str, args: &[&str]) -> Result<Str
 }
 
 /// The action model's frame that asks a session for the first page of its catalogue.
-const CATALOGUE_FRAME: &str = r#"{"version":2,"message":{"CatalogueRequest":{"correlation":1}}}"#;
+const CATALOGUE_FRAME: &str = r#"{"version":3,"message":{"CatalogueRequest":{"correlation":1}}}"#;
 
 /// The smoke test for `cargo desktop --check` and `cargo headless --check`.
 pub fn session(repo: &Path, asked: &Options) -> Result<ExitCode, String> {
