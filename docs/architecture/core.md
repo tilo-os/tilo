@@ -841,8 +841,11 @@ through `own_device`. It is the device's, not a signed-in person's: a system
 service holding the device key, up from boot, so a device at the greeter, before
 its first sign-in or mid-update still answers `tilo-actions/1`. A desktop session is
 a client of it. It is one binary that the CLI, a server and tilo.sh all run, with one MCP socket
-locally and `tilo-actions/1` frames as its remote face. A server differs only in its
-what it keeps and which work it takes, set per workspace.
+locally and `tilo-actions/1` frames as its remote face. A server differs only in
+what it keeps and which work it takes, set per workspace. An always-on server
+keeps every workspace in its person's workspace list unless that workspace's
+entry turns keeping off. It learns of a new one when the list changes, never
+from a timer, and joins it the ordinary way, as a device of a member.
 The relay is a mode of that daemon. `tilo-api` reads grants from the
 workspace, not from its own file. The agent runner is in the workspace
 service (`agents`, under its `agents` feature) and reaches what only a server
