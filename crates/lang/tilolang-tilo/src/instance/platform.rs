@@ -541,6 +541,39 @@ pub trait Platform {
         Err(tilolang_runtime::files::NO_FILES.to_owned())
     }
 
+    /// The device's own work for `app`: an op answered now. The engines this session runs for its
+    /// apps answer it ([`crate::engine`]); one it does not run is refused.
+    ///
+    /// # Errors
+    ///
+    /// The engine's refusal.
+    fn engine_call(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
+        crate::engine::answer(app, op, input)
+    }
+
+    /// The device's own work for `app`, started as a job.
+    ///
+    /// # Errors
+    ///
+    /// The engine's refusal.
+    fn engine_start(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
+        crate::engine::begin(app, op, input)
+    }
+
+    /// How far the job `job` has got, as JSON.
+    ///
+    /// # Errors
+    ///
+    /// No engine of this session runs that job.
+    fn engine_status(&self, job: &str) -> Result<String, String> {
+        crate::engine::progress(job)
+    }
+
+    /// Stop the job `job`: false when no engine runs it or it had finished.
+    fn engine_cancel(&self, job: &str) -> bool {
+        crate::engine::stop(job)
+    }
+
     /// What wakes the instance when work it waits for is ready (an index read off the frame).
     fn waker(&self) -> Waker;
 
@@ -600,6 +633,28 @@ impl BlobHost for PlatformBlobs {
 
     fn thumbnail(&self, file: &FileValue, size: u32) -> Result<Option<FileValue>, String> {
         self.0.thumbnail(file, size)
+    }
+}
+
+/// The device's own engine work, as the platform answers an app that asks for it
+/// (`engine.call`, `engine.start`, `engine.status`, `engine.cancel`).
+pub struct PlatformEngine(pub(super) Rc<dyn Platform>);
+
+impl tilolang_runtime::host_work::EngineHost for PlatformEngine {
+    fn call(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
+        self.0.engine_call(app, op, input)
+    }
+
+    fn start(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
+        self.0.engine_start(app, op, input)
+    }
+
+    fn status(&self, job: &str) -> Result<String, String> {
+        self.0.engine_status(job)
+    }
+
+    fn cancel(&self, job: &str) -> bool {
+        self.0.engine_cancel(job)
     }
 }
 

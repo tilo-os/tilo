@@ -40,6 +40,8 @@ mod e2e_counter;
 mod e2e_ebook;
 #[path = "e2e_enums.rs"]
 mod e2e_enums;
+#[path = "engine.rs"]
+mod engine;
 #[path = "e2e_layout.rs"]
 mod e2e_layout;
 #[path = "e2e_mail_files.rs"]

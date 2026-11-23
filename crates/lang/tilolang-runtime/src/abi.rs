@@ -397,6 +397,12 @@ imports! {
     (ClipboardPasteText, "clipboard_paste_text", "", "i"),
     (ClipboardPasteImage, "clipboard_paste_image", "", "i"),
 
+    // The device's own work, asked by name: an answer now, or a job with its status and cancel.
+    (EngineCall, "engine_call", "iii", "i"),
+    (EngineStart, "engine_start", "iii", "i"),
+    (EngineStatus, "engine_status", "i", "i"),
+    (EngineCancel, "engine_cancel", "i", "i"),
+
     (Abort, "abort", "i", ""),
     (MissingV, "missing", "", "i"),
 }

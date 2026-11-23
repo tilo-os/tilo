@@ -482,5 +482,12 @@ imports! {
     // document is built under.
     RowOpen = "row_open" ([] -> [I32]);
 
+    // The device's own work, asked by name: an answer now, or a job that says how far it has got
+    // and can be stopped. The app asking is the first argument, which the compiler fills.
+    EngineCall = "engine_call" ([H, H, H] -> [H]);
+    EngineStart = "engine_start" ([H, H, H] -> [H]);
+    EngineStatus = "engine_status" ([H] -> [H]);
+    EngineCancel = "engine_cancel" ([H] -> [I32]);
+
     Abort = "abort" ([H] -> []);
 }

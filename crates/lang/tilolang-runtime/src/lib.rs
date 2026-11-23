@@ -17,6 +17,7 @@ pub mod authority;
 pub mod blob;
 pub mod catalogue;
 pub mod clipboard;
+pub mod host_work;
 mod colls;
 mod core;
 pub mod cost;

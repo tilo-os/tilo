@@ -23,6 +23,10 @@ const PAGE: &str = "page";
 
 const PDF: &str = "pdf";
 
+/// The device's own work, asked by name (`engine.call`, `engine.start`, `engine.status`,
+/// `engine.cancel`).
+const ENGINE: &str = "engine";
+
 impl Checker<'_> {
     pub(super) fn call(
         &mut self,
@@ -121,6 +125,15 @@ impl Checker<'_> {
                     && self.env.find_import(PDF).is_none()
                 {
                     return self.builtin_pdf(name, args, span);
+                }
+                // `engine.call`, `engine.start`, `engine.status`, `engine.cancel`: the device's
+                // own work, asked by name. A view never asks: it is drawn again from what it is
+                // shown, and the device's work is not what it was shown.
+                if matches!(&base.kind, ExprKind::Ident(ns) if ns == ENGINE)
+                    && self.lookup(ENGINE).is_none()
+                    && self.env.find_import(ENGINE).is_none()
+                {
+                    return self.builtin_engine(name, args, span);
                 }
                 if let Some(key) = self.enum_path(base) {
                     let ty = Ty::Enum(key);
@@ -2432,6 +2445,118 @@ impl Checker<'_> {
             Ty::RichText,
         )
     }
+    /// `engine.call(op, input)`, `engine.start(op, input)`, `engine.status(job)` and
+    /// `engine.cancel(job)`: the device's own work — a decode, a render, a raster — asked by a
+    /// name the host answers for this app. A call answers now; a start answers a job id, and the
+    /// job's progress is asked for by that id. Both carry JSON, which the app reads into its own
+    /// records with `json.decode<T>`. An action asks; a view is drawn again from what it is
+    /// shown, so it never does.
+    fn builtin_engine(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
+        let result = || Ty::Result(Box::new(Ty::Text), Box::new(Ty::Text));
+        let asks_input = match name.name.as_str() {
+            "call" | "start" => true,
+            "status" | "cancel" => false,
+            other => {
+                self.err(
+                    "E022",
+                    name.span,
+                    format!(
+                        "`engine` has `call`, `start`, `status` and `cancel`, not `{other}`: \
+                         `engine.call(op, input)`, `engine.start(op, input)`, \
+                         `engine.status(job)` and `engine.cancel(job)`"
+                    ),
+                );
+                for a in args {
+                    let _ = self.expr(&a.value, None);
+                }
+                return Ex::error();
+            }
+        };
+        let what = format!("`engine.{}`", name.name);
+        if self.st.ctx == Ctx::View {
+            self.err(
+                "E067",
+                span,
+                format!(
+                    "{what} is the device's work, which a view never asks: it is drawn again \
+                     from what it is shown, so what it asks would run on every draw. Ask it from \
+                     an action"
+                ),
+            );
+        }
+        let mut held: Option<Ex> = None;
+        let mut input: Option<Ex> = None;
+        for a in args {
+            if let Some(named) = &a.name {
+                self.err(
+                    "E022",
+                    named.span,
+                    format!("{what} takes what it reads by position"),
+                );
+            }
+            if asks_input && held.is_none() {
+                held = Some(self.expr_as(&a.value, &Ty::Text));
+            } else if asks_input && input.is_none() {
+                input = Some(self.expr_as(&a.value, &Ty::Text));
+            } else if !asks_input && held.is_none() {
+                held = Some(self.expr_as(&a.value, &Ty::Text));
+            } else {
+                self.err(
+                    "E022",
+                    a.value.span,
+                    if asks_input {
+                        format!(
+                            "{what} takes the op and its input, and nothing else: \
+                             `engine.{}(\"{}\u{2026}\", input)",
+                            name.name,
+                            if name.name == "start" { "paint" } else { "decode" }
+                        )
+                    } else {
+                        format!("{what} takes the job, and nothing else: `engine.{}(job)", name.name)
+                    },
+                );
+                let _ = self.expr(&a.value, None);
+            }
+        }
+        let Some(held) = held else {
+            self.err(
+                "E022",
+                span,
+                if asks_input {
+                    format!("{what} takes the op it asks for: `engine.{}(op, input)", name.name)
+                } else {
+                    format!("{what} takes the job: `engine.{}(job)", name.name)
+                },
+            );
+            return Ex::error();
+        };
+        if asks_input && input.is_none() {
+            self.err(
+                "E022",
+                span,
+                format!(
+                    "{what} takes its input after the op: `engine.{}(op, input)`; `\"\"` for \
+                     work that reads nothing",
+                    name.name
+                ),
+            );
+            return Ex::error();
+        }
+        let app = Ex::str(&self.env.app);
+        match name.name.as_str() {
+            "call" => {
+                let input = input.unwrap_or_else(Ex::error);
+                Ex::host(Imp::EngineCall, vec![app, held, input], result())
+            }
+            "start" => {
+                let input = input.unwrap_or_else(Ex::error);
+                Ex::host(Imp::EngineStart, vec![app, held, input], result())
+            }
+            "status" => Ex::host(Imp::EngineStatus, vec![held], result()),
+            _ => Ex::host(Imp::EngineCancel, vec![held], Ty::Bool),
+        }
+    }
+
     /// `clipboard.copy(text)`, `clipboard.copy_image(file)`, `clipboard.paste()` and
     /// `clipboard.paste_image()`: the person's clipboard. A copy reaches their device and a paste
     /// reads what is on it now, so an action that does either declares `uses clipboard`, and

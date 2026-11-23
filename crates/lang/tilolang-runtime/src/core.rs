@@ -173,6 +173,9 @@ pub struct Core {
     /// The person's clipboard (`Runtime::set_clipboard`): what a copy offers and what a paste
     /// reads. Until the host sets one, nothing copies and nothing pastes.
     pub clipboard: RefCell<Option<Box<dyn crate::clipboard::ClipboardHost>>>,
+    /// The device's own work (`Runtime::set_engine`): what it answers an app that asks for a
+    /// decode, a render or a raster it cannot do itself.
+    pub engine: RefCell<Option<Box<dyn crate::host_work::EngineHost>>>,
     /// What names actors; the id itself until the host says.
     pub names: RefCell<Option<Box<dyn NameHost>>>,
     /// How a day or a time of day reads in a sentence; its stored text until the host says
@@ -375,6 +378,7 @@ impl Core {
             fonts: RefCell::new(None),
             files: RefCell::new(None),
             clipboard: RefCell::new(None),
+            engine: RefCell::new(None),
             names: RefCell::new(None),
             shown: RefCell::new(None),
             shown_by: RefCell::new(None),
@@ -610,6 +614,7 @@ impl Core {
             }
             JsonParse | JsonDecode | JsonEncode | StageReading => self.json_import(imp, a),
             FontFamilies => self.font_import(imp, a),
+            EngineCall | EngineStart | EngineStatus | EngineCancel => self.engine_import(imp, a),
             UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiOn
             | UiAnchor | SpaceI | SpaceF | RowOpen | UiBindState | StateGet | StateAt | ArgAt
             | ActSet | ActThen | ActMadeFrom | ActMany | ActOpen | ActUndo | ChangeView

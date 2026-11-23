@@ -1077,6 +1077,10 @@ impl Instance {
             .set_fonts(PlatformFonts(Rc::clone(&self.platform)));
         host.runtime()
             .set_device_files(PlatformFiles(Rc::clone(&self.platform)));
+        host.runtime()
+            .set_engine(crate::instance::platform::PlatformEngine(Rc::clone(
+                &self.platform,
+            )));
         let platform = Rc::clone(&self.platform);
         host.set_zone(move || platform.zone());
         let platform = Rc::clone(&self.platform);

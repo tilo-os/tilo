@@ -19,6 +19,7 @@ pub mod bundle;
 pub mod call;
 pub mod catalogue;
 pub mod effects;
+pub mod engine;
 pub mod host;
 pub mod instance;
 pub mod members;

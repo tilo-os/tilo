@@ -1243,6 +1243,13 @@ impl Runtime {
         *self.core.files.borrow_mut() = Some(Box::new(host));
     }
 
+    /// The device's engine work ([`crate::host_work`]): what an app's `engine.call`,
+    /// `engine.start`, `engine.status` and `engine.cancel` ask it. Until a host is set, every
+    /// ask answers with a refusal naming that the device does no such work.
+    pub fn set_engine(&self, host: impl crate::host_work::EngineHost + 'static) {
+        *self.core.engine.borrow_mut() = Some(Box::new(host));
+    }
+
     /// Where `model_call` goes.
     pub fn set_model_host(&self, host: impl ModelHost + 'static) {
         *self.core.models.borrow_mut() = Some(Box::new(host));
