@@ -16,6 +16,7 @@ pub mod drives;
 pub mod host_info;
 pub mod printers;
 pub mod scanners;
+pub mod storage;
 pub mod update;
 pub mod users;
 pub mod windows_compat;
@@ -27,6 +28,7 @@ pub use drives::DRIVES;
 pub use host_info::HOST_INFO;
 pub use printers::PRINTERS;
 pub use scanners::SCANNERS;
+pub use storage::STORAGE;
 pub use users::USERS;
 pub use windows_compat::WINDOWS_COMPAT;
 
