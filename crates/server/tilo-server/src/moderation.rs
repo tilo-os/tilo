@@ -4,9 +4,10 @@
 //! Nothing here reads or writes around Chat: the agent's API ([`ChatApi`]) reads the reports
 //! and the reported person's messages through Chat's own types, takes their messages back with
 //! Chat's `delete` and settles each report with Chat's `decide`, each invoked as the moderation
-//! bot, so the record's history names the bot for every step like anyone's. Restricting and
-//! banning are governance, which a bot never holds: only a person with the workspace's
-//! moderation authority enforces a verdict that restricts or bans a member.
+//! bot, so the record's history names the bot for every step like anyone's. A verdict that
+//! restricts or bans a member is the workspace's own membership action, made as the bot under
+//! the grants a person gave it when they turned it on ([`Governance`]): the workspace decides it,
+//! and history names the bot like anyone.
 
 use tilo_action_policy::Change;
 use tilo_action_policy::bot::MODERATION;
@@ -91,18 +92,41 @@ fn decision_text(decide: &DecideReports) -> String {
     }
 }
 
+/// A membership change the moderation agent makes in the workspace it moderates, recorded as
+/// the bot.
+pub trait Governance {
+    /// Make `change`, as the workspace decides it under the bot's grants.
+    ///
+    /// # Errors
+    /// The bot's grants do not allow it, or it could not be committed.
+    fn change(&mut self, change: Change) -> Result<(), String>;
+}
+
 /// The workspace as the moderation agent reaches it: its Chat, opened on the host, changed as
-/// the moderation bot.
+/// the moderation bot, and the workspace's own governance of its members.
 pub struct ChatApi<'a> {
     opened: &'a mut Opened,
     now_ms: i64,
     /// Every report filed when it opened, by id.
     reports: std::collections::BTreeMap<String, ResourceRef>,
+    /// The workspace's governance, when the agent runs on the host that governs it.
+    governance: Option<&'a mut dyn Governance>,
 }
 
 impl<'a> ChatApi<'a> {
-    /// The API over the workspace's Chat `opened`.
+    /// The API over the workspace's Chat `opened`, reading and changing it as the moderation
+    /// bot.
     pub fn new(opened: &'a mut Opened, now_ms: i64) -> Self {
+        Self::with_governance(opened, now_ms, None)
+    }
+
+    /// [`Self::new`] with `governance`, the workspace's own membership actions the agent makes
+    /// under its grants.
+    pub fn with_governance(
+        opened: &'a mut Opened,
+        now_ms: i64,
+        governance: Option<&'a mut dyn Governance>,
+    ) -> Self {
         let reports = tl_chat::reports(opened)
             .unwrap_or_default()
             .into_iter()
@@ -112,6 +136,7 @@ impl<'a> ChatApi<'a> {
             opened,
             now_ms,
             reports,
+            governance,
         }
     }
 
@@ -162,8 +187,15 @@ impl WorkspaceApi for ChatApi<'_> {
         activity
     }
 
-    fn govern(&mut self, _: Change) -> Result<(), String> {
-        Err("Workspace membership changes require a person with moderation authority".into())
+    /// Makes the change in the workspace's own governance, as the moderation bot: the
+    /// workspace's policy decides it under the grants a person gave the bot when they turned it
+    /// on, and history names the bot.
+    fn govern(&mut self, change: Change) -> Result<(), String> {
+        let governance = self
+            .governance
+            .as_mut()
+            .ok_or("this record is read without the workspace's governance")?;
+        governance.change(change)
     }
 
     /// Takes back what a person wrote: `undo { by, steps }` on a conversation deletes the

@@ -12,11 +12,11 @@
 
 use std::collections::BTreeSet;
 
-use tilo_action_policy::bot::{MODERATION_GRANT, moderation_grant};
-use tilo_action_policy::{Context, Grant};
+use tilo_action_policy::bot::{moderation_grant, moderation_grants};
+use tilo_action_policy::{Change, Context, Grant};
 use tilo_moderation::{Judge, ModerationAgent};
 
-use crate::moderation::ChatApi;
+use crate::moderation::{ChatApi, Governance};
 use crate::tl_chat;
 use crate::workspaces::{ResourceWrite, Workspaces};
 
@@ -119,7 +119,17 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
                 &packages,
                 tl_chat::viewer(),
                 move |opened| {
-                    let mut api = ChatApi::new(opened, tilo_clock::unix_now_ms_i64());
+                    let mut governance = HostGovernance {
+                        handle: handle.clone(),
+                        workspaces: workspaces.clone(),
+                        workspace: governed.clone(),
+                        bot: tilo_action_policy::bot::MODERATION,
+                    };
+                    let mut api = ChatApi::with_governance(
+                        opened,
+                        tilo_clock::unix_now_ms_i64(),
+                        Some(&mut governance),
+                    );
                     let moderation = api.moderation()?;
                     for person in people {
                         let look = ModerationAgent::<J>::look(&mut api, &moderation, &person);
@@ -152,6 +162,27 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
     }
 }
 
+/// The workspace's own membership actions, made as its moderation bot: the agent decides, and
+/// the host that governs the workspace carries it out under the grants it holds for the bot.
+struct HostGovernance {
+    handle: tokio::runtime::Handle,
+    workspaces: Workspaces,
+    workspace: String,
+    bot: &'static str,
+}
+
+impl Governance for HostGovernance {
+    fn change(&mut self, change: Change) -> Result<(), String> {
+        self.handle
+            .block_on(
+                self.workspaces
+                    .moderate_member(&self.workspace, self.bot, change),
+            )
+            .map(drop)
+            .map_err(|error| error.to_string())
+    }
+}
+
 /// Whether `recorded` is the moderation grant `expected` as this build writes it, on
 /// `expected`'s node or, without `node`, on any.
 fn is_moderation_grant(recorded: &Grant, expected: &Grant, node: bool) -> bool {
@@ -162,40 +193,46 @@ fn is_moderation_grant(recorded: &Grant, expected: &Grant, node: bool) -> bool {
         && recorded.answer == expected.answer
 }
 
-/// Give `workspace` its moderation grant as the workspace's own person. A grant already
-/// recorded under that id is a workspace policy decision and stays, unless it is this
-/// build's grant on another node: the grant from when reports were filed in another app,
-/// which moves to the Chat they are filed in now.
+/// Give `workspace` its moderation grants as the workspace's own person
+/// ([`moderation_grants`]). A grant already recorded under an id is a workspace policy decision
+/// and stays, unless it is this build's grant on another node: the grant from when reports were
+/// filed in another app, which moves to the Chat they are filed in now.
 ///
 /// # Errors
-/// The workspace is not governed here, or the grant could not be written.
+/// The workspace is not governed here, or a grant could not be written.
 pub async fn enable(workspaces: &Workspaces, workspace: &str) -> Result<(), String> {
     let cert = workspaces.governor();
-    let grant = moderation_grant(workspace, &hex::encode(cert.user_public_key));
+    let expected = moderation_grants(workspace, &hex::encode(cert.user_public_key));
     let recorded = workspaces
         .workspace_grants(workspace)
         .await
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .find(|recorded| recorded.id.as_str() == MODERATION_GRANT);
-    if let Some(recorded) = recorded {
-        let moved = is_moderation_grant(&recorded, &grant, false)
-            && !is_moderation_grant(&recorded, &grant, true);
-        if !moved {
-            return Ok(());
+        .map_err(|error| error.to_string())?;
+    let mut write = Vec::new();
+    for grant in expected {
+        let held = recorded.iter().find(|recorded| recorded.id == grant.id);
+        match held {
+            // As this build writes it, on its node.
+            Some(held) if is_moderation_grant(held, &grant, true) => {}
+            // Any other grant under the id is a workspace policy decision: this build does not
+            // overwrite it, save a grant from before its node moved.
+            Some(held) if !is_moderation_grant(held, &grant, false) => {}
+            _ => write.push(grant),
         }
     }
-    // The request is the grant as this build writes it: settling the same
-    // enable again changes nothing.
-    let written = serde_json::to_vec(&grant)
-        .map_err(|error| format!("the moderation bot's grant as written: {error}"))?;
+    if write.is_empty() {
+        return Ok(());
+    }
+    // The request is the grants as this build writes them: settling the same enable again
+    // changes nothing.
+    let written = serde_json::to_vec(&write)
+        .map_err(|error| format!("the moderation bot's grants as written: {error}"))?;
     let request_id = *blake3::Hasher::new()
         .update(b"enable-moderation\0")
         .update(&written)
         .finalize()
         .as_bytes();
     workspaces
-        .put_workspace_grants(workspace, cert, request_id, vec![grant])
+        .put_workspace_grants(workspace, cert, request_id, write)
         .await
         .map(drop)
         .map_err(|error| error.to_string())
@@ -203,7 +240,10 @@ pub async fn enable(workspaces: &Workspaces, workspace: &str) -> Result<(), Stri
 
 /// Whether a person who governs `workspace` turned its moderation agent on:
 /// whether its governance holds the grant the agent moderates Chat by
-/// ([`moderation_grant`]).
+/// ([`moderation_grant`]). The membership verbs it may take are granted beside it
+/// ([`moderation_grants`]); one of those a person took away, or a workspace enabled before they
+/// were given, leaves the bot moderating Chat and refused the membership change it asks for, so
+/// turning moderation on never silently widens what the bot may do to the workspace's members.
 ///
 /// # Errors
 /// The workspace is not governed here.
