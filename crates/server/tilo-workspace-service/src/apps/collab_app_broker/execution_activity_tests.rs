@@ -1927,3 +1927,155 @@ async fn an_app_taking_another_apps_action_nobody_can_allow_is_refused() {
         "no grant and no sheet to ask on"
     );
 }
+
+/// A turn answering Bo through Ada's agent acts as the agent, signed by its own key, and is
+/// bounded by both: the agent's own grants and Bo's, the one who asked. Bo may not change the
+/// workspace's blocks, so the agent answering him changes none, though Ada's turn of the same
+/// agent may; what both may (its notes) the turn for Bo changes.
+#[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, end to end, reads as one test"
+)]
+async fn an_agents_turn_does_only_what_both_it_and_its_asker_may() {
+    use tilo_action_policy::agent_answers::AnswerScope;
+    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, Role};
+    use tilo_user_identity::{AgentScope, DeviceCapabilities as Caps};
+    let root = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+    let ada = root.verifying_key().to_bytes();
+    let owner = hex::encode(ada);
+    let bo = [0xb0; 32];
+    let workspace = WorkspaceId::from_u128(53);
+    let id = workspace.to_string();
+    let mut described = Workspace::new(workspace, "Both may");
+    described.set_owner(owner.clone());
+    described
+        .policy
+        .members
+        .insert(hex::encode(bo), Role::Editor);
+    described
+        .policy
+        .grants
+        .push(tilo_action_policy::agent_answers::grant(
+            &id,
+            "scribe",
+            (
+                &AnswerScope::app("so.tilo.test"),
+                tilo_action_policy::ActionKind::Undoable,
+            ),
+            Answer::Allow,
+            Grantee::person(owner.clone()),
+        ));
+    described.policy.grants.push(Grant::new(
+        "bo-no-blocks",
+        Grantee::person(hex::encode(bo)),
+        AnswerScope::kind("so.tilo.test", "test.block").node(&id),
+        KindSet::UNDOABLE,
+        Answer::Deny,
+        Grantee::person(owner),
+    ));
+    let mut tree = WorkspaceTree::default();
+    tree.desktop.workspaces.push(described);
+    let membership = tree.shared();
+    let dispatch =
+        AppBrokerState::test_broker_with_authority(membership.authority(), membership.services());
+    let state = Arc::clone(dispatch.state());
+    let action = |resource: &str, kind: &str| PublishedAction {
+        did: None,
+        state: tilo_actions::ActionState::default(),
+        semantic_identity: None,
+        resource: resource.into(),
+        action: "update".into(),
+        resource_kind: kind.into(),
+        resource_label: "Item".into(),
+        action_label: "Update".into(),
+        keywords: Vec::new(),
+        icon: None,
+        description: None,
+        operation_kind: tilo_actions::OperationKind::Effect,
+        params: Vec::new(),
+        contract: tilo_actions::ActionContract {
+            execution: tilo_actions::ExecutionMode::Background { cancellable: true },
+            result: tilo_actions::ResultSpec::Job,
+            ..Default::default()
+        },
+        input: PublishedInput::None,
+        view: None,
+    };
+    state.replace_published_surfaces_for_test(vec![PublishedSurface {
+        peer_id: 7,
+        app_id: "so.tilo.test".into(),
+        route: CrdtRoute {
+            app_id: "so.tilo.test".into(),
+            cluster_id: id.clone(),
+            document_id: "record-a".into(),
+        },
+        actions: vec![
+            action("test:block-a", "test.block"),
+            action("test:note-a", "test.note"),
+        ],
+        live: true,
+    }]);
+    let mut app = state.capture_invocations_for_test(7);
+    state
+        .stable_invocation_subscribers
+        .lock()
+        .unwrap()
+        .insert(7);
+
+    let now = tilo_clock::unix_now_ns();
+    let key = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
+    let mut grant = tilo_user_identity::DeviceCert {
+        user_public_key: ada,
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: "Scribe".into(),
+        capabilities: Caps::agent_grant(AgentScope::agent_in(
+            *uuid::Uuid::parse_str(&id).unwrap().as_bytes(),
+            "scribe",
+        )),
+        issued_at_ns: now - 1_000_000_000,
+        expires_at_ns: Some(now + 3_600_000_000_000),
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut grant, &root).unwrap();
+    let signed = |resource: &str| {
+        let mut asked = request();
+        asked.target.address = tilo_actions::ActionAddress::new(resource, "update");
+        let signature =
+            tilo_server_protocol::invocation::sign_invocation_now(&id, &asked, &grant, &key, now);
+        asked.signed = Some(Box::new(signature.unwrap()));
+        asked
+    };
+    let turn_for = |asker: [u8; 32]| {
+        Caller::delegated_agent("scribe", ada, grant.device_public_key)
+            .in_workspace(id.clone())
+            .in_new_execution()
+            .on_roster(1, asker)
+            .held_to(Vec::new())
+    };
+    let answered =
+        |caller: &Caller, asked| state.action_invoke(caller, None, None, &asked).poll_ready();
+
+    let refused = answered(&turn_for(bo), signed("test:block-a"));
+    assert!(
+        matches!(refused, PendingPoll::Ready(Err(_))),
+        "the turn for Bo changes no block, which Bo may not: {refused:?}"
+    );
+    assert!(app.try_recv().is_err(), "the app never hears of it");
+    let allowed = answered(&turn_for(bo), signed("test:note-a"));
+    assert!(
+        matches!(allowed, PendingPoll::Ready(Ok(_))),
+        "the turn for Bo changes a note, which both the agent and Bo may: {allowed:?}"
+    );
+    assert_eq!(
+        app.try_recv().unwrap().resource,
+        "test:note-a",
+        "the note's change reaches the app"
+    );
+    let own = answered(&turn_for(ada), signed("test:block-a"));
+    assert!(
+        matches!(own, PendingPoll::Ready(Ok(_))),
+        "Ada's own turn of the agent changes the block: the agent may, so Bo's grants refused it: {own:?}"
+    );
+}
