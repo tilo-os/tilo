@@ -133,6 +133,76 @@ impl Work {
             lost: number("lost").unwrap_or_default(),
         }
     }
+
+    /// The work a task keeps in its `work` field: a record held there, or a resource the field
+    /// refers to (its id, or a reference as tilolang writes one). The default where the task
+    /// keeps none.
+    async fn where_kept(workspaces: &Workspaces, workspace: &str, held: Option<&Value>) -> Self {
+        match unwrapped(held.cloned()) {
+            Some(Value::String(id)) if !id.is_empty() => Self::at(workspaces, workspace, &id).await,
+            Some(Value::Object(record)) => match record.get("ref").and_then(Value::as_str) {
+                Some(id) => Self::at(workspaces, workspace, id).await,
+                None => match record.get("fields").and_then(Value::as_object) {
+                    Some(fields) => Self::held(fields),
+                    None => Self::held(&record),
+                },
+            },
+            _ => Self::default(),
+        }
+    }
+
+    /// The work the resource `id` of [`WORK`] keeps.
+    async fn at(workspaces: &Workspaces, workspace: &str, id: &str) -> Self {
+        workspaces
+            .store_held(workspace, WORK, id)
+            .await
+            .map(|held| Self::of(&held))
+            .unwrap_or_default()
+    }
+
+    /// The work a record held in its holder keeps, by the field names Tasks gives them.
+    fn held(fields: &Map<String, Value>) -> Self {
+        let number = |field: &str| {
+            fields
+                .get(field)
+                .and_then(|held| unwrapped(Some(held.clone())))
+                .and_then(|held| held.as_u64())
+        };
+        let text = |field: &str| {
+            fields
+                .get(field)
+                .and_then(|held| unwrapped(Some(held.clone())))
+                .and_then(|held| held.as_str().map(str::to_owned))
+                .unwrap_or_default()
+        };
+        Self {
+            folder: text("folder"),
+            note: text("note"),
+            budget_micros: number("budget_micros"),
+            budget_ms: number("budget_ms"),
+            spent_micros: number("spent_micros").unwrap_or_default(),
+            worked_ms: number("worked_ms").unwrap_or_default(),
+            sessions: number("sessions").unwrap_or_default(),
+            interrupted: fields
+                .get("session_since")
+                .and_then(|held| unwrapped(Some(held.clone())))
+                .is_some(),
+            lost: number("lost").unwrap_or_default(),
+        }
+    }
+}
+
+/// A field's value as tilolang writes one: none for `none`, the value inside `some`, else the
+/// value itself.
+fn unwrapped(held: Option<Value>) -> Option<Value> {
+    match held? {
+        Value::Null => None,
+        Value::Object(tagged) if tagged.len() == 1 && tagged.contains_key("none") => None,
+        Value::Object(mut tagged) if tagged.len() == 1 && tagged.contains_key("some") => {
+            tagged.remove("some").and_then(|some| unwrapped(Some(some)))
+        }
+        other => Some(other),
+    }
 }
 
 /// A task an agent's turn is about, as the change that triggered the turn left it.
@@ -158,14 +228,7 @@ impl Task {
         }
         let id = event.item.as_ref()?.id.clone();
         let after = event.after.as_ref()?;
-        let work = match after.get("work").and_then(Value::as_str) {
-            Some(work) if !work.is_empty() => workspaces
-                .store_held(workspace, WORK, work)
-                .await
-                .map(|held| Work::of(&held))
-                .unwrap_or_default(),
-            _ => Work::default(),
-        };
+        let work = Work::where_kept(workspaces, workspace, after.get("work")).await;
         Some(Self {
             id,
             number: after
@@ -609,14 +672,18 @@ impl Held {
 
     /// When it is due, in milliseconds since the epoch: its moment, or the start of its day.
     pub(super) fn due_ms(&self) -> Option<i64> {
-        if let Some(at) = self
-            .at
-            .as_deref()
-            .and_then(|at| at.parse::<jiff::Timestamp>().ok())
-        {
+        if let Some(at) = self.at.as_deref().and_then(|at| {
+            tilo_failure::ignored!(
+                "a due moment that does not parse names none",
+                at.parse::<jiff::Timestamp>().ok()
+            )
+        }) {
             return Some(at.as_millisecond());
         }
-        let day = self.due.as_deref()?.parse::<jiff::civil::Date>().ok()?;
+        let day = tilo_failure::ignored!(
+            "a due day that does not parse names none",
+            self.due.as_deref()?.parse::<jiff::civil::Date>().ok()?
+        );
         day.to_zoned(jiff::tz::TimeZone::UTC)
             .ok()
             .map(|start| start.timestamp().as_millisecond())
@@ -679,5 +746,553 @@ mod tests {
             "Tasks/12 Book the venue the date"
         );
         assert_eq!(folder_of(&task(" ... ")), "Tasks/12");
+    }
+}
+
+#[cfg(all(test, feature = "apps"))]
+mod session_tests {
+    use std::collections::BTreeMap;
+    use std::rc::Rc;
+    use std::sync::mpsc;
+    use std::sync::{Arc, Mutex};
+
+    use serde_json::json;
+    use tilo_actions::remote::{
+        ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+        InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus, ResourceReads,
+    };
+    use tilo_actions::{ActionInvoker, ActionOutput};
+    use tilo_resource_store::wire::{Command, Reply};
+    use tilo_server_protocol::WorkspaceId;
+
+    use super::*;
+    use crate::workspaces::fixtures::{TestGroupKeys, TestHost, governor, test_host_holding};
+
+    /// The packages the device runs, each with its ids lock: Tasks and what it builds on.
+    const PACKAGES: [(&str, &str); 3] = [
+        (
+            include_str!("../../../../../apps/tl/discussion/app.tl"),
+            include_str!("../../../../../apps/tl/discussion/app.ids"),
+        ),
+        (
+            include_str!("../../../../../apps/tl/notes/app.tl"),
+            include_str!("../../../../../apps/tl/notes/app.ids"),
+        ),
+        (
+            include_str!("../../../../../apps/tl/tasks/app.tl"),
+            include_str!("../../../../../apps/tl/tasks/app.ids"),
+        ),
+    ];
+
+    /// The documents a device's store changed, each whole: what sync carries to the workspace.
+    type Documents = Vec<(String, Vec<u8>)>;
+
+    /// One invocation of a package's action on the device, and where its answer goes.
+    struct Ask {
+        invoker: ActionInvoker,
+        resource: String,
+        action: String,
+        arguments: Map<String, Value>,
+        answer: mpsc::Sender<(Result<ActionOutput, String>, Documents)>,
+    }
+
+    /// The person's device: tilolang's host over a store of its own, on a thread of its own (a
+    /// host is held by one thread), invoked as the device's action service invokes it.
+    fn device(person: String, asks: mpsc::Receiver<Ask>, opened: mpsc::Sender<Documents>) {
+        use tilo_service::Service as _;
+        use tilolang_tilo::resources::{LocalPort, Port, ResourceStore};
+
+        let port = Rc::new(LocalPort::in_memory());
+        let store = ResourceStore::new(Rc::clone(&port) as Rc<dyn Port>);
+        let viewer = tilo_actions::Actor::Member(tilo_actions::MemberId::person(person.clone()));
+        let host = tilolang_tilo::host::Host::open(store, viewer, None, || None).unwrap();
+        for (source, ids) in PACKAGES {
+            host.load_builtin(source, ids).unwrap();
+        }
+        let mut service = tilolang_tilo::resource_service::ResourceService::new(host, person);
+        let mut sent: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        let mut moved = || {
+            let mut documents = Vec::new();
+            for doc in port.documents() {
+                let Some(bytes) = port.save(&doc) else {
+                    continue;
+                };
+                if sent.get(&doc) != Some(&bytes) {
+                    sent.insert(doc.clone(), bytes.clone());
+                    documents.push((doc, bytes));
+                }
+            }
+            documents
+        };
+        opened.send(moved()).unwrap();
+        while let Ok(ask) = asks.recv() {
+            let started =
+                service.invoke_as(&ask.invoker, &ask.resource, &ask.action, &ask.arguments);
+            let done = match started {
+                Ok(tilo_service::Started::Done(output)) => Ok(output),
+                Ok(tilo_service::Started::Accepted) => Ok(ActionOutput::default()),
+                Ok(tilo_service::Started::Later(later)) => later
+                    .wait_timeout(std::time::Duration::from_secs(10))
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| panic!("{} did not end", ask.action))
+                    .map_err(|error| error.to_string()),
+                Err(error) => Err(error.to_string()),
+            };
+            let _ = ask.answer.send((done, moved()));
+        }
+    }
+
+    /// The device's broker as a turn's calls reach it: it decides each call (`refuses` names
+    /// the actions it denies the turn, with its words) and keeps who asked what. A call it lets
+    /// through to a package runs there, Tasks' own rules deciding it; any other (Files') is
+    /// answered as done.
+    struct Broker {
+        workspaces: Workspaces,
+        workspace: String,
+        refuses: BTreeMap<&'static str, &'static str>,
+        device: Mutex<mpsc::Sender<Ask>>,
+        asked: Mutex<Vec<(Caller, String, String, Map<String, Value>)>>,
+    }
+
+    /// Run `action` on `resource` on the device as `invoker`, and carry what it wrote to the
+    /// workspace's store: what the action answered, or the words it was refused with.
+    fn on_device(
+        device: &Mutex<mpsc::Sender<Ask>>,
+        workspaces: &Workspaces,
+        workspace: &str,
+        invoker: ActionInvoker,
+        resource: &str,
+        action: &str,
+        arguments: Map<String, Value>,
+    ) -> Result<ActionOutput, String> {
+        let (answer, answered) = mpsc::channel();
+        device
+            .lock()
+            .unwrap()
+            .send(Ask {
+                invoker,
+                resource: resource.to_owned(),
+                action: action.to_owned(),
+                arguments,
+                answer,
+            })
+            .unwrap();
+        let (done, documents) = answered.recv().unwrap();
+        tokio::runtime::Handle::current().block_on(workspaces.take_documents(workspace, documents));
+        done
+    }
+
+    struct Provider(Arc<Broker>);
+
+    impl ActionProvider for Provider {
+        fn query(
+            &self,
+            _: &Caller,
+            _: CatalogueQuery,
+        ) -> Pending<Result<CataloguePage, ActionCallError>> {
+            Pending::ready(Err(ActionCallError::UnknownAction))
+        }
+
+        fn invoke(
+            &self,
+            caller: &Caller,
+            request: InvokeRequest,
+        ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+            let broker = &self.0;
+            let resource = request.target.address.resource.clone();
+            let action = request.target.address.action.clone();
+            let arguments = match &request.argument {
+                InvokeArgument::Json(arguments) => arguments.clone(),
+                _ => Map::new(),
+            };
+            broker.asked.lock().unwrap().push((
+                caller.clone(),
+                resource.clone(),
+                action.clone(),
+                arguments.clone(),
+            ));
+            if let Some(words) = broker.refuses.get(action.as_str()) {
+                return Pending::ready(Err(ActionCallError::Refused {
+                    reason: (*words).to_owned(),
+                }));
+            }
+            let output = if resource.starts_with("tl:") {
+                let ran = on_device(
+                    &broker.device,
+                    &broker.workspaces,
+                    &broker.workspace,
+                    ActionInvoker::admitted(caller.acting()),
+                    &resource,
+                    &action,
+                    arguments,
+                );
+                match ran {
+                    Ok(output) => output,
+                    Err(reason) => {
+                        return Pending::ready(Err(ActionCallError::Refused { reason }));
+                    }
+                }
+            } else {
+                ActionOutput::default()
+            };
+            Pending::ready(Ok(InvocationReceipt {
+                invocation: request.invocation,
+                status: ReceiptStatus::Completed { output },
+            }))
+        }
+
+        fn observe(&self, _: &Caller, _: &tilo_actions::InvocationId) -> Option<InvocationState> {
+            None
+        }
+
+        fn next_change(&self, _: &Caller, _: &tilo_actions::InvocationId) -> Option<Pending<()>> {
+            None
+        }
+
+        fn cancel(
+            &self,
+            _: &Caller,
+            _: &tilo_actions::InvocationId,
+        ) -> Pending<Result<(), ActionCallError>> {
+            Pending::ready(Ok(()))
+        }
+
+        fn resource_reads(&self) -> Option<Arc<dyn ResourceReads>> {
+            None
+        }
+    }
+
+    struct Keys;
+
+    impl super::super::agent_keys::AgentKeys for Keys {
+        fn grant(&self, _: WorkspaceId, _: &str, _: &str, _: [u8; 32]) -> Result<[u8; 32], String> {
+            Ok([7; 32])
+        }
+
+        fn sign(&self, _: WorkspaceId, _: &[u8; 32], _: &mut InvokeRequest) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// A workspace of a test host, its person, and Tasks on the person's device.
+    struct Host {
+        host: TestHost,
+        _dir: tempfile::TempDir,
+        workspaces: Workspaces,
+        workspace: String,
+        /// The person, by their root in hex.
+        person: String,
+        /// The person's root.
+        root: [u8; 32],
+        device: Mutex<mpsc::Sender<Ask>>,
+    }
+
+    impl Host {
+        async fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let (key, cert) = governor();
+            let host =
+                test_host_holding(dir.path(), &key, &cert, Arc::new(TestGroupKeys::default()))
+                    .await;
+            let workspaces = host.workspaces().clone();
+            workspaces.set_member_device(Arc::new(crate::workspaces::MemberDevice {
+                cert: cert.clone(),
+                signer: Arc::new(key.clone()),
+            }));
+            let workspace = workspaces.create("Tasks").await.unwrap().workspace;
+            let route = tilo_peer_state::document_frame::DocumentRoute {
+                app_id: TASKS.into(),
+                cluster_id: workspace.clone(),
+                document: String::new(),
+            };
+            let _ = workspaces.own_route_keys(&route, true).await.unwrap();
+            let person = hex::encode(cert.user_public_key);
+            let (device, asks) = mpsc::channel();
+            let (opened, documents) = mpsc::channel();
+            std::thread::Builder::new()
+                .name("tasks-device".into())
+                .spawn({
+                    let person = person.clone();
+                    move || self::device(person, asks, opened)
+                })
+                .unwrap();
+            let documents = tokio::task::spawn_blocking(move || documents.recv().unwrap())
+                .await
+                .unwrap();
+            workspaces.take_documents(&workspace, documents).await;
+            Self {
+                host,
+                _dir: dir,
+                workspaces,
+                workspace,
+                person,
+                root: cert.user_public_key,
+                device: Mutex::new(device),
+            }
+        }
+
+        /// Run `action` on `resource` as the person, on their device: the resources it made.
+        ///
+        /// # Panics
+        /// Tasks refused it.
+        async fn act(&self, resource: &str, action: &str, arguments: Value) -> Vec<String> {
+            let Value::Object(arguments) = arguments else {
+                panic!("arguments by name: {arguments}")
+            };
+            let device = self.device.lock().unwrap().clone();
+            let (workspaces, workspace) = (self.workspaces.clone(), self.workspace.clone());
+            let person = self.person.clone();
+            let (resource, action) = (resource.to_owned(), action.to_owned());
+            tokio::task::spawn_blocking(move || {
+                on_device(
+                    &Mutex::new(device),
+                    &workspaces,
+                    &workspace,
+                    ActionInvoker::person(person),
+                    &resource,
+                    &action,
+                    arguments,
+                )
+            })
+            .await
+            .unwrap()
+            .unwrap_or_else(|refused| panic!("{action}: {refused}"))
+            .resources
+        }
+
+        /// A new task of Tasks titled `title`, with `more` of what a new task is given: its id.
+        async fn new_task(&self, title: &str, more: Value) -> String {
+            let mut arguments = json!({ "title": title });
+            if let (Value::Object(all), Value::Object(more)) = (&mut arguments, more) {
+                all.extend(more);
+            }
+            let made = self
+                .act(&format!("tl:{TASKS}"), "new_task", arguments)
+                .await;
+            task_id(&made[0]).unwrap().to_owned()
+        }
+
+        /// The task `id` as the device holds it, its work read where Tasks keeps it.
+        async fn task(&self, id: &str) -> Task {
+            let command = Command::Content {
+                kind: triggered::TASK.to_owned(),
+                id: id.to_owned(),
+            };
+            let reply = self
+                .workspaces
+                .read_store_as(&self.workspace, &self.person, &command)
+                .await
+                .unwrap();
+            let Reply::Content(Some(Value::Object(content))) = reply else {
+                panic!("the task {id} is not kept: {reply:?}")
+            };
+            let number = content
+                .get("number")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            let title = content
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            Task {
+                id: id.to_owned(),
+                number,
+                title,
+                work: Work::where_kept(&self.workspaces, &self.workspace, content.get("work"))
+                    .await,
+            }
+        }
+
+        fn broker(&self, refuses: &[(&'static str, &'static str)]) -> Arc<Broker> {
+            Arc::new(Broker {
+                workspaces: self.workspaces.clone(),
+                workspace: self.workspace.clone(),
+                refuses: refuses.iter().copied().collect(),
+                device: Mutex::new(self.device.lock().unwrap().clone()),
+                asked: Mutex::default(),
+            })
+        }
+
+        /// The engine's actions through `broker`.
+        fn service(&self, broker: &Arc<Broker>) -> super::super::WorkspaceActionProvider {
+            let provider: Arc<dyn ActionProvider + Send + Sync> =
+                Arc::new(Provider(Arc::clone(broker)));
+            super::super::WorkspaceActionProvider::new(
+                super::super::EngineActions::Device(provider, Arc::new(Keys)),
+                WorkspaceId::parse(&self.workspace).unwrap(),
+            )
+        }
+
+        /// The turn's agent, `scout`, acting for the person, as its calls name it.
+        fn caller(&self) -> Caller {
+            Caller::authenticated(self.root, [7; 32])
+                .in_workspace(self.workspace.clone())
+                .delegated_to("scout")
+        }
+
+        async fn end(self) {
+            self.host.shutdown().await;
+        }
+    }
+
+    /// A workspace whose Tasks holds the task "Book the venue", its work as its person's
+    /// `before` actions on it left it, and a turn of the agent on it through a broker that
+    /// denies `refuses`.
+    async fn worked(
+        before: &[(&str, Value)],
+        refuses: &[(&'static str, &'static str)],
+    ) -> (Host, TaskWork, Arc<Broker>) {
+        let host = Host::new().await;
+        let id = host
+            .new_task("Book the venue", json!({"assignee": {"agent": "scout"}}))
+            .await;
+        for (action, arguments) in before {
+            host.act(&triggered::published(TASKS, &id), action, arguments.clone())
+                .await;
+        }
+        let broker = host.broker(refuses);
+        let service = host.service(&broker);
+        let task = host.task(&id).await;
+        let work = TaskWork {
+            service,
+            caller: host.caller(),
+            workspace: host.workspace.clone(),
+            task,
+        };
+        (host, work, broker)
+    }
+
+    /// Which actions were asked, in order.
+    fn actions(broker: &Broker) -> Vec<String> {
+        broker
+            .asked
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, _, action, _)| action.clone())
+            .collect()
+    }
+
+    /// A session Tasks refuses (the task's budget is spent) does not begin: the turn ends with
+    /// Tasks' words, which stop the task's work as spent, and no place is made for it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_session_tasks_refuses_ends_with_its_words_and_makes_nothing() {
+        const SPENT: &str = "I stopped: this task's budget is spent. Raise it to let me go on.";
+        let (host, work, broker) = worked(
+            &[
+                ("set_budget", json!({"micros": 10})),
+                ("session_began", json!({})),
+                ("session_ended", json!({"spent_micros": 10})),
+            ],
+            &[("session_began", SPENT)],
+        )
+        .await;
+        assert_eq!(work.task.work.money_left(), Some(0), "the budget is spent");
+        let refused = work.begin().await.unwrap_err();
+        assert!(refused.contains(SPENT), "{refused}");
+        assert_eq!(actions(&broker), ["session_began", "stop"]);
+        let stop = broker.asked.lock().unwrap()[1].3.clone();
+        assert_eq!(stop["why"], "budget");
+        assert!(stop["words"].as_str().unwrap().contains(SPENT));
+        host.end().await;
+    }
+
+    /// A session that begins is told that sessions came before, what is left of its budget and
+    /// where its material is, made for it through Tasks, Notes and Files as the agent; one that
+    /// runs out of the task's money stops the task's work as spent, and what it cost is counted
+    /// where Tasks keeps it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_session_is_told_its_tasks_work_and_counted_when_it_ends() {
+        let (host, work, broker) = worked(
+            &[
+                ("set_budget", json!({"micros": 1_000_000})),
+                ("session_began", json!({})),
+                ("session_ended", json!({"spent_micros": 125_000})),
+                ("session_began", json!({})),
+                ("session_ended", json!({"spent_micros": 125_000})),
+            ],
+            &[],
+        )
+        .await;
+        assert_eq!(work.task.work.sessions, 2);
+        assert_eq!(work.task.work.money_left(), Some(750_000));
+        work.begin().await.unwrap();
+        let place = work.place().await;
+        let request = with_place("Book the venue", &work.task.work, &place);
+        assert!(request.contains("not your first session"), "{request}");
+        assert!(request.contains("$0.75 of $1.00 is left"), "{request}");
+        assert!(request.contains("`tl:so.tilo.notes:"), "{request}");
+        assert!(request.contains("`Tasks/1 Book the venue`"), "{request}");
+        assert_eq!(
+            actions(&broker),
+            [
+                "session_began",
+                "open",
+                "new_note",
+                "set_place",
+                "new-folder"
+            ]
+        );
+        let ended = work
+            .ended_as(
+                Outcome::Stopped("the model ran out".into()),
+                750_000,
+                Duration::from_secs(3),
+            )
+            .await;
+        assert!(
+            matches!(&ended, Outcome::Stopped(words) if words.contains("budget of $1.00 is spent")),
+            "{ended:?}"
+        );
+        let asked = broker.asked.lock().unwrap().clone();
+        let (_, counted, stop) = (&asked[5], &asked[5].3, &asked[6].3);
+        assert_eq!(asked[5].2, "session_ended");
+        assert_eq!(counted["spent_micros"], 750_000);
+        assert_eq!(counted["worked_ms"], 3_000);
+        assert_eq!(asked[6].2, "stop");
+        assert_eq!(stop["why"], "budget");
+        let after = host.task(&work.task.id).await;
+        assert_eq!(after.work.spent_micros, 1_000_000);
+        assert_eq!(after.work.money_left(), Some(0));
+        assert!(!after.work.interrupted);
+        // Every write is the agent's own, on the task it works or the place made for it.
+        for (caller, asked_on, action, _) in &asked {
+            assert_eq!(caller, &work.caller, "{action}");
+            if !matches!(action.as_str(), "open" | "new_note" | "new-folder") {
+                assert_eq!(asked_on, &work.task.address(), "{action}");
+            }
+        }
+        host.end().await;
+    }
+
+    /// An agent the broker lets write nothing on the task begins no session on it, and nothing
+    /// is asked as anyone else: the turn ends with the broker's refusal.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_agent_without_a_grant_on_the_task_writes_nothing_to_it() {
+        const DENIED: &str = "the agent may not change this task";
+        let (host, work, broker) = worked(
+            &[],
+            &[
+                ("session_began", DENIED),
+                ("stop", DENIED),
+                ("set_place", DENIED),
+                ("new_note", DENIED),
+            ],
+        )
+        .await;
+        let refused = work.begin().await.unwrap_err();
+        assert!(refused.contains(DENIED), "{refused}");
+        assert_eq!(actions(&broker), ["session_began", "stop"]);
+        assert!(
+            broker
+                .asked
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(caller, ..)| caller == &work.caller)
+        );
+        host.end().await;
     }
 }

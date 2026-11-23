@@ -22279,6 +22279,7 @@ dependencies = [
  "tilo-secrets",
  "tilo-server-client",
  "tilo-server-protocol",
+ "tilo-service",
  "tilo-session-client",
  "tilo-test-env",
  "tilo-test-relay",
