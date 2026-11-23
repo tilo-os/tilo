@@ -690,6 +690,25 @@ def row_of(session: Session, window: dict | None, name: str) -> dict | None:
     return None
 
 
+def show_sidebar(session: Session, window: dict | None, name: str) -> None:
+    """Nothing when the row `name` stands in the window's sidebar already; else press
+    the window's own Show sidebar, where the window is narrow enough to show one
+    column at a time and keeps its places behind that button: what a person does
+    before they pick a place there."""
+    if row_of(session, window, name) is not None:
+        return
+    if window is None or window.get("rect") is None:
+        return
+    x, y, w, h = window["rect"]
+    for target in session.targets():
+        if target.get("name") != "Show sidebar" or not drawn(target):
+            continue
+        tx, ty, tw, th = target["rect"]
+        if tx >= x and ty >= y and tx + tw <= x + w and ty + th <= y + h:
+            session.click_at(tx + tw / 2, ty + th / 2)
+            return
+
+
 def press(session: Session, selector, verb: str = "activate") -> dict:
     """Press the control `selector` names, as a person's pointer does; `verb`
     opens its context menu where the control offers one."""
@@ -1380,6 +1399,8 @@ class Walk:
         """Press the row `name` in the app window's own sidebar, where a person
         picks the note their window turns to."""
         name = pick(value, self.variant)
+        window = self.window_of()
+        show_sidebar(self.session, window, name)
         target = until_value(f"the row {name!r} in the window",
                              lambda: row_of(self.session, self.window_of(), name), 30)
         x, y, w, h = target["rect"]
@@ -1390,6 +1411,8 @@ class Walk:
         """Open the menu of the row `name` in the app window's own sidebar, the
         way a person opens it: a second-button press on the row."""
         name = pick(value, self.variant)
+        window = self.window_of()
+        show_sidebar(self.session, window, name)
         target = until_value(f"the row {name!r} in the window",
                              lambda: row_of(self.session, self.window_of(), name), 30)
         x, y, w, h = target["rect"]
@@ -1811,8 +1834,14 @@ class Walk:
             self.session.open(ident, deadline)
             self.op_wait_for({"shown": {"prefix": answer}})
             self.op_press_any([{"prefix": answer}])
-        self.session.launch(ident, deadline)
-        return {"opened": ident, "waited_ms": round((time.monotonic() - began) * 1000)}
+        opened = self.session.launch(ident, deadline)
+        found = {"opened": ident, "waited_ms": round((time.monotonic() - began) * 1000)}
+        # Where the open's time went: the ask (the action listed and invoked) and the
+        # window after it, as `Session.launch` timed them.
+        for key in ("asked_ms", "window_ms", "shown_ms"):
+            if key in opened:
+                found[key] = opened[key]
+        return found
 
     def op_do(self, value) -> dict:
         """Run an action by its address and fail the step when it is refused:

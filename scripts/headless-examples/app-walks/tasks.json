@@ -26,10 +26,7 @@
         },
         {
           "must": [
-            {
-              "rust": "New issue",
-              "tl": "No tasks here"
-            }
+            "No tasks here"
           ]
         },
         {
@@ -45,12 +42,7 @@
       "ops": [
         {
           "click_any": [
-            {
-              "rust": {
-                "prefix": "What needs doing"
-              },
-              "tl": "New task for today"
-            }
+            "New task for today"
           ]
         },
         {
@@ -85,24 +77,9 @@
         },
         {
           "must": [
-            {
-              "rust": {
-                "prefix": "#1 Buy milk"
-              },
-              "tl": "Buy milk"
-            },
-            {
-              "rust": {
-                "prefix": "#2 Call the landlord"
-              },
-              "tl": "Call the landlord"
-            },
-            {
-              "rust": {
-                "prefix": "#3 Ship the release"
-              },
-              "tl": "Ship the release"
-            }
+            "Buy milk",
+            "Call the landlord",
+            "Ship the release"
           ]
         },
         {
@@ -117,603 +94,330 @@
     {
       "id": "complete",
       "said": "Complete the milk, and find it where finished work goes",
-      "ops": {
-        "rust": [
-          {
-            "press": "Mark #1 Buy milk done"
-          },
-          {
-            "press": {
-              "prefix": "#1 Buy milk"
-            }
-          },
-          {
-            "must": [
-              "Status: Done"
-            ]
-          },
-          {
-            "press_any": [
-              "Back"
-            ]
-          }
-        ],
-        "tl": [
-          {
-            "press": "Mark Buy milk done"
-          },
-          {
-            "holds": [
-              "\"status\": \"done\""
-            ]
-          },
-          {
-            "select_row": "Inbox"
-          },
-          {
-            "must_not": [
-              "Buy milk"
-            ]
-          },
-          {
-            "select_row": "Today"
-          },
-          {
-            "must_not": [
-              "Buy milk"
-            ]
-          },
-          {
-            "select_row": "Done"
-          },
-          {
-            "must": [
-              "Buy milk"
-            ]
-          }
-        ]
-      }
+      "ops": [
+        {
+          "press": "Mark Buy milk done"
+        },
+        {
+          "holds": [
+            "\"status\": \"done\""
+          ]
+        },
+        {
+          "select_row": "Inbox"
+        },
+        {
+          "must_not": [
+            "Buy milk"
+          ]
+        },
+        {
+          "select_row": "Today"
+        },
+        {
+          "must_not": [
+            "Buy milk"
+          ]
+        },
+        {
+          "select_row": "Done"
+        },
+        {
+          "must": [
+            "Buy milk"
+          ]
+        }
+      ]
     },
     {
       "id": "due",
       "said": "Give the landlord call a day: tomorrow",
-      "ops": {
-        "rust": [
-          {
-            "right_click": {
-              "rust": {
-                "prefix": "#2 Call the landlord"
-              },
-              "tl": "Call the landlord"
-            }
-          },
-          {
-            "must": {
-              "see": [
-                {
-                  "rust": {
-                    "menuitem": "Open issue"
-                  },
-                  "tl": {
-                    "menuitem": "More"
-                  }
-                }
-              ],
-              "within": 15
-            }
-          },
-          {
-            "press_any": [
-              "More"
-            ]
-          },
-          {
-            "must": [
+      "ops": [
+        {
+          "right_click": "Call the landlord"
+        },
+        {
+          "must": {
+            "see": [
+              {
+                "menuitem": "Open as page"
+              }
+            ],
+            "within": 15
+          }
+        },
+        {
+          "must": {
+            "see": [
+              {
+                "menuitem": "Plan"
+              }
+            ],
+            "within": 10
+          }
+        },
+        {
+          "press": {
+            "menuitem": "Plan"
+          }
+        },
+        {
+          "must": {
+            "see": [
               {
                 "menuitem": "Tomorrow"
               }
-            ]
-          },
-          {
-            "press": {
-              "menuitem": "Tomorrow"
-            }
+            ],
+            "within": 10
           }
-        ],
-        "tl": [
-          {
-            "right_click": "Call the landlord"
-          },
-          {
-            "must": {
-              "see": [
-                {
-                  "menuitem": "Open as page"
-                }
-              ],
-              "within": 15
-            }
-          },
-          {
-            "must": {
-              "see": [
-                {
-                  "menuitem": "Plan"
-                }
-              ],
-              "within": 10
-            }
-          },
-          {
-            "press": {
-              "menuitem": "Plan"
-            }
-          },
-          {
-            "must": {
-              "see": [
-                {
-                  "menuitem": "Tomorrow"
-                }
-              ],
-              "within": 10
-            }
-          },
-          {
-            "press": {
-              "menuitem": "Tomorrow"
-            }
+        },
+        {
+          "press": {
+            "menuitem": "Tomorrow"
           }
-        ]
-      }
+        }
+      ]
     },
     {
       "id": "due-shows",
       "said": "It leaves what is left to do today and stands with what is coming up",
-      "ops": {
-        "rust": [
-          {
-            "key": "Escape"
-          },
-          {
-            "must": [
-              {
-                "prefix": "#2 Call the landlord"
-              }
-            ]
-          }
-        ],
-        "tl": [
-          {
-            "must_not": [
-              "Call the landlord"
-            ]
-          },
-          {
-            "select_row": "Upcoming"
-          },
-          {
-            "must": [
-              "Call the landlord"
-            ]
-          }
-        ]
-      }
+      "ops": [
+        {
+          "must_not": [
+            "Call the landlord"
+          ]
+        },
+        {
+          "select_row": "Upcoming"
+        },
+        {
+          "must": [
+            "Call the landlord"
+          ]
+        }
+      ]
     },
     {
       "id": "priority",
       "said": "Make the landlord call high priority",
-      "ops": {
-        "rust": [
-          {
-            "right_click": {
-              "rust": {
-                "prefix": "#2 Call the landlord"
-              },
-              "tl": "Call the landlord"
-            }
-          },
-          {
-            "must": {
-              "see": [
-                {
-                  "rust": {
-                    "menuitem": "Open issue"
-                  },
-                  "tl": {
-                    "menuitem": "More"
-                  }
-                }
-              ],
-              "within": 15
-            }
-          },
-          {
-            "press_any": [
-              "More"
-            ]
-          },
-          {
-            "must": [
+      "ops": [
+        {
+          "right_click": "Call the landlord"
+        },
+        {
+          "must": {
+            "see": [
+              {
+                "menuitem": "Priority"
+              }
+            ],
+            "within": 15
+          }
+        },
+        {
+          "press": {
+            "menuitem": "Priority"
+          }
+        },
+        {
+          "must": {
+            "see": [
               {
                 "menuitem": "High"
               }
-            ]
-          },
-          {
-            "press": {
-              "menuitem": "High"
-            }
+            ],
+            "within": 10
           }
-        ],
-        "tl": [
-          {
-            "right_click": "Call the landlord"
-          },
-          {
-            "must": {
-              "see": [
-                {
-                  "menuitem": "Priority"
-                }
-              ],
-              "within": 15
-            }
-          },
-          {
-            "press": {
-              "menuitem": "Priority"
-            }
-          },
-          {
-            "must": {
-              "see": [
-                {
-                  "menuitem": "High"
-                }
-              ],
-              "within": 10
-            }
-          },
-          {
-            "press": {
-              "menuitem": "High"
-            }
+        },
+        {
+          "press": {
+            "menuitem": "High"
           }
-        ]
-      },
+        }
+      ],
       "dark": true
     },
     {
       "id": "priority-shows",
       "said": "The window marks it as high priority",
-      "ops": {
-        "rust": [
-          {
-            "key": "Escape"
-          },
-          {
-            "must": [
-              {
-                "prefix": "#2 Call the landlord"
-              }
-            ]
-          }
-        ],
-        "tl": [
-          {
-            "must": [
-              "Call the landlord"
-            ]
-          }
-        ]
-      }
+      "ops": [
+        {
+          "must": [
+            "Call the landlord"
+          ]
+        }
+      ]
     },
     {
       "id": "subtask",
       "said": "Break the landlord call into a subtask",
-      "ops": {
-        "rust": [
-          {
-            "press": {
-              "rust": {
-                "prefix": "#2 Call the landlord"
-              },
-              "tl": "Call the landlord"
-            }
-          },
-          {
-            "must": {
-              "see": [
-                {
-                  "rust": "A sub-issue of this one",
-                  "tl": "Add a subtask"
-                }
-              ],
-              "within": 20
-            }
-          },
-          {
-            "click_any": [
-              {
-                "rust": {
-                  "prefix": "A sub-issue of this one"
-                },
-                "tl": {
-                  "prefix": "Add a subtask"
-                }
-              }
-            ]
-          },
-          {
-            "type": "Find the number"
-          },
-          {
-            "key": "Enter"
-          },
-          {
-            "must": [
-              {
-                "rust": {
-                  "prefix": "#4 Find the number"
-                },
-                "tl": "Find the number"
-              }
-            ]
+      "ops": [
+        {
+          "press": "Call the landlord"
+        },
+        {
+          "must": {
+            "see": [
+              "Add a subtask"
+            ],
+            "within": 20
           }
-        ],
-        "tl": [
-          {
-            "press": {
-              "rust": {
-                "prefix": "#2 Call the landlord"
-              },
-              "tl": "Call the landlord"
+        },
+        {
+          "click_any": [
+            {
+              "prefix": "Add a subtask"
             }
-          },
-          {
-            "must": {
-              "see": [
-                {
-                  "rust": "A sub-issue of this one",
-                  "tl": "Add a subtask"
-                }
-              ],
-              "within": 20
-            }
-          },
-          {
-            "click_any": [
-              {
-                "rust": {
-                  "prefix": "A sub-issue of this one"
-                },
-                "tl": {
-                  "prefix": "Add a subtask"
-                }
-              }
-            ]
-          },
-          {
-            "type": "Find the number"
-          },
-          {
-            "key": "Enter"
-          },
-          {
-            "must": [
-              {
-                "rust": {
-                  "prefix": "#4 Find the number"
-                },
-                "tl": "Find the number"
-              }
-            ]
-          },
-          {
-            "holds": [
-              "Find the number"
-            ]
-          }
-        ]
-      }
+          ]
+        },
+        {
+          "type": "Find the number"
+        },
+        {
+          "key": "Enter"
+        },
+        {
+          "must": [
+            "Find the number"
+          ]
+        },
+        {
+          "holds": [
+            "Find the number"
+          ]
+        }
+      ]
     },
     {
       "id": "subtask-stands-under",
       "said": "The subtask waits in the inbox, under the task it was made in",
-      "ops": {
-        "rust": [
-          {
-            "press_any": [
-              "Back"
-            ]
-          },
-          {
-            "must": [
-              {
-                "prefix": "#4 Find the number"
-              }
-            ]
-          }
-        ],
-        "tl": [
-          {
-            "key": "Escape"
-          },
-          {
-            "select_row": "Inbox"
-          },
-          {
-            "must": [
-              {
-                "prefix": "Find the number, in Call the landlord"
-              }
-            ]
-          }
-        ]
-      }
+      "ops": [
+        {
+          "key": "Escape"
+        },
+        {
+          "select_row": "Inbox"
+        },
+        {
+          "must": [
+            {
+              "prefix": "Find the number, in Call the landlord"
+            }
+          ]
+        }
+      ]
     },
     {
       "id": "move",
       "said": "Move the subtask out from under the task it was in, to stand on its own",
-      "ops": {
-        "rust": [
-          {
-            "must": [
-              {
-                "prefix": "#4 Find the number"
-              }
-            ]
+      "ops": [
+        {
+          "right_click": {
+            "prefix": "Find the number"
           }
-        ],
-        "tl": [
-          {
-            "right_click": {
+        },
+        {
+          "must": {
+            "see": [
+              {
+                "menuitem": "Move"
+              }
+            ],
+            "within": 15
+          }
+        },
+        {
+          "press": {
+            "menuitem": "Move"
+          }
+        },
+        {
+          "must": {
+            "see": [
+              {
+                "menuitem": "Outdent"
+              }
+            ],
+            "within": 10
+          }
+        },
+        {
+          "press": {
+            "menuitem": "Outdent"
+          }
+        },
+        {
+          "must": [
+            {
               "prefix": "Find the number"
             }
-          },
-          {
-            "must": {
-              "see": [
-                {
-                  "menuitem": "Move"
-                }
-              ],
-              "within": 15
-            }
-          },
-          {
-            "press": {
-              "menuitem": "Move"
-            }
-          },
-          {
-            "must": {
-              "see": [
-                {
-                  "menuitem": "Outdent"
-                }
-              ],
-              "within": 10
-            }
-          },
-          {
-            "press": {
-              "menuitem": "Outdent"
-            }
-          },
-          {
-            "must": [
-              {
-                "prefix": "Find the number"
-              }
-            ]
-          },
-          {
-            "must_not": [
-              "Call the landlord"
-            ]
-          },
-          {
-            "select_row": "Today"
-          },
-          {
-            "holds": [
-              "Find the number"
-            ]
-          }
-        ]
-      }
+          ]
+        },
+        {
+          "must_not": [
+            "Call the landlord"
+          ]
+        },
+        {
+          "select_row": "Today"
+        },
+        {
+          "holds": [
+            "Find the number"
+          ]
+        }
+      ]
     },
     {
       "id": "delete",
       "said": "Delete one task",
-      "ops": {
-        "rust": [
-          {
-            "right_click": {
-              "rust": {
-                "prefix": "#3 Ship the release"
-              },
-              "tl": "Ship the release"
-            }
-          },
-          {
-            "must": {
-              "see": [
-                {
-                  "menuitem": "Open issue"
-                }
-              ],
-              "within": 15
-            }
-          },
-          {
-            "press_any": [
-              "More"
-            ]
-          },
-          {
-            "must": [
+      "ops": [
+        {
+          "select_row": "Today"
+        },
+        {
+          "right_click": {
+            "prefix": "Ship the release"
+          }
+        },
+        {
+          "must": {
+            "see": [
+              {
+                "menuitem": "More"
+              }
+            ],
+            "within": 15
+          }
+        },
+        {
+          "press": {
+            "menuitem": "More"
+          }
+        },
+        {
+          "must": {
+            "see": [
               {
                 "menuitem": "Delete"
               }
-            ]
-          },
-          {
-            "press": {
-              "menuitem": "Delete"
-            }
+            ],
+            "within": 10
           }
-        ],
-        "tl": [
-          {
-            "select_row": "Today"
-          },
-          {
-            "right_click": {
+        },
+        {
+          "press": {
+            "menuitem": "Delete"
+          }
+        },
+        {
+          "must_not": [
+            {
               "prefix": "Ship the release"
             }
-          },
-          {
-            "must": {
-              "see": [
-                {
-                  "menuitem": "More"
-                }
-              ],
-              "within": 15
-            }
-          },
-          {
-            "press": {
-              "menuitem": "More"
-            }
-          },
-          {
-            "must": {
-              "see": [
-                {
-                  "menuitem": "Delete"
-                }
-              ],
-              "within": 10
-            }
-          },
-          {
-            "press": {
-              "menuitem": "Delete"
-            }
-          },
-          {
-            "must_not": [
-              {
-                "prefix": "Ship the release"
-              }
-            ]
-          }
-        ]
-      }
+          ]
+        }
+      ]
     },
     {
       "id": "search",

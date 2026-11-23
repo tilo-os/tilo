@@ -171,6 +171,138 @@
     "to": "so.tilo.terminal terminal.session#restart",
     "test": "apps/terminal/src/chrome_tests.rs:48"
   },
+  "so.tilo.tasks tasks.issues#add-label": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Task#label",
+    "test": "crates/lang/tilolang-tilo/tests/tasks_features.rs:866"
+  },
+  "so.tilo.tasks tasks.issues#assign": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Task#assign",
+    "test": "crates/lang/tilolang-tilo/tests/tasks_features.rs:266"
+  },
+  "so.tilo.tasks tasks.issues#attach": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Task#attach",
+    "test": "crates/lang/tilolang-tilo/tests/tasks_features.rs:237"
+  },
+  "so.tilo.tasks tasks.issues#comment": {
+    "to": "so.tilo.lang.discussion tl.so.tilo.lang.discussion.Comments#comment",
+    "test": "crates/lang/tilolang-tilo/tests/discussion.rs:73"
+  },
+  "so.tilo.tasks tasks.issues#create": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Tasks#new_task",
+    "test": "crates/lang/tilolang-tilo/tests/tasks_menu.rs:23"
+  },
+  "so.tilo.tasks tasks.issues#create-many": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Tasks#new_tasks",
+    "test": "crates/lang/tilolang-tilo/tests/tasks_features.rs:309"
+  },
+  "so.tilo.tasks tasks.issues#delete": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Task#remove",
+    "test": "crates/lang/tilolang-tilo/tests/tasks_features.rs:969"
+  },
+  "so.tilo.tasks tasks.issues#detach": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Task#detach",
+    "test": "crates/lang/tilolang-tilo/tests/tasks_features.rs:244"
+  },
+  "so.tilo.tasks tasks.issues#field-edit": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Task#edit-text",
+    "test": "crates/lang/tilolang-tilo/tests/tasks.rs:2901"
+  },
+  "so.tilo.tasks tasks.issues#link": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Task#relate",
+    "test": "crates/lang/tilolang-tilo/tests/tasks.rs:2890"
+  },
+  "so.tilo.tasks tasks.issues#link-note": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Task#write_note",
+    "test": "crates/lang/tilolang-tilo/tests/tasks_features.rs:977"
+  },
+  "so.tilo.tasks tasks.issues#move-under": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Task#indent",
+    "test": "crates/lang/tilolang-tilo/tests/tasks.rs:1109"
+  },
+  "so.tilo.tasks tasks.issues#place": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Task#file",
+    "test": "crates/lang/tilolang-tilo/tests/tasks.rs:415"
+  },
+  "so.tilo.tasks tasks.issues#plan": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Task#schedule",
+    "test": "crates/lang/tilolang-tilo/tests/tasks_time.rs:30"
+  },
+  "so.tilo.tasks tasks.issues#rename": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Task#retitle",
+    "test": "crates/lang/tilolang-tilo/tests/tasks.rs:2901"
+  },
+  "so.tilo.tasks tasks.issues#resume": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Task#resume",
+    "test": "crates/lang/tilolang-tilo/tests/tasks_features.rs:377"
+  },
+  "so.tilo.tasks tasks.issues#session-began": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Task#session_began",
+    "test": "crates/lang/tilolang-tilo/tests/tasks_features.rs:441"
+  },
+  "so.tilo.tasks tasks.issues#session-ended": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Task#session_ended",
+    "test": "crates/lang/tilolang-tilo/tests/tasks_features.rs:424"
+  },
+  "so.tilo.tasks tasks.issues#set-budget": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Task#set_budget",
+    "test": "crates/lang/tilolang-tilo/tests/tasks_features.rs:414"
+  },
+  "so.tilo.tasks tasks.issues#set-pieces-at-once": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Task#set_pieces_at_once",
+    "test": "crates/lang/tilolang-tilo/tests/tasks_features.rs:1043"
+  },
+  "so.tilo.tasks tasks.issues#set-place": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Task#set_place",
+    "test": "crates/lang/tilolang-tilo/tests/tasks_features.rs:1036"
+  },
+  "so.tilo.tasks tasks.issues#set-project": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Task#file",
+    "test": "crates/lang/tilolang-tilo/tests/tasks.rs:199"
+  },
+  "so.tilo.tasks tasks.issues#start": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Task#set_status",
+    "test": "crates/lang/tilolang-tilo/tests/tasks_features.rs:142"
+  },
+  "so.tilo.tasks tasks.issues#stop": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Task#stop",
+    "test": "crates/lang/tilolang-tilo/tests/tasks_features.rs:444"
+  },
+  "so.tilo.tasks tasks.issues#wait": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Task#wait",
+    "test": "crates/lang/tilolang-tilo/tests/tasks_features.rs:357"
+  },
+  "so.tilo.tasks tasks.tracker#create-area": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Tasks#new_project",
+    "test": "crates/lang/tilolang-tilo/tests/tasks_features.rs:100"
+  },
+  "so.tilo.tasks tasks.tracker#delete-area": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Project#remove_project",
+    "test": "crates/lang/tilolang-tilo/tests/tasks.rs:206"
+  },
+  "so.tilo.tasks tasks.tracker#field-edit": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Project#edit-text",
+    "test": "crates/lang/tilolang-tilo/tests/tasks_places.rs:31"
+  },
+  "so.tilo.tasks tasks.tracker#involve": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Project#involve",
+    "test": "crates/lang/tilolang-tilo/tests/tasks_features.rs:206"
+  },
+  "so.tilo.tasks tasks.tracker#new-project": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Tasks#new_project",
+    "test": "crates/lang/tilolang-tilo/tests/tasks_features.rs:100"
+  },
+  "so.tilo.tasks tasks.tracker#remove-person": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Project#remove_person",
+    "test": "crates/lang/tilolang-tilo/tests/tasks.rs:2922"
+  },
+  "so.tilo.tasks tasks.tracker#rename-area": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Project#rename",
+    "test": "crates/lang/tilolang-tilo/tests/tasks_places.rs:31"
+  },
+  "so.tilo.tasks tasks.tracker#set-kind": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Project#set_kind",
+    "test": "crates/lang/tilolang-tilo/tests/tasks_features.rs:201"
+  },
   "so.tilo.tube tube.library#open-creator": {
     "to": "so.tilo.tube tl.so.tilo.tube.Channel#open",
     "test": "crates/desktop/session/tests/youtube_client.rs:57"

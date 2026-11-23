@@ -993,14 +993,23 @@ class Session:
         desktop offers an app's open only while it has no window, so waiting
         for that listing entry would wait on one that never comes; asking it to
         open an app it already shows is not wanted either. An app this device
-        does not have is refused by the invoke, naming why."""
+        does not have is refused by the invoke, naming why. The answer says how
+        long the ask took (`asked_ms`: the action listed, then invoked) and how
+        long the window took after it (`window_ms`), for a walk's record of an
+        open."""
         ident = app if "." in app else app_id(app)
+        began = time.monotonic()
         found = next((w for w in self.windows() if w.get("app_id") == ident), None)
         if found is None:
             self.open(ident, deadline)
+            asked = time.monotonic()
             found = until(f"the window of {ident}", lambda: next(
                 (w for w in self.windows() if w.get("app_id") == ident), None), deadline)
-        return {**found, "title": found.get("title")}
+            return {**found, "title": found.get("title"),
+                    "asked_ms": round((asked - began) * 1000),
+                    "window_ms": round((time.monotonic() - asked) * 1000)}
+        return {**found, "title": found.get("title"),
+                "shown_ms": round((time.monotonic() - began) * 1000)}
 
     def processes(self, app: str) -> list:
         """The command lines of the running processes of `app`.

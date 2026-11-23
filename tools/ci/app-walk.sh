@@ -29,6 +29,10 @@ build=$(realpath -m "${TILO_NESTED_SESSION_BUILD:-$target/nested-session}")
     exit 1
 }
 export TILO_NESTED_SESSION_BUILD=$build
+# Every app the walks open writes its own startup timeline, and the session's log carries each
+# open's phases (the launcher's, the sandbox's, loading, fonts, records, the first tree) as
+# `APP-STARTUP`: an open that is over the bar says where its time went.
+export TILO_STARTUP_TIMELINE=1
 # The walks are scripts, not modules: nothing may drop bytecode into the tree.
 export PYTHONDONTWRITEBYTECODE=1
 
