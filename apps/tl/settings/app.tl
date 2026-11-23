@@ -86,6 +86,9 @@ view settings_window(s: Settings) {
                     ui.NavItem("accounts", "Accounts", icon: .mail) {
                         on select: set(pane, "accounts")
                     }
+                    ui.NavItem("users", "Users", icon: .user) {
+                        on select: set(pane, "users")
+                    }
                     ui.NavItem("agent_models", "Agent models", icon: .sparkles) {
                         on select: set(pane, "agent_models")
                     }
@@ -151,6 +154,8 @@ view settings_window(s: Settings) {
                         continuity_pane()
                     } else if pane == "updates" {
                         updates_pane()
+                    } else if pane == "users" {
+                        users_pane()
                     } else if pane == "about" {
                         about_pane()
                     } else {
@@ -205,6 +210,8 @@ fn pane_title(pane: Text) -> Text {
         "Continuity"
     } else if pane == "updates" {
         "Updates"
+    } else if pane == "users" {
+        "Users"
     } else if pane == "about" {
         "About"
     } else {

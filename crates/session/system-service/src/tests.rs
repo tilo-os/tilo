@@ -9,11 +9,14 @@ use tilo_service::{Service, Services, Started, Wake};
 use tilo_system_resources::printers::{
     DiscoveredPrinter, JobState, PrintJob, PrinterQueue, Printers, QueueState,
 };
+use tilo_system_resources::users::{LocalAccount, Users};
 
-use crate::device::{Change, PowerProfiles, PrintChange, System};
+use crate::device::{Change, PowerProfiles, PrintChange, System, UserChange};
 use crate::model::{KeyboardLight, Power, PowerMode, Time};
 use crate::update::Update;
-use crate::{KEYBOARD_BACKLIGHT, POWER, PRINTERS, SYSTEM_UPDATE, SystemService, TIME_ZONE};
+use crate::{
+    KEYBOARD_BACKLIGHT, POWER, PRINTERS, SYSTEM_UPDATE, SystemService, TIME_ZONE, USERS,
+};
 
 /// A machine in memory, in Amsterdam unless told it is elsewhere.
 struct Fake {
@@ -30,6 +33,9 @@ struct Fake {
     nearby: Mutex<Result<Vec<DiscoveredPrinter>, String>>,
     print_changes: Mutex<Vec<PrintChange>>,
     print_refusal: Mutex<Option<String>>,
+    users: Mutex<Users>,
+    user_changes: Mutex<Vec<UserChange>>,
+    user_refusal: Mutex<Option<String>>,
 }
 
 impl Fake {
@@ -82,6 +88,21 @@ impl Fake {
             nearby: Mutex::new(Ok(Vec::new())),
             print_changes: Mutex::new(Vec::new()),
             print_refusal: Mutex::new(None),
+            users: Mutex::new(Users {
+                serving: true,
+                accounts: vec![LocalAccount {
+                    username: "ada".into(),
+                    full_name: "Ada Lovelace".into(),
+                    uid: 1000,
+                    admin: true,
+                    current: true,
+                    automatic_login: false,
+                    automatic_login_error: None,
+                }],
+                ..Users::default()
+            }),
+            user_changes: Mutex::new(Vec::new()),
+            user_refusal: Mutex::new(None),
         })
     }
 
@@ -91,6 +112,10 @@ impl Fake {
 
     fn print_changes(&self) -> Vec<PrintChange> {
         self.print_changes.lock().unwrap().clone()
+    }
+
+    fn user_changes(&self) -> Vec<UserChange> {
+        self.user_changes.lock().unwrap().clone()
     }
 
     fn power_reads(&self) -> usize {
@@ -214,6 +239,45 @@ impl System for Fake {
                 supplies: Vec::new(),
                 reachable: true,
             }),
+        }
+        Ok(())
+    }
+
+    fn users(&self) -> Users {
+        self.users.lock().unwrap().clone()
+    }
+
+    fn change_user(&self, change: &UserChange) -> Result<(), String> {
+        self.user_changes.lock().unwrap().push(change.clone());
+        if let Some(reason) = self.user_refusal.lock().unwrap().clone() {
+            return Err(reason);
+        }
+        let mut users = self.users.lock().unwrap();
+        match change {
+            UserChange::Add {
+                username, full_name, ..
+            } => users.accounts.push(LocalAccount {
+                username: username.clone(),
+                full_name: full_name.clone(),
+                uid: 1001,
+                admin: false,
+                current: false,
+                automatic_login: false,
+                automatic_login_error: None,
+            }),
+            UserChange::SetAdmin { user, admin } => {
+                if let Some(found) = users.accounts.iter_mut().find(|a| a.username == *user) {
+                    found.admin = *admin;
+                }
+            }
+            UserChange::SetAutomaticLogin { user, on } => {
+                if let Some(found) = users.accounts.iter_mut().find(|a| a.username == *user) {
+                    found.automatic_login = *on;
+                }
+            }
+            UserChange::Remove { user, .. } => {
+                users.accounts.retain(|account| account.username != *user);
+            }
         }
         Ok(())
     }
@@ -1077,6 +1141,116 @@ fn a_machine_with_no_printer_service_offers_no_print_actions() {
     );
     assert!(matches!(
         service.invoke(PRINTERS, "find", &Map::new()),
+        Err(ApiError::Unavailable { .. })
+    ));
+}
+
+#[test]
+fn the_users_resource_reads_the_accounts_and_takes_their_actions() {
+    let fake = Fake::new();
+    let mut service = service(&fake);
+    let users = service.read(USERS).unwrap();
+    assert_eq!(users["serving"], json!(true));
+    assert_eq!(users["accounts"][0]["username"], json!("ada"));
+    assert_eq!(users["accounts"][0]["full_name"], json!("Ada Lovelace"));
+    assert_eq!(users["accounts"][0]["admin"], json!(true));
+    assert_eq!(users["accounts"][0]["current"], json!(true));
+
+    let published = service
+        .resources()
+        .into_iter()
+        .find(|resource| resource.id.as_str() == USERS)
+        .expect("the users resource is published");
+    let actions: Vec<&str> = published
+        .actions
+        .iter()
+        .map(|action| action.id.as_str())
+        .collect();
+    for action in ["add", "set-admin", "set-automatic-login", "remove"] {
+        assert!(actions.contains(&action), "{action} is published: {actions:?}");
+    }
+    let add = published
+        .actions
+        .iter()
+        .find(|action| action.id.as_str() == "add")
+        .expect("adding an account is published");
+    let password = add
+        .params()
+        .iter()
+        .find(|param| &*param.name == "password")
+        .expect("the password is a parameter");
+    assert_eq!(
+        password.ty,
+        tilo_actions::ParamType::Secret,
+        "the password never reaches history, logs or a confirmation"
+    );
+
+    assert_eq!(
+        service.invoke(
+            USERS,
+            "add",
+            &arguments(json!({"username": "grace", "full_name": "Grace Hopper", "password": "correct horse"})),
+        ),
+        Ok(Started::Accepted)
+    );
+    assert_eq!(
+        service.read(USERS).unwrap()["pending"],
+        json!(["add"]),
+        "the action is pending until it lands"
+    );
+    service.settle();
+    assert_eq!(
+        fake.user_changes(),
+        [UserChange::Add {
+            username: "grace".into(),
+            full_name: "Grace Hopper".into(),
+            password: "correct horse".into(),
+        }]
+    );
+    let users = service.read(USERS).unwrap();
+    assert_eq!(users["pending"], json!([]));
+    assert_eq!(users["accounts"][1]["username"], json!("grace"));
+
+    // A machine whose account service refuses says why, and nothing stays pending.
+    *fake.user_refusal.lock().unwrap() = Some("account change was refused: polkit".into());
+    service
+        .invoke(
+            USERS,
+            "set-admin",
+            &arguments(json!({"user": "ada", "admin": false})),
+        )
+        .unwrap();
+    service.settle();
+    let users = service.read(USERS).unwrap();
+    assert_eq!(users["problem"], json!("account change was refused: polkit"));
+    assert_eq!(users["pending"], json!([]));
+}
+
+#[test]
+fn a_machine_with_no_account_service_offers_no_account_actions() {
+    let fake = Fake::new();
+    fake.users.lock().unwrap().serving = false;
+    let mut service = service(&fake);
+    let published = service
+        .resources()
+        .into_iter()
+        .find(|resource| resource.id.as_str() == USERS)
+        .expect("the users resource is published");
+    let add = published
+        .actions
+        .iter()
+        .find(|action| action.id.as_str() == "add")
+        .expect("the add action is published, marked unavailable");
+    assert_eq!(
+        add.contract.availability,
+        tilo_actions::Availability::Unavailable {
+            code: "no_account_service".into(),
+            reason: "This computer cannot change its accounts".into(),
+        },
+        "a machine without an account service says so"
+    );
+    assert!(matches!(
+        service.invoke(USERS, "add", &Map::new()),
         Err(ApiError::Unavailable { .. })
     ));
 }

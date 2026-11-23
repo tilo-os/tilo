@@ -7,6 +7,7 @@ use tilo_system_resources::printers::{
     DiscoveredPrinter, JobState as PrintJobState, PrintJob as PrintJobReading, PrinterQueue,
     PrinterSupply, Printers, QueueState as PrintQueueState,
 };
+use tilo_system_resources::users::Users;
 
 use crate::model::{KeyboardLight, Power, PowerMode, Time};
 use crate::update::Update;
@@ -23,6 +24,21 @@ pub enum PrintChange {
     SetPaused(String, bool),
     CancelJob(String),
     RetryJob(String),
+}
+
+/// A change to make on the accounts: what a person, an agent or a script asked of the `users`
+/// resource.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UserChange {
+    Add {
+        username: String,
+        full_name: String,
+        password: String,
+    },
+    SetAdmin { user: String, admin: bool },
+    SetAutomaticLogin { user: String, on: bool },
+    /// Remove the account, keeping its home folder when `keep_files`.
+    Remove { user: String, keep_files: bool },
 }
 
 /// A change to make on the machine.
@@ -129,6 +145,20 @@ pub trait System: Send + Sync {
     /// The handle keeps the subscription alive while it is held.
     fn follow_printers(&self, _changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn Send>> {
         None
+    }
+
+    /// The local login accounts this computer keeps. A machine that cannot read them answers
+    /// with `serving: false`.
+    fn users(&self) -> Users {
+        Users::default()
+    }
+
+    /// Make `change` on the accounts.
+    ///
+    /// # Errors
+    /// Why it did not happen.
+    fn change_user(&self, _change: &UserChange) -> Result<(), String> {
+        Err("this machine cannot change its accounts".to_owned())
     }
 }
 
@@ -290,6 +320,55 @@ impl System for OsSystem {
         os_actions::printing::follow_changes(move || changed())
             .ok()
             .map(|follow| Box::new(follow) as Box<dyn Send>)
+    }
+
+    fn users(&self) -> Users {
+        match crate::users::accounts() {
+            Ok(accounts) => Users {
+                serving: true,
+                accounts,
+                ..Users::default()
+            },
+            Err(error) => Users {
+                read_error: Some(error),
+                ..Users::default()
+            },
+        }
+    }
+
+    fn change_user(&self, change: &UserChange) -> Result<(), String> {
+        match change {
+            UserChange::Add {
+                username,
+                full_name,
+                password,
+            } => {
+                os_actions::users::create_user(
+                    username,
+                    full_name,
+                    os_actions::AccountRole::Standard,
+                )?;
+                let mut password = password.as_bytes().to_vec();
+                let outcome = os_actions::users::set_password(username, &mut password);
+                password.fill(0);
+                outcome
+            }
+            UserChange::SetAdmin { user, admin } => os_actions::users::set_role(
+                user,
+                if *admin {
+                    os_actions::AccountRole::Administrator
+                } else {
+                    os_actions::AccountRole::Standard
+                },
+            ),
+            UserChange::SetAutomaticLogin { user, on } => {
+                os_actions::users::set_automatic_login(user, *on)
+            }
+            UserChange::Remove { user, keep_files } => {
+                let uid = crate::users::uid(user)?;
+                os_actions::users::delete_user(user, uid, !keep_files)
+            }
+        }
     }
 }
 

@@ -11,8 +11,10 @@ pub mod effects;
 pub mod model;
 pub mod printers;
 pub mod update;
+pub mod users;
 
 pub use printers::PRINTERS;
+pub use users::USERS;
 
 /// The resources' ids.
 pub const POWER: &str = "power";

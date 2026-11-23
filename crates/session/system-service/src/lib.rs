@@ -31,6 +31,7 @@ tilo_resource::declared_names!();
 pub mod model;
 pub mod printers;
 pub mod update;
+pub mod users;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -42,14 +43,14 @@ use tilo_actions::{ApiError, ResourceSpec};
 use tilo_resource::Effect as _;
 use tilo_service::{Jobs, Service, Started, Wake, Worker, decode, offer, reading, unavailable};
 
-use device::{Change, PowerProfiles, PrintChange, System, follow_once};
+use device::{Change, PowerProfiles, PrintChange, System, UserChange, follow_once};
 use effects::{KeyboardLightAction, PowerAction, TimeAction, UpdateAction};
 use model::{KeyboardLight, Power, PowerMode, Time};
 use update::Update;
 
 /// The resources' ids.
 pub use tilo_system_resources::{
-    KEYBOARD_BACKLIGHT, POWER, PRINTERS, SYSTEM_UPDATE, TIME_ZONE,
+    KEYBOARD_BACKLIGHT, POWER, PRINTERS, SYSTEM_UPDATE, TIME_ZONE, USERS,
 };
 
 /// How often a device whose zone follows it looks where it is again: often
@@ -64,6 +65,7 @@ enum Part {
     Time,
     KeyboardLight,
     Printers,
+    Users,
 }
 
 /// What the machine reads now.
@@ -74,6 +76,7 @@ pub struct Readings {
     pub time: Time,
     pub keyboard_light: KeyboardLight,
     pub printers: tilo_system_resources::printers::Printers,
+    pub users: tilo_system_resources::users::Users,
 }
 
 fn read(system: &dyn System, live_profiles: bool) -> Readings {
@@ -91,6 +94,7 @@ fn read(system: &dyn System, live_profiles: bool) -> Readings {
         time: system.time(),
         keyboard_light: system.keyboard_light(),
         printers: system.printers(),
+        users: system.users(),
     }
 }
 
@@ -327,6 +331,7 @@ impl SystemService {
                 &mut readings.printers.pending,
                 &mut readings.printers.problem,
             ),
+            Part::Users => (&mut readings.users.pending, &mut readings.users.problem),
         }
     }
 
@@ -346,6 +351,8 @@ impl SystemService {
         readings.keyboard_light.problem = old.keyboard_light.problem.take();
         readings.printers.pending = std::mem::take(&mut old.printers.pending);
         readings.printers.problem = old.printers.problem.take();
+        readings.users.pending = std::mem::take(&mut old.users.pending);
+        readings.users.problem = old.users.problem.take();
         // What a find turned up stays until the next one: a plain read of the queues and
         // jobs replaces neither.
         if readings.printers.nearby.is_empty() {
@@ -447,6 +454,24 @@ impl SystemService {
             let result = system.change_print(&change);
             Landed::Changed {
                 part: Part::Printers,
+                action,
+                result,
+                readings: Box::new(read(system, is_live(live_active.as_ref()))),
+                live_power_mode: None,
+            }
+        });
+        Started::Accepted
+    }
+
+    /// Make `change` on the accounts, landing the machine's answer and a fresh reading.
+    fn start_user(&mut self, action: &str, change: UserChange) -> Started {
+        self.readings.users.pending.push(action.to_owned());
+        let action = action.to_owned();
+        let live_active = self.live_active_flag();
+        self.worker.run(move |system| {
+            let result = system.change_user(&change);
+            Landed::Changed {
+                part: Part::Users,
                 action,
                 result,
                 readings: Box::new(read(system, is_live(live_active.as_ref()))),
@@ -631,6 +656,15 @@ pub fn printers_surface() -> tilo_resource::surface::Surface {
     >(PRINTERS, "Printers")
 }
 
+/// The `users` resource's surface, as a shell reads it over `so.tilo.device`.
+#[must_use]
+pub fn users_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<
+        tilo_system_resources::users::Users,
+        tilo_system_resources::users::UsersAction,
+    >(USERS, "Users")
+}
+
 /// The `system-update` resource's surface, as a shell reads it over `so.tilo.device`: what the
 /// machine booted, what waits for a restart, and the actions that update it.
 #[must_use]
@@ -776,6 +810,7 @@ impl Service for SystemService {
             time_resource(&self.readings.time),
             keyboard_light_resource(&self.readings.keyboard_light),
             printers::resource(&self.readings.printers),
+            users::resource(&self.readings.users),
         ]
     }
 
@@ -786,6 +821,7 @@ impl Service for SystemService {
             TIME_ZONE => Some(reading(&self.readings.time)),
             KEYBOARD_BACKLIGHT => Some(reading(&self.readings.keyboard_light)),
             PRINTERS => Some(reading(&self.readings.printers)),
+            USERS => Some(reading(&self.readings.users)),
             _ => None,
         }
     }
@@ -913,6 +949,41 @@ impl Service for SystemService {
                     tilo_system_resources::printers::PrintAction::RetryJob { job } => {
                         Ok(self.start_print(id, PrintChange::RetryJob(job)))
                     }
+                }
+            }
+            USERS => {
+                if !self.readings.users.serving {
+                    return Err(ApiError::Unavailable {
+                        code: "no_account_service".into(),
+                        reason: "This computer cannot change its accounts".into(),
+                    });
+                }
+                let action = decode::<tilo_system_resources::users::UsersAction>(
+                    &published, resource, action, arguments,
+                )?;
+                let id = action.id();
+                match action {
+                    tilo_system_resources::users::UsersAction::Add {
+                        username,
+                        full_name,
+                        password,
+                    } => Ok(self.start_user(
+                        id,
+                        UserChange::Add {
+                            username,
+                            full_name,
+                            password,
+                        },
+                    )),
+                    tilo_system_resources::users::UsersAction::SetAdmin { user, admin } => {
+                        Ok(self.start_user(id, UserChange::SetAdmin { user, admin }))
+                    }
+                    tilo_system_resources::users::UsersAction::SetAutomaticLogin { user, on } => {
+                        Ok(self.start_user(id, UserChange::SetAutomaticLogin { user, on }))
+                    }
+                    tilo_system_resources::users::UsersAction::Remove { user, keep_files } => Ok(
+                        self.start_user(id, UserChange::Remove { user, keep_files }),
+                    ),
                 }
             }
             _ => Err(ApiError::Unknown(tilo_actions::ActionAddress::new(
