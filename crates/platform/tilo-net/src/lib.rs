@@ -39,18 +39,25 @@ pub use client::{Lookup, refused_lookup};
 pub use error::NetError;
 pub use url::Url;
 
+/// Whether `url` names this machine: `localhost`, any name under it
+/// ([`loopback_name`]), or a loopback IPv4 or IPv6 address.
+#[must_use]
+pub fn is_loopback_host(url: &Url) -> bool {
+    match url.host() {
+        Some(url::Host::Domain(name)) => loopback_name(name),
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        None => false,
+    }
+}
+
 /// Whether `url` is on an origin browsers treat as secure: `https`, or plain
 /// `http` on this machine, which never leaves it.
 #[must_use]
 pub fn secure_origin(url: &Url) -> bool {
     match url.scheme() {
         "https" => true,
-        "http" => match url.host() {
-            Some(url::Host::Domain(name)) => loopback_name(name),
-            Some(url::Host::Ipv4(address)) => address.is_loopback(),
-            Some(url::Host::Ipv6(address)) => address.is_loopback(),
-            None => false,
-        },
+        "http" => is_loopback_host(url),
         _ => false,
     }
 }
@@ -98,6 +105,7 @@ mod secure_origin_tests {
             "https://tilo.sh",
             "https://eu1.tilo.sh:8443",
             "http://localhost:24110",
+            "http://localhost./",
             "http://tilo.localhost:24120",
             "http://127.0.0.1:24100",
             "http://127.1.2.3",
@@ -109,6 +117,9 @@ mod secure_origin_tests {
             "http://tilo.sh",
             "http://localhost.tilo.sh",
             "http://10.0.0.1",
+            "http://0.0.0.0/",
+            "http://[::]/",
+            "http://[::ffff:127.0.0.1]/",
             "ws://localhost",
             "ftp://localhost",
         ] {
@@ -122,6 +133,7 @@ mod secure_origin_tests {
             "https://tilo.sh",
             "https://eu1.tilo.sh:8443/entries",
             "http://localhost:24110/",
+            "http://localhost./",
             "http://tilo.localhost:24120/",
             "http://127.0.0.1:24100/",
             "http://127.1.2.3:8080/",
@@ -133,6 +145,9 @@ mod secure_origin_tests {
             "http://tilo.sh/",
             "http://localhost.tilo.sh/",
             "http://10.0.0.1/",
+            "http://0.0.0.0/",
+            "http://[::]/",
+            "http://[::ffff:127.0.0.1]/",
             "https://placeholder:placeholder@tilo.sh/",
             "https://placeholder@tilo.sh/",
             "https://:placeholder@tilo.sh/",
@@ -205,7 +220,8 @@ pub mod http {
         let builder = reqwest::Client::builder()
             .gzip(false)
             .brotli(false)
-            .dns_resolver(LoopbackNames);
+            .dns_resolver(LoopbackNames)
+            .proxy(system_proxy_except_loopback());
         #[cfg(target_os = "android")]
         let builder = builder.tls_certs_only(system_certificates());
         builder
@@ -221,10 +237,50 @@ pub mod http {
         let builder = reqwest::blocking::Client::builder()
             .gzip(false)
             .brotli(false)
-            .dns_resolver(std::sync::Arc::new(LoopbackNames));
+            .dns_resolver(std::sync::Arc::new(LoopbackNames))
+            .proxy(system_proxy_except_loopback());
         #[cfg(target_os = "android")]
         let builder = builder.tls_certs_only(system_certificates());
         builder
+    }
+
+    /// The system/environment proxy for destinations off this machine, and
+    /// direct connections for destinations [`crate::is_loopback_host`] counts
+    /// as this machine (`localhost`, `*.localhost`, `127.0.0.0/8`, `::1`).
+    fn system_proxy_except_loopback() -> reqwest::Proxy {
+        let system = hyper_util::client::proxy::matcher::Matcher::from_system();
+        reqwest::Proxy::custom(move |url| {
+            if crate::is_loopback_host(url) {
+                return None;
+            }
+            let uri = url.as_str().parse::<::http::Uri>().ok()?;
+            let intercept = system.intercept(&uri)?;
+            proxy_url(&intercept)
+        })
+    }
+
+    fn proxy_url(intercept: &hyper_util::client::proxy::matcher::Intercept) -> Option<crate::Url> {
+        use base64::Engine as _;
+
+        let mut target = crate::Url::parse(&intercept.uri().to_string()).ok()?;
+        if let Some((user, pass)) = intercept.raw_auth() {
+            target.set_username(user).ok()?;
+            target.set_password(Some(pass)).ok()?;
+        } else if let Some(header) = intercept.basic_auth()
+            && let Ok(text) = header.to_str()
+            && let Some(encoded) = text.strip_prefix("Basic ")
+            && let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(encoded)
+            && let Ok(credentials) = String::from_utf8(decoded)
+        {
+            let (user, pass) = credentials
+                .split_once(':')
+                .map_or((credentials.as_str(), None), |(user, pass)| {
+                    (user, Some(pass))
+                });
+            target.set_username(user).ok()?;
+            target.set_password(pass).ok()?;
+        }
+        Some(target)
     }
 
     /// [`blocking_client`] for a caller that keeps its requests off some

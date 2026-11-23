@@ -562,6 +562,111 @@ async fn a_direct_client_sends_nothing_to_a_proxy_its_environment_names() {
     assert_eq!(page.drain_requests().len(), 1);
 }
 
+/// Destinations on this machine (`localhost`, `*.localhost`, `127.0.0.0/8`,
+/// `[::1]`) never leave it through an environment proxy, even when `HTTP_PROXY`
+/// and `ALL_PROXY` are set without `NO_PROXY`; destinations off this machine
+/// keep their proxy behaviour.
+#[tokio::test]
+async fn local_destinations_never_reach_an_environment_proxy() {
+    if !tilo_test_env::in_own_process_here(
+        module_path!(),
+        "local_destinations_never_reach_an_environment_proxy",
+    ) {
+        return;
+    }
+    let proxy = Responder::handle(|_| Some(Reply::status(200).body("the proxy's answer")));
+    let local = Responder::handle(|_| Some(Reply::status(200).body("this machine")));
+    let mut environment = tilo_test_env::ScopedEnv::new();
+    for name in [
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ] {
+        environment.set(name, proxy.url());
+    }
+    for name in ["NO_PROXY", "no_proxy", "REQUEST_METHOD"] {
+        environment.remove(name);
+    }
+
+    let local_urls = [
+        format!("http://tilo.localhost:{}/local", local.port()),
+        format!("http://localhost.:{}/local", local.port()),
+        format!("http://127.0.0.1:{}/local", local.port()),
+    ];
+    let remote_url = format!(
+        "http://outside-this-machine.invalid:{}/remote",
+        local.port()
+    );
+
+    let async_client = tilo_net::http::client().build().unwrap();
+    for url in &local_urls {
+        let body = async_client
+            .get(url.as_str())
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert_eq!(body, "this machine", "async request to {url}");
+    }
+    assert!(
+        proxy.drain_requests().is_empty(),
+        "local async requests must never reach the environment proxy"
+    );
+    assert_eq!(local.drain_requests().len(), local_urls.len());
+
+    let proxied = async_client
+        .get(remote_url.as_str())
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(proxied, "the proxy's answer");
+    assert_eq!(proxy.drain_requests().len(), 1);
+    assert!(local.drain_requests().is_empty());
+
+    #[cfg(feature = "blocking")]
+    {
+        let local_urls_blocking = local_urls.clone();
+        let remote_url_blocking = remote_url.clone();
+        let (local_bodies, proxied_body) = tokio::task::spawn_blocking(move || {
+            let blocking_client = tilo_net::http::blocking_client().build().unwrap();
+            let bodies: Vec<String> = local_urls_blocking
+                .iter()
+                .map(|url| {
+                    blocking_client
+                        .get(url.as_str())
+                        .send()
+                        .unwrap()
+                        .text()
+                        .unwrap()
+                })
+                .collect();
+            let remote = blocking_client
+                .get(remote_url_blocking.as_str())
+                .send()
+                .unwrap()
+                .text()
+                .unwrap();
+            (bodies, remote)
+        })
+        .await
+        .unwrap();
+        for (url, body) in local_urls.iter().zip(&local_bodies) {
+            assert_eq!(body, "this machine", "blocking request to {url}");
+        }
+        assert_eq!(proxied_body, "the proxy's answer");
+        assert_eq!(proxy.drain_requests().len(), 1);
+        assert_eq!(local.drain_requests().len(), local_urls.len());
+    }
+}
+
 /// A client whose lookup is the one judge's (`address::public_only`) is
 /// refused a name that answers with an address of this machine: the request
 /// ends as blocked, told apart from a connection that failed, and nothing is

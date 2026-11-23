@@ -98,7 +98,7 @@ web-sys = { version = "=0.3.85", features = [
 default = []
 # `Client`: HTTP requests with streaming bodies, decompressed like a browser's.
 # The legacy reqwest builders in `tilo_net::http` come with it on the desktop.
-http = ["dep:reqwest", "reqwest/gzip", "reqwest/brotli", "dep:base64"]
+http = ["dep:reqwest", "reqwest/gzip", "reqwest/brotli", "dep:base64", "dep:hyper-util", "hyper-util/client-proxy"]
 # The legacy blocking reqwest builder, for desktop-only code.
 blocking = ["http", "reqwest/blocking", "dep:sha2", "dep:hex"]
 # JSON request and response bodies.
