@@ -420,12 +420,11 @@ fn write_escaped_str<S: Sink>(sink: &mut S, value: &str) {
         };
         sink.write_str(escaped);
         let next = pos.saturating_add(1);
-        match rest.get(next..) {
-            Some(tail) => rest = tail,
-            None => {
-                rest = "";
-                break;
-            }
+        if let Some(tail) = rest.get(next..) {
+            rest = tail;
+        } else {
+            rest = "";
+            break;
         }
     }
     if !rest.is_empty() {
