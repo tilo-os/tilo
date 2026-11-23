@@ -20,7 +20,7 @@ use crate::{
 };
 use tilo_contact_directory::routing::Route;
 
-use super::link::{Handler, Responder};
+use super::link::Events;
 use super::wire::{AppLink, Call, Event, GroupCall, Handoff, PROTOCOL, Reply, Snapshot};
 
 const FIRST_STATE: Duration = Duration::from_secs(5);
@@ -49,10 +49,7 @@ impl State {
     }
 }
 
-impl Handler<Call, Reply, Event> for State {
-    fn call(&self, _: Call, reply: Responder<Call, Reply, Event>) {
-        reply.send(Reply::Refused);
-    }
+impl Events<Event> for State {
     fn event(&self, event: Event) {
         match event {
             Event::State(snapshot) => {
@@ -119,7 +116,7 @@ impl Connection {
             first: (Mutex::new(false), std::sync::Condvar::new()),
             observers: Mutex::default(),
         });
-        let link = AppLink::start(
+        let link = AppLink::start_calling(
             "tilo-messaging-client",
             stream.try_clone()?,
             stream,
