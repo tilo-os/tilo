@@ -40,6 +40,7 @@
       "id": "set-a-trigger",
       "said": "Start a new shortcut when an app opens, set in the trigger form",
       "ops": [
+        {"wait_for": "New shortcut"},
         {"press": "New shortcut"},
         {"wait_for": "Add trigger"},
         {"click": "App to watch"},
