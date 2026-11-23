@@ -904,6 +904,31 @@ mod store {
         ])
     }
 
+    /// A store that declares the issues these tests write, as every workspace store declares the
+    /// types of the surfaces it holds: one that declares none admits no change it receives.
+    fn issues() -> Store {
+        let field = |name: &str, kind: FieldKind| tilo_resource_store::Field {
+            name: name.to_owned(),
+            kind,
+            value: tilo_resource_store::Expected::Any,
+            optional: true,
+        };
+        let mut store = Store::new();
+        store.declare(Schema {
+            types: vec![tilo_resource_store::Type {
+                name: ISSUE.to_owned(),
+                fields: vec![
+                    field("title", FieldKind::Scalar),
+                    field("state", FieldKind::Scalar),
+                    field("labels", FieldKind::Set),
+                ],
+                nested: Vec::new(),
+            }],
+            ..Schema::default()
+        });
+        store
+    }
+
     fn resource(parent: &str, order: &str, title: &str, state: &str) -> Resource {
         read_by(MEMBERS, parent, order, title, state)
     }
@@ -953,7 +978,7 @@ mod store {
     #[test]
     fn a_write_costs_what_it_touched_whatever_its_kind_holds() {
         let retitled = |held: usize| {
-            let mut store = Store::new();
+            let mut store = issues();
             for n in 0..held {
                 put(
                     &mut store,
@@ -989,7 +1014,7 @@ mod store {
     /// query over the kind is told.
     #[test]
     fn a_write_taken_back_leaves_the_store_as_it_was() {
-        let mut store = Store::new();
+        let mut store = issues();
         let held = put(&mut store, "a", resource("board", "a0", "Kept", "open"));
         let watch = store.watch(ISSUE);
         let _ = store.changed();
@@ -1039,7 +1064,7 @@ mod store {
     /// every step, its own removal last.
     #[test]
     fn the_ends_of_a_history_read_alone_are_those_of_the_whole_of_it() {
-        let mut store = Store::new();
+        let mut store = issues();
         let at = |invocation: &str, moment: u64| Stamp {
             invocation: invocation.to_owned(),
             moment,
@@ -1116,7 +1141,7 @@ mod store {
     #[test]
     fn the_newest_versions_under_a_document_are_read_most_recent_first_a_page_at_a_time() {
         use tilo_resource_store::wire::{Command, Reply, read};
-        let mut store = Store::new();
+        let mut store = issues();
         let at = |invocation: &str, moment: u64| Stamp {
             invocation: invocation.to_owned(),
             moment,
@@ -1198,8 +1223,8 @@ mod store {
 
     #[test]
     fn a_write_is_queried_at_once_and_reaches_a_peer() {
-        let mut here = Store::new();
-        let mut there = Store::new();
+        let mut here = issues();
+        let mut there = issues();
         let mut written = put(&mut here, "a", resource("board", "a0", "First", "open"));
         written.extend(put(
             &mut here,
@@ -1219,8 +1244,8 @@ mod store {
 
     #[test]
     fn two_devices_changing_different_fields_keep_both() {
-        let mut here = Store::new();
-        let mut there = Store::new();
+        let mut here = issues();
+        let mut there = issues();
         let made = put(&mut here, "a", resource("board", "a0", "First", "open"));
         send(&made, &mut there);
 
@@ -1237,8 +1262,8 @@ mod store {
 
     #[test]
     fn a_removal_reaches_a_peer() {
-        let mut here = Store::new();
-        let mut there = Store::new();
+        let mut here = issues();
+        let mut there = issues();
         let made = put(&mut here, "a", resource("board", "a0", "First", "open"));
         let gone = here.remove(ISSUE, "a", &Stamp::default()).unwrap();
         send(&made, &mut there);
@@ -1250,7 +1275,7 @@ mod store {
 
     #[test]
     fn a_reader_is_shown_and_counted_only_what_they_may_read() {
-        let mut store = Store::new();
+        let mut store = issues();
         put(
             &mut store,
             "shared",
@@ -1280,8 +1305,8 @@ mod store {
 
     #[test]
     fn a_resource_whose_readers_change_moves_to_a_document_of_theirs() {
-        let mut here = Store::new();
-        let mut there = Store::new();
+        let mut here = issues();
+        let mut there = issues();
         let made = put(&mut here, "a", resource("board", "a0", "Draft", "open"));
         send(&made, &mut there);
         let moved = put(
@@ -1316,8 +1341,8 @@ mod store {
         use automerge::transaction::Transactable as _;
         use automerge::{ObjType, ReadDoc as _};
 
-        let mut here = Store::new();
-        let mut there = Store::new();
+        let mut here = issues();
+        let mut there = issues();
         let mut written = put(&mut here, "a", resource("board", "a0", "Draft", "open"));
         let ((), body) = here
             .edit_content(ISSUE, "a", &Stamp::default(), |tx, root| {
@@ -1426,8 +1451,8 @@ mod store {
         use serde_json::json;
         use tilo_resource_store::wire::{Command, Edit, write};
 
-        let mut here = Store::new();
-        let mut there = Store::new();
+        let mut here = issues();
+        let mut there = issues();
         // One action, one request: the note and its body.
         let made = write(
             &mut here,
@@ -1739,7 +1764,7 @@ mod store {
         use automerge::transaction::Transactable as _;
 
         let all = |_: &str| true;
-        let mut store = Store::new();
+        let mut store = issues();
         store
             .put(
                 ISSUE,
@@ -1821,8 +1846,8 @@ mod store {
     #[test]
     fn a_refused_change_has_no_effect_and_neither_has_one_built_on_it() {
         use tilo_resource_store::Refusal;
-        let mut here = Store::new();
-        let mut there = Store::new();
+        let mut here = issues();
+        let mut there = issues();
         // The author may add and edit, never close.
         let admit = |proposal: &Proposal<'_>| {
             assert_eq!(proposal.author, &[7; 32]);
@@ -1878,7 +1903,7 @@ mod store {
     /// change reaches the store.
     #[test]
     fn an_item_verb_writes_the_items_another_surface_declares() {
-        let mut there = Store::new();
+        let mut there = issues();
         for surface in [
             super::tilolang_list_surface(),
             super::tilolang_todo_surface(),
@@ -1897,11 +1922,11 @@ mod store {
                 ("$in".to_owned(), Cell::One("items".into())),
             ]),
         };
-        let made = Store::new()
+        let made = issues()
             .put("tl.so.tilo.todo.Todo", "t1", item("a"), &stamp("add", "i1"))
             .unwrap();
         assert_eq!(deliver(&made, &mut there, &anyone), []);
-        let moved = Store::new()
+        let moved = issues()
             .put(
                 "tl.so.tilo.todo.Todo",
                 "t1",
@@ -1917,7 +1942,7 @@ mod store {
             order: Some("a".to_owned()),
             fields: BTreeMap::from([("text".to_owned(), Cell::One("soon".into()))]),
         };
-        let noted = Store::new()
+        let noted = issues()
             .put(
                 "tl.so.tilo.todo.Comment",
                 "c1",
@@ -1939,7 +1964,7 @@ mod store {
     #[test]
     fn a_tilolang_verb_writes_its_own_packages_records_and_no_others() {
         use tilo_resource_store::Refusal;
-        let mut there = Store::new();
+        let mut there = issues();
         for surface in [
             super::tilolang_list_surface(),
             super::tilolang_todo_surface(),
@@ -1954,7 +1979,7 @@ mod store {
             order: None,
             fields: BTreeMap::from([(field.to_owned(), Cell::One("Errands".into()))]),
         };
-        let list = Store::new()
+        let list = issues()
             .put(
                 "tl.so.tilo.todo.TodoList",
                 "l",
@@ -1963,7 +1988,7 @@ mod store {
             )
             .unwrap();
         assert_eq!(deliver(&list, &mut there, &anyone), []);
-        let item = Store::new()
+        let item = issues()
             .put(
                 "tl.so.tilo.lang.gallery.Item",
                 "g1",
@@ -1981,7 +2006,7 @@ mod store {
     /// the store admits it beside the fields the type does declare.
     #[test]
     fn a_change_writes_the_platform_field_no_type_declares() {
-        let mut there = Store::new();
+        let mut there = issues();
         there.declare(Schema::from_surface(&super::tilolang_surface()));
         there.declare(Schema::from_surface(&super::tilolang_item_surface()));
         let anyone = |_: &Proposal<'_>| true;
@@ -1994,7 +2019,7 @@ mod store {
                 ("title".to_owned(), Cell::One("Dawn".into())),
             ]),
         };
-        let made = Store::new()
+        let made = issues()
             .put(
                 "tl.so.tilo.lang.gallery.Item",
                 "i",
@@ -2016,7 +2041,7 @@ mod store {
     /// writes it. A surface read without its own record refused every app's first change.
     #[test]
     fn a_package_creates_its_root_under_its_surface() {
-        let mut there = Store::new();
+        let mut there = issues();
         there.declare(Schema::from_surface(&super::tilolang_surface()));
         let anyone = |_: &Proposal<'_>| true;
         let mut fields = BTreeMap::new();
@@ -2027,7 +2052,7 @@ mod store {
             order: None,
             fields,
         };
-        let made = Store::new()
+        let made = issues()
             .put(
                 "tl.so.tilo.lang.gallery.Gallery",
                 "g",
@@ -2089,7 +2114,7 @@ mod store {
             )],
             "the holder's type nests the held kind"
         );
-        let mut there = Store::new();
+        let mut there = issues();
         there.declare(holding);
         there.declare(Schema::from_surface(&super::tilolang_held_surface()));
         let anyone = |_: &Proposal<'_>| true;
@@ -2099,7 +2124,7 @@ mod store {
             order: None,
             fields: BTreeMap::from([(field.to_owned(), Cell::One(text.into()))]),
         };
-        let mut made = Store::new();
+        let mut made = issues();
         let mut changes = made
             .put(
                 "tl.so.tilo.clocks.Clocks",
@@ -2128,7 +2153,7 @@ mod store {
     #[test]
     fn a_change_writes_only_what_the_verb_it_names_declares() {
         use tilo_resource_store::Refusal;
-        let mut there = Store::new();
+        let mut there = issues();
         there.declare(Schema::from_surface(&super::tracker_surface()));
         let anyone = |_: &Proposal<'_>| true;
         let comment = |stamp: Stamp, id: &str| {
@@ -2141,7 +2166,7 @@ mod store {
                 fields,
             };
             // Each from a device of its own, so none is built on another's refusal.
-            Store::new().put("Comment", id, resource, &stamp).unwrap()
+            issues().put("Comment", id, resource, &stamp).unwrap()
         };
         assert_eq!(
             deliver(&comment(stamp("comment", "c1"), "c1"), &mut there, &anyone),
@@ -2191,8 +2216,8 @@ mod store {
             }],
             ..Schema::default()
         };
-        let mut here = Store::new();
-        let mut there = Store::new();
+        let mut here = issues();
+        let mut there = issues();
         there.declare(schema);
         let anyone = |_: &Proposal<'_>| true;
         let made = put(&mut here, "a", resource("board", "a0", "First", "open"));
@@ -2200,7 +2225,7 @@ mod store {
         // Each written by another device, each into a document of its own, so neither is built
         // on the other's refusal.
         let lost = put(
-            &mut Store::new(),
+            &mut issues(),
             "b",
             resource("sprint", "a1", "Second", "lost"),
         );
@@ -2212,7 +2237,7 @@ mod store {
         secret
             .fields
             .insert("secret".to_owned(), Cell::One(1.into()));
-        let secret = put(&mut Store::new(), "c", secret);
+        let secret = put(&mut issues(), "c", secret);
         assert!(matches!(
             deliver(&secret, &mut there, &anyone).as_slice(),
             [Refusal::Undeclared(why)] if why.contains("secret")
@@ -2222,8 +2247,8 @@ mod store {
 
     #[test]
     fn two_devices_starting_one_document_at_once_both_keep_what_they_wrote() {
-        let mut here = Store::new();
-        let mut there = Store::new();
+        let mut here = issues();
+        let mut there = issues();
         let mine = put(&mut here, "a", resource("board", "a0", "Mine", "open"));
         let theirs = put(&mut there, "b", resource("board", "a1", "Theirs", "open"));
         assert_eq!(mine[0].doc, theirs[0].doc, "one document, started twice");
@@ -2236,8 +2261,8 @@ mod store {
 
     #[test]
     fn a_change_that_arrives_before_the_one_it_is_built_on_waits_for_it() {
-        let mut here = Store::new();
-        let mut there = Store::new();
+        let mut here = issues();
+        let mut there = issues();
         let anyone = |_: &Proposal<'_>| true;
         let first = put(&mut here, "a", resource("board", "a0", "First", "open"));
         let second = put(&mut here, "a", resource("board", "a0", "First", "done"));
@@ -2253,8 +2278,8 @@ mod store {
     #[test]
     fn a_content_edit_is_judged_as_one_of_its_resource() {
         use automerge::transaction::Transactable as _;
-        let mut here = Store::new();
-        let mut there = Store::new();
+        let mut here = issues();
+        let mut there = issues();
         let made = put(&mut here, "a", resource("board", "a0", "Draft", "open"));
         let anyone = |_: &Proposal<'_>| true;
         assert!(deliver(&made, &mut there, &anyone).is_empty());
@@ -2278,7 +2303,7 @@ mod store {
 
     #[test]
     fn a_full_document_starts_the_next_and_a_query_reads_across_them() {
-        let mut store = Store::new();
+        let mut store = issues();
         let mut docs = BTreeSet::new();
         for n in 0..=DOCUMENT_LIMIT {
             for written in put(
@@ -2311,7 +2336,7 @@ mod store {
 
     /// A store holding three issues in one document, and that document saved.
     fn kept() -> (Store, String, Vec<u8>) {
-        let mut store = Store::new();
+        let mut store = issues();
         let mut doc = String::new();
         for (id, state) in [("a", "open"), ("b", "done"), ("c", "open")] {
             doc = put(&mut store, id, resource("board", id, id, state))
@@ -2326,7 +2351,7 @@ mod store {
     #[test]
     fn a_kept_document_is_loaded_with_its_resources() {
         let (kept, doc, bytes) = kept();
-        let mut started = Store::new();
+        let mut started = issues();
         started.load(&doc, &bytes).unwrap();
         let all = Query::of(ISSUE, 10);
         assert_eq!(
@@ -2358,7 +2383,7 @@ mod store {
         assert_eq!(started.document(&doc).unwrap().get_heads().len(), 1);
 
         // A snapshot of other heads is not taken: the document is loaded instead.
-        let mut stale = Store::new();
+        let mut stale = issues();
         assert!(!stale.restore(&doc, &snapshot, &[]));
         assert_eq!(stale.count(ISSUE, &[], &anyone), 0);
         stale.load(&doc, &bytes).unwrap();
@@ -2399,7 +2424,7 @@ mod store {
 
     #[test]
     fn a_watch_names_the_commits_of_its_kind() {
-        let mut store = Store::new();
+        let mut store = issues();
         let issues = store.watch(ISSUE);
         let notes = store.watch("Note");
         put(&mut store, "a", resource("board", "a", "a", "open"));
