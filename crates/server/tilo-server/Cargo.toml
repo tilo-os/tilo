@@ -26,14 +26,6 @@ web = ["tilo-workspace-service/device-keys", "dep:tilo-live", "dep:tilo-net", "d
 name = "tilo-server"
 path = "src/main.rs"
 
-[[bin]]
-name = "tilo-server-admin"
-path = "src/admin.rs"
-
-[[bin]]
-name = "tilo-home-peer-control"
-path = "src/home_peer_control/main.rs"
-
 # The host / server daemon.
 #
 # `tilo-server` is the WAN transport + host tier of the sync/host model:
@@ -223,7 +215,6 @@ tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-ide
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The host keeps its workspaces' content in directories, one per workspace.
 tilo-content = { path = "../../system/content", features = ["dir"] }
-bounded-command = { path = "../../system/bounded-command" }
 launcher = { path = "../../packaging/launcher" }
 # Installed packages and their integrity records.
 package-store = { path = "../../packaging/package-store", features = ["store"] }
@@ -238,8 +229,7 @@ tokio = { workspace = true, features = ["full", "test-util"] }
 # The daemon's bounded runtime.
 tilo-rt.workspace = true
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-# `watch`: the daemon follows membership files `tilo-server-admin` edits.
-tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
+tilo-files = { path = "../../platform/tilo-files" }
 # Home-peer configuration is one signed filesystem bundle; the server imports
 # its workspace tickets rather than asking the operator to duplicate ids.
 tilo-fs = { path = "../../system/fs" }
@@ -271,11 +261,6 @@ tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
 # Owners pre-admit people by the SHA-256 of a token someone else hands them.
 sha2.workspace = true
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
-# Nearby pairing redeems enrollment tokens through the identity host's one
-# redemption: its issuer checks, nonce store and device fleet.
-tilo-enrollment = { path = "../../collab/tilo-enrollment" }
-tilo-identity = { path = "../../runtime/tilo-identity" }
-tilo-identity-client = { path = "../../runtime/tilo-identity-client" }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
@@ -286,8 +271,6 @@ getrandom03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
 uuid = { workspace = true, features = ["js"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-# What an app reaches the server's content store with, as a launched app does.
-tilo-fs-client = { path = "../../runtime/tilo-fs-client" }
 # A host selling the workspaces' VMs, which keeps what each program it starts was given.
 ush = { path = "../../runtime/ush", features = ["quic", "test-host"] }
 # The live session a workspace's session publishes on, as the hosted Browser
@@ -295,8 +278,11 @@ ush = { path = "../../runtime/ush", features = ["quic", "test-host"] }
 tilo-live = { path = "../../collab/tilo-live", features = ["relay", "iroh"] }
 # A folder's link streams a zip: the tests read it back as a file manager does.
 zip.workspace = true
-# The TLS tests write a PEM pair and read it back.
-rcgen.workspace = true
+# The fetch proxy test's target.
+test-http = { path = "../../dev/test-http" }
+# The sources a test has an event look at are servers the test starts, which
+# the fetch reaches only through its fixture entry.
+tilo-web-search = { path = "../../platform/tilo-web-search", features = ["fixture-servers"] }
 # The workspace host's fixtures: a certified test host and the devices around it.
 # The tests author a workspace's record through the host's app action server
 # (`author_workspace_record`), which the `agents` feature carries: asking for it here
@@ -334,6 +320,10 @@ test-http = { path = "../../../tools/test-http" }
 # The sources a test has an event look at are servers the test starts, which
 # the fetch reaches only through its fixture entry.
 tilo-web-search = { path = "../../platform/tilo-web-search", features = ["fixture-servers"] }
+# Nearby pairing redeems enrollment tokens through the identity host's one
+# redemption, and the machine tests mint their tokens with the identity crate.
+tilo-enrollment = { path = "../../collab/tilo-enrollment" }
+tilo-identity = { path = "../../runtime/tilo-identity" }
 # The packet relay on this machine's loopback these tests run their hosts and devices on, and
 # the keys no two runs share: no test reaches a relay or directory out on the internet.
 test-server = { path = "../../../tools/test-server" }

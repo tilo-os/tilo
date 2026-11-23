@@ -1475,11 +1475,11 @@ async fn a_member_asks_for_a_channel_through(
 impl AskedForKeys {
     /// Whether the workspace kept the member's request among the records it
     /// retains for the devices that take part in its channels.
-    fn retains_the_request(&self) -> bool {
+    async fn retains_the_request(&self) -> bool {
         let workspace_id = WorkspaceId::parse(&self.workspace).unwrap();
         self.server
             .workspace_documents()
-            .retained(workspace_id)
+            .retained(workspace_id).await
             .is_ok_and(|retained| {
                 retained.iter().any(|retained| {
                     postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&retained.body).is_ok_and(
@@ -1519,7 +1519,7 @@ impl AskedForKeys {
 async fn a_host_keeps_what_its_members_send_for_a_channels_group() {
     let asked = a_member_asks_for_a_channel(DeviceCapabilities::member()).await;
     assert!(
-        asked.retains_the_request(),
+        asked.retains_the_request().await,
         "the workspace retained the member's request for its channels"
     );
     asked.shut_down().await;
@@ -1535,7 +1535,7 @@ async fn a_request_the_server_kept_is_not_kept_again_as_the_hosts() {
         a_member_asks_for_a_channel_through(DeviceCapabilities::member(), super::Carried::Kept)
             .await;
     assert!(
-        !asked.retains_the_request(),
+        !asked.retains_the_request().await,
         "the host kept a second copy of a request its server keeps as the member's"
     );
     asked.shut_down().await;

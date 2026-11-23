@@ -402,6 +402,37 @@ pub async fn serve_on(user: &TestUser, device: &TestDevice, work: WorkSetting) -
     serve_in(user, device, work, tempfile::tempdir().unwrap()).await
 }
 
+/// `device` joins the person's own workspace as a device joining from a ticket
+/// does: the device the ticket is answered on enters it among the person's
+/// servers, and the copy's holders hand it the workspace once its entry names
+/// where it is reached. Waits until `at` keeps the workspace.
+pub async fn join_person_workspace(governor: &Hosted, device: &TestDevice, at: &Hosted) {
+    // Boxed: the hand-over's own future is large, and every fixture that joins
+    // a device would otherwise carry it in its own.
+    Box::pin(async move {
+        tilo_server::servers::admit(
+            governor.host.workspaces(),
+            &device.cert,
+            &at.host.node_addr(),
+        )
+        .await
+        .unwrap();
+        tilo_server::servers::attach::attach_named(governor.host.workspaces())
+            .await
+            .unwrap();
+        tilo_test_env::within(
+            "the joining device to keep the person's own workspace",
+            async {
+                while !tilo_server::servers::holds_person_workspace(at.host.workspaces()).await {
+                    tokio::task::yield_now().await;
+                }
+            },
+        )
+        .await;
+    })
+    .await;
+}
+
 /// A host as [`serve_on`] makes one, over the state `state` holds.
 pub async fn serve_in(
     user: &TestUser,

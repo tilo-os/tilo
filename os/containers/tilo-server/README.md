@@ -56,9 +56,7 @@ certified devices connect automatically. Workspace authority travels signed by
 the owner identity. Inspect the
 running state with:
 
-```sh
-podman compose exec tilo-server tilo-server-admin --config /etc/tilo/server.toml status
-```
+The daemon's counters are in the state volume's `metrics.json`.
 
 ## Three roles
 

@@ -298,6 +298,7 @@ pub(super) async fn retained_writes(
     server
         .workspace_documents()
         .retained_settled(workspace_id)
+        .await
         .unwrap()
         .into_iter()
         .filter_map(

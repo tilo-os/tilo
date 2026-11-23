@@ -6,16 +6,11 @@
 //! - `run` — long-running daemon (systemd `Type=notify`); with feature
 //!   `web`, `--web <addr> --allowed-origin <origin> --tls dev|files:<chain>,<key>`
 //!   also serves browsers (HTTPS).
-//! - `dev` (feature `web`) — a throwaway local host for browser development:
-//!   its own user root, the browser listener, and an approver that
-//!   certifies every browser that asks.
-//! - `workspace` (feature `web`) — a short-lived shared workspace: like `dev`, but it
+//! - `workspace` (feature `web`) — a short-lived shared workspace: it
 //!   certifies only the browsers whose pairing codes its operator admits
 //!   (`admit <code>` on stdin) and announces each on stdout.
-//! - `--workspace-documents` on `run` and `dev` (feature `agents`) — the workspaces'
+//! - `--workspace-documents` on `run` (feature `agents`) — the workspaces'
 //!   records and roster agents on the host, each agent working on the model its workspace linked.
-//! - `status` — print a snapshot of the running daemon's counters
-//!   by reading the on-disk metrics dump.
 
 #![cfg_attr(
     test,
@@ -43,16 +38,8 @@ tilo_agent_session::app_worker!();
 
 #[cfg(feature = "agents")]
 mod persistent_moderation;
-#[cfg(feature = "agents")]
-mod persistent_workspace_cli;
 #[cfg(feature = "web")]
 mod web_cli;
-#[cfg(feature = "agents")]
-mod workspace_chat;
-#[cfg(feature = "agents")]
-mod workspace_discussions;
-#[cfg(feature = "agents")]
-mod workspace_strips;
 
 /// Default location for the daemon config on a Fedora bootc image.
 const DEFAULT_CONFIG_PATH: &str = "/etc/tilo/server.toml";
@@ -172,11 +159,6 @@ fn cmd_init(path: &std::path::Path) -> anyhow::Result<()> {
 
 fn cmd_run(path: &Path, #[cfg(feature = "web")] web: web_cli::WebArgs) -> anyhow::Result<()> {
     let cfg = load_or_default(path)?;
-    // One server per state, and nothing else changing it while it runs
-    // (`web_cli::start_server` takes it in a build with `web`).
-    #[cfg(not(feature = "web"))]
-    let _lock =
-        tilo_server::state_lock::StateLock::acquire(&cfg.state_root).map_err(anyhow::Error::msg)?;
     tilo_rt::daemon("tilo-server").run(watched(async move {
         // Every change the server receives is decided against its app's
         // surface: the one it runs the app with, or one the workspace keeps

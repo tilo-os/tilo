@@ -221,7 +221,7 @@ async fn a_detached_host_lets_the_workspace_go_and_serves_it_again_from_its_file
     let workspaces = governor.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
     let records = member.host.workspace_documents();
-    let retained = || async { records.retained(workspace.workspace_id).ok() };
+    let retained = || async { records.retained(workspace.workspace_id).await.ok() };
 
     workspaces
         .attach_server(

@@ -1830,7 +1830,7 @@ impl Workspaces {
             return;
         };
         let mut governed = state.lock().await;
-        let retained = match self.inner.records.retained(governed.workspace_id()) {
+        let retained = match self.inner.records.retained(governed.workspace_id()).await {
             Ok(retained) => retained,
             Err(error) => {
                 tracing::warn!(%workspace, %error, "a member copy did not read the writes it kept");
@@ -1889,7 +1889,7 @@ impl Workspaces {
         governed: &mut GovernedWorkspace,
         link: Option<&DirectSync>,
     ) -> Result<(), String> {
-        let retained = self.inner.records.retained(governed.workspace_id())?;
+        let retained = self.inner.records.retained(governed.workspace_id()).await?;
         for frame in retained {
             let Ok(message) = NeighbourMsg::decode(&frame.body) else {
                 continue;
@@ -1957,6 +1957,22 @@ impl Workspaces {
                         .await
                 {
                     tracing::warn!(%name, %error, "a member copy did not keep what the serving device sent");
+                }
+                // A write caught up, not one written now: the link admitted it
+                // into this copy's replica before the reader heard it, so
+                // neither taking it in nor landing it changes the copy, and
+                // nothing above told a follower. Whoever follows the record
+                // hears of it as of a write made now, from where the copy
+                // keeps it.
+                if frame.retained
+                    && frame.report.is_ok()
+                    && let NeighbourMsg::AppDocument {
+                        app_id,
+                        document_id,
+                        ..
+                    } = &frame.message
+                {
+                    workspaces.wrote(&name, app_id, document_id);
                 }
                 if answering {
                     let (workspaces, name, author) =

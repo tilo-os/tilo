@@ -37,18 +37,18 @@ class FilesWorkspaceTest(unittest.TestCase):
             driver = ROOT / "dist/stage-payload.sh"
             generic = root / "generic"
             subprocess.run(["bash", str(driver), str(binaries), str(generic)], check=True, capture_output=True)
-            for name in ["fs", "tilo-server-admin"]:
+            for name in ["fs"]:
                 self.assertFalse((generic / "bin" / name).exists())
             primary = root / "primary"
             result = subprocess.run(["bash", str(driver), str(binaries), str(primary), "--primary-files"], capture_output=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse(primary.exists())
-            for name in ["fs", "tilo-server-admin"]:
+            for name in ["fs"]:
                 path = binaries / name
                 path.write_text("#!/bin/sh\nexit 0\n")
                 path.chmod(0o755)
             subprocess.run(["bash", str(driver), str(binaries), str(primary), "--primary-files"], check=True, capture_output=True)
-            for relative in ["bin/fs", "bin/tilo-server-admin"]:
+            for relative in ["bin/fs"]:
                 self.assertTrue(os.access(primary / relative, os.X_OK))
             self.assertFalse((primary / "libexec/tilo-files-workspace").exists())
             unit = (primary / "systemd-user/tilo-files-workspace.service").read_text()
@@ -63,7 +63,7 @@ class FilesWorkspaceTest(unittest.TestCase):
         spec = (ROOT / "dist/rpm/tilo-session.spec").read_text()
         install = spec.split("\n%install\n", 1)[1].split("\n%check\n", 1)[0]
         manifest = spec.split("\n%files\n", 1)[1].split("\n%files ", 1)[0]
-        names = ["fs", "tilo-server-admin"]
+        names = ["fs"]
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "bin").mkdir()

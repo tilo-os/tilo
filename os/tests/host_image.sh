@@ -48,7 +48,7 @@ inside bootc --version >/dev/null || die 'no bootc'
 inside efibootmgr --version >/dev/null || die 'no efibootmgr, so a server cannot change its boot order'
 
 # The programs, at the paths their units and scripts name.
-for bin in usr/libexec/tilo/tilo-server usr/libexec/tilo/tilo-server-admin \
+for bin in usr/libexec/tilo/tilo-server \
   usr/bin/fs usr/libexec/tilo/tilo-api \
   usr/libexec/tilo/tilolang-process \
   usr/libexec/tilo/tilo-linux-vm usr/libexec/tilo-esp-write \

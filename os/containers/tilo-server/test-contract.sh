@@ -45,10 +45,11 @@ PY
 need "$readme" "tilo device add --server"
 need "$readme" "TILO_TICKET"
 
-# The image packages programs t built: the device's daemon, which is the server, its admin, and
-# the command beside them, from the staged context; nothing in the image compiles.
+# The image packages programs t built: the device's daemon, which is the server, and the command
+# beside it, from the staged context; nothing in the image compiles.
 forbid "$containerfile" "COPY bin/tilo-server /"
-need "$containerfile" "COPY bin/tilo-server-admin /usr/libexec/tilo/tilo-server-admin"
+forbid "$containerfile" "tilo-server-admin"
+need "$containerfile" "COPY bin/tilo-runtime /usr/bin/tilo-runtime"
 need "$containerfile" "COPY bin/tilo /usr/bin/tilo"
 need "$containerfile" "COPY bin/tilo-runtime /usr/bin/tilo-runtime"
 forbid "$containerfile" 'COPY bin/fs'
@@ -64,8 +65,8 @@ need "$containerfile" "microdnf remove -y --setopt=protected_packages= openssl-l
 # The programs are one check's, thin LTO and read back off the ELF, from one feature resolution
 # per image. Thin LTO is
 # the default; only a development image's build asks for none, and the server image's does not.
-need "$binaries" "packages+=(-p tilo-server --bin tilo-server-admin"
-need "$binaries" "bins+=(tilo-server-admin tilo tilo-runtime)"
+need "$binaries" "packages+=(-p tilo-cli --bin tilo -p tilo-runtime --bin tilo-runtime)"
+need "$binaries" "bins+=(tilo tilo-runtime)"
 need "$binaries" ': "${TILO_SERVER_LTO:=thin}"'
 need "$binaries" "thin) export CARGO_PROFILE_RELEASE_LTO=thin ;;"
 need "$binaries" 'bash os/scripts/verify-elf-hardening.sh "$out"'
@@ -74,7 +75,7 @@ need "$binaries" 'bash os/scripts/verify-elf-hardening.sh "$out"'
 # passed by digest; the binaries are the check's output, staged with the entrypoint and the unit
 # the image copies; nothing else enters the context, and a commit time is no input.
 need "$build" "bash os/containers/tilo-server/test-contract.sh"
-need "$build" 'for bin in tilo-server-admin tilo tilo-runtime; do'
+need "$build" 'for bin in tilo tilo-runtime; do'
 need "$build" '--build-arg "RPMS_REF=$rpms_ref"'
 need "$build" 'cp os/containers/tilo-server/tilo-home-peer "$context/os/containers/tilo-server/"'
 need "$build" 'cp os/usr/lib/systemd/system/tilo-server.service "$context/os/usr/lib/systemd/system/"'

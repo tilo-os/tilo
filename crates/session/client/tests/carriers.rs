@@ -89,7 +89,8 @@ struct Ada {
     host_device: Device,
     laptop: Device,
     host: TestHost,
-    state: tempfile::TempDir,
+    /// The host's state, kept for the test's lifetime: the host serves from it.
+    _state: tempfile::TempDir,
 }
 
 impl Ada {
@@ -114,7 +115,7 @@ impl Ada {
             host_device,
             laptop,
             host,
-            state,
+            _state: state,
         }
     }
 
@@ -286,7 +287,8 @@ async fn documents_sync_both_ways_until_the_device_is_revoked(carrier: Carrier) 
 
     // Revoked, the page is told so at its next hello, over every carrier, and stops there:
     // its server says why it turns the device away, where it used to close the hello with
-    // nothing said and the page gave up as `not-admitted` after three tries.
+    // nothing said and the page gave up as `not-admitted` after three tries. Ada's root signs
+    // the revocation and her laptop's session announces it, as the web page's removal does.
     let mut entry = RevocationEntry {
         user_public_key: ada.root.verifying_key().to_bytes(),
         revoked_device_public_key: cert.device_public_key,
@@ -295,7 +297,7 @@ async fn documents_sync_both_ways_until_the_device_is_revoked(carrier: Carrier) 
         signature: [0; 64],
     };
     sign_revocation_entry(&mut entry, &ada.root).unwrap();
-    tilo_server::workspace_files::save_revocations(ada.state.path(), &[entry]).unwrap();
+    laptop.send(Cmd::Revoke(entry)).unwrap();
     let failed = wait_for("the page to be refused", || {
         let snapshot = page.snapshot();
         async move { (snapshot.phase == "failed").then_some(snapshot) }

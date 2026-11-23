@@ -61,11 +61,11 @@ for image in "${images[@]}"; do
                  -p tilo-cli --bin tilo -p tilo-device-admin --bin tilo-device-admin)
       bins+=(tilo-linux-vm tilo-hosted-jail tilo-runtime tilo tilo-device-admin) ;;
     server)
-      # The device's one daemon, which keeps what a server keeps as its configuration says and
-      # spends the ticket a volume first starts with, the command beside it, and the admin.
-      packages+=(-p tilo-server --bin tilo-server-admin \
-                 -p tilo-cli --bin tilo -p tilo-runtime --bin tilo-runtime)
-      bins+=(tilo-server-admin tilo tilo-runtime) ;;
+      # The command and the device's one daemon beside it are what a volume first booting as one
+      # of a person's devices runs: `tilo login` spends the ticket it was given, and the daemon
+      # keeps what a server keeps as its configuration says.
+      packages+=(-p tilo-cli --bin tilo -p tilo-runtime --bin tilo-runtime)
+      bins+=(tilo tilo-runtime) ;;
     host)
       # The server OS: the server and replica, the hosted-VM service and its jail helper, the API
       # server with the program it starts a task's tilolang programs in (it finds it beside

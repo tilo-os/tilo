@@ -209,6 +209,38 @@ async fn a_revocation_announced_in_one_workspace_reaches_the_server_and_every_wo
     server.shutdown().await;
 }
 
+/// A revocation written into a workspace reaches a session that is already
+/// open and ends it, with nothing polling for it: the write itself wakes what
+/// applies it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_revocation_announced_in_a_workspace_closes_a_connected_session() {
+    let alice = TestUser::fresh("Alice");
+    let host = alice.enrol("alice-home", DeviceCapabilities::member());
+    let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
+    let phone = alice.enrol("alice-phone", DeviceCapabilities::primary());
+    let state = tempfile::tempdir().unwrap();
+    let server = start(state.path(), &alice, &host).await;
+    let plans = create_and_enter(&server, &laptop, "Plans").await;
+    enter(&server, &phone, &plans.workspace).await;
+
+    // The laptop is connected when the revocation is announced.
+    let laptop_session = session(&server, &laptop, plans.workspace_id).await;
+    let phone_session = session(&server, &phone, plans.workspace_id).await;
+    publish(
+        &phone_session,
+        &hello(&phone, vec![revoke(&alice, &laptop)]),
+    );
+
+    // Its session ends as the write takes effect; no timer drove it.
+    tilo_test_env::within("the revoked laptop's session to end", async {
+        while laptop_session.recv().await.is_some() {}
+    })
+    .await;
+
+    phone_session.close().await;
+    server.shutdown().await;
+}
+
 /// A person's root revokes the stand-in approver the server's host holds for
 /// them: a key no workspace lists, because a stand-in is no device. The server keeps
 /// the entry in its own revocation log — the list its approvals read — and what

@@ -26,7 +26,7 @@ UMask=0077
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
-# `tilo-server-admin status` opens every durable workspace store, and opening one
+# `tilo-server status` opens every durable workspace store, and opening one
 # recovers its journal: that is the "store opens" half of the verdict, so the
 # probe needs the state root writable exactly as the server does.
 ReadWritePaths=/var/lib/tilo-server

@@ -27,6 +27,9 @@ pub(crate) fn load(
     Ok(ModerationAgent::new(judge))
 }
 
+/// The secret store app a host keeps its public workspaces' roots in.
+const SECRET_APP: &str = "so.tilo.server";
+
 /// Names the model key file that moderates this server's public workspaces;
 /// unset, they are moderated by their own moderators alone.
 pub(crate) const PUBLIC_MODERATION_KEY_ENV: &str = "TILO_SERVER_MODERATION_KEY_FILE";
@@ -54,7 +57,7 @@ pub(crate) fn follow_published(
     let Some(workspaces) = server.workspaces().cloned() else {
         return Ok(None);
     };
-    let store = tilo_secrets::SecretStore::for_app(crate::persistent_workspace_cli::SECRET_APP);
+    let store = tilo_secrets::SecretStore::for_app(SECRET_APP);
     let agent = load(&store, &key_file, model.as_deref())?;
     tracing::info!(model = agent.model(), "public workspaces are moderated");
     Ok(Some(tokio::spawn(async move {

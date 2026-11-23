@@ -14,7 +14,7 @@ use tilo_server_protocol::WorkSetting;
 use tilo_user_identity::DeviceCapabilities;
 use tilo_workspace_service::work::offers_compute;
 
-use crate::common::{TestUser, serve_on};
+use crate::common::{TestUser, join_person_workspace, serve_on};
 
 /// The document's entry id of the device `device`.
 fn entry(device: &crate::common::TestDevice) -> Id {
@@ -77,6 +77,7 @@ async fn a_planned_machine_holds_what_its_plan_names_until_its_workspace_lets_it
             .host
             .workspace_documents()
             .retained(workspace.workspace_id)
+            .await
             .ok()
     };
     applied::reconcile(workspaces).await.unwrap();
@@ -569,19 +570,7 @@ async fn a_device_that_writes_before_the_document_arrives_keeps_every_entry() {
 
     // The other device is handed the workspace: its governance first, and the
     // document over the replication after it.
-    servers::take_in(
-        holder.host.workspaces(),
-        &desktop.cert,
-        &late.host.node_addr(),
-    )
-    .await
-    .unwrap();
-    tilo_test_env::within("the other device to hold the workspace", async {
-        while !servers::holds_person_workspace(late.host.workspaces()).await {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
-    .await;
+    join_person_workspace(&holder, &desktop, &late).await;
 
     // It writes its own server there at once, before the document it knows
     // nothing of has arrived.
@@ -780,12 +769,17 @@ async fn a_fresh_device_that_founds_the_servers_workspace_again_replaces_no_serv
     // It hands its history to the holder, which refuses it: that history
     // names another founder than the one the holder's document was founded
     // with.
-    let handed = servers::take_in(
-        fresh.host.workspaces(),
-        &laptop.cert,
-        &holder.host.node_addr(),
-    )
-    .await;
+    let handed = fresh
+        .host
+        .workspaces()
+        .attach_server(
+            &admin,
+            laptop.device_pubkey(),
+            holder.host.node_addr(),
+            tilo_peer_state::CopyRole::KeyHolder,
+        )
+        .await
+        .map(drop);
     assert_eq!(
         named_servers(&holder).await,
         ["laptop", "tablet"],
@@ -799,16 +793,10 @@ async fn a_fresh_device_that_founds_the_servers_workspace_again_replaces_no_serv
 
     // Another device of the person that is handed the workspace reads the
     // servers the holder keeps, and none the second founding named.
-    servers::take_in(
-        holder.host.workspaces(),
-        &tablet.cert,
-        &second.host.node_addr(),
-    )
-    .await
-    .unwrap();
+    join_person_workspace(&holder, &tablet, &second).await;
     tilo_test_env::within("the other device to read the person's servers", async {
         while named_servers(&second).await != ["laptop", "tablet"] {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            tokio::task::yield_now().await;
         }
     })
     .await;

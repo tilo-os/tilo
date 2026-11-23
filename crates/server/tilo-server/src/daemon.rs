@@ -16,11 +16,8 @@ use iroh::protocol::{DynProtocolHandler, Router};
 use iroh_base::EndpointAddr;
 use tokio::task::JoinHandle;
 
-use tilo_user_identity::RevocationList;
-
 use crate::config::ServerConfig;
 
-use crate::handshake::LiveIdentity;
 use crate::metrics::Metrics;
 use crate::policy::TrustPolicy;
 use crate::service::ServerProtocol;
@@ -681,7 +678,7 @@ impl Server {
             let (alpn, handler) = origin.protocol();
             protocols.push((alpn, handler));
         }
-        let background_tasks = spawn_background_tasks(&cfg, &identity, &metrics, &live);
+        let background_tasks = spawn_background_tasks(&cfg, &metrics);
         #[cfg(feature = "web")]
         if let Some(origin) = live_origin.as_mut() {
             let mut tasks = lock_background_tasks(&background_tasks);
@@ -1299,115 +1296,18 @@ fn validate_additional_alpns<'a>(
     Ok(())
 }
 
-/// Spawn the revocation-refresh loop and the metrics-persist loop,
-/// returning the abort-on-drop handle list `Server` owns.
+/// Spawn the metrics-persist loop, returning the abort-on-drop handle list
+/// `Server` owns.
 fn spawn_background_tasks(
     cfg: &ServerConfig,
-    identity: &ServerIdentity,
     metrics: &Arc<Metrics>,
-    live: &LiveIdentity,
 ) -> Arc<std::sync::Mutex<Vec<AbortOnDrop>>> {
     let background_tasks: Arc<std::sync::Mutex<Vec<AbortOnDrop>>> =
         Arc::new(std::sync::Mutex::new(Vec::new()));
 
-    let revocation_task = spawn_revocation_refresh_task(
-        cfg.state_root.clone(),
-        identity.revocations.clone(),
-        live.revocations.clone(),
-    );
-    push_background_task(&background_tasks, revocation_task);
-
     let metrics_task = spawn_metrics_persist_task(cfg.state_root.clone(), metrics.clone());
     push_background_task(&background_tasks, metrics_task);
     background_tasks
-}
-
-/// How often the revocation log is re-read while its directory cannot be
-/// watched: the cadence `tilo-server-admin` promises ("within one second").
-const REVOCATION_POLL: Duration = Duration::from_secs(1);
-
-/// The revocation-refresh task: re-read the on-disk revocation log whenever
-/// it changes and, if every entry still applies cleanly against the
-/// identity's own base list, swap it in and wake every admitted session to
-/// re-check. A malformed entry leaves the previously-live list untouched
-/// rather than partially applying.
-///
-/// The log is followed through a watch on the state root's own entries. When
-/// that watch cannot be installed the task says so and falls back to reading
-/// the log every [`REVOCATION_POLL`], as before the watch existed.
-fn spawn_revocation_refresh_task(
-    state_root: PathBuf,
-    base_revocations: RevocationList,
-    live_revocations: Arc<std::sync::RwLock<RevocationList>>,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut refresh = RevocationRefresh {
-            state_root,
-            base: base_revocations,
-            live: live_revocations,
-            applied: None,
-        };
-        let watch = match tilo_files::native::watch_entries(&refresh.state_root) {
-            Ok(watch) => Some(watch),
-            Err(error) => {
-                tracing::warn!(
-                    path = %refresh.state_root.display(),
-                    %error,
-                    "the revocation log cannot be watched; reading it every second"
-                );
-                None
-            }
-        };
-        // Read once the watch exists, so an edit made before it began is seen.
-        refresh.reload();
-        let Some(watch) = watch else {
-            let mut interval = tokio::time::interval(REVOCATION_POLL);
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            loop {
-                interval.tick().await;
-                refresh.reload();
-            }
-        };
-        loop {
-            let change = watch.next().await;
-            if change.kind == tilo_files::ChangeKind::Rescan
-                || change.path.as_str() == crate::workspace_files::REVOCATIONS_FILE
-            {
-                refresh.reload();
-            }
-        }
-    })
-}
-
-/// The live revocation list and the log entries last applied to it.
-struct RevocationRefresh {
-    state_root: PathBuf,
-    base: RevocationList,
-    live: Arc<std::sync::RwLock<RevocationList>>,
-    applied: Option<Vec<tilo_user_identity::RevocationEntry>>,
-}
-
-impl RevocationRefresh {
-    fn reload(&mut self) {
-        let Ok(entries) = crate::workspace_files::load_revocations(&self.state_root) else {
-            return;
-        };
-        if self.applied.as_ref() == Some(&entries) {
-            return;
-        }
-        let mut next = self.base.clone();
-        for entry in &entries {
-            if next.insert(entry.clone()).is_err() {
-                return;
-            }
-        }
-        if let Ok(mut current) = self.live.write() {
-            *current = next;
-            drop(current);
-            self.applied = Some(entries);
-            crate::authority_epoch::bump();
-        }
-    }
 }
 
 /// The metrics-persist loop: snapshot + save to disk every second.
@@ -1463,7 +1363,8 @@ pub use crate::frame::{read_frame, write_frame};
 mod tests {
     use super::*;
     use tilo_user_identity::{
-        DeviceCapabilities, DeviceCert, DeviceIdentity, UserIdentity, sign_device_cert,
+        DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, UserIdentity,
+        sign_device_cert,
     };
 
     fn identity(capabilities: DeviceCapabilities) -> ServerIdentity {
@@ -1685,7 +1586,16 @@ mod tests {
             crate::servers::admit(primary_workspaces, &server_cert, &server.node_addr())
                 .await
                 .unwrap();
-            crate::servers::take_in(primary_workspaces, &server_cert, &server.node_addr())
+            let person_workspace = crate::servers::person_workspace_id(&user.public_key);
+            // The entry names where the server is reached, and the workspace's
+            // holders hand it the workspace once it does.
+            primary_workspaces
+                .attach_server(
+                    &person_workspace,
+                    server_cert.device_public_key,
+                    server.node_addr(),
+                    tilo_peer_state::CopyRole::KeyHolder,
+                )
                 .await
                 .unwrap();
             tilo_test_env::within(

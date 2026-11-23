@@ -4,9 +4,10 @@ use std::ffi::{OsStr, OsString};
 use std::os::unix::fs::DirBuilderExt as _;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
+use tilo_device_identity::{IdentityPaths, persist};
 
 use crate::workspace_startup;
 
@@ -18,9 +19,27 @@ pub(super) struct PrimaryArgs {
     /// Print the daemon command line as JSON instead of starting it.
     #[arg(long)]
     dry_run: bool,
-    /// The production identity and Files permission check.
-    #[arg(long, default_value = "/usr/libexec/tilo/tilo-server-admin")]
-    admin_binary: PathBuf,
+}
+
+/// The person the existing identity at `paths` is certified for: the device
+/// key, its root-signed certificate and the person's public key agree, the
+/// certificate is current and its root has not revoked the device. Nothing is
+/// created here: a machine that is not a certified device starts no mount.
+fn existing_person(paths: &IdentityPaths) -> Result<[u8; 32]> {
+    let key = persist::load_device_key(paths).context("read existing certified device key")?;
+    let person = persist::read_public_key(&paths.user_pubkey)?;
+    let cert = persist::read_device_cert(&paths.device_cert)?;
+    tilo_user_identity::verify_device_cert_at(&cert, tilo_clock::unix_now_ns())?;
+    ensure!(
+        cert.user_public_key == person && cert.device_public_key == key.verifying_key().to_bytes(),
+        "existing identity projection is inconsistent"
+    );
+    let revocations = tilo_fs::load_revocation_list(paths)?;
+    ensure!(
+        !revocations.refuses_at(&cert, tilo_clock::unix_now_ns()),
+        "existing device is revoked"
+    );
+    Ok(person)
 }
 
 struct Paths {
@@ -70,26 +89,18 @@ fn private_dir(path: &Path) -> Result<()> {
         .with_context(|| format!("create {}", path.display()))
 }
 
-fn command(args: &PrimaryArgs, env: &dyn Fn(&str) -> Option<OsString>) -> Result<Command> {
+fn command(_args: &PrimaryArgs, env: &dyn Fn(&str) -> Option<OsString>) -> Result<Command> {
     let paths = paths(env)?;
     // Read-only: with no saved tree and no workspace service to sync one
     // from, nothing starts, so the desktop never shows an empty workspace.
     // This production check validates the existing certificate and key; it
     // never creates credentials.
     workspace_startup::inspect(&paths.state, &paths.tree_socket)?.require_existing()?;
-    let status = Command::new(&args.admin_binary)
-        .arg("files-workspace-check")
-        .arg("--identity-root")
-        .arg(&paths.identity)
-        .stdout(Stdio::null())
-        .status()
-        .with_context(|| format!("run {}", args.admin_binary.display()))?;
-    if !status.success() {
-        bail!(
-            "{} files-workspace-check failed: {status}",
-            args.admin_binary.display()
-        );
-    }
+    let person = existing_person(&IdentityPaths::under(&paths.identity))?;
+    eprintln!(
+        "Files mount starts as this device's identity, certified for person {}",
+        hex::encode(person)
+    );
     let mount = paths.state.join("mount");
     private_dir(&mount)?;
     private_dir(&paths.runtime)?;
@@ -148,6 +159,31 @@ pub(super) fn run(args: &PrimaryArgs) -> i32 {
 mod tests {
     use super::*;
 
+    /// A certified device of a person, written under `root`, as a machine that
+    /// joined leaves it.
+    fn certified_identity(root: &Path) {
+        use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+        let root_key = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
+        let device = ed25519_dalek::SigningKey::from_bytes(&[52; 32]);
+        let paths = IdentityPaths::under(root);
+        paths.ensure_directories().expect("identity directories");
+        let person = root_key.verifying_key().to_bytes();
+        persist::write_public_key(&paths.user_pubkey, &person).expect("write person");
+        persist::write_device_key(&paths.device_privkey, &device).expect("write device key");
+        let mut cert = DeviceCert {
+            user_public_key: person,
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "fixture".into(),
+            capabilities: DeviceCapabilities::primary(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        sign_device_cert(&mut cert, &root_key).expect("sign the device");
+        persist::write_device_cert(&paths.device_cert, &cert).expect("write the certificate");
+    }
+
     #[test]
     fn daemon_environment_names_the_checked_identity_and_private_runtime() {
         let dir = tempfile::tempdir().expect("isolated fixture");
@@ -160,6 +196,7 @@ mod tests {
             b"saved",
         )
         .expect("write a kept document");
+        certified_identity(&home.join("certified"));
         let runtime = home.join("runtime");
         let env = |name: &str| match name {
             "HOME" => Some(home.clone().into_os_string()),
@@ -167,10 +204,7 @@ mod tests {
             "TILO_IDENTITY_ROOT" => Some(home.join("certified").into_os_string()),
             _ => None,
         };
-        let args = PrimaryArgs {
-            dry_run: true,
-            admin_binary: PathBuf::from("/bin/true"),
-        };
+        let args = PrimaryArgs { dry_run: true };
         let serve = command(&args, &env).expect("ready fixture");
         let mut flags = serve.get_args();
         assert!(flags.any(|arg| arg == "--workspace-key-socket"));
@@ -183,6 +217,6 @@ mod tests {
             envs[OsStr::new("TILO_IDENTITY_ROOT")],
             Some(home.join("certified").as_os_str())
         );
-        assert!(!home.join("certified").exists());
+        assert!(home.join("certified/device/cert.bin").exists());
     }
 }

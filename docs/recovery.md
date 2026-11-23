@@ -174,7 +174,7 @@ image enables the same boot assessment, and `tilo-boot-health` there is given
 same boundary an always-on board uses for its session). That probe passes when the
 server is active — it notifies readiness only after its iroh endpoint is bound and
 accepting, so peers can dial it, and it keeps writing its metrics snapshot into
-its state root — and `tilo-server-admin status` could open every durable workspace
+its state root — and `tilo-server status` could open every durable workspace
 store. A server that has not
 been paired yet has nothing to serve; it is judged by reaching
 `multi-user.target` alone, so a fresh machine waiting at its pairing prompt is
@@ -268,7 +268,7 @@ Boot loader entries (what the firmware will actually offer):
 
 A server reboots into a staged update (`tilo-server-update-apply`, inside its
 update window and only once its running generation passed its health check)
-only after its server daemon said so (`tilo-server-admin rollout prepare`): the
+only after its server daemon said so (`tilo-server rollout prepare`): the
 daemon takes its person's admin workspace's update lease, so at most one of
 their servers restarts at a time; checks that every workspace the server holds
 keeps its copies on the person's other servers; and drains — it takes and renews

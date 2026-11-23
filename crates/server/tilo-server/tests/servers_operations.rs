@@ -26,7 +26,9 @@ use tilo_server_protocol::WorkSetting;
 use tilo_server_protocol::transport::ServerOperationResult;
 use tilo_user_identity::DeviceCapabilities;
 
-use crate::common::{Hosted, TestDevice, TestUser, device_endpoint, serve_in, serve_on};
+use crate::common::{
+    Hosted, TestDevice, TestUser, device_endpoint, join_person_workspace, serve_in, serve_on,
+};
 
 /// Stand in for the root helper that carries out what changes the
 /// machine: answer every request written under `state_root` at the same files
@@ -226,26 +228,7 @@ async fn person_with_a_server() -> Fixture {
     // needed, enters the server among their servers there, and hands it the
     // workspace as it hands a server any workspace its entry names.
     servers::found(desktop.host.workspaces()).await.unwrap();
-    servers::admit(
-        desktop.host.workspaces(),
-        &nas.cert,
-        &server.host.node_addr(),
-    )
-    .await
-    .unwrap();
-    servers::take_in(
-        desktop.host.workspaces(),
-        &nas.cert,
-        &server.host.node_addr(),
-    )
-    .await
-    .unwrap();
-    tilo_test_env::within("the server to hold the Servers workspace", async {
-        while !servers::holds_person_workspace(server.host.workspaces()).await {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await;
+    join_person_workspace(&desktop, &nas, &server).await;
     following.push(applied::follow(
         desktop.host.workspaces(),
         applied::Requests::at(policy.path().join("laptop.request")),

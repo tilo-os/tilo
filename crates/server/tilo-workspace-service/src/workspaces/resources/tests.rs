@@ -731,7 +731,7 @@ async fn index_retained_checkpoint(
     let device = workspaces.member_identity().unwrap();
     let context = context(workspace, &device.cert);
     let records = &workspaces.inner.records;
-    let before = records.retained(workspace_id).unwrap();
+    let before = records.retained(workspace_id).await.unwrap();
     let mut watches = workspaces.document_writes();
     let refused = workspaces
         .resource_command(&context, put_signed_issue("No signed base"))
@@ -743,7 +743,7 @@ async fn index_retained_checkpoint(
         .await
         .unwrap_err();
     assert!(refused.contains("has not opened this resource's signed history"));
-    assert_eq!(records.retained(workspace_id).unwrap(), before);
+    assert_eq!(records.retained(workspace_id).await.unwrap(), before);
     assert!(watches.try_recv().is_err());
     assert_eq!(
         title_through_service(workspaces, &context, "i-1").await,
@@ -789,7 +789,7 @@ async fn a_cancelled_write_keeps_nothing(
     context: &ResourceRequestContext,
 ) {
     let records = &workspaces.inner.records;
-    let before = records.retained(workspace_id).unwrap();
+    let before = records.retained(workspace_id).await.unwrap();
     let state = workspaces.workspace(workspace).await.unwrap();
     // The workspace held, the write waits for it before admission: cancelling
     // it there keeps nothing.
@@ -808,7 +808,7 @@ async fn a_cancelled_write_keeps_nothing(
     cancelled.abort();
     assert!(cancelled.await.unwrap_err().is_cancelled());
     drop(held);
-    assert_eq!(records.retained(workspace_id).unwrap(), before);
+    assert_eq!(records.retained(workspace_id).await.unwrap(), before);
     assert_eq!(
         title_through_service(workspaces, context, "i-1").await,
         None
@@ -836,7 +836,7 @@ async fn a_first_resource_write_refused_by_retention_leaves_no_row() {
     };
     let context = context(&workspace, &cert);
     let records = &workspaces.inner.records;
-    let before = records.retained(created.workspace_id).unwrap();
+    let before = records.retained(created.workspace_id).await.unwrap();
     // Peer-state's admission refuses the first write: this device holds no keys
     // of the record's channel yet, so nothing is retained, nothing reads, and
     // whoever follows the workspace's records is not woken.
@@ -845,7 +845,10 @@ async fn a_first_resource_write_refused_by_retention_leaves_no_row() {
         .resource_command(&context, put_signed_issue("Refused"))
         .await;
     assert_eq!(refused.unwrap_err(), "this channel has no keys yet");
-    assert_eq!(records.retained(created.workspace_id).unwrap(), before);
+    assert_eq!(
+        records.retained(created.workspace_id).await.unwrap(),
+        before
+    );
     let title = title_through_service(&workspaces, &context, "i-1").await;
     assert_eq!(
         title, None,
@@ -969,6 +972,7 @@ async fn a_member_copy_retains_and_forwards_its_first_resource_write() {
     let retained = member
         .workspace_documents()
         .retained(created.workspace_id)
+        .await
         .unwrap();
     assert!(retained.iter().any(|frame| {
         frame.author == cert.device_public_key
@@ -1079,6 +1083,7 @@ async fn a_member_copy_reads_resources_that_reached_it_before_its_keys() {
             let retained = member
                 .workspace_documents()
                 .retained(created.workspace_id)
+                .await
                 .unwrap();
             if retained.iter().any(|frame| {
                 matches!(NeighbourMsg::decode(&frame.body), Ok(NeighbourMsg::AppDocument {
@@ -1166,7 +1171,7 @@ async fn retained_store_checkpoint_restores_signed_history_on_open() {
 
     let context = context(&workspace, &cert);
     let records = &workspaces.inner.records;
-    let before_cancel = records.retained(created.workspace_id).unwrap();
+    let before_cancel = records.retained(created.workspace_id).await.unwrap();
     let mut watches = workspaces.document_writes();
     {
         let state = workspaces.workspace(&workspace).await.unwrap();
@@ -1201,7 +1206,7 @@ async fn retained_store_checkpoint_restores_signed_history_on_open() {
         Some(Value::Text("First".into()))
     );
     assert_eq!(
-        records.retained(created.workspace_id).unwrap(),
+        records.retained(created.workspace_id).await.unwrap(),
         before_cancel,
         "a cancelled write leaves retained history untouched"
     );
@@ -1283,6 +1288,7 @@ async fn a_write_this_device_cannot_send_is_not_read_back() {
         .inner
         .records
         .retained(created.workspace_id)
+        .await
         .unwrap();
     assert!(
         !retained.iter().any(|frame| matches!(

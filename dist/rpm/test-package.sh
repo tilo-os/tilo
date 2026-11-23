@@ -37,7 +37,7 @@ rpm -q --requires tilo-session | grep -Eq '^tilo-session-apps(\([^)]*\))? = '
     '^(ld-linux|libc\.so|libstd-|libruntime_dylib\.so)'
 # Inspect installed, package-owned tools and parse help only. This must never
 # enroll, initialize, start a Files service or create credentials during QA.
-for program in fs tilo-server-admin; do
+for program in fs; do
     test -x "/usr/bin/$program"
     test "$(rpm -qf "/usr/bin/$program")" = "$(rpm -q tilo-session)"
     "/usr/bin/$program" --help >/dev/null

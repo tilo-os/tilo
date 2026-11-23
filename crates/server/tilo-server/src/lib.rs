@@ -91,8 +91,6 @@ pub mod moderation;
 pub mod public_avatars;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod servers;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod state_lock;
 #[cfg(feature = "web")]
 pub mod web;
 #[cfg(feature = "web")]
@@ -158,5 +156,3 @@ pub use tilo_server_protocol::WorkspaceId;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod operations;
 pub mod rollout;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod root_signer;

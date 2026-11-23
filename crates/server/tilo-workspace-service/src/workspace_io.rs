@@ -1036,7 +1036,7 @@ mod tests {
         let workspace = runtime(tmp.path());
         let watch = crate::membership_watch::spawn_membership_watch(tmp.path());
         warm(&workspace).await;
-        // `tilo-server-admin` edits the file from another process.
+        // another process may edit the file.
         let external = WorkspaceFiles::open(tmp.path(), WorkspaceId::from_u128(7)).unwrap();
         external.save_membership(&[[1; 32], [2; 32]]).unwrap();
         wait_for_members(&workspace, &[[1; 32], [2; 32]]).await;

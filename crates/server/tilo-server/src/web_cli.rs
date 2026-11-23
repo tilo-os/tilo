@@ -169,11 +169,9 @@ pub struct WebArgs {
     pub session_env_out: Option<PathBuf>,
 }
 
-/// The server, and its state's lock.
+/// The server this command runs.
 pub struct HostedServer {
     pub server: Server,
-    /// Its state's lock, released once it stopped.
-    _lock: tilo_server::state_lock::StateLock,
 }
 
 impl HostedServer {
@@ -207,15 +205,10 @@ pub async fn start_server(
     cfg.packet_relay_url = cfg
         .packet_relay_url
         .or_else(|| args.packet_relay_url.clone());
-    let lock =
-        tilo_server::state_lock::StateLock::acquire(&cfg.state_root).map_err(anyhow::Error::msg)?;
     let server = Server::start(cfg, identity)
         .await
         .context("start the server")?;
-    Ok(HostedServer {
-        server,
-        _lock: lock,
-    })
+    Ok(HostedServer { server })
 }
 
 /// Hand `server` the key for Apple's push service that `args` name, where
@@ -544,9 +537,6 @@ pub struct WorkspaceArgs {
     /// operator removes it when the workspace ends.
     #[arg(long, value_name = "DIR")]
     pub state: PathBuf,
-    #[cfg(feature = "agents")]
-    #[command(flatten)]
-    pub persistent: crate::persistent_workspace_cli::PersistentArgs,
 }
 
 /// One operator line from stdin, or why it could not be read.
@@ -801,10 +791,6 @@ pub async fn workspace(
     // a bot's included: the workspace's own apps carry theirs, others the workspace
     // keeps for them in its content store.
     tilo_server::surfaces::decide_receipt(&args.state.join("surfaces"));
-    #[cfg(feature = "agents")]
-    if args.persistent.persistent.is_some() {
-        return crate::persistent_workspace_cli::run(args, shutdown).await;
-    }
     let state = args.state;
     std::fs::create_dir_all(&state).with_context(|| format!("create {}", state.display()))?;
     let listen = args.web.web.context("a workspace needs --web")?;

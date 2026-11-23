@@ -2192,7 +2192,7 @@ impl Workspaces {
             return;
         };
         let workspace_id = state.lock().await.workspace_id();
-        let retained = match self.inner.records.retained_settled(workspace_id) {
+        let retained = match self.inner.records.retained_settled(workspace_id).await {
             Ok(retained) => retained,
             Err(error) => {
                 tracing::warn!(%workspace, %error, "governed workspace did not replay what its members wrote");

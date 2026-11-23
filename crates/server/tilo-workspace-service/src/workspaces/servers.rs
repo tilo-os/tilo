@@ -1263,40 +1263,6 @@ pub async fn admit(
     enter(workspaces, server, endpoint).await
 }
 
-/// Hand the device `device`, another of this device's person's devices, the
-/// Servers workspace to keep as the servers do, dialled at `endpoint`. A device
-/// that keeps it already is handed it afresh, which is how its address is
-/// brought up to date.
-///
-/// # Errors
-/// `device` is not a device of this device's person, this device holds no Servers
-/// workspace, the device could not be reached, or it refused.
-pub async fn take_in(
-    workspaces: &Workspaces,
-    device: &DeviceCert,
-    endpoint: &iroh_base::EndpointAddr,
-) -> Result<(), String> {
-    if device.user_public_key != workspaces.serving_certificate().user_public_key
-        || device.capabilities.agent.is_some()
-        || device.capabilities.stand_in
-    {
-        return Err("only a device of this person holds their Servers workspace".into());
-    }
-    if !holds_person_workspace(workspaces).await {
-        return Err("this device holds no Servers workspace yet".into());
-    }
-    let admin = person_workspace_id(&device.user_public_key);
-    workspaces
-        .attach_server(
-            &admin,
-            device.device_public_key,
-            endpoint.clone(),
-            tilo_peer_state::CopyRole::KeyHolder,
-        )
-        .await
-        .map(drop)
-}
-
 /// Enter the device `cert` among the person's servers at `endpoint`; an entry
 /// that says so already writes no history.
 async fn enter(

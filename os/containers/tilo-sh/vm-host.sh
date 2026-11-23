@@ -72,7 +72,7 @@ pod=vm-host-0
 host_container=tilo-sh-$pod
 server_iroh=${TILO_SH_SERVER_IROH:-127.0.0.1:24104}
 server_state=${TILO_SH_SERVER_STATE:-$state/workspaces/lounge/server}
-server_admin=${TILO_SH_TILO_SERVER_ADMIN:-tilo-server-admin}
+server_cli=${TILO_SH_TILO_SERVER:-tilo-server}
 # What the host holds awake at once: the size's warm template (a template is
 # counted at its size's whole memory, since warming it fills its guest), a
 # clone of that template awake beside it (a third of a gigabyte, measured), and
@@ -149,11 +149,11 @@ guest_ready() { # dir images -> reference
 
 # The server's endpoint id: an iroh endpoint is keyed apart from the device it
 # signs its runs as, and a VM's Browser session reaches the server there.
-# `tilo-server-admin node-id` derives it from the device key the server keeps.
+# `tilo-server node-id` derives it from the device key the server keeps.
 server_endpoint() {
   [ -f "$server_state/host-device.key" ] \
     || fail "$server_state/host-device.key: the server has not started yet: start the stack's server first"
-  "$server_admin" node-id --key-file "$server_state/host-device.key"
+  "$server_cli" node-id --key-file "$server_state/host-device.key"
 }
 
 # The state disk: a sparse file loop-attached and made XFS with reflink the

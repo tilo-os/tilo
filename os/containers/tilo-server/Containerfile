@@ -12,7 +12,7 @@
 #      unit; instances get provisioned per-tenant via k8s or a
 #      podman-quadlet fleet.
 #
-# Nothing here compiles: t builds the server, its admin and its enroll program
+# Nothing here compiles: t builds the server and its enroll program
 # (tools/ci/publish/server-binaries.sh, the check
 # server-binaries) and this build lays them out with the base and the packages
 # they run against, from the same frozen snapshot and mirrored base as the
@@ -59,12 +59,10 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
         \( -name 'libssl.so*' -o -name 'libcrypto.so*' -o -name openssl \) \
         -print -quit | /usr/bin/busybox grep -q .
 
-COPY bin/tilo-server-admin /usr/libexec/tilo/tilo-server-admin
 COPY bin/tilo /usr/bin/tilo
 COPY bin/tilo-runtime /usr/bin/tilo-runtime
 COPY os/containers/tilo-server/tilo-home-peer /usr/bin/tilo-home-peer
-RUN /usr/bin/busybox chmod 0755 /usr/bin/tilo-home-peer /usr/bin/tilo /usr/bin/tilo-runtime \
-    && /usr/bin/busybox ln -s ../libexec/tilo/tilo-server-admin /usr/bin/tilo-server-admin
+RUN /usr/bin/busybox chmod 0755 /usr/bin/tilo-home-peer /usr/bin/tilo /usr/bin/tilo-runtime
 COPY os/usr/lib/systemd/system/tilo-server.service /usr/lib/systemd/system/tilo-server.service
 # The model runtime the apps of this release link their model modules against
 # (tools/ci/app-models.sh): the server applies an installed app's actions from
@@ -81,5 +79,5 @@ VOLUME ["/var/lib/tilo-server", "/var/lib/tilo", "/etc/tilo"]
 # ephemeral; the config file lets an operator pin a fixed port.
 EXPOSE 4433/udp
 
-# Default command: daemon. Operator can override with `admin`.
+# Default command: the daemon.
 ENTRYPOINT ["/usr/bin/tilo-home-peer"]

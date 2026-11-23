@@ -1,6 +1,6 @@
 //! Change notification for the access record another process edits.
 //!
-//! `tilo-server-admin` and the operator's own tools rewrite a workspace's
+//! A host's own tools rewrite a workspace's
 //! `governed-access.log` from outside the daemon. Rather than re-read and
 //! parse it on every authorization, the daemon watches the entries of
 //! `<state_root>/workspaces` (workspace directories appearing and going) and the

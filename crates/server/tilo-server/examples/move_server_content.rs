@@ -161,10 +161,7 @@ fn main() -> ExitCode {
 
 fn run(args: &Args) -> anyhow::Result<Report> {
     let server_root = tilo_server_protocol::metrics::workspace_server_root(&args.state);
-    // Nothing else runs on this state while it moves.
-    let _lock = tilo_server::state_lock::StateLock::acquire(&server_root)
-        .map_err(anyhow::Error::msg)
-        .context("the host must be stopped")?;
+    // Run with the host stopped: it is the only writer of this state.
     let named = tilo_rt::app()
         .block_on(Box::pin(named_by_workspace(args, &server_root)))
         .map_err(|error| anyhow::anyhow!("{error:?}"))??;

@@ -92,6 +92,7 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
         .server
         .workspace_documents()
         .retained(workspace.workspace_id)
+        .await
         .unwrap();
     assert!(
         retained.iter().any(|body| {

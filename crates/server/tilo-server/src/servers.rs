@@ -14,7 +14,6 @@ pub use tilo_workspace_service::workspaces::person_workspace::{found, holds_pers
 pub use tilo_workspace_service::workspaces::servers::{
     Asked, HISTORY_KEPT, MINUTES_PER_DAY, SERVERS, Server, Servers, UNLOCK_POLICIES, UPDATES,
     admit, apply, apply_on, device, device_id, enroll, name, plan, read, read_on, refuse_retired,
-    take_in,
 };
 
 pub use tilo_workspace_service::workspaces::servers::attach;

@@ -128,6 +128,7 @@ fn retained_sealed(
         .server
         .workspace_documents()
         .retained(workspace)
+        .await
         .unwrap()
         .into_iter()
         .filter(|body| body.author == author)
@@ -1005,6 +1006,7 @@ async fn assert_store_edit(
         .server
         .workspace_documents()
         .retained(WorkspaceId::parse(&route.cluster_id).unwrap())
+        .await
         .unwrap()
         .into_iter()
         .filter_map(|body| match postcard::from_bytes(&body.body).unwrap() {
@@ -1037,6 +1039,7 @@ fn roster_write(
         .server
         .workspace_documents()
         .retained(workspace)
+        .await
         .unwrap()
         .into_iter()
         .filter(|body| body.author == device)

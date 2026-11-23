@@ -38,6 +38,7 @@ fn retained_by(
         .server
         .workspace_documents()
         .retained(workspace)
+        .await
         .unwrap()
         .into_iter()
         .filter(|body| body.author == author)
