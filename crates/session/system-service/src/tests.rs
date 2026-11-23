@@ -28,8 +28,8 @@ use crate::device::{
 use crate::model::{KeyboardLight, Power, PowerMode, Time};
 use crate::update::Update;
 use crate::{
-    DISK_UNLOCK, DRIVES, HOST_INFO, KEYBOARD_BACKLIGHT, POWER, PRINTERS, SCANNERS, STORAGE,
-    SYSTEM_UPDATE, SystemService, TIME_ZONE, USERS,
+    CODEC_PACK, DISK_UNLOCK, DRIVES, FIRMWARE, HOST_INFO, KEYBOARD_BACKLIGHT, POWER, PRINTERS,
+    SCANNERS, STORAGE, SYSTEM_UPDATE, SystemService, TIME_ZONE, USERS, WINDOWS_COMPAT,
 };
 
 /// A machine in memory, in Amsterdam unless told it is elsewhere.
