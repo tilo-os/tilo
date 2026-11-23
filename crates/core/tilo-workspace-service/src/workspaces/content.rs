@@ -241,11 +241,22 @@ impl Workspaces {
     /// the files it keeps for members. `None` for a workspace not governed here
     /// or content it does not keep.
     pub async fn kept_content(&self, workspace: WorkspaceId, hash: &str) -> Option<Vec<u8>> {
+        self.kept_record_content(workspace, "", hash).await
+    }
+
+    /// The bytes named `hash` this host keeps for the records of `app` in the workspace of
+    /// `workspace`, checked against the hash: what a member reading one of them is answered.
+    pub async fn kept_record_content(
+        &self,
+        workspace: WorkspaceId,
+        app: &str,
+        hash: &str,
+    ) -> Option<Vec<u8>> {
         let identity = self.workspace_identity(workspace).await?;
         let sources = self.inner.content.get();
         sources.iter().find_map(|source| {
             source
-                .read(&identity, "", hash)
+                .read(&identity, app, hash)
                 .filter(|bytes| tilo_content::verify(hash, bytes))
         })
     }

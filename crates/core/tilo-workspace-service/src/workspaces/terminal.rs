@@ -71,6 +71,13 @@ const MAX_COMMAND_BYTES: usize = 4096;
 /// What an answer carries of a command's output at most: its end, where a build's errors and a
 /// test summary are.
 const ANSWERED_OUTPUT: usize = 32 * 1024;
+/// What a command's record keeps of its output at most: its end, as much as Terminal keeps of a
+/// command typed at its prompt.
+pub const RECORDED_OUTPUT: usize = 4 * 1024 * 1024;
+
+/// Keeps content a session record names on this device, under the Terminal's scope of a
+/// workspace: `(workspace, hash, bytes)`. Where the record's readers ask for it, on its route.
+pub type KeepContent = Arc<dyn Fn(&str, &str, &[u8]) -> Result<(), String> + Send + Sync>;
 
 /// The host-side Terminal: a workspace's shells, and the records of their sessions.
 #[derive(Clone)]
@@ -88,6 +95,8 @@ pub struct TerminalService {
     stops: Arc<Mutex<HashMap<(String, String), Vec<Arc<AtomicBool>>>>>,
     /// What stops one invocation's run: what a cancel of it ends.
     running: Arc<Mutex<HashMap<InvocationId, Arc<AtomicBool>>>>,
+    /// Where a command's output too long to live in its record is kept.
+    keep: Option<KeepContent>,
 }
 
 impl TerminalService {
@@ -108,7 +117,16 @@ impl TerminalService {
             moved: tokio::sync::watch::Sender::new(0),
             stops: Arc::new(Mutex::new(HashMap::new())),
             running: Arc::new(Mutex::new(HashMap::new())),
+            keep: None,
         }
+    }
+
+    /// Keep a command's output that is too long to live in its record with `keep`, so the
+    /// record names content its readers can fetch.
+    #[must_use]
+    pub fn keeping_output(mut self, keep: KeepContent) -> Self {
+        self.keep = Some(keep);
+        self
     }
 
     /// The workspace and record a `request` of this provider names.
@@ -429,6 +447,9 @@ impl TerminalService {
 
     /// Record `ran`, a command line the session ran, on its session record through the app's
     /// `record-command` as the command's invoker. Answers the command's id.
+    ///
+    /// The record keeps the end of the output, at most [`RECORDED_OUTPUT`]; output too long to
+    /// live in the record is kept on this device first, and the record names it.
     fn record(&self, workspace: &str, record: &str, caller: &Caller, ran: ShellRan) -> String {
         let id = uuid::Uuid::new_v4().simple().to_string();
         let mut finished = Map::new();
@@ -437,23 +458,38 @@ impl TerminalService {
         finished.insert("started_ms".into(), json!(ran.started_ms));
         finished.insert("ended_ms".into(), json!(ran.ended_ms));
         finished.insert("exit".into(), json!(ran.exit));
-        if !ran.output.is_empty() {
-            finished.insert(
-                "output".into(),
-                json!(tilo_resource::Bytes::of(&ran.output)),
-            );
-        }
-        finished.insert("truncated".into(), json!(ran.truncated));
         finished.insert("tool".into(), json!(""));
         finished.insert("undoable".into(), json!(false));
         finished.insert("items".into(), json!([]));
         finished.insert("id".into(), json!(id));
         let copies = self.copies.clone();
         let catalogue = self.catalogue.clone();
+        let keep = self.keep.clone();
         let governor = copies.governor().clone();
         let (workspace, record) = (workspace.to_owned(), record.to_owned());
         let invoker = tilo_actions::ActionInvoker::admitted(caller.acting());
         self.runtime.spawn(async move {
+            let kept = {
+                let workspace = workspace.clone();
+                tokio::task::spawn_blocking(move || {
+                    recorded_output(&workspace, &ran.output, ran.truncated, keep.as_ref())
+                })
+                .await
+            };
+            let (output, truncated) = match kept {
+                Ok(kept) => kept,
+                Err(error) => {
+                    tracing::warn!(%workspace, %record, %error, "a Terminal command's output was not kept");
+                    (tilo_resource::Bytes::Empty, true)
+                }
+            };
+            if let Some(hash) = output.reference() {
+                copies.content_kept(&workspace, &hash);
+            }
+            if !output.is_empty() {
+                finished.insert("output".into(), json!(output));
+            }
+            finished.insert("truncated".into(), json!(truncated));
             let asked = RecordAction {
                 app: TERMINAL_APP,
                 record: &record,
@@ -584,6 +620,40 @@ fn answer(id: &str, ran: &ShellRan) -> Value {
         );
     }
     Value::Object(answer)
+}
+
+/// What a command's record keeps of `output` in `workspace`, and whether any of it was left out:
+/// its last [`RECORDED_OUTPUT`] bytes, in the record when they fit there, else kept with `keep`
+/// and named by the record. Where they cannot be kept, the record keeps the end that fits in it.
+fn recorded_output(
+    workspace: &str,
+    output: &[u8],
+    truncated: bool,
+    keep: Option<&KeepContent>,
+) -> (tilo_resource::Bytes, bool) {
+    let start = output.len().saturating_sub(RECORDED_OUTPUT);
+    let end = output.get(start..).unwrap_or_default();
+    let bytes = tilo_resource::Bytes::of(end);
+    let Some(hash) = bytes.reference() else {
+        return (bytes, truncated || start > 0);
+    };
+    let kept = match keep {
+        Some(keep) => keep(workspace, &hash, end),
+        None => Err("this device keeps no content".to_owned()),
+    };
+    match kept {
+        Ok(()) => (bytes, truncated || start > 0),
+        Err(error) => {
+            tracing::warn!(%workspace, %error, "a Terminal command's output was not kept; the record keeps its end");
+            let start = end
+                .len()
+                .saturating_sub(tilo_resource::storage::BYTES_INLINE_LIMIT);
+            (
+                tilo_resource::Bytes::of(end.get(start..).unwrap_or_default()),
+                true,
+            )
+        }
+    }
 }
 
 /// The last `max` bytes of `output` as text, and whether any were left out.

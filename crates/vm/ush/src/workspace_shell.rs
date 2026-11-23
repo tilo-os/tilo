@@ -10,7 +10,8 @@
 //! ([`crate::machine_programs`]).
 //!
 //! A shell keeps its working directory and variables between commands. Output comes back
-//! whole and in order up to [`MAX_OUTPUT`], with how the command ended and, when the host
+//! in order, its last [`MAX_OUTPUT`] bytes when it printed more (where a build's errors and a
+//! test summary are), with how the command ended and, when the host
 //! refused it a VM, the host's typed refusal. A caller passing [`Seen`] is shown output as it
 //! grows, and [`Stopping`] ends a command as Ctrl+C does, in the shell and in the VM.
 //!
@@ -574,7 +575,7 @@ impl Session {
         let mut output = self.captured.take();
         output.extend(self.notices.take());
         let truncated = output.len() > MAX_OUTPUT;
-        output.truncate(MAX_OUTPUT);
+        output.drain(..output.len().saturating_sub(MAX_OUTPUT));
         ShellRun {
             command: command.to_owned(),
             cwd,

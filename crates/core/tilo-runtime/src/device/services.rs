@@ -796,11 +796,30 @@ impl Daemon {
                         },
                     )),
                 ));
+                // A command's output too long for its record is kept on the shelf its record's
+                // content is read from, once the device's content store is open.
+                let shelf = Arc::clone(&workspaces);
                 let terminal = tilo_workspace_service::workspaces::terminal::TerminalService::new(
                     workspaces.copies().clone(),
                     host,
                     tilo_rt::app().handle().clone(),
-                );
+                )
+                .keeping_output(Arc::new(
+                    move |workspace: &str, hash: &str, bytes: &[u8]| {
+                        let shelf = shelf
+                            .content_shelf()
+                            .ok_or("this device's content store is not open")?;
+                        shelf.keep(
+                            &tilo_workspace_service::content::ContentScope {
+                                workspace: workspace.to_owned(),
+                                app: tilo_workspace_service::workspaces::terminal::TERMINAL_APP
+                                    .to_owned(),
+                            },
+                            hash,
+                            bytes,
+                        )
+                    },
+                ));
                 workspaces.copies().provide(
                     tilo_workspace_service::workspaces::terminal::PROVIDER,
                     Arc::new(terminal),
