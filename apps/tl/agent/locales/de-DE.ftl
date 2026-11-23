@@ -92,6 +92,15 @@ d-bnlsdtf6 = Ansichten
 d-mwwrjl52 = Gezeigte
     .doc = Die Dinge, die er gezeigt hat, der Reihe nach.
 
+d-vbzsd5lu = Anbieter
+    .doc = Der Anbieter, der die Antwort gegeben hat, wie ihn die Einstellungen des Arbeitsbereichs nennen (`Google`): leer, wenn kein Modell geantwortet hat.
+
+d-5xeeayip = Modell
+    .doc = Das Modell, das geantwortet hat, wie es eine Person liest (`Gemini 2.5 Pro`), oder seine Kennung, wenn sein Anbieter ihm keinen Namen gibt: leer, wenn kein Modell geantwortet hat.
+
+d-4xymfj5v = Kosten
+    .doc = Was die Modellaufrufe des Durchlaufs gekostet haben, in Millionsteln der Währung des Arbeitsbereichs.
+
 d-eyh6zmbf = Überholt
     .doc = Ob die Antwort eines anderen Geräts auf dieselbe Anfrage stattdessen steht: zwei Geräte, gleichzeitig offline, können beide geantwortet haben.
 
@@ -100,6 +109,8 @@ d-uwopf5u7-filter-ask = Anfrage
 d-uwopf5u7-filter-state = Zustand
 
 d-uwopf5u7-filter-attempt = Versuch
+
+d-uwopf5u7-filter-cost = Kosten
 
 d-uwopf5u7-filter-superseded = Überholt
 
@@ -244,6 +255,12 @@ d-6koj42w5 = Beenden
     .w-a-turn-ends-done-failed-or = Ein Zug endet als erledigt, fehlgeschlagen oder angehalten
 
 d-6koj42w5-state = Zustand
+
+d-6koj42w5-provider = Anbieter
+
+d-6koj42w5-model = Modell
+
+d-6koj42w5-cost = Kosten
 
 d-5n4bbzji = Überholen
     .doc = Die Antwort eines anderen Geräts auf dieselbe Anfrage steht statt `r`.

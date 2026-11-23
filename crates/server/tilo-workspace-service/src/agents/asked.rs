@@ -555,19 +555,37 @@ impl Replying {
     }
 
     /// End the turn as `state`: `words` go onto the end of the reply first, where there are
-    /// any ([`super::written::Written::ending`]).
+    /// any ([`super::written::Written::ending`]). `answered` is what answered the turn's calls,
+    /// where a model did, and `cost` what they cost in millionths of the currency.
     ///
     /// # Errors
     /// The reply did not take it.
-    pub(super) async fn finish(&self, words: &str, state: AskState) -> Result<(), String> {
+    pub(super) async fn finish(
+        &self,
+        words: &str,
+        state: AskState,
+        answered: Option<&tilo_agent_session::model::Answered>,
+        cost: u64,
+    ) -> Result<(), String> {
         let reply = self.reply().await?;
         let agent = self.agent.clone();
         let words = words.to_owned();
+        let (provider, model) = answered.map_or_else(
+            || (String::new(), String::new()),
+            |answered| {
+                let label = if answered.label.trim().is_empty() {
+                    answered.model.clone()
+                } else {
+                    answered.label.clone()
+                };
+                (answered.provider.clone(), label)
+            },
+        );
         self.on_record(move |opened| {
             if !words.trim().is_empty() {
                 asks::say(opened, &agent, &reply, &words)?;
             }
-            asks::finish(opened, &agent, &reply, state)
+            asks::finish(opened, &agent, &reply, state, (&provider, &model, cost))
         })
         .await
     }

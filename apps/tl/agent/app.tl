@@ -78,6 +78,14 @@ type Reply {
     views: Collection<SentView>
     /// The things it showed, in order.
     shown: Collection<Shown>
+    /// The provider that answered the reply, as the workspace's settings name it (`Google`):
+    /// empty where no model answered.
+    provider: Text = ""
+    /// The model that answered it, as a person reads it (`Gemini 2.5 Pro`), or its id where its
+    /// provider labels it none: empty where no model answered.
+    model: Text = ""
+    /// What the turn's model calls cost, in millionths of the workspace's currency.
+    cost: Int = 0
     /// Whether another device's answer to the same ask stands instead: two devices offline at
     /// once may both have answered.
     superseded: Bool = false
@@ -212,13 +220,18 @@ action show(r: Reply, card: RichText) {
     r.shown.insert(Shown(card: card))
 }
 
-/// The agent's turn ended as `state`: done, failed, or stopped when a person stopped it.
-action finish(r: Reply, state: AskState) {
+/// The agent's turn ended as `state`: done, failed, or stopped when a person stopped it. `model`
+/// of `provider` answered it, where a model did, its calls costing `cost` millionths of the
+/// workspace's currency; a turn that ended before its model answered says nothing of one.
+action finish(r: Reply, state: AskState, provider: Text = "", model: Text = "", cost: Int = 0) {
     require invoker == r.ask.agent "Only the agent asked may answer"
     require state == .done or state == .failed or state == .stopped "A turn ends done, failed or stopped"
     let ended = if r.ask.state == .stopped { AskState.stopped } else { state }
     r.state = ended
     r.ask.state = ended
+    r.provider = provider
+    r.model = model
+    r.cost = cost
 }
 
 /// Another device's answer to the same ask stands instead of `r`.
@@ -299,6 +312,14 @@ view reply(r: Reply) {
             for s in r.shown {
                 rich_text(s.card)
             }
+            // What answered it and what the turn cost: a quiet line under the answer, kept with
+            // the reply so an answer read later still names the model that wrote it.
+            if r.model != "" {
+                row(gap: .tight) {
+                    text("{r.model}, {r.provider},", role: .caption, secondary: true)
+                    ui.Money(r.cost, role: .caption, secondary: true)
+                }
+            }
             for step in r.steps {
                 text(step.called, role: .caption, secondary: true)
             }
@@ -375,7 +396,11 @@ scenario "a morning of asks" {
         by: scout,
         at: 2026-06-24T08:03Z,
     )
-    invoke(finish(summary, .done), by: scout, at: 2026-06-24T08:03Z)
+    invoke(
+        finish(summary, .done, "Google", "Gemini 2.5 Pro", 42000),
+        by: scout,
+        at: 2026-06-24T08:03Z,
+    )
     let costs = invoke(
         ask(agents, ledger, RichText("What did the studio cost us in May?")),
         by: leo,

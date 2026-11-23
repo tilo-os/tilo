@@ -23191,7 +23191,9 @@
             "description": "The name of the field to set.",
             "enum": [
               "body",
-              "thinking"
+              "thinking",
+              "provider",
+              "model"
             ],
             "type": "string"
           },
@@ -23348,12 +23350,21 @@
               "cannot_read"
             ],
             "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "cost": {
+            "type": "integer"
           }
         },
         "required": [
           "state"
         ],
-        "description": "The agent's turn ended as `state`: done, failed, or stopped when a person stopped it."
+        "description": "The agent's turn ended as `state`: done, failed, or stopped when a person stopped it. `model`\nof `provider` answered it, where a model did, its calls costing `cost` millionths of the\nworkspace's currency; a turn that ended before its model answered says nothing of one."
       },
       "tl.so.tilo.agent.Reply.supersede.Arguments": {
         "type": "object",

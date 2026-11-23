@@ -175,6 +175,13 @@ pub struct Replied {
     /// The things it showed as cards ([`show`]), in order: what each card is called, and the
     /// thing.
     pub shown: Vec<(String, Reference)>,
+    /// The provider that answered it, as the workspace's settings name it; empty where no model
+    /// answered.
+    pub provider: String,
+    /// The model that answered it, as a person reads it; empty where no model answered.
+    pub model: String,
+    /// What its model's calls cost, in millionths of the workspace's currency.
+    pub cost: u64,
     pub superseded: bool,
     /// What it called on the way, in order.
     pub steps: Vec<Stepped>,
@@ -391,6 +398,9 @@ pub fn asks(opened: &Opened) -> Result<Vec<Asked>, String> {
                         Some((text(Some(card)), to))
                     })
                     .collect(),
+                provider: text(read(opened, reply, "provider")),
+                model: text(read(opened, reply, "model")),
+                cost: u64::try_from(int(read(opened, reply, "cost").as_ref())).unwrap_or(0),
                 superseded: matches!(read(opened, reply, "superseded"), Some(Value::Bool(true))),
                 steps: items(opened, reply, "steps")
                     .iter()
@@ -768,7 +778,8 @@ pub fn step(
         .map(drop)
 }
 
-/// End `agent`'s turn on `reply` as `state`: done, failed or stopped.
+/// End `agent`'s turn on `reply` as `state`: done, failed or stopped, answered by `provider`'s
+/// `model` where one answered, its calls costing `cost` millionths of the currency.
 ///
 /// # Errors
 /// The package refused it.
@@ -777,6 +788,7 @@ pub fn finish(
     agent: &MemberId,
     reply: &ResourceRef,
     state: AskState,
+    (provider, model, cost): (&str, &str, u64),
 ) -> Result<(), String> {
     let meta = meta(opened)?;
     let state = state_value(&meta, state)?;
@@ -784,7 +796,13 @@ pub fn finish(
         .invoke(
             &self::agent(agent),
             (AGENT_APP, "finish"),
-            vec![Value::resource(reply), state],
+            vec![
+                Value::resource(reply),
+                state,
+                Value::Text(provider.into()),
+                Value::Text(model.into()),
+                Value::Int(i64::try_from(cost).unwrap_or(i64::MAX)),
+            ],
             None,
         )
         .map(drop)
