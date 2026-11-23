@@ -732,7 +732,7 @@ mod tests {
         {
             failures |= 32;
         }
-        if crate::shm::from_bytes("probe", b"ok").is_err() {
+        if tilo_shm::from_bytes("probe", b"ok").is_err() {
             failures |= 1 << 6;
         }
         failures

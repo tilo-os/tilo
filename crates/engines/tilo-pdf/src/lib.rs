@@ -115,7 +115,7 @@ pub use text::{SearchOptions, Selection, TextChar, TextLayer, TextMatch};
 use proto::OpenKind;
 use tilo_lock::MutexRecover as _;
 #[cfg(unix)]
-use tilo_sandbox::shm;
+use tilo_shm as shm;
 
 /// Documents larger than this are refused before any parsing.
 pub const MAX_DOCUMENT_BYTES: u64 = 512 * 1024 * 1024;

@@ -2,10 +2,15 @@
 //! socket. The writer creates a memory file, fills it and drops every writable mapping. On Linux it
 //! then seals the memfd against writes and resizing, and the reader verifies the seals before
 //! mapping it read-only, so a sealed mapping cannot change under the reader. macOS has no sealing:
-//! there [`map_sealed`] copies the bytes once into private memory, which gives the reader the same
-//! guarantee at the price of one copy. macOS also rounds a shared memory object's size up to the
-//! page size, so a file's length is only an upper bound. Every reader here takes the meaningful
+//! there [`Mapping::map_sealed`] copies the bytes once into private memory, which gives the reader
+//! the same guarantee at the price of one copy. macOS also rounds a shared memory object's size up to
+//! the page size, so a file's length is only an upper bound. Every reader here takes the meaningful
 //! length from its caller.
+//!
+//! A buffer that stays writable — the ring an app writes its frames into, a render target — is only
+//! sealed against resizing: a mapping the reader holds can never turn into `SIGBUS` under it.
+
+#![cfg(unix)]
 
 use std::fs::File;
 use std::io;
@@ -13,6 +18,10 @@ use std::ops::Deref;
 use std::os::fd::{AsFd, OwnedFd};
 
 use memmap2::{Mmap, MmapMut, MmapOptions};
+
+/// The largest page size of a supported system: Apple silicon's 16 KiB.
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+const MAX_PAGE: usize = 16 * 1024;
 
 /// Create an empty anonymous memory file of at least `len` bytes. `name` is a diagnostic label. A
 /// file can be sized only once on macOS: create it at its final size.
@@ -35,18 +44,172 @@ pub fn from_bytes(name: &str, bytes: &[u8]) -> io::Result<OwnedFd> {
     Ok(file.into())
 }
 
+/// Seal `file` against shrinking, growing and further sealing, keeping it writable: a reader maps it
+/// read-only, and its size can no longer change under that mapping.
+pub fn seal_sizes(file: &File) -> io::Result<()> {
+    sys::seal_sizes(file)
+}
+
 /// Bytes read from a memory file or regular file, truncated to the length the caller vouched for.
-pub struct Bytes {
+pub struct Mapping {
     backing: Backing,
     len: usize,
 }
 
 enum Backing {
     Mapped(Mmap),
+    /// A copy, where this system cannot seal memory.
+    #[cfg_attr(
+        any(target_os = "linux", target_os = "android"),
+        allow(dead_code, reason = "Linux maps instead of copying")
+    )]
     Copied(Vec<u8>),
 }
 
-impl Deref for Bytes {
+impl Mapping {
+    fn view(map: Mmap, len: usize) -> Self {
+        Self {
+            backing: Backing::Mapped(map),
+            len,
+        }
+    }
+
+    /// Map a whole regular file read-only, limited to `max_len` bytes: a font from the shared
+    /// read-only view, which lives on the image's read-only `/usr` and so cannot shrink under the
+    /// mapping.
+    pub fn map_file(fd: &OwnedFd, max_len: usize) -> io::Result<Self> {
+        let file = File::from(fd.as_fd().try_clone_to_owned()?);
+        let metadata = file.metadata()?;
+        if !metadata.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "not a regular file",
+            ));
+        }
+        let len = usize::try_from(metadata.len()).map_err(io::Error::other)?;
+        if len == 0 || len > max_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "a file's size is out of range",
+            ));
+        }
+        // SAFETY: a fresh private read-only mapping of a file we hold, unmapped exactly once in
+        // `Drop`.
+        let map = unsafe { MmapOptions::new().map_copy_read_only(&file) }?;
+        Ok(Self::view(map, len))
+    }
+
+    /// Map a file or memory file read-only, limited to `len` bytes when given (a memory file's size
+    /// can exceed its content). A concurrent truncation by the sender can only fault this process,
+    /// so use it where this process is the confined one.
+    pub fn map_document(file: &File, len: Option<u64>) -> io::Result<Self> {
+        let actual = file.metadata()?.len();
+        let len = len.unwrap_or(actual);
+        if len == 0 || actual == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "the document is empty",
+            ));
+        }
+        if actual < len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "the document is shorter than announced",
+            ));
+        }
+        let len = usize::try_from(len).map_err(io::Error::other)?;
+        // SAFETY: see the function documentation; the only party that can be hurt by a changing
+        // file is this (confined) process.
+        let map = unsafe { Mmap::map(file) }?;
+        Ok(Self::view(map, len))
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// `len` bytes at `offset`, or `None` outside the mapping.
+    pub fn get(&self, offset: usize, len: usize) -> Option<&[u8]> {
+        let end = offset.checked_add(len)?;
+        self.as_ref().get(offset..end)
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+impl Mapping {
+    /// Map `fd` read-only after checking it is a memfd sealed against resizing (and against writes
+    /// when `immutable`), at least `min_len` bytes and at most `max_len`.
+    pub fn map_sealed(
+        fd: &OwnedFd,
+        immutable: bool,
+        min_len: usize,
+        max_len: usize,
+    ) -> io::Result<Self> {
+        let file = File::from(fd.as_fd().try_clone_to_owned()?);
+        sys::require_seals(&file, immutable)?;
+        let len = usize::try_from(file.metadata()?.len()).map_err(io::Error::other)?;
+        if len < min_len || len > max_len || len == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "a shared buffer's size is out of range",
+            ));
+        }
+        // SAFETY: the file is sealed against shrinking, so the mapping can never be truncated under
+        // us, and against writes when `immutable`. An immutable buffer is read whole, so it is
+        // populated up front: one batched fault is far cheaper than one per page. A writable buffer
+        // (the ring) is populated lazily, as the app writes it.
+        let mut options = MmapOptions::new();
+        if immutable {
+            options.populate();
+        }
+        let map = unsafe { options.map(&file) }?;
+        Ok(Self::view(map, len))
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+impl Mapping {
+    /// The bytes of `fd`, at least `min_len` and at most `max_len` of them, copied once into this
+    /// process's own read-only memory: nothing seals memory here, so a sender that kept it could
+    /// still change it, but never the copy. A shared memory object's size is rounded up to whole
+    /// pages, so it may exceed `max_len` by less than a page; what lies beyond `max_len` is not
+    /// copied. A writable buffer (`immutable` false) needs seals and is refused.
+    pub fn map_sealed(
+        fd: &OwnedFd,
+        immutable: bool,
+        min_len: usize,
+        max_len: usize,
+    ) -> io::Result<Self> {
+        if !immutable {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "a writable shared buffer needs sealed memory, which only Linux has",
+            ));
+        }
+        let file = File::from(fd.as_fd().try_clone_to_owned()?);
+        let size = usize::try_from(file.metadata()?.len()).map_err(io::Error::other)?;
+        let len = size.min(max_len);
+        if size < min_len || len == 0 || size.saturating_sub(max_len) >= MAX_PAGE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "a shared buffer's size is out of range",
+            ));
+        }
+        // SAFETY: the sender may still write this memory; the mapping is only read once, to copy
+        // the bytes out, and nothing is inferred from them until the copy is complete.
+        let map = unsafe { MmapOptions::new().len(len).map(&file) }?;
+        Ok(Self {
+            backing: Backing::Copied(map.to_vec()),
+            len,
+        })
+    }
+}
+
+impl Deref for Mapping {
     type Target = [u8];
 
     fn deref(&self) -> &[u8] {
@@ -58,75 +221,10 @@ impl Deref for Bytes {
     }
 }
 
-impl AsRef<[u8]> for Bytes {
+impl AsRef<[u8]> for Mapping {
     fn as_ref(&self) -> &[u8] {
         self
     }
-}
-
-/// The first `len` bytes of a descriptor received from a less trusted process, which cannot change
-/// afterwards: a verified sealed mapping on Linux, a private copy where memory cannot be sealed.
-pub fn map_sealed(fd: &OwnedFd, len: u64) -> io::Result<Bytes> {
-    let file = File::from(fd.as_fd().try_clone_to_owned()?);
-    let actual = file.metadata()?.len();
-    if actual < len {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "shared buffer is shorter than announced",
-        ));
-    }
-    if actual == 0 || len == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "shared buffer is empty",
-        ));
-    }
-    let len = usize::try_from(len).map_err(io::Error::other)?;
-    if sys::verify_sealed(&file)? {
-        // SAFETY: the file is sealed against writes and shrinking, so the mapping can neither
-        // change nor be truncated under us. Populated up front: the caller reads every byte, and
-        // one batched fault is far cheaper than one per page.
-        let map = unsafe { MmapOptions::new().populate().map(&file) }?;
-        return Ok(Bytes {
-            backing: Backing::Mapped(map),
-            len,
-        });
-    }
-    // SAFETY: the sender may still write this memory; the mapping is only read once, to copy the
-    // bytes out, and nothing is inferred from them until the copy is complete.
-    let map = unsafe { MmapOptions::new().len(len).map(&file) }?;
-    Ok(Bytes {
-        backing: Backing::Copied(map.to_vec()),
-        len,
-    })
-}
-
-/// Map a file or memory file read-only, limited to `len` bytes when given (a memory file's size can
-/// exceed its content). A concurrent truncation by the sender can only fault this process, so use
-/// it where this process is the confined one.
-pub fn map_document(file: &File, len: Option<u64>) -> io::Result<Bytes> {
-    let actual = file.metadata()?.len();
-    let len = len.unwrap_or(actual);
-    if len == 0 || actual == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "the document is empty",
-        ));
-    }
-    if actual < len {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "the document is shorter than announced",
-        ));
-    }
-    let len = usize::try_from(len).map_err(io::Error::other)?;
-    // SAFETY: see the function documentation; the only party that can be hurt by a changing file is
-    // this (confined) process.
-    let map = unsafe { Mmap::map(file) }?;
-    Ok(Bytes {
-        backing: Backing::Mapped(map),
-        len,
-    })
 }
 
 /// Map a memory file this process shares with another read-only, for memory the other side writes
@@ -139,8 +237,9 @@ pub fn map_shared(file: &File) -> io::Result<Mmap> {
 
 pub fn map_writable(file: &File) -> io::Result<MmapMut> {
     // SAFETY: the file is a memory file shared only with a peer that reads it after this side
-    // reports the write complete. Populated up front, since the writer fills every byte.
-    unsafe { MmapOptions::new().populate().map_mut(file) }
+    // reports the write complete. Pages fault in as they are written, so a buffer only as large as
+    // what is used is charged to the writer.
+    unsafe { MmapOptions::new().map_mut(file) }
 }
 
 /// Reopen a regular file read-only, so a descriptor that also allows writing is not handed to a
@@ -151,14 +250,14 @@ pub fn reopen_read_only(file: &File) -> Option<File> {
     sys::reopen_read_only(file)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 mod sys {
     use std::fs::File;
     use std::io;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
-    const SEALS: libc::c_int =
-        libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE | libc::F_SEAL_SEAL;
+    /// Seals every buffer carries: its size can never change.
+    const SIZE_SEALS: libc::c_int = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_SEAL;
 
     pub fn create(name: &str, len: u64) -> io::Result<File> {
         let cname = std::ffi::CString::new(name).map_err(io::Error::other)?;
@@ -176,25 +275,42 @@ mod sys {
     }
 
     pub fn seal(file: &File) -> io::Result<()> {
+        add_seals(file, SIZE_SEALS | libc::F_SEAL_WRITE)
+    }
+
+    pub fn seal_sizes(file: &File) -> io::Result<()> {
+        add_seals(file, SIZE_SEALS)
+    }
+
+    fn add_seals(file: &File, seals: libc::c_int) -> io::Result<()> {
         // SAFETY: F_ADD_SEALS on a descriptor we own; no pointers involved.
-        let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_ADD_SEALS, SEALS) };
+        let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_ADD_SEALS, seals) };
         if rc < 0 {
             return Err(io::Error::last_os_error());
         }
         Ok(())
     }
 
-    pub fn verify_sealed(file: &File) -> io::Result<bool> {
+    /// Whether `file` carries the seals `immutable` needs: a buffer whose size cannot change, and
+    /// which cannot be written either.
+    pub fn require_seals(file: &File, immutable: bool) -> io::Result<()> {
+        let required = if immutable {
+            SIZE_SEALS | libc::F_SEAL_WRITE
+        } else {
+            SIZE_SEALS
+        };
         // SAFETY: F_GET_SEALS on a descriptor we own; no pointers involved.
         let seals = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) };
-        let required = libc::F_SEAL_WRITE | libc::F_SEAL_SHRINK;
-        if seals < 0 || seals & required != required {
+        if seals < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if seals & required != required {
             return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "shared buffer is not sealed",
+                io::ErrorKind::PermissionDenied,
+                "a shared buffer must be a sealed memfd",
             ));
         }
-        Ok(true)
+        Ok(())
     }
 
     pub fn reopen_read_only(file: &File) -> Option<File> {
@@ -274,7 +390,7 @@ mod sys {
         value
     }
 
-    #[allow(
+    #[expect(
         clippy::unnecessary_wraps,
         reason = "the same signature as the Linux implementation, where it can fail"
     )]
@@ -282,12 +398,14 @@ mod sys {
         Ok(())
     }
 
-    #[allow(
+    /// Unlinked shared memory cannot be sealed, but nothing verifies sizes here: a writable buffer
+    /// is only mapped on Linux.
+    #[expect(
         clippy::unnecessary_wraps,
         reason = "the same signature as the Linux implementation, where it can fail"
     )]
-    pub fn verify_sealed(_file: &File) -> io::Result<bool> {
-        Ok(false)
+    pub fn seal_sizes(_file: &File) -> io::Result<()> {
+        Ok(())
     }
 
     pub fn reopen_read_only(file: &File) -> Option<File> {
@@ -313,7 +431,10 @@ mod sys {
     }
 }
 
-#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+#[cfg(all(
+    unix,
+    not(any(target_os = "linux", target_os = "android", target_os = "macos"))
+))]
 mod sys {
     use std::fs::File;
     use std::io;
@@ -337,8 +458,8 @@ mod sys {
         clippy::unnecessary_wraps,
         reason = "the signature of the platforms that seal memory, whose callers this shares"
     )]
-    pub fn verify_sealed(_file: &File) -> io::Result<bool> {
-        Ok(false)
+    pub fn seal_sizes(_file: &File) -> io::Result<()> {
+        Ok(())
     }
 
     pub fn reopen_read_only(_file: &File) -> Option<File> {
@@ -350,11 +471,27 @@ mod sys {
 mod tests {
     use super::*;
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]
     fn unsealed_memfd_is_refused() {
         let unsealed: OwnedFd = create("u", 4).unwrap().into();
-        assert!(map_sealed(&unsealed, 4).is_err());
+        assert!(Mapping::map_sealed(&unsealed, true, 4, 4).is_err());
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn a_sizes_sealed_buffer_maps_read_only_while_its_writer_keeps_it() {
+        let file = create("ring", 8).unwrap();
+        seal_sizes(&file).unwrap();
+        let fd: OwnedFd = file.as_fd().try_clone_to_owned().unwrap();
+        let mut writer = map_writable(&file).unwrap();
+        writer[..3].copy_from_slice(b"abc");
+        let reader = Mapping::map_sealed(&fd, false, 8, 8).unwrap();
+        assert_eq!(&reader[..3], b"abc");
+        assert!(
+            Mapping::map_sealed(&fd, true, 8, 8).is_err(),
+            "a writable buffer is not an immutable one"
+        );
     }
 
     tilo_test_env::scenario! {
@@ -363,17 +500,17 @@ mod tests {
         phase memory_file_round_trips_with_its_length;
         {
             let fd = from_bytes("t", b"hello").unwrap();
-            let bytes = map_sealed(&fd, 5).unwrap();
+            let bytes = Mapping::map_sealed(&fd, true, 5, 5).unwrap();
             assert_eq!(&bytes[..], b"hello");
             let file = File::from(fd.try_clone().unwrap());
-            assert_eq!(&map_document(&file, Some(5)).unwrap()[..], b"hello");
+            assert_eq!(&Mapping::map_document(&file, Some(5)).unwrap()[..], b"hello");
         }
 
         phase empty_and_short_buffers_are_refused;
         {
             let fd = from_bytes("t", b"hello").unwrap();
-            assert!(map_sealed(&fd, 0).is_err());
-            assert!(map_sealed(&fd, 1 << 30).is_err());
+            assert!(Mapping::map_sealed(&fd, true, 0, 0).is_err());
+            assert!(Mapping::map_sealed(&fd, true, 1 << 30, 1 << 30).is_err());
         }
 
         phase shared_mapping_sees_the_writers_bytes;
@@ -388,7 +525,7 @@ mod tests {
 
         phase a_regular_file_reopens_read_only;
         {
-            let dir = std::env::temp_dir().join(format!("tilo-sandbox-{}", std::process::id()));
+            let dir = std::env::temp_dir().join(format!("tilo-shm-{}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
             let path = dir.join("doc.pdf");
             std::fs::write(&path, b"%PDF").unwrap();

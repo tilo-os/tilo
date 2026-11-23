@@ -196,7 +196,7 @@ impl Builder {
     }
 
     /// What every app may do. The `/tilo-` shared memory is the app's own anonymous memory
-    /// (`tilo_sandbox::shm`), how it hands an immutable buffer to another process or to itself:
+    /// (`tilo_shm`), how it hands an immutable buffer to another process or to itself:
     /// each object is created exclusively under a fresh name and unlinked at once.
     fn baseline(&mut self) {
         self.text.push_str(

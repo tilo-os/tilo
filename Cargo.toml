@@ -434,6 +434,7 @@ members = [
     "crates/platform/tilo-secrets",
     "crates/engines/tilo-subject",
     "crates/platform/tilo-sandbox",
+    "crates/platform/tilo-shm",
     "crates/engines/tilo-typst-fonts",
     "crates/platform/tilo-wallpapers",
     "crates/platform/zone-globe",
@@ -781,6 +782,7 @@ tilo-location = { version = "0.1.0", path = "crates/platform/tilo-location" }
 tilo-secrets = { version = "0.1.0", path = "crates/platform/tilo-secrets" }
 tilo-net = { path = "crates/platform/tilo-net" }
 tilo-sandbox = { version = "0.1.0", path = "crates/platform/tilo-sandbox" }
+tilo-shm = { version = "0.1.0", path = "crates/platform/tilo-shm" }
 tokio-util = { version = "0.7.18", features = ["compat"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 async-imap = { version = "0.10", default-features = false, features = ["runtime-tokio"] }

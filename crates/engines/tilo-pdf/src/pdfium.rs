@@ -191,7 +191,7 @@ impl Library {
 enum Backing {
     /// The document's bytes: pdfium reads them in place, and the
     /// structure reader shares them.
-    Mapped(std::sync::Arc<tilo_sandbox::shm::Bytes>),
+    Mapped(std::sync::Arc<tilo_shm::Mapping>),
     None,
 }
 
@@ -516,7 +516,7 @@ impl Engine {
         }
         let (raw, backing) = match kind {
             OpenKind::Pdf => {
-                let map = tilo_sandbox::shm::map_document(file, len)
+                let map = tilo_shm::Mapping::map_document(file, len)
                     .map_err(|e| Failure::new(FailureKind::Format, e.to_string()))?;
                 let raw = self.api().FPDF_LoadMemDocument64(&map, password.as_deref());
                 if raw.is_null() {
@@ -559,7 +559,7 @@ impl Engine {
         const MAX_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
         // Mapped rather than read: the descriptor's offset is shared with
         // the sender and may sit anywhere.
-        let bytes = tilo_sandbox::shm::map_document(file, len)
+        let bytes = tilo_shm::Mapping::map_document(file, len)
             .map_err(|e| Failure::new(FailureKind::Format, e.to_string()))?;
         if bytes.len() as u64 > MAX_IMAGE_BYTES {
             return Err(Failure::new(FailureKind::Limit, "the image is too large"));

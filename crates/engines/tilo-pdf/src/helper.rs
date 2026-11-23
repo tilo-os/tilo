@@ -210,7 +210,7 @@ fn handle(
             edits,
             imports,
         } => match engine.export(doc, &edits, &imports) {
-            Ok(bytes) => match tilo_sandbox::shm::from_bytes("tilo-pdf-export", &bytes) {
+            Ok(bytes) => match tilo_shm::from_bytes("tilo-pdf-export", &bytes) {
                 Ok(fd) => {
                     channel.send(&Response::Exported {
                         len: bytes.len() as u64,
@@ -259,7 +259,7 @@ fn map_buffer(
             "too much attached pixel memory".into(),
         ));
     }
-    tilo_sandbox::shm::map_writable(file).map_err(|e| failure(FailureKind::Engine, e.to_string()))
+    tilo_shm::map_writable(file).map_err(|e| failure(FailureKind::Engine, e.to_string()))
 }
 
 fn render(

@@ -21,7 +21,7 @@ use crate::proto::{
     Channel, FailureKind, OpenKind, PROTOCOL_VERSION, ProbeReport, Request, Response,
 };
 use crate::text::RawChar;
-use tilo_sandbox::shm;
+use tilo_shm as shm;
 
 use crate::Bitmap;
 use tilo_lock::MutexRecover as _;
@@ -542,10 +542,10 @@ impl Sandboxed {
         };
         match self.call(&docs, &request, EXPORT_TIMEOUT)? {
             (Response::Exported { len }, Payload::Fd(fd)) => {
-                let map = shm::map_sealed(&fd, len).map_err(Error::Io)?;
                 let len =
                     usize::try_from(len).map_err(|_| Error::Limit("export too large".into()))?;
-                Ok(map.get(..len).map(<[u8]>::to_vec).unwrap_or_default())
+                let map = shm::Mapping::map_sealed(&fd, true, len, len).map_err(Error::Io)?;
+                Ok(map.get(0, len).map(<[u8]>::to_vec).unwrap_or_default())
             }
             (other, _) => Err(unexpected(&other)),
         }

@@ -46,9 +46,11 @@ memmap2 = "0.9.10"
 # other Tilo services rather than re-implemented here.
 wire-frame = { version = "0.1.0", path = "../../platform/wire-frame", features = ["postcard"] }
 runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal" }
-# The helper's confinement and the shared memory it exchanges with the
-# client (Landlock + seccomp + memfd on Linux, Seatbelt + POSIX shm on macOS).
+# The helper's confinement (Landlock + seccomp on Linux, Seatbelt on macOS).
 tilo-sandbox.workspace = true
+# The shared memory it exchanges with the client (sealed memfd on Linux,
+# unlinked POSIX shm on macOS).
+tilo-shm.workspace = true
 # The system font directories and the home directory, per platform.
 tilo-paths.workspace = true
 # The pinned fonts appearance text is set in, read from the installed catalog.

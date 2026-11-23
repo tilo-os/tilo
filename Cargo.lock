@@ -20893,6 +20893,7 @@ dependencies = [
  "tilo-lock",
  "tilo-paths",
  "tilo-sandbox",
+ "tilo-shm",
  "tilo-test-env",
  "typst",
  "typst-assets",
@@ -21259,6 +21260,7 @@ dependencies = [
 name = "tilo-render-protocol"
 version = "0.1.0"
 dependencies = [
+ "memmap2",
  "peniko",
  "postcard",
  "proptest",
@@ -21268,7 +21270,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-actions",
  "tilo-font-catalog",
- "tilo-sandbox",
+ "tilo-shm",
  "tilo-ui-graph",
  "tilo-vello",
  "tilo-vello-encoding",
@@ -21529,11 +21531,11 @@ name = "tilo-sandbox"
 version = "0.1.0"
 dependencies = [
  "libc",
- "memmap2",
  "tempfile",
  "thiserror 2.0.21",
  "tilo-platform-caps",
  "tilo-sandbox-core",
+ "tilo-shm",
  "tilo-test-env",
  "workspace-hack",
 ]
@@ -22407,6 +22409,16 @@ dependencies = [
  "tilolang-tilo",
  "tracing",
  "url",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-shm"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "memmap2",
+ "tilo-test-env",
  "workspace-hack",
 ]
 
