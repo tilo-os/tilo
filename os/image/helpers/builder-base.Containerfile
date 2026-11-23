@@ -26,7 +26,7 @@ ARG RPMS_REF
 # jemalloc, sqlite) need to build. `sccache` honours the project's
 # .cargo/config.toml `rustc-wrapper`. Throwaway stage — nothing here ships.
 #
-# The browser engine's native host (apps/browser/chromium) builds with the same
+# The browser engine's native host (crates/engines/chromium-host/chromium) builds with the same
 # C++ toolchain and cmake against the pinned CEF distribution; it links nothing
 # from this list beyond the C++ runtime.
 #

@@ -1889,7 +1889,7 @@ class Walk:
             # A browser reaches this machine's loopback and refuses a file path:
             # the tree's test pages, served where a page can be opened.
             served = value["pages"]
-            folder = REPO / (served.get("dir") or "apps/browser/test-pages")
+            folder = REPO / (served.get("dir") or "crates/engines/chromium-host/test-pages")
             handler = functools.partial(PageServer, directory=str(folder))
             self.pages = ThreadingHTTPServer(("127.0.0.1", 0), handler)
             threading.Thread(target=self.pages.serve_forever, daemon=True).start()

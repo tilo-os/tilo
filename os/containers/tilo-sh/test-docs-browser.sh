@@ -45,7 +45,7 @@ trap 'bash "$here/stack.sh" down >&2 || true' EXIT
 step 'serve the visa test page where a VM reaches it'
 form=$work/form
 mkdir -p "$form"
-cp "$repo/apps/browser/test-pages/visa-form.html" "$form/visa-form.html"
+cp "$repo/crates/engines/chromium-host/test-pages/visa-form.html" "$form/visa-form.html"
 form_port=$iroh_port
 python3 -m http.server --bind 127.0.0.1 --directory "$form" "$form_port" > "$work/form.log" 2>&1 &
 form_pid=$!

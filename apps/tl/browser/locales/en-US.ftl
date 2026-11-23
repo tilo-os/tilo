@@ -1,7 +1,7 @@
 # tilolang messages: generated from the package's source, commit it. Translate in
 # locales/<language>.ftl beside it; edit the words in the source, not here.
 
-d-so-tilo-browser-preview = Browser
+d-so-tilo-browser = Browser
 
 d-lrkgwd2c = Bookmark
     .doc = A site someone saved: where it is and what it is called.

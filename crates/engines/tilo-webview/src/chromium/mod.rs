@@ -40,7 +40,7 @@ use serde_json::{Value, json};
 use tilo_lock::MutexRecover as _;
 
 /// How long the engine holds a page's departure for an answer: the longest it
-/// lets one wait (`apps/browser/chromium/src/departures.h`). Browser answers
+/// lets one wait (`crates/engines/chromium-host/chromium/src/departures.h`). Browser answers
 /// within it ([`crate::HeldRequest`]), and a person asked on another
 /// device needs the time to get to it.
 const HOLD_WAIT_MS: u64 = 600_000;

@@ -20,9 +20,9 @@ class EngineRuntimeNameTests(unittest.TestCase):
         built = re.findall(r"^ARG CHROMIUM_RUNTIME_VERSION=(\S+)$", containerfile, re.MULTILINE)
         self.assertEqual(built, [rust_const("RUNTIME_VERSION")])
 
-    def test_the_browser_manifest_requires_that_runtime(self):
-        manifest = (ROOT / "apps/browser/tilo-app.toml").read_text()
-        self.assertIn(f'optional-runtimes = ["{rust_const("RUNTIME_REF")}"]', manifest)
+    def test_the_browser_package_declares_that_runtime(self):
+        app = (ROOT / "apps/tl/browser/app.tl").read_text()
+        self.assertIn(f'engine: "{rust_const("RUNTIME_REF")}"', app)
 
     def test_the_image_fetches_the_pinned_distribution_for_each_architecture(self):
         lock = json.loads((ROOT / "scripts/browser/cef-lock.json").read_text())

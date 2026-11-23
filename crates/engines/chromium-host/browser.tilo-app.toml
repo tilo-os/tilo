@@ -1,0 +1,48 @@
+# The package `apps/tl/browser` builds into, kept as the fixture the launcher, the packaging CLI
+# and the imager's tests read: a package that shows a web page declares its engine runtime, and
+# the launcher runs it in the web engine's confinement. `tilolang build` writes this shape; the
+# numbers a build fills in (its version, the language runtime it ships) are the build's own.
+
+[package]
+id = "so.tilo.browser"
+name = "Browser"
+category = "Network"
+version = "0.1.0"
+kind = "app"
+platforms = ["linux", "macos", "web"]
+runtime = "tilo-runtime/2026.07"
+optional-runtimes = ["tilolang/0.1.0+tilolang", "tilo-runtime/2026.10.23-chromium"]
+
+[package.isa]
+x86_64 = "baseline"
+aarch64 = "aarch64"
+
+[capabilities]
+required = ["network.http", "webview"]
+optional = []
+
+[resources]
+kinds = ["Browser", "tilolang.personal"]
+
+[publisher]
+identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[sandbox]
+namespaces = ["user", "pid", "uts", "ipc", "mount", "net"]
+seccomp = "tilo-web-engine"
+landlock = "strict"
+
+[sandbox.net]
+mode = "host"
+
+[sandbox.portals]
+
+[sandbox.services]
+collab = "optional@37"
+tilo-fs = "optional@37"
+
+[entrypoint]
+runtime = "tilolang/0.1.0+tilolang"
+bin = "bin/tilolang-process"
+type = "gui"

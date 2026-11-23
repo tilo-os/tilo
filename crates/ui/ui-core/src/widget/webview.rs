@@ -115,6 +115,9 @@ pub struct WebView {
     /// Whether this view is the one that reads the engine's events: a window's page, not an
     /// app's view whose own code polls the engine it passed in.
     reports_events: bool,
+    /// The window's page, when this view is the window's: the one session that reads the
+    /// engine's events, shared with the app's page calls, so the engine has one reader.
+    session: Option<crate::webview::PageHandle>,
     /// The address this view last told the engine to open.
     opened_at: Option<String>,
 }
@@ -216,6 +219,7 @@ impl WebView {
             navigate: crate::component::Event::None,
             fail: crate::component::Event::None,
             reports_events: false,
+            session: None,
             opened_at: None,
         }
     }
@@ -242,6 +246,14 @@ impl WebView {
     ) -> Self {
         self.navigate = navigate;
         self.fail = fail;
+        self
+    }
+
+    /// Read the page's events from the window's session, when the window keeps one: it is the
+    /// engine's one reader, and the app's page calls read their answers from it too.
+    #[must_use]
+    pub fn with_page(mut self, session: Option<crate::webview::PageHandle>) -> Self {
+        self.session = session;
         self
     }
 
@@ -280,7 +292,19 @@ impl WebView {
                 intent.fire(Some(value));
             }
         };
-        for event in self.engine.drain_events() {
+        // The window's session reads the engine once a frame, for this view and for the app's
+        // page calls alike: draining the engine here as well would give each of them half the
+        // page's events.
+        let reported = self.session.as_ref().and_then(|page| {
+            let mut held = page.borrow_mut();
+            let session = held.as_mut()?;
+            session.poll();
+            let events: Vec<tilo_webview::WebViewEvent> =
+                std::iter::from_fn(|| session.next_event()).collect();
+            Some(events)
+        });
+        let events = reported.unwrap_or_else(|| self.engine.drain_events());
+        for event in events {
             match event {
                 WebViewEvent::LoadFinishedAt { uri } | WebViewEvent::UriChanged(uri) => {
                     fire(&self.navigate, crate::component::Value::Text(uri));

@@ -16,6 +16,10 @@ tilo-rich-edit = { version = "0.1.0", path = "../../ui/tilo-rich-edit" }
 # same way a window's toolkit says it and an app process without the toolkit does.
 tilo-formats = { version = "0.1.0", path = "../../ui/tilo-formats" }
 tilo-render-protocol = { version = "0.1.0", path = "../../ui/tilo-render-protocol" }
+# The page a window shows: its engine, one reader of the engine's events, and the answers to
+# the app's page calls.
+tilo-page-engine = { version = "0.1.0", path = "../../engines/page-engine" }
+tilo-webview = { version = "0.1.0", path = "../../engines/tilo-webview" }
 # The actions the window's app publishes for its command palette.
 tilo-actions = { version = "0.1.0", path = "../../core/actions" }
 # The named scopes a frame's work is counted in (`ui.bind`): what a test reads to see that a

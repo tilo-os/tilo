@@ -146,11 +146,16 @@ bin = "bin/app"
         phase shipped_manifests_declare_what_they_need_to_open;
         {
             {
-                let manifest = read_manifest(&repo().join("apps/browser/tilo-app.toml"))
-                    .expect("shipped browser manifest parses through installed-app schema");
-                assert_eq!(
-                    manifest.continuity.required,
-                    vec![ContinuityFacet::Presentation, ContinuityFacet::Semantic]
+                let manifest = read_manifest(
+                    &repo().join("crates/engines/chromium-host/browser.tilo-app.toml"),
+                )
+                .expect("the browser's built manifest parses through installed-app schema");
+                assert!(
+                    manifest
+                        .required_runtimes
+                        .iter()
+                        .any(|runtime| runtime.contains("chromium")),
+                    "the browser names the engine it renders with"
                 );
             }
             {

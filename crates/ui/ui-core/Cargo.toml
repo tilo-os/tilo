@@ -139,6 +139,7 @@ tilo-paint-strokes = { version = "0.1.0", path = "../../engines/paint-strokes" }
 # the page protocol and their commands, so code that talks to a web engine links that
 # crate instead of the toolkit.
 tilo-webview = { version = "0.1.0", path = "../../engines/tilo-webview" }
+tilo-page-engine = { version = "0.1.0", path = "../../engines/page-engine" }
 # The part painter interface every painter set draws through (`part_paint`).
 tilo-theme-sdk = { version = "0.1.0", path = "../theme-sdk" }
 # The interpreter a theme's painter sets loaded from wasm run on

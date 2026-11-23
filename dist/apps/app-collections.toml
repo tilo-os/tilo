@@ -40,9 +40,10 @@ calendar = ["runtime-engine"]
 clocks = ["runtime-engine"]
 messages = ["runtime-engine"]
 print-centre = ["runtime-engine"]
-# The import from another browser's profile, with the SQLite it reads, from its
-# engine library beside the runtime.
-browser = ["runtime-engine"]
+# The installer's home-capture worker (not an app: the capture service builds
+# it): account credentials with the WebDAV client, and the projection worker's
+# FUSE presentation, from their engine libraries beside the runtime.
+imager = ["runtime-engine"]
 # The app host's client, with its RPC, and the catalogue, from their engine
 # library beside the runtime.
 store = ["runtime-engine"]

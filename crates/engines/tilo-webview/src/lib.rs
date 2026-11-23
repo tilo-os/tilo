@@ -409,7 +409,7 @@ pub enum KeyInput {
 #[allow(
     clippy::struct_excessive_bools,
     reason = "one flag per physical modifier key, mirroring winit's own \
-              modifiers state; `apps/browser` constructs this by field name \
+              modifiers state; a browser app constructs this by field name \
               across the crate boundary, so reshaping it into flags is out \
               of scope for a lint fix"
 )]

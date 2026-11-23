@@ -824,7 +824,7 @@ class ServingAPageAndAPicture(unittest.TestCase):
         out = Path(tempfile.mkdtemp(prefix="app-walk-pages-"))
         w = self.walk(out)
         try:
-            served = w.op_serve({"pages": {"dir": "apps/browser/test-pages",
+            served = w.op_serve({"pages": {"dir": "crates/engines/chromium-host/test-pages",
                                             "page": "links.html"}})
             body = urllib.request.urlopen(served["pages"], timeout=10).read().decode()
             self.assertIn("Second section", body)

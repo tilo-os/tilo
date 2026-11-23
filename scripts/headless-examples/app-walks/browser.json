@@ -2,10 +2,10 @@
   "app": "browser",
   "said": "Browser",
   "family": "apps",
-  "live": "rust",
-  "rust": {
+  "live": "tl",
+  "tl": {
     "id": "so.tilo.browser",
-    "native": "browser"
+    "package": "browser"
   },
   "steps": [
     {
@@ -43,28 +43,26 @@
         {
           "serve": {
             "pages": {
-              "dir": "apps/browser/test-pages",
+              "dir": "crates/engines/chromium-host/test-pages",
               "page": "links.html"
             }
           }
         },
         {
-          "act": {
-            "do": [
-              "browser.page",
-              "navigate",
-              {
-                "url": {
-                  "served": "pages"
-                }
+          "act": [
+            "Page",
+            "navigate",
+            {
+              "url": {
+                "served": "pages"
               }
-            ]
-          }
+            }
+          ]
         },
         {
           "read": {
             "app": "so.tilo.browser",
-            "operation": "read-page",
+            "operation": "read_page",
             "contains": "First section"
           }
         }
@@ -78,8 +76,8 @@
         {
           "act": {
             "do": [
-              "browser.page",
-              "find-page-element",
+              "Page",
+              "find_page_element",
               {
                 "role": "link",
                 "name": "Second section"
@@ -89,22 +87,20 @@
           }
         },
         {
-          "act": {
-            "do": [
-              "browser.page",
-              "click-page",
-              {
-                "element": {
-                  "served": "link.element"
-                }
+          "act": [
+            "Page",
+            "click_page",
+            {
+              "element": {
+                "served": "link.element"
               }
-            ]
-          }
+            }
+          ]
         },
         {
           "read": {
             "app": "so.tilo.browser",
-            "operation": "read-page",
+            "operation": "read_page",
             "contains": "Followed."
           }
         }
@@ -115,17 +111,15 @@
       "said": "Go back to the page the link was on",
       "ops": [
         {
-          "act": {
-            "do": [
-              "browser.page",
-              "back"
-            ]
-          }
+          "act": [
+            "Page",
+            "back"
+          ]
         },
         {
           "read": {
             "app": "so.tilo.browser",
-            "operation": "read-page",
+            "operation": "read_page",
             "contains": "First section"
           }
         }

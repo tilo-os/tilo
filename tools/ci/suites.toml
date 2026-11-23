@@ -531,8 +531,8 @@ inputs = [
   "scripts/browser/",
   "os/Containerfile",
   "os/external-assets/github-assets.tsv",
-  "apps/browser/tilo-app.toml",
-  "apps/browser/src/browser_widget/engine_runtime.rs",
+  "crates/engines/chromium-host/browser.tilo-app.toml",
+  "apps/tl/browser/app.tl",
   "crates/engines/tilo-webview/src/chromium/runtime.rs",
 ]
 suites = [
@@ -1381,7 +1381,7 @@ inputs = [
   "crates/os/block-devices/tests/fixtures/imager.json",
   "apps/imager/tests/fixtures/lsblk-targets.json",
   "crates/os/block-devices/tests/fixtures/installer.json",
-  "apps/browser/tilo-app.toml",
+  "crates/engines/chromium-host/browser.tilo-app.toml",
 ]
 readers = [
   "crates/os/imager-backend/src/destination/disks.rs",
@@ -1391,7 +1391,7 @@ readers = [
 
 [[cargo]]
 package = "tilo-app-package-cli"
-inputs = ["apps/browser/tilo-app.toml"]
+inputs = ["crates/engines/chromium-host/browser.tilo-app.toml"]
 readers = ["tools/tilo-app-package-cli/src/main.rs"]
 
 [[cargo]]
@@ -2112,10 +2112,10 @@ inputs = [
   "os/external-assets/github-assets.tsv",
   "tools/apps/pack-runtime-package.sh",
   "scripts/browser/",
-  "apps/browser/chromium/",
+  "crates/engines/chromium-host/chromium/",
   "os/dev/assert-native-arch.sh",
   "os/scripts/verify-elf-hardening.sh",
-  "apps/browser/tilo-app.toml",
+  "crates/engines/chromium-host/browser.tilo-app.toml",
   "crates/engines/tilo-webview/src/chromium/runtime.rs",
   "os/Containerfile",
 ]

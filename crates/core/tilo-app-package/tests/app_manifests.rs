@@ -204,7 +204,10 @@ tilo_test_env::scenario! {
             .filter(Manifest::window_runs_on_its_device)
             .map(|manifest| manifest.package.id)
             .collect();
-        assert_eq!(bound, ["so.tilo.browser"]);
+        // No Rust app's window is bound to its device: the one that was, a page shown by the
+        // engine, is a package the language builds, and its manifest says so where it is built
+        // (`crates/lang/tilolang-cli`, `packages_showing_a_page_bind_their_window_to_the_device`).
+        assert!(bound.is_empty(), "{bound:?}");
     }
 
     phase shipped_apps_declare_presentation_metadata;

@@ -58,7 +58,9 @@ impl Described for WebView {
             });
         let mut view = Self::new(engine);
         if window_page {
-            view = view.reporting(navigate, fail);
+            view = view
+                .reporting(navigate, fail)
+                .with_page(crate::webview::window_page());
         } else {
             view = view.keeping_events(navigate, fail);
         }

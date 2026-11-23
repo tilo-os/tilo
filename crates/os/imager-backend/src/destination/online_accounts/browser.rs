@@ -448,12 +448,13 @@ mod tests {
 
         phase browser_policy_keeps_the_canonical_oauth_loopback_reachable;
         {
-            let manifest = include_str!("../../../../../../apps/browser/tilo-app.toml");
+            let manifest =
+                include_str!("../../../../../../crates/engines/chromium-host/browser.tilo-app.toml");
             // The installed signed manifest is consumed by the launcher, not edited or overridden here;
             // host mode already supplies --share-net.
             assert!(manifest.contains("[sandbox.net]\nmode = \"host\""));
-            assert!(manifest.contains("landlock   = \"strict\""));
-            assert!(manifest.contains("seccomp    = \"tilo-web-engine\""));
+            assert!(manifest.contains("landlock = \"strict\""));
+            assert!(manifest.contains("seccomp = \"tilo-web-engine\""));
         }
     }
 }

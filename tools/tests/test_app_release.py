@@ -308,10 +308,13 @@ class AppReleaseTests(unittest.TestCase):
                 ),
                 sorted(catalog),
             )
-        with self.subTest(phase='a browser change releases the browser tapp'):
-            catalog = {**CATALOG, "browser": {}}
+        with self.subTest(phase='a change to a package releases that app'):
+            catalog = {**CATALOG, "calculator": {}}
             self.assertEqual(
-                app_release.apps_from_changes(["apps/browser/src/main.rs"], catalog), ["browser"]
+                app_release.apps_from_changes(
+                    ["apps/calculator/src/main.rs"], catalog
+                ),
+                ["calculator"],
             )
         with self.subTest(phase='release graph keeps image codecs explicit'):
             # No tapp may pull image's default features: every dependency names

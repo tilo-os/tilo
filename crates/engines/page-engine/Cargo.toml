@@ -9,6 +9,11 @@ license.workspace = true
 [dependencies]
 # The engine client: the page protocol's requests and answers, and the engine's events.
 tilo-webview = { version = "0.1.0", path = "../tilo-webview" }
+serde_json.workspace = true
+base64.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
 [lints]

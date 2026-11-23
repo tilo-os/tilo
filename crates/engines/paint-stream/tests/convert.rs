@@ -5,7 +5,7 @@
 //! `fixtures/controls.json` is the engine suite's form with every common
 //! control, its first field being edited, as the suite's own engine laid it
 //! out at 1280x800: the page `CONTROLS` of
-//! `apps/browser/chromium/tests/page_share.py`, which prints the snapshot
+//! `crates/engines/chromium-host/chromium/tests/page_share.py`, which prints the snapshot
 //! when run with `TILO_PAGE_SHARE_RECORD` set. It was asked for with every
 //! style of today's list, so it says what the engine's theme paints.
 #![allow(

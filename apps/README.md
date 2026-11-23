@@ -22,8 +22,6 @@ review and CI. Apps that reach the network or hardware keep that behind an
 off-by-default feature (`live`, `audio`, …) and fall back to bundled sample
 data, so default builds and screenshots stay hermetic.
 
-Toolkit exception: `browser` embeds Servo for page rendering.
-
 ## Application contract (required)
 
 There is **one** resource / action / view model. Every app is a
@@ -224,7 +222,7 @@ touch. Expanded neighbouring targets must not overlap.
 
 | Crate           | What it is                                                                                                                                                                                                                                                                           |
 | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `browser`       | Web browser embedding Servo (libservo + surfman + glow) with adblock; chrome is a `ui` widget (migrated off iced).                                                                                                                                                                   |
+| `file-explorer` | Spatial file manager with safe native ZIP/TAR inspection, extraction and creation; opens editable documents in the word processor via `tilo-doc`. Binary `file-explorer`.                                                                                                            |
 
 ## Building
 
@@ -232,7 +230,7 @@ All apps are workspace members; build from the repo root. See
 [CONTRIBUTING.md](../CONTRIBUTING.md) for the toolchain and native dependencies:
 
 ```bash
-cargo build -p terminal -p browser
+cargo build -p terminal -p file-explorer -p calculator
 cargo run -p scratchpad -- --shots out.png        # headless offscreen frame
 ```
 

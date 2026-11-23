@@ -13,7 +13,6 @@
 [budgets]
 "api-tester" = 26   # 22.3 MB
 "backups" = 22   # 18.9 MB
-"browser" = 27   # 23.0 MB
 "calendar" = 27   # 22.7 MB
 "camera" = 23   # 19.8 MB
 "click_test_client" = 3   # 1.9 MB

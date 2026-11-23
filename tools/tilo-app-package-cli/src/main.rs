@@ -1151,9 +1151,27 @@ mod runtime_readiness_tests {
             };
 
             let manifest: super::Manifest =
-                super::Manifest::from_toml_str(include_str!("../../../apps/browser/tilo-app.toml"))
-                    .unwrap();
-            let runtime = &manifest.package.required_runtimes[0];
+                super::Manifest::from_toml_str(include_str!(
+                    "../../../crates/engines/chromium-host/browser.tilo-app.toml"
+                ))
+                .unwrap();
+            // The engine runtime the package requires beside the language's own, and the
+            // language runtime: each must be provided by a runtime package before the app is
+            // published.
+            let runtime = manifest
+                .package
+                .required_runtimes
+                .iter()
+                .find(|runtime| runtime.contains("chromium"))
+                .expect("the browser names the engine it renders with")
+                .clone();
+            let language = manifest
+                .package
+                .required_runtimes
+                .iter()
+                .find(|runtime| runtime.starts_with("tilolang/"))
+                .expect("every package names the language runtime it runs on")
+                .clone();
             let signer = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
             let url = "https://apps.tilo.so/artifacts/browser.tapp";
             let mut app = RegistryEntry {
@@ -1195,8 +1213,19 @@ mod runtime_readiness_tests {
                     .downcast_ref::<app_registry::publisher::runtime_history::MissingRuntime>()
                     .unwrap()
                     .runtime,
-                *runtime
+                language
             );
+            // What provides the language runtime, which every package waits for first.
+            let mut language_provider = app.clone();
+            language_provider.package_id = "so.tilo.runtime.tilolang".into();
+            {
+                let VersionArtifact::Tapp(artifact) = &mut language_provider.versions[0].artifact
+                else {
+                    panic!("native package")
+                };
+                artifact.target.runtime = Some(language.clone());
+            }
+            registry_types::sign_entry(&mut language_provider, &signer);
             let mut provider = app.clone();
             provider.package_id = "so.tilo.runtime.chromium".into();
             for (provided_runtime, architecture, accepted) in [
@@ -1211,7 +1240,13 @@ mod runtime_readiness_tests {
                 artifact.target.architecture = architecture.into();
                 registry_types::sign_entry(&mut provider, &signer);
                 assert_eq!(
-                    require_runtime_offers(&app, url, &manifest, &[provider.clone()]).is_ok(),
+                    require_runtime_offers(
+                        &app,
+                        url,
+                        &manifest,
+                        &[language_provider.clone(), provider.clone()],
+                    )
+                    .is_ok(),
                     accepted
                 );
             }

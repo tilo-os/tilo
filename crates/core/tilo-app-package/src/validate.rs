@@ -1266,7 +1266,8 @@ mode = "off"
 
         phase browser_manifest_names_its_engine_runtime;
         {
-            let source = include_str!("../../../../apps/browser/tilo-app.toml");
+            let source =
+                include_str!("../../../engines/chromium-host/browser.tilo-app.toml");
             let manifest = Manifest::from_toml_str(source).expect("browser TOML");
             assert_eq!(validate_manifest(&manifest), Ok(()));
             assert!(

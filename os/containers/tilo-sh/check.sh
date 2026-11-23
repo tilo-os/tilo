@@ -21,7 +21,7 @@
 # end of the check is the Browser of a hosted workspace (docs/hosted-browser.md),
 # in the workspace's own VM:
 #
-#   8. the visa test page (apps/browser/test-pages/visa-form.html), served
+#   8. the visa test page (crates/engines/chromium-host/test-pages/visa-form.html), served
 #      where a VM's network may reach it: the server endpoint's own address and
 #      port, the one destination besides the internet a VM is given;
 #   9. the guest this stack's VM host boots carries the Browser there: the
@@ -362,7 +362,7 @@ if [[ $hosted == 1 ]]; then
     step '8. the visa test page, where a VM may reach it'
     form_dir=$work/form
     mkdir -p "$form_dir"
-    cp "$repo/apps/browser/test-pages/visa-form.html" "$form_dir/visa-form.html"
+    cp "$repo/crates/engines/chromium-host/test-pages/visa-form.html" "$form_dir/visa-form.html"
     # A VM reaches the public internet and one address of this machine: the
     # server's own endpoint, as the VM dials it (10.0.2.4, which pasta maps to
     # this machine's loopback). The server's endpoint is UDP; its port's TCP side

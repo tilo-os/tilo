@@ -273,6 +273,11 @@ pub struct AppWindow {
     composing: bool,
     /// How often the app asked for the window to come forward since the window last did.
     activations: u32,
+    /// The page this window shows, the same one its views read their events from: the app's
+    /// page calls are asked here and answered on the next frame.
+    page: crate::page_runner::Page,
+    /// The app's page request each page action waits for the answer of, by the action.
+    page_asks: BTreeMap<u32, u32>,
     /// The task runs a change mark asked to show ([`ToUi::ShowRun`]), until the window takes
     /// them ([`Self::take_shown_runs`]).
     shown_runs: Vec<String>,
@@ -418,12 +423,16 @@ impl AppWindow {
             });
             Reconciler::new(Rc::clone(&events)).with_rows(rows_of)
         };
+        let reconciler = Rc::new(RefCell::new(reconciler));
+        let page = reconciler.borrow().page();
         Self {
             transport,
             limits: PatchLimits::default(),
             root: None,
             detail: None,
-            reconciler: Rc::new(RefCell::new(reconciler)),
+            reconciler,
+            page,
+            page_asks: BTreeMap::new(),
             events,
             built: None,
             rows,
@@ -680,11 +689,30 @@ impl AppWindow {
                 ToUi::ShowRun { run } => self.shown_runs.push(run),
                 ToUi::Speak(language) => ui::i18n::I18nManager::set_locale(&language),
                 ToUi::Kept(kept) => self.kept(kept),
-                // No page engine runs in this window yet: the answer says so, empty, and the
-                // action that asked says why in words.
-                ToUi::Page { request_id, .. } => self.out.push(ToApp::PageAnswer {
-                    request_id,
-                    answer: Vec::new(),
+                // The window's page does what the app asked, and its answer goes back as the
+                // engine gave it. An operation the page answers at once is done here; one the
+                // page thinks about waits with the window's next frames.
+                ToUi::Page { request_id, request } => match String::from_utf8(request) {
+                    Ok(request) => match crate::page_runner::ask(&self.page, &request) {
+                        Ok(crate::page_runner::Asked::Answered(answer)) => {
+                            self.out.push(ToApp::PageAnswer {
+                                request_id,
+                                answer: answer.into_bytes(),
+                            });
+                        }
+                        Ok(crate::page_runner::Asked::Waiting(action)) => {
+                            self.page_asks.insert(action, request_id);
+                        }
+                        Err(why) => self.out.push(ToApp::PageAnswer {
+                            request_id,
+                            answer: tilo_page_engine::codec::refused(&why).into_bytes(),
+                        }),
+                    },
+                    Err(_) => self.out.push(ToApp::PageAnswer {
+                        request_id,
+                        answer: tilo_page_engine::codec::refused("a page request is no text")
+                            .into_bytes(),
+                    }),
                 }),
                 // Its page goes back to what the window shows ([`Self::compose`]).
                 ToUi::History(shown) => content |= self.shows_history(shown),
@@ -1507,6 +1535,7 @@ impl AppWindow {
     #[must_use]
     pub fn owes(&self) -> bool {
         !self.out.is_empty()
+            || !self.page_asks.is_empty()
             || !self.events.is_empty()
             || self
                 .rows
@@ -1516,6 +1545,16 @@ impl AppWindow {
     }
 
     pub fn flush(&mut self) {
+        // A page the app asked does its work in its own time: what it answered since the last
+        // frame goes back to whoever asked.
+        for (action, answer) in crate::page_runner::answers(&self.page) {
+            if let Some(request_id) = self.page_asks.remove(&action) {
+                self.out.push(ToApp::PageAnswer {
+                    request_id,
+                    answer: answer.into_bytes(),
+                });
+            }
+        }
         // What was typed while the keyboard was on its way to the field a press opened goes there
         // once it arrived.
         self.release_landing();

@@ -7,7 +7,8 @@
 use std::error::Error;
 
 #[cfg(target_os = "linux")]
-const BROWSER_MANIFEST: &str = include_str!("../../../../apps/browser/tilo-app.toml");
+const BROWSER_MANIFEST: &str =
+    include_str!("../../../engines/chromium-host/browser.tilo-app.toml");
 
 #[cfg(target_os = "linux")]
 fn main() -> Result<(), Box<dyn Error>> {

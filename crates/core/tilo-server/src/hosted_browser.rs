@@ -201,7 +201,7 @@ const NOT_READY_WAITS: [Duration; 4] = [
 ];
 
 /// How long a page action's question waits for the person: as long as the
-/// window holds what it asks about (`apps/browser`, whose engine lets a
+/// window holds what it asks about (`apps/tl/browser`, whose window shows a page the engine draws: a
 /// request wait ten minutes at most), less a margin, so an answer always
 /// finds the request still held. Every device of the person is asked, and
 /// told again by a notification when no Tilo of theirs is open.

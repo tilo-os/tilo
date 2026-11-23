@@ -130,11 +130,8 @@ doc = false
 "bounded-zip" = { path = "../../crates/engines/bounded-zip", default-features = false, features = ["default", "epub"] }
 "brotli-8_0_2" = { package = "brotli", version = "^8.0.2", default-features = false, features = ["alloc-stdlib", "default", "std"] }
 "brotli-decompressor-5_0_0" = { package = "brotli-decompressor", version = "^5.0.0", default-features = false, features = ["alloc-stdlib", "std"] }
-"browser" = { path = "../../apps/browser", default-features = false, features = [] }
 "browser-continuity" = { path = "../../crates/import/browser-continuity", default-features = false, features = ["native"] }
 "browser-continuity-core" = { path = "../../crates/engines/browser-continuity-core", default-features = false, features = [] }
-"browser-model" = { path = "../../apps/browser-model", default-features = false, features = [] }
-"browser-model-wasm" = { path = "../../apps/browser-model-wasm", default-features = false, features = [] }
 "brush-parser-0_4_0" = { package = "brush-parser", version = "^0.4.0", default-features = false, features = [] }
 "btoi-0_5_0" = { package = "btoi", version = "^0.5.0", default-features = false, features = ["default", "std"] }
 "buffa-0_9_2" = { package = "buffa", version = "^0.9.2", default-features = false, features = ["fast-utf8", "json", "std"] }
@@ -2765,11 +2762,8 @@ doc = false
 "bounded-zip" = { path = "../../crates/engines/bounded-zip", default-features = false, features = ["default", "epub"] }
 "brotli-8_0_2" = { package = "brotli", version = "^8.0.2", default-features = false, features = ["alloc-stdlib", "default", "std"] }
 "brotli-decompressor-5_0_0" = { package = "brotli-decompressor", version = "^5.0.0", default-features = false, features = ["alloc-stdlib", "std"] }
-"browser" = { path = "../../apps/browser", default-features = false, features = [] }
 "browser-continuity" = { path = "../../crates/import/browser-continuity", default-features = false, features = ["native"] }
 "browser-continuity-core" = { path = "../../crates/engines/browser-continuity-core", default-features = false, features = [] }
-"browser-model" = { path = "../../apps/browser-model", default-features = false, features = [] }
-"browser-model-wasm" = { path = "../../apps/browser-model-wasm", default-features = false, features = [] }
 "brush-parser-0_4_0" = { package = "brush-parser", version = "^0.4.0", default-features = false, features = [] }
 "btoi-0_5_0" = { package = "btoi", version = "^0.5.0", default-features = false, features = ["default", "std"] }
 "buffa-0_9_2" = { package = "buffa", version = "^0.9.2", default-features = false, features = ["fast-utf8", "json", "std"] }

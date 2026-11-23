@@ -61,7 +61,7 @@ inputs_digest() {
     os/scripts/install-components.py os/scripts/pack-apps.sh \
     os/scripts/signed-records.py os/scripts/collect-runtime-dependencies.py \
     os/scripts/verify-runtime-bundle-closure.sh os/etc/containers/policy.json \
-    apps/browser crates/engines/tilo-webview/src/chromium crates/ui/ui-core/assets/fonts \
+    crates/engines/chromium-host crates/engines/tilo-webview/src/chromium crates/ui/ui-core/assets/fonts \
     tools/font-catalog.py tools/apps tools/perf/tapp-size-budget \
     tools/ci/publish/hosted-guest.sh -type f -print0 \
     | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1

@@ -6,6 +6,8 @@
 //! reads. The engine's events have one reader — this session — so a page's navigation and its
 //! answers never take each other's.
 
+pub mod codec;
+
 use std::collections::{BTreeMap, VecDeque};
 
 use tilo_webview::{

@@ -9,7 +9,7 @@ use std::fmt::Write as _;
 use ui::icons::Icon;
 
 /// The scheme the browser takes a web search under; it runs the query on
-/// the person's own search engine (`apps/browser`, `launch_search`).
+/// the person's own search engine (`apps/tl/browser`, its address bar).
 pub const WEB_SEARCH_SCHEME: &str = "web+search";
 
 /// Where a web search goes when no browser takes [`WEB_SEARCH_SCHEME`]: the

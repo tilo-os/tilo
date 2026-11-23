@@ -45,7 +45,7 @@
 //! `page-share-probe HOST PROFILE URL WIDTH HEIGHT [--watched-before-load] [--within-ms N]
 //! [--expect TEXT]... [--has TEXT]... [--changes N] [--still-ms N] [--items] [--focus]
 //! [--zoom LEVEL] [--settle-ms N] [--snapshot PATH] [--slow-capture-ms N] [--order]`, run by
-//! `apps/browser/chromium/tests/page_share.py` on pages of its own.
+//! `crates/engines/chromium-host/chromium/tests/page_share.py` on pages of its own.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

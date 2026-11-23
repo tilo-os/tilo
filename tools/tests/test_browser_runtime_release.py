@@ -43,13 +43,13 @@ class BrowserRuntimeRelease(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for name in ('crates/engines/tilo-webview/src/chromium/runtime.rs',
-                         'apps/browser/tilo-app.toml', 'os/Containerfile'):
+                         'apps/tl/browser/app.tl', 'os/Containerfile'):
                 target = root / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text((ROOT / name).read_text())
             version = release.runtime_version(root)
-            manifest = root / 'apps/browser/tilo-app.toml'
-            manifest.write_text(manifest.read_text().replace(version, 'wrong-chromium'))
+            app = root / 'apps/tl/browser/app.tl'
+            app.write_text(app.read_text().replace(version, 'wrong-chromium'))
             with self.assertRaisesRegex(ValueError, 'Browser engine runtime differs'):
                 release.runtime_version(root)
 

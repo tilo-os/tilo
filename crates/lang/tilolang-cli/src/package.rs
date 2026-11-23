@@ -25,7 +25,7 @@ pub const DEFAULT_TILO_RUNTIME: &str = "tilo-runtime/2026.07";
 pub const PLATFORMS: &str = "[\"linux\", \"macos\", \"web\"]";
 
 /// What a build makes of the package in a directory and the packages it uses.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct BuildOptions {
     /// The package directory; the packages it uses are found beside it and in `search`.
     pub dir: PathBuf,
@@ -110,16 +110,20 @@ pub fn origins_of(meta: &PackageMeta) -> Vec<&'static str> {
 /// actions reads them (`uses files`). An app that reads a folder also opens the files it lists in
 /// the app that opens their kind, which is `files.open`; it is a `required` capability since the
 /// app's own page offers the open, and the person saw it declared when they installed the app.
-fn capabilities(origins: &[&str], uses_files: bool) -> String {
+fn capabilities(origins: &[&str], uses_files: bool, engine: bool) -> String {
     let mut required: Vec<&str> = Vec::new();
     let mut optional: Vec<&str> = Vec::new();
-    if !origins.is_empty() {
+    if !origins.is_empty() || engine {
         required.push("network.http");
         // The mail origin signs in to the workspace's accounts (`ACCOUNT_SIGN_INS`); the others
         // don't.
         if origins.contains(&"imap") {
             optional.push("account-sign-ins");
         }
+    }
+    // The page runs in this device's engine, which keeps its own processes and speaks to the web.
+    if engine {
+        required.push("webview");
     }
     if uses_files {
         required.push(tilo_app_package::manifest::FILES_OPEN);
@@ -141,13 +145,30 @@ fn capabilities(origins: &[&str], uses_files: bool) -> String {
 /// A package's `[sandbox]`: the capabilities, namespaces and
 /// network mode of a package holding the outside `origins` and reading the device's files when
 /// `uses_files`.
-fn sandbox(origins: &[&str], uses_files: bool) -> (String, &'static str, &'static str) {
-    let capabilities = capabilities(origins, uses_files);
+fn sandbox(
+    origins: &[&str],
+    uses_files: bool,
+    engine: Option<&str>,
+) -> (String, &'static str, &'static str, &'static str) {
+    let capabilities = capabilities(origins, uses_files, engine.is_some());
+    if engine.is_some() {
+        // A page runs in this device's engine, which keeps its own processes and speaks to the
+        // web: the launcher grants it the web engine's confinement, which is the JIT a renderer
+        // needs and nothing more than the engine's own sandbox around it.
+        return (
+            capabilities,
+            "[\"user\", \"pid\", \"uts\", \"ipc\", \"mount\", \"net\"]",
+            "# The engine reaches the web itself, in the sandbox the launcher runs the app in.\n\
+             mode = \"host\"",
+            "tilo-web-engine",
+        );
+    }
     if origins.is_empty() {
         return (
             capabilities,
             "[\"user\", \"pid\", \"uts\", \"ipc\", \"mount\"]",
             "mode = \"off\"",
+            "tilo-default",
         );
     }
     (
@@ -155,6 +176,7 @@ fn sandbox(origins: &[&str], uses_files: bool) -> (String, &'static str, &'stati
         "[\"user\", \"pid\", \"uts\", \"ipc\", \"mount\", \"net\"]",
         "# Each origin's connector speaks to the hosts its service names, in the sandbox\n\
          # the launcher runs it in.\nmode = \"host\"",
+        "tilo-default",
     )
 }
 
@@ -216,7 +238,21 @@ pub fn manifest_text(
         .collect();
     let providers_ext: Vec<String> = providers_ext.iter().map(|ext| toml_string(ext)).collect();
     let origins = origins_of(meta);
-    let (capabilities, namespaces, net) = sandbox(&origins, uses_files(meta));
+    let (capabilities, namespaces, net, seccomp) = sandbox(&origins, uses_files(meta), meta.engine.as_deref());
+    // The runtimes the package needs beside the language's own: the app's page engine, which
+    // installing the app installs in the same step or not at all.
+    let mut runtimes = vec![toml_string(&options.tilolang_runtime)];
+    if let Some(engine) = &meta.engine {
+        runtimes.push(toml_string(engine));
+    }
+    let runtimes = runtimes.join(", ");
+    // A package that shows a page shows it with this device's engine, so its window runs only
+    // where that engine is: the manifest says so, and a session does not move the window.
+    let window = if meta.engine.is_some() {
+        "window = \"device\"\n"
+    } else {
+        ""
+    };
     let mut extra = if meta.icon.is_some() {
         format!("icon = {}\n", toml_string(ICON_FILE))
     } else {
@@ -256,7 +292,7 @@ version = {version}
 kind = "app"
 platforms = {platforms}
 runtime = {runtime}
-{extra}optional-runtimes = [{tilolang}]
+{extra}optional-runtimes = [{runtimes}]
 {names}
 {keywords}
 
@@ -278,7 +314,7 @@ signature = ""
 # Without the mail origin no `net` namespace: the app opens no socket of its own. Collaboration reaches the
 # broker over a service descriptor.
 namespaces = {namespaces}
-seccomp = "tilo-default"
+seccomp = {seccomp}
 landlock = "strict"
 
 [sandbox.net]
@@ -295,7 +331,7 @@ tilo-fs = "optional@{services}"
 runtime = {tilolang}
 bin = {bin}
 type = "gui"
-{origins}
+{window}{origins}
 [providers]
 mime = [{providers_mime}]
 ext = [{providers_ext}]
@@ -309,6 +345,8 @@ schemes = [{providers_schemes}]
         platforms = PLATFORMS,
         runtime = toml_string(&options.tilo_runtime),
         tilolang = toml_string(&options.tilolang_runtime),
+        runtimes = runtimes,
+        seccomp = toml_string(seccomp),
         // The app's workspace record, and the workspace's record of each person's own state of it,
         // which every app of the language opens.
         resource_types = [
@@ -317,6 +355,7 @@ schemes = [{providers_schemes}]
         ]
         .join(", "),
         bin = toml_string(RUNTIME_BIN),
+        window = window,
         invokes = invokes,
         services = runtime_portal::RUNTIME_INTERFACE_VERSION,
         capabilities = capabilities,
@@ -773,19 +812,51 @@ mod tests {
     #[test]
     fn an_app_that_reads_the_devices_files_declares_that_it_opens_them() {
         assert_eq!(
-            capabilities(&[], true),
+            capabilities(&[], true, false),
             "required = [\"files.open\"]\noptional = []",
             "an app reading folders opens the files it lists"
         );
-        assert_eq!(capabilities(&[], false), "required = []\noptional = []");
         assert_eq!(
-            capabilities(&["youtube"], false),
+            capabilities(&[], false, false),
+            "required = []\noptional = []"
+        );
+        assert_eq!(
+            capabilities(&["youtube"], false, false),
             "required = [\"network.http\"]\noptional = []"
         );
         assert_eq!(
-            capabilities(&["imap"], true),
+            capabilities(&["imap"], true, false),
             "required = [\"network.http\", \"files.open\"]\noptional = [\"account-sign-ins\"]"
         );
-        assert!(sandbox(&[], true).0.contains("\"files.open\""));
+        assert!(sandbox(&[], true, None).0.contains("\"files.open\""));
+        // A package showing a page names its engine and the confinement the launcher runs it in.
+        let (capabilities, namespaces, _, seccomp) =
+            sandbox(&[], false, Some("tilo-runtime/2026.10.23-chromium"));
+        assert!(capabilities.contains("\"webview\""), "{capabilities}");
+        assert!(namespaces.contains("\"net\""), "{namespaces}");
+        assert_eq!(seccomp, "tilo-web-engine");
+    }
+
+    #[test]
+    fn packages_showing_a_page_bind_their_window_to_the_device() {
+        let manifest = manifest_text(
+            &PackageMeta {
+                app: "so.tilo.example".into(),
+                engine: Some("tilo-runtime/2026.10.23-chromium".into()),
+                ..PackageMeta::default()
+            },
+            &[],
+            &BuildOptions::default(),
+            "00",
+        );
+        assert!(
+            manifest.contains("[entrypoint]\nwindow = \"device\""),
+            "a package showing a page declares a window that runs where its engine is: {manifest}"
+        );
+        assert!(
+            !manifest_text(&PackageMeta::default(), &[], &BuildOptions::default(), "00")
+                .contains("window = \"device\""),
+            "an app with no engine has views of records"
+        );
     }
 }

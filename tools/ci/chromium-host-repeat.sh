@@ -16,7 +16,7 @@
 set -uo pipefail
 
 plan=${1:-tools/ci/chromium-host-repeat.plan}
-tests=apps/browser/chromium/tests
+tests=crates/engines/chromium-host/chromium/tests
 host=target/chromium/tilo-chromium-host
 
 bash tools/ci/ensure-browser-dependencies.sh || exit 1
@@ -24,7 +24,7 @@ command -v cmake >/dev/null || dnf install -y cmake || exit 1
 python3 scripts/browser/build-host.py --jobs 8 || exit 1
 ctest --test-dir target/chromium-build --output-on-failure || exit 1
 # Chromium refuses root, and the host never turns its sandbox off: the suites run as a user.
-chmod -R a+rX target/chromium "$tests" apps/browser/chromium/src apps/browser/assets/extension-manager apps/browser/src/extension_toolbar.rs
+chmod -R a+rX target/chromium "$tests" crates/engines/chromium-host/chromium/src crates/engines/chromium-host/assets/extension-manager crates/engines/chromium-host/src/extension_toolbar.rs
 mkdir -p -m 1777 /tmp/host-test
 
 burners=()

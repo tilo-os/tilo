@@ -244,7 +244,7 @@ def main():
     env = dict(os.environ, PATH=str(local_bin) + os.pathsep + os.environ["PATH"])
     blocker = build_blocker_library()
     build = work / "chromium-build"
-    subprocess.run([cmake, "-S", str(ROOT / "apps/browser/chromium"), "-B", str(build),
+    subprocess.run([cmake, "-S", str(ROOT / "crates/engines/chromium-host/chromium"), "-B", str(build),
                     f"-DCEF_ROOT={sdk}", f"-DTILO_BLOCKER_LIBRARY={blocker}", "-DCMAKE_BUILD_TYPE=Release",
                     f"-DTILO_OUTPUT_DIR={work / 'chromium'}"], check=True, env=env)
     subprocess.run([cmake, "--build", str(build), "--parallel", str(args.jobs)], check=True, env=env)

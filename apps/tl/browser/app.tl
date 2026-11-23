@@ -1,4 +1,4 @@
-app so.tilo.browser.preview "Browser" (
+app so.tilo.browser "Browser" (
     icon: .globe,
     category: .network,
     tagline: "Web browser with ad blocking and Chrome extensions",
@@ -142,6 +142,85 @@ type PageStep {
     values: Option<List<Text>> = .none
 }
 
+/// What a page is asked, as the window that holds it reads it: one operation and the fields it
+/// takes. A field left at its default is unsent, and the page reads it as absent.
+type Ask {
+    op: Text
+    element: Option<Text> = .none
+    text: Option<Text> = .none
+    from: Option<Int> = .none
+    by: Option<Int> = .none
+    drag_from: Option<Text> = .none
+    drag_steps: Option<Int> = .none
+    frame: Option<Text> = .none
+    frames: Bool = false
+    x: Option<Float> = .none
+    y: Option<Float> = .none
+    from_x: Option<Float> = .none
+    from_y: Option<Float> = .none
+    to_x: Option<Float> = .none
+    to_y: Option<Float> = .none
+    role: Option<Text> = .none
+    name: Option<Text> = .none
+    nth: Option<Int> = .none
+    key: Option<Text> = .none
+    url: Option<Text> = .none
+    level: Option<Float> = .none
+    values: Option<List<Text>> = .none
+    paths: Option<List<Text>> = .none
+    steps: Option<List<Text>> = .none
+    since: Option<Int> = .none
+    quiet_ms: Option<Int> = .none
+    timeout_ms: Option<Int> = .none
+    gone: Option<Text> = .none
+    cross_origin: Bool = false
+    secret: Bool = false
+    submit: Bool = false
+    form: Option<Text> = .none
+    submit_button: Option<Text> = .none
+    to: Option<Text> = .none
+    into_view: Option<Text> = .none
+    button: Option<Text> = .none
+    enabled: Bool = false
+    max_width: Option<Int> = .none
+    id: Option<Int> = .none
+    asker: Option<Text> = .none
+    username: Option<Text> = .none
+    password: Option<Text> = .none
+    accept: Bool = false
+    forward: Bool = false
+    next: Bool = false
+}
+
+/// What a page answered: whether it did what was asked, what it said, and what it found.
+type Answer (title: message) {
+    ok: Bool = false
+    /// Why it did not: the engine's own code, and what it said.
+    code: Text = ""
+    message: Text = ""
+    /// Where the page is, what it is called, whether it is loading and whether it went
+    /// somewhere.
+    url: Text = ""
+    title: Text = ""
+    navigation: Text = ""
+    loading: Bool = false
+    /// What the page says, line by line: a read's outline, a table's rows, a field's value.
+    outline: Text = ""
+    /// The element a find names, and the outline line that says the words.
+    element: Text = ""
+    line: Int = 0
+    role: Text = ""
+    name: Text = ""
+    frame: Text = ""
+    /// A picture of the page, as the PNG the engine painted, base64.
+    image: Text = ""
+
+    search {
+        hide url
+        hide image
+    }
+}
+
 /// The workspace's browser: what the person set, the sites they saved and visited, the forms
 /// their pages asked, and the addresses they fill forms with. One workspace holds one, and each
 /// member sees the same one.
@@ -183,7 +262,16 @@ default view visit_page for Visit
 /// Opens a page in a window of its own. Every window of the app is one page; what it shows, its
 /// address and its own back and forward are the system's.
 primary action new_page(b: Browser) -> Page (icon: .plus, label: "New page", key: "t") {
-    b.pages.insert(Page(url: b.homepage, title: ""))
+    let made = b.pages.insert(Page(url: b.homepage, title: ""))
+    open(made)
+    made
+}
+
+/// The browser opens on a page: a workspace with none gets its home page as one.
+initial action start(b: Browser) {
+    if b.pages.is_empty() {
+        b.pages.insert(Page(url: b.homepage, title: ""))
+    }
 }
 
 /// Opens an address in a page of its own, or asks the search engine for what was typed when it
@@ -191,7 +279,371 @@ primary action new_page(b: Browser) -> Page (icon: .plus, label: "New page", key
 action go(b: Browser, typed: Text) -> Page (icon: .arrow_right, label: "Open address") {
     require typed.trim() != "" "Type an address or what to search for"
     let url = resolve(b, typed)
-    b.pages.insert(Page(url: url, title: ""))
+    let made = b.pages.insert(Page(url: url, title: ""))
+    open(made)
+    made
+}
+
+/// What the page of `p` says and does, carried to the window that holds it. Each action answers
+/// the page's own report as an [`Answer`], and what was done is written into the page's record.
+
+/// Read the page: what it says, line by line, as an agent reads it. A long page is read in
+/// parts: a read that stops short names the line to read on from.
+action read_page(p: Page, from: Option<Int> = .none, frame: Option<Text> = .none) -> Answer uses page (
+    icon: .eye,
+    label: "Read the page",
+) {
+    let request = json.encode(Ask(op: "outline", from: from, frame: frame))
+    ask_page(p, request)
+}
+
+/// What changed on the page since the last read: the lines added and removed, or the whole
+/// outline when the document is new.
+action read_page_changes(p: Page, frame: Option<Text> = .none) -> Answer uses page (
+    icon: .eye,
+    label: "Read what changed",
+) {
+    let request = json.encode(Ask(op: "changes", frame: frame))
+    ask_page(p, request)
+}
+
+/// What a click at a point would hit, through overlays and banners, and the element holding it.
+action read_page_element_at(p: Page, x: Float, y: Float, frame: Option<Text> = .none) -> Answer uses page (
+    icon: .mouse_pointer_2,
+    label: "Element at a point",
+) {
+    let request = json.encode(Ask(op: "at", x: .some(x), y: .some(y), frame: frame))
+    ask_page(p, request)
+}
+
+/// Wait for the page to go quiet, or until the words it must say are there and the ones it must
+/// not say are gone.
+action wait_page_settled(
+    p: Page,
+    quiet_ms: Option<Int> = .none,
+    timeout_ms: Option<Int> = .none,
+    text: Option<Text> = .none,
+    gone: Option<Text> = .none,
+    frame: Option<Text> = .none,
+) -> Answer uses page (
+    icon: .clock,
+    label: "Wait for the page",
+) {
+    let request = json.encode(Ask(
+            op: "settle",
+            quiet_ms: quiet_ms,
+            timeout_ms: timeout_ms,
+            text: text,
+            gone: gone,
+            frame: frame,
+        ))
+    ask_page(p, request)
+}
+
+/// The page's console messages and uncaught errors after a sequence number.
+action read_page_console(p: Page, since: Option<Int> = .none) -> Answer uses page {
+    let request = json.encode(Ask(op: "console", since: since))
+    ask_page(p, request)
+}
+
+/// The page's network requests after a sequence number: method, address, type, status and
+/// failure, never headers, bodies or cookies.
+action read_page_network(p: Page, since: Option<Int> = .none) -> Answer uses page {
+    let request = json.encode(Ask(op: "network", since: since))
+    ask_page(p, request)
+}
+
+/// The record of who did what in the page, after the place `since` names.
+action read_page_record(p: Page, since: Option<Int> = .none) -> Answer uses page {
+    let request = json.encode(Ask(op: "log", since: since))
+    ask_page(p, request)
+}
+
+/// Every field of the document with what it holds and who set it. A secret is listed by length.
+action read_page_fields(p: Page, frame: Option<Text> = .none) -> Answer uses page {
+    let request = json.encode(Ask(op: "fields", frame: frame))
+    ask_page(p, request)
+}
+
+/// The document's forms as what they ask: their questions, the answers they offer, which are
+/// required, and the buttons that send them.
+action read_page_forms(p: Page, frame: Option<Text> = .none) -> Answer uses page {
+    let request = json.encode(Ask(op: "forms", frame: frame))
+    ask_page(p, request)
+}
+
+/// The page's tables as rows, a long one read in parts.
+action read_page_table(
+    p: Page,
+    element: Option<Text> = .none,
+    from: Option<Int> = .none,
+    frame: Option<Text> = .none,
+) -> Answer uses page {
+    let request = json.encode(Ask(op: "table", element: element, from: from, frame: frame))
+    ask_page(p, request)
+}
+
+/// The outline lines that hold `text`, each with its line number.
+action find_page_text(
+    p: Page,
+    text: Text,
+    frame: Option<Text> = .none,
+    frames: Bool = false,
+) -> Answer uses page {
+    let request = json.encode(Ask(op: "search", text: .some(text), frame: frame, frames: frames))
+    ask_page(p, request)
+}
+
+/// The element the role and name name, and the ref that acts there.
+action find_page_element(
+    p: Page,
+    role: Option<Text> = .none,
+    name: Option<Text> = .none,
+    nth: Option<Int> = .none,
+    frame: Option<Text> = .none,
+    frames: Bool = false,
+) -> Answer uses page {
+    let request = json.encode(Ask(op: "find", role: role, name: name, nth: nth, frame: frame, frames: frames))
+    ask_page(p, request)
+}
+
+/// Press the element, as a hand does.
+action click_page(p: Page, element: Text, frame: Option<Text> = .none) -> Answer uses page {
+    let request = json.encode(Ask(op: "click", element: .some(element), frame: frame))
+    ask_page(p, request)
+}
+
+/// Move the pointer over an element, or to a point of the page.
+action hover_page(
+    p: Page,
+    element: Option<Text> = .none,
+    x: Option<Float> = .none,
+    y: Option<Float> = .none,
+) -> Answer uses page {
+    let request = json.encode(Ask(op: "hover", element: element, x: x, y: y))
+    ask_page(p, request)
+}
+
+/// Drag from one element or point to another, in steps.
+action drag_page(
+    p: Page,
+    from: Option<Text> = .none,
+    from_x: Option<Float> = .none,
+    from_y: Option<Float> = .none,
+    to: Option<Text> = .none,
+    to_x: Option<Float> = .none,
+    to_y: Option<Float> = .none,
+    steps: Option<Int> = .none,
+) -> Answer uses page {
+    let request = json.encode(Ask(
+            op: "drag",
+            drag_from: from,
+            from_x: from_x,
+            from_y: from_y,
+            to: to,
+            to_x: to_x,
+            to_y: to_y,
+            drag_steps: steps,
+        ))
+    ask_page(p, request)
+}
+
+/// Write `text` into an editable element.
+action fill_page(p: Page, element: Text, text: Text, frame: Option<Text> = .none) -> Answer uses page {
+    let request = json.encode(Ask(op: "fill", element: .some(element), text: .some(text), frame: frame))
+    ask_page(p, request)
+}
+
+/// Write a secret into a password or card field: it is never kept in the page's record.
+action fill_page_secret(
+    p: Page,
+    element: Text,
+    text: Text,
+    frame: Option<Text> = .none,
+) -> Answer uses page (
+    icon: .key,
+    label: "Fill a secret",
+) {
+    let request = json.encode(Ask(
+            op: "fill",
+            element: .some(element),
+            text: .some(text),
+            secret: true,
+            frame: frame,
+        ))
+    ask_page(p, request)
+}
+
+/// Choose options of a select.
+action select_page(p: Page, element: Text, values: List<Text>, frame: Option<Text> = .none) -> Answer uses page {
+    let request = json.encode(Ask(op: "select", element: .some(element), values: .some(values), frame: frame))
+    ask_page(p, request)
+}
+
+/// Choose the files of a file input, by absolute path.
+action fill_page_files(
+    p: Page,
+    element: Text,
+    paths: List<Text>,
+    frame: Option<Text> = .none,
+) -> Answer uses page {
+    let request = json.encode(Ask(op: "fill_files", element: .some(element), paths: .some(paths), frame: frame))
+    ask_page(p, request)
+}
+
+/// Press a key in the page, as `Control+a` or `Enter`.
+action press_page(p: Page, key: Text, element: Option<Text> = .none, frame: Option<Text> = .none) -> Answer uses page {
+    let request = json.encode(Ask(op: "press", key: .some(key), element: element, frame: frame))
+    ask_page(p, request)
+}
+
+/// Send the element's form through the page's own validation.
+action submit_page(
+    p: Page,
+    element: Text,
+    cross_origin: Bool = false,
+    frame: Option<Text> = .none,
+) -> Answer uses page {
+    let request = json.encode(Ask(op: "submit", element: .some(element), cross_origin: cross_origin, frame: frame))
+    ask_page(p, request)
+}
+
+/// A trusted pointer gesture: press at the first point, move through the rest and release at
+/// the last, for drawing on canvases.
+action pointer_page(p: Page, steps: List<Text>, button: Text = "left") -> Answer uses page {
+    let request = json.encode(Ask(op: "pointer", steps: .some(steps), button: .some(button)))
+    ask_page(p, request)
+}
+
+/// Turn the page's wheel to the top or the bottom, into view, or by a distance.
+action scroll_page(
+    p: Page,
+    element: Option<Text> = .none,
+    to: Option<Text> = .none,
+    by: Option<Int> = .none,
+    into_view: Option<Text> = .none,
+    frame: Option<Text> = .none,
+) -> Answer uses page {
+    let request = json.encode(Ask(
+            op: "scroll",
+            element: element,
+            to: to,
+            by: by,
+            into_view: into_view,
+            frame: frame,
+        ))
+    ask_page(p, request)
+}
+
+/// A picture of the page, or of one element's box, as a PNG.
+action capture_page(
+    p: Page,
+    element: Option<Text> = .none,
+    max_width: Option<Int> = .none,
+    frame: Option<Text> = .none,
+) -> Answer uses page (
+    icon: .camera,
+    label: "Capture the page",
+) {
+    let request = json.encode(Ask(op: "capture", element: element, max_width: max_width, frame: frame))
+    ask_page(p, request)
+}
+
+/// Open an address in the page's own window.
+action navigate(p: Page, url: Text) -> Answer uses page (
+    icon: .arrow_right,
+    label: "Go to an address",
+) {
+    let request = json.encode(Ask(op: "navigate", url: .some(url)))
+    let answer = ask_page(p, request)
+    p.url = url
+    answer
+}
+
+/// Go back to the page before this one.
+action back(p: Page) -> Answer uses page (icon: .arrow_left, label: "Back") {
+    let request = json.encode(Ask(op: "back"))
+    ask_page(p, request)
+}
+
+/// Go forward to the page this one followed.
+action forward(p: Page) -> Answer uses page (icon: .arrow_right, label: "Forward") {
+    let request = json.encode(Ask(op: "forward"))
+    ask_page(p, request)
+}
+
+/// Load the page again.
+action reload(p: Page) -> Answer uses page (icon: .refresh, label: "Reload") {
+    let request = json.encode(Ask(op: "reload"))
+    ask_page(p, request)
+}
+
+/// Stop loading the page.
+action stop_loading(p: Page) -> Answer uses page (icon: .x, label: "Stop") {
+    let request = json.encode(Ask(op: "stop"))
+    ask_page(p, request)
+}
+
+/// Show the page's article without its clutter.
+action reader(p: Page, enabled: Bool) -> Answer uses page (icon: .book_open, label: "Reader view") {
+    let request = json.encode(Ask(op: "reader", enabled: enabled))
+    ask_page(p, request)
+}
+
+/// Show the page at `level` zoom, where 1 is actual size.
+action zoom(p: Page, level: Float) -> Answer uses page (icon: .zoom_in, label: "Zoom") {
+    let request = json.encode(Ask(op: "zoom", level: .some(level)))
+    ask_page(p, request)
+}
+
+/// Find words in the page, as the find bar does.
+action find_in_page(
+    p: Page,
+    text: Text,
+    forward: Bool = true,
+    next: Bool = false,
+) -> Answer uses page {
+    let request = json.encode(Ask(op: "find_in_page", text: .some(text), forward: forward, next: next))
+    ask_page(p, request)
+}
+
+/// Close the find bar's search.
+action stop_finding(p: Page) -> Answer uses page {
+    let request = json.encode(Ask(op: "stop_finding"))
+    ask_page(p, request)
+}
+
+/// Answer a page's own question: an alert, a confirmation or a prompt.
+action answer_page_dialog(p: Page, id: Int, accept: Bool, text: Option<Text> = .none) -> Answer uses page {
+    let request = json.encode(Ask(op: "answer_dialog", id: .some(id), accept: accept, text: text))
+    ask_page(p, request)
+}
+
+/// Answer a server's sign-in request, or cancel it with no username.
+action answer_page_sign_in(
+    p: Page,
+    id: Int,
+    asker: Text,
+    username: Option<Text> = .none,
+    password: Option<Text> = .none,
+) -> Answer uses page (
+    icon: .key,
+    label: "Sign in to the page",
+) {
+    let request = json.encode(Ask(
+            op: "answer_sign_in",
+            id: .some(id),
+            asker: .some(asker),
+            username: username,
+            password: password,
+        ))
+    ask_page(p, request)
+}
+
+/// Let a held request leave, or keep the page as it is.
+action answer_held_request(p: Page, id: Int, allow: Bool) -> Answer uses page {
+    let request = json.encode(Ask(op: "answer_held_request", id: .some(id), allow: allow))
+    ask_page(p, request)
 }
 
 /// Saves a page for later. A page is bookmarked by its address alone: bookmarking it twice keeps
@@ -363,6 +815,19 @@ action visit(b: Browser, url: Text, title: Text, at: Time) {
 /// Takes in a page a window arrived at: it joins the person's history.
 action arrived_at(b: Browser, url: Text) uses time {
     visit(b, url, "", now)
+}
+
+/// The page went somewhere: where it is now is written on the page, and the visit joins the
+/// person's history unless the page's window paused it.
+action went_to(p: Page, url: Text) uses time {
+    let url = normalized(url)
+    if url == "" {
+        return
+    }
+    p.url = url
+    if not p.paused {
+        arrived_at(root Browser, url)
+    }
 }
 
 /// Pauses or resumes the person's history in a page's window.
@@ -614,61 +1079,101 @@ fn json_number(value: json.Value, key: Text) -> Float {
     }
 }
 
+/// The page `p` does what `request` (JSON, as the window's page reads it) says, and answers the
+/// page's own report. What was done is written into the page's record; a call that could not be
+/// made answers with its words. Every named page action below is this one, written out.
+action ask_page(p: Page, request: Text) -> Answer uses page (
+    icon: .send,
+    label: "Ask the page",
+) {
+    let raw = page.call(request)
+    let op = match json.parse(request) {
+        .ok(value) => json_text(value, "op"),
+        .err(_) => "",
+    }
+    let value = match json.parse(raw) {
+        .ok(value) => value,
+        .err(_) => {
+            p.steps.insert(PageStep(at: 0, operation: op, ok: false, message: raw))
+            return Answer(message: raw)
+        }
+    }
+    let ok = json_flag(value, "ok")
+    // A find puts the element it found in its findings, not in the reading.
+    let found = json_field(value, "data") ?? value
+    let answer = Answer(
+        ok: ok,
+        code: json_text(value, "code"),
+        message: json_text(value, "message"),
+        url: json_text(value, "url"),
+        title: json_text(value, "title"),
+        navigation: json_text(value, "navigation"),
+        loading: json_flag(value, "loading"),
+        outline: json_text(value, "outline"),
+        element: json_text(found, "element"),
+        line: json_number(found, "line").to_int(),
+        role: json_text(found, "role"),
+        name: json_text(found, "name"),
+        frame: json_text(found, "frame"),
+        image: json_text(value, "image"),
+    )
+    p.steps.insert(
+        PageStep(
+            at: 0,
+            operation: op,
+            ok: ok,
+            code: answer.code,
+            message: answer.message,
+            url: answer.url,
+        ),
+    )
+    answer
+}
+
+/// Whether the value at `key` of a JSON object is true.
+fn json_flag(value: json.Value, key: Text) -> Bool {
+    match json_field(value, key) {
+        .some(held) => match held {
+            .bool(flag) => flag,
+            .object(fields) => false,
+            .array(items) => false,
+            .string(text) => false,
+            .number(number) => false,
+            .null => false,
+        },
+        .none => false,
+    }
+}
+
 /// The moment at Unix seconds `seconds`.
 fn epoch(seconds: Float) -> Time {
     Time("1970-01-01T00:00:00Z") + Duration(seconds.to_int())
 }
 
-/// The browser's window: the address bar over the page it shows, and the menus that open the
-/// library and the browser's settings.
+/// The browser's window: the page it shows, or, in a workspace that has none, an empty window
+/// that offers one.
 view page_window(b: Browser) {
-    state address: Text = ""
-    state current: Text = ""
-    state title: Text = ""
-    state failed: Text = ""
-    ui.NavShell(content_kind: .document, title: if title == "" { "Browser" } else { title }) {
-        content: {
-            stack {
-                stack(padding: .related) {
-                    ui.TextInput(bind: address, placeholder: "Address and search", key: "l") {
-                        on submit(typed: Text): go(b, typed)
-                    }
-                    stack(padding: .related) {
-                        ui.Button("Bookmark", icon: .star, role: .plain) {
-                            on press: bookmark(
-                                b,
-                                if current == "" { address } else { current },
-                                .some(title),
-                            )
-                        }
-                        page_menu(b, current)
-                    }
-                }
-                if failed != "" {
-                    ui.EmptyState(
-                        "This page could not be shown",
-                        message: failed,
-                        icon: .globe,
-                        error: true,
-                    ) {
-                        on act: set(failed, "")
-                    }
-                } else {
-                    layers(fill) {
-                        ui.WebView(title: if title == "" { current } else { title }, uri: current) {
-                            on navigate(address: Text): set(current, address)
-                            on fail(why: Text): set(failed, why)
-                        }
-                    }
+    let first = b.pages.find(p -> true)
+    if let p = first {
+        page_view(p)
+    } else {
+        ui.NavShell(content_kind: .document, title: "Browser") {
+            content: {
+                ui.EmptyState(
+                    "No page is open",
+                    message: "Open a page to browse: its address, or what to search for.",
+                    icon: .globe,
+                ) {
+                    on act: new_page(b)
                 }
             }
         }
     }
 }
 
-/// What the address bar does when the person presses Enter: a page opens where the address says
-/// it is, and one already open in this window goes there.
-view page_menu(b: Browser, url: Text) {
+/// The page's menu: its library and settings, what this site's protection and forms are, and
+/// how the page is read.
+view page_menu(b: Browser, p: Page, zoom: State<Float>, reading: State<Bool>) {
     ui.MenuButton("Page", icon: .menu) {
         ui.MenuItem("History", icon: .clock) {
             on choose: open(b, view: library)
@@ -679,8 +1184,20 @@ view page_menu(b: Browser, url: Text) {
         ui.MenuItem("Browser settings", icon: .settings) {
             on choose: open(b, view: browser_settings)
         }
-        if origin_of(url) != "" {
-            let site = origin_of(url)
+        ui.MenuItem("Reader view", icon: .book_open) {
+            on choose: set(reading, not reading).then(reader(p, not reading))
+        }
+        ui.MenuItem("Zoom in", icon: .plus) {
+            on choose: zoom(p, zoom * 1.1).then(set(zoom, zoom * 1.1))
+        }
+        ui.MenuItem("Zoom out", icon: .minus) {
+            on choose: zoom(p, zoom / 1.1).then(set(zoom, zoom / 1.1))
+        }
+        ui.MenuItem("Actual size", icon: .zoom_in) {
+            on choose: zoom(p, 1.0).then(set(zoom, 1.0))
+        }
+        if origin_of(p.url) != "" {
+            let site = origin_of(p.url)
             if b.sites_without_protection.contains(site) {
                 ui.MenuItem("Turn tracker protection on for this site", icon: .shield) {
                     on choose: set_site_protection(b, site, true)
@@ -697,15 +1214,31 @@ view page_menu(b: Browser, url: Text) {
     }
 }
 
-/// A page's own window: the page itself, with its address, whether its history is paused, and
-/// what was done in it.
+/// A page's own window: the page itself, with its address and navigation, whether its history
+/// is paused, and what was done in it.
 view page_view(p: Page) {
     state address: Text = ""
     state failed: Text = ""
+    state finding: Bool = false
+    state find_text: Text = ""
+    state zoom: Float = 1.0
+    state reading: Bool = false
     let b = root Browser
     ui.NavShell(content_kind: .document, title: if p.title == "" { p.url } else { p.title }) {
         actions: {
             std.header {
+                ui.Button("Back", icon: .arrow_left, role: .plain) {
+                    on press: back(p)
+                }
+                ui.Button("Forward", icon: .arrow_right, role: .plain) {
+                    on press: forward(p)
+                }
+                ui.Button("Reload", icon: .refresh, role: .plain) {
+                    on press: reload(p)
+                }
+                ui.Button("Find in page", icon: .search, role: .plain) {
+                    on press: set(finding, not finding)
+                }
                 ui.Button("Pause history", icon: .clock, toggled: p.paused) {
                     on press: toggle_pause(p)
                 }
@@ -714,11 +1247,29 @@ view page_view(p: Page) {
         content: {
             stack {
                 stack(padding: .related) {
-                    ui.TextInput(bind: address, placeholder: p.url) {
-                        on submit(typed: Text): go(b, typed)
+                    ui.TextInput(
+                        bind: address,
+                        placeholder: if p.url == "" { "Address and search" } else { p.url },
+                        key: "l",
+                    ) {
+                        on submit(typed: Text): navigate(p, typed)
                     }
                     ui.Button("Bookmark", icon: .star, role: .plain) {
                         on press: bookmark(b, p.url, .some(p.title))
+                    }
+                    page_menu(b, p, zoom, reading)
+                }
+                if finding {
+                    stack(padding: .related) {
+                        ui.TextInput(bind: find_text, placeholder: "Find in page", key: "f") {
+                            on submit(typed: Text): find_in_page(p, typed)
+                        }
+                        ui.Button("Next", icon: .arrow_down, role: .plain) {
+                            on press: find_in_page(p, find_text, next: true)
+                        }
+                        ui.Button("Close", icon: .x, role: .plain) {
+                            on press: stop_finding(p).then(set(finding, false))
+                        }
                     }
                 }
                 if failed != "" {
@@ -727,10 +1278,13 @@ view page_view(p: Page) {
                         message: failed,
                         icon: .globe,
                         error: true,
-                    )
+                    ) {
+                        on act: set(failed, "")
+                    }
                 } else {
                     layers(fill) {
                         ui.WebView(title: if p.title == "" { p.url } else { p.title }, uri: p.url) {
+                            on navigate(address: Text): went_to(p, address)
                             on fail(why: Text): set(failed, why)
                         }
                     }

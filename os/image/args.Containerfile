@@ -65,7 +65,7 @@ ARG ENV_RUNTIME_REF=scratch
 # TILO_WITH_BROWSER=0 builds the image without the browser: no Browser app and
 # no Chromium engine runtime. Default 1.
 #
-# The engine is the native CEF host (apps/browser/chromium) built against the
+# The engine is the native CEF host (crates/engines/chromium-host/chromium) built against the
 # pinned CEF distribution (scripts/browser/cef-lock.json, fetched as an external
 # asset) and signed as its own runtime bundle; the Browser is an ordinary tapp.
 # Nothing about the boot chain (kernel, initramfs, LUKS/TPM unlock, greeter,

@@ -117,9 +117,10 @@ pub struct Reconciler {
     /// renders in, which holds the view's root, so a call's `fill` reaches that root through each
     /// fragment between ([`fragment_fill`]).
     filling: HashMap<String, f32>,
-    /// The page engine this window shows a `ui.WebView` with, made when one is first built: one
-    /// page per window, so the window holds it and not the app whose view it draws.
-    page_engine: Rc<RefCell<Option<ui::webview::SharedEngine>>>,
+    /// The page this window shows a `ui.WebView` with, made when one is first built: one page
+    /// per window, so the window holds it and not the app whose view it draws. Its session is
+    /// the engine's one reader, which the window also asks for the app's page calls.
+    shown_page: crate::page_runner::Page,
 }
 
 fn prop<'a>(node: &'a UiNode, name: &str) -> Option<&'a Value> {
@@ -498,7 +499,7 @@ impl Reconciler {
             rows: None,
             broken: Rc::default(),
             filling: HashMap::new(),
-            page_engine: Rc::default(),
+            shown_page: Rc::default(),
         }
     }
 
@@ -517,13 +518,20 @@ impl Reconciler {
             rows: other.rows.clone(),
             broken: Rc::clone(&other.broken),
             filling: HashMap::new(),
-            page_engine: Rc::clone(&other.page_engine),
+            shown_page: Rc::clone(&other.shown_page),
         }
     }
 
     #[must_use]
     pub fn broken(&self) -> Vec<String> {
         self.broken.borrow().clone()
+    }
+
+    /// The page this window shows, as the reconciler hands it to its views: the window keeps
+    /// the same one to answer its app's page calls.
+    #[must_use]
+    pub fn page(&self) -> crate::page_runner::Page {
+        Rc::clone(&self.shown_page)
     }
 
     fn note_broken(&self, node: &UiNode, error: &ui::component::Error) {
@@ -703,14 +711,13 @@ impl Reconciler {
             return self.text_of(node, "", TextRole::Caption);
         };
         // A page is shown with the window's engine: the window holds it, and hands it to the
-        // view while the view is built.
+        // view while the view is built, beside the session that reads the engine's events once.
         let outer = ui::webview::window_engine();
+        let outer_page = ui::webview::window_page();
         if description.name == "WebView" {
-            let mut held = self.page_engine.borrow_mut();
-            let engine = held
-                .get_or_insert_with(ui::webview::new_page_engine)
-                .clone();
+            let engine = crate::page_runner::engine_of(&self.shown_page);
             ui::webview::set_window_engine(Some(engine));
+            ui::webview::set_window_page(Some(Rc::clone(&self.shown_page)));
         }
         let built = {
             let mut source = NodeSource::new(node, description, self);
@@ -720,6 +727,7 @@ impl Reconciler {
             crate::adapter::components().build(&description.name, &mut source)
         };
         ui::webview::set_window_engine(outer);
+        ui::webview::set_window_page(outer_page);
         built.unwrap_or_else(|error| {
             self.note_broken(node, &error);
             self.text_of(node, "", TextRole::Caption)

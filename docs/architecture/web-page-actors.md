@@ -6,7 +6,7 @@ rest, a person reviewing what agents filled. This page says how that holds
 together, what each actor is told, and what is not built yet.
 
 The engine's side of it is specified in
-[`apps/browser/chromium/README.md`](../../apps/browser/chromium/README.md)
+[`crates/engines/chromium-host/chromium/README.md`](../../crates/engines/chromium-host/chromium/README.md)
 ("Several actors in one tab"); this page is the model around it.
 
 ## Where a page lives
@@ -866,7 +866,7 @@ down.
   a connection be asked there and answer there. That a real page then hands
   its whole frame over is held on the engine's side: a suite runs the page
   as the Browser runs it, plays the session's ask and reads the frame out of
-  the share's outbox (`apps/browser/chromium/tests/page_share.py`). An app
+  the share's outbox (`crates/engines/chromium-host/chromium/tests/page_share.py`). An app
   that is asked and hands nothing over within ten seconds is asked again,
   and both devices say which side waits: the sharing one that the window's
   app has not handed its page over, the watching one that the device running

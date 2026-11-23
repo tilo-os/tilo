@@ -98,7 +98,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
 # The repository the pack scripts read: the app manifests and their budgets,
 # the fonts' catalog, and the tools.
 COPY os/ /build/os/
-COPY apps/browser/ /build/apps/browser/
+COPY crates/engines/chromium-host/ /build/crates/engines/chromium-host/
 COPY crates/core/tilo-app-package/max-app-bytes /build/crates/core/tilo-app-package/max-app-bytes
 COPY crates/ui/ui-core/assets/fonts/ /build/crates/ui/ui-core/assets/fonts/
 COPY crates/engines/tilo-webview/src/chromium/runtime.rs /build/crates/engines/tilo-webview/src/chromium/runtime.rs
@@ -116,7 +116,7 @@ RUN test -s /out/fonts/manifest.toml
 RUN set -eu; \
     python3 /build/os/scripts/collect-runtime-dependencies.py --library-dir /out \
         /out/libruntime_dylib.so /out/tilo-runtime-account-capability \
-        $(sed "s|^|/out/|" /out/runtime-engines) /out/thin-apps/browser > /tmp/dependencies; \
+        $(sed "s|^|/out/|" /out/runtime-engines) > /tmp/dependencies; \
     libstd="$(find /out -maxdepth 1 -name 'libstd-*.so' -print -quit)"; \
     test -n "$libstd"; \
     /out/tilo-runtime-bundle key generate --out /tmp/runtime-identity.json; \
@@ -131,7 +131,7 @@ RUN set -eu; \
         --require-publisher "$(cat /out/runtime-bundle-publisher.hex)"; \
     bash /build/os/scripts/verify-runtime-bundle-closure.sh \
         "/usr/lib/tilo-runtime/$(cat /out/runtime-version)" \
-        /out/tilo-runtime-account-capability /out/thin-apps/browser; \
+        /out/tilo-runtime-account-capability; \
     rm -f /tmp/runtime-identity.json
 # The Chromium engine's own runtime bundle, signed here too: Browser's manifest
 # lists it in `[package].optional-runtimes`, so the launcher mounts it into the

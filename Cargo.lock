@@ -1542,49 +1542,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "browser"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "blake3",
- "bounded-zip",
- "browser-continuity",
- "browser-model",
- "fnv",
- "hex",
- "host-info",
- "jiff",
- "reqwest",
- "ring",
- "runtime-dylib",
- "rusqlite",
- "serde",
- "serde_json",
- "settings-model",
- "sha2 0.11.0",
- "taffy",
- "tempfile",
- "tilo-accounts-engine",
- "tilo-app",
- "tilo-automerge-fork",
- "tilo-browser-import-engine",
- "tilo-browser-sessions",
- "tilo-clock",
- "tilo-files",
- "tilo-net",
- "tilo-paths",
- "tilo-test-env",
- "tilo-vello",
- "tilo-webview",
- "tilo-winit",
- "tracing",
- "url",
- "uuid",
- "workspace-hack",
- "zip",
-]
-
-[[package]]
 name = "browser-continuity"
 version = "0.1.0"
 dependencies = [
@@ -1618,27 +1575,6 @@ dependencies = [
  "tilo-sandbox-core",
  "workspace-hack",
  "zeroize",
-]
-
-[[package]]
-name = "browser-model"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tilo-resource",
- "tilo-test-env",
- "url",
- "workspace-hack",
-]
-
-[[package]]
-name = "browser-model-wasm"
-version = "0.1.0"
-dependencies = [
- "browser-model",
- "tilo-model-guest",
- "workspace-hack",
 ]
 
 [[package]]
@@ -17267,11 +17203,13 @@ dependencies = [
  "tilo-failure",
  "tilo-formats",
  "tilo-media",
+ "tilo-page-engine",
  "tilo-render-protocol",
  "tilo-resource",
  "tilo-rich-edit",
  "tilo-ui",
  "tilo-ui-graph",
+ "tilo-webview",
  "tracing",
  "workspace-hack",
 ]
@@ -19666,7 +19604,6 @@ dependencies = [
  "api-tester-model-wasm",
  "assistant-model-wasm",
  "backups-model-wasm",
- "browser-model-wasm",
  "camera-model-wasm",
  "clocks-model-wasm",
  "console-model-wasm",
@@ -20139,6 +20076,8 @@ dependencies = [
 name = "tilo-page-engine"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "serde_json",
  "tilo-webview",
  "workspace-hack",
 ]
@@ -22187,6 +22126,7 @@ dependencies = [
  "tilo-lock",
  "tilo-media",
  "tilo-mime",
+ "tilo-page-engine",
  "tilo-paint-stream",
  "tilo-paint-strokes",
  "tilo-paths",
@@ -27343,11 +27283,8 @@ dependencies = [
  "bounded-zip",
  "brotli",
  "brotli-decompressor",
- "browser",
  "browser-continuity",
  "browser-continuity-core",
- "browser-model",
- "browser-model-wasm",
  "brush-parser",
  "btoi",
  "buffa",

@@ -1209,7 +1209,7 @@ class Run:
         whole key, as that machine's own identity names it, and its label as B's server caps it.
         B's own agent is recorded and reviewed with no device. The record's device is the one
         the change it made was invoked with (`/invoker/device`): the tab takes no entry whose
-        device is not that (apps/browser/src/page_record.rs). B's shell registers them the same way
+        device is not that (the page the window's engine shows). B's shell registers them the same way
         while they work, none of them as an agent of an environment."""
         res.facts["actors"] = self.tab_actors
         res.facts["sessions"] = self.tab_sessions
