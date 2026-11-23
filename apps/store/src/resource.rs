@@ -1085,11 +1085,17 @@ mod tests {
         let mut request = None;
         tilo_test_env::wait_until("the original channel carries the admitted launch", || {
             app.settle();
+            // The host takes the window's requests every frame it runs, and
+            // the test harness is that host here: what the Store asked of the
+            // original channel is what it took, whether it was taken in the
+            // frame the launch landed in or the one after.
             request = app
-                .with_surface::<StoreApp, _>(|surface| {
-                    surface.state().take_collab_requests().into_iter().next()
-                })
-                .flatten();
+                .harness()
+                .take_collaboration_requests()
+                .into_iter()
+                .find(|request| {
+                    matches!(request, CollabRequest::LaunchInstalledApplication { .. })
+                });
             request.is_some()
         });
         let Some(CollabRequest::LaunchInstalledApplication {
