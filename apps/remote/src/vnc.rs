@@ -285,25 +285,46 @@ fn read_security_result(stream: &mut TcpStream) -> io::Result<()> {
 fn read_reason(stream: &mut TcpStream) -> io::Result<String> {
     let mut len = [0u8; 4];
     stream.read_exact(&mut len)?;
-    let mut buf = vec![0u8; u32::from_be_bytes(len) as usize];
+    let len = usize::try_from(u32::from_be_bytes(len)).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "RFB server reason exceeds the 16 KiB limit",
+        )
+    })?;
+    if len > rfb::MAX_SERVER_NAME_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("RFB server reason length {len} exceeds the 16 KiB limit"),
+        ));
+    }
+    let mut buf = vec![0u8; len];
     stream.read_exact(&mut buf)?;
     Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+fn discard_exact(stream: &mut TcpStream, len: u64) -> io::Result<()> {
+    let copied = io::copy(&mut Read::by_ref(stream).take(len), &mut io::sink())?;
+    if copied < len {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "RFB server closed the stream mid-message",
+        ));
+    }
+    Ok(())
 }
 
 fn read_set_colour_map(stream: &mut TcpStream) -> io::Result<()> {
     let mut head = [0u8; 5];
     stream.read_exact(&mut head)?;
-    let n = u16::from_be_bytes([head[3], head[4]]) as usize;
-    let mut skip = vec![0u8; n * 6];
-    stream.read_exact(&mut skip)
+    let n = u64::from(u16::from_be_bytes([head[3], head[4]]));
+    discard_exact(stream, n.saturating_mul(6))
 }
 
 fn read_server_cut_text(stream: &mut TcpStream) -> io::Result<()> {
     let mut head = [0u8; 7];
     stream.read_exact(&mut head)?;
-    let len = u32::from_be_bytes([head[3], head[4], head[5], head[6]]) as usize;
-    let mut skip = vec![0u8; len];
-    stream.read_exact(&mut skip)
+    let len = u64::from(u32::from_be_bytes([head[3], head[4], head[5], head[6]]));
+    discard_exact(stream, len)
 }
 
 fn is_timeout(e: &io::Error) -> bool {
@@ -318,8 +339,12 @@ mod tests {
     use super::*;
     use std::net::TcpListener;
 
-    /// A minimal RFB 3.8 server that offers `None` security and serves one
-    fn spawn_loopback_server(pixels: Vec<[u8; 4]>) -> (u16, std::sync::mpsc::Sender<()>) {
+    /// A minimal RFB 3.8 server that offers `None` security, optionally sends
+    /// leading messages before the framebuffer update, and serves one raw update.
+    fn spawn_loopback_server_with_prefix(
+        prefix: Vec<u8>,
+        pixels: Vec<[u8; 4]>,
+    ) -> (u16, std::sync::mpsc::Sender<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let (keep_open, open) = std::sync::mpsc::channel::<()>();
@@ -358,6 +383,10 @@ mod tests {
             let mut req = [0u8; 10];
             s.read_exact(&mut req).unwrap();
 
+            if !prefix.is_empty() {
+                s.write_all(&prefix).unwrap();
+            }
+
             let mut msg = vec![0u8, 0, 0, 1]; // type=0, pad=0, count=1
             msg.extend_from_slice(&0u16.to_be_bytes());
             msg.extend_from_slice(&0u16.to_be_bytes());
@@ -373,6 +402,10 @@ mod tests {
             let _ = open.recv();
         });
         (port, keep_open)
+    }
+
+    fn spawn_loopback_server(pixels: Vec<[u8; 4]>) -> (u16, std::sync::mpsc::Sender<()>) {
+        spawn_loopback_server_with_prefix(Vec::new(), pixels)
     }
 
     tilo_test_env::scenario! {
@@ -429,6 +462,116 @@ mod tests {
             tilo_test_env::wait_until("the refused connection to surface as Failed", || {
                 matches!(vnc.status(), SessionStatus::Failed(_))
             });
+        }
+    }
+
+    #[test]
+    fn read_reason_refuses_reason_over_the_server_name_bound() {
+        let too_long = rfb::MAX_SERVER_NAME_BYTES + 1;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let header = u32::try_from(too_long).unwrap().to_be_bytes();
+            let _ = s.write_all(&header);
+            let _ = s.write_all(&vec![b'x'; too_long]);
+        });
+        let mut client = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let err = read_reason(&mut client).expect_err("reason over 16 KiB must be refused");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        drop(client);
+        server.join().unwrap();
+
+        let exact = rfb::MAX_SERVER_NAME_BYTES;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let header = u32::try_from(exact).unwrap().to_be_bytes();
+            s.write_all(&header).unwrap();
+            s.write_all(&vec![b'a'; exact]).unwrap();
+        });
+        let mut client = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let reason = read_reason(&mut client).unwrap();
+        assert_eq!(reason.len(), exact);
+        assert!(reason.bytes().all(|b| b == b'a'));
+        server.join().unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            s.write_all(b"RFB 003.008\n").unwrap();
+            let mut ver = [0u8; 12];
+            s.read_exact(&mut ver).unwrap();
+            let _ = s.write_all(&[0u8]);
+            let _ = s.write_all(&u32::try_from(too_long).unwrap().to_be_bytes());
+            let _ = s.write_all(&vec![b'x'; too_long]);
+        });
+        let vnc = VncSession::connect(VncConfig {
+            host: "127.0.0.1".into(),
+            port,
+            password: None,
+        })
+        .unwrap();
+        let failure = tilo_test_env::wait_for("oversized reason refusal", || {
+            if let SessionStatus::Failed(msg) = vnc.status() {
+                Some(msg)
+            } else {
+                None
+            }
+        });
+        assert!(
+            failure.contains("16 KiB"),
+            "expected size refusal, got: {failure}"
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn discarded_colour_map_and_cut_text_leave_the_following_update_intact() {
+        let mut prefix = Vec::new();
+        // SetColourMapEntries: type=1, pad=0, first_colour=0, n_colours=3, 3*6 payload bytes.
+        prefix.push(1u8);
+        prefix.push(0u8);
+        prefix.extend_from_slice(&0u16.to_be_bytes());
+        prefix.extend_from_slice(&3u16.to_be_bytes());
+        prefix.extend_from_slice(&[0xAB; 18]);
+        // ServerCutText: type=3, 3 pad bytes, len=256, 256 payload bytes.
+        prefix.push(3u8);
+        prefix.extend_from_slice(&[0u8; 3]);
+        prefix.extend_from_slice(&256u32.to_be_bytes());
+        prefix.extend_from_slice(&[b'c'; 256]);
+
+        let pixels = vec![
+            [11, 22, 33, 255],
+            [44, 55, 66, 255],
+            [77, 88, 99, 255],
+            [111, 122, 133, 255],
+            [144, 155, 166, 255],
+            [177, 188, 199, 255],
+            [200, 210, 220, 255],
+            [230, 240, 250, 255],
+        ];
+        let (port, _hold) = spawn_loopback_server_with_prefix(prefix, pixels.clone());
+        let mut vnc = VncSession::connect(VncConfig {
+            host: "127.0.0.1".into(),
+            port,
+            password: None,
+        })
+        .unwrap();
+
+        let fb = tilo_test_env::wait_for("framebuffer after discarded messages", || {
+            if let SessionStatus::Failed(e) = vnc.status() {
+                panic!("vnc connect failed: {e}")
+            }
+            vnc.take_frame()
+                .filter(|fb| fb.data.iter().any(|&b| b != 0))
+        });
+        assert_eq!((fb.width, fb.height), (4, 2));
+        for (i, expected) in pixels.iter().enumerate() {
+            let got_px = &fb.data[i * 4..i * 4 + 4];
+            assert_eq!(got_px, &expected[..], "pixel {i} mismatch");
         }
     }
 }
