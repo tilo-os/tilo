@@ -211,7 +211,7 @@ pub fn device_cert(
 /// A certified workspace service on its own endpoint, routed as an embedder routes
 /// it.
 pub struct TestHost {
-    host: WorkspaceService,
+    host: Arc<WorkspaceService>,
     router: Router,
     /// The relay its endpoint took as its home ([`reached_through`]), closed
     /// after the endpoint that reaches it.
@@ -222,14 +222,21 @@ pub struct TestHost {
 impl TestHost {
     /// The workspaces it governs.
     #[must_use]
-    pub const fn workspaces(&self) -> &Workspaces {
+    pub fn workspaces(&self) -> &Workspaces {
         self.host.workspaces()
     }
 
     /// The host itself.
     #[must_use]
-    pub const fn host(&self) -> &WorkspaceService {
+    pub fn host(&self) -> &WorkspaceService {
         &self.host
+    }
+
+    /// The host, shared with what answers its steps from another thread, as an embedder
+    /// installs its service where its apps reach it.
+    #[must_use]
+    pub fn shared(&self) -> Arc<WorkspaceService> {
+        Arc::clone(&self.host)
     }
 
     /// The durable records of its workspaces.
@@ -518,33 +525,35 @@ async fn host_on(
     let endpoint = endpoint.bind().await.expect("a loopback endpoint binds");
     #[cfg(test)]
     reached_through(&endpoint, &home).await;
-    let host = WorkspaceService::open(
-        ServiceConfig {
-            max_workspace_grants: grants,
-            // Each device knows only the app surfaces named to it: tests run side by side in one
-            // process, and a surface one of them names must not change what another's stores
-            // admit.
-            surfaces: Arc::default(),
-            // A server of other people's workspaces takes their work in them.
-            ..ServiceConfig::new(
-                state_root.to_owned(),
-                tilo_server_protocol::WorkSetting {
-                    from: tilo_server_protocol::WorkFrom::Anyone,
-                    ..tilo_server_protocol::WorkSetting::own_person()
-                },
-            )
-        },
-        ServiceIdentity {
-            user_public_key: cert.user_public_key,
-            device_signing_key: key.clone(),
-            device_cert: cert.clone(),
-            revocations: RevocationList::new(),
-        },
-        endpoint.clone(),
-        Some(channels),
-    )
-    .await
-    .expect("the host opens");
+    let host = Arc::new(
+        WorkspaceService::open(
+            ServiceConfig {
+                max_workspace_grants: grants,
+                // Each device knows only the app surfaces named to it: tests run side by side in one
+                // process, and a surface one of them names must not change what another's stores
+                // admit.
+                surfaces: Arc::default(),
+                // A server of other people's workspaces takes their work in them.
+                ..ServiceConfig::new(
+                    state_root.to_owned(),
+                    tilo_server_protocol::WorkSetting {
+                        from: tilo_server_protocol::WorkFrom::Anyone,
+                        ..tilo_server_protocol::WorkSetting::own_person()
+                    },
+                )
+            },
+            ServiceIdentity {
+                user_public_key: cert.user_public_key,
+                device_signing_key: key.clone(),
+                device_cert: cert.clone(),
+                revocations: RevocationList::new(),
+            },
+            endpoint.clone(),
+            Some(channels),
+        )
+        .await
+        .expect("the host opens"),
+    );
     let mut router = Router::builder(endpoint);
     for (alpn, handler) in host.protocols() {
         router = router.accept(alpn, handler);

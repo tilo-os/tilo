@@ -3584,4 +3584,4 @@ mod person_model_tests;
 #[cfg(test)]
 mod share_tests;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

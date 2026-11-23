@@ -193,6 +193,9 @@ pub mod servers;
 mod shares;
 #[cfg(test)]
 pub(crate) mod tests;
+/// A fixture workspace with its governance as actions, for tests outside this module.
+#[cfg(test)]
+pub(crate) use actions::tests::governed;
 mod unattended;
 mod unbuildable_windows;
 pub use unattended::{Answer as PersonAnswer, AsksPeople};

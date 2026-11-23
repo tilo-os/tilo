@@ -7,13 +7,16 @@
 //! answer held to the shape the caller asked for, and its cost counted on the day of the
 //! assistant the person keeps in the workspace, as a judgement of their programs is.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
+use tilo_action_policy::MemberId;
 use tilo_actions::ActionDescriptor;
 use tilo_actions::remote::{Pending, pending};
 use tilo_agent_session::transform::{self, Interaction, TransformModel};
 use tilo_broker_core::steps::{HostStepOutcome, HostStepRequest, HostStepServices};
+use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
 use ui::time::Duration;
 
@@ -30,9 +33,9 @@ pub struct Transforms {
     service: ServiceSlot,
     /// Where a transform's cost is written once its answer came.
     runtime: tokio::runtime::Handle,
-    /// The transforms running now, so a burst is refused as busy rather than piling up on the
-    /// model ([`transform::MAX_RUNNING`]).
-    running: Arc<AtomicUsize>,
+    /// The transforms running now, by the agent whose work each is, so a burst is refused as
+    /// busy rather than piling up on the model ([`transform::MAX_RUNNING`]).
+    running: Running,
 }
 
 impl Transforms {
@@ -43,28 +46,54 @@ impl Transforms {
         Self {
             service,
             runtime,
-            running: Arc::default(),
+            running: Running::default(),
         }
-    }
-
-    /// One place of the transforms that may run at once, or `None` when as many as the agent
-    /// allows already run. The place is given back when the value is dropped.
-    fn begin(&self) -> Option<Place> {
-        self.running
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |running| {
-                (running < transform::MAX_RUNNING).then_some(running.saturating_add(1))
-            })
-            .ok()
-            .map(|_| Place(Arc::clone(&self.running)))
     }
 }
 
-/// One of the transforms that may run at once: dropped, it gives its place back.
-struct Place(Arc<AtomicUsize>);
+/// The transforms running now, counted per agent: each agent the device answers for gets its own
+/// [`transform::MAX_RUNNING`] places, so a burst one agent asks for never holds another agent's
+/// work.
+#[derive(Clone, Default)]
+struct Running {
+    by_agent: Arc<Mutex<HashMap<MemberId, usize>>>,
+}
+
+impl Running {
+    /// One of `agent`'s places to run a transform in, or `None` when it already runs as many as
+    /// it may. The place is given back when the value is dropped.
+    fn begin(&self, agent: &MemberId) -> Option<Place> {
+        let mut by_agent = self.by_agent.lock_recover();
+        let running = by_agent.entry(agent.clone()).or_default();
+        if *running >= transform::MAX_RUNNING {
+            return None;
+        }
+        *running = running.saturating_add(1);
+        drop(by_agent);
+        Some(Place {
+            by_agent: Arc::clone(&self.by_agent),
+            agent: agent.clone(),
+        })
+    }
+}
+
+/// One agent's place among its transforms that may run at once: dropped, it gives its place
+/// back.
+struct Place {
+    by_agent: Arc<Mutex<HashMap<MemberId, usize>>>,
+    agent: MemberId,
+}
 
 impl Drop for Place {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::AcqRel);
+        let mut by_agent = self.by_agent.lock_recover();
+        let Some(running) = by_agent.get_mut(&self.agent) else {
+            return;
+        };
+        *running = running.saturating_sub(1);
+        if *running == 0 {
+            by_agent.remove(&self.agent);
+        }
     }
 }
 
@@ -88,10 +117,10 @@ impl HostStepServices for Transforms {
                 request.address.resource
             ));
         }
-        let Some(place) = self.begin() else {
+        let Some(place) = self.running.begin(&request.actor.member) else {
             return Ok(Pending::ready(Err(Box::new(tilo_actions::ActionFailure {
                 code: transform::code::BUSY.to_owned(),
-                message: "the agent is already running as many transforms as it allows".to_owned(),
+                message: "this agent is already running as many transforms as it allows".to_owned(),
                 details: None,
                 retryable: true,
             }))));
@@ -222,36 +251,5 @@ impl TransformModel for Asked<'_> {
 }
 
 #[cfg(test)]
-mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )]
-
-    use super::*;
-
-    /// As many transforms as the agent allows run at once; the next is refused as busy until one
-    /// ends.
-    #[test]
-    fn no_more_than_the_allowed_transforms_run_at_once() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap();
-        let transforms = Transforms::new(ServiceSlot::default(), runtime.handle().clone());
-        let mut places = Vec::new();
-        for _ in 0..transform::MAX_RUNNING {
-            places.push(transforms.begin().expect("a place is free"));
-        }
-        assert!(
-            transforms.begin().is_none(),
-            "the agent is running as many transforms as it allows"
-        );
-        drop(places);
-        assert!(
-            transforms.begin().is_some(),
-            "a place is free once a transform ends"
-        );
-    }
-}
+#[path = "transforms_tests.rs"]
+mod tests;

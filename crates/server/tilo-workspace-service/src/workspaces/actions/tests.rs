@@ -146,7 +146,7 @@ pub(super) fn request(workspace: &str, verb: &str, argument: Value) -> InvokeReq
 
 /// A new workspace of `workspaces`, the workspace carrying it, and its governance
 /// as actions.
-pub(super) async fn governed(
+pub(crate) async fn governed(
     workspaces: &Workspaces,
 ) -> (String, WorkspaceId, ServiceWorkspaceActions) {
     let summary = workspaces.create("Team").await.unwrap();

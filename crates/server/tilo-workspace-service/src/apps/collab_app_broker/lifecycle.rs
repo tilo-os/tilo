@@ -858,6 +858,17 @@ impl AppBrokerState {
     ) {
         Self::test_state_configured(membership, None, PeerPublisher::disabled(), services)
     }
+    /// [`Self::test_state`] for a test outside this module, which drains no bridge: the
+    /// receiver is dropped here.
+    #[cfg(test)]
+    pub(crate) fn test_state_only(
+        membership: Option<WorkspaceTreeHandle>,
+        services: ProcessServices,
+    ) -> Arc<Self> {
+        let (state, bridge) = Self::test_state(membership, services);
+        drop(bridge);
+        state
+    }
     /// The state [`Self::test_broker_with_authority`] wraps, with the bridge a
     /// test drains itself, its own publisher, or a native config.
     #[cfg(any(test, feature = "test-support"))]
