@@ -86,6 +86,8 @@ mod asks;
 mod calendar_connect;
 mod calendars;
 mod carried;
+#[cfg(test)]
+mod device_turn_tests;
 mod engine_actions;
 mod going;
 mod instructions;
@@ -2976,7 +2978,7 @@ impl tilo_agent_turn::Doing<McpServer<WorkspaceActionProvider>> for Answering<'_
         {
             let mut noted = self.noted.lock_recover();
             if noting == steps::Note::After {
-                noted.1 = Some(call.name.clone());
+                noted.1 = Some(narration::said(call));
             }
             noted.0 = Some(call.name.clone());
         }
