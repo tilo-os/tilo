@@ -67,9 +67,8 @@ writes only to the workspace mailbox.
 Workspaces refuse new writes to archived per-member app documents. An app
 with a workspace primary opens that same document for each member. The
 archives retain their original read rules so members can recover earlier data.
-Packages can use shared workspace documents or declare
-personal profile storage for private data. TiloLang packages built with
-`resources: .own` open in the certified profile. Recovery uses the locally
+Packages use shared workspace documents, or keep each member's records in
+their own workspace (TiloLang's `resources: .own`). Recovery uses the locally
 held copy for that person and workspace and marks unconfirmed outside effects
 as unknown. The original archive remains available to its original reader.
 

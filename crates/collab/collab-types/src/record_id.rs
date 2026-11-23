@@ -38,15 +38,6 @@ pub fn is_personal_cluster(root: &[u8; 32], cluster: &uuid::Uuid) -> bool {
     personal_cluster(root) == *cluster
 }
 
-/// The retained store's cluster of the person a [`Actor::Person`](crate::Actor) id names (the
-/// lowercase hex of their root public key); `None` for anything else.
-#[must_use]
-pub fn personal_cluster_of(person: &str) -> Option<uuid::Uuid> {
-    let mut key = [0u8; 32];
-    hex::decode_to_slice(person, &mut key).ok()?;
-    Some(personal_cluster(&key))
-}
-
 /// What every person record's id derives from: the app's base record
 /// (`tab:0`), whose role the person's record of a kind plays.
 const PERSON_RESOURCE_BASE: &str = "tab:0000000000000000";
@@ -183,9 +174,6 @@ mod tests {
             assert_eq!(cluster.get_version_num(), 8);
             assert!(is_personal_cluster(&ada, &cluster));
             assert!(!is_personal_cluster(&bob, &cluster));
-            assert_eq!(personal_cluster_of(&hex::encode(ada)), Some(cluster));
-            assert_eq!(personal_cluster_of("not a key"), None);
-            assert_eq!(personal_cluster_of(&hex::encode([1u8; 31])), None);
         }
     }
 }

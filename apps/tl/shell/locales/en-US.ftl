@@ -402,7 +402,7 @@ d-soy4vimv = Shell
 d-farfsl4d-filter-pinned = Pinned
 
 d-nkjtmr33 = Viewing
-    .doc = What the person shows of their layout: the shell's own view of it, in their profile (`resources: .profile`, `root viewing: Viewing`).
+    .doc = What the person shows of their layout: the shell's own view of it, in their own workspace (`resources: .own`, `root viewing: Viewing`).
     .noun = { $count ->
         [one] viewing
        *[other] viewings

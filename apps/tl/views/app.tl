@@ -1,4 +1,4 @@
-app so.tilo.lang.views "Views" (icon: .eye, category: .system, resources: .profile)
+app so.tilo.lang.views "Views" (icon: .eye, category: .system, resources: .own)
 
 use so.tilo.chat as chat
 

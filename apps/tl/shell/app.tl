@@ -1,4 +1,4 @@
-app so.tilo.shell "Shell" (icon: .monitor, category: .system, resources: .profile)
+app so.tilo.shell "Shell" (icon: .monitor, category: .system, resources: .own)
 
 use so.tilo.session as session
 

@@ -2,8 +2,8 @@
 //! style, where the dock rides and the style's own settings — survives
 //! the session ending, and it is the same record their other devices read and change.
 //!
-//! The shell keeps those choices in the person's profile (`resources: .profile`), one document
-//! opened through the store every app's record in the profile is opened through. Where a note stands on the canvas is not the shell's: it is the
+//! The shell keeps those choices in the person's own workspace (`resources: .own`), one document
+//! opened through the store every app's record of theirs is opened through. Where a note stands on the canvas is not the shell's: it is the
 //! workspace's layout, kept in the workspace's own record. This proves the file half of both: a
 //! session that sets three choices and places a note, and ends, and a session started after it on
 //! the same device, reads all three back and shows the note where it stood, at its size. It fails

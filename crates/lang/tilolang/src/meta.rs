@@ -102,9 +102,9 @@ pub struct PackageMeta {
     /// its records, grants and windows under them as the app's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub previously: Vec<String>,
-    /// The app keeps its data in the person's profile (`resources: .profile`).
+    /// Each member keeps the app's records in their own workspace (`resources: .own`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub profile_resources: bool,
+    pub own_resources: bool,
     /// The hosts the app's `uses web` requests may reach (`web: ["example.com"]`). A request to any
     /// other host is refused as a value.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -784,10 +784,10 @@ impl TypeMeta {
 pub use tilo_words::{in_words, plural, singular};
 
 impl PackageMeta {
-    /// Whether the package opens a document in the person's certified profile.
+    /// Whether each member keeps the package's records in their own workspace.
     #[must_use]
-    pub fn uses_personal_profile(&self) -> bool {
-        self.profile_resources
+    pub fn keeps_own_resources(&self) -> bool {
+        self.own_resources
     }
 
     /// The declared type named `name` (a qualified name's last segment), or whose id is `name`.

@@ -217,7 +217,7 @@ impl ResourceService {
 
     /// Whether this service publishes the resources and actions of `app`.
     fn offers(&self, app: &str) -> bool {
-        self.only.as_deref().is_none_or(|only| only == app) && !self.profile_only(app)
+        self.only.as_deref().is_none_or(|only| only == app) && !self.each_members_own(app)
     }
 
     /// Whether this service keeps `app`'s resources: the app's own service, or the session's for
@@ -233,12 +233,12 @@ impl ResourceService {
         }
     }
 
-    /// Whether `app` keeps its records in each person's profile: the person's own app instance
-    /// publishes them, never the workspace's service. The shell's are the session's.
-    fn profile_only(&self, app: &str) -> bool {
+    /// Whether each member keeps `app`'s records in their own workspace: the person's own app
+    /// instance publishes them, never the workspace's service. The shell's are the session's.
+    fn each_members_own(&self, app: &str) -> bool {
         self.host
             .package(app)
-            .is_some_and(|package| package.meta.uses_personal_profile())
+            .is_some_and(|package| package.meta.keeps_own_resources())
             && !(self.session_document && app == "so.tilo.shell")
     }
 
@@ -574,7 +574,7 @@ impl ResourceService {
         invoker: &tilo_actions::ActionInvoker,
     ) -> Result<Started, ApiError> {
         let address = ActionAddress::new(resource, action);
-        if crate::publish::app_of(resource).is_some_and(|app| self.profile_only(app)) {
+        if crate::publish::app_of(resource).is_some_and(|app| self.each_members_own(app)) {
             return Err(ApiError::Unknown(address));
         }
         // The place this invocation is asked in, taken as this one's: a note from the step that
@@ -1274,7 +1274,8 @@ impl Service for ResourceService {
             .trees()
             .values()
             .filter(|tree| {
-                crate::publish::app_of(tree.id.as_str()).is_none_or(|app| !self.profile_only(app))
+                crate::publish::app_of(tree.id.as_str())
+                    .is_none_or(|app| !self.each_members_own(app))
             })
             .map(|tree| {
                 let mut tree = (**tree).clone();
@@ -1298,7 +1299,7 @@ impl Service for ResourceService {
 
     fn read(&self, resource: &str) -> Option<Json> {
         let app = crate::publish::app_of(resource)?;
-        if self.profile_only(app) {
+        if self.each_members_own(app) {
             return None;
         }
         reading_of(&self.host, resource)

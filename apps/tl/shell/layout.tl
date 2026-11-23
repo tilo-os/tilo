@@ -163,8 +163,8 @@ fn permille_of(w: Width) -> Int {
     }
 }
 
-/// What the person shows of their layout: the shell's own view of it, in their profile
-/// (`resources: .profile`, `root viewing: Viewing`). The layout is the session's and the same
+/// What the person shows of their layout: the shell's own view of it, in their own workspace
+/// (`resources: .own`, `root viewing: Viewing`). The layout is the session's and the same
 /// whichever way it is shown; this is what changes when the person picks a style, and switching
 /// keeps every place where it was.
 type Viewing {

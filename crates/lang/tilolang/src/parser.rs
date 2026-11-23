@@ -202,7 +202,7 @@ struct AppOptions {
     keywords: Vec<String>,
     previously: Vec<String>,
     schemes: Vec<String>,
-    profile_resources: bool,
+    own_resources: bool,
     web: Vec<String>,
     engine: Option<String>,
 }
@@ -582,12 +582,12 @@ impl<'a> Parser<'a> {
                         &mut out.category
                     }
                     "resources" => {
-                        if !matches!(value.name.as_str(), "shared" | "profile") {
+                        if !matches!(value.name.as_str(), "shared" | "own") {
                             return self.fail(
                                 value.span,
                                 format!(
                                     "`.{}` is not where resources are kept; an app's resources are \
-                                     `.shared` with the workspace or in a person's `.profile`",
+                                     `.shared` with the workspace or each member's `.own`",
                                     value.name
                                 ),
                             );
@@ -615,7 +615,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        out.profile_resources = resources.as_deref() == Some("profile");
+        out.own_resources = resources.as_deref() == Some("own");
         Ok(out)
     }
 
@@ -825,7 +825,7 @@ impl<'a> Parser<'a> {
                 tagline: options.tagline,
                 keywords: options.keywords,
                 previously: options.previously,
-                profile_resources: options.profile_resources,
+                own_resources: options.own_resources,
                 web: options.web,
                 schemes: options.schemes,
                 engine: options.engine,
@@ -876,7 +876,7 @@ impl<'a> Parser<'a> {
                         tagline: options.tagline,
                         keywords: options.keywords,
                         previously: options.previously,
-                        profile_resources: options.profile_resources,
+                        own_resources: options.own_resources,
                         web: options.web,
                         schemes: options.schemes,
                         engine: options.engine,

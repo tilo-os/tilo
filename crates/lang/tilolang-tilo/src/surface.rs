@@ -654,7 +654,7 @@ pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
         kind: meta.package_kind(),
         label: crate::publish::app_name(words, meta),
         version: VERSION,
-        person: meta.uses_personal_profile(),
+        person: meta.keeps_own_resources(),
         readers: None,
         verbs: loose,
         fields: Vec::new(),

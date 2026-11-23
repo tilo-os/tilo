@@ -1,7 +1,7 @@
 //! The shell's own resources, kept as the person's: where they live on this device, and how they
 //! reach the person's other devices.
 //!
-//! The shell keeps the person's shell choices in their profile (`resources: .profile`): the
+//! The shell keeps the person's shell choices in their own workspace (`resources: .own`): the
 //! style, the bar and the dock, the strips' and the frames' settings, and the person's layout.
 //! They are the person's as an app's own resources are, so they are kept beside those: a store of
 //! the shell's own, in the directory the launcher binds into every app as `TILO_PERSON_DIR`,
@@ -24,7 +24,7 @@ use automerge::ChangeHash;
 use tilolang_tilo::resources::{LocalPort, ResourceStore};
 
 /// The app whose resources these are: the shell package the session runs, which declares
-/// `resources: .profile` (`apps/tl/shell/app.tl`).
+/// `resources: .own` (`apps/tl/shell/app.tl`).
 pub(crate) const APP: &str = "so.tilo.shell";
 
 /// Where the shell's resources live in this session, and what became of the ones it kept.
@@ -147,7 +147,7 @@ impl ShellRecord {
     }
 }
 
-/// The shell document's id in the person's profile.
+/// The shell document's id in the person's own workspace.
 fn document_id() -> String {
     ui::resource::person::document_id(&ui::resource::ResourceType::new(APP))
         .as_str()

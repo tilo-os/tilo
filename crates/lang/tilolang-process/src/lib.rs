@@ -128,7 +128,7 @@ pub fn route_of(
     workspace: uuid::Uuid,
     person: &str,
 ) -> collaboration::RouteSpec {
-    if meta.uses_personal_profile()
+    if meta.keeps_own_resources()
         && let Some(profile) = collab_types::person_workspace_of(person)
     {
         let kind = format!("tl.{}", meta.app);
@@ -810,11 +810,11 @@ impl TilolangProcess {
             .map_err(|_| AdmitError::Workspace(request.workspace.clone()))?;
         let identity =
             identity.ok_or_else(|| AdmitError::Join("no identity connection".to_owned()))?;
-        if bundle.meta.uses_personal_profile()
+        if bundle.meta.keeps_own_resources()
             && collab_types::person_workspace_of(&request.person).is_none()
         {
             return Err(AdmitError::Join(
-                "this app needs the person's certified profile".into(),
+                "this app keeps its records in the person's own workspace".into(),
             ));
         }
         let route = route_of(&bundle.meta, workspace, &request.person);
@@ -1245,9 +1245,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn views_open_in_the_persons_profile_with_the_workspace_as_context() {
+    fn views_open_in_the_persons_workspace_with_the_workspace_as_context() {
         let source = r#"
-app so.tilo.lang.views "Views" (resources: .profile)
+app so.tilo.lang.views "Views" (resources: .own)
 
 type Views { title: Text }
 root Views
@@ -1259,7 +1259,7 @@ view saved_views(v: Views) {
 "#;
         let ids = tilolang_tilo::tilolang::IdsLock::default();
         let package = tilolang_tilo::tilolang::compile_package(source, &ids, &[])
-            .expect("a package with profile storage")
+            .expect("a package with its records in each member's own workspace")
             .meta;
         let a = uuid::Uuid::from_u128(7);
         let b = uuid::Uuid::from_u128(8);

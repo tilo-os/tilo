@@ -48,8 +48,8 @@ pub struct AppHeader {
     /// `(previously: so.tilo.old)`: the ids the app was published under before; its resources,
     /// grants and windows under them are the app's, when the same publisher signed both.
     pub previously: Vec<String>,
-    /// The app keeps its data in the person's profile (`resources: .profile`).
-    pub profile_resources: bool,
+    /// Each member keeps the app's records in their own workspace (`resources: .own`).
+    pub own_resources: bool,
     /// `(web: ["example.com", "*.rss.org"])`: the hosts `uses web` requests may reach; any other is
     /// refused. `*.rss.org` covers subdomains, not `rss.org`.
     pub web: Vec<String>,

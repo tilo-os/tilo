@@ -153,7 +153,7 @@ pub use receipt::{
 };
 pub use record_id::{
     is_personal_cluster, person_document_context, person_document_for_workspace,
-    person_document_id, person_resource_type, personal_cluster, personal_cluster_of,
+    person_document_id, person_resource_type, personal_cluster,
 };
 pub use redaction::{
     MAX_REDACTION_REASON_BYTES, OpId, RedactRequest, RedactedMarker, RedactionError,

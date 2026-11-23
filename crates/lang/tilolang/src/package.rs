@@ -510,7 +510,7 @@ fn build_meta(
         tagline: module.app.tagline.clone(),
         keywords: module.app.keywords.clone(),
         previously: module.app.previously.clone(),
-        profile_resources: module.app.profile_resources,
+        own_resources: module.app.own_resources,
         web: module.app.web.clone(),
         schemes: module.app.schemes.clone(),
         engine: module.app.engine.clone(),
