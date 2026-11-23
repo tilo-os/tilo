@@ -14,17 +14,8 @@
 #[cfg(feature = "service")]
 pub mod effects;
 mod model;
-/// What a resource of a kind this crate publishes from outside a document is
-/// called, in the person's language: the kind's entry in the catalogue beside
-/// this crate, read the way a declaration's words are.
 #[cfg(feature = "service")]
-mod i18n {
-    tilo_resource::declared_catalogue!(CATALOGUE);
-
-    pub(crate) fn name(kind: &str, source: &str) -> String {
-        tilo_resource::label::localized(kind, source, Some(&CATALOGUE))
-    }
-}
+tilo_resource::declared_names!();
 
 #[cfg(feature = "service")]
 mod service;

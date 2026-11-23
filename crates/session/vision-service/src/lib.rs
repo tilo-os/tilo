@@ -49,13 +49,7 @@ pub const ANALYSIS_KIND: &str = "vision.analysis";
 /// What wakes the session's loop when a run's reading moves.
 pub type Wake = tilo_service::Wake;
 
-mod i18n {
-    tilo_resource::declared_catalogue!(CATALOGUE);
-
-    pub(crate) fn name(kind: &str, source: &str) -> String {
-        tilo_resource::label::localized(kind, source, Some(&CATALOGUE))
-    }
-}
+tilo_resource::declared_names!();
 
 /// Which model answers now, as the AI settings hub chose it.
 #[derive(
