@@ -1,3 +1,10 @@
+#![cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        dead_code,
+        reason = "the record's own readers are the host's file store and journal"
+    )
+)]
 use crate::join::TransportHint;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
