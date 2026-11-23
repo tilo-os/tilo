@@ -659,6 +659,11 @@ impl WantedPackages {
         let Some(key) = foreign_type(ty) else {
             return false;
         };
+        // The standard library is loaded beside every package and is no app a session serves:
+        // a view that reads of it waits on nothing ([`stdlib`](tilolang::stdlib)).
+        if key.app == tilolang::stdlib::APP {
+            return false;
+        }
         if self.asked.insert(key.app.clone()) {
             self.wanted.insert(key.app, ty.to_owned());
         }
@@ -668,6 +673,9 @@ impl WantedPackages {
     /// Ask for the package of `app`, whose view a view call composes (`view:<app>:<view id>`):
     /// a view of another app is that app's code, as a resource of its type is its app's record.
     pub(crate) fn want_app(&mut self, app: &str) {
+        if app == tilolang::stdlib::APP {
+            return;
+        }
         if self.asked.insert(app.to_owned()) {
             self.wanted.insert(app.to_owned(), app.to_owned());
         }
