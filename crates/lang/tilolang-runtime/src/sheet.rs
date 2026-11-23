@@ -1,5 +1,11 @@
-//! Spreadsheets: a workbook file read as the sheets it holds, a workbook written as a file, and
-//! the values a workbook's cells compute. The engine is `tilo-sheet`, which draws nothing.
+//! Spreadsheets: a workbook file read as the sheets it holds, a workbook written as a file, the
+//! values its cells compute, and the sheets a structural change or a written record leaves. The
+//! engine is `tilo-sheet`, which draws nothing.
+//!
+//! A workbook crosses this boundary as JSON, the shape its resources have: its sheets, each with
+//! its name, whether its tab is hidden, and the input, format and weight of its cells by their A1
+//! reference. What the engine answers comes back as rows of texts a view reads without a
+//! document: a sheet's name, then its cells.
 
 use crate::abi::Imp;
 use crate::blob::{BlobHost, FileValue};
@@ -11,42 +17,137 @@ use crate::value::Value;
 const MAX_BYTES: i64 = 64 * 1024 * 1024;
 
 impl Core {
-    /// The workbook a text describes, evaluated: each of its sheets with the extent a window shows
-    /// and what each cell shows.
+    /// The workbook a text describes, with each sheet's extent and what each of its cells shows.
     pub(crate) fn sheet_values(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
         let text = self.text(a.h(0)?)?;
-        self.result(self.values_of(&text).map(Value::text))
+        let answer = self.book_of(&text).map(|book| {
+            let rows = tilo_sheet::shown_rows(&book);
+            serde_json::to_string(&rows).map_err(|why| why.to_string())
+        });
+        self.json_result(answer)
     }
 
-    fn values_of(&self, text: &str) -> Result<String, String> {
-        let mut book: tilo_sheet::Book = serde_json::from_str(text)
-            .map_err(|why| format!("the workbook is not JSON: {why}"))?;
-        // A cell's own date and time formats are the workbook's, so every member reads them
-        // alike: they read in the language the window speaks.
-        book.language = self.words.borrow().language();
-        let shown = tilo_sheet::values(&book);
-        serde_json::to_string(&shown).map_err(|why| why.to_string())
+    /// The sheets a structural change leaves: rows and columns inserted or removed, a range
+    /// sorted, a fill extended or a sheet renamed, with the formulas the change moves rewritten.
+    pub(crate) fn sheet_edit(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let book = self.text(a.h(0)?)?;
+        let change = self.text(a.h(1)?)?;
+        let answer = self.book_of(&book).and_then(|book: tilo_sheet::Book| {
+            let change: tilo_sheet::Change = serde_json::from_str(&change)
+                .map_err(|why| format!("the change is not a change of a sheet: {why}"))?;
+            let sheets = tilo_sheet::edit(&book, &change)?;
+            serde_json::to_string(&tilo_sheet::sheet_rows(&sheets))
+                .map_err(|why| why.to_string())
+        });
+        self.json_result(answer)
     }
 
-    /// The sheets a spreadsheet file holds, as the text `file.sheets()` answers.
-    pub(crate) fn sheet_import(&self, file: &FileValue) -> Result<String, String> {
-        let blobs = self.blobs.borrow();
-        let Some(blobs) = blobs.as_ref() else {
-            return Err("this host holds no content store".to_owned());
+    /// The numbers a range of a sheet shows, row by row: a chart's readings.
+    pub(crate) fn sheet_numbers(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let book = self.text(a.h(0)?)?;
+        let sheet = self.text(a.h(1)?)?;
+        let range = self.text(a.h(2)?)?;
+        let answer = self.book_of(&book).map(|book: tilo_sheet::Book| {
+            serde_json::to_string(&tilo_sheet::range_numbers(&book, &sheet, &range))
+                .map_err(|why| why.to_string())
+        });
+        self.json_result(answer)
+    }
+
+    /// The ranges of a sheet as a structural change leaves them, each empty where the change
+    /// removes every cell it names.
+    pub(crate) fn sheet_ranges(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let change = self.text(a.h(0)?)?;
+        let sheet = self.text(a.h(1)?)?;
+        let areas = match self.val_whole(a.h(2)?)? {
+            Value::List(items) => {
+                let mut areas = Vec::with_capacity(items.len());
+                for item in &items {
+                    match item {
+                        Value::Text(text) => areas.push(text.clone()),
+                        other => {
+                            return trap(format!(
+                                "the ranges are texts, and this list holds a {}",
+                                other.kind_name()
+                            ));
+                        }
+                    }
+                }
+                areas
+            }
+            other => {
+                return trap(format!(
+                    "the ranges are a list, and this is a {}",
+                    other.kind_name()
+                ));
+            }
         };
-        let bytes = read(blobs.as_ref(), file)?;
+        let answer = serde_json::from_str::<tilo_sheet::Change>(&change)
+            .map_err(|why| format!("the change is not a change of a sheet: {why}"))
+            .and_then(|change| {
+                serde_json::to_string(&tilo_sheet::moved_ranges(&change, &sheet, &areas))
+                    .map_err(|why| why.to_string())
+            });
+        self.json_result(answer)
+    }
+
+    /// The cells a record action writes into a sheet: `set-records` by column header, or
+    /// `upsert-item` by the values that identify its row.
+    pub(crate) fn sheet_records(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let sheet = self.text(a.h(0)?)?;
+        let request = self.text(a.h(1)?)?;
+        let answer = sheet_of(&sheet).and_then(|sheet| {
+            let request: serde_json::Value = serde_json::from_str(&request)
+                .map_err(|why| format!("the records are not JSON: {why}"))?;
+            let writes = records_of(&sheet, &request)?;
+            writes_json(&writes).map_err(|why| why.to_string())
+        });
+        self.json_result(answer)
+    }
+
+    /// The input to store for a typed entry, and the format it shows in: `90%` as a fraction
+    /// shown as a percent, `2024-01-31` as a date, a leading apostrophe as text.
+    pub(crate) fn sheet_entry(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let input = self.text(a.h(0)?)?;
+        let currency = self.text(a.h(1)?)?;
+        let (stored, format) = tilo_sheet::entry_of(&input, &currency);
+        let answer = serde_json::to_string(&[stored, format]);
+        self.json_result(answer.map_err(|why| why.to_string()))
+    }
+
+    /// The sheets a spreadsheet file holds, as the app keeps them.
+    pub(crate) fn sheet_import(&self, file: &FileValue) -> Result<String, String> {
+        let bytes = {
+            let blobs = self.blobs.borrow();
+            let Some(blobs) = blobs.as_ref() else {
+                return Err("this host holds no content store".to_owned());
+            };
+            read(blobs.as_ref(), file)?
+        };
         let sheets = tilo_sheet::import(&bytes, &file.name, &self.notion_words())?;
-        serde_json::to_string(&sheets).map_err(|why| why.to_string())
+        serde_json::to_string(&tilo_sheet::sheet_rows(&sheets)).map_err(|why| why.to_string())
     }
 
     /// The bytes of a workbook's file, of the format its name ends in.
     pub(crate) fn sheet_export(&self, workbook: &str, name: &str) -> Result<Vec<u8>, String> {
-        let mut book: tilo_sheet::Book = serde_json::from_str(workbook)
-            .map_err(|why| format!("the workbook is not JSON: {why}"))?;
-        book.language = self.words.borrow().language();
+        let book = self.book_of(workbook)?;
         let format = tilo_sheet::Format::of_name(name)
             .ok_or_else(|| format!("`{name}` is no spreadsheet file"))?;
         tilo_sheet::export(&book, format)
+    }
+
+    /// The workbook a text describes, with its cells' own date and time formats read in the
+    /// language the window speaks, so every member of the workspace reads a value alike.
+    fn book_of(&self, text: &str) -> Result<tilo_sheet::Book, String> {
+        let mut book: tilo_sheet::Book = serde_json::from_str(text)
+            .map_err(|why| format!("the workbook is not JSON: {why}"))?;
+        book.language = self.words.borrow().language();
+        Ok(book)
+    }
+
+    /// `answer` as the text a call answers, or the refusal it carries.
+    fn json_result(&self, answer: Result<String, String>) -> HResult<Option<Wasm>> {
+        self.result(answer.map(Value::text))
     }
 
     /// The words a Notion import says its outcome in: the app's own, in the reader's language.
@@ -71,26 +172,77 @@ impl Core {
         }
     }
 
-    /// Whether `imp` is one of the spreadsheet imports.
+    /// Whether `imp` is one of the spreadsheet calls.
     pub(crate) fn is_sheet_import(imp: Imp) -> bool {
         matches!(imp, Imp::SheetFile | Imp::SheetOfFile)
     }
 }
 
+/// The sheet a text describes.
+fn sheet_of(text: &str) -> Result<tilo_sheet::Sheet, String> {
+    serde_json::from_str(text).map_err(|why| format!("the sheet is not JSON: {why}"))
+}
+
+/// The writes a record request makes on `sheet`: an `upsert-item` when it names `match`, else a
+/// `set-records`.
+fn records_of(
+    sheet: &tilo_sheet::Sheet,
+    request: &serde_json::Value,
+) -> Result<tilo_sheet::Writes, String> {
+    let records = request
+        .get("records")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "give `records`: the rows to write, each by its column header".to_owned())?;
+    if let Some(matching) = request.get("match").and_then(serde_json::Value::as_object) {
+        let value = request
+            .get("value")
+            .and_then(serde_json::Value::as_object)
+            .ok_or_else(|| "`upsert` needs `value`: the row written by its headers".to_owned())?;
+        return tilo_sheet::upsert(sheet, matching, value);
+    }
+    let row = match request.get("row") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(row) => Some(
+            u32::try_from(row.as_u64().ok_or_else(|| "`row` is a row number".to_owned())?)
+                .map_err(|_| "`row` is a row number".to_owned())?,
+        ),
+    };
+    let columns = request.get("columns").and_then(|columns| {
+        columns.as_array().map(|columns| {
+            columns
+                .iter()
+                .filter_map(|column| column.as_str().map(str::to_owned))
+                .collect::<Vec<_>>()
+        })
+    });
+    let key = request
+        .get("key")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let request = tilo_sheet::RecordsRequest {
+        records,
+        row,
+        columns: columns.as_deref(),
+        key: key.as_deref(),
+    };
+    tilo_sheet::set_records(sheet, &request)
+}
+
+/// What a record request wrote, as the app reads it: each cell's new input (`null` leaves it),
+/// and each format's.
+fn writes_json(writes: &tilo_sheet::Writes) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&serde_json::json!({
+        "cells": writes.cells,
+        "formats": writes.formats,
+    }))
+}
+
 /// The bytes a file holds, read whole.
 fn read(blobs: &dyn BlobHost, file: &FileValue) -> Result<Vec<u8>, String> {
     if file.size > MAX_BYTES {
-        return Err(format!(
-            "`{}` is too large to open here",
-            file.name
-        ));
+        return Err(format!("`{}` is too large to open here", file.name));
     }
     blobs
         .read(&file.hash)
         .ok_or_else(|| format!("the content of `{}` is not on this device", file.name))
-}
-
-/// The spreadsheet failure that never happens: a trap for an import this module does not own.
-pub(crate) fn not_a_sheet() -> HResult<Option<Wasm>> {
-    trap("not a spreadsheet import")
 }

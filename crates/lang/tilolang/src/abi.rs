@@ -399,6 +399,18 @@ imports! {
     // A workbook described as text (the JSON a cell's action builds) evaluated: what each of its
     // cells shows, in the workbook's own formats.
     SheetValues = "sheet_values" ([H] -> [H]);
+    // The ranges of a sheet as a structural change leaves them.
+    SheetRanges = "sheet_ranges" ([H, H, H] -> [H]);
+    // The numbers a range of a sheet shows, row by row.
+    SheetNumbers = "sheet_numbers" ([H, H, H] -> [H]);
+    // The sheets a structural change leaves (rows or columns inserted or removed, a range sorted,
+    // a fill extended, a sheet renamed), with the formulas the change moves rewritten.
+    SheetEdit = "sheet_edit" ([H, H] -> [H]);
+    // The cells a record action writes into a sheet: `set-records` by column header, or
+    // `upsert-item` by the values that identify its row.
+    SheetRecords = "sheet_records" ([H, H] -> [H]);
+    // The input to store for a typed entry, and the format it shows in.
+    SheetEntry = "sheet_entry" ([H, H] -> [H]);
     ActChoose = "act_choose" ([H, H] -> [H]);
     ActChooseFolder = "act_choose_folder" ([H, H] -> [H]);
     ActSave = "act_save" ([H, H] -> [H]);

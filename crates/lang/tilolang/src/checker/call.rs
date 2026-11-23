@@ -2621,11 +2621,7 @@ impl Checker<'_> {
             let named = self.expr_as(&named.value, &Ty::Text);
             let workbook = self.expr_as(&workbook.value, &Ty::Text);
             let format = self.expr_as(&format.value, &Ty::Text);
-            return Ex::host(
-                Imp::SheetOfFile,
-                vec![named, workbook, format],
-                Ty::Result(Box::new(Ty::File), Box::new(Ty::Text)),
-            );
+            return Ex::host(Imp::SheetOfFile, vec![named, workbook, format], Ty::File);
         }
         let (held, imp, what, of) = match name.name.as_str() {
             "of_text" => (Ty::Text, Imp::FileOfText, "the text it holds", "text"),
@@ -2783,6 +2779,93 @@ impl Checker<'_> {
                 vec![r],
                 Ty::Result(Box::new(Ty::Text), Box::new(Ty::Text)),
             ),
+            // The sheets a structural change of a workbook's text leaves (rows or columns
+            // inserted or removed, a range sorted, a fill extended, a sheet renamed), with the
+            // formulas the change moves rewritten.
+            (Ty::Text, "sheet_edit") => {
+                let [change] = args else {
+                    self.err("E022", span, "`sheet_edit` takes the change, as text: `book.sheet_edit(change)`");
+                    for a in args {
+                        let _ = self.expr(&a.value, None);
+                    }
+                    return Ex::error();
+                };
+                let change = self.expr_as(&change.value, &Ty::Text);
+                Ex::host(
+                    Imp::SheetEdit,
+                    vec![r, change],
+                    Ty::Result(Box::new(Ty::Text), Box::new(Ty::Text)),
+                )
+            }
+            // The numbers a range of a sheet shows, row by row: a chart's readings.
+            (Ty::Text, "sheet_numbers") => {
+                let [sheet, range] = args else {
+                    self.err("E022", span, "`sheet_numbers` takes the sheet's name and the range: `book.sheet_numbers(sheet, range)`");
+                    for a in args {
+                        let _ = self.expr(&a.value, None);
+                    }
+                    return Ex::error();
+                };
+                let sheet = self.expr_as(&sheet.value, &Ty::Text);
+                let range = self.expr_as(&range.value, &Ty::Text);
+                Ex::host(
+                    Imp::SheetNumbers,
+                    vec![r, sheet, range],
+                    Ty::Result(Box::new(Ty::Text), Box::new(Ty::Text)),
+                )
+            }
+            // The ranges of a sheet as a structural change leaves them, each empty where the
+            // change removes every cell it names.
+            (Ty::Text, "sheet_ranges") => {
+                let [sheet, ranges] = args else {
+                    self.err("E022", span, "`sheet_ranges` takes the sheet and the ranges: `change.sheet_ranges(sheet, ranges)`");
+                    for a in args {
+                        let _ = self.expr(&a.value, None);
+                    }
+                    return Ex::error();
+                };
+                let sheet = self.expr_as(&sheet.value, &Ty::Text);
+                let ranges = self.expr_as(&ranges.value, &Ty::List(Box::new(Ty::Text)));
+                Ex::host(
+                    Imp::SheetRanges,
+                    vec![r, sheet, ranges],
+                    Ty::Result(Box::new(Ty::Text), Box::new(Ty::Text)),
+                )
+            }
+            // The cells a record action writes into a sheet: `set-records` by column header, or
+            // `upsert-item` by the values that identify its row.
+            (Ty::Text, "sheet_records") => {
+                let [request] = args else {
+                    self.err("E022", span, "`sheet_records` takes the records as text: `sheet.sheet_records(records)`");
+                    for a in args {
+                        let _ = self.expr(&a.value, None);
+                    }
+                    return Ex::error();
+                };
+                let request = self.expr_as(&request.value, &Ty::Text);
+                Ex::host(
+                    Imp::SheetRecords,
+                    vec![r, request],
+                    Ty::Result(Box::new(Ty::Text), Box::new(Ty::Text)),
+                )
+            }
+            // The input to store for a typed entry and the format it shows in, for the currency
+            // a bare money symbol means.
+            (Ty::Text, "sheet_entry") => {
+                let [currency] = args else {
+                    self.err("E022", span, "`sheet_entry` takes the workbook's currency: `input.sheet_entry(currency)`");
+                    for a in args {
+                        let _ = self.expr(&a.value, None);
+                    }
+                    return Ex::error();
+                };
+                let currency = self.expr_as(&currency.value, &Ty::Text);
+                Ex::host(
+                    Imp::SheetEntry,
+                    vec![r, currency],
+                    Ty::Result(Box::new(Ty::Text), Box::new(Ty::Text)),
+                )
+            }
             (Ty::File, "text") if args.is_empty() => Ex::host(
                 Imp::FileText,
                 vec![r],

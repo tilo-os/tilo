@@ -6,7 +6,6 @@
 //! laid out and painted, so a sheet of a hundred thousand cells costs its window.
 
 use std::collections::{HashMap, HashSet};
-use std::ops::Range;
 
 use taffy::TaffyTree;
 use vello::Scene;
@@ -15,11 +14,7 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, Ime, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::a11y::{AccessNode, AccessState, Role};
-use crate::component::{Event, Value};
-use crate::ime::InputContent;
 use crate::paint::PaintCtx;
-use crate::presence::PresenceCtx;
 use crate::surface::{Region, edge_on};
 use crate::text_edit::{EditCore, Motion};
 use crate::text_render::{TextRenderer, TextStyle, TextWeight};
@@ -39,21 +34,6 @@ pub enum CellKind {
     Number,
     Bool,
     Error,
-}
-
-impl CellKind {
-    pub(crate) fn from_value(value: &crate::component::Value) -> Result<Self, String> {
-        let crate::component::Value::Choice(case) | crate::component::Value::Text(case) = value
-        else {
-            return Err(format!("`{value:?}` is not a cell kind"));
-        };
-        Ok(match case.as_str() {
-            "number" => Self::Number,
-            "bool" => Self::Bool,
-            "error" => Self::Error,
-            _ => Self::Text,
-        })
-    }
 }
 
 /// One cell as the app hands it to the grid.
@@ -245,7 +225,7 @@ struct Editing {
 
 /// What the grid reports to the app.
 #[derive(Default)]
-struct Events {
+pub(crate) struct Events {
     select: crate::component::Event,
     edit: crate::component::Event,
     resized_column: crate::component::Event,
@@ -283,7 +263,7 @@ pub struct Sheet {
     /// Where the pointer is, for the fill handle and resize grabs.
     pointer: Option<Point>,
     bars: (Scrollbar, Scrollbar),
-    events: Events,
+    pub(crate) events: Events,
     focused: bool,
     /// The rows and columns shown last, for the accessibility tree.
     visible: (std::ops::Range<u32>, std::ops::Range<u32>),
@@ -690,7 +670,7 @@ impl Sheet {
     }
 
     /// The cells the focus moves to with an arrow, as `(d column, d row)`.
-    fn step(&self, d_col: i64, d_row: i64, extend: bool) {
+    fn step(&mut self, d_col: i64, d_row: i64, extend: bool) {
         let clamp = |value: i64, max: u32| -> u32 {
             u32::try_from(value.clamp(0, i64::from(max.saturating_sub(1)))).unwrap_or(0)
         };
@@ -891,7 +871,7 @@ impl Sheet {
                 true
             }
             Key::Named(NamedKey::ArrowLeft) => {
-                if editing.entering && shift.not() && !control {
+                if editing.entering && !shift && !control {
                     editing.text = text;
                     let left = self.focus.0.saturating_sub(1);
                     self.commit_edit(Some((left, self.focus.1)));
@@ -900,7 +880,7 @@ impl Sheet {
                 motion(if control { Motion::WordLeft } else { Motion::Left })
             }
             Key::Named(NamedKey::ArrowRight) => {
-                if editing.entering && shift.not() && !control {
+                if editing.entering && !shift && !control {
                     editing.text = text;
                     let right = self.focus.0.saturating_add(1);
                     self.commit_edit(Some((right, self.focus.1)));
@@ -1369,8 +1349,8 @@ impl Widget for Sheet {
                     }
                     if self.drag.is_some() {
                         self.drag = None;
-                        self.bars.0.cease();
-                        self.bars.1.cease();
+                        self.bars.0.release();
+                        self.bars.1.release();
                         *ctx.handled = true;
                     }
                 }
@@ -1418,8 +1398,7 @@ impl Widget for Sheet {
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
-        let (start, end) = self.selection();
+                let (start, end) = self.selection();
         let (columns, rows) = self.visible.clone();
         let mut row_nodes = Vec::new();
         for row in rows {
@@ -1705,7 +1684,7 @@ impl Sheet {
             ctx.stroke_rect(active, colors.intent.accent_ink, 2.0);
         }
         if self.focused {
-            ctx.stroke_rect(self.rect.deflate(1.0), colors.border_focus, 2.0);
+            ctx.stroke_rect(self.rect.inset(1.0), colors.border_focus, 2.0);
         }
         // A comment's corner mark, unresolved in the accent and resolved quietly.
         for row in self.visible.1.clone() {
@@ -1730,9 +1709,9 @@ impl Sheet {
                     tone,
                     None,
                     &vello::kurbo::Triangle {
-                        a: (corner.x0, corner.y0),
-                        b: (corner.x1, corner.y0),
-                        c: (corner.x1, corner.y1),
+                        a: Point::new(corner.x0, corner.y0),
+                        b: Point::new(corner.x1, corner.y0),
+                        c: Point::new(corner.x1, corner.y1),
                     },
                 );
             }

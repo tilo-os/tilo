@@ -1,0 +1,693 @@
+//! The workbook's window: the grid of the sheet the person has open, the bar over it holding the
+//! name box and the formula bar, the tabs under it, and the panel beside it with what was said
+//! about the cells and the charts drawn over them.
+
+/// The workbook's window.
+view workbook(w: Workbook) {
+    state open_sheet: Option<Sheet> = w.sheets.first()
+    state area: Text = "A1"
+    state typed: Text = ""
+    state formulas: Bool = false
+    state panel: Text = ""
+    workbook_page(w, open_sheet, area, typed, formulas, panel)
+}
+
+/// A sheet's window of its own: the workbook it is in, with that sheet open.
+view sheet_window(s: Sheet) {
+    state open_sheet: Option<Sheet> = .some(s)
+    state area: Text = "A1"
+    state typed: Text = ""
+    state formulas: Bool = false
+    state panel: Text = ""
+    workbook_page(root Workbook, open_sheet, area, typed, formulas, panel)
+}
+
+/// One sheet as a row: its name and how many cells it holds.
+row view sheet_row(s: Sheet) {
+    ui.ListRow(title: s.name, secondary: "{s.cells.keys().len()} cells")
+}
+
+/// The workbook's page: its bar, its grid and its tabs.
+template view workbook_page(
+    w: Workbook,
+    open_sheet: State<Option<Sheet>>,
+    area: State<Text>,
+    typed: State<Text>,
+    formulas: State<Bool>,
+    panel: State<Text>,
+) {
+    state renaming: Bool = false
+    state rename_text: Text = ""
+    state coloring: Bool = false
+    state settings_open: Bool = false
+    let shown = open_sheet ?? w.sheets.first()
+    if let s = shown {
+        // The workbook as the engine reads it, and what each of its cells shows.
+        let book = book_of(
+            w.sheets.map(x -> sheet_book(
+                x.name,
+                x.hidden,
+                x.cells.keys().map(k -> pair(k, x.cells.get(k) ?? "")),
+                x.formats.keys().map(k -> pair(k, x.formats.get(k) ?? "")),
+                x.bold.map(b -> b),
+            )),
+            currency_code(w.currency),
+        )
+        let rows = shown_sheet(values_of(book), s.name)
+        let cells = shown_cells(rows)
+        std.page(w, canvas: true, fill: true, header: {
+            workbook_bar(w, s, area, typed, formulas, panel, settings_open)
+        }) {
+            ui.Docked {
+                content: {
+                    row(fill) {
+                        grid(w, s, area, typed, cells, formulas)
+                        if panel != "" {
+                            side_panel(w, s, area, panel, book)
+                        }
+                    }
+                }
+                foot: {
+                    workbook_tabs(w, s, open_sheet, area, renaming, rename_text, coloring)
+                }
+            }
+        }
+        workbook_dialogs(w, s, renaming, rename_text, coloring, settings_open)
+    } else {
+        ui.EmptyState("This workbook has no sheet", icon: .table) {
+            on act: new_sheet(w)
+        }
+    }
+}
+
+/// The bar over the grid: the File and Format menus, the name box, the formula bar and the
+/// controls beside them.
+template view workbook_bar(
+    w: Workbook,
+    s: Sheet,
+    area: State<Text>,
+    typed: State<Text>,
+    formulas: State<Bool>,
+    panel: State<Text>,
+    settings_open: State<Bool>,
+) {
+    file_menu(w, s, settings_open)
+    format_menu(w, s, area)
+    ui.TextInput(bind: area, placeholder: "A1") {
+        on submit(reference): set(area, reference.trim().upper())
+    }
+    ui.TextInput(bind: typed, placeholder: "Value or formula") {
+        on submit(input): write_cells(w, s, [range_start(area)], [input]).then(set(typed, ""))
+    }
+    spacer
+    ui.Button("Bold", icon: .bold, icon_only: true, toggled: s.bold.any(b -> in_range(area, b))) {
+        on press: toggle_bold(w, s, area)
+    }
+    ui.Button("AutoSum", icon: .plus, icon_only: true) {
+        on press: autosum(w, s, range_start(area))
+    }
+    ui.Button(
+        if formulas { "Show results" } else { "Show formulas" },
+        icon: if formulas { .equal } else { .hash },
+        icon_only: true,
+        toggled: formulas,
+    ) {
+        on press: set(formulas, not formulas)
+    }
+    ui.Button("Comments and charts", icon: .panel_right, icon_only: true, toggled: panel != "") {
+        on press: if panel == "" { set(panel, "comments") } else { set(panel, "") }
+    }
+}
+
+/// The workbook's own commands: a table in and out, and the document's settings.
+template view file_menu(w: Workbook, s: Sheet, settings_open: State<Bool>) {
+    ui.MenuButton("File", icon: .file_plus) {
+        ui.MenuItem("Import a table…", icon: .file_plus) {
+            on choose: file.choose(import_table(w), accept: [
+                "text/csv",
+                "text/tab-separated-values",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "application/vnd.oasis.opendocument.spreadsheet",
+                "application/zip",
+            ])
+        }
+        ui.MenuItem("Export the workbook…", icon: .download) {
+            on choose: file.save(export_workbook(w), name: export_name(w, "xlsx"))
+        }
+        ui.MenuItem("Export this sheet as a table…", icon: .download) {
+            on choose: file.save(export_table(w, s), name: export_name(w, "csv"))
+        }
+        ui.MenuSeparator
+        ui.MenuItem("Document settings…", icon: .settings_2) {
+            on choose: set(settings_open, true)
+        }
+        ui.MenuSeparator
+        ui.MenuItem("Duplicate this sheet", icon: .copy) {
+            on choose: duplicate_sheet(w, s)
+        }
+        ui.MenuItem("Delete this sheet", icon: .trash, destructive: true) {
+            on choose: delete_sheet(w, s)
+        }
+    }
+}
+
+/// The formats a cell shows its value in, and the ways to change the cells themselves.
+template view format_menu(w: Workbook, s: Sheet, area: State<Text>) {
+    ui.MenuButton("Format", icon: .paint_bucket) {
+        ui.MenuItem("Number", icon: .hash) {
+            on choose: format_cells(w, s, area, format: "number")
+        }
+        ui.MenuItem("Money", icon: .wallet) {
+            on choose: format_cells(w, s, area, format: currency_format(w))
+        }
+        ui.MenuItem("Percent", icon: .slash) {
+            on choose: format_cells(w, s, area, format: "percent")
+        }
+        ui.MenuItem("Date", icon: .calendar) {
+            on choose: format_cells(w, s, area, format: date_format(w))
+        }
+        ui.MenuItem("Time", icon: .clock) {
+            on choose: format_cells(w, s, area, format: time_format(w))
+        }
+        ui.MenuItem("Text", icon: .type) {
+            on choose: format_cells(w, s, area, format: "text")
+        }
+        ui.MenuItem("General", icon: .eraser) {
+            on choose: format_cells(w, s, area, format: "general")
+        }
+        ui.MenuSeparator
+        ui.MenuItem("Sum this selection", icon: .plus) {
+            on choose: sum_selection(w, s, area)
+        }
+        ui.MenuSeparator
+        ui.MenuItem("Insert rows above", icon: .list_plus) {
+            on choose: insert_rows(w, s, row_of(range_start(area)))
+        }
+        ui.MenuItem("Delete these rows", icon: .trash, destructive: true) {
+            on choose: delete_rows(w, s, rows_of_range(area))
+        }
+        ui.MenuItem("Insert columns left", icon: .columns_2) {
+            on choose: insert_columns(w, s, column_of(range_start(area)))
+        }
+        ui.MenuItem("Delete these columns", icon: .trash, destructive: true) {
+            on choose: delete_columns(w, s, columns_of_range(area))
+        }
+        ui.MenuSeparator
+        ui.MenuItem("Sort the rows ascending", icon: .arrow_down_wide_narrow) {
+            on choose: sort_rows(w, s, area, column_of(range_start(area)))
+        }
+        ui.MenuItem("Sort the rows descending", icon: .arrow_up) {
+            on choose: sort_rows(w, s, area, column_of(range_start(area)), descending: true)
+        }
+    }
+}
+
+/// The rows a range covers, counting from 1.
+fn rows_of_range(range: Text) -> List<Int> {
+    let first = row_of(range_start(range))
+    let last = row_of(range_end(range))
+    if first > last { [] } else { count_up(first, last) }
+}
+
+/// The numbers from `from` to `to`, both counted in.
+fn count_up(from: Int, to: Int) -> List<Int> {
+    if from > to {
+        []
+    } else {
+        let rest = count_up(from + 1, to)
+        [[from], rest].flat_map(x -> x)
+    }
+}
+
+/// The columns a range covers, by their letters.
+fn columns_of_range(range: Text) -> List<Text> {
+    let first = column_index(column_of(range_start(range)))
+    let last = column_index(column_of(range_end(range)))
+    if first > last { [] } else { count_up(first, last).map(i -> column_letter(i)) }
+}
+
+/// The grid of the sheet the person has open.
+template view grid(
+    w: Workbook,
+    s: Sheet,
+    area: State<Text>,
+    typed: State<Text>,
+    cells: List<List<Text>>,
+    formulas: State<Bool>,
+) {
+    let count = shown_count(cells, formulas)
+    ui.Sheet(
+        name: .some(s.name),
+        columns: count.0,
+        rows: count.1,
+        column_width: .some(112.0),
+        row_height: .some(28.0),
+        sizes: sizes_of(s),
+        cells: cells_of(s, cells, formulas),
+        selection: .some(area),
+        editable: true,
+    ) {
+        on select(chosen): set(area, chosen).then(set(typed, input_at(s, range_start(chosen))))
+        on edit(pairs): edit_cells(w, s, pairs)
+        on resized_column(pair): resize_column(s, pair)
+        on resized_row(pair): resize_row(s, pair)
+        on fill(pair): fill(w, s, pair.at(0) ?? "", pair.at(1) ?? "")
+    }
+}
+
+/// How many columns and rows the grid holds: what the sheet reaches, and at least a window's.
+fn shown_count(cells: List<List<Text>>, formulas: Bool) -> (Int, Int) {
+    let last = cells.last() ?? []
+    (26, 200)
+}
+
+/// The cells a sheet's grid shows: what each holds, and how it reads.
+fn cells_of(s: Sheet, cells: List<List<Text>>, formulas: Bool) -> List<ui.SheetCell> {
+    cells.map(c -> .cell(
+        cell: text_at(c, 1),
+        text: if formulas { input_at(s, text_at(c, 1)) } else { text_at(c, 2) },
+        kind: if formulas { .text } else { kind_of(text_at(c, 3)) },
+        bold: s.bold.contains(text_at(c, 1)),
+    ))
+}
+
+/// How a cell's text reads, as the grid draws it.
+fn kind_of(kind: Text) -> ui.SheetCellKind {
+    if kind == "number" {
+        .number
+    } else if kind == "error" {
+        .error
+    } else if kind == "bool" {
+        .bool
+    } else {
+        .text
+    }
+}
+
+/// Writes the cells a grid edit reports: pairs of reference and input, in order.
+action edit_cells(w: Workbook, s: Sheet, pairs: List<Text>) (label: "Edit cells", did: "edited cells") {
+    for i in pairs.map((x, i) -> i) {
+        if i % 2 == 0 {
+            let reference = pairs.at(i) ?? ""
+            let input = pairs.at(i + 1) ?? ""
+            if reference != "" {
+                if input == "" {
+                    if s.cells.get(reference) != .none {
+                        s.cells.remove(reference)
+                    }
+                } else {
+                    let entry = entry_of(input, currency_code(w.currency))
+                    s.cells.put(reference, text_at(entry, 0))
+                    let format = text_at(entry, 1)
+                    if format != "general" and s.formats.get(reference) == .none {
+                        s.formats.put(reference, format)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Keeps the width the person dragged a column to: the pair carries its letter and its width.
+action resize_column(s: Sheet, pair: List<Text>) (label: "Resize the column", did: "resized a column") {
+    let letter = pair.at(0) ?? ""
+    let width = pair.at(1) ?? ""
+    if letter != "" and width != "" {
+        s.widths.put(letter, width)
+    }
+}
+
+/// Keeps the height the person dragged a row to: the pair carries its number and its height.
+action resize_row(s: Sheet, pair: List<Text>) (label: "Resize the row", did: "resized a row") {
+    let number = pair.at(0) ?? ""
+    let height = pair.at(1) ?? ""
+    if number != "" and height != "" {
+        s.heights.put(number, height)
+    }
+}
+
+/// The columns and rows the person sized.
+fn sizes_of(s: Sheet) -> List<ui.SheetSize> {
+    let wide = s.widths.keys().map(k -> .column(
+        column: k,
+        width: pixels_of(s.widths.get(k) ?? "", 112),
+    ))
+    let tall = s.heights.keys().map(k -> .row(
+        row: (k.to_int() ?? 1).to_float(),
+        height: pixels_of(s.heights.get(k) ?? "", 28),
+    ))
+    [wide, tall].flat_map(x -> x)
+}
+
+/// The pixels a size holds, or `fallback` when it holds none.
+fn pixels_of(text: Text, fallback: Int) -> Float {
+    (text.to_int() ?? fallback).to_float()
+}
+
+// ---------------------------------------------------------------------------------------------
+// The tabs under the grid.
+
+/// The workbook's sheets as tabs, with the way to add one and the open sheet's own menu.
+template view workbook_tabs(
+    w: Workbook,
+    s: Sheet,
+    open_sheet: State<Option<Sheet>>,
+    area: State<Text>,
+    renaming: State<Bool>,
+    rename_text: State<Text>,
+    coloring: State<Bool>,
+) {
+    row(gap: .tight, align: .center) {
+        for tab in w.sheets {
+            if not tab.hidden or tab == s {
+                ui.Button(tab.name, toggled: tab == s, size: .small) {
+                    on press: set(open_sheet, tab).then(set(area, "A1"))
+                }
+            }
+        }
+        ui.Button("Add sheet", icon: .plus, icon_only: true, size: .small) {
+            on press: new_sheet_after(w, s)
+        }
+        spacer
+        ui.MenuButton("Sheet", icon: .more_horizontal, icon_only: true, size: .small) {
+            ui.MenuItem("Rename…", icon: .pencil) {
+                on choose: set(rename_text, s.name).then(set(renaming, true))
+            }
+            ui.MenuItem("Duplicate", icon: .copy) {
+                on choose: duplicate_sheet(w, s)
+            }
+            ui.MenuItem("Tab colour…", icon: .palette) {
+                on choose: set(coloring, true)
+            }
+            ui.MenuItem(if s.hidden { "Show the tab" } else { "Hide the tab" }, icon: .eye_off) {
+                on choose: set_sheet_hidden(s, not s.hidden)
+            }
+            ui.MenuSeparator
+            for other in w.sheets.filter(x -> x != s) {
+                ui.MenuItem("Move before {other.name}", icon: .arrow_left) {
+                    on choose: place_sheet(w, s, other)
+                }
+            }
+            ui.MenuSeparator
+            ui.MenuItem("Delete the sheet", icon: .trash, destructive: true) {
+                on choose: delete_sheet(w, s)
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// What was said about the cells, and the charts over them.
+
+/// The panel beside the grid: the comments about the open sheet, or its charts.
+template view side_panel(w: Workbook, s: Sheet, area: State<Text>, panel: State<Text>, book: Text) {
+    ui.Card {
+        row(gap: .tight, align: .center) {
+            ui.Button("Comments", size: .small, toggled: panel == "comments") {
+                on press: set(panel, "comments")
+            }
+            ui.Button("Charts", size: .small, toggled: panel == "charts") {
+                on press: set(panel, "charts")
+            }
+            spacer
+            ui.Button("Close", icon: .x, icon_only: true, size: .small) {
+                on press: set(panel, "")
+            }
+        }
+        scroll {
+            if panel == "comments" {
+                comments_panel(w, s, area)
+            } else {
+                charts_panel(w, s, area, book)
+            }
+        }
+    }
+}
+
+/// What was said about the open sheet, and the field to say something about the cells the person
+/// chose.
+template view comments_panel(w: Workbook, s: Sheet, area: State<Text>) {
+    state draft: RichText = RichText("")
+    let said = w.comments.filter(c -> c.sheet == s.name)
+    if said.is_empty() {
+        ui.Text("Nothing said about this sheet yet", secondary: true)
+    }
+    for c in said {
+        comment_card(w, c, area)
+    }
+    ui.RichInput(bind: draft, placeholder: "Comment on {area}") {
+        on submit: comment(w, s, area, draft).then(set(draft, RichText("")))
+    }
+    ui.Button("Comment", icon: .message_square_plus, size: .small) {
+        on press: comment(w, s, area, draft).then(set(draft, RichText("")))
+    }
+}
+
+/// One comment: the cells it is about, what it says, the replies under it, and what can be done
+/// with it.
+template view comment_card(w: Workbook, c: Comment, area: State<Text>) {
+    state replying: Bool = false
+    state reply_text: RichText = RichText("")
+    ui.Card {
+        row(gap: .tight, align: .center) {
+            ui.Button(c.range, icon: .locate_fixed, size: .small) {
+                on press: set(area, c.range)
+            }
+            spacer
+            if let who = created(c)?.who {
+                text(who.name(), role: .caption, secondary: true)
+            }
+            if c.resolved {
+                ui.Badge("Resolved", tone: .success)
+            }
+        }
+        rich_text(c.text)
+        for r in c.replies {
+            reply_row(r)
+        }
+        if replying {
+            ui.RichInput(bind: reply_text, placeholder: "Reply") {
+                on submit: reply(c, reply_text).then(set(reply_text, RichText(""))).then(set(replying, false))
+            }
+        }
+        row(gap: .tight) {
+            ui.Button("Reply", icon: .reply, size: .small) {
+                on press: set(replying, true)
+            }
+            ui.Button(if c.resolved { "Reopen" } else { "Resolve" }, icon: .circle_check, size: .small) {
+                on press: resolve(c)
+            }
+            spacer
+            if created(c)?.who == workspace.me {
+                ui.Button("Delete", icon: .trash, icon_only: true, size: .small) {
+                    on press: delete_comment(w, c)
+                }
+            }
+        }
+    }
+}
+
+/// One answer to a comment.
+view reply_row(r: Reply) {
+    stack(gap: .tight) {
+        if let who = created(r)?.who {
+            text(who.name(), role: .caption, secondary: true)
+        }
+        rich_text(r.text)
+    }
+}
+
+/// The charts over the open sheet, each drawn from the cells it is about, and the way to chart the
+/// cells the person chose.
+template view charts_panel(w: Workbook, s: Sheet, area: State<Text>, book: Text) {
+    if s.charts.is_empty() {
+        ui.Text("No chart over this sheet yet", secondary: true)
+    }
+    for c in s.charts {
+        chart_card(w, s, c, area, book)
+    }
+    row(gap: .tight) {
+        ui.Button("Column chart", icon: .bar_chart, size: .small) {
+            on press: add_chart(s, area, .column, "")
+        }
+        ui.Button("Line chart", icon: .activity, size: .small) {
+            on press: add_chart(s, area, .line, "")
+        }
+    }
+}
+
+/// One chart, drawn from the cells it is about, with the way to change or remove it.
+template view chart_card(w: Workbook, s: Sheet, c: Chart, area: State<Text>, book: Text) {
+    let cells = shown_cells(shown_sheet(values_of(book), s.name))
+    let readings = readings_of(book, s.name, c.range)
+    ui.Card(title: c.title) {
+        if readings.is_empty() {
+            ui.Text("Nothing in {c.range} to chart", secondary: true)
+        } else if c.kind == .line {
+            ui.Chart([.series(values: readings, label: c.title)], title: .some(c.title))
+        } else {
+            ui.BarChart(
+                [.bars(values: readings, label: c.title)],
+                categories: categories_of(cells, c.range),
+                title: .some(c.title),
+            )
+        }
+        row(gap: .tight) {
+            ui.Button("Show the cells", icon: .locate_fixed, size: .small) {
+                on press: set(area, c.range)
+            }
+            spacer
+            ui.Button("Delete", icon: .trash, icon_only: true, size: .small) {
+                on press: delete_chart(s, c)
+            }
+        }
+    }
+}
+
+/// The numbers a range shows, as a chart reads them: its last column, or the only column it has.
+fn readings_of(book: Text, sheet: Text, range: Text) -> List<Float> {
+    match book.sheet_numbers(sheet, range) {
+        .ok(text) => json.decode<List<Float>>(text) ?? [],
+        .err(_) => [],
+    }
+}
+
+/// What each row a chart reads is called, from the first column of its range.
+fn categories_of(cells: List<List<Text>>, range: Text) -> List<Text> {
+    let column = column_letter(column_index(column_of(range_start(range))))
+    let top = row_of(range_start(range))
+    let bottom = row_of(range_end(range))
+    count_up(top, bottom).map(row -> text_at(cell_row(cells, "{column}{row}"), 2))
+}
+
+/// The shown cell for a reference.
+fn cell_row(cells: List<List<Text>>, reference: Text) -> List<Text> {
+    cells.find(c -> text_at(c, 1) == reference) ?? []
+}
+
+// ---------------------------------------------------------------------------------------------
+// The small questions a sheet asks: its name, its colour and the workbook's settings.
+
+/// The dialogs: renaming a sheet, choosing its colour, and the document's settings.
+template view workbook_dialogs(
+    w: Workbook,
+    s: Sheet,
+    renaming: State<Bool>,
+    rename_text: State<Text>,
+    coloring: State<Bool>,
+    settings_open: State<Bool>,
+) {
+    ui.ModalDialog(
+        title: "Rename the sheet",
+        open: renaming,
+        primary: "Rename",
+        secondary: "Cancel",
+        icon: .pencil,
+    ) {
+        on act_primary: rename_sheet(w, s, rename_text).then(set(renaming, false))
+        on act_secondary: set(renaming, false)
+        on dismiss: set(renaming, false)
+        ui.TextInput(bind: rename_text, autofocus: true, placeholder: s.name)
+    }
+    ui.ModalDialog(
+        title: "Tab colour",
+        open: coloring,
+        secondary: "Done",
+        icon: .palette,
+    ) {
+        on act_secondary: set(coloring, false)
+        on dismiss: set(coloring, false)
+        ui.ColorSwatchPicker(
+            swatches: tab_colors(),
+            selected: s.color,
+            columns: 6,
+            label: "Tab colour",
+        ) {
+            on change(index): set_sheet_color(s, .some(index))
+        }
+        ui.Button("No colour") {
+            on press: set_sheet_color(s, .none)
+        }
+    }
+    ui.ModalDialog(
+        title: "Document settings",
+        open: settings_open,
+        secondary: "Done",
+        icon: .settings_2,
+    ) {
+        on act_secondary: set(settings_open, false)
+        on dismiss: set(settings_open, false)
+        stack(gap: .related) {
+            text("How its numbers, dates and times are written", role: .caption, secondary: true)
+            money_choice(w)
+            date_choice(w)
+            time_choice(w)
+        }
+    }
+}
+
+/// The currencies the workbook's bare money format may show in.
+template view money_choice(w: Workbook) {
+    ui.MenuButton("Money: {currency_name(w.currency)}", icon: .wallet) {
+        for c in [.usd, .eur, .gbp, .jpy, .chf, .cad, .aud, .cny, .inr] {
+            ui.MenuItem(currency_name(c), checked: c == w.currency) {
+                on choose: set_settings(w, currency: .some(c))
+            }
+        }
+    }
+}
+
+/// The date styles the workbook reads its dates in.
+template view date_choice(w: Workbook) {
+    ui.MenuButton("Dates: {date_name(w.date_style)}", icon: .calendar) {
+        for d in [.language, .iso, .us, .eu, .long] {
+            ui.MenuItem(date_name(d), checked: d == w.date_style) {
+                on choose: set_settings(w, date_style: .some(d))
+            }
+        }
+    }
+}
+
+/// The time styles the workbook reads its times in.
+template view time_choice(w: Workbook) {
+    ui.MenuButton("Times: {time_name(w.time_style)}", icon: .clock) {
+        for t in [.language, .h24, .h12] {
+            ui.MenuItem(time_name(t), checked: t == w.time_style) {
+                on choose: set_settings(w, time_style: .some(t))
+            }
+        }
+    }
+}
+
+/// What a currency is called in the menu.
+fn currency_name(c: Currency) -> Text {
+    "{currency_code(c)}"
+}
+
+/// What a date style is called in the menu.
+fn date_name(d: DateStyle) -> Text {
+    match d {
+        .language => "As the language writes them"
+        .iso => "2026-11-23"
+        .us => "11/23/2026"
+        .eu => "23.11.2026"
+        .long => "November 23, 2026"
+    }
+}
+
+/// What a time style is called in the menu.
+fn time_name(t: TimeStyle) -> Text {
+    match t {
+        .language => "As the language writes them"
+        .h24 => "14:30"
+        .h12 => "2:30 PM"
+    }
+}
+
+/// The colours a tab may take.
+fn tab_colors() -> List<Text> {
+    [
+        "#e5484d", "#e54d2e", "#f76b15", "#ffb224", "#46a758", "#12a594",
+        "#05a2c2", "#3e63dd", "#8e4ec6", "#e93d82", "#8d8d8d", "#60646c",
+    ]
+}

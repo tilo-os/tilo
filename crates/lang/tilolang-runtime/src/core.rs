@@ -39,7 +39,8 @@ use Imp::{
     ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew, ListPrevious, ListPushF,
     ListPushH, ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI, MadeFrom, MapGetH,
     MapGetValue, MapKeys, MapKeysValue, MapNew, MapPut, MapPutValue, MapRemove, MapRemoveValue,
-    MapSetAdd, MapSetRemove, MatchGroup, MayRead, Me, Members, Mentions, MetaOf, MissingV,
+    MapSetAdd, MapSetRemove, SheetEdit, SheetEntry, SheetFile, SheetNumbers, SheetOfFile,
+    SheetRanges, SheetRecords, SheetValues, MatchGroup, MayRead, Me, Members, Mentions, MetaOf, MissingV,
     ModelCall, NoneV, Notify, Now, OfType, Outside, OutsideAt, PersonNamed, Phrase, Print,
     PrintRows, ProposalNote, Query, QueueBlock, RandomChoice, RandomFloat, RandomId, RandomInt,
     RandomShuffle, ReadText, ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs,
@@ -552,9 +553,19 @@ impl Core {
             | ActorName | QueueBlock | Now | TimeShift | PersonNamed | AgentNamed
             | InvocationPush | InvocationPop => self.effect_import(imp, a),
             WebGet | WebPost | WebOk | WebStatus | WebStatusText | WebHeaders | WebBody
-            | WebText | BytesLength => self.web_import(imp, a),
-            FilePart | FileSize | FileText | FileFiles => self.file_import(imp, a),
-            FileOfText | FileOfBytes | FileAt | FileZip => self.file_make(imp, a),
+            | WebText | BytesLength | Base64Decode => self.web_import(imp, a),
+            PageCall => self.page_import(a),
+            FilePart | FileSize | FileText | FileFiles | SheetFile => self.file_import(imp, a),
+            FileOfText | FileOfBytes | FileAt | FileZip | SheetOfFile => self.file_make(imp, a),
+            FileImageInfo | FileCrop | FileTurn | FileResize | FileEncode | FileThumbnail => {
+                self.image_import(imp, a)
+            }
+            SheetValues => self.sheet_values(a),
+            SheetEdit => self.sheet_edit(a),
+            SheetRanges => self.sheet_ranges(a),
+            SheetNumbers => self.sheet_numbers(a),
+            SheetRecords => self.sheet_records(a),
+            SheetEntry => self.sheet_entry(a),
             ClipboardCopyText | ClipboardCopyImage | ClipboardPasteText | ClipboardPasteImage => {
                 self.clipboard_import(imp, a)
             }

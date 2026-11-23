@@ -8,7 +8,7 @@
 
 mod calc;
 mod csv;
-mod edit;
+pub mod edit;
 pub mod fill;
 pub mod infer;
 pub mod model;
@@ -18,10 +18,11 @@ mod records;
 mod refs;
 mod xlsx;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+pub use edit::Change;
 pub use model::{Addr, CellFormat, CellValue, FormulaError, a1_to_addr, addr_to_a1};
 
 /// How a workbook is written to a file, by the file's kind.
@@ -146,9 +147,6 @@ pub struct ShownSheet {
     pub cells: BTreeMap<String, CellShown>,
 }
 
-impl ShownSheet {
-}
-
 /// A shown cell with the format and weight it stands in.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct CellShown {
@@ -254,6 +252,77 @@ pub fn values(book: &Book) -> Vec<ShownSheet> {
             shown.columns = columns.max(1);
             shown.rows = rows.max(1);
             shown
+        })
+        .collect()
+}
+
+/// The input to store for a typed entry, and the format code it shows in, with the currency a
+/// bare money symbol means named by its ISO code.
+#[must_use]
+pub fn entry_of(input: &str, currency: &str) -> (String, String) {
+    let currency =
+        tilo_formats::Currency::from_code(currency).unwrap_or(tilo_formats::Currency::USD);
+    let inferred = infer::infer_entry(input, currency);
+    (inferred.raw, inferred.format.as_str())
+}
+
+/// Each sheet as an app reads it to draw its grid: its name, how many columns and rows it shows,
+/// and then each cell that shows anything as its reference, what it shows and how it reads
+/// (`text`, `number`, `bool` or `error`).
+///
+/// A call answers a list of sheets, each a list of rows that say what they are: the sheet's own
+/// name and extent, tagged `sheet`, and one `cell` row for each cell that shows anything.
+#[must_use]
+pub fn shown_rows(book: &Book) -> Vec<Vec<Vec<String>>> {
+    values(book)
+        .into_iter()
+        .map(|sheet| {
+            let mut rows = vec![vec![
+                "sheet".to_owned(),
+                sheet.name,
+                sheet.columns.to_string(),
+                sheet.rows.to_string(),
+            ]];
+            for (reference, cell) in sheet.cells {
+                rows.push(vec!["cell".to_owned(), reference, cell.shown, cell.kind]);
+            }
+            rows
+        })
+        .collect()
+}
+
+/// The sheets as an app keeps them: each sheet's name and whether its tab is hidden, and then
+/// each cell that holds anything as its reference, the input typed into it, its format code and
+/// whether it is bold.
+#[must_use]
+pub fn sheet_rows(sheets: &[Sheet]) -> Vec<Vec<Vec<String>>> {
+    sheets
+        .iter()
+        .map(|sheet| {
+            let mut rows = vec![vec![
+                "sheet".to_owned(),
+                sheet.name.clone(),
+                if sheet.hidden { "1" } else { "0" }.to_owned(),
+            ]];
+            let mut references: BTreeSet<&str> =
+                sheet.cells.keys().map(String::as_str).collect();
+            references.extend(sheet.formats.keys().map(String::as_str));
+            references.extend(sheet.bold.iter().map(String::as_str));
+            for reference in references {
+                rows.push(vec![
+                    "cell".to_owned(),
+                    reference.to_owned(),
+                    sheet.cells.get(reference).cloned().unwrap_or_default(),
+                    sheet.formats.get(reference).cloned().unwrap_or_default(),
+                    if sheet.bold.iter().any(|bold| bold == reference) {
+                        "1"
+                    } else {
+                        "0"
+                    }
+                    .to_owned(),
+                ]);
+            }
+            rows
         })
         .collect()
 }
@@ -463,6 +532,60 @@ fn sheet_name(file: &str) -> String {
 /// The change names a sheet or a range the workbook does not hold.
 pub fn edit(book: &Book, change: &edit::Change) -> Result<Vec<Sheet>, String> {
     edit::apply(book, change)
+}
+
+/// The numbers a range of a sheet shows, row by row: a chart's readings. A cell that is not a
+/// number reads as 0, so every row of the range has its reading.
+#[must_use]
+pub fn range_numbers(book: &Book, sheet: &str, range: &str) -> Vec<f64> {
+    let Some(own) = book
+        .sheets
+        .iter()
+        .position(|shown| refs::fold_sheet(&shown.name) == refs::fold_sheet(sheet))
+    else {
+        return Vec::new();
+    };
+    let Some((start, end)) = corners_of(range) else {
+        return Vec::new();
+    };
+    let inputs: Vec<(String, std::collections::HashMap<Addr, String>)> = book
+        .sheets
+        .iter()
+        .map(|sheet| (sheet.name.clone(), sheet.inputs()))
+        .collect();
+    let computed = calc::evaluate(&inputs, own);
+    let column = if end.0 > start.0 { end.0 } else { start.0 };
+    (start.1..=end.1)
+        .map(|row| {
+            computed
+                .get(&(column, row))
+                .and_then(CellValue::as_number)
+                .unwrap_or(0.0)
+        })
+        .collect()
+}
+
+/// The two corners of an A1 range, top left first.
+fn corners_of(text: &str) -> Option<(Addr, Addr)> {
+    let mut parts = text.trim().split(':');
+    let first = parts.next().unwrap_or_default();
+    let last = parts.next().unwrap_or(first);
+    let start = a1_to_addr(first)?;
+    let end = a1_to_addr(last)?;
+    Some((
+        (start.0.min(end.0), start.1.min(end.1)),
+        (start.0.max(end.0), start.1.max(end.1)),
+    ))
+}
+
+/// The ranges of `sheet` as they stand after `change`, each empty where the change removes every
+/// cell it names: a chart or a comment keeps the cells it is about as the rows under them move.
+#[must_use]
+pub fn moved_ranges(change: &edit::Change, sheet: &str, areas: &[String]) -> Vec<String> {
+    areas
+        .iter()
+        .map(|area| edit::moved_range(change, sheet, area).unwrap_or_default())
+        .collect()
 }
 
 /// The cells a record is written as, for the actions that take records.

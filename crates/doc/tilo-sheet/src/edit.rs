@@ -25,15 +25,15 @@ pub enum Change {
     },
     /// Remove the zero-based rows `rows`; the rows below move up.
     DeleteRows { sheet: String, rows: Vec<u32> },
-    /// Insert `count` columns left of the zero-based column `at`.
+    /// Insert `count` columns left of the column `at`, by its letters (`C`).
     InsertColumns {
         sheet: String,
-        at: u32,
+        at: String,
         #[serde(default = "one")]
         count: u32,
     },
-    /// Remove the zero-based columns `columns`; the columns right of them move left.
-    DeleteColumns { sheet: String, columns: Vec<u32> },
+    /// Remove the columns `columns`, by their letters; the columns right of them move left.
+    DeleteColumns { sheet: String, columns: Vec<String> },
     /// Sort the rows of `range` by the values in column `by`.
     SortRows {
         sheet: String,
@@ -50,6 +50,26 @@ pub enum Change {
     },
     /// Give the sheet `name`, and rewrite every formula that reads it by its old name.
     Rename { sheet: String, name: String },
+    /// Write the formats of the cells of `range` (`None` leaves them as they are) and their
+    /// weight (`None` leaves it), as the Format menu does.
+    Format {
+        sheet: String,
+        range: String,
+        #[serde(default)]
+        format: Option<String>,
+        #[serde(default)]
+        bold: Option<bool>,
+    },
+    /// Write rows of values into `start` and rightward and downward from it: what a paste or a
+    /// table handed to the workbook writes. An empty value clears its cell.
+    SetCells {
+        sheet: String,
+        start: String,
+        rows: Vec<Vec<String>>,
+    },
+    /// Write the sum of each column of `range` into the cell under it: what summing a selection
+    /// writes.
+    Sum { sheet: String, range: String },
 }
 
 const fn one() -> u32 {
@@ -62,41 +82,11 @@ const fn one() -> u32 {
 /// A sheet or range the workbook does not hold.
 pub fn apply(book: &Book, change: &Change) -> Result<Vec<Sheet>, String> {
     let mut sheets = book.sheets.clone();
+    let (moved, edits) = edits_of(change)?;
+    for edit in edits {
+        reshape(&mut sheets, moved, edit)?;
+    }
     match change {
-        Change::InsertRows { sheet, at, count } => {
-            let count = (*count).clamp(1, 1000);
-            for _ in 0..count {
-                reshape(&mut sheets, sheet, GridEdit::InsertRow(*at))?;
-            }
-        }
-        Change::DeleteRows { sheet, rows } => {
-            let mut rows = rows.clone();
-            if rows.is_empty() {
-                return Err("name at least one row".into());
-            }
-            rows.sort_unstable();
-            rows.dedup();
-            for at in rows.into_iter().rev() {
-                reshape(&mut sheets, sheet, GridEdit::DeleteRow(at))?;
-            }
-        }
-        Change::InsertColumns { sheet, at, count } => {
-            let count = (*count).clamp(1, 1000);
-            for _ in 0..count {
-                reshape(&mut sheets, sheet, GridEdit::InsertColumn(*at))?;
-            }
-        }
-        Change::DeleteColumns { sheet, columns } => {
-            let mut columns = columns.clone();
-            if columns.is_empty() {
-                return Err("name at least one column".into());
-            }
-            columns.sort_unstable();
-            columns.dedup();
-            for at in columns.into_iter().rev() {
-                reshape(&mut sheets, sheet, GridEdit::DeleteColumn(at))?;
-            }
-        }
         Change::SortRows {
             sheet,
             range,
@@ -115,8 +105,171 @@ pub fn apply(book: &Book, change: &Change) -> Result<Vec<Sheet>, String> {
             target,
         } => fill_range(&mut sheets, sheet, source, target)?,
         Change::Rename { sheet, name } => rename(&mut sheets, sheet, name)?,
+        Change::Format {
+            sheet,
+            range,
+            format,
+            bold,
+        } => format(&mut sheets, sheet, range, format.as_deref(), *bold)?,
+        Change::SetCells { sheet, start, rows } => {
+            write_rows(&mut sheets, sheet, start, rows)?;
+        }
+        Change::Sum { sheet, range } => sum_columns(&mut sheets, sheet, range)?,
     }
     Ok(sheets)
+}
+
+/// The sheet a change moves lines of, and the line moves it makes in the order they are made: none
+/// for the changes that move no line (a sort, a fill, a rename).
+///
+/// # Errors
+/// A change that names no row or column at all.
+fn edits_of(change: &Change) -> Result<(&str, Vec<GridEdit>), String> {
+    let lines = |at: u32, count: u32, edit: fn(u32) -> GridEdit| -> Vec<GridEdit> {
+        (0..count.clamp(1, 1000)).map(|_| edit(at)).collect()
+    };
+    Ok(match change {
+        Change::InsertRows { sheet, at, count } => {
+            (sheet.as_str(), lines(*at, *count, GridEdit::InsertRow))
+        }
+        Change::DeleteRows { sheet, rows } => {
+            if rows.is_empty() {
+                return Err("name at least one row".into());
+            }
+            let mut rows = rows.clone();
+            rows.sort_unstable();
+            rows.dedup();
+            (
+                sheet.as_str(),
+                rows.into_iter().rev().map(GridEdit::DeleteRow).collect(),
+            )
+        }
+        Change::InsertColumns { sheet, at, count } => {
+            let at = column_index(at)?;
+            (sheet.as_str(), lines(at, *count, GridEdit::InsertColumn))
+        }
+        Change::DeleteColumns { sheet, columns } => {
+            if columns.is_empty() {
+                return Err("name at least one column".into());
+            }
+            let mut at: Vec<u32> = columns
+                .iter()
+                .map(|column| column_index(column))
+                .collect::<Result<_, _>>()?;
+            at.sort_unstable();
+            at.dedup();
+            (
+                sheet.as_str(),
+                at.into_iter().rev().map(GridEdit::DeleteColumn).collect(),
+            )
+        }
+        Change::SortRows { sheet, .. }
+        | Change::Fill { sheet, .. }
+        | Change::Rename { sheet, .. }
+        | Change::Format { sheet, .. }
+        | Change::SetCells { sheet, .. }
+        | Change::Sum { sheet, .. } => (sheet.as_str(), Vec::new()),
+    })
+}
+
+/// Where the range `area` of `sheet` stands after `change`, or nothing when the change removes
+/// every cell it names: a chart or a comment keeps the cells it is about as the rows under them
+/// move.
+#[must_use]
+pub fn moved_range(change: &Change, sheet: &str, area: &str) -> Option<String> {
+    let Ok((moved, edits)) = edits_of(change) else {
+        return None;
+    };
+    if fold_sheet(moved) != fold_sheet(sheet) {
+        return Some(area.to_owned());
+    }
+    let (mut start, mut end) = range_of(area).ok()?;
+    for edit in edits {
+        (start, end) = edit.map_range(start, end)?;
+    }
+    Some(if start == end {
+        addr_to_a1(start.0, start.1)
+    } else {
+        format!("{}:{}", addr_to_a1(start.0, start.1), addr_to_a1(end.0, end.1))
+    })
+}
+
+/// The zero-based index of the column `letters` names.
+fn column_index(letters: &str) -> Result<u32, String> {
+    letters_to_col(letters.trim())
+        .ok_or_else(|| format!("`{letters}` names no column; a column is its letters, as `C`"))
+}
+
+/// Write the format and weight of every cell of `range`.
+fn format(
+    sheets: &mut [Sheet],
+    name: &str,
+    range: &str,
+    code: Option<&str>,
+    bold: Option<bool>,
+) -> Result<(), String> {
+    let (start, end) = range_of(range)?;
+    let sheet = sheet_of(sheets, name)?;
+    for row in start.1..=end.1 {
+        for column in start.0..=end.0 {
+            let reference = addr_to_a1(column, row);
+            if let Some(code) = code {
+                if matches!(CellFormat::parse_code(code), None | Some(CellFormat::General)) {
+                    sheet.formats.remove(&reference);
+                } else {
+                    sheet.formats.insert(reference.clone(), code.to_owned());
+                }
+            }
+            if let Some(bold) = bold {
+                sheet.bold.retain(|cell| cell != &reference);
+                if bold {
+                    sheet.bold.push(reference);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Write the sum of each column of `range` into the cell under it.
+fn sum_columns(sheets: &mut [Sheet], name: &str, range: &str) -> Result<(), String> {
+    let (start, end) = range_of(range)?;
+    let sheet = sheet_of(sheets, name)?;
+    for column in start.0..=end.0 {
+        let under = addr_to_a1(column, end.1.saturating_add(1));
+        let sum = format!(
+            "=SUM({}:{})",
+            addr_to_a1(column, start.1),
+            addr_to_a1(column, end.1)
+        );
+        sheet.cells.insert(under, sum);
+    }
+    Ok(())
+}
+
+/// Write `rows` into the sheet from `start` and rightward and downward from it.
+fn write_rows(
+    sheets: &mut [Sheet],
+    name: &str,
+    start: &str,
+    rows: &[Vec<String>],
+) -> Result<(), String> {
+    let from = a1_to_addr(start).ok_or_else(|| format!("`{start}` names no cell"))?;
+    let sheet = sheet_of(sheets, name)?;
+    for (down, row) in rows.iter().enumerate() {
+        for (across, value) in row.iter().enumerate() {
+            let (Ok(down), Ok(across)) = (u32::try_from(down), u32::try_from(across)) else {
+                continue;
+            };
+            let reference = addr_to_a1(from.0.saturating_add(across), from.1.saturating_add(down));
+            if value.is_empty() {
+                sheet.cells.remove(&reference);
+            } else {
+                sheet.cells.insert(reference, value.clone());
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The sheet `name` names.
