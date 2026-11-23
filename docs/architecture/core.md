@@ -190,6 +190,14 @@ agent's triggers; it never reads an app's own fields. Which eligible device runs
 runs, decided in one function, `tilo_workspace_service::work::takes_turn`. Everything a turn writes
 is a member write for the agent, signed by the device that runs it.
 
+There is one trigger runner, and it runs every shortcut: an agent's, a
+connector's, a person's. A run that can't go ahead yet (no model, nothing to
+take it) is tried again later. A run that fails for good keeps its failed
+record, shown wherever runs are listed. A shortcut's counts come from its run
+history, and pausing it is a setting on the shortcut. The workspace's host runs
+a member's shortcuts for that member, within what that member allowed when
+saving them, so events reach members who have no server of their own.
+
 An agent is a reader in its own right. Its member key is in the reader set
 of every record it is in: a direct conversation between Ada and her agent
 is sealed for Ada and the agent, never for Ada alone. A device that runs the
