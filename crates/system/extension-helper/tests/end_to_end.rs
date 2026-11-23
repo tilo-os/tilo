@@ -1,4 +1,4 @@
-//! tilo-extension end to end, with real RPMs and a real P-256 signature.
+//! tilo-extension end to end, with real RPMs and real signatures.
 //!
 //! Builds tiny RPMs shaped like the media-codecs packages, publishes a
 //! manifest pinning them, signs it with a throwaway P-256 key (openssl, as
@@ -11,17 +11,20 @@
 //! of URLs, the base's package list is given, connectivity is "full", and
 //! merging is left to `systemd-sysext list` (rootless) rather than done.
 //!
-//! Needs rpmbuild, rpm, rpm2archive, openssl and a tilo-crypto binary
-//! (`$TILO_CRYPTO`, `target/{debug,release}/tilo-crypto` or `PATH`); without
-//! them each case says what is missing and passes, as the suite it replaces
-//! did. Scratch space lives under `~/.cache/tilo-extension-e2e` (or
-//! `$TILO_EXTENSION_E2E_DIR`), never /tmp.
+//! Needs rpmbuild, rpm, rpm2archive, openssl and systemd-sysext, which the
+//! build image carries, and the tilo-crypto binary the run builds beside this
+//! package's (t.toml `starts`). Scratch space lives under
+//! `~/.cache/tilo-extension-e2e` (or `$TILO_EXTENSION_E2E_DIR`), never /tmp.
 #![allow(
     clippy::unwrap_used,
     clippy::indexing_slicing,
     clippy::string_slice,
-    clippy::arithmetic_side_effects,
     reason = "test helpers fail the test on any I/O error"
+)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::panic,
+    reason = "one journey asserts every step, and a missing tool fails it by name"
 )]
 
 mod support;
@@ -30,13 +33,79 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use serde_json::{Value, json};
+use serde_json::json;
 use support::{BASE_PACKAGES, Fake, Machine, RPMFUSION, repo, sha256_hex};
 
-const TOOLS: [&str; 4] = ["rpmbuild", "rpm", "rpm2archive", "openssl"];
+fn run(program: &str, args: &[&str]) -> Vec<u8> {
+    let out = Command::new(program)
+        .args(args)
+        .output_locked()
+        .unwrap_or_else(|error| panic!("{program} could not start: {error}"));
+    assert!(
+        out.status.success(),
+        "{program} {args:?} failed:\n{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    out.stdout
+}
+
+fn openssl_stdin(args: &[&str], input: &[u8]) -> Vec<u8> {
+    let mut child = Command::new("openssl")
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn_locked()
+        .unwrap();
+    std::io::Write::write_all(&mut child.stdin.take().unwrap(), input).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success());
+    out.stdout
+}
+
+fn base64(data: &[u8]) -> String {
+    String::from_utf8(openssl_stdin(&["base64", "-A"], data)).unwrap()
+}
+
+fn p256_key(path: &Path) {
+    let path = path.to_str().unwrap();
+    run(
+        "openssl",
+        &[
+            "ecparam",
+            "-name",
+            "prime256v1",
+            "-genkey",
+            "-noout",
+            "-out",
+            path,
+        ],
+    );
+}
+
+fn public_key(key: &Path, public: &Path) {
+    let (key, public) = (key.to_str().unwrap(), public.to_str().unwrap());
+    run("openssl", &["ec", "-in", key, "-pubout", "-out", public]);
+}
+
+/// A base64 DER ECDSA signature over SHA-256, as cosign's signer makes one.
+fn sign(data: &[u8], key: &Path, workdir: &Path) -> Vec<u8> {
+    let message = workdir.join("to-sign");
+    fs::write(&message, data).unwrap();
+    let der = run(
+        "openssl",
+        &[
+            "dgst",
+            "-sha256",
+            "-sign",
+            key.to_str().unwrap(),
+            message.to_str().unwrap(),
+        ],
+    );
+    base64(&der).into_bytes()
+}
 
 struct Package {
     name: &'static str,
@@ -88,54 +157,6 @@ const PACKAGES: [Package; 4] = [
         ld_conf: Some("/usr/lib64/mesa-freeworld\n"),
     },
 ];
-
-fn on_path(tool: &str) -> bool {
-    std::env::var_os("PATH")
-        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(tool).is_file()))
-}
-
-fn find_tilo_crypto() -> Option<PathBuf> {
-    let built =
-        ["debug", "release"].map(|profile| repo().join("target").join(profile).join("tilo-crypto"));
-    let on_path: Vec<PathBuf> = std::env::var_os("PATH")
-        .map(|path| {
-            std::env::split_paths(&path)
-                .map(|dir| dir.join("tilo-crypto"))
-                .collect()
-        })
-        .unwrap_or_default();
-    std::env::var_os("TILO_CRYPTO")
-        .map(PathBuf::from)
-        .into_iter()
-        .chain(built)
-        .chain(on_path)
-        .find(|c| c.is_file())
-}
-
-fn run(program: &str, args: &[&str]) -> Vec<u8> {
-    let out = Command::new(program).args(args).output_locked().unwrap();
-    assert!(
-        out.status.success(),
-        "{program} {args:?} failed:\n{}\n{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    out.stdout
-}
-
-struct Fixture {
-    _scratch: tempfile::TempDir,
-    rpms: BTreeMap<&'static str, PathBuf>,
-    key: PathBuf,
-    public: PathBuf,
-    rogue: PathBuf,
-    crypto: PathBuf,
-    root: PathBuf,
-    certificate: PathBuf,
-    other_root: PathBuf,
-    rekor: PathBuf,
-    rekor_public: PathBuf,
-}
 
 fn build_rpm(top: &Path, package: &Package) -> PathBuf {
     let mut install = Vec::new();
@@ -196,215 +217,90 @@ fn build_rpm(top: &Path, package: &Package) -> PathBuf {
     built
 }
 
-fn release_ceremony(scratch: &Path, public: &Path) {
-    let path = |name: &str| scratch.join(name);
-    let ceremony = repo().join("tools/signing/release-ca.sh");
-    for name in ["root", "other-root"] {
-        let key = path(&format!("{name}.key"));
-        run(
-            "openssl",
-            &[
-                "genpkey",
-                "-algorithm",
-                "EC",
-                "-pkeyopt",
-                "ec_paramgen_curve:P-384",
-                "-out",
-                key.to_str().unwrap(),
-            ],
+/// Keys, the release roots and certificate the ceremony makes, and a Rekor key.
+struct Keys {
+    _scratch: tempfile::TempDir,
+    dir: PathBuf,
+}
+
+impl Keys {
+    fn new() -> Self {
+        // rpmbuild's tree is large for a small /tmp.
+        let base = std::env::var_os("TILO_EXTENSION_E2E_DIR").map_or_else(
+            || PathBuf::from(std::env::var_os("HOME").unwrap()).join(".cache/tilo-extension-e2e"),
+            PathBuf::from,
         );
+        fs::create_dir_all(&base).unwrap();
+        let scratch = tempfile::Builder::new()
+            .prefix("run-")
+            .tempdir_in(&base)
+            .unwrap();
+        let dir = scratch.path().to_path_buf();
+        let path = |name: &str| dir.join(name);
+        for name in ["release", "rogue", "rekor"] {
+            p256_key(&path(&format!("{name}.key")));
+        }
+        public_key(&path("release.key"), &path("release.pub"));
+        public_key(&path("rekor.key"), &path("rekor.pub"));
+        let ceremony = repo().join("tools/signing/release-ca.sh");
+        let ceremony = ceremony.to_str().unwrap();
+        for name in ["root", "other-root"] {
+            let key = path(&format!("{name}.key"));
+            run(
+                "openssl",
+                &[
+                    "genpkey",
+                    "-algorithm",
+                    "EC",
+                    "-pkeyopt",
+                    "ec_paramgen_curve:P-384",
+                    "-out",
+                    key.to_str().unwrap(),
+                ],
+            );
+            run(
+                ceremony,
+                &[
+                    "init-root",
+                    "--key",
+                    key.to_str().unwrap(),
+                    "--out",
+                    path(&format!("{name}.crt")).to_str().unwrap(),
+                ],
+            );
+        }
         run(
-            ceremony.to_str().unwrap(),
+            ceremony,
             &[
-                "init-root",
+                "issue",
+                "--root",
+                path("root.crt").to_str().unwrap(),
                 "--key",
-                key.to_str().unwrap(),
+                path("root.key").to_str().unwrap(),
+                "--purpose",
+                "extension-manifests",
+                "--public-key",
+                path("release.pub").to_str().unwrap(),
+                "--days",
+                "30",
                 "--out",
-                path(&format!("{name}.crt")).to_str().unwrap(),
+                path("operational.crt").to_str().unwrap(),
             ],
         );
+        Self {
+            _scratch: scratch,
+            dir,
+        }
     }
-    run(
-        ceremony.to_str().unwrap(),
-        &[
-            "issue",
-            "--root",
-            path("root.crt").to_str().unwrap(),
-            "--key",
-            path("root.key").to_str().unwrap(),
-            "--purpose",
-            "extension-manifests",
-            "--public-key",
-            public.to_str().unwrap(),
-            "--days",
-            "30",
-            "--out",
-            path("operational.crt").to_str().unwrap(),
-        ],
-    );
-    run(
-        "openssl",
-        &[
-            "ecparam",
-            "-name",
-            "prime256v1",
-            "-genkey",
-            "-noout",
-            "-out",
-            path("rekor.key").to_str().unwrap(),
-        ],
-    );
-    run(
-        "openssl",
-        &[
-            "ec",
-            "-in",
-            path("rekor.key").to_str().unwrap(),
-            "-pubout",
-            "-out",
-            path("rekor.pub").to_str().unwrap(),
-        ],
-    );
+
+    fn path(&self, name: &str) -> PathBuf {
+        self.dir.join(name)
+    }
 }
 
-fn fixture() -> Option<&'static Fixture> {
-    static FIXTURE: OnceLock<Option<Fixture>> = OnceLock::new();
-    FIXTURE
-        .get_or_init(|| {
-            let crypto = find_tilo_crypto();
-            let mut missing: Vec<&str> = TOOLS.into_iter().filter(|tool| !on_path(tool)).collect();
-            if crypto.is_none() {
-                missing.push("tilo-crypto");
-            }
-            if !missing.is_empty() {
-                eprintln!(
-                    "end-to-end extension cases need {}; not run here",
-                    missing.join(", ")
-                );
-                return None;
-            }
-            let base = std::env::var_os("TILO_EXTENSION_E2E_DIR").map_or_else(
-                || {
-                    PathBuf::from(std::env::var_os("HOME").unwrap())
-                        .join(".cache/tilo-extension-e2e")
-                },
-                PathBuf::from,
-            );
-            fs::create_dir_all(&base).unwrap();
-            let scratch = tempfile::Builder::new()
-                .prefix("run-")
-                .tempdir_in(&base)
-                .unwrap();
-            let top = scratch.path().join("rpmbuild");
-            fs::create_dir_all(&top).unwrap();
-            let rpms = PACKAGES
-                .iter()
-                .map(|p| (p.name, build_rpm(&top, p)))
-                .collect();
-            let key = scratch.path().join("release.key");
-            let public = scratch.path().join("release.pub");
-            let rogue = scratch.path().join("rogue.key");
-            run(
-                "openssl",
-                &[
-                    "ecparam",
-                    "-name",
-                    "prime256v1",
-                    "-genkey",
-                    "-noout",
-                    "-out",
-                    key.to_str().unwrap(),
-                ],
-            );
-            run(
-                "openssl",
-                &[
-                    "ec",
-                    "-in",
-                    key.to_str().unwrap(),
-                    "-pubout",
-                    "-out",
-                    public.to_str().unwrap(),
-                ],
-            );
-            run(
-                "openssl",
-                &[
-                    "ecparam",
-                    "-name",
-                    "prime256v1",
-                    "-genkey",
-                    "-noout",
-                    "-out",
-                    rogue.to_str().unwrap(),
-                ],
-            );
-            let path = |name: &str| scratch.path().join(name);
-            release_ceremony(scratch.path(), &public);
-            Some(Fixture {
-                rpms,
-                key,
-                public,
-                rogue,
-                crypto: crypto.unwrap(),
-                root: path("root.crt"),
-                certificate: path("operational.crt"),
-                other_root: path("other-root.crt"),
-                rekor: path("rekor.key"),
-                rekor_public: path("rekor.pub"),
-                _scratch: scratch,
-            })
-        })
-        .as_ref()
-}
-
-fn sign(data: &[u8], key: &Path, workdir: &Path) -> Vec<u8> {
-    let message = workdir.join("to-sign");
-    fs::write(&message, data).unwrap();
-    let der = run(
-        "openssl",
-        &[
-            "dgst",
-            "-sha256",
-            "-sign",
-            key.to_str().unwrap(),
-            message.to_str().unwrap(),
-        ],
-    );
-    let mut child = Command::new("openssl")
-        .args(["base64", "-A"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn_locked()
-        .unwrap();
-    std::io::Write::write_all(&mut child.stdin.take().unwrap(), &der).unwrap();
-    let out = child.wait_with_output().unwrap();
-    assert!(out.status.success());
-    out.stdout
-}
-
-fn machine(fixture: &Fixture) -> Machine {
-    let machine = Machine::with_host(Fake {
-        real_tools: Some(fixture.crypto.clone()),
-        ..Fake::default()
-    });
-    fs::write(
-        machine.root.join("usr/lib/os-release"),
-        "ID=fedora\nVERSION_ID=44\n",
-    )
-    .unwrap();
-    fs::copy(&fixture.public, machine.layout.trust_key()).unwrap();
-    machine
-}
-
-/// Publish the manifest pinning the fixture RPMs, then let `tamper` change
-/// the published bytes. Returns the manifest.
-fn publish(
-    machine: &Machine,
-    fixture: &Fixture,
-    key: &Path,
-    tamper: impl Fn(&Machine, &str, &Value),
-) -> Value {
+/// Publish the manifest pinning the fixture RPMs under `key`'s signature;
+/// returns its URL.
+fn publish(machine: &Machine, rpms: &BTreeMap<&str, PathBuf>, key: &Path) -> String {
     let fingerprint = tilo_extension::base_packages_sha256(&BASE_PACKAGES);
     let parts = [
         (
@@ -421,7 +317,7 @@ fn publish(
     for (part, names) in parts {
         let mut artifacts = Vec::new();
         for name in names {
-            let path = &fixture.rpms[name];
+            let path = &rpms[name];
             let data = fs::read(path).unwrap();
             let file = path.file_name().unwrap().to_str().unwrap();
             let url = format!("{RPMFUSION}/{}/{file}", &name[..1]);
@@ -449,40 +345,19 @@ fn publish(
         .borrow_mut()
         .insert(format!("{url}.sig"), signature);
     machine.host.web.borrow_mut().insert(url.clone(), data);
-    tamper(machine, &url, &manifest);
-    manifest
+    url
 }
 
-fn base64(data: &[u8]) -> String {
-    let mut child = Command::new("openssl")
-        .args(["base64", "-A"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn_locked()
-        .unwrap();
-    std::io::Write::write_all(&mut child.stdin.take().unwrap(), data).unwrap();
-    let out = child.wait_with_output().unwrap();
-    assert!(out.status.success());
-    String::from_utf8(out.stdout).unwrap()
-}
-
-/// Make `machine` an image with the release root `root` and trust `trust`.
-fn certify(machine: &Machine, fixture: &Fixture, root: &Path, trust: &str) {
-    let layout = &machine.layout;
-    fs::create_dir_all(layout.release_root().parent().unwrap()).unwrap();
-    fs::copy(root, layout.release_root()).unwrap();
-    fs::copy(&fixture.rekor_public, layout.rekor_key()).unwrap();
-    fs::write(layout.release_trust(), trust).unwrap();
-}
-
-fn publish_bundle(machine: &Machine, fixture: &Fixture) {
-    let url = machine.manifest_url(Some(&tilo_extension::base_packages_sha256(&BASE_PACKAGES)));
+/// The cosign bundle beside the manifest at `url`: the release key's
+/// signature, the operational certificate and a Rekor entry signed by `keys`'s
+/// log key.
+fn publish_bundle(machine: &Machine, keys: &Keys, url: &str) {
     let (data, signature) = {
         let web = machine.host.web.borrow();
-        (web[&url].clone(), web[&format!("{url}.sig")].clone())
+        (web[url].clone(), web[&format!("{url}.sig")].clone())
     };
     let signature = String::from_utf8(signature).unwrap().trim().to_owned();
-    let certificate = base64(&fs::read(&fixture.certificate).unwrap());
+    let certificate = base64(&fs::read(keys.path("operational.crt")).unwrap());
     let body = json!({
         "apiVersion": "0.0.1", "kind": "hashedrekord",
         "spec": {"data": {"hash": {"algorithm": "sha256", "value": sha256_hex(&data)}},
@@ -495,7 +370,7 @@ fn publish_bundle(machine: &Machine, fixture: &Fixture) {
             "pkey",
             "-pubin",
             "-in",
-            fixture.rekor_public.to_str().unwrap(),
+            keys.path("rekor.pub").to_str().unwrap(),
             "-outform",
             "DER",
         ],
@@ -508,8 +383,12 @@ fn publish_bundle(machine: &Machine, fixture: &Fixture) {
     let canonical = format!(
         "{{\"body\":\"{body}\",\"integratedTime\":{time},\"logID\":\"{log_id}\",\"logIndex\":1}}"
     );
-    let timestamp =
-        String::from_utf8(sign(canonical.as_bytes(), &fixture.rekor, &machine.root)).unwrap();
+    let timestamp = String::from_utf8(sign(
+        canonical.as_bytes(),
+        &keys.path("rekor.key"),
+        &machine.root,
+    ))
+    .unwrap();
     let bundle = json!({
         "base64Signature": signature, "cert": certificate,
         "rekorBundle": {"SignedEntryTimestamp": timestamp,
@@ -522,8 +401,13 @@ fn publish_bundle(machine: &Machine, fixture: &Fixture) {
     );
 }
 
-fn trust(epoch: u32) -> String {
-    fs::read_to_string(repo().join("keys/release/trust.env"))
+/// Make `machine` an image with the release root `root` at release epoch `epoch`.
+fn certify(machine: &Machine, keys: &Keys, root: &str, epoch: u32) {
+    let layout = &machine.layout;
+    fs::create_dir_all(layout.release_root().parent().unwrap()).unwrap();
+    fs::copy(keys.path(root), layout.release_root()).unwrap();
+    fs::copy(keys.path("rekor.pub"), layout.rekor_key()).unwrap();
+    let trust: String = fs::read_to_string(repo().join("keys/release/trust.env"))
         .unwrap()
         .lines()
         .map(|line| {
@@ -533,179 +417,127 @@ fn trust(epoch: u32) -> String {
                 format!("{line}\n")
             }
         })
-        .collect()
+        .collect();
+    fs::write(layout.release_trust(), trust).unwrap();
 }
 
-fn install(machine: &Machine) -> (i32, Value) {
-    let code = machine.run("install");
-    (code, machine.status())
-}
-
-tilo_test_env::scenario! {
-    fn real_packages_install_only_under_the_trusted_keys_signature;
-
-    phase install_assembles_signed_artifacts_and_remove_restores_everything;
-    {
-        let Some(fixture) = fixture() else { return };
-        let machine = machine(fixture);
-        publish(&machine, fixture, &fixture.key, |_, _, _| {});
-        let (code, status) = install(&machine);
-        assert_eq!(code, 0, "{status}");
-        assert_eq!(
-            (status["state"].clone(), status["parts"].clone()),
-            (
-                json!("installed"),
-                json!({"tilo-codecs": "enabled", "tilo-codecs-mesa": "enabled"})
-            )
-        );
-        let codecs = machine.codecs();
-        assert_eq!(
-            fs::read_to_string(codecs.join("usr/lib64/gstreamer-1.0/libgstopenh264.so")).unwrap(),
-            "plugin"
-        );
-        assert!(
-            !codecs.join("etc").exists(),
-            "an extension carries only /usr"
-        );
-        assert_eq!(
-            fs::read_to_string(codecs.join("usr/lib64/libavcodec.so.61")).unwrap(),
-            "freeworld libavcodec"
-        );
-        let mesa = machine.part("tilo-codecs-mesa");
-        assert_eq!(
-            fs::read_to_string(mesa.join("usr/lib64/dri-freeworld/radeonsi_drv_video.so")).unwrap(),
-            "freeworld gallium"
-        );
-        if on_path("systemd-sysext") {
-            let listing = String::from_utf8(run(
-                "systemd-sysext",
-                &[&format!("--root={}", machine.root.display()), "list"],
-            ))
-            .unwrap();
-            for name in ["tilo-codecs", "tilo-codecs-mesa"] {
-                assert!(
-                    listing
-                        .lines()
-                        .any(|l| l.split_whitespace().take(2).eq([name, "directory"])),
-                    "{listing}"
-                );
-            }
-        }
-        fs::write(codecs.join("usr/lib64/libavcodec.so.61"), "hijacked").unwrap();
-        assert_eq!(machine.run("activate"), 0);
-        assert_eq!(
-            fs::read_to_string(codecs.join("usr/lib64/libavcodec.so.61")).unwrap(),
-            "freeworld libavcodec"
-        );
-        assert_eq!(machine.run("remove"), 0);
-        assert_eq!(machine.status()["state"], "not-installed");
-        assert_eq!(
-            fs::read_dir(machine.layout.extensions()).unwrap().count(),
-            0
-        );
-        assert!(!machine.layout.objects("media-codecs").exists());
-    }
-
-    phase a_manifest_signed_by_another_key_is_refused;
-    {
-        refused("signature is not valid", |f| &f.rogue, |_, _, _| {});
-    }
-
-    phase a_manifest_changed_after_signing_is_refused;
-    {
-        refused(
-            "signature is not valid",
-            |f| &f.key,
-            |machine, url, _| {
-                let mut web = machine.host.web.borrow_mut();
-                let text = String::from_utf8(web[url].clone()).unwrap();
-                web.insert(
-                    url.to_owned(),
-                    text.replacen(r#""license": "MIT""#, r#""license": "MIU""#, 1)
-                        .into_bytes(),
-                );
-            },
-        );
-    }
-
-    phase a_replaced_artifact_is_refused;
-    {
-        refused(
-            "does not match the signed manifest",
-            |f| &f.key,
-            |machine, _, manifest| {
-                let url = manifest["parts"][0]["artifacts"][0]["urls"][0]
-                    .as_str()
-                    .unwrap();
-                let mut web = machine.host.web.borrow_mut();
-                let last = web[url].len() - 1;
-                web.get_mut(url).unwrap()[last] ^= 1;
-            },
-        );
-    }
-}
-
-fn refused(
-    fragment: &str,
-    key: impl Fn(&Fixture) -> &Path,
-    tamper: impl Fn(&Machine, &str, &Value),
-) {
-    let Some(fixture) = fixture() else { return };
-    let machine = machine(fixture);
-    publish(&machine, fixture, key(fixture), tamper);
-    let (code, status) = install(&machine);
-    assert_eq!(code, 1);
-    assert!(
-        status["last_error"].as_str().unwrap().contains(fragment),
-        "{status}"
-    );
-    assert_eq!(status["state"], "failed");
-    assert!(!machine.codecs().exists());
-}
-
-tilo_test_env::scenario! {
-    fn an_image_with_the_release_root_installs_only_under_its_root_and_epoch;
-
-    phase an_image_with_the_release_root_installs_a_certified_manifest;
-    {
-        let Some(fixture) = fixture() else { return };
-        let machine = machine(fixture);
-        certify(&machine, fixture, &fixture.root, &trust(1));
-        publish(&machine, fixture, &fixture.key, |_, _, _| {});
-        publish_bundle(&machine, fixture);
-        let (code, status) = install(&machine);
-        assert_eq!(code, 0, "{status}");
-        assert_eq!(status["state"], "installed");
-        fs::remove_dir_all(machine.codecs()).unwrap();
-        assert_eq!(machine.run("activate"), 0);
-        assert!(machine.codecs().is_dir());
-    }
-
-    phase a_certificate_from_another_root_is_refused;
-    {
-        refused_certified(|f| &f.other_root, 1);
-    }
-
-    phase a_certificate_of_a_revoked_epoch_is_refused;
-    {
-        refused_certified(|f| &f.root, 2);
-    }
-}
-
-fn refused_certified(root: impl Fn(&Fixture) -> &Path, epoch: u32) {
-    let Some(fixture) = fixture() else { return };
-    let machine = machine(fixture);
-    certify(&machine, fixture, root(fixture), &trust(epoch));
-    publish(&machine, fixture, &fixture.key, |_, _, _| {});
-    publish_bundle(&machine, fixture);
-    let (code, status) = install(&machine);
-    assert_eq!(code, 1, "{status}");
+fn assert_refused(machine: &Machine, why: &str) {
+    assert_eq!(machine.run("install"), 1, "{why}");
+    let status = machine.status();
     assert!(
         status["last_error"]
             .as_str()
             .unwrap()
             .contains("signature is not valid"),
-        "{status}"
+        "{why}: {status}"
     );
-    assert!(!machine.codecs().exists());
+    assert_eq!(status["state"], "failed", "{why}");
+    assert!(!machine.codecs().exists(), "{why}");
+}
+
+/// Real packages install only under the trusted key's signature, or on an
+/// image with the release root only under a certificate its root issued for
+/// the current epoch; activation restores what was changed behind its back,
+/// and removal leaves nothing.
+#[test]
+fn real_packages_install_only_under_the_signature_their_image_trusts() {
+    let keys = Keys::new();
+    let top = keys.path("rpmbuild");
+    fs::create_dir_all(&top).unwrap();
+    let rpms: BTreeMap<&str, PathBuf> = PACKAGES
+        .iter()
+        .map(|p| (p.name, build_rpm(&top, p)))
+        .collect();
+    let machine = Machine::with_host(Fake {
+        real_tools: Some(tilo_test_env::sibling_binary("tilo-crypto", "tilo-crypto")),
+        ..Fake::default()
+    });
+    fs::write(
+        machine.root.join("usr/lib/os-release"),
+        "ID=fedora\nVERSION_ID=44\n",
+    )
+    .unwrap();
+    fs::copy(keys.path("release.pub"), machine.layout.trust_key()).unwrap();
+
+    publish(&machine, &rpms, &keys.path("rogue.key"));
+    assert_refused(&machine, "signed by another key");
+    let url = publish(&machine, &rpms, &keys.path("release.key"));
+    {
+        let mut web = machine.host.web.borrow_mut();
+        let text = String::from_utf8(web[&url].clone()).unwrap();
+        web.insert(
+            url,
+            text.replacen(r#""license": "MIT""#, r#""license": "MIU""#, 1)
+                .into_bytes(),
+        );
+    }
+    assert_refused(&machine, "changed after signing");
+
+    publish(&machine, &rpms, &keys.path("release.key"));
+    assert_eq!(machine.run("install"), 0, "{}", machine.status());
+    let status = machine.status();
+    assert_eq!(
+        (status["state"].clone(), status["parts"].clone()),
+        (
+            json!("installed"),
+            json!({"tilo-codecs": "enabled", "tilo-codecs-mesa": "enabled"})
+        )
+    );
+    let codecs = machine.codecs();
+    assert_eq!(
+        fs::read_to_string(codecs.join("usr/lib64/gstreamer-1.0/libgstopenh264.so")).unwrap(),
+        "plugin"
+    );
+    assert!(
+        !codecs.join("etc").exists(),
+        "an extension carries only /usr"
+    );
+    assert_eq!(
+        fs::read_to_string(codecs.join("usr/lib64/libavcodec.so.61")).unwrap(),
+        "freeworld libavcodec"
+    );
+    let mesa = machine.part("tilo-codecs-mesa");
+    assert_eq!(
+        fs::read_to_string(mesa.join("usr/lib64/dri-freeworld/radeonsi_drv_video.so")).unwrap(),
+        "freeworld gallium"
+    );
+    let listing = String::from_utf8(run(
+        "systemd-sysext",
+        &[&format!("--root={}", machine.root.display()), "list"],
+    ))
+    .unwrap();
+    for name in ["tilo-codecs", "tilo-codecs-mesa"] {
+        assert!(
+            listing
+                .lines()
+                .any(|l| l.split_whitespace().take(2).eq([name, "directory"])),
+            "{listing}"
+        );
+    }
+    fs::write(codecs.join("usr/lib64/libavcodec.so.61"), "hijacked").unwrap();
+    assert_eq!(machine.run("activate"), 0);
+    assert_eq!(
+        fs::read_to_string(codecs.join("usr/lib64/libavcodec.so.61")).unwrap(),
+        "freeworld libavcodec"
+    );
+    assert_eq!(machine.run("remove"), 0);
+    assert_eq!(machine.status()["state"], "not-installed");
+    assert_eq!(
+        fs::read_dir(machine.layout.extensions()).unwrap().count(),
+        0
+    );
+    assert!(!machine.layout.objects("media-codecs").exists());
+
+    certify(&machine, &keys, "other-root.crt", 1);
+    let url = publish(&machine, &rpms, &keys.path("release.key"));
+    publish_bundle(&machine, &keys, &url);
+    assert_refused(&machine, "a certificate from another root");
+    certify(&machine, &keys, "root.crt", 2);
+    assert_refused(&machine, "a certificate of a revoked epoch");
+    certify(&machine, &keys, "root.crt", 1);
+    assert_eq!(machine.run("install"), 0, "{}", machine.status());
+    assert_eq!(machine.status()["state"], "installed");
+    fs::remove_dir_all(machine.codecs()).unwrap();
+    assert_eq!(machine.run("activate"), 0);
+    assert!(machine.codecs().is_dir());
 }
