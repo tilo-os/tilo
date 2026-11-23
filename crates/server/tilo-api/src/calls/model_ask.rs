@@ -10,10 +10,10 @@ use anyhow::{Result, anyhow};
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
 use tilo_actions::remote::{
-    ActionProvider as _, Caller, InvokeRequest, LineClient, ReceiptStatus, RemoteActionTarget,
+    ActionProvider, Caller, InvokeRequest, LineClient, ReceiptStatus, RemoteActionTarget,
     UpdateMark,
 };
-use tilo_actions::{ActionAddress, InvocationUpdate};
+use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 use tilo_clock::time::Duration;
 
 use super::Refusal;
@@ -71,43 +71,83 @@ pub async fn ask_model(
         .await
         .ok_or_else(|| unavailable("the daemon did not answer".into()))?
         .map_err(|error| refused(error.to_string()))?;
+    let mut tell = |kind: &str, data: Value| {
+        told(kind, &data);
+        true
+    };
+    // Followed on the client itself, not through a wait that keeps it: an ask let go of drops
+    // its connection, and the daemon hears it left.
+    follow(
+        &client,
+        &caller,
+        invocation,
+        receipt.status,
+        "the daemon",
+        &mut tell,
+    )
+    .await
+    .map(Option::unwrap_or_default)
+    .map_err(|(code, message)| {
+        anyhow::Error::new(Refusal {
+            code: code.into(),
+            message,
+            retry_after_ms: None,
+        })
+    })
+}
+
+/// Follow the ask `invocation` of `provider`, whose receipt said `status`, to its end, telling
+/// `told` each `text` and `reasoning` delta as the model writes it: the whole turn, or `None`
+/// once `told` answers `false` (nobody listens any more). `answering` names who answers it, for
+/// when it stops.
+///
+/// # Errors
+/// The ask was refused or stopped (`refused`), or nothing answered it in time (`unavailable`).
+pub(crate) async fn follow<P: ActionProvider + Sync>(
+    provider: &P,
+    caller: &Caller,
+    invocation: InvocationId,
+    mut status: ReceiptStatus,
+    answering: &str,
+    told: &mut (dyn FnMut(&str, Value) -> bool + Send),
+) -> Result<Option<Value>, (&'static str, String)> {
     let now = tilo_clock::now();
     let until = now.checked_add(TURN).unwrap_or(now);
     let mut seen = UpdateMark::Accepted;
     let mut shown = Shown::default();
-    let mut status = receipt.status;
+    let stopped = || ("unavailable", format!("{answering} stopped answering"));
     loop {
         match status {
             ReceiptStatus::Accepted if tilo_clock::now() >= until => {
-                return Err(unavailable("the model took too long".into()));
+                return Err(("unavailable", "the model took too long".into()));
             }
             ReceiptStatus::Accepted => {}
             ReceiptStatus::Completed { output } => {
                 let answer = output.value.unwrap_or_default();
                 // The whole turn replaces the last item: what it wrote after the newest item
                 // read is told before it.
-                shown.tell(&written_in(&answer), told);
-                return Ok(answer);
+                return Ok(shown.tell(&written_in(&answer), told).then_some(answer));
             }
-            ReceiptStatus::Failed { error } => return Err(refused(error.message)),
-            ReceiptStatus::Rejected { error } => return Err(refused(error.to_string())),
-            ReceiptStatus::Cancelled { .. } => return Err(refused("the ask was stopped".into())),
+            ReceiptStatus::Failed { error } => return Err(("refused", error.message)),
+            ReceiptStatus::Rejected { error } => return Err(("refused", error.to_string())),
+            ReceiptStatus::Cancelled { .. } => {
+                return Err(("refused", "the ask was stopped".into()));
+            }
         }
-        // Followed on the client itself, not through a wait that keeps it: an ask let go of
-        // drops its connection, and the daemon hears it left.
-        let stopped = || unavailable("the daemon stopped answering".into());
-        client
-            .next_change(&caller, &invocation)
-            .ok_or_else(stopped)?
-            .await
+        // Asked for before looking, so a change between the two is never missed.
+        let change = provider
+            .next_change(caller, &invocation)
             .ok_or_else(stopped)?;
-        let state = client.observe(&caller, &invocation).ok_or_else(stopped)?;
+        let state = provider.observe(caller, &invocation).ok_or_else(stopped)?;
         if UpdateMark::of(&state.update) == seen {
+            change.await.ok_or_else(stopped)?;
             continue;
         }
         seen = UpdateMark::of(&state.update);
-        if let InvocationUpdate::Item { value, .. } = &state.update {
-            shown.tell(value, told);
+        if let InvocationUpdate::Item { value, .. } = &state.update
+            && !shown.tell(value, told)
+        {
+            return Ok(None);
         }
         status = state.receipt().status;
     }
@@ -141,8 +181,9 @@ struct Shown {
 }
 
 impl Shown {
-    /// Tell `told` what the answer so far `value` adds to what was told.
-    fn tell(&mut self, value: &Value, told: &mut (dyn FnMut(&str, &Value) + Send)) {
+    /// Tell `told` what the answer so far `value` adds to what was told: whether it still
+    /// listens.
+    fn tell(&mut self, value: &Value, told: &mut (dyn FnMut(&str, Value) -> bool + Send)) -> bool {
         for kind in ["reasoning", "text"] {
             let shown = if kind == "text" {
                 &mut self.text
@@ -156,8 +197,11 @@ impl Shown {
                 continue;
             };
             *shown = said.len();
-            told(kind, &json!({"text": more}));
+            if !told(kind, json!({"text": more})) {
+                return false;
+            }
         }
+        true
     }
 }
 
@@ -168,11 +212,59 @@ mod tests {
     use std::io::BufReader;
     use std::os::unix::net::UnixListener;
     use std::sync::Mutex;
+    use tilo_actions::ActionOutput;
     use tilo_actions::remote::{
         ActionCallError, ActionProvider, CataloguePage, CatalogueQuery, Completer,
         InvocationReceipt, InvocationState, InvokeArgument, Pending, pending, serve_lines,
     };
-    use tilo_actions::{ActionOutput, InvocationId};
+
+    fn heard() -> (Vec<(String, Value)>, Shown) {
+        (Vec::new(), Shown::default())
+    }
+
+    /// The whole turn tells what its last item did not.
+    #[test]
+    fn the_whole_turn_tells_the_rest() {
+        let (mut heard, mut shown) = heard();
+        let mut told = |kind: &str, data: Value| {
+            heard.push((kind.to_owned(), data));
+            true
+        };
+        shown.tell(&json!({"text": "on ", "reasoning": ""}), &mut told);
+        let whole = json!({"Ok": {"message": {"role": "assistant", "content": [
+            {"type": "text", "text": "on Tuesday"},
+            {"type": "tool_call", "id": "1", "name": "x", "input": {}},
+        ]}}});
+        shown.tell(&written_in(&whole), &mut told);
+        assert_eq!(
+            heard,
+            [
+                ("text".to_owned(), json!({"text": "on "})),
+                ("text".to_owned(), json!({"text": "Tuesday"})),
+            ]
+        );
+    }
+
+    /// Each snapshot tells only what it adds, so a missed item loses nothing.
+    #[test]
+    fn a_snapshot_tells_only_what_it_adds() {
+        let (mut heard, mut shown) = heard();
+        let mut told = |kind: &str, data: Value| {
+            heard.push((kind.to_owned(), data));
+            true
+        };
+        assert!(shown.tell(&json!({"text": "Hel", "reasoning": ""}), &mut told));
+        assert!(shown.tell(&json!({"text": "Hello wor", "reasoning": "hm"}), &mut told));
+        assert!(shown.tell(&json!({"text": "Hello wor", "reasoning": "hm"}), &mut told));
+        assert_eq!(
+            heard,
+            [
+                ("text".to_owned(), json!({"text": "Hel"})),
+                ("reasoning".to_owned(), json!({"text": "hm"})),
+                ("text".to_owned(), json!({"text": "lo wor"})),
+            ]
+        );
+    }
 
     /// The whole turn the stand-in's model answers.
     fn whole_turn(text: &str) -> Value {

@@ -1921,7 +1921,7 @@ mod tests {
             None
         );
 
-        exports_a_key_of_its_own(dir.path(), &root, &device, &mut env);
+        exports_a_key_of_its_own(dir.path(), &root, &key, &device, &mut env);
     }
 
     /// `tilo keys export` asks for a new key, as `tilo keys create` does, at the API server the
@@ -1931,6 +1931,7 @@ mod tests {
     fn exports_a_key_of_its_own(
         dir: &Path,
         root: &ed25519_dalek::SigningKey,
+        key: &ed25519_dalek::SigningKey,
         device: &crate::login::Device,
         env: &mut tilo_test_env::ScopedEnv,
     ) {
@@ -1987,8 +1988,9 @@ mod tests {
             site: url,
             ..device.clone()
         };
-        let login = crate::login::Place::here(crate::identity::paths()).unwrap();
-        crate::login::store(&login, &at_site).unwrap();
+        // The daemon says where the device enters: now with the site that names the server.
+        std::fs::remove_file(tilo_api::daemon::this_computer().unwrap().native()).unwrap();
+        crate::login::keep_for_test(env, dir, key, &at_site);
         let file = &api::login_key(None).unwrap().expect("still logged in");
         let exported = crate::hosted::keys(
             Reach::default(),

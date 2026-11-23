@@ -28,6 +28,7 @@ use tilo_mcp::McpServer;
 mod model_ask;
 
 pub use model_ask::ask_model;
+pub(crate) use model_ask::follow;
 
 use crate::session::Provider;
 use crate::v1::answers;
@@ -1221,7 +1222,7 @@ pub fn desktop_socket() -> Option<PathBuf> {
 /// # Errors
 /// The login is damaged.
 pub fn login_key(name: Option<&str>) -> Result<Option<crate::direct::KeyFile>> {
-    let Some((key, device)) = device::load(&device::Place::here(device_keys())?)? else {
+    let Some((key, device)) = crate::daemon::who::here()? else {
         return Ok(None);
     };
     let canonical = tilo_user_identity::canonical::canonical_bytes(&device.cert)

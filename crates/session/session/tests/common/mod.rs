@@ -38,6 +38,7 @@ use tilo_actions::remote::{
     CatalogueQuery, CatalogueRow, Confirmation, InvocationReceipt, InvokeArgument, InvokeRequest,
     ReceiptStatus, RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
 };
+use tilo_api::v1::routing::{encode_path, encode_query};
 use tilo_compositor::{InputEvent, OutputConfig};
 use tilo_service::{Questions, Service as _, Started};
 use tilo_session::{AppSocket, Options, Session};
@@ -1011,34 +1012,6 @@ pub fn placed_resources(session: &Session) -> Vec<(String, String)> {
             .map(|(resource, _)| (resource.kind.clone(), resource.label.clone()))
         })
         .collect()
-}
-
-/// `value`, percent-encoded as a path segment or a query value: letters, digits and `-._~` as
-/// they are, everything else as its UTF-8 bytes, `/` and `#` included.
-pub fn encode_query(value: &str) -> String {
-    /// The digits `%` is followed by.
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut encoded = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-            encoded.push(char::from(byte));
-        } else {
-            encoded.push('%');
-            encoded.push(char::from(HEX[usize::from(byte >> 4)]));
-            encoded.push(char::from(HEX[usize::from(byte & 0x0F)]));
-        }
-    }
-    encoded
-}
-
-/// `path`, each segment percent-encoded ([`encode_query`]) and `/` kept as the separator a
-/// workspace names a resource by.
-pub fn encode_path(path: &str) -> String {
-    path.split('/')
-        .filter(|segment| !segment.is_empty())
-        .map(encode_query)
-        .collect::<Vec<_>>()
-        .join("/")
 }
 
 /// One request to the API a session serves its own person's programs on its socket

@@ -292,13 +292,10 @@ pub fn key() -> Result<ExitCode> {
     let Some(here) = login::home() else {
         login::ensure_daemon()?;
         let workspace = login::runtime()?.block_on(async {
-            Client::open(Reach {
-                api: None,
-                key_file: None,
-                json: false,
-            })?
-            .founded_workspace()
-            .await
+            Calls::open_with(Reach::default(), crate::mcp::reach_daemon)
+                .await?
+                .founded_workspace()
+                .await
         })?;
         println!("{}", json!({ "workspace": workspace }));
         return Ok(ExitCode::SUCCESS);

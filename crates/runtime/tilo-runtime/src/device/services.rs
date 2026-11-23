@@ -1313,6 +1313,9 @@ impl Daemon {
     ) -> Option<Arc<dyn tilo_mcp::TaskHosts>> {
         let _ = (host, caller, person);
         None
+    }
+}
+
 /// The daemon as its API reaches it, without keeping it.
 struct DaemonHere(std::sync::Weak<Daemon>);
 

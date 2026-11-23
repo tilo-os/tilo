@@ -205,13 +205,6 @@ impl DaemonPlace {
         self.system
     }
 
-    /// The mode its sockets are made with: open to every account under the system unit, which
-    /// admits each connection by its account ([`admission`]), and the owner's alone otherwise.
-    #[must_use]
-    pub const fn socket_mode(&self) -> u32 {
-        if self.system { 0o666 } else { 0o600 }
-    }
-
     /// The directory its sockets are in.
     #[must_use]
     pub fn sockets(&self) -> &Path {
@@ -283,7 +276,10 @@ impl DaemonPlace {
     ///
     /// # Errors
     /// The service did not start, or no daemon answered in `within`.
-    pub fn reach_native(&self, within: Duration) -> Result<tilo_files::native::socket::Stream, String> {
+    pub fn reach_native(
+        &self,
+        within: Duration,
+    ) -> Result<tilo_files::native::socket::Stream, String> {
         self.wait_for(within)?;
         tilo_files::native::socket::connect(&self.native).map_err(|error| error.to_string())
     }

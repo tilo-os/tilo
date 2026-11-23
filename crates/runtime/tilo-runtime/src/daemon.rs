@@ -433,6 +433,8 @@ fn shell_reads(name: &std::ffi::OsStr) -> bool {
             || (PREFIXED.iter().any(|prefix| name.starts_with(prefix))
                 && name != runtime_collab::wire::shell::SHELL_FD_ENV)
     })
+}
+
 /// What the native endpoint serves the person with once `session`, their services, runs: the
 /// MCP projection and the action wire over their workspace, and host search's results opened
 /// through `search` once it started.

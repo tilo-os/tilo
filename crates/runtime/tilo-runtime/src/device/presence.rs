@@ -117,11 +117,6 @@ impl Presence {
         self.home.get()
     }
 
-    /// Tilo's API as this daemon.
-    pub(crate) fn api(&self) -> Arc<Direct> {
-        Arc::clone(&self.api)
-    }
-
     /// The session as it is now, whether or not it serves.
     pub(crate) fn current(&self) -> Option<Arc<Session>> {
         self.current.lock_recover().clone()

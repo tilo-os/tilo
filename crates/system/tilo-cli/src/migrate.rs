@@ -249,9 +249,7 @@ pub fn run_into(cmd: MigrateCmd, json: bool, target: &Target) -> Result<ExitCode
         }
         MigrateCmd::Status { source } => engine::status(&cx, source.as_deref())?,
         MigrateCmd::Undo { run } => engine::undo(&cx, &run, &mut *target.connect()?)?,
-        MigrateCmd::Stop { source } => {
-            runs::stop(&root, engine::registry::named(&source)?.key)?
-        }
+        MigrateCmd::Stop { source } => runs::stop(&root, engine::registry::named(&source)?.key)?,
     };
     if json {
         println!("{}", serde_json::to_string_pretty(&answer)?);

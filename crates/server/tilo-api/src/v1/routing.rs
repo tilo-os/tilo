@@ -97,6 +97,31 @@ fn decode(segments: &[&str]) -> Option<String> {
     Some(decoded.join("/"))
 }
 
+/// What a path segment or a query value keeps as it is: letters, digits and `-._~`.
+const KEPT: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
+
+/// `value`, percent-encoded as one path segment or a query value: `/` and `#` included, so
+/// [`find`] reads it back whole.
+#[must_use]
+pub fn encode_query(value: &str) -> String {
+    percent_encoding::utf8_percent_encode(value, KEPT).to_string()
+}
+
+/// `path`, each segment percent-encoded ([`encode_query`]) and `/` kept as the separator a
+/// workspace names a resource by: `notes/Q3 4 plan` reaches the host as `notes/Q3%204%20plan`.
+#[must_use]
+pub fn encode_path(path: &str) -> String {
+    path.split('/')
+        .filter(|segment| !segment.is_empty())
+        .map(encode_query)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
