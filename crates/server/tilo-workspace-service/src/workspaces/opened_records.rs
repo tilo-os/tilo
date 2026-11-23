@@ -361,8 +361,7 @@ impl Workspaces {
             return Vec::new();
         };
         let records = self.inner.records.clone();
-        let Ok(Ok(bodies)) = tokio::task::spawn_blocking(move || records.retained(workspace)).await
-        else {
+        let Ok(bodies) = records.retained(workspace).await else {
             return Vec::new();
         };
         let reads = link.reads_of(device);
