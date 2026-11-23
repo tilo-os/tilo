@@ -457,6 +457,15 @@ def _caret(st):
     return (st.get("chrome") or {}).get("caret")
 
 
+def _keyboard_evidence(ctx) -> str:
+    """What the session said about the on-screen keyboard while the search field asked for it:
+    whether it was started, whether it was told to show, and how its own app answered."""
+    return ctx.vm.exec(
+        f'tail -n 4000 "{core.SESSION_LOG}" | sed "s/\\x1b\\[[0-9;]*m//g" '
+        '| grep -aiE "keyboard|osk|tilo-osk|input method|ime|no on-screen" | tail -n 120 '
+        '| cut -c1-400', check=False) or "the session log said nothing about the keyboard"
+
+
 def _close_search(ctx) -> None:
     """Search closed again, whatever W20 got to: Escape while it shows (bounded)."""
     for _ in range(3):
@@ -495,6 +504,8 @@ def _on_screen_keyboard_in_the_shell(ctx, res):
     # The field stands at the caret the search publishes; tapping there focuses it.
     _tap(ctx, (caret[0], caret[1], max(1, caret[2] - caret[0]), max(1, caret[3] - caret[1])))
     showed = wait_until(lambda: (keys,) if (keys := _keyboard_keys(ctx, d0)) else None, 30, 0.5)
+    if not showed:
+        ctx.write("W20-keyboard.log", _keyboard_evidence(ctx))
     expect(showed, "the on-screen keyboard did not show for the search field")
     res.metrics["keys"] = len(showed[0])
     ctx.shot("W20-keyboard-over-search")
