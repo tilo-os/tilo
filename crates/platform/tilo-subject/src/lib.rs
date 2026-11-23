@@ -3,15 +3,13 @@
 //! the maths an app refines and cleans its edge with (`tilo-segment`).
 //!
 
-use std::io::Cursor;
-
-use image::ImageEncoder as _;
 pub use tilo_segment::{Matte, Picture, defringe, object_at, refine_edge};
 
 use base64::Engine as _;
 use image::{DynamicImage, RgbaImage};
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
+use tilo_image_codec::{DecodedImage, EncodeError, Encoding};
 
 /// The longest side of the picture sent to the model: it sees far less (320
 /// pixels for U²-Net), and the edge is refined at full size after.
@@ -35,6 +33,8 @@ pub enum SubjectError {
     Empty,
     #[error("the picture cannot be prepared: {0}")]
     Image(#[from] image::ImageError),
+    #[error("the picture cannot be prepared: {0}")]
+    Encode(#[from] EncodeError),
     #[error("the subject model failed: {0}")]
     Failed(String),
 }
@@ -104,14 +104,50 @@ pub fn find_subject(rgba: &[u8], width: u32, height: u32) -> Result<Subject, Sub
     })
 }
 
-fn encode_jpeg(image: &DynamicImage, quality: u8) -> Result<Vec<u8>, image::ImageError> {
-    let mut output = Cursor::new(Vec::new());
-    let rgb = image.to_rgb8();
-    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut output, quality).write_image(
-        rgb.as_raw(),
-        rgb.width(),
-        rgb.height(),
-        image::ExtendedColorType::Rgb8,
-    )?;
-    Ok(output.into_inner())
+fn encode_jpeg(image: &DynamicImage, quality: u8) -> Result<Vec<u8>, EncodeError> {
+    let rgba = image.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    tilo_image_codec::encode_now(
+        &DecodedImage {
+            rgba: rgba.into_raw(),
+            width,
+            height,
+        },
+        Encoding::Jpeg { quality },
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixed_rgba_image() -> DynamicImage {
+        let rgba = RgbaImage::from_fn(17, 13, |x, y| {
+            let r = u8::try_from(x.wrapping_mul(15).wrapping_add(y.wrapping_mul(3)) & 0xff)
+                .unwrap_or(0);
+            let g = u8::try_from(y.wrapping_mul(19).wrapping_add(x.wrapping_mul(7)) & 0xff)
+                .unwrap_or(0);
+            let b = u8::try_from(
+                x.wrapping_mul(11)
+                    .wrapping_add(y.wrapping_mul(13))
+                    .wrapping_add(29)
+                    & 0xff,
+            )
+            .unwrap_or(0);
+            let a = u8::try_from(x.wrapping_add(y).wrapping_mul(17) & 0xff).unwrap_or(0);
+            image::Rgba([r, g, b, a])
+        });
+        DynamicImage::ImageRgba8(rgba)
+    }
+
+    #[test]
+    fn encode_jpeg_bytes_match_pinned_digest_at_subject_quality() {
+        let image = fixed_rgba_image();
+        let bytes = encode_jpeg(&image, 90).expect("encode jpeg");
+        let digest = hex::encode(Sha256::digest(&bytes));
+        assert_eq!(
+            digest,
+            "d74109cb352acfef202a0b9b475d8ecac2ca2ec9e6b6be2c8125a48e85bd0a62"
+        );
+    }
 }

@@ -6,12 +6,11 @@
 //! encoded bytes before data crosses a sandbox service boundary; [`analyze`]
 //! calls the Photos-only fixed-schema gateway operation.
 
-use std::io::Cursor;
-use tilo_image_codec::DecodedImage;
+use tilo_image_codec::{DecodedImage, EncodeError, Encoding};
 
 use agent_provider_config::{ModelDescriptor, ProviderConfig};
 use base64::Engine as _;
-use image::{DynamicImage, GenericImageView, ImageEncoder};
+use image::{DynamicImage, GenericImageView};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
@@ -110,7 +109,7 @@ pub enum Error {
     #[error("decoded image has no usable pixels")]
     EmptyImage,
     #[error("image encoding failed: {0}")]
-    Image(#[from] image::ImageError),
+    Image(#[from] EncodeError),
     #[error("local model gateway failed: {0}")]
     Gateway(#[from] tilo_model_client::ClientError),
     #[error("local model returned invalid analysis JSON")]
@@ -426,16 +425,17 @@ fn bounded_resize(image: &DynamicImage) -> DynamicImage {
     )
 }
 
-fn encode_jpeg(image: &DynamicImage, quality: u8) -> Result<Vec<u8>, image::ImageError> {
-    let mut output = Cursor::new(Vec::new());
-    let rgb = image.to_rgb8();
-    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut output, quality).write_image(
-        rgb.as_raw(),
-        rgb.width(),
-        rgb.height(),
-        image::ExtendedColorType::Rgb8,
-    )?;
-    Ok(output.into_inner())
+fn encode_jpeg(image: &DynamicImage, quality: u8) -> Result<Vec<u8>, EncodeError> {
+    let rgba = image.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    tilo_image_codec::encode_now(
+        &DecodedImage {
+            rgba: rgba.into_raw(),
+            width,
+            height,
+        },
+        Encoding::Jpeg { quality },
+    )
 }
 
 fn bounded_text(value: &str, limit: usize) -> String {
@@ -537,6 +537,69 @@ mod tests {
                 &ids,
             )
             .is_err());
+        }
+    }
+
+    fn fixed_rgba_image() -> DynamicImage {
+        let rgba = image::RgbaImage::from_fn(17, 13, |x, y| {
+            let r = u8::try_from(x.wrapping_mul(15).wrapping_add(y.wrapping_mul(3)) & 0xff)
+                .unwrap_or(0);
+            let g = u8::try_from(y.wrapping_mul(19).wrapping_add(x.wrapping_mul(7)) & 0xff)
+                .unwrap_or(0);
+            let b = u8::try_from(
+                x.wrapping_mul(11)
+                    .wrapping_add(y.wrapping_mul(13))
+                    .wrapping_add(29)
+                    & 0xff,
+            )
+            .unwrap_or(0);
+            let a = u8::try_from(x.wrapping_add(y).wrapping_mul(17) & 0xff).unwrap_or(0);
+            image::Rgba([r, g, b, a])
+        });
+        DynamicImage::ImageRgba8(rgba)
+    }
+
+    #[test]
+    fn encode_jpeg_bytes_match_pinned_digests_at_vision_qualities() {
+        let image = fixed_rgba_image();
+        let expected = [
+            (
+                85_u8,
+                "78848b17fdce559c4cd9b1c47b32d18c51a11e1a7c35db4603ba8311da779c82",
+            ),
+            (
+                78,
+                "099cf7ca8cd6f3fad3508e73d116c1260453d4892700d02f43edcd92fd4ba8fb",
+            ),
+            (
+                74,
+                "feaa31437a911f2c4f4be7d6c4fc16aaf30359fe97023642495d7f2a02c1e690",
+            ),
+            (
+                65,
+                "73b6cb2497de0de87ad0292f916923b4c8c5da8f9878fa392e55d14671a16484",
+            ),
+            (
+                62,
+                "bb94e4f20c66d13c473601cc087c56874b93a9a9b7ae0df296ba31948438e66e",
+            ),
+            (
+                52,
+                "3761e1f5e736b00ac0e251827bd8ee4ebbb028985ccb93b4426c04a9131a7cf6",
+            ),
+            (
+                50,
+                "9009386c720696ea964420a645652e17de2581f4a0294f45f954fbe4ecb2397d",
+            ),
+            (
+                42,
+                "72d5ff8a9f290053e527e3892e248c3289e8572fd9d9448dbac0218ca4996a09",
+            ),
+        ];
+        for (quality, pinned) in expected {
+            let bytes = encode_jpeg(&image, quality).expect("encode jpeg");
+            let digest = hex::encode(Sha256::digest(&bytes));
+            assert_eq!(digest, pinned, "quality {quality}");
         }
     }
 }
