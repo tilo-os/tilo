@@ -792,6 +792,7 @@ mod tests {
                     actions: vec!["post".into()],
                     fields: vec![],
                     by: ActorFilter::NotBots,
+                    filter: crate::shortcut::ChangeFilter::default(),
                 },
                 TriggerSpec::Connector {
                     app_id: "so.tilo.discord".into(),

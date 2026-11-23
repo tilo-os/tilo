@@ -173,7 +173,8 @@ fn on_issue_change() -> Shortcut {
 }
 
 /// An app's write of a record a saved shortcut watches fires it once, on the device that wrote
-/// it; looking again at the same record fires nothing more.
+/// it; looking again at the same record fires nothing more. A write whose resource the
+/// trigger's filter does not match, by the fields the write left it with, fires nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_record_write_fires_the_shortcut_watching_it_once() {
     use tilo_resource_store::wire::Command;
@@ -195,7 +196,12 @@ async fn a_record_write_fires_the_shortcut_watching_it_once() {
         document: String::new(),
     };
     let _ = workspaces.own_route_keys(&route, true).await.unwrap();
-    save_signed(workspaces, &workspace, on_issue_change(), (&key, &cert)).await;
+    let mut shortcut = on_issue_change();
+    let Some(TriggerSpec::ResourceChanged { filter, .. }) = shortcut.triggers.first_mut() else {
+        panic!("the shortcut watches a resource");
+    };
+    *filter = serde_json::from_value(json!([{ "field": "item.title", "is": "First" }])).unwrap();
+    save_signed(workspaces, &workspace, shortcut, (&key, &cert)).await;
 
     let started = Arc::new(Started::default());
     let mut runner = Runner::new(
@@ -205,29 +211,31 @@ async fn a_record_write_fires_the_shortcut_watching_it_once() {
     );
     runner.arm().await;
     let mut writes = workspaces.document_writes();
-    workspaces
-        .own_resource_command(
-            &workspace,
-            "so.tilo.tasks",
-            Command::Put {
-                kind: "tasks.issue".into(),
-                id: "i-1".into(),
-                resource: Resource {
-                    readers: "*".into(),
-                    parent: None,
-                    order: None,
-                    fields: [("title".to_owned(), Cell::One(Value::Text("First".into())))].into(),
+    for (id, title) in [("i-0", "Other"), ("i-1", "First")] {
+        workspaces
+            .own_resource_command(
+                &workspace,
+                "so.tilo.tasks",
+                Command::Put {
+                    kind: "tasks.issue".into(),
+                    id: id.into(),
+                    resource: Resource {
+                        readers: "*".into(),
+                        parent: None,
+                        order: None,
+                        fields: [("title".to_owned(), Cell::One(Value::Text(title.into())))].into(),
+                    },
+                    stamp: Stamp {
+                        verb: "add".into(),
+                        invoker: hex::encode(cert.user_public_key),
+                        invocation: id.into(),
+                        ..Stamp::default()
+                    },
                 },
-                stamp: Stamp {
-                    verb: "add".into(),
-                    invoker: hex::encode(cert.user_public_key),
-                    invocation: "i1".into(),
-                    ..Stamp::default()
-                },
-            },
-        )
-        .await
-        .unwrap();
+            )
+            .await
+            .unwrap();
+    }
     let mut written = Vec::new();
     while let Ok(write) = writes.try_recv() {
         written.push(write);

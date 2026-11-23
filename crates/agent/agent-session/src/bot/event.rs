@@ -463,6 +463,7 @@ mod tests {
             actions: Vec::new(),
             fields: Vec::new(),
             by: tilo_automation::ActorFilter::default(),
+            filter: tilo_automation::ChangeFilter::default(),
         });
         let event = Definition {
             when: line.clone(),

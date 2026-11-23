@@ -35,6 +35,10 @@ pub struct DocumentEvent {
     pub after: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caused_by: Option<Cause>,
+    /// The member whose change this one copies, as their actor bytes read (`agent:<id>`), when
+    /// a writer copied one ([`tilo_actions::ORIGIN_FACET`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
     /// The change carries the incoming-message facet.
     #[serde(default)]
     pub incoming_message: bool,
@@ -109,6 +113,7 @@ pub fn event_of(
         before: None,
         after: None,
         caused_by: context.caused_by.clone(),
+        origin: facet(tilo_actions::ORIGIN_FACET),
         incoming_message: facet(tilo_actions::INCOMING_MESSAGE_FACET).is_some(),
         housekeeping: context.is_housekeeping(),
         shortcut: facet("shortcut"),
