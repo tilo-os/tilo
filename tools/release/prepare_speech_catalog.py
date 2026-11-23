@@ -8,13 +8,60 @@ before promoting each artifact. The existing production catalogue is untouched.
 import argparse
 import hashlib
 import json
+import os
 import shutil
 from pathlib import Path
 import tempfile
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
+# A flaky host must not decide a run: a 5xx or a connection error is retried a few times,
+# with backoff, and the last failure names the URL and what answered.
+TRIES = 5
+BACKOFF_SECONDS = 1
+LONGEST_BACKOFF_SECONDS = 30
+# Where verified artifacts are kept, by their digest, so a later run fetches nothing.
+# On t this is under the build directory a run keeps, which a retried run reuses.
+CACHE_ENV = "TILO_LOCAL_MODEL_CACHE"
+
+
+class DownloadError(RuntimeError):
+    """The artifact could not be fetched: the URL and what answered are in the message."""
+
+
+def cache_root() -> Path:
+    where = os.environ.get(CACHE_ENV)
+    if where:
+        return Path(where)
+    target = os.environ.get("CARGO_TARGET_DIR")
+    return Path(target) / "local-model-artifacts" if target else ROOT / "target" / "local-model-artifacts"
+
+
+def verified(cache: Path, size: int, sha256: str) -> Path | None:
+    """The cached copy of the artifact, when its bytes are the receipt's."""
+    candidate = cache / sha256
+    try:
+        if candidate.stat().st_size != size:
+            return None
+        if hashlib.sha256(candidate.read_bytes()).hexdigest() != sha256:
+            return None
+    except FileNotFoundError:
+        return None
+    return candidate
+
+
+def transport(error: Exception) -> str | None:
+    """Why `error` is a transport failure to retry, or None when it is not retryable."""
+    if isinstance(error, urllib.error.HTTPError):
+        return f"HTTP {error.code}" if error.code >= 500 else None
+    if isinstance(error, urllib.error.URLError):
+        return f"connection error: {error.reason}"
+    if isinstance(error, (TimeoutError, ConnectionError)):
+        return f"connection error: {error}"
+    return None
 
 
 class HttpsOnly(urllib.request.HTTPRedirectHandler):
@@ -24,25 +71,51 @@ class HttpsOnly(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+def fetch(url, size, sha256, cache: Path) -> Path:
+    """`url`'s bytes, checked against the receipt, kept in `cache` once they verify."""
+    cache.mkdir(parents=True, exist_ok=True)
+    opener = urllib.request.build_opener(HttpsOnly())
+    reason = "no answer"
+    delay = BACKOFF_SECONDS
+    for attempt in range(1, TRIES + 1):
+        try:
+            with tempfile.NamedTemporaryFile(dir=cache) as temporary:
+                digest = hashlib.sha256()
+                count = 0
+                with opener.open(url, timeout=180) as response:
+                    while chunk := response.read(min(65536, size + 1 - count)):
+                        count += len(chunk)
+                        if count > size:
+                            raise ValueError("artifact exceeds reviewed size")
+                        digest.update(chunk)
+                        temporary.write(chunk)
+                if count != size or digest.hexdigest() != sha256:
+                    # A receipt mismatch is the host's bytes, not its mood: ask no again.
+                    raise ValueError("artifact receipt mismatch")
+                temporary.flush()
+                kept = cache / sha256
+                shutil.copyfile(temporary.name, kept)
+                return kept
+        except ValueError:
+            raise
+        except Exception as error:  # noqa: BLE001 - what a transport may raise, read below
+            why = transport(error)
+            if why is None:
+                raise
+            reason = why
+            if attempt < TRIES:
+                time.sleep(delay)
+                delay = min(delay * 2, LONGEST_BACKOFF_SECONDS)
+    raise DownloadError(f"{url} could not be fetched after {TRIES} tries: {reason}")
+
+
 def stage(destination, url, size, sha256):
     if urllib.parse.urlsplit(url).scheme != "https":
         raise ValueError("artifact must use HTTPS")
+    cache = cache_root()
+    kept = verified(cache, size, sha256) or fetch(url, size, sha256, cache)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    opener = urllib.request.build_opener(HttpsOnly())
-    with tempfile.NamedTemporaryFile(dir=destination.parent) as temporary:
-        digest = hashlib.sha256()
-        count = 0
-        with opener.open(url, timeout=180) as response:
-            while chunk := response.read(min(65536, size + 1 - count)):
-                count += len(chunk)
-                if count > size:
-                    raise ValueError("artifact exceeds reviewed size")
-                digest.update(chunk)
-                temporary.write(chunk)
-        if count != size or digest.hexdigest() != sha256:
-            raise ValueError("artifact receipt mismatch")
-        temporary.flush()
-        shutil.copyfile(temporary.name, destination)
+    shutil.copyfile(kept, destination)
 
 
 def main():
