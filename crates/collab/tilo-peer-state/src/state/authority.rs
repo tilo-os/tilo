@@ -904,10 +904,11 @@ impl StatePeer {
                 .find(|(channel, _)| collab_types::calls::tag(channel) == tag)
                 .map(|(_, rule)| rule)
                 .unwrap_or_default();
-            // A generation the rule has not reached yet has no holders: nobody takes keys a
-            // change that leaves them out would then seal under. An earlier one keeps only
-            // whom the rule admits now, so its keys move on past whoever it left out.
-            if generation > rule.generation {
+            // Only the rule's current generation has holders. Nobody takes keys of one it has
+            // not reached, which a change leaving them out would then seal under; and nobody is
+            // added to one it moved past, so a person let back in is never handed the keys of
+            // what was said while they were left out.
+            if generation != rule.generation {
                 return Ok(BTreeSet::new());
             }
             // No device holds them by role: whichever device the rule admits needs them first

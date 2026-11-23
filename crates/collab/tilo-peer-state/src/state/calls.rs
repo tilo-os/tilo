@@ -162,10 +162,10 @@ mod tests {
     use crate::StatePeer;
     use crate::workspace_membership::WorkspaceMembershipCommand as Command;
 
-    /// A call's media keys go to the devices of the people its rule admits, in the rule's
-    /// generation and none ahead of it: denied, a person's devices hold none of the next
-    /// generation's keys and leave the earlier one's group; let back, they hold them again; and an
-    /// ended call's keys go to nobody.
+    /// A call's media keys go to the devices of the people its rule admits, in the rule's current
+    /// generation only: denied, a person's devices hold none of the next generation's keys and
+    /// leave the earlier one's group; let back, they hold the generation after, and never that of
+    /// the time they were left out; and an ended call's keys go to nobody.
     #[test]
     fn a_calls_media_keys_go_only_to_the_people_its_rule_admits() {
         let (mut peer, key, _, device, now) = crate::admission_tests::seeded();
@@ -217,6 +217,10 @@ mod tests {
             holders(&peer, 2),
             everyone,
             "let back, they hold the next keys"
+        );
+        assert!(
+            holders(&peer, 1).is_empty(),
+            "and none of the keys of what was said while they were left out"
         );
         change(&mut peer, CallChange::End);
         assert!(
