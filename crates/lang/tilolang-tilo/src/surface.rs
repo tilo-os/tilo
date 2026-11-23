@@ -290,15 +290,6 @@ pub fn is_primary(action: &ActionMeta) -> bool {
     action.role.as_deref() == Some("primary")
 }
 
-fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet, targeted: bool) -> VerbSurface {
-    let declared = meta.arguments(&action.params);
-    // On a type's surface the resource is the one the verb is offered on; on the package's, an
-    // action taking a union of types takes it as a reference argument.
-    let declared = if targeted && meta.target_of(&action.params).is_none() {
-        declared.get(1..).unwrap_or_default()
-    } else {
-        declared
-    };
 /// Whether `ty` is or contains a `Duration`: its return schema carries the unit (`whole seconds`)
 /// so a caller reading the surface knows the wire unit of the integer result.
 fn mentions_duration(ty: &Ty) -> bool {
@@ -315,7 +306,15 @@ fn mentions_duration(ty: &Ty) -> bool {
     }
 }
 
-fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet) -> VerbSurface {
+fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet, targeted: bool) -> VerbSurface {
+    let declared = meta.arguments(&action.params);
+    // On a type's surface the resource is the one the verb is offered on; on the package's, an
+    // action taking a union of types takes it as a reference argument.
+    let declared = if targeted && meta.target_of(&action.params).is_none() {
+        declared.get(1..).unwrap_or_default()
+    } else {
+        declared
+    };
     VerbSurface {
         // The action as the document names it, which is what a change's claim names too
         // ([`crate::action::DynAction::describe`]): its id, the one its words keep
