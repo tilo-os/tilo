@@ -69,6 +69,14 @@ spec = importlib.util.spec_from_file_location("app_walk", sys.argv[4])
 walk = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(walk)
 found = json.load(open(sys.argv[1]))
+failed = walk.unwalked(found)
+if failed:
+    # A baseline that held a failure would turn it green on main, hiding its fix or its
+    # getting worse; the walk stays red until it passes.
+    for step in failed:
+        print(f"not a baseline: {step['version']} {step['step']} failed: {step['why']}",
+              file=sys.stderr)
+    sys.exit(1)
 found["run"] = sys.argv[3]
 kept = Path(sys.argv[2])
 before = json.loads(kept.read_text()) if kept.is_file() else None
