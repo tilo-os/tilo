@@ -6941,8 +6941,11 @@ story = ["wait-list-sign-up"]
 
 # The user stories walked in Tilo shells (stories.json's `"walk": "shell"`): each person a headless
 # Tilo session of their own, on the session the nested-session check built with the tree's apps, on
-# scratch homes (stories/shell/story.py). Each step is driven through the shell's own actions,
-# pointer and keys, decided by reading the shells' own state, timed against its budget and
+# scratch homes (stories/shell/story.py), or a computer of theirs where the `tilo` command is the
+# whole of Tilo, driven by the commands a person runs there (stories/shell/cli_host.py: a ticket
+# from one computer logged in on another, and a home server joined to a workspace). Each step is
+# driven through the shell's own actions, pointer and keys, or through those commands, decided by
+# reading the shells' own state or what the commands answered, timed against its budget and
 # snapshotted; each person's snapshots become their video. A story that meets a server (`servers`)
 # starts it here first, as root, and reads its state beside the person's (test-user-stories.sh):
 # the Nextcloud one story connects to over WebDAV and CalDAV is the conformance suite's own image,
@@ -6978,7 +6981,7 @@ outputs = ["/target/user-stories-shell/{story}/index.html", "/target/user-storie
 evidence = ["/target/user-stories-shell/{story}/index.html", "/target/user-stories-shell/{story}/{story}/**"]
 timeout_secs = 3000
 [check.matrix]
-story = ["agent-mcp", "second-device", "files-in", "calendar-invite", "nextcloud-files", "mail-password", "shared-mailbox", "desktop-easy"]
+story = ["agent-mcp", "second-device", "files-in", "calendar-invite", "nextcloud-files", "mail-password", "shared-mailbox", "desktop-easy", "invite-live", "cli-login-ticket", "home-server-joins"]
 
 # The programs the local tilo.sh stack's checks run, and its server's laid-out context: built once
 # here, at the release's code and opt-level without its whole-program link (Cargo.toml's
