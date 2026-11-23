@@ -253,6 +253,16 @@ view reply(r: Reply) {
             for step in r.steps {
                 text(step.called, role: .caption, secondary: true)
             }
+            // The person whose ask this answer is stops the turn while the agent works. The
+            // reply and its ask are working together until the agent's finish moves them on, so
+            // a stopped ask offers the control no more.
+            if r.state == .working
+                and r.ask.state == .working
+                and created(r.ask)?.who == workspace.me {
+                row {
+                    button(stop(r.ask))
+                }
+            }
         }
     }
 }
