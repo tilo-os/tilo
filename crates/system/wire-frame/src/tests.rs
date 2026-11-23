@@ -211,6 +211,34 @@ fn lines_are_bounded_and_end_with_a_newline() {
     ));
 }
 
+#[test]
+fn lines_or_eof_accept_a_final_line_at_eof_within_the_bound() {
+    let mut reader = Cursor::new(b"one\nfour".to_vec());
+    assert_eq!(
+        read_line_or_eof(&mut reader, 4).unwrap().as_deref(),
+        Some(&b"one"[..])
+    );
+    assert_eq!(
+        read_line_or_eof(&mut reader, 4).unwrap().as_deref(),
+        Some(&b"four"[..])
+    );
+    assert_eq!(read_line_or_eof(&mut reader, 4).unwrap(), None);
+
+    let mut short = Cursor::new(b"hi".to_vec());
+    assert_eq!(
+        read_line_or_eof(&mut short, 4).unwrap().as_deref(),
+        Some(&b"hi"[..])
+    );
+    assert!(matches!(
+        read_line_or_eof(&mut Cursor::new(b"fives\n".to_vec()), 4),
+        Err(FrameError::TooLarge(5))
+    ));
+    assert!(matches!(
+        read_line_or_eof(&mut Cursor::new(b"fives".to_vec()), 4),
+        Err(FrameError::TooLarge(5))
+    ));
+}
+
 #[cfg(feature = "tokio")]
 mod asynchronous {
     use super::*;
@@ -224,6 +252,34 @@ mod asynchronous {
         );
         assert!(matches!(
             read_line_async(&mut reader, 4).await,
+            Err(FrameError::TooLarge(5))
+        ));
+    }
+
+    #[tokio::test]
+    async fn async_lines_or_eof_accept_unterminated_within_bound_and_refuse_over() {
+        let mut reader = &b"one\nfour"[..];
+        assert_eq!(
+            read_line_or_eof_async(&mut reader, 4)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(&b"one"[..])
+        );
+        assert_eq!(
+            read_line_or_eof_async(&mut reader, 4)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(&b"four"[..])
+        );
+        assert_eq!(read_line_or_eof_async(&mut reader, 4).await.unwrap(), None);
+        assert!(matches!(
+            read_line_or_eof_async(&mut &b"fives\n"[..], 4).await,
+            Err(FrameError::TooLarge(5))
+        ));
+        assert!(matches!(
+            read_line_or_eof_async(&mut &b"fives"[..], 4).await,
             Err(FrameError::TooLarge(5))
         ));
     }

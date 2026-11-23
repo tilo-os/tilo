@@ -1976,7 +1976,8 @@ async fn answer_operator_socket(context: OperatorContext, stream: tokio::net::Un
     use tokio::io::AsyncWriteExt as _;
     let (reading, mut writing) = stream.into_split();
     let mut reading = tokio::io::BufReader::new(reading);
-    let line = match wire_frame::read_line_async(&mut reading, MAX_OPERATOR_LINE_BYTES).await {
+    let line = match wire_frame::read_line_or_eof_async(&mut reading, MAX_OPERATOR_LINE_BYTES).await
+    {
         Ok(None) => return,
         Ok(Some(bytes)) => match String::from_utf8(bytes) {
             Ok(line) => line,
@@ -3053,7 +3054,23 @@ mod tests {
             (request, json)
         };
 
-        // Oversized line without a trailing newline, then close: answered on main, closed silently after fix.
+        // Oversized line ending in '\n': pins the size bound itself (would be answered without one).
+        let (_over_nl_req, mut over_nl_json) =
+            make_status(MAX_OPERATOR_LINE_BYTES.saturating_add(1), "over-nl:");
+        over_nl_json.push('\n');
+        let (mut client, peer) = tokio::net::UnixStream::pair().unwrap();
+        let serving = tokio::spawn(answer_operator_socket(context.clone(), peer));
+        let _ = client.write_all(over_nl_json.as_bytes()).await;
+        let _ = client.shutdown().await;
+        let mut reply = String::new();
+        client.read_to_string(&mut reply).await.unwrap();
+        serving.await.unwrap();
+        assert!(
+            reply.is_empty(),
+            "an oversized newline-terminated operator line must end the exchange with no answer, got: {reply}"
+        );
+
+        // Oversized line without a trailing newline, then close: refused too.
         let (_over_req, over_json) =
             make_status(MAX_OPERATOR_LINE_BYTES.saturating_add(1), "over:");
         let (mut client, peer) = tokio::net::UnixStream::pair().unwrap();
@@ -3065,7 +3082,7 @@ mod tests {
         serving.await.unwrap();
         assert!(
             reply.is_empty(),
-            "an oversized operator line must end the exchange with no answer, got: {reply}"
+            "an oversized unterminated operator line must end the exchange with no answer, got: {reply}"
         );
 
         // Exact-bound line ending in '\n': answered with the matching request id.
@@ -3080,6 +3097,76 @@ mod tests {
         serving.await.unwrap();
         assert_eq!(
             OperatorEvent::from_line(&reply).unwrap(),
+            OperatorEvent::Status {
+                request: exact_req,
+                state: tilo_server_protocol::operator::WaitListStatus::Gone,
+            }
+        );
+
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn operator_socket_answers_unterminated_line_within_bound() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let dir = tempfile::tempdir().unwrap();
+        let (server, workspaces, _server_cert, workspace) = plaza(dir.path()).await;
+        let context = OperatorContext {
+            workspaces,
+            workspace,
+        };
+        let removal_sha256 = "00".repeat(32);
+
+        // Short unterminated Status line, then close the write half.
+        let short_req = "unterminated-short".to_owned();
+        let short_json = serde_json::to_string(&OperatorCommand::Status {
+            request: short_req.clone(),
+            removal_sha256: removal_sha256.clone(),
+        })
+        .unwrap();
+        assert!(!short_json.ends_with('\n'));
+        let (mut client, peer) = tokio::net::UnixStream::pair().unwrap();
+        let serving = tokio::spawn(answer_operator_socket(context.clone(), peer));
+        client.write_all(short_json.as_bytes()).await.unwrap();
+        client.shutdown().await.unwrap();
+        let mut reply = String::new();
+        client.read_to_string(&mut reply).await.unwrap();
+        serving.await.unwrap();
+        assert_eq!(
+            OperatorEvent::from_line(&reply)
+                .unwrap_or_else(|error| panic!("expected Status answer, got {reply:?} ({error})")),
+            OperatorEvent::Status {
+                request: short_req,
+                state: tilo_server_protocol::operator::WaitListStatus::Gone,
+            }
+        );
+
+        // Exact-bound unterminated Status line, then close the write half.
+        let prefix = "unterminated-exact:";
+        let shell = serde_json::to_string(&OperatorCommand::Status {
+            request: prefix.to_owned(),
+            removal_sha256: removal_sha256.clone(),
+        })
+        .unwrap();
+        let pad = MAX_OPERATOR_LINE_BYTES.checked_sub(shell.len()).unwrap();
+        let exact_req = format!("{prefix}{}", "r".repeat(pad));
+        let exact_json = serde_json::to_string(&OperatorCommand::Status {
+            request: exact_req.clone(),
+            removal_sha256,
+        })
+        .unwrap();
+        assert_eq!(exact_json.len(), MAX_OPERATOR_LINE_BYTES);
+        let (mut client, peer) = tokio::net::UnixStream::pair().unwrap();
+        let serving = tokio::spawn(answer_operator_socket(context, peer));
+        client.write_all(exact_json.as_bytes()).await.unwrap();
+        client.shutdown().await.unwrap();
+        let mut reply = String::new();
+        client.read_to_string(&mut reply).await.unwrap();
+        serving.await.unwrap();
+        assert_eq!(
+            OperatorEvent::from_line(&reply)
+                .unwrap_or_else(|error| panic!("expected Status answer, got {reply:?} ({error})")),
             OperatorEvent::Status {
                 request: exact_req,
                 state: tilo_server_protocol::operator::WaitListStatus::Gone,
