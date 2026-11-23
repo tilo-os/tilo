@@ -338,11 +338,19 @@ pub fn nested_setting_row(label: &str, description: Option<&str>, control: El) -
 }
 
 /// A setting whose control wants the whole measure (a slider, a text
-/// field): the label (and its explanation) over the control.
+/// field): the label (and its explanation) over the control. The label names
+/// the control to assistive technology and is read as its name, never twice.
 fn stacked(label: &str, description: Option<&str>, control: El) -> Item {
     let text = match description {
         Some(description) => TextStack::new(label).secondary(description),
         None => TextStack::new(label),
+    }
+    .naming_its_control();
+    let control: El = match description {
+        Some(description) => {
+            Box::new(ui::widget::Labelled::new(label, control).described(description))
+        }
+        None => Box::new(ui::widget::Labelled::new(label, control)),
     };
     block(Box::new(
         Column::new()
@@ -612,6 +620,27 @@ pub fn cards(sections: Vec<SettingsSection>) -> El {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A field's label is the name of the control under it, read once: the
+    /// field a form writes is one control to a screen reader, not a label and
+    /// a nameless input.
+    #[test]
+    fn a_fields_label_names_the_control_under_it() {
+        let field = field_row(
+            "Display name",
+            Box::new(ui::widget::TextInput::local().with_id("display-name")),
+        );
+        let frame =
+            ui::headless::FrameHarness::new(ui::State::new(), field.into_element(), (500, 300));
+        let named = frame.a11y_nodes_named("Display name");
+        assert_eq!(named.len(), 1, "the label names the field once: {named:?}");
+        let node = frame.a11y_node(named[0]).expect("the exported node");
+        assert_eq!(node.role(), ui::accesskit::Role::TextInput);
+        assert!(
+            frame.targets().contains_key("display-name"),
+            "the field the label names is the one drawn"
+        );
+    }
 
     /// A failed reading shows what failed; the command's own words wait
     /// behind a closed "Details", and a screen reader hears the whole

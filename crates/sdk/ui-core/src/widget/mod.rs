@@ -2120,7 +2120,7 @@ mod flow;
 mod form;
 mod form_composition;
 mod layout_info;
-pub use form::{CheckControl, FormControl, labeled_check, labeled_field};
+pub use form::{CheckControl, FormControl, Labelled, labeled_check, labeled_field};
 pub use form_composition::{Field, Form, FormPage, FormSection, Page};
 pub use layout_info::{
     Density, Effective, FieldLayout, FormLayout, HeaderRowLayout, HeaderRows, LabelPlacement,

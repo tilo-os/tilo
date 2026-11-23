@@ -353,6 +353,10 @@ pub struct TextStack {
     dirty: bool,
     layout_dirty: bool,
     layout_theme: Theme,
+    /// The stack is the label of the control beside or under it, which
+    /// carries the words as its name: it reads as nothing of its own, as a
+    /// [`Field`](crate::widget::Field)'s label does.
+    naming_its_control: bool,
 }
 
 impl TextStack {
@@ -368,7 +372,16 @@ impl TextStack {
             dirty: true,
             layout_dirty: true,
             layout_theme: Theme::dark(),
+            naming_its_control: false,
         }
+    }
+
+    /// The stack names the control beside or under it: a label, read as the
+    /// control's name and never as a second thing of its own.
+    #[must_use]
+    pub fn naming_its_control(mut self) -> Self {
+        self.naming_its_control = true;
+        self
     }
 
     #[must_use]
@@ -548,6 +561,9 @@ impl Widget for TextStack {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
+        if self.naming_its_control {
+            return None;
+        }
         Some(AccessNode::new(Role::StaticText).with_name(self.face().spoken()))
     }
 }

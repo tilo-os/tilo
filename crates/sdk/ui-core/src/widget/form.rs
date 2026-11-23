@@ -6,6 +6,66 @@ use super::{
 };
 use crate::tokens::TextRole;
 
+/// `label` names `content`, which is a control composed as plain elements
+/// rather than one [`FormControl`] — a chooser, a field holding parts of its
+/// own, anything already boxed as an [`Element`](super::Element). It is the
+/// naming a [`Field`](crate::widget::Field)'s label gives its control, for a
+/// layout that places the label itself (over the control, in a stack).
+///
+/// The visible label is the caller's; this stands in for it in the
+/// accessibility tree, so a control that carried no name of its own is
+/// reached by the words the person reads beside it.
+pub struct Labelled {
+    label: String,
+    description: String,
+    content: Box<dyn Widget>,
+}
+
+impl Labelled {
+    #[must_use]
+    pub fn new(label: impl Into<String>, content: Box<dyn Widget>) -> Self {
+        Self {
+            label: label.into(),
+            description: String::new(),
+            content,
+        }
+    }
+
+    /// A line that explains the control, read after its name.
+    #[must_use]
+    pub fn described(mut self, description: impl Into<String>) -> Self {
+        self.description = description.into();
+        self
+    }
+}
+
+impl super::Decorator for Labelled {
+    type Inner = dyn Widget;
+
+    fn inner(&self) -> &(dyn Widget + 'static) {
+        self.content.as_ref()
+    }
+
+    fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
+        self.content.as_mut()
+    }
+
+    /// The control's own node, named by its label where it had no name (or
+    /// only the value or placeholder it shows): the visible label is read
+    /// once, as the control's name.
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        let mut node = self.content.accessibility()?;
+        if node.name.is_none() || node.name_found {
+            node.name = Some(crate::i18n::widget_text(&self.label));
+            node.name_found = false;
+        }
+        if node.description.is_none() && !self.description.is_empty() {
+            node.description = Some(crate::i18n::widget_text(&self.description));
+        }
+        Some(node)
+    }
+}
+
 /// A control that can receive the accessible name of a visible form label.
 ///
 /// Implemented by the toolkit's standard text, choice, numeric, date, time,
@@ -296,10 +356,48 @@ mod tests {
             assert_eq!(label.name.as_deref(), Some("remember-label"));
         }
 
+        /// A label placed over a boxed control names it, and is read once: in
+        /// Settings' pages, whose controls are composed as plain elements.
+        fn a_label_over_a_boxed_control_is_the_controls_name() {
+            let field = Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .push(Box::new(Text::new("Display name").naming_its_control()))
+                .push(Box::new(Labelled::new(
+                    "Display name",
+                    Box::new(TextInput::local().with_id("display-name")),
+                )));
+            let app = crate::headless::FrameHarness::new(
+                crate::State::new(),
+                Box::new(field),
+                (400, 200),
+            );
+            let named = app.a11y_nodes_named("Display name");
+            assert_eq!(named.len(), 1, "the label names the field once: {named:?}");
+            let node = app.a11y_node(named[0]).expect("the exported node");
+            assert_eq!(node.role(), crate::accesskit::Role::TextInput);
+            let input = app.targets().get("display-name").copied();
+            assert!(input.is_some(), "the field is the one drawn");
+        }
+
+        /// A control that already says what it is keeps its own name; the label
+        /// only fills in the name one lacks.
+        fn a_named_control_keeps_its_name_under_a_label() {
+            let input = TextInput::local()
+                .with_id("email")
+                .with_accessible_name("Email address");
+            let node = Labelled::new("Display name", Box::new(input))
+                .accessibility()
+                .expect("the field's semantics");
+            assert_eq!(node.name.as_deref(), Some("Email address"));
+        }
+
         one_key_names_the_visible_label_and_text_input();
         labeled_field_hugs_its_content_inside_a_tall_form();
         standard_boolean_and_range_controls_share_the_contract();
         composite_inputs_share_the_contract();
         inline_check_uses_one_key_for_visible_and_spoken_labels();
+        a_label_over_a_boxed_control_is_the_controls_name();
+        a_named_control_keeps_its_name_under_a_label();
     }
 }
