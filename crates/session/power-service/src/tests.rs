@@ -292,6 +292,16 @@ fn the_sleep_resource_carries_no_power_profiles_or_duplicate_action() {
         !service.poll(),
         "the active power profile does not move the power:sleep reading"
     );
+    // A move of the power service's own readings (the battery) still wakes poll once.
+    link.bridge().reading_moved();
+    assert!(
+        service.poll(),
+        "a battery reading move reports true on SessionPower::poll"
+    );
+    assert!(
+        !service.poll(),
+        "and reports false on the next poll until another reading moves"
+    );
     let reading = service.read(SLEEP).expect("the sleep reading");
     assert_eq!(reading.get("profile"), None, "{reading}");
     assert_eq!(reading.get("profiles"), None, "{reading}");
