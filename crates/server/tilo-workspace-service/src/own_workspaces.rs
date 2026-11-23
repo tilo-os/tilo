@@ -9,7 +9,7 @@ use tilo_actions::ActionAddress;
 use tilo_actions::remote::{
     InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
 };
-use tilo_server_session::workspaces::{
+use tilo_server_protocol::workspaces::{
     CREATE_WORKSPACE, CreatedWorkspace, ENTER_WORKSPACE, EnteredWorkspace, HOST_ACTIONS_PROVIDER,
     HOST_WORKSPACES_RESOURCE,
 };

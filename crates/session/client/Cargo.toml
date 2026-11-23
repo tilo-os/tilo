@@ -38,7 +38,6 @@ tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
 # over iroh natively and over the browser's WebTransport in a page.
 tilo-server-client = { path = "../../server/tilo-server-client" }
 # The session client every device reaches its host with, over its link.
-tilo-server-session = { path = "../../server/tilo-server-session" }
 # The action host another device of a workspace is, reached through the session.
 tilo-actions = { path = "../../collab/actions" }
 # Another device's actions, asked through this session.

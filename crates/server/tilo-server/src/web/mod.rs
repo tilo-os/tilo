@@ -591,11 +591,6 @@ impl Server {
             public_origin.as_deref(),
             addr,
         );
-        // A page's fetch proxy token is minted on the session it fetched from.
-        if web.fetch.is_some() {
-            let grants: Arc<dyn crate::peer::FetchGrants> = web.grants.clone();
-            let _ = context.server.fetch.set(grants);
-        }
         let mut tasks = Vec::new();
         tasks.extend(fetch.metrics);
         let mut plain_origin = None;

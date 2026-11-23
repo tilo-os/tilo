@@ -1325,7 +1325,6 @@ doc = false
 "tilo-server-account" = { path = "../../crates/server/tilo-server-account", default-features = false, features = [] }
 "tilo-server-client" = { path = "../../crates/server/tilo-server-client", default-features = false, features = ["default", "dial"] }
 "tilo-server-protocol" = { path = "../../crates/server/tilo-server-protocol", default-features = false, features = [] }
-"tilo-server-session" = { path = "../../crates/server/tilo-server-session", default-features = false, features = [] }
 "tilo-service" = { path = "../../crates/session/service", default-features = false, features = [] }
 "tilo-session" = { path = "../../crates/session/session", default-features = false, features = [] }
 "tilo-session-actions" = { path = "../../crates/session/session-actions", default-features = false, features = [] }
@@ -2489,7 +2488,6 @@ doc = false
 "tilo-selector" = { path = "../../crates/platform/tilo-selector", default-features = false, features = [] }
 "tilo-server-client" = { path = "../../crates/server/tilo-server-client", default-features = false, features = ["default", "dial"] }
 "tilo-server-protocol" = { path = "../../crates/server/tilo-server-protocol", default-features = false, features = [] }
-"tilo-server-session" = { path = "../../crates/server/tilo-server-session", default-features = false, features = [] }
 "tilo-session-actions" = { path = "../../crates/session/session-actions", default-features = false, features = [] }
 "tilo-session-client" = { path = "../../crates/session/client", default-features = false, features = ["default", "toolkit"] }
 "tilo-socket" = { path = "../../crates/platform/tilo-socket", default-features = false, features = [] }
@@ -3969,7 +3967,6 @@ doc = false
 "tilo-server-account" = { path = "../../crates/server/tilo-server-account", default-features = false, features = [] }
 "tilo-server-client" = { path = "../../crates/server/tilo-server-client", default-features = false, features = ["default", "dial"] }
 "tilo-server-protocol" = { path = "../../crates/server/tilo-server-protocol", default-features = false, features = [] }
-"tilo-server-session" = { path = "../../crates/server/tilo-server-session", default-features = false, features = [] }
 "tilo-service" = { path = "../../crates/session/service", default-features = false, features = [] }
 "tilo-session" = { path = "../../crates/session/session", default-features = false, features = [] }
 "tilo-session-actions" = { path = "../../crates/session/session-actions", default-features = false, features = [] }
@@ -5119,7 +5116,6 @@ doc = false
 "tilo-selector" = { path = "../../crates/platform/tilo-selector", default-features = false, features = [] }
 "tilo-server-client" = { path = "../../crates/server/tilo-server-client", default-features = false, features = ["default", "dial"] }
 "tilo-server-protocol" = { path = "../../crates/server/tilo-server-protocol", default-features = false, features = [] }
-"tilo-server-session" = { path = "../../crates/server/tilo-server-session", default-features = false, features = [] }
 "tilo-session-actions" = { path = "../../crates/session/session-actions", default-features = false, features = [] }
 "tilo-session-client" = { path = "../../crates/session/client", default-features = false, features = ["default", "toolkit"] }
 "tilo-socket" = { path = "../../crates/platform/tilo-socket", default-features = false, features = [] }

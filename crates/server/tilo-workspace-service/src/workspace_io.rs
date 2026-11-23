@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::{MutexGuard, OwnedMutexGuard, Semaphore, watch};
 
 use crate::membership_watch::DiskGeneration;
-use crate::peer::WorkspaceRegistry;
+use crate::registry::WorkspaceRegistry;
 use crate::workspace::{Membership, SharedWorkspace, WorkspaceRuntime};
 use crate::workspace_access::AdmissionMode;
 use crate::workspace_files::{FilesError, GovernedAccessRecord, WorkspaceFiles};
@@ -433,7 +433,7 @@ pub(crate) async fn replace_membership(
                 .retain(|device| members.contains(device));
         }
         drop(file);
-        // Sessions of removed devices re-check now, before the write.
+        // Links of removed devices re-check now, before the write.
         crate::authority_epoch::bump();
         let saved = members.clone();
         authorization_io(move || store.save_membership(&saved)).await?;
@@ -516,9 +516,8 @@ pub(crate) async fn replace_governed_access(
                 } else {
                     runtime.membership_ceiling = Some(requested_devices);
                 }
-                // Refuse under the runtime's lock so the writer can deliver
-                // NotAuthorised before a waiting access audit closes the session.
-                runtime.refuse_removed_live_members(&removed);
+                // The links of the devices it no longer admits end on the
+                // announced change ([`crate::authority_epoch`]).
             } else {
                 // Only additions: admitted now, the file following.
                 runtime.membership.set(access.member_devices.clone());
@@ -1114,7 +1113,7 @@ mod tests {
         let owner = [9; 32];
         let revocations = std::sync::RwLock::new(tilo_user_identity::RevocationList::new());
         let policy = std::sync::RwLock::new(crate::policy::TrustPolicy::AllowAny);
-        let agents = crate::peer::AgentRegistry::default();
+        let agents = crate::registry::AgentRegistry::default();
         let trust = crate::workspace_access::ServerTrust {
             revocations: &revocations,
             policy: &policy,
@@ -1151,7 +1150,7 @@ mod tests {
         // The handshake admits anyone: only the workspace may keep a stranger out.
         let revocations = std::sync::RwLock::new(tilo_user_identity::RevocationList::new());
         let policy = std::sync::RwLock::new(crate::policy::TrustPolicy::AllowAny);
-        let agents = crate::peer::AgentRegistry::default();
+        let agents = crate::registry::AgentRegistry::default();
         let trust = crate::workspace_access::ServerTrust {
             revocations: &revocations,
             policy: &policy,

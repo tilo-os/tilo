@@ -153,7 +153,7 @@ pub struct CertificationProtocol {
     answered_invites: Arc<Mutex<AnsweredInvites>>,
     /// The workspaces this host serves, whose members may queue their own
     /// devices' requests; absent in a host that governs none.
-    workspaces: Option<crate::peer::WorkspaceRegistry>,
+    workspaces: Option<crate::registry::WorkspaceRegistry>,
     /// The requests this server's login codes expect.
     codes: Arc<std::sync::OnceLock<Arc<dyn TabRequests>>>,
     /// The workspaces this host governs, whose records keep each person's
@@ -186,7 +186,7 @@ fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, AcceptError> {
 impl CertificationProtocol {
     pub(crate) fn new(
         identity: LiveIdentity,
-        workspaces: Option<crate::peer::WorkspaceRegistry>,
+        workspaces: Option<crate::registry::WorkspaceRegistry>,
     ) -> Self {
         Self {
             identity,

@@ -1,6 +1,5 @@
-//! The long-running daemon: binds an iroh endpoint, accepts on
-//! `tilo-server/1`, runs the auth handshake, hands off to
-//! [`crate::peer::run_peer`].
+//! The long-running daemon: binds an iroh endpoint, and serves its workspaces'
+//! links there and over WebTransport.
 //!
 //! Also exposes the `Server` struct so integration tests can spin up
 //! two servers in the same process and let them merge.
@@ -21,7 +20,8 @@ use crate::config::ServerConfig;
 use crate::metrics::Metrics;
 use crate::policy::TrustPolicy;
 use crate::service::ServerProtocol;
-use crate::transport::ALPN;
+use tilo_server_protocol::transport::{ACTIONS_ALPN, DIRECT_ALPN};
+use tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN;
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tilo_server_protocol::WorkspaceId;
 use tilo_workspace_service::Reaching;
@@ -321,7 +321,7 @@ pub struct ServerHandle {
 ///
 /// The delegation is not the agent's person's, or names another device.
 pub(crate) fn register_agent_in(
-    agents: &crate::peer::AgentRegistry,
+    agents: &crate::registry::AgentRegistry,
     cert: &tilo_user_identity::DeviceCert,
     delegation: &tilo_server_protocol::delegation::Delegation,
 ) -> Result<(), String> {
@@ -408,9 +408,7 @@ impl Server {
     /// Start the daemon with the given config + identity.
     ///
     /// Binds an iroh endpoint (using the persistent secret at
-    /// `<state_root>/iroh-secret.bin`) and spawns an accept task that runs the auth
-    /// handshake + dispatches to `run_peer` for every inbound
-    /// connection.
+    /// `<state_root>/iroh-secret.bin`) and serves the workspaces' links on it.
     ///
     /// # Errors
     ///
@@ -1311,7 +1309,7 @@ async fn bind_endpoint(
 }
 
 fn validate_additional_alpn(alpn: &[u8]) -> Result<(), ServerError> {
-    let reserved: &[&[u8]] = &[ALPN];
+    let reserved: &[&[u8]] = &[DIRECT_ALPN, ACTIONS_ALPN, WORKSPACE_JOIN_ALPN];
     if alpn.is_empty() {
         return Err(ServerError::ProtocolRegistration(
             "additional ALPN must not be empty".into(),
@@ -1946,7 +1944,7 @@ mod tests {
     #[test]
     fn additional_protocol_rejects_server_owned_alpns() {
         assert!(matches!(
-            validate_additional_alpn(ALPN),
+            validate_additional_alpn(DIRECT_ALPN),
             Err(ServerError::ProtocolRegistration(_))
         ));
         validate_additional_alpn(b"tilo-workspace-join/1").unwrap();

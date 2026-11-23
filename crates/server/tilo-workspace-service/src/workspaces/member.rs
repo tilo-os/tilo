@@ -1710,7 +1710,7 @@ impl Workspaces {
             services.access.state_root().to_path_buf(),
             workspace_id,
             crate::workspace_access::AdmissionMode::Governed,
-            crate::peer::MAX_HELD_WORKSPACES,
+            crate::registry::MAX_HELD_WORKSPACES,
         )
         .await
         .map_err(|error| error.to_string())?;

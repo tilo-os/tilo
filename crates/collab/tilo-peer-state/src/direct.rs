@@ -883,19 +883,11 @@ struct Inner {
     /// The records this device asks the one it dialled to open
     /// ([`DirectSync::open_record`]), while the link runs.
     opening: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<RecordAsk>>>>,
-    /// Told each record frame this device takes in and keeps, and each it
-    /// carries, with its author: a session following the same record reads it
-    /// from here ([`DirectSync::with_record_sink`]).
-    record_sink: Option<RecordSink>,
     /// Answers a test loses, as a link that ended before they came
     /// ([`DirectSync::lose_answers`]).
     #[cfg(feature = "test-support")]
     lost_answers: Arc<std::sync::atomic::AtomicUsize>,
 }
-
-/// Told each record frame a link takes in and keeps, and each it carries, with
-/// its author ([`DirectSync::with_record_sink`]).
-type RecordSink = Arc<dyn Fn([u8; 32], &NeighbourMsg) + Send + Sync>;
 
 /// The geneses of a workspace's group its host carries, each with its
 /// author: what it answers a member's access request with
@@ -973,7 +965,6 @@ impl DirectSync {
             other_store: Arc::default(),
             opens: false,
             opening: Arc::default(),
-            record_sink: None,
             #[cfg(feature = "test-support")]
             lost_answers: Arc::default(),
         }))
@@ -1002,7 +993,6 @@ impl DirectSync {
             other_store: Arc::clone(&self.0.other_store),
             opens: self.0.opens,
             opening: Arc::clone(&self.0.opening),
-            record_sink: self.0.record_sink.clone(),
             #[cfg(feature = "test-support")]
             lost_answers: Arc::clone(&self.0.lost_answers),
         }
@@ -1065,21 +1055,6 @@ impl DirectSync {
             .keeping_devices()
             .iter()
             .any(|address| address.host.device_public_key == device)
-    }
-
-    /// Tell `sink` each record frame this link takes in and keeps, and each it
-    /// carries, with its author: the one point a record's write is in this
-    /// device's store and on its way to the devices linked to it, from which a
-    /// session that opened the same record is sent it too.
-    #[must_use]
-    pub fn with_record_sink(
-        &self,
-        sink: impl Fn([u8; 32], &NeighbourMsg) + Send + Sync + 'static,
-    ) -> Self {
-        Self(Arc::new(Inner {
-            record_sink: Some(Arc::new(sink)),
-            ..self.copied()
-        }))
     }
 
     /// The same link onto the same replica and store, with room for `capacity`
@@ -1371,13 +1346,6 @@ impl DirectSync {
             message: message.clone(),
             published: false,
         });
-        // Governance goes out through [`Self::outgoing`] alone, which tells the
-        // sessions too: a frame carried here is told once.
-        if !carried_governance(message)
-            && let Some(sink) = &self.0.record_sink
-        {
-            sink(from, message);
-        }
         Ok(true)
     }
 
@@ -1429,14 +1397,6 @@ impl DirectSync {
         }
         #[cfg(not(target_arch = "wasm32"))]
         self.keep_channel(&authored);
-        // The host's sessions get the channel governance a link would, from the one
-        // point it goes out on the links: a page that reaches its workspace only over
-        // a session joins a record's group the same way.
-        if carried_governance(&authored.message)
-            && let Some(sink) = &self.0.record_sink
-        {
-            sink(authored.from, &authored.message);
-        }
         let author = authored.from;
         let links = self.0.outgoing.send(authored).unwrap_or(0);
         tracing::debug!(
@@ -1495,9 +1455,6 @@ impl DirectSync {
             .get(&request.workspace)
             .cloned();
         for answer in known.unwrap_or_default() {
-            if let Some(sink) = &self.0.record_sink {
-                sink(answer.from, &answer.message);
-            }
             let _ = self.0.outgoing.send(answer);
         }
     }
@@ -3200,15 +3157,6 @@ impl DirectSync {
                 message: heard.message.clone(),
                 published: false,
             });
-        }
-        // A session that opened the record reads the write too, from the same
-        // point: the frame is in this device's store now, and on its way to the
-        // devices linked to it.
-        if heard.report.is_ok()
-            && heard.fresh
-            && let Some(sink) = &self.0.record_sink
-        {
-            sink(heard.author, &heard.message);
         }
         self.tell(heard);
         (lacks_history, kept)

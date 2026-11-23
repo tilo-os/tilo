@@ -84,7 +84,6 @@ mod listing;
 pub(crate) mod memberships;
 /// The operator's kill switch, held while a host offers one.
 pub mod mode;
-mod opened_records;
 mod own;
 mod ownership;
 #[cfg(not(target_arch = "wasm32"))]
@@ -242,15 +241,15 @@ pub use wait_list::{Mailbox, Secrets as WaitListSecrets, WaitListMail, WaitListe
 
 // The administration vocabulary (the actions' names and answers), under the
 // daemon's historic paths.
-pub use tilo_server_session::workspaces::{
+pub use tilo_server_protocol::workspaces::{
     ActionInvitation, CREATE_WORKSPACE, CancelInvitationRequest, CreatedWorkspace, ENTER_WORKSPACE,
     EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACE, HOST_WORKSPACES_RESOURCE,
     HostedWorkspace, IssueInvitationRequest, IssuedInvitation, LIST_WORKSPACES, PendingInvitation,
     RemoveMemberRequest, SetMemberRoleRequest, UNHOST_WORKSPACE, WorkspaceListing,
-    WorkspaceSummary, ask_host, enter_invitation,
+    WorkspaceSummary,
 };
 
-use crate::peer::WorkspaceRegistry;
+use crate::registry::WorkspaceRegistry;
 use tilo_lock::RwLockRecover as _;
 
 /// The record's version this build writes, and the one it reads: it keeps no
@@ -908,7 +907,7 @@ impl GovernedWorkspace {
             name: self.name(),
             generation: self.record.generation,
             role: None,
-            labels: tilo_server_session::workspaces::WorkspaceLabels::new(),
+            labels: tilo_server_protocol::workspaces::WorkspaceLabels::new(),
             unattended: false,
             made_at_ms: self.made_at_ms,
         }
@@ -946,7 +945,7 @@ pub(crate) struct WorkspaceServices {
     pub(crate) blocked: Arc<std::sync::RwLock<blocked::BlockedKeys>>,
     /// Agent delegations, for [`crate::workspace_access::decide`] and for
     /// refusing an agent the administration only a person holds.
-    pub(crate) agents: crate::peer::AgentRegistry,
+    pub(crate) agents: crate::registry::AgentRegistry,
     /// The devices this server certified and placed itself, for the windows in its workspaces'
     /// machines ([`crate::environment`]): none of them is a device of a person's own.
     pub(crate) environments: crate::environment::EnvironmentRegistry,
@@ -1099,9 +1098,6 @@ struct WorkspacesInner {
     web_ui: std::sync::RwLock<Option<Arc<dyn WebUi>>>,
     /// Each record write of a member the governor's copy took in.
     document_writes: tokio::sync::broadcast::Sender<ResourceWrite>,
-    /// The records sessions opened, and where a write of one goes
-    /// ([`opened_records`]).
-    opened_records: opened_records::OpenedRecords,
     /// Moves whenever a person's own settings kept here — their mail
     /// accounts — changed, so a window following them reads them again
     /// ([`person_settings`]).
@@ -1162,8 +1158,8 @@ struct WorkspacesInner {
     /// The owner invitations the host handed out and nobody accepted yet
     /// ([`host_invitations`]).
     owner_invitations: host_invitations::OwnerInvitations,
-    /// The sessions of people's devices here, sent their person's workspace
-    /// list whenever it changes ([`personal::PersonalPushes`]).
+    /// The counter a person's workspace list moves when it changes
+    /// ([`personal::PersonalPushes`]).
     personal_pushes: personal::PersonalPushes,
     /// Each person's devices as their own workspace lists them, by device key:
     /// the name each reads by and whether a revocation here refuses it. Kept
@@ -1267,6 +1263,17 @@ impl Workspaces {
     #[must_use]
     pub fn direct(&self) -> tilo_peer_state::direct::Serving {
         self.inner.direct.clone()
+    }
+
+    /// Whether `device` holds a link to `workspace_id` here now: one the
+    /// workspace's host admitted and has not refused.
+    #[must_use]
+    pub fn linked(&self, workspace_id: WorkspaceId, device: &[u8; 32]) -> bool {
+        self.inner
+            .link_remotes
+            .lock_recover()
+            .get(&workspace_id)
+            .is_some_and(|remotes| remotes.contains(device))
     }
 
     /// In-process access to the records of the workspaces this host keeps, for
@@ -1451,7 +1458,6 @@ impl Workspaces {
                 person_names: std::sync::RwLock::default(),
                 web_ui: std::sync::RwLock::default(),
                 document_writes: tokio::sync::broadcast::channel(256).0,
-                opened_records: opened_records::OpenedRecords::default(),
                 person_settings_moved: tokio::sync::watch::channel(0).0,
                 #[cfg(not(target_arch = "wasm32"))]
                 models: Arc::clone(&models),
@@ -1563,7 +1569,6 @@ impl Workspaces {
     fn start_following(&self) {
         self.follow_activity();
         self.follow_missing_surfaces();
-        self.follow_personal_changes();
         self.follow_own_address();
         // The keys the operator blocks are a record of their own workspace, read
         // again as it changes ([`blocked`]).
@@ -2208,10 +2213,9 @@ impl Workspaces {
     }
 
     /// The membership answer a page builds its replica of `workspace_id` from
-    /// as it subscribes ([`crate::transport::Envelope::WorkspaceBootstrap`]): the
-    /// workspace's roster, its revocations and its governance as one message,
-    /// answered for `device`, the session's certified device. What follows such
-    /// an answer is admitted like any governance
+    /// as it joins it: the workspace's roster, its revocations and its
+    /// governance as one message, answered for `device`, the link's certified
+    /// device. What follows such an answer is admitted like any governance
     /// ([`tilo_peer_state::owner::NativeWorkspaceOwner::install_vouched`]). Built
     /// only for a device a subscription is answered with: it is as large as the
     /// workspace.
@@ -2269,7 +2273,7 @@ impl Workspaces {
             &host.workspaces,
             host.access.state_root().to_path_buf(),
             workspace_id,
-            crate::peer::MAX_HELD_WORKSPACES,
+            crate::registry::MAX_HELD_WORKSPACES,
         )
         .await
         .map_err(|error| error.to_string())?;

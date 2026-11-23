@@ -5,22 +5,13 @@
 //! as that agent's, for the person, under the agent's grants there. The desktop session and the
 //! device's daemon serve such clients alike.
 
-use std::collections::BTreeMap;
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use collab_types::signer::DeviceSigner;
 use iroh::{Endpoint, EndpointAddr, EndpointId};
-use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ConfirmedInvocation,
-    InvocationReceipt, InvocationState, InvokeRequest, Pending, RemoteActionFrame,
-    RemoteActionMessage,
-};
 use tilo_server_protocol::WorkspaceId;
-use tilo_server_protocol::transport::{Envelope, REMOTE_ACTION_ENVELOPE_VERSION};
-use tilo_server_session::client::ServerClient;
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tilo_workspace_service::agents::agent_keys::{AgentKeys, AgentSigner};
 
@@ -135,7 +126,7 @@ impl OtherDevices {
                 agent_signer,
             ))?;
             let server = tilo_mcp::McpServer::for_agent(
-                Forwarded(Arc::clone(&session)),
+                session.actions.clone(),
                 workspace.clone(),
                 &agent,
                 &hex::encode(person),
@@ -152,8 +143,9 @@ impl OtherDevices {
     }
 
     /// Open the connection to `device` and make it the run of the agent `client`, in
-    /// `workspace`: invocations on it are signed by `agent_cert`/`agent_signer`, and the device
-    /// admits them as that agent's.
+    /// `workspace`: the session is the agent's own device there, so every request it makes is
+    /// signed by the agent's key this device made for it, and the device admits it as that
+    /// agent's for the person, under the agent's grants there.
     async fn open(
         &self,
         device: [u8; 32],
@@ -166,74 +158,37 @@ impl OtherDevices {
             EndpointId::from_bytes(&device).map_err(|_| "that is not a device key".to_owned())?;
         let workspace_id =
             WorkspaceId::parse(workspace).ok_or_else(|| "that is not a workspace id".to_owned())?;
-        let whose = self.0.whose;
-        let connect = ServerClient::connect_v2_to_own_device(
-            self.0.endpoint.clone(),
-            self.0.places.addr(id),
-            whose.0,
-            device,
-            self.0.cert.clone(),
-            Arc::clone(&self.0.signer),
-            self.0.revocations.clone(),
-        );
-        let client_session = tokio::time::timeout(CONNECT_DEADLINE, connect)
-            .await
-            .map_err(|_| "the device did not answer".to_owned())
-            .and_then(|connected| connected.map_err(|error| error.to_string()))?
-            .signing_invocations_as(agent_cert, agent_signer);
-        let client_session = Arc::new(client_session);
-        client_session
-            .send(Envelope::Subscribe { workspace_id })
-            .map_err(|_| "the device's connection closed".to_owned())?;
-        client_session
-            .send(Envelope::AgentSession {
-                request_id: 1,
-                label: client.to_owned(),
-            })
-            .map_err(|_| "the device's connection closed".to_owned())?;
-        let mut ready = false;
-        let mut run = false;
-        while !ready || !run {
-            let envelope = tokio::time::timeout(REPLY_DEADLINE, client_session.recv())
+        let server_cert = self
+            .others_in(workspace)
+            .into_iter()
+            .find(|certificate| certificate.device_public_key == device)
+            .ok_or_else(|| "that device is not in the workspace here".to_owned())?;
+        let config = tilo_session_client::PeerConfig {
+            host: tilo_server_client::host::ServerAddress::at(self.0.places.addr(id)),
+            cert: agent_cert,
+            server_cert,
+            revocations: self.0.revocations.clone(),
+            entering: None,
+        };
+        let opened = tokio::time::timeout(CONNECT_DEADLINE, async {
+            let session =
+                tilo_session_client::device::Device::over(config, agent_signer, client);
+            session
+                .enter_workspace(workspace, client)
                 .await
-                .map_err(|_| "the device did not answer".to_owned())?
-                .ok_or_else(|| "the device closed the connection".to_owned())?;
-            match envelope {
-                Envelope::Ready {
-                    workspace_id: ready_id,
-                    ..
-                } if ready_id == workspace_id => {
-                    ready = true;
-                }
-                Envelope::NotAuthorised { refusal, .. } => {
-                    return Err(format!(
-                        "the workspace did not admit this device: {refusal}"
-                    ));
-                }
-                Envelope::AgentSessionAnswer {
-                    refusal: Some(reason),
-                    ..
-                } => {
-                    return Err(format!("the device did not take the agent's run: {reason}"));
-                }
-                Envelope::AgentSessionAnswer { refusal: None, .. } => run = true,
-                Envelope::AgentSessionStopped => {
-                    return Err("the device ended the agent's run".to_owned());
-                }
-                _ => {}
-            }
-        }
-        let session = Arc::new(ForwardSession {
-            client: Arc::clone(&client_session),
-            workspace: workspace_id,
-            host: device,
-            own: whose.1,
-            user: whose.0,
-            next_correlation: AtomicU64::new(1),
-            waits: std::sync::Mutex::default(),
-        });
-        session.clone().start();
-        Ok(session)
+                .map_err(|refusal| refusal.to_string())?;
+            tilo_session_client::device::session_as_agent(session.session(), client)
+                .await
+                .map_err(|error| format!("the device did not take the agent's run: {error}"))?;
+            Ok::<_, String>(session)
+        })
+        .await
+        .map_err(|_| "the device did not answer".to_owned())??;
+        let actions = opened.actions(workspace_id);
+        Ok(Arc::new(ForwardSession {
+            _session: opened,
+            actions,
+        }))
     }
 
     /// The device `forward` names and the workspace the agent works in there: the one it names,
@@ -296,324 +251,18 @@ impl OtherDevices {
     }
 }
 
-/// One forwarded client's connection to the device that answers for it.
+/// One forwarded client's connection to the device that answers for it: the session keeps the
+/// agent's run open, and its actions carry each request.
 struct ForwardSession {
-    client: Arc<ServerClient>,
-    workspace: WorkspaceId,
-    host: [u8; 32],
-    own: [u8; 32],
-    user: [u8; 32],
-    next_correlation: AtomicU64,
-    /// What each request waits for: an answer by its correlation, or an invocation's receipt or
-    /// state.
-    waits: std::sync::Mutex<Waits>,
+    /// Holding the session keeps its links and the agent's run open.
+    _session: tilo_session_client::device::Device,
+    /// The workspace's actions, asked of the device that answers for them.
+    actions: tilo_session_actions::SessionActions,
 }
-
-/// The requests waiting for an answer, by what answers them.
-#[derive(Default)]
-struct Waits {
-    by_correlation: BTreeMap<u64, tilo_actions::remote::Completer<Answered>>,
-    by_invocation: std::collections::HashMap<
-        tilo_actions::InvocationId,
-        Vec<tilo_actions::remote::Completer<Answered>>,
-    >,
-}
-
-type Answered = Result<RemoteActionMessage, ActionCallError>;
 
 impl std::fmt::Debug for ForwardSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ForwardSession")
-            .field("host", &hex::encode(self.host))
-            .finish_non_exhaustive()
-    }
-}
-
-impl ForwardSession {
-    /// Read everything the device answers, on the runtime, and hand each to the request it
-    /// answers. Ends when the device's connection ends, failing what still waits.
-    fn start(self: Arc<Self>) {
-        let client = Arc::clone(&self.client);
-        tokio::spawn(async move {
-            while let Some(envelope) = client.recv().await {
-                if !self.heard(envelope) {
-                    break;
-                }
-            }
-            self.failed(&ActionCallError::Unavailable {
-                reason: "the device's connection ended".to_owned(),
-            });
-        });
-    }
-
-    /// Hand `envelope` to the request it answers.
-    fn heard(&self, envelope: Envelope) -> bool {
-        match envelope {
-            Envelope::RemoteAction { frame, .. } => {
-                let Ok(frame) = RemoteActionFrame::decode(&frame) else {
-                    return true;
-                };
-                self.answered(frame.message);
-                true
-            }
-            Envelope::RemoteActionUndeliverable { refusal, .. } => {
-                self.failed(&ActionCallError::Refused {
-                    reason: format!("{refusal:?}"),
-                });
-                true
-            }
-            Envelope::AgentSessionStopped => false,
-            _ => true,
-        }
-    }
-
-    fn answered(&self, message: RemoteActionMessage) {
-        let (correlation, invocation) = match &message {
-            RemoteActionMessage::CatalogueResponse { correlation, .. }
-            | RemoteActionMessage::ConfirmResponse { correlation, .. }
-            | RemoteActionMessage::Update {
-                correlation: Some(correlation),
-                ..
-            } => (Some(*correlation), None),
-            RemoteActionMessage::Receipt(receipt) => (None, Some(receipt.invocation)),
-            RemoteActionMessage::Update {
-                invocation,
-                correlation: None,
-                ..
-            }
-            | RemoteActionMessage::CancelResponse { invocation, .. } => (None, Some(*invocation)),
-            _ => (None, None),
-        };
-        let waiting = {
-            let mut waits = self
-                .waits
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            match (correlation, invocation) {
-                (Some(correlation), _) => waits.by_correlation.remove(&correlation),
-                (None, Some(invocation)) => {
-                    waits
-                        .by_invocation
-                        .get_mut(&invocation)
-                        .and_then(|waiting| {
-                            if waiting.is_empty() {
-                                None
-                            } else {
-                                Some(waiting.remove(0))
-                            }
-                        })
-                }
-                (None, None) => None,
-            }
-        };
-        if let Some(waiting) = waiting {
-            waiting.complete(Ok(message));
-        }
-    }
-
-    /// Fail every request still waiting: the device closed or refused the frame.
-    fn failed(&self, error: &ActionCallError) {
-        let waits = std::mem::take(
-            &mut *self
-                .waits
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
-        for waiting in waits.by_correlation.into_values() {
-            waiting.complete(Err(error.clone()));
-        }
-        for waiting in waits.by_invocation.into_values().flatten() {
-            waiting.complete(Err(error.clone()));
-        }
-    }
-
-    /// Send `message` to the device and wait for the answer `key` names.
-    fn ask(&self, message: &RemoteActionMessage) -> Pending<Answered> {
-        let frame = match RemoteActionFrame::new(message.clone()).encode() {
-            Ok(frame) => frame,
-            Err(error) => {
-                return Pending::ready(Err(ActionCallError::Refused {
-                    reason: format!("the request does not encode: {error}"),
-                }));
-            }
-        };
-        let (completer, pending) = tilo_actions::remote::pending();
-        {
-            let mut waits = self
-                .waits
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            match message {
-                RemoteActionMessage::CatalogueRequest { correlation, .. }
-                | RemoteActionMessage::Confirm { correlation, .. } => {
-                    waits.by_correlation.insert(*correlation, completer);
-                }
-                RemoteActionMessage::Invoke(request) => {
-                    waits
-                        .by_invocation
-                        .entry(request.invocation)
-                        .or_default()
-                        .push(completer);
-                }
-                RemoteActionMessage::Observe {
-                    correlation,
-                    invocation,
-                    ..
-                } => {
-                    if *correlation == 0 {
-                        waits
-                            .by_invocation
-                            .entry(*invocation)
-                            .or_default()
-                            .push(completer);
-                    } else {
-                        waits.by_correlation.insert(*correlation, completer);
-                    }
-                }
-                RemoteActionMessage::Cancel { invocation } => {
-                    waits
-                        .by_invocation
-                        .entry(*invocation)
-                        .or_default()
-                        .push(completer);
-                }
-                _ => {}
-            }
-        }
-        match self.client.send(Envelope::RemoteAction {
-            workspace_id: self.workspace,
-            version: REMOTE_ACTION_ENVELOPE_VERSION,
-            to_device_public_key: self.host,
-            from_device_public_key: self.own,
-            from_user_public_key: self.user,
-            frame,
-        }) {
-            Ok(()) => pending,
-            Err(_) => Pending::ready(Err(ActionCallError::Refused {
-                reason: "the device's connection closed".to_owned(),
-            })),
-        }
-    }
-}
-
-/// One forwarded client's actions, each asked of the device that answers for it.
-#[derive(Clone)]
-struct Forwarded(Arc<ForwardSession>);
-
-impl ActionProvider for Forwarded {
-    fn query(
-        &self,
-        _caller: &Caller,
-        query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        let correlation = self.0.next_correlation.fetch_add(1, Ordering::Relaxed);
-        self.0
-            .ask(&RemoteActionMessage::CatalogueRequest { correlation, query })
-            .map(|answer| {
-                answer.and_then(|message| match message {
-                    RemoteActionMessage::CatalogueResponse { result, .. } => result,
-                    _ => Err(unexpected()),
-                })
-            })
-    }
-
-    fn invoke(
-        &self,
-        _caller: &Caller,
-        request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        self.0
-            .ask(&RemoteActionMessage::Invoke(request))
-            .map(|answer| {
-                answer.and_then(|message| match message {
-                    RemoteActionMessage::Receipt(receipt) => match receipt.status {
-                        tilo_actions::remote::ReceiptStatus::Rejected { error } => Err(error),
-                        _ => Ok(receipt),
-                    },
-                    _ => Err(unexpected()),
-                })
-            })
-    }
-
-    fn observe(
-        &self,
-        _caller: &Caller,
-        id: &tilo_actions::InvocationId,
-    ) -> Option<InvocationState> {
-        let correlation = self.0.next_correlation.fetch_add(1, Ordering::Relaxed);
-        self.0
-            .ask(&RemoteActionMessage::Observe {
-                correlation,
-                invocation: *id,
-                wait_ms: None,
-                seen: None,
-            })
-            .wait_timeout(REPLY_DEADLINE)
-            .ok()
-            .flatten()
-            .and_then(|answer| match answer {
-                Ok(RemoteActionMessage::Update { state, .. }) => state,
-                _ => None,
-            })
-    }
-
-    fn next_change(
-        &self,
-        _caller: &Caller,
-        id: &tilo_actions::InvocationId,
-    ) -> Option<Pending<()>> {
-        let correlation = self.0.next_correlation.fetch_add(1, Ordering::Relaxed);
-        let asked = self.0.ask(&RemoteActionMessage::Observe {
-            correlation,
-            invocation: *id,
-            wait_ms: Some(1_000),
-            seen: None,
-        });
-        let (changed, pending) = tilo_actions::remote::pending();
-        asked.then(move |_| changed.complete(()));
-        Some(pending)
-    }
-
-    fn cancel(
-        &self,
-        _caller: &Caller,
-        id: &tilo_actions::InvocationId,
-    ) -> Pending<Result<(), ActionCallError>> {
-        self.0
-            .ask(&RemoteActionMessage::Cancel { invocation: *id })
-            .map(|answer| {
-                answer.and_then(|message| match message {
-                    RemoteActionMessage::CancelResponse { result, .. } => result,
-                    _ => Err(unexpected()),
-                })
-            })
-    }
-
-    fn confirm(
-        &self,
-        _caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Pending<Result<ConfirmedInvocation, ActionCallError>> {
-        let correlation = self.0.next_correlation.fetch_add(1, Ordering::Relaxed);
-        self.0
-            .ask(&RemoteActionMessage::Confirm {
-                correlation,
-                request: Box::new(request.clone()),
-            })
-            .map(|answer| {
-                answer.and_then(|message| match message {
-                    RemoteActionMessage::ConfirmResponse { result, .. } => {
-                        result.map(|confirmed| *confirmed)
-                    }
-                    _ => Err(unexpected()),
-                })
-            })
-    }
-}
-
-fn unexpected() -> ActionCallError {
-    ActionCallError::Unavailable {
-        reason: "the device answered with an unexpected message".to_owned(),
+        f.debug_struct("ForwardSession").finish_non_exhaustive()
     }
 }
 

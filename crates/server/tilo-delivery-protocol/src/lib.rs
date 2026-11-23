@@ -1,7 +1,6 @@
 //! Wire contract of Tilo's browser-facing delivery.
 //!
-//! Every type here is an inert, validated record: the v2 live envelope and the
-//! workspace join contract.
+//! Every type here is an inert, validated record: the workspace join contract.
 //! Browsers, the action broker and both hosts link this crate without linking the
 //! server daemon. The live presence and ops frames are `tilo_server_protocol::live`.
 #![deny(rust_2018_idioms)]
@@ -14,5 +13,4 @@
     )
 )]
 
-pub mod transport_v2;
 pub mod workspace_join;

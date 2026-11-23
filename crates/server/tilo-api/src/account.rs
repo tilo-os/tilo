@@ -57,7 +57,7 @@ use tilo_actions::{
     ActionParam, ExecutionLocus, InputSpec, InvocationId, InvocationUpdate, OperationKind,
     ParamType, RiskLevel,
 };
-use tilo_server_session::workspaces::{
+use tilo_server_protocol::workspaces::{
     BRANCH_OWN_WORKSPACE, CREATE_OWN_WORKSPACE, CreatedWorkspace, DELETE_WORKSPACE,
     HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, LIST_PERSONAL, PersonalList, RUN_UNATTENDED,
     WorkspaceLabels,

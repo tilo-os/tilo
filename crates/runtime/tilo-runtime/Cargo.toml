@@ -116,8 +116,7 @@ rand.workspace = true
 tilo-content-device = { path = "../../system/content-device" }
 # The workspace store this device holds for the workspaces it belongs to, and
 # the admission API it answers with: the engine's own membership.
-# The server session a joined workspace syncs through.
-tilo-server-session = { path = "../../server/tilo-server-session" }
+tilo-session-actions = { path = "../../session/session-actions" }
 # A workspace host's signed address, which a key enters a workspace at.
 tilo-server-client = { path = "../../server/tilo-server-client" }
 tilo-server-protocol = { path = "../../server/tilo-server-protocol" }

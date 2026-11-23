@@ -16,9 +16,7 @@
 //! against its author, as for any device.
 
 #[cfg(not(target_arch = "wasm32"))]
-use crate::peer::WorkspaceRegistry;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::transport::Envelope;
+use crate::registry::WorkspaceRegistry;
 #[cfg(not(target_arch = "wasm32"))]
 use neighbour_wire::NeighbourMsg;
 #[cfg(not(target_arch = "wasm32"))]
@@ -155,33 +153,6 @@ impl WorkspaceDocuments {
         workspace_id: WorkspaceId,
     ) -> Result<Vec<RetainedBody>, String> {
         self.retained(workspace_id).await
-    }
-
-    /// Publish `body` on `workspace_id`'s presence as this host's own, to
-    /// every device subscribed to it: how the host asks the workspace's members
-    /// for content, as any member asks. The number of devices it reached.
-    pub(crate) async fn host_presence(
-        &self,
-        workspace_id: WorkspaceId,
-        body: Vec<u8>,
-    ) -> Result<usize, String> {
-        let payload = crate::AttributedPresence {
-            author: self.device,
-            body,
-        }
-        .encode()
-        .map_err(|error| error.to_string())?;
-        let envelope = Envelope::Presence {
-            workspace_id,
-            payload,
-        };
-        let ws = self.workspaces.lock().await.get(&workspace_id).cloned();
-        let ws = ws.ok_or("the workspace is not hosted here")?;
-        let mut runtime = ws.lock().await;
-        let delivered = runtime.fanout_presence(&self.device, &envelope);
-        drop(runtime);
-        drop(ws);
-        Ok(delivered)
     }
 
     /// The kept bodies of `channel`, one record's route, up to `max_bytes` of them.

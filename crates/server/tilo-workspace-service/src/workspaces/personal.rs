@@ -34,9 +34,9 @@ use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ROOT, ReadDoc as _};
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::servers::person_workspace_id;
-use tilo_server_session::workspaces::{
-    KeepingDeviceAddress, MAX_BROWSER_DEVICES, MAX_PERSONAL_DEVICES, PersonalBrowser, PersonalList,
-    PersonalWorkspace,
+use tilo_server_protocol::workspaces::{
+    KeepingDeviceAddress, MAX_BROWSER_DEVICES, MAX_PERSONAL_DEVICES, PersonalBrowser,
+    PersonalDevice, PersonalList, PersonalWorkspace,
 };
 use tilo_user_identity::{
     DeviceCert, RevocationEntry, WorkspaceDirectory, WorkspaceMeta, verify_device_cert,
@@ -67,166 +67,34 @@ fn now_ms() -> i64 {
     i64::try_from(tilo_clock::unix_now_ns() / 1_000_000).unwrap_or(i64::MAX)
 }
 
-/// The sessions of people's devices on this host, each sent its person's
-/// workspace list whenever it changes: what the peer, its folders and the page
-/// read as it happens, rather than asking the host again and again.
+/// The counter a person's workspace list moves when a write of it lands: what
+/// a device following its list waits on, rather than asking the host again and
+/// again.
 pub(super) struct PersonalPushes {
-    /// What names each watch, so the session ending takes its own away.
-    next: std::sync::atomic::AtomicU64,
-    sessions: std::sync::Mutex<BTreeMap<u64, Watched>>,
-    /// Told whenever a list changed, so the sessions are sent the new ones.
-    changed: Arc<tokio::sync::Notify>,
-}
-
-/// One device's session here, and where the lists its person's host keeps are
-/// pushed to it: the session's own outbound queue.
-struct Watched {
-    cert: DeviceCert,
-    outbound: tokio::sync::mpsc::Sender<crate::transport::Envelope>,
-}
-
-/// One device's list, once built, and the sessions of it that read it: built once however many
-/// connections that device holds.
-type TheirList = (Option<Vec<u8>>, Vec<(u64, Watched)>);
-
-impl PersonalPushes {
-    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<u64, Watched>> {
-        self.sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
+    changed: tokio::sync::watch::Sender<u64>,
 }
 
 impl Default for PersonalPushes {
     fn default() -> Self {
         Self {
-            next: std::sync::atomic::AtomicU64::new(1),
-            sessions: std::sync::Mutex::default(),
-            changed: Arc::default(),
+            changed: tokio::sync::watch::channel(0).0,
         }
     }
 }
 
 impl Workspaces {
-    /// Send `device`'s person's workspace list to this session of theirs
-    /// whenever it changes, answering the watch to end with
-    /// [`Self::unwatch_personal`] as the session ends.
-    pub fn watch_personal(
-        &self,
-        device: &DeviceCert,
-        outbound: tokio::sync::mpsc::Sender<crate::transport::Envelope>,
-    ) -> u64 {
-        let watch = self
-            .inner
-            .personal_pushes
-            .next
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.inner.personal_pushes.lock().insert(
-            watch,
-            Watched {
-                cert: device.clone(),
-                outbound,
-            },
-        );
-        watch
+    /// The list changed: every device following its person's list reads it
+    /// again.
+    pub fn personal_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.inner.personal_pushes.changed.subscribe()
     }
 
-    /// Stop sending the list to the session `watch` names.
-    pub fn unwatch_personal(&self, watch: u64) {
-        self.inner.personal_pushes.lock().remove(&watch);
-    }
-
-    /// A person's workspace list changed: every session of their devices is
-    /// sent the new one.
+    /// A person's workspace list changed.
     pub(super) fn personal_changed(&self) {
-        self.inner.personal_pushes.changed.notify_one();
-    }
-
-    /// How long a burst of list changes is gathered before each list is sent: a workspace made
-    /// changes its governance several times, and those are one list. A person who makes a
-    /// hundred workspaces reads the list their devices were sent a moment after they stop, not a
-    /// list built again for each of them, which costs more the more workspaces they have.
-    const GATHER_PERSONAL: std::time::Duration = std::time::Duration::from_millis(250);
-
-    /// Follow the change of every person's list: each is sent the new one, as
-    /// often as it changes.
-    pub(super) fn follow_personal_changes(&self) {
-        let workspaces = Arc::downgrade(&self.inner);
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        runtime.spawn(async move {
-            let changed = workspaces
-                .upgrade()
-                .map(|inner| Arc::clone(&inner.personal_pushes.changed));
-            let Some(changed) = changed else { return };
-            loop {
-                changed.notified().await;
-                // A burst of changes (a workspace made changes its governance several times) is
-                // one list: waiting a moment for it to settle sends each person their list once,
-                // and building a hundredth workspace's list does not stall the work that made it.
-                tokio::time::sleep(Self::GATHER_PERSONAL).await;
-                let Some(inner) = workspaces.upgrade() else {
-                    return;
-                };
-                Self { inner }.push_personal_lists().await;
-            }
-        });
-    }
-
-    /// Send every watched session its person's workspace list as it is now.
-    async fn push_personal_lists(&self) {
-        let watched: Vec<(u64, Watched)> = {
-            let sessions = self.inner.personal_pushes.lock();
-            sessions
-                .iter()
-                .map(|(watch, session)| {
-                    (
-                        *watch,
-                        Watched {
-                            cert: session.cert.clone(),
-                            outbound: session.outbound.clone(),
-                        },
-                    )
-                })
-                .collect()
-        };
-        // A device's list is one, however many connections it holds: it is built once and sent
-        // to each. A device's own capabilities decide what its list names, so a person's agent
-        // key keeps its own.
-        let mut by_device: std::collections::HashMap<[u8; 32], TheirList> =
-            std::collections::HashMap::new();
-        for (watch, session) in watched {
-            by_device
-                .entry(session.cert.device_public_key)
-                .or_insert_with(|| (None, Vec::new()))
-                .1
-                .push((watch, session));
-        }
-        for (_, (mut list, sessions)) in by_device {
-            for (watch, session) in sessions {
-                if list.is_none() {
-                    match serde_json::to_vec(&self.personal_of(&session.cert).await) {
-                        Ok(kept) => list = Some(kept),
-                        Err(_) => break,
-                    }
-                }
-                let Some(list) = list.clone() else {
-                    break;
-                };
-                match session
-                    .outbound
-                    .try_send(crate::transport::Envelope::PersonalList { list })
-                {
-                    // A session already busy with an older list reads the next
-                    // change's; one whose connection ended holds nothing.
-                    Ok(()) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
-                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                        self.inner.personal_pushes.lock().remove(&watch);
-                    }
-                }
-            }
-        }
+        self.inner
+            .personal_pushes
+            .changed
+            .send_modify(|changed| *changed = changed.wrapping_add(1));
     }
 
     /// The workspaces `person`'s own list names that this server does not govern, each by
@@ -346,7 +214,7 @@ impl Workspaces {
     pub(super) async fn personal(
         &self,
         device: &DeviceCert,
-        here: &[tilo_server_session::workspaces::WorkspaceListing],
+        here: &[tilo_server_protocol::workspaces::WorkspaceListing],
         only: &super::actions::host::Listed,
     ) -> PersonalList {
         let name = self.host_name();
@@ -475,7 +343,7 @@ impl Workspaces {
     /// Only a device of the person's own names them: an agent's grant and a
     /// stand-in are no browser of theirs.
     ///
-    /// [`LIST_PERSONAL`]: tilo_server_session::workspaces::LIST_PERSONAL
+    /// [`LIST_PERSONAL`]: tilo_server_protocol::workspaces::LIST_PERSONAL
     pub(super) async fn note_browser(&self, device: &DeviceCert, browser: PersonalBrowser) {
         if device.capabilities.agent.is_some() || device.capabilities.stand_in {
             return;

@@ -1,15 +1,7 @@
-//! A device entering a workspace on the session it opens with the
-//! workspace's host, through the workspace's entry or with an invitation,
-//! rather than in requests of its own before it.
-//!
-//! The device is a stranger to the host until the workspace admits it, so its
-//! session carries the entry and nothing else until then. The device proves
-//! everything in its first message, so the host answers once:
-//!
-//! ```text
-//! client → server:  Hello { .., entering: Some(Entry) }, its first requests right behind
-//! server → client:  HelloAck, then Envelope::Entered, then the session (or nothing more)
-//! ```
+//! A device entering a workspace it is a stranger to, through the workspace's
+//! entry or with an invitation: what the host's `workspace.entry` action takes,
+//! proved by the device's key over the connection it was asked on, and what
+//! that action answers ([`Entered`]).
 //!
 //! The entry lets the person in as its HTTP form did: an invitation bound to
 //! their user root and the one-time token that admits them, both kept on the
@@ -179,8 +171,7 @@ impl EnterRefusal {
     }
 }
 
-/// The host's answer to an entry, the first envelope of the session it opened
-/// ([`crate::Envelope::Entered`]).
+/// The host's answer to an entry: the `workspace.entry` action's `entered`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Entered {
     /// The workspace admitted the device: from here on the session is a

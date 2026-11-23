@@ -38,7 +38,7 @@ use tilo_peer_state::actions::{ActionService, ReadFuture, Workspaces};
 use tilo_server_protocol::WorkspaceId;
 
 use crate::work::{HostJobs, HostLinux, Job, LINUX_RESOURCE, Turn, WORK_PROVIDER};
-use tilo_server_session::workspaces::{
+use tilo_server_protocol::workspaces::{
     HOST_ACTIONS_PROVIDER, LIST_PERSONAL, PERSONAL_AFTER, PersonalList,
 };
 use tokio::sync::Mutex as AsyncMutex;
@@ -201,7 +201,7 @@ impl DeviceWork {
     async fn follow_list<H: ActionProvider + Clone + Send + Sync + 'static>(
         self: &Arc<Self>,
         host: &H,
-        certificate: &tilo_user_identity::DeviceCert,
+        _certificate: &tilo_user_identity::DeviceCert,
         caller: &Caller,
         request: InvokeRequest,
         after: String,
@@ -221,19 +221,17 @@ impl DeviceWork {
             .get()
             .and_then(super::WeakWorkspaces::upgrade)
             .ok_or_else(not_served)?;
-        // Watched before the first read, so a change between the read and the wait is not missed.
-        let (told, mut heard) = tokio::sync::mpsc::channel(1);
-        let watch = workspaces.watch_personal(certificate, told);
+        // Followed before the first read, so a change between the read and the
+        // wait is not missed.
+        let mut changed = workspaces.personal_changes();
         let first = match list_now(host, caller, &request).await {
             Ok(list) => list,
             Err(error) => {
-                workspaces.unwatch_personal(watch);
                 self.log.lock_recover().abandon(&invocation);
                 return Err(error);
             }
         };
         if PersonalList::version(&first) != after {
-            workspaces.unwatch_personal(watch);
             let state = listed(invocation, first);
             let receipt = state.receipt();
             self.log.lock_recover().complete(&invocation, state);
@@ -244,8 +242,7 @@ impl DeviceWork {
         self.log.lock_recover().complete(&invocation, accepted);
         let (work, caller, host) = (Arc::downgrade(self), caller.clone(), host.clone());
         self.runtime.spawn(async move {
-            let _ = tokio::time::timeout(LIST_FOLLOWED, heard.recv()).await;
-            workspaces.unwatch_personal(watch);
+            let _ = tokio::time::timeout(LIST_FOLLOWED, changed.changed()).await;
             let update = match list_now(&host, &caller, &request).await {
                 Ok(list) => listed(invocation, list).update,
                 Err(error) => InvocationUpdate::Failed {

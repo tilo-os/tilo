@@ -7,7 +7,7 @@ use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_actions::remote::{ActionCallError, ActionProvider as _, InvokeRequest, ReceiptStatus};
 use tilo_server_protocol::workspaces::JoinReply;
-use tilo_server_session::workspaces::{
+use tilo_server_protocol::workspaces::{
     CREATE_OWN_WORKSPACE, CreatedWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE,
     KEEP_PERSONAL, LIST_PERSONAL, PersonalList,
 };
@@ -733,90 +733,6 @@ async fn an_opening_is_written_once_a_minute_and_an_ending_always() {
     server.shutdown().await;
 }
 
-/// A session of a member's device — a person this host is not the own of —
-/// says in their record when it was here as it starts, from the session itself
-/// and not from the record's own entry.
-#[tokio::test]
-async fn a_members_session_says_when_its_key_was_here_as_it_starts() {
-    use std::collections::HashMap;
-    use std::sync::Arc;
-    use tokio::sync::Mutex as AsyncMutex;
-
-    let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
-    let server = test_host(dir.path(), &key, &owner).await;
-    let workspaces = server.workspaces();
-    let root = SigningKey::from_bytes(&rand::random());
-    hold_person_workspace(workspaces, root.verifying_key().to_bytes()).await;
-    let laptop_key = SigningKey::from_bytes(&rand::random());
-    let mut laptop = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: laptop_key.verifying_key().to_bytes(),
-        device_label: "Claude Code on laptop".into(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: tilo_clock::unix_now_ns(),
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut laptop, &root).unwrap();
-    workspaces.keep_issued_device(&laptop, "").await;
-    assert_eq!(
-        seen_at(workspaces, &laptop).await,
-        None,
-        "no session of the key was here yet"
-    );
-
-    let hello = crate::auth::Hello::new(laptop.clone(), [2; 32]);
-    let peer = crate::auth::accept_hello(
-        &hello,
-        &owner.user_public_key,
-        &crate::policy::TrustPolicy::AllowAny,
-        &tilo_user_identity::RevocationList::new(),
-        tilo_clock::unix_now_ns(),
-    )
-    .unwrap();
-    let registry: crate::peer::WorkspaceRegistry = Arc::new(AsyncMutex::new(HashMap::new()));
-    let context = crate::peer::PeerContext {
-        workspaces: registry,
-        revocations: Arc::new(std::sync::RwLock::new(
-            tilo_user_identity::RevocationList::new(),
-        )),
-        trust_policy: Arc::new(std::sync::RwLock::new(crate::policy::TrustPolicy::AllowAny)),
-        blocked: Arc::new(std::sync::RwLock::new(
-            crate::workspaces::blocked::BlockedKeys::default(),
-        )),
-        own_user_public_key: owner.user_public_key,
-        own_device_cert: owner.clone(),
-        own_device_public_key: owner.device_public_key,
-        app_serving: None,
-        metrics: Arc::new(crate::metrics::Metrics::default()),
-        admin: Some(Arc::new(workspaces.clone())),
-        fetch: None,
-        agents: crate::peer::AgentRegistry::default(),
-        environments: crate::environment::EnvironmentRegistry::default(),
-    };
-    let (_client, end) = tokio::io::duplex(65_536);
-    let (read, write) = tokio::io::split(end);
-    let session = tokio::spawn(crate::peer::run_peer_until(
-        peer,
-        std::future::pending::<()>(),
-        read,
-        write,
-        context,
-    ));
-    tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        while seen_at(workspaces, &laptop).await.is_none() {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("the session says in the record when the key was here");
-
-    session.abort();
-    server.shutdown().await;
-}
-
 /// A computer the person logged in is one of their own devices, and its session is their agent's
 /// run: it reads the person's workspace list (its folders are named after their workspaces),
 /// and asks its person before it changes anything of their account on the host.
@@ -904,37 +820,44 @@ async fn an_agents_run_on_a_persons_own_device_reads_their_list_and_asks_before_
     server.shutdown().await;
 }
 
-/// The session of `device`: the watch that sends it what its person's devices
-/// are sent, and where that arrives.
-fn session_of(
-    workspaces: &crate::workspaces::Workspaces,
-    device: &DeviceCert,
-) -> (u64, tokio::sync::mpsc::Receiver<crate::transport::Envelope>) {
-    let (outbound, pushed) = tokio::sync::mpsc::channel(8);
-    (workspaces.watch_personal(device, outbound), pushed)
+/// A device following its person's list: the host's own workspaces, and the
+/// counter the list moves on.
+struct Session {
+    workspaces: crate::workspaces::Workspaces,
+    device: DeviceCert,
+    changed: tokio::sync::watch::Receiver<u64>,
 }
 
-/// The next list the host pushes to a device's session, waiting for one that
+/// `device`, following the list of its person's workspaces.
+fn session_of(workspaces: &crate::workspaces::Workspaces, device: &DeviceCert) -> Session {
+    Session {
+        workspaces: workspaces.clone(),
+        device: device.clone(),
+        changed: workspaces.personal_changes(),
+    }
+}
+
+/// The next list the host keeps of a device's person, waiting for one that
 /// `ok` takes: a change lands as the host settles it, not in a fixed order.
 async fn next_list(
-    pushed: &mut tokio::sync::mpsc::Receiver<crate::transport::Envelope>,
+    session: &mut Session,
     ok: impl Fn(&PersonalList) -> bool + Send + Sync,
 ) -> PersonalList {
     tokio::time::timeout(std::time::Duration::from_secs(30), async {
         loop {
-            let crate::transport::Envelope::PersonalList { list } =
-                pushed.recv().await.expect("the device's session")
-            else {
-                panic!("the host sends the person's list");
-            };
-            let list: PersonalList = serde_json::from_slice(&list).expect("a list");
+            let list = session.workspaces.personal_of(&session.device).await;
             if ok(&list) {
                 return list;
             }
+            session
+                .changed
+                .changed()
+                .await
+                .expect("the host keeps the person's list");
         }
     })
     .await
-    .expect("the host sends the list as it changes")
+    .expect("the host keeps the list as it changes")
 }
 
 /// A device of a person's is sent their workspace list as it changes — one
@@ -972,7 +895,7 @@ async fn a_devices_session_is_sent_the_list_as_its_person_workspaces_change() {
     let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
     // The session of the person's device: where their list is sent.
-    let (_watch, mut pushed) = session_of(workspaces, &desktop);
+    let mut session = session_of(workspaces, &desktop);
 
     // A workspace the person makes is in the list at once.
     let created: CreatedWorkspace = serde_json::from_value(
@@ -986,7 +909,7 @@ async fn a_devices_session_is_sent_the_list_as_its_person_workspaces_change() {
         .unwrap(),
     )
     .unwrap();
-    next_list(&mut pushed, |list| {
+    next_list(&mut session, |list| {
         list.workspaces
             .iter()
             .any(|one| one.workspace == created.workspace.workspace && one.name == "Second")
@@ -1026,7 +949,7 @@ async fn a_devices_session_is_sent_the_list_as_its_person_workspaces_change() {
         let mut governed = state.lock().await;
         workspaces.settle(&mut governed).await.unwrap();
     }
-    next_list(&mut pushed, |list| {
+    next_list(&mut session, |list| {
         list.workspaces
             .iter()
             .any(|one| one.workspace == home && one.name == "Lounge")
@@ -1038,7 +961,7 @@ async fn a_devices_session_is_sent_the_list_as_its_person_workspaces_change() {
         .rename(&created.workspace.workspace, "Renamed")
         .await
         .unwrap();
-    next_list(&mut pushed, |list| {
+    next_list(&mut session, |list| {
         list.workspaces
             .iter()
             .any(|one| one.workspace == created.workspace.workspace && one.name == "Renamed")
@@ -1064,8 +987,18 @@ async fn a_revocation_marks_the_device_in_the_persons_record() {
     let desktop = key_of(&root, "studio", DeviceCapabilities::member());
     let laptop = key_of(&root, "laptop", DeviceCapabilities::member());
     workspaces.keep_issued_device(&desktop, "").await;
+    // The session of the person's desktop: where their list is sent.
+    let mut session = session_of(workspaces, &desktop);
+    let listed = |list: &PersonalList, device: &DeviceCert| {
+        list.devices
+            .iter()
+            .find(|listed| listed.cert.device_public_key == device.device_public_key)
+            .map(|listed| listed.revoked)
+    };
+
+    // A laptop paired with them is in the list their sessions are sent.
     workspaces.keep_issued_device(&laptop, "").await;
-    assert!(!recorded_device(workspaces, &laptop).await.revoked);
+    next_list(&mut session, |list| listed(list, &laptop) == Some(false)).await;
 
     // Their root takes the laptop back, and one of their sessions says so.
     let mut entry = tilo_user_identity::RevocationEntry {
@@ -1077,12 +1010,10 @@ async fn a_revocation_marks_the_device_in_the_persons_record() {
     };
     tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
     workspaces.take_revocations(vec![entry]).await.unwrap();
-    assert!(
-        recorded_device(workspaces, &laptop).await.revoked,
-        "a revoked device stays in the record, marked"
-    );
-    assert!(
-        !recorded_device(workspaces, &desktop).await.revoked,
+    let sent = next_list(&mut session, |list| listed(list, &laptop) == Some(true)).await;
+    assert_eq!(
+        listed(&sent, &desktop),
+        Some(false),
         "their other devices stay theirs"
     );
     assert!(

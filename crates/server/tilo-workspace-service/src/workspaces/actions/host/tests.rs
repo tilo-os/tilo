@@ -11,7 +11,7 @@ use tilo_actions::remote::{
     RemoteActionMessage, RemoteActionTarget,
 };
 use tilo_peer_state::join::{Role, decode_and_verify_invitation};
-use tilo_server_session::workspaces::{
+use tilo_server_protocol::workspaces::{
     CREATE_WORKSPACE, CreatedWorkspace, DELETE_WORKSPACE, ENTER_WORKSPACE, EnteredWorkspace,
     HOST_ACTIONS_PROVIDER, HOST_WORKSPACE, HOST_WORKSPACES_RESOURCE, LIST_REVOCATIONS,
     LIST_WORKSPACES, UNHOST_WORKSPACE, WorkspaceListing,
@@ -88,21 +88,21 @@ async fn invoke(
 /// What the host offers its person's devices, in the order it lists them.
 const HOST_OPERATIONS: [&str; 24] = [
     CREATE_WORKSPACE,
-    tilo_server_session::workspaces::CREATE_OWN_WORKSPACE,
+    tilo_server_protocol::workspaces::CREATE_OWN_WORKSPACE,
     DELETE_WORKSPACE,
-    tilo_server_session::workspaces::BRANCH_OWN_WORKSPACE,
+    tilo_server_protocol::workspaces::BRANCH_OWN_WORKSPACE,
     LIST_WORKSPACES,
-    tilo_server_session::workspaces::LIST_PERSONAL,
-    tilo_server_session::workspaces::KEEP_PERSONAL,
+    tilo_server_protocol::workspaces::LIST_PERSONAL,
+    tilo_server_protocol::workspaces::KEEP_PERSONAL,
     LIST_REVOCATIONS,
     super::BLOCK,
     super::UNBLOCK,
     ENTER_WORKSPACE,
     HOST_WORKSPACE,
     UNHOST_WORKSPACE,
-    tilo_server_session::workspaces::CATCH_UP_WORKSPACE,
-    tilo_server_session::workspaces::CATCH_UP_ABSENT,
-    tilo_server_session::workspaces::CATCH_UP_STANDING,
+    tilo_server_protocol::workspaces::CATCH_UP_WORKSPACE,
+    tilo_server_protocol::workspaces::CATCH_UP_ABSENT,
+    tilo_server_protocol::workspaces::CATCH_UP_STANDING,
     super::PLAN_MACHINE,
     super::LIST_MACHINES,
     super::SHOW_MACHINE,

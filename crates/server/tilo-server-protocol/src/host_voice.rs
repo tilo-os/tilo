@@ -152,8 +152,8 @@ impl HostSaid {
     }
 
     /// Sign the frame with `sign`, the host device's signer over the bytes
-    /// it is handed: the encoding and its signature, as
-    /// [`crate::transport::Envelope::HostSaid`] carries them.
+    /// it is handed: the encoding and its signature, as a host's word on a run
+    /// is written into the workspace's record.
     ///
     /// # Errors
     ///

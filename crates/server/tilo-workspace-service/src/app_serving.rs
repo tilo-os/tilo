@@ -32,9 +32,9 @@ pub trait AppActionServer: Send + Sync {
 
     /// As [`Self::serve`], with the certificate the server's handshake
     /// verified for `caller`'s device: what the server hands every message
-    /// that arrives on a session. The host's own operations need it (they
-    /// admit that certificate to a workspace); an app action server has no use
-    /// for it, and the default ignores it.
+    /// that arrives on its actions link. The host's own operations need it
+    /// (they admit that certificate to a workspace); an app action server has
+    /// no use for it, and the default ignores it.
     fn serve_certified(
         &self,
         workspace_id: WorkspaceId,
@@ -77,9 +77,8 @@ pub trait AppActionServer: Send + Sync {
         None
     }
 
-    /// `caller`'s session became an agent's run
-    /// ([`Envelope::AgentSession`](tilo_server_protocol::transport::Envelope::AgentSession))
-    /// in `workspace_id`, the workspace the session entered: an app action server that
+    /// `caller`'s requests on its link are one run of an agent in
+    /// `workspace_id`, the workspace the link entered: an app action server that
     /// speaks for the runs it executes makes the run present there now, so an
     /// agent that connected and has not acted yet is already seen, waiting.
     /// Nothing by default.
@@ -96,7 +95,7 @@ pub trait AppActionServer: Send + Sync {
 
     /// Stop answering and let go of what this app action server holds, its
     /// own worker threads included, serving what it holds before it returns.
-    /// The host calls it as the service whose sessions it answers stops,
+    /// The host calls it as the service whose links it answers stops,
     /// while the runtime those threads work on is still running. Later
     /// requests are refused as unavailable. Nothing by default.
     fn shutdown(&self) {}

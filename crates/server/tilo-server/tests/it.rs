@@ -35,10 +35,6 @@ mod auth_reject;
 mod bridged_avatar;
 #[path = "browser_transport.rs"]
 mod browser_transport;
-#[path = "client_owns_its_endpoint.rs"]
-mod client_owns_its_endpoint;
-#[path = "coedit_through_host.rs"]
-mod coedit_through_host;
 #[path = "device_certification.rs"]
 mod device_certification;
 #[path = "governed_workspace_access.rs"]
@@ -57,8 +53,6 @@ mod hosting_member;
 #[cfg(target_os = "linux")]
 #[path = "offloadable_action.rs"]
 mod offloadable_action;
-#[path = "presence_batching.rs"]
-mod presence_batching;
 #[path = "record_content_routing.rs"]
 mod record_content_routing;
 #[path = "region_follows.rs"]

@@ -9,7 +9,7 @@ license = "MIT OR Apache-2.0"
 # Browsers, the action broker and both hosts speak these records without
 # linking the server daemon. Keep this crate wasm-clean: no filesystem, process,
 # endpoint or runtime dependencies. The Iroh join transport is in
-# `tilo-server-session` (client) and `tilo-server` (host).
+# the session client and `tilo-server` (host).
 [package.metadata.cargo-machete]
 # getrandom 0.2 and 0.3 are feature-only edges that select JS entropy for transitive
 # WASM cryptography. serde_bytes is named only inside `#[serde(with = "serde_bytes")]`,

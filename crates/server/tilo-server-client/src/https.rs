@@ -1,9 +1,9 @@
-//! What a page asks a server before it holds a session, over HTTPS through its
+//! What a page asks a server before it holds a link, over HTTPS through its
 //! `fetch`: whether a workspace was deleted, what an invitation offers, and
 //! joining a workspace.
 //!
-//! Everything after that is the session, over iroh
-//! (`tilo_server_session::ServerClient`), dialled where [`crate::ServerAddress`] says.
+//! Everything after that travels the device's link, dialled where
+//! [`crate::ServerAddress`] says.
 
 use std::future::Future;
 use std::pin::Pin;

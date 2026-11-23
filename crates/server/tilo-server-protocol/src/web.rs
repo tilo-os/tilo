@@ -227,9 +227,6 @@ impl ServerInfo {
     }
 }
 
-/// The session with the host (the server ALPN's): its first stream carries
-/// the handshake and then the session, as over iroh.
-pub const LINK_SESSION_PATH: &str = "/peer/v1/link/session";
 /// Certification: each stream one conversation, as each connection on
 /// the certification ALPN.
 pub const LINK_CERTIFY_PATH: &str = "/peer/v1/link/certify";

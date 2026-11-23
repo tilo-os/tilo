@@ -21,7 +21,7 @@ pub use tilo_peer_state::workspace_view::{
 };
 use tilo_peer_state::workspace_view::{LIST, workspace_of};
 use tilo_peer_state::{Member, MemberList};
-use tilo_server_session::workspaces::{HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE};
+use tilo_server_protocol::workspaces::{HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE};
 
 use crate::engine::ServiceAnswer;
 

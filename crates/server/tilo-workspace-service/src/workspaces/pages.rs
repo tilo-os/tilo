@@ -637,7 +637,7 @@ impl Workspaces {
             person == self.inner.host.cert.user_public_key || self.owns(&person, workspace);
         if !theirs || !self.lists_to(device, workspace) {
             return Err(CollaborationError::new(
-                tilo_server_session::workspaces::AdminRefusal::NotYourOwn.to_reason(),
+                tilo_server_protocol::workspaces::AdminRefusal::NotYourOwn.to_reason(),
             ));
         }
         {

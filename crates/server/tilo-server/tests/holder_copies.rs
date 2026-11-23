@@ -245,7 +245,7 @@ async fn the_server_a_workspace_was_made_on_is_named_among_its_holders() {
 async fn ask(
     client: &tilo_server::ServerClient,
     host: &crate::common::TestDevice,
-    workspace: &tilo_server_session::workspaces::WorkspaceSummary,
+    workspace: &tilo_server_protocol::workspaces::WorkspaceSummary,
     message: tilo_actions::remote::RemoteActionMessage,
 ) -> tilo_actions::remote::RemoteActionMessage {
     use tilo_actions::remote::RemoteActionFrame;
@@ -281,7 +281,7 @@ async fn ask(
 async fn offered(
     client: &tilo_server::ServerClient,
     host: &crate::common::TestDevice,
-    workspace: &tilo_server_session::workspaces::WorkspaceSummary,
+    workspace: &tilo_server_protocol::workspaces::WorkspaceSummary,
     child: &str,
 ) -> Vec<String> {
     use tilo_actions::remote::{
@@ -320,7 +320,7 @@ async fn offered(
 async fn govern(
     client: &tilo_server::ServerClient,
     host: &crate::common::TestDevice,
-    workspace: &tilo_server_session::workspaces::WorkspaceSummary,
+    workspace: &tilo_server_protocol::workspaces::WorkspaceSummary,
     action: &str,
     argument: serde_json::Value,
 ) -> Result<serde_json::Value, tilo_actions::remote::ActionCallError> {

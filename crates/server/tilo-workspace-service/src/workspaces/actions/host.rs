@@ -21,8 +21,8 @@ use tilo_action_policy::{Answer, roles};
 use tilo_actions::remote::{ActionCallError, Caller, CatalogueRow, InvokeRequest};
 use tilo_actions::{ActionKind, ActionParam, ParamType};
 use tilo_peer_state::join::Role;
-use tilo_server_session::workspaces::BRANCH_OWN_WORKSPACE;
-use tilo_server_session::workspaces::{
+use tilo_server_protocol::workspaces::BRANCH_OWN_WORKSPACE;
+use tilo_server_protocol::workspaces::{
     ActionInvitation, AdminRefusal, CATCH_UP_ABSENT, CATCH_UP_STANDING, CATCH_UP_WORKSPACE,
     CREATE_OWN_WORKSPACE, CREATE_WORKSPACE, CaughtUpWorkspace, CreatedWorkspace, DELETE_WORKSPACE,
     ENTER_WORKSPACE, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACE,
@@ -524,7 +524,7 @@ fn list_personal_params() -> Vec<ActionParam> {
             "Only this workspace (a UUID), when it is yours.",
         ),
         ActionParam::optional(
-            tilo_server_session::workspaces::PERSONAL_AFTER,
+            tilo_server_protocol::workspaces::PERSONAL_AFTER,
             ParamType::Text,
             "The version of the list your device holds: the answer waits until the list changes.",
         ),
@@ -662,7 +662,7 @@ fn listing(summary: &WorkspaceSummary) -> WorkspaceListing {
         name: summary.name.clone(),
         generation: summary.generation,
         role: None,
-        labels: tilo_server_session::workspaces::WorkspaceLabels::new(),
+        labels: tilo_server_protocol::workspaces::WorkspaceLabels::new(),
         unattended: false,
         made_at_ms: None,
     }
@@ -884,7 +884,7 @@ impl Workspaces {
     }
 
     /// Answer the page's administration request the host action carries
-    /// ([`tilo_server_session::workspaces::ADMINISTER_WORKSPACES`]) as
+    /// ([`tilo_server_protocol::workspaces::ADMINISTER_WORKSPACES`]) as
     /// `device`, the caller's own device: each request inside it is decided as
     /// the workspace it names (or the host, where it names none) decides it,
     /// exactly as the same request on a page's own session is.
@@ -1119,7 +1119,7 @@ impl Workspaces {
     /// hundreds of workspaces here waits on no signing; one asked alone is
     /// what a device enters.
     ///
-    /// [`PersonalWorkspace::enter_at`]: tilo_server_session::workspaces::PersonalWorkspace::enter_at
+    /// [`PersonalWorkspace::enter_at`]: tilo_server_protocol::workspaces::PersonalWorkspace::enter_at
     async fn sign_own_addresses(&self, list: &mut PersonalList) {
         let own = self.inner.host.cert.device_public_key;
         for entry in &mut list.workspaces {

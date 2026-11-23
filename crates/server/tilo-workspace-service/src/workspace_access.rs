@@ -88,7 +88,7 @@ use std::sync::RwLock;
 use tilo_user_identity::RevocationList;
 
 use crate::auth::AuthenticatedPeer;
-use crate::peer::AgentRegistry;
+use crate::registry::AgentRegistry;
 use crate::policy::TrustPolicy;
 use crate::workspace::WorkspaceRuntime;
 use tilo_lock::RwLockRecover as _;
@@ -175,7 +175,7 @@ pub enum Decision {
 /// workspace it serves: who the host queues a device certificate for, beside
 /// the owner's own devices.
 pub async fn admits_person(
-    workspaces: &crate::peer::WorkspaceRegistry,
+    workspaces: &crate::registry::WorkspaceRegistry,
     own_user: [u8; 32],
     user: [u8; 32],
 ) -> bool {

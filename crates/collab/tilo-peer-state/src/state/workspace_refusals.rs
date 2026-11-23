@@ -20,7 +20,7 @@ use tilo_desktop_model::projection::WORKSPACE_WRITE_REFUSALS_KEY;
 
 /// A change a device refuses before it goes, as its author's session is told it: the document the
 /// change writes, the changes it would have carried, and why — the same shape a server's refusal
-/// of a change has (`tilo_server_protocol::transport::Envelope::ChangeRefused`), so a reader tells
+/// of a change has, so a reader tells
 /// one from the other by its words, never by which device spoke.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ChangeRefused {

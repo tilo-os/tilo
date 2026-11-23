@@ -54,7 +54,6 @@ tilo-reference = { path = "../../collab/reference" }
 # rules and open choices its entry carries.
 install-profile-model = { path = "../../os/install-profile-model" }
 tilo-server-client = { path = "../tilo-server-client" }
-tilo-server-session = { path = "../tilo-server-session" }
 tilo-delivery-protocol = { path = "../tilo-delivery-protocol" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 automerge.workspace = true

@@ -41,7 +41,7 @@ use tilo_lock::MutexRecover as _;
 
 use super::Workspaces;
 use tilo_server_protocol::WorkspaceId;
-use tilo_server_session::workspaces::WorkspaceLabels;
+use tilo_server_protocol::workspaces::WorkspaceLabels;
 
 /// The file beside the workspaces' records that says whose each own
 /// workspace is.

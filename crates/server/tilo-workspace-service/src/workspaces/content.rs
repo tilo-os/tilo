@@ -589,10 +589,9 @@ impl Workspaces {
     /// Publish `body`, a `NeighbourMsg::DocumentContentWant` naming this
     /// host, to `workspace`'s members: the ones keeping the content answer the
     /// host. A member reaches the workspace's other devices only through this
-    /// host, and the host asks them the same way they ask it — on the live
-    /// content store for the members reaching it there, and on the workspace's own
-    /// link for those directly connected, which is where their answers come
-    /// from. The number of devices it reached on the live session.
+    /// host, and the host asks them the same way they ask it, on the
+    /// workspace's own link, which is where their answers come from. The
+    /// number of devices that link reaches.
     ///
     /// # Errors
     ///
@@ -605,20 +604,23 @@ impl Workspaces {
             .lock()
             .await
             .workspace_id();
-        let reached = self
-            .inner
-            .records
-            .host_presence(workspace_id, body.clone())
-            .await?;
-        if let Ok(message) = tilo_failure::ignored!(
+        let message = tilo_failure::ignored!(
             "the body is the host's own request, which it just encoded",
             NeighbourMsg::decode(&body)
-        ) && let Some(link) = self.inner.direct.link(workspace_id)
-            && let Err(error) = link.send(message)
-        {
-            tracing::debug!(%workspace, %error, "a workspace's link did not carry the host's request");
-        }
-        Ok(reached)
+        )?;
+        let link = self
+            .inner
+            .direct
+            .link(workspace_id)
+            .ok_or("the workspace has no link here")?;
+        link.send(message)
+            .map_err(|error| format!("a workspace's link did not carry the host's request: {error}"))?;
+        Ok(self
+            .inner
+            .link_remotes
+            .lock_recover()
+            .get(&workspace_id)
+            .map_or(0, BTreeSet::len))
     }
 
     /// The answer to `body`, a presence the member device `asker` of

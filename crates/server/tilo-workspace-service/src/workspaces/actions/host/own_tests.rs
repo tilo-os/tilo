@@ -13,7 +13,7 @@ use tilo_actions::remote::{
 use tilo_peer_state::join::{Role, decode_and_verify_invitation};
 use tilo_server_protocol::certify::ConfirmationAnswer;
 use tilo_server_protocol::workspaces::JoinReply;
-use tilo_server_session::workspaces::{
+use tilo_server_protocol::workspaces::{
     AdminRefusal, CREATE_OWN_WORKSPACE, CreatedWorkspace, DELETE_WORKSPACE, HOST_ACTIONS_PROVIDER,
     HOST_WORKSPACES_RESOURCE,
 };
@@ -191,12 +191,12 @@ async fn a_person_let_in_gets_a_workspace_of_their_own_and_administers_it() {
     assert_eq!(
         offers,
         [
-            tilo_server_session::workspaces::BRANCH_OWN_WORKSPACE,
+            tilo_server_protocol::workspaces::BRANCH_OWN_WORKSPACE,
             CREATE_OWN_WORKSPACE,
             DELETE_WORKSPACE,
-            tilo_server_session::workspaces::LIST_WORKSPACES,
-            tilo_server_session::workspaces::LIST_PERSONAL,
-            tilo_server_session::workspaces::KEEP_PERSONAL,
+            tilo_server_protocol::workspaces::LIST_WORKSPACES,
+            tilo_server_protocol::workspaces::LIST_PERSONAL,
+            tilo_server_protocol::workspaces::KEEP_PERSONAL,
         ],
         "a stranger makes, branches, deletes and lists the workspaces of their own, keeps and \
          reads their list, and nothing else"
@@ -343,8 +343,8 @@ async fn a_person_may_keep_many_workspaces_of_their_own_and_they_stay_quick() {
     // Their listing names every one, and is looked up by their own workspaces
     // rather than by reading the ones the host keeps.
     let mut ask = own_request(json!({}));
-    ask.target.address.action = tilo_server_session::workspaces::LIST_WORKSPACES.into();
-    let listed: Vec<tilo_server_session::workspaces::WorkspaceListing> =
+    ask.target.address.action = tilo_server_protocol::workspaces::LIST_WORKSPACES.into();
+    let listed: Vec<tilo_server_protocol::workspaces::WorkspaceListing> =
         serde_json::from_value(invoke(&host, &guest, ask).await.unwrap()).unwrap();
     assert_eq!(listed.len(), MANY, "{listed:?}");
     assert!(
@@ -788,7 +788,7 @@ async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspace
     // host's others.
     workspaces.create("Someone else's").await.unwrap();
     let mut list = own_request(json!({}));
-    list.target.address.action = tilo_server_session::workspaces::LIST_WORKSPACES.into();
+    list.target.address.action = tilo_server_protocol::workspaces::LIST_WORKSPACES.into();
     let listed = settled(host.as_host(&all).invoke(&agent, list))
         .await
         .unwrap();
@@ -985,7 +985,7 @@ async fn own_as_key(
 /// `verb` of `workspace`'s governance with `argument`, asked by `cert`'s key.
 async fn govern(
     host: &ServiceWorkspaceActions,
-    workspace: &tilo_server_session::workspaces::WorkspaceListing,
+    workspace: &tilo_server_protocol::workspaces::WorkspaceListing,
     cert: &DeviceCert,
     verb: &str,
     argument: Value,
@@ -1261,7 +1261,7 @@ async fn an_owners_key_adds_an_administrator_by_key_whose_own_key_then_brings_pe
 async fn entered(
     host: &ServiceWorkspaceActions,
     workspaces: &Workspaces,
-    workspace: &tilo_server_session::workspaces::WorkspaceListing,
+    workspace: &tilo_server_protocol::workspaces::WorkspaceListing,
     person: &SigningKey,
 ) -> DeviceCert {
     let key = certified(
@@ -1277,7 +1277,7 @@ async fn entered(
 /// `cert` asks the host to add `person` to `workspace` as `role`, named "Someone".
 async fn add_member(
     host: &ServiceWorkspaceActions,
-    workspace: &tilo_server_session::workspaces::WorkspaceListing,
+    workspace: &tilo_server_protocol::workspaces::WorkspaceListing,
     cert: &DeviceCert,
     person: &SigningKey,
     role: &str,
@@ -1301,9 +1301,9 @@ async fn add_member(
 async fn listed_for(
     host: &ServiceWorkspaceActions,
     device: &DeviceCert,
-) -> Vec<tilo_server_session::workspaces::WorkspaceListing> {
+) -> Vec<tilo_server_protocol::workspaces::WorkspaceListing> {
     let mut ask = own_request(json!({}));
-    ask.target.address.action = tilo_server_session::workspaces::LIST_WORKSPACES.into();
+    ask.target.address.action = tilo_server_protocol::workspaces::LIST_WORKSPACES.into();
     serde_json::from_value(invoke(host, device, ask).await.unwrap()).unwrap()
 }
 
@@ -1786,7 +1786,7 @@ async fn a_fresh_root_and_its_keys_are_refused_with_the_wait_list() {
         .await,
     );
     let mut keep = own_request(json!({"list": {"workspaces": []}}));
-    keep.target.address.action = tilo_server_session::workspaces::KEEP_PERSONAL.into();
+    keep.target.address.action = tilo_server_protocol::workspaces::KEEP_PERSONAL.into();
     waits(&invoke(&host, &stranger, keep).await);
     for person in [stranger.user_public_key, root.verifying_key().to_bytes()] {
         assert!(
@@ -1917,7 +1917,7 @@ async fn an_invited_member_enters_what_they_were_invited_into() {
     super::personal_tests::hold_person_workspace(&workspaces, stranger.user_public_key).await;
     // Their workspace list is kept: they take part here.
     let mut keep = own_request(json!({"list": {"workspaces": []}}));
-    keep.target.address.action = tilo_server_session::workspaces::KEEP_PERSONAL.into();
+    keep.target.address.action = tilo_server_protocol::workspaces::KEEP_PERSONAL.into();
     invoke(&host, &stranger, keep).await.unwrap();
     // Invited into a workspace here, they are past the site's invite-only
     // sign-up: a workspace of their own is theirs to make too.
@@ -1966,7 +1966,7 @@ async fn subscribe(
         .unwrap();
     let revocations = std::sync::RwLock::new(RevocationList::new());
     let policy = std::sync::RwLock::new(crate::policy::TrustPolicy::AllowAny);
-    let agents = crate::peer::AgentRegistry::default();
+    let agents = crate::registry::AgentRegistry::default();
     let environments = crate::environment::EnvironmentRegistry::default();
     let blocked = std::sync::RwLock::new(crate::workspaces::blocked::BlockedKeys::default());
     let own_user = workspaces.serving_certificate().user_public_key;
@@ -2036,7 +2036,7 @@ async fn a_persons_first_device_joins_their_own_workspace_before_any_entry() {
 /// that may be gone, and a workspace not open right now is no other device's.
 #[tokio::test]
 async fn a_kept_own_workspace_lists_as_this_hosts_whatever_a_devices_list_said() {
-    use tilo_server_session::workspaces::{PersonalList, PersonalWorkspace};
+    use tilo_server_protocol::workspaces::{PersonalList, PersonalWorkspace};
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
@@ -2062,12 +2062,12 @@ async fn a_kept_own_workspace_lists_as_this_hosts_whatever_a_devices_list_said()
         workspaces: vec![PersonalWorkspace {
             workspace: workspace.clone(),
             name: "Company".into(),
-            host: Some(tilo_server_session::workspaces::KeepingDeviceAddress {
+            host: Some(tilo_server_protocol::workspaces::KeepingDeviceAddress {
                 name: "Ada's laptop".into(),
                 hint: Some("00".into()),
             }),
             role: None,
-            labels: tilo_server_session::workspaces::WorkspaceLabels::default(),
+            labels: tilo_server_protocol::workspaces::WorkspaceLabels::default(),
             made_at_ms: None,
             unattended: false,
             enter_at: None,

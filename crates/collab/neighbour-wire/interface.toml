@@ -16,9 +16,6 @@ sources = [
     "crates/server/tilo-server-protocol/src/entering.rs",
     "crates/server/tilo-server-protocol/src/directory.rs",
     "crates/server/tilo-server-protocol/src/workspaces.rs",
-    "crates/server/tilo-delivery-protocol/src/transport_v2.rs",
-    "crates/server/tilo-delivery-protocol/src/transport_v2/delta.rs",
-    "crates/server/tilo-delivery-protocol/src/transport_v2/presence.rs",
     "crates/collab/neighbour-wire/src/lib.rs",
     "crates/collab/neighbour-wire/src/actions.rs",
     "crates/collab/neighbour-wire/src/colorimetry.rs",
@@ -47,7 +44,7 @@ sources = [
     "crates/collab/collab-types/src/peer.rs",
     "crates/collab/collab-types/src/presence/shell.rs",
 ]
-roots = ["Hello", "HelloAck", "HelloAck2", "HelloRefused", "EnvelopeV2", "NeighbourMsg", "DeviceAction", "SignedDeviceAction", "ActionServiceFrame", "crates/collab/neighbour-wire/src/placement.rs:Answer"]
+roots = ["Hello", "HelloAck", "HelloAck2", "HelloRefused", "NeighbourMsg", "DeviceAction", "SignedDeviceAction", "ActionServiceFrame", "crates/collab/neighbour-wire/src/placement.rs:Answer"]
 
 [opaque]
 Uuid = "uuid::Uuid: 16 bytes"
@@ -245,7 +242,6 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "Envelope::DocumentContentWant.from_device_public_key" = "#1 [u8; 32]"
 "Envelope::DocumentContentWant.workspace_id" = "#0 WorkspaceId"
 "Envelope::DocumentOpened" = "#25 struct"
-"Envelope::DocumentOpened.answer" = "#2 DocumentAnswer"
 "Envelope::DocumentOpened.channel" = "#1 [u8; 32]"
 "Envelope::DocumentOpened.workspace_id" = "#0 WorkspaceId"
 "Envelope::Entered" = "#33 tuple(Entered)"
@@ -313,19 +309,6 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "Envelope::WorkspaceBootstrap" = "#27 struct"
 "Envelope::WorkspaceBootstrap.bootstrap" = "#1 Vec<u8> with=serde_bytes"
 "Envelope::WorkspaceBootstrap.workspace_id" = "#0 WorkspaceId"
-"EnvelopeV2" = "enum external"
-"EnvelopeV2::CodedDelta" = "#3 struct"
-"EnvelopeV2::CodedDelta.segments" = "#1 Vec<DeltaSegment>"
-"EnvelopeV2::CodedDelta.slot" = "#0 u16"
-"EnvelopeV2::PresenceBatch" = "#2 struct"
-"EnvelopeV2::PresenceBatch.items" = "#1 Vec<PresenceItem>"
-"EnvelopeV2::PresenceBatch.workspace_id" = "#0 WorkspaceId"
-"EnvelopeV2::State" = "#0 tuple(Envelope)"
-"EnvelopeV2::UnsignedDelta" = "#1 struct"
-"EnvelopeV2::UnsignedDelta.author_device_public_key" = "#1 [u8; 32]"
-"EnvelopeV2::UnsignedDelta.authored_at_ns" = "#2 u64"
-"EnvelopeV2::UnsignedDelta.delta" = "#3 Vec<u8> with=serde_bytes"
-"EnvelopeV2::UnsignedDelta.workspace_id" = "#0 WorkspaceId"
 "FrameworkChange" = "enum external"
 "FrameworkChange::genesis" = "#0 unit"
 "FrameworkChange::migrate" = "#1 unit"

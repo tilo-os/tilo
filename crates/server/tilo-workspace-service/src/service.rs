@@ -1,16 +1,13 @@
-//! The workspaces one device serves: their governance and the session stack their members
-//! connect through, embeddable in any process that owns an iroh endpoint.
+//! The workspaces one device serves: their governance and the links their members connect
+//! through, embeddable in any process that owns an iroh endpoint.
 //!
 //! A device runs the same stack whether it has a screen or not; [`ServiceConfig::work`] is what
 //! it takes from others. [`WorkspaceService::open`] spawns nothing periodic: with no peers
-//! connected the service wakes only on I/O, and a connected peer's session is audited when a
+//! connected the service wakes only on I/O, and a connected peer's link is re-checked when a
 //! workspace's signed member list leaves someone out ([`crate::authority_epoch`]). Its embedder registers
 //! [`WorkspaceService::protocols`] on its own router, or, when the router is built before any
 //! workspace is placed here, [`deferred_protocols`], which refuse connections until
 //! [`ServiceSlot::install`] gives them one.
-//!
-//! A member in the same process connects through [`WorkspaceService::connect_local`]: the same
-//! handshake and session as a remote member, over an in-process stream.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -27,17 +24,13 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use crate::Reaching;
 use crate::app_serving::AppActionServer;
-use crate::client::{ClientError, ServerClient};
 use crate::handshake::{EndpointTrust, HandshakeError, LiveIdentity};
 use crate::metrics::Metrics;
-use crate::peer::{PeerContext, WorkspaceRegistry, run_peer_until};
+use crate::registry::WorkspaceRegistry;
 use crate::policy::TrustPolicy;
-use crate::transport::{ALPN, MAX_FRAME_BYTES};
+use crate::transport::MAX_FRAME_BYTES;
 use tilo_peer_state::transport::{StreamFuture, StreamRecv, StreamSend, Transport};
 use tilo_server_protocol::{WorkSetting, WorkspaceId};
-
-/// How much an in-process session buffers each way before its writer waits.
-const LOCAL_SESSION_BUFFER: usize = 1 << 20;
 
 /// What a service is opened with.
 #[derive(Clone)]
@@ -138,15 +131,14 @@ pub enum ServiceError {
 pub type Protocols = Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>;
 
 /// The ALPNs a workspace service answers on.
-const SERVICE_ALPNS: [&[u8]; 4] = [
-    ALPN,
+const SERVICE_ALPNS: [&[u8]; 3] = [
     tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN,
     tilo_peer_state::actions::ACTIONS_ALPN,
     tilo_peer_state::direct::DIRECT_ALPN,
 ];
 
-/// A service's session stack: its workspaces, the handshake that admits their
-/// members, and the session every member runs, whatever its carrier.
+/// A service's workspace stack: its workspaces, the handshake that admits their
+/// members, and the links they reach them over.
 #[derive(Clone)]
 pub struct ServiceSessions {
     pub(crate) endpoint: Endpoint,
@@ -155,10 +147,9 @@ pub struct ServiceSessions {
     pub identity: LiveIdentity,
     pub(crate) handshake_trust: HandshakeTrust,
     pub state_root: PathBuf,
-    /// The server ALPN's handler, and every session's context.
+    /// The service's own protocol handler: what proves a member's device and
+    /// answers the app-serving questions its links ask.
     pub handler: ServerProtocol,
-    /// Ends the in-process sessions when the service shuts down.
-    closing: Arc<tokio::sync::watch::Sender<bool>>,
 }
 
 /// An app action server that answers nothing: what a service opened only for
@@ -248,12 +239,10 @@ impl ServiceSessions {
             metrics: metrics.clone(),
             app_serving: wrap(&workspaces, own_server.clone()),
             admin: Arc::default(),
-            fetch: Arc::default(),
             agents: Arc::default(),
             environments: crate::environment::EnvironmentRegistry::at(
                 cfg.state_root.join("environments.json"),
             ),
-            holds_for_others: cfg.work.from.takes_others(),
         };
         let sessions = Self {
             endpoint: endpoint.clone(),
@@ -263,7 +252,6 @@ impl ServiceSessions {
             handshake_trust,
             state_root: cfg.state_root.clone(),
             handler,
-            closing: Arc::new(tokio::sync::watch::channel(false).0),
         };
         // A service that founds nothing still holds the member copies of a
         // device that joined workspaces another device serves; with neither,
@@ -329,7 +317,7 @@ impl ServiceSessions {
         ))
     }
 
-    /// What the workspaces a service governs take from it: its sessions' registry,
+    /// What the workspaces a service governs take from it: its workspaces' registry,
     /// access, records, identity and live trust, and `cfg`'s workspace settings.
     fn workspace_services(
         &self,
@@ -369,7 +357,7 @@ impl ServiceSessions {
         }
     }
 
-    /// What settles each workspace's member list onto the service's sessions.
+    /// What settles each workspace's member list onto the service's links.
     pub(crate) fn access_writer(&self) -> GovernedAccessWriter {
         GovernedAccessWriter {
             workspaces: self.workspaces.clone(),
@@ -379,61 +367,19 @@ impl ServiceSessions {
         }
     }
 
-    /// Whether the service counts `device` as subscribed to `workspace_id`.
+    /// Whether `device` holds a link to `workspace_id` here now: one the
+    /// workspace's host admitted and has not refused.
     pub async fn is_subscribed(&self, workspace_id: WorkspaceId, device: &[u8; 32]) -> bool {
-        let ws = self.workspaces.lock().await.get(&workspace_id).cloned();
-        match ws {
-            Some(ws) => ws.lock().await.has_subscriber(device),
-            None => false,
-        }
+        self.handler
+            .admin
+            .get()
+            .is_some_and(|workspaces| workspaces.linked(workspace_id, device))
     }
 
-    /// A member session of this device's own person to this service, over an
-    /// in-process stream: the handshake and the session a remote member
-    /// runs. It lasts until either side drops it or the service shuts down.
-    ///
-    /// # Errors
-    ///
-    /// As [`ServerClient::connect_v2_over_stream`]: the service refused the
-    /// device, or the handshake failed.
-    pub(crate) async fn connect_local(
-        &self,
-        cert: DeviceCert,
-        key: ed25519_dalek::SigningKey,
-        revocations: RevocationList,
-    ) -> Result<ServerClient, ClientError> {
-        let (client, server) = tokio::io::duplex(LOCAL_SESSION_BUFFER);
-        let (server_read, server_write) = tokio::io::split(server);
-        let handler = self.handler.clone();
-        let mut closing = self.closing.subscribe();
-        tokio::spawn(async move {
-            let closed = async move {
-                // The sender lives as long as the service; its end is one too.
-                let _ = closing.wait_for(|closing| *closing).await;
-            };
-            if let Err(error) =
-                serve_session(handler, server_read, server_write, None, closed).await
-            {
-                tracing::debug!(%error, "in-process session ended");
-            }
-        });
-        let (client_read, client_write) = tokio::io::split(client);
-        ServerClient::connect_v2_over_stream(
-            client_read,
-            client_write,
-            self.identity.cert.device_public_key,
-            cert,
-            key,
-            revocations,
-        )
-        .await
-    }
-
-    /// End every in-process session and stop what answered for them: the app
-    /// action server the embedder brought stops here, while the runtime its
-    /// threads work on still runs.
+    /// Stop what answered for the service's members' devices: the app action
+    /// server the embedder brought stops here, while the runtime its threads
+    /// work on still runs.
     pub fn shutdown(&self) {
-        self.closing.send_replace(true);
         if let Some(answers) = &self.handler.app_serving {
             answers.shutdown();
         }
@@ -447,10 +393,6 @@ fn service_handlers(
     workspaces: &crate::workspaces::Workspaces,
 ) -> Vec<(&'static [u8], Arc<dyn DynProtocolHandler>)> {
     vec![
-        (
-            ALPN,
-            Arc::new(sessions.handler.clone()) as Arc<dyn DynProtocolHandler>,
-        ),
         (
             tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN,
             Arc::new(tilo_peer_state::join_transport::WorkspaceJoinProtocol::new(
@@ -478,14 +420,13 @@ fn service_handlers(
     ]
 }
 
-/// The workspaces' own ALPNs on a server's router, beside its session ALPN.
+/// The workspaces' own ALPNs on a server's router.
 pub fn workspaces_protocols(
     sessions: &ServiceSessions,
     workspaces: &crate::workspaces::Workspaces,
 ) -> Vec<(&'static [u8], Box<dyn DynProtocolHandler>)> {
     service_handlers(sessions, workspaces)
         .into_iter()
-        .filter(|(alpn, _)| *alpn != ALPN)
         .map(|(alpn, handler)| {
             (
                 alpn,
@@ -704,8 +645,8 @@ impl WorkspaceService {
             .map(|writes| writes.runtime.clone())
     }
 
-    /// The ALPN handlers to register on the embedder's router: the session,
-    /// workspace join, workspace administration and private protocols.
+    /// The ALPN handlers to register on the embedder's router: workspace join,
+    /// workspace administration and the device link.
     #[must_use]
     pub fn protocols(&self) -> Protocols {
         self.handlers
@@ -726,7 +667,7 @@ impl WorkspaceService {
             .map(|(_, handler)| handler)
     }
 
-    /// The session stack the service's members connect through.
+    /// The service's workspaces, handshake and identity, as its links read them.
     #[must_use]
     pub const fn sessions(&self) -> &ServiceSessions {
         &self.sessions
@@ -753,22 +694,6 @@ impl WorkspaceService {
     #[must_use]
     pub fn join_service(&self) -> Arc<dyn tilo_peer_state::join_transport::LocalJoinService> {
         Arc::new(self.workspaces.join_service())
-    }
-
-    /// An in-process member session of this device's own person: the same
-    /// handshake and session as a remote member, with its private action
-    /// channel, over an in-process stream.
-    ///
-    /// # Errors
-    ///
-    /// The service refused `cert`, or the handshake failed.
-    pub async fn connect_local(
-        &self,
-        cert: DeviceCert,
-        key: ed25519_dalek::SigningKey,
-        revocations: RevocationList,
-    ) -> Result<ServerClient, ClientError> {
-        self.sessions.connect_local(cert, key, revocations).await
     }
 
     /// This service's endpoint address: what a member dials.
@@ -1030,7 +955,7 @@ impl GovernedAccessWriter {
             &self.workspaces,
             self.state_root.clone(),
             workspace_id,
-            crate::peer::MAX_HELD_WORKSPACES,
+            crate::registry::MAX_HELD_WORKSPACES,
         )
         .await?;
         // An environment this server placed in the workspace is listed by
@@ -1276,7 +1201,8 @@ pub fn validate_service_device_identity(identity: &ServiceIdentity) -> Result<()
     Ok(())
 }
 
-/// The `ProtocolHandler` iroh wires to the ALPN.
+/// The service's own identity and admission, as its embedder's handlers and its
+/// links read them.
 #[derive(Clone)]
 pub struct ServerProtocol {
     pub workspaces: WorkspaceRegistry,
@@ -1287,22 +1213,13 @@ pub struct ServerProtocol {
     pub identity: LiveIdentity,
     pub metrics: Arc<Metrics>,
     pub(crate) app_serving: Option<Arc<dyn crate::app_serving::AppActionServer>>,
-    /// Set once when the service governs workspaces: what its sessions answer a
+    /// Set once when the service governs workspaces: what its links answer a
     /// device's workspace administration with.
     pub admin: Arc<std::sync::OnceLock<Arc<crate::workspaces::Workspaces>>>,
-    /// Set once when the service serves a fetch proxy: the grant a session takes
-    /// for its connection there.
-    pub fetch: Arc<std::sync::OnceLock<Arc<dyn crate::peer::FetchGrants>>>,
-    pub agents: crate::peer::AgentRegistry,
+    pub agents: crate::registry::AgentRegistry,
     /// The devices this service certified for its browser environments, see
     /// [`crate::environment`].
     pub environments: crate::environment::EnvironmentRegistry,
-    /// Whether this service's work setting takes workspaces of people other
-    /// than its own to hold ([`tilo_server_protocol::WorkFrom::takes_others`]):
-    /// their governing services, whom nothing here admits yet, then open a
-    /// session to hand them over. Every workspace such a session reaches
-    /// still asks the live policy, which admits none of theirs.
-    pub(crate) holds_for_others: bool,
 }
 
 impl ServerProtocol {
@@ -1328,25 +1245,6 @@ impl ServerProtocol {
         )
         .await
     }
-
-    /// The peer context a session of this server runs with.
-    pub fn peer_context(&self) -> PeerContext {
-        PeerContext {
-            workspaces: self.workspaces.clone(),
-            revocations: self.identity.revocations.clone(),
-            trust_policy: self.trust_policy.clone(),
-            blocked: self.blocked.clone(),
-            own_user_public_key: self.identity.user_public_key,
-            own_device_cert: self.identity.cert.clone(),
-            metrics: self.metrics.clone(),
-            own_device_public_key: self.identity.cert.device_public_key,
-            app_serving: self.app_serving.clone(),
-            admin: self.admin.get().cloned(),
-            fetch: self.fetch.get().cloned(),
-            agents: self.agents.clone(),
-            environments: self.environments.clone(),
-        }
-    }
 }
 
 impl std::fmt::Debug for ServerProtocol {
@@ -1355,26 +1253,7 @@ impl std::fmt::Debug for ServerProtocol {
     }
 }
 
-impl ProtocolHandler for ServerProtocol {
-    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-        self.accept_streams(connection).await
-    }
-}
-
 impl ServerProtocol {
-    /// Take `connection`'s first stream and serve its sessions on a task of
-    /// their own, so the iroh router can accept the next connection.
-    async fn accept_streams(&self, connection: Connection) -> Result<(), AcceptError> {
-        let connection = tilo_server_client::link::Link::iroh(connection);
-        let binding = connection.offer_binding().await;
-        let first = connection
-            .accept_bi()
-            .await
-            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-        tokio::spawn(serve_streams(self.clone(), connection, binding, first));
-        Ok(())
-    }
-
     /// What shows its workspaces' apps as web pages, where the apps it serves
     /// do ([`crate::app_serving::AppActionServer::pages`]).
     #[must_use]
@@ -1425,161 +1304,6 @@ impl ServerProtocol {
             .await
     }
 
-    /// Serve every session `link` carries, each on a stream of its own, until
-    /// it closes: what a WebTransport session at the session path is, as a
-    /// connection on the server ALPN is.
-    pub async fn serve_link(&self, link: tilo_server_client::link::Link) {
-        let binding = link.offer_binding().await;
-        let Ok(first) = link.accept_bi().await else {
-            return;
-        };
-        serve_streams(self.clone(), link, binding, first).await;
-    }
-}
-
-/// Serve every session `connection` carries, `first` (already accepted)
-/// first, each on a stream of its own, until the connection closes. An entry
-/// on any of them is bound to `binding`
-/// ([`tilo_server_client::link::Link::offer_binding`]).
-async fn serve_streams(
-    ctx: ServerProtocol,
-    connection: tilo_server_client::link::Link,
-    binding: Option<[u8; 32]>,
-    first: (
-        tilo_server_client::link::LinkSend,
-        tilo_server_client::link::LinkRecv,
-    ),
-) {
-    let sessions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let mut first = Some(first);
-    loop {
-        let (send, recv) = match first.take() {
-            Some(streams) => streams,
-            None => match connection.accept_bi().await {
-                Ok(streams) => streams,
-                Err(_) => return,
-            },
-        };
-        sessions.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        let (ctx, connection) = (ctx.clone(), connection.clone());
-        let sessions = Arc::clone(&sessions);
-        tokio::spawn(async move {
-            let closed = connection.clone();
-            let result = Box::pin(serve_session(ctx, recv, send, binding, async move {
-                closed.closed().await;
-            }))
-            .await;
-            if let Err(error) = result {
-                tracing::debug!("server session ended: {error}");
-            }
-            let last = sessions.fetch_sub(1, std::sync::atomic::Ordering::AcqRel) == 1;
-            if last {
-                connection.close("server session ended");
-            }
-        });
-    }
-}
-
-/// One member session over `recv`/`send`: the bounded shared handshake
-/// under the live policy (the owner and every user the service currently
-/// admits), then the peer loop until the stream ends or `closed` resolves.
-/// Every carrier runs this: an iroh stream, and an in-process stream. Only a
-/// stream with a connection's keying material (`binding`) takes an entry.
-async fn serve_session<R, W>(
-    ctx: ServerProtocol,
-    mut recv: R,
-    mut send: W,
-    binding: Option<[u8; 32]>,
-    closed: impl std::future::Future<Output = ()> + Send,
-) -> Result<(), ServiceError>
-where
-    R: tokio::io::AsyncRead + Unpin + Send + 'static,
-    W: tokio::io::AsyncWrite + Unpin + Send + 'static,
-{
-    ctx.metrics.inc_conns_accepted();
-    // A device the service has not admitted yet may enter a workspace through
-    // its entry on this session, where the service governs workspaces.
-    let admit = ctx.admin.get().cloned();
-    // A service that keeps workspaces for the people it let in takes a workspace
-    // another service governs for its owner, as it does for an operator taking
-    // others' workspaces: that service's device opens the session to hand it
-    // over before anything here admits it.
-    let takes_handed_over = ctx.holds_for_others
-        || admit
-            .as_deref()
-            .is_some_and(crate::workspaces::Workspaces::keeps_workspaces_for_people);
-    let (client_peer, entered) = match ctx
-        .identity
-        .authenticate_or_enter(
-            if takes_handed_over {
-                EndpointTrust::Fixed(crate::auth::HandshakeTrust::AnyCertifiedDevice)
-            } else {
-                EndpointTrust::Live(&ctx.trust_policy)
-            },
-            &mut recv,
-            &mut send,
-            MAX_FRAME_BYTES,
-            admit
-                .as_deref()
-                .map(|workspaces| workspaces as &dyn crate::handshake::Admit),
-            binding,
-        )
-        .await
-    {
-        Ok(entered) => entered,
-        Err(error) => {
-            if matches!(error, HandshakeError::Auth(_)) {
-                ctx.metrics.inc_auth_rejected();
-            }
-            return Err(ServiceError::Handshake(error.to_string()));
-        }
-    };
-    if let Some(entered) = entered {
-        // The answer is the session's first envelope; a refused device hears
-        // it and nothing else.
-        let admitted = matches!(
-            entered,
-            tilo_server_protocol::entering::Entered::Admitted { .. }
-        );
-        let frame = tilo_delivery_protocol::transport_v2::encode(
-            &tilo_delivery_protocol::transport_v2::EnvelopeV2::State(
-                crate::transport::Envelope::Entered(entered),
-            ),
-        )
-        .map_err(|error| ServiceError::Handshake(error.to_string()))?;
-        tokio::io::AsyncWriteExt::write_all(&mut send, &frame)
-            .await
-            .map_err(|error| ServiceError::Handshake(error.to_string()))?;
-        if !admitted {
-            ctx.metrics.inc_auth_rejected();
-            told_then_closed(&mut send, closed).await;
-            return Err(ServiceError::Handshake("the entry was refused".to_owned()));
-        }
-    }
-    ctx.metrics.inc_conns_authed();
-    // One of an environment's devices may be here: its environment is up, and
-    // an end being waited on is not one.
-    ctx.environments.arrived(client_peer.device_public_key);
-    let context = ctx.peer_context();
-    if let Err(e) = Box::pin(run_peer_until(client_peer, closed, recv, send, context)).await {
-        tracing::debug!("peer session ended with error: {e}");
-    }
-    Ok(())
-}
-
-/// How long a refused entry's stream stays open for its device to read why.
-const REFUSAL_READ: std::time::Duration = std::time::Duration::from_secs(5);
-
-/// End a refused entry's stream once its device was told why: the stream
-/// finishes, and the connection closes when the device closes it, or after
-/// [`REFUSAL_READ`]. Closed at once, the connection would drop the answer
-/// still on its way.
-async fn told_then_closed<W>(send: &mut W, closed: impl std::future::Future<Output = ()>)
-where
-    W: tokio::io::AsyncWrite + Unpin,
-{
-    let _ = tokio::io::AsyncWriteExt::shutdown(send).await;
-    let _ = tokio::time::timeout(REFUSAL_READ, closed).await;
 }
 
 /// The device's own host, as its native owner joins the workspaces placed on it.

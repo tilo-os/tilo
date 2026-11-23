@@ -6,12 +6,9 @@
 //!
 //! - [`auth`] — the mutual challenge/response handshake messages and their
 //!   signing / verification;
-//! - [`transport`] — the server ALPNs and the post-handshake [`Envelope`]
-//!   plus the discovery and home-peer management messages;
+//! - [`transport`] — the link ALPNs and the server's own operation messages;
 //! - [`certify`] — server-mediated issuance of a `DeviceCert` to a device
 //!   that holds only its own key;
-//! - [`compaction`] — a member device's coverage statement for a sealed
-//!   route the host cannot read;
 //! - [`live`] — the ephemeral presence and preview frames of the live session;
 //! - [`web`] — the HTTPS routes a page asks a host before it holds a session,
 //!   and the live grant;
@@ -35,10 +32,11 @@
 
 #![deny(rust_2018_idioms)]
 
+use serde::{Deserialize, Serialize};
+
 pub mod agents;
 pub mod auth;
 pub mod certify;
-pub mod compaction;
 pub mod config;
 pub mod devices;
 pub mod directory;
@@ -76,5 +74,5 @@ pub use mesh::{
 };
 pub use metrics::MetricsSnapshot;
 pub use policy::TrustPolicy;
-pub use transport::{ALPN, DocumentAnswer, Envelope};
+pub use transport::DocumentAnswer;
 pub use work::{Whose, WorkFrom, WorkKinds, WorkSetting, WorkWhen};

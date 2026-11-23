@@ -1183,27 +1183,72 @@ fn take_identity(material: &Material) -> Result<(), String> {
 /// Ask its server to enter the session's device into the workspace, the way a member
 /// device asks to enter a workspace its server hosts, and answer the invitation text it redeems.
 async fn invitation(material: &Material) -> Result<String, String> {
+    use tilo_actions::remote::{InvokeArgument, InvokeRequest, InvocationUpdate};
+    use tilo_server_protocol::workspaces::{
+        ENTER_WORKSPACE, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE,
+    };
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .bind()
         .await
         .map_err(|error| format!("the session reached no network: {error}"))?;
     let joined = async {
-        let client = tilo_server_session::ServerClient::connect(
-            endpoint.clone(),
-            material.server.clone(),
-            material.user_public_key,
-            material.device.clone(),
+        // The host answers this device's ask on its actions link: entering is
+        // one of the host's own actions, as it is for any device asking.
+        let actions = std::sync::Arc::new(tilo_peer_state::actions::ActionService::new(
             material.key()?,
-            tilo_user_identity::RevocationList::new(),
-        )
-        .await
-        .map_err(|error| format!("the session could not reach its server: {error}"))?;
-        tilo_server_protocol::workspaces::enter_invitation(
-            &client,
-            &material.workspace,
-            ENTER_INVITATION_SECONDS,
-        )
-        .await
+            std::sync::Arc::new(tilo_peer_state::actions::NoActions),
+        ));
+        let remote = std::sync::Arc::new(actions.remote(
+            &endpoint,
+            &material.server,
+            &tilo_server_protocol::WorkspaceId::nil().to_string(),
+        ));
+        let arguments = serde_json::Map::from_iter([
+            ("workspace".to_owned(), material.workspace.clone().into()),
+            (
+                "expires_in_seconds".to_owned(),
+                ENTER_INVITATION_SECONDS.into(),
+            ),
+        ]);
+        let request = InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: tilo_actions::remote::RemoteActionTarget {
+                provider: HOST_ACTIONS_PROVIDER.to_owned(),
+                address: tilo_actions::ActionAddress::new(
+                    HOST_WORKSPACES_RESOURCE.to_owned(),
+                    ENTER_WORKSPACE,
+                ),
+            },
+            argument: InvokeArgument::Json(arguments),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        match remote
+            .invoke_until_settled(request, std::time::Duration::from_secs(60))
+            .await
+        {
+            Some(Ok(InvocationUpdate::Succeeded { output, .. })) => {
+                let entered: EnteredWorkspace = serde_json::from_value(
+                    output.value.unwrap_or_default(),
+                )
+                .map_err(|error| format!("the server answered no invitation: {error}"))?;
+                let signed = entered
+                    .invitation
+                    .decode()
+                    .map_err(|error| format!("the server answered no invitation: {error}"))?
+                    .signed_invitation;
+                Ok(tilo_workspace_join::encode_invitation_text(&signed))
+            }
+            Some(Ok(InvocationUpdate::Failed { error, .. })) => Err(error.message),
+            Some(Ok(_)) => Err("the server did not answer the entry".into()),
+            Some(Err(error)) => Err(format!("the server refused to enter it: {error}")),
+            None => Err("the session could not reach its server".into()),
+        }
     }
     .await;
     endpoint.close().await;

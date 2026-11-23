@@ -14,7 +14,7 @@
 //!   <total µs> <max µs>` line per step and second.
 //!
 //! Both are off unless the target is enabled (a capacity run does, such as the
-//! server load bench, `crates/server/tilo-server/examples/server_load`): a
+//! server's own timing): a
 //! production host pays one disabled-callsite check per phase and reads no
 //! clock.
 

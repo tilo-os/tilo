@@ -1355,7 +1355,7 @@ async fn a_renamed_workspace_shows_its_new_name_to_members_and_after_a_restart()
     reason = "the server stays live until its consuming shutdown"
 )]
 async fn the_owner_restricts_until_a_time_and_lifts_it() {
-    use tilo_server_session::workspaces::RemoveMemberRequest;
+    use tilo_server_protocol::workspaces::RemoveMemberRequest;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let server = test_host(dir.path(), &key, &cert).await;

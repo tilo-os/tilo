@@ -1,7 +1,7 @@
 //! Holding a workspace that was made on another device.
 //!
 //! A holder of the workspace hands it over with
-//! [`HOST_WORKSPACE`](tilo_server_session::workspaces::HOST_WORKSPACE): the
+//! [`HOST_WORKSPACE`](tilo_server_protocol::workspaces::HOST_WORKSPACE): the
 //! workspace as a joining member gets it (its signed governance, roster and
 //! revocations) and the handing holder's own signed address. This device then
 //! keeps a writable copy of its own ([`GovernedWorkspace::adopt`]), as the device
@@ -29,7 +29,7 @@
 //! of what ([`Workspaces::copies`]).
 //!
 //! The device lets the workspace go ([`Workspaces::release`]) when its owners
-//! ask ([`UNHOST_WORKSPACE`](tilo_server_session::workspaces::UNHOST_WORKSPACE))
+//! ask ([`UNHOST_WORKSPACE`](tilo_server_protocol::workspaces::UNHOST_WORKSPACE))
 //! or when the workspace's governance no longer names it. The files stay; a
 //! later hand-over serves the workspace from them again.
 

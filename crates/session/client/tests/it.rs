@@ -17,8 +17,6 @@
 // is that worker, as the server host's own is.
 tilo_automerge_isolate::test_worker!();
 
-#[path = "support/native.rs"]
-mod native;
 
 #[path = "support/mod.rs"]
 mod support;

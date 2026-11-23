@@ -730,7 +730,7 @@ mod tests {
             target: tilo_actions::remote::RemoteActionTarget,
             arguments: serde_json::Map<String, serde_json::Value>,
         ) -> crate::session::Asked<'_, serde_json::Value> {
-            use tilo_server_session::workspaces as ws;
+            use tilo_server_protocol::workspaces as ws;
             let text = |name: &str| arguments[name].as_str().unwrap().to_owned();
             let action = target.address.action.as_str();
             let answer = match action {

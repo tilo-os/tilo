@@ -29,9 +29,10 @@ pub struct ServerAddress {
 
 /// A host's WebTransport listener: HTTP/3 on the UDP port of its HTTPS
 /// origin, presenting the same certificate. A device opens one session per
-/// thing it asks, at that thing's path (`LINK_SESSION_PATH`,
-/// `LINK_CERTIFY_PATH`, `LINK_LIVE_SESSION_PATH`): the same conversations a
-/// native device holds over the host's iroh endpoint on their ALPNs.
+/// thing it asks, at that thing's path (`LINK_RECORDS_PATH`,
+/// `LINK_ACTIONS_PATH`, `LINK_CERTIFY_PATH`, `LINK_LIVE_SESSION_PATH`): the
+/// same conversations a native device holds over the host's iroh endpoint on
+/// their ALPNs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WebLink {
     /// `https://host:port`, the origin the sessions open at.

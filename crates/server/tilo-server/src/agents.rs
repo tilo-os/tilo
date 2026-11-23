@@ -67,7 +67,7 @@ use tilo_user_identity::{
 use crate::WorkspaceId;
 use crate::certification::CertificationProtocol;
 use crate::daemon::{Server, ServerError, ServerIdentity};
-use crate::peer::AgentRegistry;
+use crate::registry::AgentRegistry;
 use tilo_content::WorkspaceStores;
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 

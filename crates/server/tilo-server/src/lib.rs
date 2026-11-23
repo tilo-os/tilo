@@ -2,55 +2,37 @@
 //!
 //! # Model
 //!
-//! A **host** in Tilo is a device that (a) presents a `DeviceCert`
-//! chaining to your user identity, (b) is marked always-on, and (c)
-//! pins one or more workspaces so their `WorkspaceDirectory` CRDT is
-//! held persistently even while your laptop sleeps. The same daemon
-//! also **relays** — when your phone and laptop cannot punch through
-//! each other's NATs, they both hole-punch to a host and exchange
-//! CRDT deltas through it; when one is offline, its deltas are
-//! **store-and-forwarded** on disk until it reconnects.
+//! A **host** in Tilo is a device that (a) presents a `DeviceCert` chaining to
+//! your user identity, (b) is marked always-on, and (c) serves the workspaces
+//! placed on it: their records, governance and channels, and the actions their
+//! devices ask. The same daemon also **keeps** a workspace's history while a
+//! device is away, and hands it to that device when it links again.
 //!
 //! # Wire model
 //!
-//! The daemon binds a single iroh endpoint. Every inbound
-//! connection speaks a Tilo server ALPN and performs a small
-//! authenticated handshake ([`Hello`](tilo_server_protocol::auth::Hello)):
+//! The daemon binds a single iroh endpoint, and opens a WebTransport listener
+//! for pages. A device proves itself in the authenticated handshake
+//! ([`Hello`](tilo_server_protocol::auth::Hello)): it sends its `DeviceCert`
+//! and a challenge nonce, the host answers with its own certificate, a nonce
+//! and a signature over the client's nonce, and the device signs the host's
+//! nonce in return. Both sides have then proved a device key chaining to an
+//! identity the host admits.
 //!
-//! 1. Client sends its `DeviceCert` + a challenge nonce.
-//! 2. Server verifies the cert chains to *this server's* user
-//!    identity, replies with its own cert + a nonce + an Ed25519
-//!    signature over the client's nonce (challenge/response).
-//! 3. Client verifies the server's cert + signature, then sends the
-//!    server a signature of its own over the server's nonce.
-//! 4. Both sides are now authenticated: mutual proof of possession
-//!    of a device signing key that chains to the same user identity.
-//!
-//! After the handshake, the connection is a bidirectional pipe of
-//! framed [`transport::Envelope`] messages: `Subscribe(workspace_id)`,
-//! `Delta(workspace_id, bytes)`, `Presence(workspace_id, bytes)`,
-//! `Ack(seq)`, `RequestPending(workspace_id)`. The daemon receives
-//! deltas, appends them to the workspace's on-disk log, and fans
-//! them out to every other peer currently subscribed to the same
-//! workspace. Offline peers accumulate deltas in
-//! `workspaces/<id>/pending/<peer_id>/`.
+//! What follows the proof is the device's link to a workspace
+//! ([`tilo_peer_state::direct`]): the workspace's records, governance and
+//! channels travel it, and the host answers the device's writes there. The
+//! actions a device asks travel the same way
+//! ([`tilo_peer_state::actions`]), and a request addressed to another device
+//! of the workspace is passed on over the link that reaches it.
 //!
 //! # Multi-host
 //!
-//! Two relays bound to the same workspace are peers in the same
-//! Automerge mesh — from the CRDT's point of view they are
-//! indistinguishable from any other member device. The workspace-
-//! directory carries a `Vec<[u8; 32]>` of host device pubkeys per
-//! entry (see [`tilo_user_identity::WorkspaceMeta::host_devices`]);
-//! peers pick the nearest available host and fail over on timeout.
-//!
-//! # Current boundaries
-//!
-//! - App backends are not executed here.
-//! - No content byte transfer — content hydration continues to
-//!   travel over `iroh-blobs` inside the `crates/system/fs/` crate; the relay
-//!   handles only the CRDT-directory tier.
-
+//! Two hosts serving the same workspace are holders of the workspace's
+//! history, alike from its governance's point of view. Which device holds a
+//! workspace, and in which role, is the workspace's own governance
+//! ([`tilo_peer_state::WORKSPACE_KEEPING_DEVICES_KEY`]), so every member learns
+//! each holder as it learns any change, and reaches the workspace wherever it
+//! is held.
 #![deny(rust_2018_idioms)]
 #![cfg_attr(
     test,
@@ -103,34 +85,21 @@ tilo_agent_session::app_worker!();
 
 // The records and wire messages shared with server clients live in
 // `tilo-server-protocol`, the frame codec in `tilo-server-client`, and the
-// session clients (server, co-edit and workspace administration, and
-// workspace join) in `tilo-server-session`, so clients need not link the
-// daemon. The daemon keeps addressing them here.
+// workspace administration vocabulary in `tilo-workspace-service`, so clients
+// need not link the daemon. The daemon keeps addressing them here.
 #[cfg(not(target_arch = "wasm32"))]
 pub use tilo_workspace_service::{
-    Reaching, app_serving, device_documents, environment, metrics, payloads, peer,
-    presence_mailbox, service, surfaces, workspace, workspace_documents, workspace_files,
-    workspaces,
+    Reaching, app_serving, device_documents, environment, metrics, payloads, registry, service,
+    surfaces, workspace, workspace_documents, workspace_files, workspaces,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_workspace_service::{authority_epoch, handshake, workspace_access};
 
 pub use tilo_server_client::frame;
 pub use tilo_server_protocol::{auth, certify, config, devices, live, mesh, policy};
-pub use tilo_server_session::{client, coedit};
-
-/// The server wire messages ([`tilo_server_protocol::transport`]) together with
-/// the envelope frame codec ([`frame`]), under the path the daemon and its
-/// callers have always used for both.
-pub mod transport {
-    pub use crate::frame::{FrameError, FrameReader, decode, encode};
-    pub use tilo_server_protocol::transport::*;
-}
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use app_serving::{ActionProviderServer, AppActionServer};
-pub use client::{ClientError, ServerClient};
-pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound, ServerCoeditSession};
 pub use config::ServerConfig;
 #[cfg(not(target_arch = "wasm32"))]
 pub use daemon::{Server, ServerError, ServerHandle};
@@ -140,7 +109,6 @@ pub use mesh::{
     ServiceCapabilities,
 };
 pub use policy::TrustPolicy;
-pub use transport::{ALPN, Envelope};
 
 /// Semantic version emitted by `tilo-server --version`. Tied to the
 /// crate version.

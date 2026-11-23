@@ -329,7 +329,7 @@ impl Workspaces {
     /// Hand `workspace`'s channel key holders the request `cert`'s device
     /// made in its entry, as they take every member's. The Welcome it asks
     /// for is kept for the device's subscription, whose replay writes it
-    /// first ([`crate::peer::Arriving`]); the entry's answer waits neither
+    /// first; the entry's answer waits neither
     /// for it nor for the request to be retained, so the key holders commit
     /// it while the answer travels and the device subscribes. A request for
     /// another group than the workspace's own, by another device, or not
@@ -431,7 +431,7 @@ mod tests {
     use tilo_server_protocol::directory::{EntryJoin, EntryRefusalCode, Listing};
     use tilo_server_protocol::entering::{EnterRefusal, Entered, Entering, Entry, Through};
     use tilo_server_protocol::workspaces::{JoinReply, Role};
-    use tilo_server_session::workspaces::RemoveMemberRequest;
+    use tilo_server_protocol::workspaces::RemoveMemberRequest;
     use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, sign_device_cert};
 
     use crate::handshake::Admit;

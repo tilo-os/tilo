@@ -30,7 +30,7 @@ use tilo_net::webtransport::Answer;
 use tilo_server_client::link::Link;
 use tilo_server_protocol::web::{
     LINK_ACTIONS_PATH, LINK_CERTIFY_KEPT, LINK_CERTIFY_PATH, LINK_LIVE_SESSION_PATH,
-    LINK_PAGE_PATH, LINK_RECORDS_PATH, LINK_SESSION_PATH,
+    LINK_PAGE_PATH, LINK_RECORDS_PATH,
 };
 
 use crate::certification::CertificationProtocol;
@@ -61,7 +61,7 @@ fn answer(path: &str, offered: &[String]) -> Answer {
         LINK_CERTIFY_PATH if offered.iter().any(|protocol| protocol == LINK_CERTIFY_KEPT) => {
             Answer::AcceptAs(LINK_CERTIFY_KEPT.to_owned())
         }
-        LINK_SESSION_PATH | LINK_CERTIFY_PATH | LINK_PAGE_PATH | LINK_RECORDS_PATH
+        LINK_CERTIFY_PATH | LINK_PAGE_PATH | LINK_RECORDS_PATH
         | LINK_ACTIONS_PATH => Answer::Accept,
         LINK_LIVE_SESSION_PATH
             if offered
@@ -109,7 +109,6 @@ pub(crate) async fn serve(listener: tilo_net::webtransport::Listener, serving: S
             let serving = serving.clone();
             async move {
                 match path.as_str() {
-                    LINK_SESSION_PATH => serving.server.serve_link(Link::web(session)).await,
                     LINK_CERTIFY_PATH => {
                         // A device that offered to keep the session has every
                         // conversation on it; any other has the one.
@@ -180,7 +179,6 @@ mod tests {
             Answer::Refuse,
             "one that offers only other protocols speaks none the live session does"
         );
-        assert_eq!(answer(LINK_SESSION_PATH, &[]), Answer::Accept);
         assert_eq!(answer("/elsewhere", &[]), Answer::Refuse);
     }
 
@@ -209,11 +207,6 @@ mod tests {
             answer(LINK_CERTIFY_PATH, &[]),
             Answer::Accept,
             "an older page, which offers nothing, has its one conversation as before"
-        );
-        assert_eq!(
-            answer(LINK_SESSION_PATH, &[LINK_CERTIFY_KEPT.to_owned()]),
-            Answer::Accept,
-            "the offer means nothing at another path"
         );
     }
 }

@@ -8,7 +8,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use super::{GovernedWorkspace, RELEASED, delete};
 use tilo_server_protocol::WorkspaceId;
-use tilo_server_session::workspaces::WorkspaceSummary;
+use tilo_server_protocol::workspaces::WorkspaceSummary;
 
 /// How many workspaces are made at once: each writes and syncs its files on
 /// the runtime's threads, and the rest of the host's traffic needs some free.

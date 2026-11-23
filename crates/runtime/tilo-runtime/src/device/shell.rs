@@ -95,7 +95,7 @@ async fn ask(
         return Err("this device acts for its own person only".to_owned());
     }
     let address = &request.target.address;
-    if request.target.provider == tilo_server_session::workspaces::HOST_ACTIONS_PROVIDER {
+    if request.target.provider == tilo_server_protocol::workspaces::HOST_ACTIONS_PROVIDER {
         let arguments = named(request.argument)?;
         // The person's workspace list: founding one here, and joining one.
         if address.resource == LIST {

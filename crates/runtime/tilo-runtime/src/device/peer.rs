@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
-use tilo_server_session::workspaces::PersonalList;
+use tilo_server_protocol::workspaces::PersonalList;
 use tilo_workspace_service::files;
 
 use tilo_api::daemon::folders;

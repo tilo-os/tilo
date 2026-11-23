@@ -24,8 +24,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use tilo_server_protocol::web::{
-    LINK_ACTIONS_PATH, LINK_CERTIFY_PATH, LINK_LIVE_SESSION_PATH, LINK_RECORDS_PATH,
-    LINK_SESSION_PATH, WebLink,
+    LINK_ACTIONS_PATH, LINK_CERTIFY_PATH, LINK_LIVE_SESSION_PATH, LINK_RECORDS_PATH, WebLink,
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
@@ -49,8 +48,6 @@ const DIAL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 /// One thing a device asks its server, on a link of its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Purpose {
-    /// The session: its first stream is the handshake, then the session.
-    Session,
     /// Certification: each stream one request or approver command.
     Certify,
     /// A workspace's live session.
@@ -67,7 +64,6 @@ impl Purpose {
     #[must_use]
     pub const fn path(self) -> &'static str {
         match self {
-            Self::Session => LINK_SESSION_PATH,
             Self::Certify => LINK_CERTIFY_PATH,
             Self::LiveSession => LINK_LIVE_SESSION_PATH,
             Self::Records => LINK_RECORDS_PATH,
@@ -213,6 +209,69 @@ impl Dialer {
             endpoint.close().await;
         }
     }
+}
+
+/// The client half of the member handshake over `send`/`recv`, the stream
+/// pair a device already opened on a host: hello, the host's proof checked as
+/// the person and device `expected_user`/`expected_device` name, and this
+/// device's own proof. What a live session runs on the first stream of its
+/// link before the stream carries its own protocol.
+///
+/// # Errors
+///
+/// The host refused the device, proved another person or device, or answered
+/// nothing; or the proof could not be written.
+pub async fn prove_stream<R, W>(
+    send: &mut W,
+    recv: &mut R,
+    cert: &tilo_user_identity::DeviceCert,
+    signer: &dyn crate::signer::DeviceSigner,
+    revocations: &tilo_user_identity::RevocationList,
+    expected_user: [u8; 32],
+    expected_device: Option<[u8; 32]>,
+) -> Result<tilo_server_protocol::auth::AuthenticatedPeer, String>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    use tilo_server_protocol::auth::{self, Hello, HelloAck, HelloRefused};
+    const MAX_HANDSHAKE_BYTES: usize = 64 * 1024;
+    let client_nonce: [u8; 32] = rand::random();
+    let hello = Hello::new(cert.clone(), client_nonce);
+    let hello = postcard::to_allocvec(&hello).map_err(|error| error.to_string())?;
+    crate::frame::write_frame(send, &hello)
+        .await
+        .map_err(|error| error.to_string())?;
+    let answer = crate::frame::read_answer(recv, MAX_HANDSHAKE_BYTES)
+        .await
+        .map_err(|error| error.to_string())?;
+    let ack: HelloAck = match answer {
+        Some(crate::frame::Answer::Frame(bytes)) => {
+            auth::decode_handshake(&bytes).map_err(|error| error.to_string())?
+        }
+        Some(crate::frame::Answer::Refusal(bytes)) => {
+            let refused: HelloRefused =
+                auth::decode_handshake(&bytes).map_err(|error| error.to_string())?;
+            return Err(format!("the host refused the device: {}", refused.refusal));
+        }
+        None => return Err("the host answered nothing".into()),
+    };
+    let now = tilo_clock::unix_now_ns();
+    let peer = auth::verify_hello_ack(&ack, &expected_user, revocations, now, &client_nonce)
+        .map_err(|error| error.to_string())?;
+    if expected_device
+        .is_some_and(|expected| peer.cert.device_public_key != expected)
+    {
+        return Err("the host proved another device than the one dialled".into());
+    }
+    let ack2 = crate::signer::signed_ack2(signer, &ack.server_nonce)
+        .await
+        .map_err(|error| error.0)?;
+    let ack2 = postcard::to_allocvec(&ack2).map_err(|error| error.to_string())?;
+    crate::frame::write_frame(send, &ack2)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(peer)
 }
 
 /// A WebTransport session at `purpose`'s path on `web`.

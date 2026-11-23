@@ -563,7 +563,6 @@ inputs = [
   # baseline_only choice, so kpi-budgets.toml loads.
   # The adapters parse these benchmarks' output, so their format is the suite's.
   "crates/system/fs/tests/performance_timing.rs",
-  "crates/server/tilo-server/examples/server_load/main.rs",
   # scripts/perf/render_bench.py reads the dashboard benchmark's output.
   "tools/ui-examples/examples/dashboard_perf_bench.rs",
   # tools/perf/test_tapp_size_ratchet.py holds the budgeted apps equal to the
@@ -924,12 +923,6 @@ package = "tilo-peer-state"
 # A lease claim is read as the previous peer version wrote it, frozen beside neighbour-wire.
 inputs = ["crates/collab/neighbour-wire/previous-peer-frames.txt"]
 readers = ["crates/collab/tilo-peer-state/src/state/leases.rs"]
-
-[[cargo]]
-package = "tilo-server-protocol"
-# The previous peer version's main flows, frozen beside neighbour-wire.
-inputs = ["crates/collab/neighbour-wire/previous-peer-frames.txt"]
-readers = ["crates/server/tilo-server-protocol/tests/previous_peer_version.rs"]
 
 [[cargo]]
 package = "onboarding-walk"

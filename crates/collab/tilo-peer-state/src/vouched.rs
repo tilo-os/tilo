@@ -1,7 +1,6 @@
 //! Workspaces a device holds on its host's word rather than an enrollment of its
 //! own: a page reaches its workspaces through its person's host, which answers
-//! each subscription with the workspace's membership answer
-//! ([`tilo_server_protocol::Envelope::WorkspaceBootstrap`]) over the session the
+//! each subscription with the workspace's membership answer over the link the
 //! page authenticated to it. The page holds the workspace from that answer as a
 //! native device holds a workspace it enrolled in, the workspace's governance
 //! carried with it and admitted like any other; what the host says of the

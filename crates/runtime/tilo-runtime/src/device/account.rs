@@ -14,7 +14,7 @@ use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
 use tilo_peer_state::actions::RemoteDevice;
 use tilo_peer_state::join::TransportHint;
 use tilo_server_protocol::WorkspaceId;
-use tilo_server_session::workspaces::{
+use tilo_server_protocol::workspaces::{
     HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, LIST_PERSONAL, PERSONAL_AFTER, PersonalList,
 };
 

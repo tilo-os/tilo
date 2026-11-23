@@ -107,7 +107,6 @@ tilo-actions = { path = "../../collab/actions" }
 tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
 # A browser environment's session asks its server to enter the workspace it was handed, the way a
 # member device does.
-tilo-server-session = { path = "../../server/tilo-server-session" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 toml.workspace = true
 url.workspace = true
@@ -246,7 +245,6 @@ tilo-workspace-service = { path = "../../server/tilo-workspace-service", feature
 tilo-server-client = { path = "../../server/tilo-server-client" }
 # The person's workspace list, as their keys read it and the hosts of their
 # workspaces keep it.
-tilo-server-session = { path = "../../server/tilo-server-session" }
 # This device's relays wait in the collaboration endpoint until a workspace
 # it shows has someone else in it, and its key is published only then.
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }

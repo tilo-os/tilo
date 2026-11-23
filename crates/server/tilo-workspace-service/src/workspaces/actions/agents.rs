@@ -23,7 +23,7 @@ use tilo_actions::remote::{ActionCallError, Caller};
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_server_protocol::workspaces::WorkspacesRequest;
-use tilo_server_session::workspaces::{CREATE_WORKSPACE, ENTER_WORKSPACE, LIST_WORKSPACES};
+use tilo_server_protocol::workspaces::{CREATE_WORKSPACE, ENTER_WORKSPACE, LIST_WORKSPACES};
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_agent::WorkspaceAgents;
 

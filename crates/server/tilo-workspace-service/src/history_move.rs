@@ -23,9 +23,6 @@ use tilo_server_protocol::WorkspaceId;
 
 mod old_layout;
 
-use crate::coedit::CoeditPayload;
-use crate::transport::Envelope;
-
 /// The file in a workspace's directory that says its history was moved.
 pub const MOVED: &str = "moved-into-store";
 
@@ -268,27 +265,83 @@ fn held_checkpoints(
     }
 }
 
-/// The author and body of `bytes`, one framed change the old store kept.
+/// The author and body of `bytes`, one framed change the old store kept: the
+/// serialized `Delta` envelope a session carried, read byte by byte here
+/// because the type it was is gone.
 fn change_of(bytes: &[u8], workspace: WorkspaceId) -> Option<([u8; 32], Vec<u8>)> {
-    let Ok(Envelope::Delta {
-        workspace_id,
-        author_device_public_key,
-        delta,
-        ..
-    }) = crate::frame::decode(bytes.get(4..)?)
-    else {
-        return None;
-    };
-    if workspace_id != workspace {
+    // The frame codec's four-byte length prefix, then postcard's bytes.
+    let mut at = 4usize;
+    let bytes = bytes.get(at..)?;
+    at = 0;
+    // The envelope's discriminant: `Delta` was the third variant.
+    if varint(bytes, &mut at)? != 2 {
         return None;
     }
-    let body = match CoeditPayload::decode(&delta) {
-        Some(
-            CoeditPayload::Checkpoint { body, .. } | CoeditPayload::RetainedDelta { body, .. },
-        ) => body,
-        None => delta,
+    let id = uuid_at(bytes, &mut at)?;
+    if WorkspaceId::parse(&id.to_string()) != Some(workspace) {
+        return None;
+    }
+    let author: [u8; 32] = bytes.get(at..at.checked_add(32)?)?.try_into().ok()?;
+    at = at.checked_add(32)?;
+    // When it was authored.
+    let _authored_at_ns = varint(bytes, &mut at)?;
+    let delta = bytes_at(bytes, &mut at)?;
+    // The signature: 64 bytes, which the old store did not check here.
+    at = at.checked_add(64)?;
+    if at > bytes.len() {
+        return None;
+    }
+    // A co-edit payload names its channel and keeps the body after it; a
+    // change written before them is the body itself.
+    let body = match delta.first() {
+        Some(0 | 1) => {
+            let mut inner = 1usize;
+            let _channel: [u8; 32] = delta.get(inner..inner.checked_add(32)?)?.try_into().ok()?;
+            inner = inner.checked_add(32)?;
+            bytes_at(delta, &mut inner)?
+        }
+        _ => delta.to_vec(),
     };
-    Some((author_device_public_key, body))
+    Some((author, body))
+}
+
+/// The `LEN` bytes at `at`, advancing past them.
+fn bytes_at(bytes: &[u8], at: &mut usize) -> Option<Vec<u8>> {
+    let len = usize::try_from(varint(bytes, at)?).ok()?;
+    let end = at.checked_add(len)?;
+    let taken = bytes.get(*at..end)?.to_vec();
+    *at = end;
+    Some(taken)
+}
+
+/// The UUID at `at`: its length byte and sixteen bytes, advancing past them.
+fn uuid_at(bytes: &[u8], at: &mut usize) -> Option<uuid::Uuid> {
+    let len = varint(bytes, at)?;
+    if len != 16 {
+        return None;
+    }
+    let end = at.checked_add(16)?;
+    let id = uuid::Uuid::from_slice(bytes.get(*at..end)?).ok()?;
+    *at = end;
+    Some(id)
+}
+
+/// One postcard varint (LEB128) at `at`, advancing past it.
+fn varint(bytes: &[u8], at: &mut usize) -> Option<u64> {
+    let mut value = 0u64;
+    let mut shift = 0u32;
+    loop {
+        let byte = *bytes.get(*at)?;
+        *at = at.checked_add(1)?;
+        value |= u64::from(byte & 0x7F).checked_shl(shift)?;
+        if byte & 0x80 == 0 {
+            return Some(value);
+        }
+        shift = shift.checked_add(7)?;
+        if shift >= 64 {
+            return None;
+        }
+    }
 }
 
 /// Keep `message`, `author`'s change, in `store` when it is one the store
@@ -419,19 +472,24 @@ mod tests {
         checkpoint: bool,
     ) -> Vec<u8> {
         let body = postcard::to_allocvec(message).unwrap();
-        let payload = if checkpoint {
-            CoeditPayload::Checkpoint { channel, body }
-        } else {
-            CoeditPayload::RetainedDelta { channel, body }
-        };
-        tilo_server_client::frame::encode(&Envelope::Delta {
-            workspace_id: workspace(),
-            author_device_public_key: author.verifying_key().to_bytes(),
-            authored_at_ns: 1,
-            delta: payload.encode().unwrap(),
-            signature: [0; 64],
-        })
-        .unwrap()
+        // The old `CoeditPayload`, then the `Delta` envelope around it.
+        let mut payload = vec![u8::from(!checkpoint)];
+        payload.extend(channel);
+        payload.push(u8::try_from(body.len()).unwrap());
+        payload.extend(body);
+        let mut envelope = vec![2u8];
+        let id = workspace();
+        envelope.push(16);
+        envelope.extend(id.as_uuid().as_bytes());
+        envelope.extend(author.verifying_key().to_bytes());
+        envelope.push(1); // authored at 1ns
+        envelope.push(u8::try_from(payload.len()).unwrap());
+        envelope.extend(payload);
+        envelope.extend([0u8; 64]);
+        // The frame codec's four-byte length prefix.
+        let mut framed = u32::try_from(envelope.len()).unwrap().to_le_bytes().to_vec();
+        framed.extend(envelope);
+        framed
     }
 
     /// A workspace's files as a host from before the device store wrote them.

@@ -1,12 +1,12 @@
 //! Branching a workspace of the caller's own person as a host operation
-//! ([`tilo_server_session::workspaces::BRANCH_OWN_WORKSPACE`]): who may, and which branch a retry answers. What a
+//! ([`tilo_server_protocol::workspaces::BRANCH_OWN_WORKSPACE`]): who may, and which branch a retry answers. What a
 //! branch holds is the workspaces' (`crate::workspaces::branch`).
 
 use serde_json::Value;
 use tilo_actions::remote::ActionCallError;
 use tilo_actions::{ActionParam, ParamType};
 use tilo_peer_state::join::Role;
-use tilo_server_session::workspaces::{AdminRefusal, WorkspaceLabels, check_labels};
+use tilo_server_protocol::workspaces::{AdminRefusal, WorkspaceLabels, check_labels};
 use tilo_user_identity::DeviceCert;
 
 use super::{Args, OWN_INVITATION_SECONDS, expiry};

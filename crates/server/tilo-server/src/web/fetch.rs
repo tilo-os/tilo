@@ -88,9 +88,8 @@ async fn write_metrics(proxy: FetchProxy, path: PathBuf) {
     }
 }
 
-/// The tokens this listener's fetch proxy takes: one per open page session,
-/// minted as the session starts over its own carrier and taken back when its
-/// connection ends.
+/// The tokens this listener's fetch proxy takes: one per page, minted when the
+/// page reaches the host and taken back when it leaves.
 #[derive(Default)]
 pub struct Grants {
     open: Mutex<HashMap<[u8; 32], Holder>>,
@@ -110,8 +109,9 @@ impl Grants {
     }
 }
 
-impl crate::peer::FetchGrants for Grants {
-    fn grant(&self, user: [u8; 32], device: [u8; 32]) -> Option<[u8; 32]> {
+impl Grants {
+    /// A token naming a request made for `user` on `device`.
+    pub fn grant(&self, user: [u8; 32], device: [u8; 32]) -> Option<[u8; 32]> {
         let token: [u8; 32] = rand::random();
         self.open
             .lock()
@@ -120,7 +120,8 @@ impl crate::peer::FetchGrants for Grants {
         Some(token)
     }
 
-    fn revoke(&self, token: [u8; 32]) {
+    /// Take `token` back: the device that held it is gone.
+    pub fn revoke(&self, token: [u8; 32]) {
         if let Ok(mut open) = self.open.lock() {
             open.remove(&token);
         }

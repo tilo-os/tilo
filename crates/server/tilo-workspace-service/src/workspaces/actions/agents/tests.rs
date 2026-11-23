@@ -312,7 +312,7 @@ async fn set_under_agents(
 #[tokio::test]
 async fn what_its_person_allows_under_agents_runs_unasked_within_their_account() {
     use tilo_action_policy::agent_answers::ACCOUNT_APP;
-    use tilo_server_session::workspaces::CREATE_WORKSPACE;
+    use tilo_server_protocol::workspaces::CREATE_WORKSPACE;
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
@@ -328,7 +328,7 @@ async fn what_its_person_allows_under_agents_runs_unasked_within_their_account()
         asked.target = tilo_actions::remote::RemoteActionTarget {
             provider: ACCOUNT_APP.into(),
             address: tilo_actions::api::ActionAddress::new(
-                tilo_server_session::workspaces::HOST_WORKSPACES_RESOURCE,
+                tilo_server_protocol::workspaces::HOST_WORKSPACES_RESOURCE,
                 CREATE_WORKSPACE,
             ),
         };

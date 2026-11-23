@@ -610,22 +610,11 @@ impl Workspaces {
     /// and its channels' governance at the host's store, and take in what its
     /// members send there.
     pub(super) fn serve_direct(&self, workspace: &GovernedWorkspace) -> Result<(), String> {
-        let workspace_id = workspace.workspace_id();
-        let workspaces = WeakWorkspaces(Arc::downgrade(&self.inner));
         let link = tilo_peer_state::direct::DirectSync::over(
             workspace.peer.clone(),
             self.inner.host.key.clone(),
         )
-        .with_store(Arc::clone(&self.inner.store))
-        .with_record_sink(move |author, message| {
-            // The sessions that read this workspace through a session get what a
-            // link to their device would, from the one point a frame is kept and
-            // carried: the record's write where one is opened, a channel's
-            // governance for every session.
-            if let Some(workspaces) = workspaces.upgrade() {
-                workspaces.deliver_record_write(workspace_id, author, message);
-            }
-        });
+        .with_store(Arc::clone(&self.inner.store));
         #[cfg(test)]
         let link = match self
             .inner
@@ -865,6 +854,13 @@ impl Workspaces {
             .entry(workspace_id)
             .or_default()
             .insert(remote);
+        // A device that reached its workspace is online from here: its
+        // person's record of their keys says so, and when it was last.
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let workspaces = self.clone();
+            let cert = peer.cert.clone();
+            runtime.spawn(async move { workspaces.session_opened(&cert).await });
+        }
         Ok(tilo_peer_state::direct::LinkScope {
             reads,
             own_frames_only: !keeps_workspace,

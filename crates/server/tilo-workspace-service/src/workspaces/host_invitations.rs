@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use tilo_lock::MutexRecover as _;
-use tilo_server_session::workspaces::{IssueInvitationRequest, IssuedInvitation};
+use tilo_server_protocol::workspaces::{IssueInvitationRequest, IssuedInvitation};
 use tilo_user_identity::DeviceCert;
 
 use super::{CollaborationError, Workspaces};
@@ -565,7 +565,7 @@ mod tests {
             .set_member_role(
                 &lounge,
                 &owner,
-                tilo_server_session::workspaces::SetMemberRoleRequest {
+                tilo_server_protocol::workspaces::SetMemberRoleRequest {
                     request_id: rand::random(),
                     user_public_key: member.user_public_key,
                     role: Role::Viewer,

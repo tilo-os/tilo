@@ -67,7 +67,7 @@ pub struct Workspace {
 
 impl Workspace {
     /// `listed`, a workspace of the person's list as their server keeps it.
-    pub(crate) fn personal(listed: tilo_server_session::workspaces::PersonalWorkspace) -> Self {
+    pub(crate) fn personal(listed: tilo_server_protocol::workspaces::PersonalWorkspace) -> Self {
         Self {
             id: listed.workspace,
             name: listed.name,
@@ -83,7 +83,7 @@ impl Workspace {
 
     /// `listing`, a workspace the server `host` made or answered.
     pub(crate) fn listed(
-        listing: &tilo_server_session::workspaces::WorkspaceListing,
+        listing: &tilo_server_protocol::workspaces::WorkspaceListing,
         host: Option<String>,
     ) -> Self {
         Self {

@@ -1,12 +1,7 @@
 //! `tilo-server-client` — the device side of the Tilo server + server that every
 //! peer shares, native or in a browser.
 //!
-//! - the session with a relay over iroh is `tilo_server_session::ServerClient`;
-//! - [`frame`] — the length-prefixed frame codec every server stream uses.
-//!   The daemon and the server session client in `tilo-server-session` read and write
-//!   through the same functions;
-//! - [`coedit`] — the co-edit payloads carried through the server; the iroh
-//!   session speaking them is `tilo_server_session::coedit::ServerCoeditSession`;
+//! - [`frame`] — the length-prefixed frame codec every handshake and link uses;
 //! - [`certify`] — transport signed certification requests, check responses,
 //!   and carry approvals from root-holding devices and members; a device
 //!   without a certificate asks for one with [`certify::certify`];
@@ -16,8 +11,7 @@
 //!   certificates a person's root issues;
 //! - [`login`] — the pairing link, the signed-in device, and the workspace entry;
 //! - [`sign_in`] — a device proving its person to a service that asks;
-//! - [`invite`] — joining a workspace another server governs, with no session
-//!   there;
+//! - [`invite`] — joining a workspace another server governs;
 //! - [`signer`] — the device key as a signer, so a browser's
 //!   non-extractable key can authenticate;
 //! - [`error`] — why a call to a server failed, and why a server turned a device
@@ -46,7 +40,6 @@
 pub mod certification;
 #[cfg(feature = "dial")]
 pub mod certify;
-pub mod coedit;
 pub mod error;
 pub mod frame;
 pub mod host;
@@ -77,7 +70,6 @@ pub use certify::{
     CERTIFICATION_WAIT_NS, CertificationOutcome, KeptAsks, MemberApprover, MemberServer,
     ask_member, request_certification_at,
 };
-pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound};
 pub use error::{CertifyError, LinkError};
 pub use host::{Carrier, ServerAddress};
 pub use https::{Answer, AnswerFuture, HttpClient, HttpFuture};

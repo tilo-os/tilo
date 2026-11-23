@@ -12,7 +12,7 @@
 //! track it publishes.
 //!
 //! This register is the environment's half of the rule that confines an agent
-//! to its delegation ([`crate::peer::AgentRegistry`]): the devices this server
+//! to its delegation ([`crate::registry::AgentRegistry`]): the devices this server
 //! certified for its environments, by device key, with the one record each
 //! reaches. It is the server's, and nothing here is asked of the session in the
 //! VM: [`crate::workspace_access::decide`] answers every protocol with it, the

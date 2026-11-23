@@ -1,5 +1,5 @@
 //! Branching a workspace this host keeps for a person
-//! ([`tilo_server_session::workspaces::BRANCH_OWN_WORKSPACE`],
+//! ([`tilo_server_protocol::workspaces::BRANCH_OWN_WORKSPACE`],
 //! `docs/architecture/workspace.md`, "Branching a workspace"): a new workspace of
 //! theirs that starts with everything the source holds and goes on apart from it.
 //!
@@ -155,7 +155,7 @@ mod copy {
 
         /// The refusal the host answers with; `why` stays with the host's log.
         pub(in crate::workspaces) fn refusal(&self) -> String {
-            tilo_server_session::workspaces::AdminRefusal::BranchNotMade {
+            tilo_server_protocol::workspaces::AdminRefusal::BranchNotMade {
                 part: self.part.clone(),
             }
             .to_reason()

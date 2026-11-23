@@ -444,7 +444,7 @@ async fn proven_live_session_link(
         .await
         .map_err(unavailable)?;
     let (mut send, mut recv) = link.open_bi().await.map_err(unavailable)?;
-    let proved = tilo_server_session::client::prove(
+    let proved = tilo_server_client::link::prove_stream(
         &mut send,
         &mut recv,
         &join.cert,

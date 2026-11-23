@@ -1,12 +1,10 @@
 //! The MCP server of the host's own person: the devices they run an agent on
-//! (`tilo login`, then `tilo mcp`), and each session of one open now.
+//! (`tilo login`, then `tilo mcp`), and each run of one open now.
 //!
-//! A device says it runs an agent when its session opens
-//! ([`tilo_server_protocol::transport::Envelope::AgentSession`]), naming the agent
-//! as History names it; the host keeps that only for a device of its own
-//! person. Each of the device's sessions is one agent session, ended at once by
-//! [`McpServer::stop`] while the device stays the person's, so the agent can
-//! come back. A revoked device leaves the server ([`McpServer::forget`]); its
+//! A device says it runs an agent on its link, naming the agent as History
+//! names it; the host keeps that only for a device of its own person. Each of
+//! the device's links is one agent run, ended at once by [`McpServer::stop`]
+//! while the device stays the person's, so the agent can come back. A revoked device leaves the server ([`McpServer::forget`]); its
 //! sessions end through the access audit that refuses it everywhere.
 //!
 //! The server is served as a live read

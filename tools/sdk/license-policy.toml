@@ -58,7 +58,6 @@ client_roots = [
     "neighbour-wire",          # what peers say to each other: sync, actions, content
     "tilo-actions",            # resources, the actions on them, the ActionProvider vocabulary
     "tilo-identity-client",    # the identity broker client: a device's keys
-    "tilo-server-session",      # the authenticated session: co-edit, anti-entropy, join
     "tilo-user-identity",      # who a device belongs to: certificates and revocations
     "tilo-workspace-join",     # signed invitations and join proofs
 ]
@@ -100,7 +99,6 @@ client_side = [
     "tilo-reference",          # the links an invitation is written as
     "tilo-server-client",       # device certification and the device-signer boundary
     "tilo-server-protocol",     # the server's handshake and wire messages
-    "tilo-server-session",
     "tilo-resource",           # a resource's fields, as an app publishes them
     "tilo-resource-macros",
     "tilo-rt",

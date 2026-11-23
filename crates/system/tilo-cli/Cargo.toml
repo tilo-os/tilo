@@ -99,7 +99,6 @@ iroh.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["fmt", "registry", "std"] }
 # The person's workspace list, as the peer asks for the folders it keeps.
-tilo-server-session = { path = "../../server/tilo-server-session" }
 
 # `tilo migrate`: the terminal's view of the one migration engine.
 tilo-migrate = { path = "../../import/migrate" }

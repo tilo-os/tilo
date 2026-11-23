@@ -1,10 +1,9 @@
 //! Why a host turned something away, typed.
 //!
-//! Every refusal a host sends ([`crate::transport::Envelope::CommitRefused`],
-//! [`crate::transport::Envelope::NotAuthorised`],
-//! [`crate::transport::Envelope::RemoteActionUndeliverable`]) carries one
-//! [`Refusal`]. A device decides what to do by its variant: wait for the
-//! workspace to be ready, ask the person, or give up.
+//! Every refusal a host sends — a write it does not keep, a device it does not
+//! admit, an action it does not route — carries one [`Refusal`]. A device
+//! decides what to do by its variant: wait for the workspace to be ready, ask
+//! the person, or give up.
 //! A person reads [`Refusal::plain`]; a log reads its [`Display`](std::fmt::Display).
 
 use serde::{Deserialize, Serialize};
@@ -15,10 +14,9 @@ use tilo_user_identity::RevocationEntry;
 /// Why a host turned a change, a subscription or an action away.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Refusal {
-    /// The host had not taken the workspace up for this session yet: the
-    /// session had not subscribed to it, the workspace was not open here, or
-    /// its admission was not installed. The same thing goes through once the
-    /// host says the workspace is ready ([`crate::transport::Envelope::Ready`]).
+    /// The host had not taken the workspace up for this link yet: the link
+    /// had not named it, the workspace was not open here, or its admission was
+    /// not installed. The same thing goes through once the host serves it.
     NotReady,
     /// The person's own workspaces keep as much as the host keeps for them:
     /// the change was not kept.

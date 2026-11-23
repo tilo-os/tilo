@@ -1,10 +1,9 @@
 //! What the host may know about an opaque co-edit body.
 //!
-//! A [`CoeditPayload`](crate::coedit::CoeditPayload) carries its channel and
-//! retention kind in the clear and the collaboration message as an opaque
-//! body. The host decisions that need to know a little about that body ask a
-//! [`ShellPayloads`] adapter; the transport core never names the desktop's
-//! message vocabulary itself.
+//! A retained body carries its channel and retention kind in the clear and
+//! the collaboration message as an opaque body. The host decisions that need
+//! to know a little about that body ask a [`ShellPayloads`] adapter; the
+//! transport core never names the desktop's message vocabulary itself.
 //!
 //! [`NeighbourPayloads`] answers them for the desktop's peer-sync messages
 //! (`NeighbourMsg`); it is the only place surface admission decodes one.
@@ -104,8 +103,8 @@ pub trait ShellPayloads: Send + Sync + 'static {
 
     /// Whether `body` is a device's request to be admitted to a channel's
     /// group: what only a device that admits others acts on. A device that
-    /// only follows its groups ([`crate::transport::Envelope::KeyFollower`])
-    /// is sent none. Read off the body's first bytes, without decoding it.
+    /// only follows its groups is sent none. Read off the body's first bytes,
+    /// without decoding it.
     /// The default, for an adapter that knows no channel governance, is
     /// `false`: every device is sent the body.
     fn asks_admission(&self, _body: &[u8]) -> bool {

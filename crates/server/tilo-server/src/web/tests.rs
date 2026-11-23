@@ -5,7 +5,6 @@
 
 use super::*;
 use crate::ServerConfig;
-use crate::peer::FetchGrants as _;
 use ed25519_dalek::SigningKey;
 use std::sync::Arc;
 use tilo_peer_state::join::Role;

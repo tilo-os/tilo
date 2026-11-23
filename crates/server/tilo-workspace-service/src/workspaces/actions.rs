@@ -5,22 +5,21 @@
 //! workspace's governance resource (`workspace.permissions:<workspace>`), so an agent,
 //! a script, the palette or a screen reader invites, lists and cancels
 //! invitations, admits and declines join requests, sets roles, restricts and
-//! unbans members over `Envelope::RemoteAction`, without the
+//! unbans members over the device link's actions, without the
 //! `/workspaces` pages those callers cannot speak. The
 //! desktop administers the workspaces it holds this way too.
 //!
 //! Beside it, two providers carry what is not one workspace's governance
-//! (`tilo_server_session::workspaces` names them):
+//! (`tilo_server_protocol::workspaces` names them):
 //!
 //! - the holder's own operations ([`HOST_ACTIONS_PROVIDER`], `host`):
 //!   creating, listing and entering workspaces and letting an app author one,
 //!   which only devices of the server's own person may, decided as
 //!   [`Workspaces::authorize`] decides every [`WorkspaceOp::Host`]. They are asked of
-//!   the holder itself over the device's session with it, naming no workspace
-//!   (`Envelope::HostAction`, [`AppActionServer::serve_host`]), or on a workspace
-//!   the device holds there, and need the device's certificate as the
-//!   server's handshake verified it,
-//!   which entering admits to the workspace. Creating a workspace may issue its first
+//!   the holder itself over the device's link to it, naming no workspace
+//!   ([`AppActionServer::serve_host`]), or on a workspace the device holds
+//!   there, and need the device's certificate as the server's handshake
+//!   verified it, which entering admits to the workspace. Creating a workspace may issue its first
 //!   invitation and entering answers the invitation the device redeems, so
 //!   a desktop shares a workspace without any governance before it holds
 //!   the workspace.
@@ -67,7 +66,7 @@ use tilo_actions::{
     InputSpec, InvocationId, InvocationUpdate, OperationKind, ParamType, RiskLevel,
 };
 use tilo_peer_state::join::Role;
-use tilo_server_session::workspaces::{
+use tilo_server_protocol::workspaces::{
     ADMINISTER_WORKSPACES, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE,
 };
 use tilo_user_identity::DeviceCert;
@@ -1613,7 +1612,7 @@ impl Workspaces {
                     workspace_governance_operation(&request.target.address)
                         .ok_or(ActionCallError::UnknownAction)?;
                 let asked = governance_request(request, workspace, operation);
-                if operation == tilo_server_session::workspaces::RUN_UNATTENDED {
+                if operation == tilo_server_protocol::workspaces::RUN_UNATTENDED {
                     self.unattended_invoke(workspace_id, caller, certificate, &asked)
                         .await
                 } else {

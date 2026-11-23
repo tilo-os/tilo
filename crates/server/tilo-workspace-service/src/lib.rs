@@ -1,9 +1,9 @@
 //! The workspace service every device runs and the server embeds: the governance of
-//! the workspaces placed on a device (`workspaces`), the session stack their members
-//! run (the handshake, `peer`, each workspace's runtime) and the device store
-//! the workspace's changes are kept in. [`service::WorkspaceService`] is its embeddable
-//! surface; the modules marked hidden are shared with the server daemon that
-//! embeds the same stack, and are not an interface of their own.
+//! the workspaces placed on a device (`workspaces`), the device link their members
+//! reach them over (the handshake, `workspace_access`, each workspace's runtime) and
+//! the device store the workspace's changes are kept in. [`service::WorkspaceService`]
+//! is its embeddable surface; the modules marked hidden are shared with the server
+//! daemon that embeds the same stack, and are not an interface of their own.
 //!
 //! A device's link, its files and its processes are a native target's: a page
 //! reaches its host and holds its workspaces over the page's own storage. Those
@@ -50,10 +50,6 @@ mod connections;
 /// Content a record references, reaching the devices that may read it.
 #[cfg(all(feature = "content", not(target_arch = "wasm32")))]
 pub mod content;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod content_queue;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod content_work;
 /// A device's own documents, as its workspace service holds them.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod device_documents;
@@ -82,9 +78,7 @@ mod own_workspaces;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod payloads;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod peer;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod presence_mailbox;
+pub mod registry;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod service;
 #[cfg(not(target_arch = "wasm32"))]
@@ -127,19 +121,6 @@ use tilo_server_client::frame;
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_server_protocol::{auth, policy};
 #[cfg(not(target_arch = "wasm32"))]
-use tilo_server_session::{client, coedit};
-
-#[cfg(not(target_arch = "wasm32"))]
 mod transport {
     pub(crate) use tilo_server_protocol::transport::*;
 }
-
-#[cfg(all(test, feature = "agents", not(target_arch = "wasm32")))]
-use client::ServerClient;
-#[cfg(not(target_arch = "wasm32"))]
-use coedit::AttributedPresence;
-#[cfg(all(test, feature = "agents", not(target_arch = "wasm32")))]
-use coedit::CoeditPayload;
-
-#[cfg(all(test, feature = "agents", not(target_arch = "wasm32")))]
-use transport::Envelope;

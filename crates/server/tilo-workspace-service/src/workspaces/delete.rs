@@ -1,10 +1,10 @@
 //! Deleting a governed workspace, as its owner asks
-//! ([`tilo_server_session::workspaces::DELETE_WORKSPACE`]): final, and with
+//! ([`tilo_server_protocol::workspaces::DELETE_WORKSPACE`]): final, and with
 //! everything this host keeps of it.
 //!
 //! Releasing a workspace ([`Workspaces::release`]) stops serving it and keeps
 //! its files, because it lives on elsewhere. Deleting it ends it: everyone in
-//! it is told it was deleted ([`Refusal::WorkspaceDeleted`]) while their session is
+//! every link to it ends and its devices are told it was deleted ([`tilo_server_protocol::refusal::Refusal::WorkspaceDeleted`]) while their link is
 //! still open, and let in no more; its record, the state and history it
 //! retained, and whatever else this host lists for it go from the disk and
 //! from memory, so the storage it took no longer counts against its owner;
@@ -30,7 +30,6 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use tilo_server_protocol::refusal::Refusal;
 
 use super::Workspaces;
 use tilo_lock::MutexRecover as _;
@@ -90,25 +89,9 @@ impl Workspaces {
         self.inner.memberships.forget(workspace);
         self.inner.host.access.people_moved();
         self.inner.direct.delete(workspace_id);
-        // Everyone in it hears why while their session is open, then nobody
-        // is let in. The workspace is already recorded as deleted, so a
-        // connection auditing its subscriptions drops this one instead of
-        // ending a session that serves other workspaces too — a backend
-        // reaches all its customers' workspaces on one session.
-        let bound = self
-            .inner
-            .host
-            .workspaces
-            .lock()
-            .await
-            .get(&workspace_id)
-            .cloned();
-        if let Some(bound) = bound {
-            bound
-                .lock()
-                .await
-                .refuse_every_live_member(&Refusal::WorkspaceDeleted);
-        }
+        // Every link to it ends with the workspace's own deletion
+        // ([`tilo_peer_state::direct::Serving::delete`]), told why; nobody is
+        // let in again.
         self.stop_serving(workspace_id).await;
         drop(governed);
         self.forget_deleted(workspace, workspace_id).await;
@@ -152,7 +135,7 @@ impl Workspaces {
 
     /// Whether the workspace whose server workspace is `workspace_id` was
     /// deleted here: whoever asks for it is told so
-    /// ([`Refusal::WorkspaceDeleted`]), the same on every queue.
+    /// ([`tilo_server_protocol::refusal::Refusal::WorkspaceDeleted`]), the same on every queue.
     #[must_use]
     pub fn deleted(&self, workspace_id: WorkspaceId) -> bool {
         self.inner.direct.deleted(workspace_id)
