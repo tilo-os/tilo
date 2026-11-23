@@ -1782,7 +1782,7 @@ check = "os-acceptance-{arch}"
 [[unrequired]]
 suite = "os/dev/test-internal-install-cycle.sh"
 reason = "boots VMs (KVM) from a built installer image and a retained Fedora Cloud Base qcow2; the internal install cycle check pins that image and runs os/dev/ci-internal-install-cycle.sh in a KVM guest"
-check = "installer-internal-cycle-x86_64"
+check = "medium/internal-cycle-x86_64"
 
 [[unrequired]]
 suite = "os/dev/test-server-plan-install-cycle.sh"
