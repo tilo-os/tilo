@@ -5203,7 +5203,7 @@ egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west
 run = "bash tools/ci/publish/installer-release-medium.sh {arch} /target/os/{arch}/release-image /target/imager-medium/{arch}"
 needs = ["os-release-image-{arch}", "bootc-alongside-{arch}"]
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
-env = { TILO_INSTALLER_BOOTC_ALONGSIDE = "/target/bootc-alongside/{arch}/bootc", TILO_INSTALLER_RELEASE_TAG = "imager-v0.0.0", TILO_INSTALLER_VERSION = "0.0.0", TILO_INSTALLER_CHANNEL = "stable" }
+env = { TILO_INSTALLER_BOOTC_ALONGSIDE = "/target/bootc-alongside/{arch}/bootc" }
 requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/imager-medium/{arch}/**"]
