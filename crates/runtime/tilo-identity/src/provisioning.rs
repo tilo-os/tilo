@@ -766,7 +766,7 @@ pub fn device_certificate_clock_refusal(
 /// [`tilo_user_identity::CertificateClockError`], so startup tells a wrong
 /// clock apart from a broken identity and never offers to replace one that
 /// is intact.
-fn joined_device_unusable(error: persist::PersistError) -> io::Error {
+fn joined_device_unusable(paths: &IdentityPaths, error: persist::PersistError) -> io::Error {
     match error {
         persist::PersistError::Io(error)
             if tilo_user_identity::CertificateClockError::in_io(&error).is_some() =>
@@ -775,7 +775,10 @@ fn joined_device_unusable(error: persist::PersistError) -> io::Error {
         }
         error => io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("pre-enrolled device identity is not usable: {error}"),
+            format!(
+                "pre-enrolled device identity in {} is not usable: {error}",
+                paths.device_cert.display()
+            ),
         ),
     }
 }
@@ -792,6 +795,7 @@ fn ensure_collaboration_identity_in_context(
     let class = DeviceClass::of(identity_dir, class);
 
     let now_ns = tilo_clock::unix_now_ns();
+    drop_unreadable_certificates_of_held_root(identity_dir, paths);
     match persist::joined_device_is_ready(paths, now_ns) {
         Ok(true) => {
             // `Existing` promises a record this account can resolve. The
@@ -812,7 +816,7 @@ fn ensure_collaboration_identity_in_context(
             return Ok(ProvisionOutcome::Existing);
         }
         Ok(false) => {}
-        Err(error) => return Err(joined_device_unusable(error)),
+        Err(error) => return Err(joined_device_unusable(paths, error)),
     }
 
     let primary_path = identity_dir.join(PRIMARY_IDENTITY_FILE);
@@ -864,6 +868,28 @@ fn ensure_collaboration_identity_in_context(
     }
 
     Ok(outcome)
+}
+
+/// Drop this device's certificates for a person whose root this computer holds when they are in
+/// an encoding no build reads any more: the root certifies the device key again below, so an old
+/// certificate never stops the computer of the person who can make a new one. One no build reads
+/// proves nothing to anyone, so the device's own goes too; a certificate that reads stays.
+fn drop_unreadable_certificates_of_held_root(identity_dir: &Path, paths: &IdentityPaths) {
+    let Some(root) = crate::store::resolve_active_identity(identity_dir)
+        .and_then(|record| crate::store::load_metadata_from_path(&record).ok())
+        .filter(|metadata| metadata.single_device)
+        .map(|metadata| metadata.group_public_key)
+    else {
+        return;
+    };
+    for path in [paths.device_cert.clone(), paths.device_cert_for_user(&root)] {
+        if let Err(persist::PersistError::Canonical(error)) = persist::read_device_cert(&path) {
+            tracing::info!(path = %path.display(), %error, "this device's certificate is in an encoding no build reads; the person's root certifies the device again");
+            if let Err(error) = fs::remove_file(&path) {
+                tracing::warn!(path = %path.display(), %error, "the unreadable certificate could not be dropped");
+            }
+        }
+    }
 }
 
 /// Keep this account's proof that it is the device's person
@@ -1195,7 +1221,8 @@ pub fn verify_collaboration_identity(
     }
     // A joined device holds no share of the identity's key: its record only
     // names the identity, and its certificate binds this device's key to it.
-    let joined = persist::joined_device_is_ready(paths, now_ns).map_err(joined_device_unusable)?;
+    let joined = persist::joined_device_is_ready(paths, now_ns)
+        .map_err(|error| joined_device_unusable(paths, error))?;
     if joined {
         let metadata = tilo_identity_client::load_metadata_from_path(&primary_path)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
