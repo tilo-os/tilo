@@ -709,3 +709,8 @@ reason = "a device-control action's argument, JSON by name, read once by the ste
 file = "crates/agent/agent-session/src/apps.rs"
 enum = "ReplicaActor"
 reason = "sent only from a supervisor to the app worker it starts from its own running image (/proc/self/exe), so both ends are one build, and kept only in that worker's memory to send again on a revive: no bytes written by another build are read"
+
+[[break]]
+file = "crates/lang/tilolang-runtime/src/run.rs"
+enum = "Pending"
+reason = "a run's journal waits on a call it made through the dispatch, a person's yes included, so a run no longer keeps a person's answer itself; a journal suspended on one before is not resumed"

@@ -1,4 +1,4 @@
-//! Run journals and suggestions.
+//! Run journals, and what a suspended run waits on.
 //!
 //! An invocation that runs other actions — an action that calls another app's action, an
 //! agent's program — is a run: a journal of the ordered results of every action it invoked and
@@ -11,17 +11,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::{ActionId, Actor, ModuleHash, RunId};
 use crate::value::Value;
-
-/// An action applied to arguments, waiting for a person's decision.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Suggestion {
-    pub run: RunId,
-    pub action: ActionId,
-    pub args: Vec<Value>,
-    pub invoker: Actor,
-    /// The authorship chain that led to the invocation, outermost first.
-    pub chain: Vec<ModuleHash>,
-}
 
 /// One journaled step.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -110,8 +99,9 @@ pub struct Step {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Pending {
-    /// A person's answer to an action the run invoked.
-    Ask(Suggestion),
+    /// The answer to the call `call` the run made of another app's action, journaled as
+    /// `action`.
+    Call { call: String, action: ActionId },
     /// The action the run invoked next: it runs from the journal, and the run goes on from its
     /// result.
     Step(Step),
@@ -244,12 +234,21 @@ pub struct Journal {
 #[derive(Clone, Debug, PartialEq)]
 pub enum RunOutcome {
     Done(Value),
-    Suspended(Suggestion),
+    /// It waits on the answer to the call `call` it made through the dispatch: of another app's
+    /// action, or of one a person is asked about first.
+    Waits {
+        run: RunId,
+        call: String,
+    },
 }
 
-/// A person's answer to a suggestion.
+/// A person's answer to an asked invocation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Resolution {
-    Approve,
+    /// Do it: the choice `choice` of a question that offers choices.
+    Approve { choice: Option<usize> },
+    /// Do it, and from now on without asking: a grant of the asked action on its resource type.
+    ApproveAndGrant,
+    /// Do not do it.
     Decline,
 }

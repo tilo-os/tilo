@@ -101,7 +101,7 @@ pub use marks::DOC_VERSIONS;
 pub use meta::Meta;
 pub use project::ProjectOptions;
 pub use render::ViewTarget;
-pub use run::{Journal, JournalEntry, Pending, Resolution, RunOutcome, Suggestion};
+pub use run::{Journal, JournalEntry, Pending, Resolution, RunOutcome};
 pub use runtime::{BlockOutput, CallMember, MemorySink, Reading, Runtime, SettleReport};
 pub use settle::{AgentBlock, InvocationEntry};
 pub use space::Space;

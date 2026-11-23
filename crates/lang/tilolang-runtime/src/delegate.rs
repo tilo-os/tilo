@@ -34,6 +34,9 @@ pub enum Invocation {
         /// The resource the invocation is made from, when it is made from one: the action API that
         /// takes it records what it makes as made from it.
         from: Option<ResourceRef>,
+        /// A person is asked before it runs: the code that makes it may not make it unasked, so
+        /// the dispatch keeps it as its invocation record, asked, until they answer.
+        asks: bool,
     },
     /// The field `field` (its name; `field_id` its id) of the resource `target` set to `value`.
     Edit {
@@ -120,12 +123,9 @@ pub enum Invoked {
     Failed(String),
     /// Policy refused it: the program gets the reason as an error value.
     Refused(String),
-    /// Policy asks the person first: the program stops here and its step waits on the answer.
-    Asks(String),
-    /// It went to the app that holds the resource, which runs it and answers there: what it
-    /// changes comes back as that app's readings. The code goes on without its result, as the
-    /// result type's empty value.
-    Sent,
+    /// It went to the app that holds the resource as the call named here, which answers it
+    /// later: a run that made it waits on that answer ([`crate::Core::answer_call`]).
+    Pending(String),
 }
 
 /// Where a runtime sends the changes a program makes.

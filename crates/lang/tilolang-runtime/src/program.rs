@@ -16,7 +16,7 @@ use crate::core::{Core, HResult, trap};
 use crate::ids::Actor;
 use crate::meta::{FieldKind, Ty};
 use crate::query::{Query, find, resolve};
-use crate::run::{RunOutcome, Suggestion};
+use crate::run::RunOutcome;
 use crate::runtime::Runtime;
 use crate::value::{RefValue, ResourceRef, Value};
 
@@ -59,8 +59,6 @@ pub enum ProgramOutcome {
     Done,
     /// It did not compile: one line per diagnostic, `line:col: code message`.
     Rejected(Vec<String>),
-    /// An action it applied asks a person first; the run waits for their answer.
-    Suspended(Suggestion),
     /// It stopped: a trap, or an action that failed.
     Failed(String),
     /// It read apps its host does not hold, and needs these answers first: it changed nothing,
@@ -247,7 +245,10 @@ impl Runtime {
         }
         let outcome = match ran {
             Ok(RunOutcome::Done(_)) => ProgramOutcome::Done,
-            Ok(RunOutcome::Suspended(s)) => ProgramOutcome::Suspended(s),
+            // A program's host answers every call it sends on before the program goes on.
+            Ok(RunOutcome::Waits { .. }) => {
+                ProgramOutcome::Failed("a program's call was left unanswered".to_owned())
+            }
             Err(e) => ProgramOutcome::Failed(e.to_string()),
         };
         (io, outcome)

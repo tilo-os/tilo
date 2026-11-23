@@ -605,29 +605,7 @@ impl Runtime {
         self.core.open_written_view(viewer, source, author, args)
     }
 
-    /// Record the suggestion raised for `action` called with `args` by `invoker` as an
-    /// `Invocation` resource that waits for a person.
-    ///
-    /// # Errors
-    ///
-    /// A store failure while recording.
-    pub fn record_suggestion(
-        &self,
-        invoker: &Actor,
-        action: &str,
-        args: Vec<Value>,
-        suggestion: &crate::run::Suggestion,
-    ) -> Result<ResourceRef, RuntimeError> {
-        let aref = ActionRef {
-            action: action.to_owned(),
-            args,
-            author: None,
-            from: None,
-        };
-        self.core.record_suggestion(invoker, &aref, suggestion)
-    }
-
-    /// Decide the suggestion an `Invocation` resource holds (see `Core::resolve_invocation`):
+    /// Decide the question an asked `Invocation` resource holds (see `Core::resolve_invocation`):
     /// approving runs the action once, on this replica, and records the outcome in the
     /// resource so every replica shows it after sync. Returns the invocation's new state.
     ///
@@ -867,18 +845,17 @@ impl Runtime {
         tilolang::natural::dated(text, now, offset)
     }
 
-    /// Answer the suggestion a run waits on and continue the run.
+    /// Answer the call the run `run` waits on ([`crate::exec::Core::answer_call`]).
     ///
     /// # Errors
     ///
-    /// `NotPending` when nothing waits on the run.
-    pub fn resolve(
+    /// `NotPending` when the run waits on no call; otherwise as running it on.
+    pub fn answer_call(
         &self,
         run: &RunId,
-        approver: &Actor,
-        resolution: Resolution,
+        answer: crate::delegate::Invoked,
     ) -> Result<crate::run::RunOutcome, RuntimeError> {
-        self.core.resolve(run, approver, resolution)
+        self.core.answer_call(run, answer)
     }
 
     /// Open a view for `actor`, in the window of its first resource argument.

@@ -32,7 +32,7 @@ use crate::host_res::unboxed;
 use crate::ids::{Actor, AppId, ModuleHash, RunId};
 use crate::meta::{ActionMeta, EffectClass, ParamMeta, Repr, Ty, parse_ty};
 use crate::registry::Package;
-use crate::run::{Journal, JournalEntry, Pending, Resolution, RunOutcome, Step, Suggestion};
+use crate::run::{Journal, JournalEntry, Pending, RunOutcome, Step};
 use crate::store::{Applied, ChangeNote, Mutation, Txn};
 use crate::value::{ActionRef, ResourceRef, Value, to_json};
 
@@ -71,17 +71,6 @@ pub struct ExecCtx {
 }
 
 impl ExecCtx {
-    /// What `run` asks a person about `aref`, for this invocation.
-    fn asking(&self, run: &RunId, aref: &ActionRef) -> Suggestion {
-        Suggestion {
-            run: run.clone(),
-            action: aref.action.clone(),
-            args: aref.args.clone(),
-            invoker: self.invoker.clone(),
-            chain: self.chain.clone(),
-        }
-    }
-
     /// The journal of a run of `aref` for this invocation, belonging to `invocation`, before it
     /// did anything.
     fn journal(&self, aref: &ActionRef, invocation: RunId) -> Journal {
@@ -108,8 +97,8 @@ impl ExecCtx {
 #[derive(Debug)]
 pub enum ActionOutcome {
     Done(Value),
-    /// It invoked an action a person must answer first: the run waits for them.
-    Suspended(Suggestion),
+    /// It waits: on a person's answer, or on another app's ([`RunOutcome`]).
+    Waits(RunOutcome),
     /// The action trapped or ran out of fuel or time; its change was rolled back.
     Failed(String),
 }
@@ -118,8 +107,25 @@ pub enum ActionOutcome {
 #[derive(Clone, Debug, PartialEq)]
 pub enum InvokeOutcome {
     Done(Value),
-    Suggested(Suggestion),
+    /// It waits on the answer to the call `call` it made through the dispatch, as the run `run`:
+    /// another app's action, or one a person is asked about first.
+    Waits {
+        run: RunId,
+        call: String,
+    },
+    /// It needs a person's yes first: the call `call` went through the dispatch asking them, and
+    /// the app runs it when they answer.
+    Asked(String),
     Denied,
+}
+
+impl From<RunOutcome> for InvokeOutcome {
+    fn from(outcome: RunOutcome) -> Self {
+        match outcome {
+            RunOutcome::Done(value) => Self::Done(value),
+            RunOutcome::Waits { run, call } => Self::Waits { run, call },
+        }
+    }
 }
 
 /// What one attempt at a run's code came to.
@@ -145,8 +151,8 @@ enum Attempted {
 enum Delegated {
     /// It ran, or was refused or failed: what the run journals of it.
     Ran(Box<JournalEntry>),
-    /// A person must answer it first.
-    Asks,
+    /// It went to its app, which answers the call `call` later.
+    Waits(String),
 }
 
 /// The change an action's completed attempt makes.
@@ -163,7 +169,8 @@ enum RunEnd {
         journal: Journal,
         value: Value,
     },
-    Suspended(Suggestion),
+    /// It waits on a call ([`RunOutcome::Waits`]).
+    Waits(RunOutcome),
     Failed {
         journal: Journal,
         error: RuntimeError,
@@ -867,7 +874,7 @@ impl Core {
         let aref = &self.completed(aref)?;
         match self.start_ctx(ctx, aref) {
             Ok(RunOutcome::Done(v)) => Ok(ActionOutcome::Done(v)),
-            Ok(RunOutcome::Suspended(s)) => Ok(ActionOutcome::Suspended(s)),
+            Ok(waits) => Ok(ActionOutcome::Waits(waits)),
             Err(e) if failed(&e) => Ok(ActionOutcome::Failed(e.to_string())),
             Err(e) => Err(e),
         }
@@ -943,7 +950,7 @@ impl Core {
                 Ok(InvokeOutcome::Done(Value::Unit))
             }
             Decision::Deny => Ok(InvokeOutcome::Denied),
-            Decision::Ask => self.wait_on_person(&ctx, aref),
+            Decision::Ask => self.wait_on_person(aref),
         }
     }
 
@@ -1156,30 +1163,25 @@ impl Core {
         match self.decide(&ctx, aref)? {
             Decision::Allow => match self.run_action(&ctx, aref)? {
                 ActionOutcome::Done(v) => Ok(InvokeOutcome::Done(v)),
-                ActionOutcome::Suspended(suggestion) => Ok(InvokeOutcome::Suggested(suggestion)),
+                ActionOutcome::Waits(waits) => Ok(waits.into()),
                 ActionOutcome::Failed(m) => Err(RuntimeError::Trap(m)),
             },
             Decision::Deny => Ok(InvokeOutcome::Denied),
-            Decision::Ask => self.wait_on_person(&ctx, aref),
+            Decision::Ask => self.wait_on_person(aref),
         }
     }
 
-    /// `aref`, which the authority asks a person about before it runs, as a run of its own that
-    /// waits on their answer.
-    fn wait_on_person(
-        &self,
-        ctx: &ExecCtx,
-        aref: &ActionRef,
-    ) -> Result<InvokeOutcome, RuntimeError> {
-        let run = self.store.borrow_mut().fresh_id("s");
-        let suggestion = ctx.asking(&run, aref);
-        let journal = Journal {
-            action: None,
-            pending: Some(Pending::Ask(suggestion.clone())),
-            ..ctx.journal(aref, run.clone())
-        };
-        self.store.borrow_mut().save_journal(&run, &journal)?;
-        Ok(InvokeOutcome::Suggested(suggestion))
+    /// `aref`, which the authority asks a person about before it runs: sent through the dispatch
+    /// asking them, which keeps it as its invocation record until they answer, and runs it then.
+    fn wait_on_person(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
+        Ok(match self.sent(aref, true)? {
+            Delegated::Waits(call) => InvokeOutcome::Asked(call),
+            Delegated::Ran(entry) => match *entry {
+                JournalEntry::Invoked { result, .. } => InvokeOutcome::Done(result),
+                JournalEntry::Failed { reason, .. } => return Err(RuntimeError::Trap(reason)),
+                _ => InvokeOutcome::Denied,
+            },
+        })
     }
 
     /// Whether `action` is an action of an app this runtime does not run: one the host invokes
@@ -1235,6 +1237,7 @@ impl Core {
             author: aref.author.clone(),
             target: Some(ResourceRef::clone(&target.target)),
             from: aref.from.clone(),
+            asks: false,
         }))
     }
 
@@ -1256,9 +1259,11 @@ impl Core {
         };
         Ok(match invoker.invoke(invocation) {
             Invoked::Done(result) => InvokeOutcome::Done(result),
-            Invoked::Sent => InvokeOutcome::Done(Value::Unit),
+            // Nothing waits on a call made outside a run: what it changes comes back as its
+            // app's readings.
+            Invoked::Pending(_) => InvokeOutcome::Done(Value::Unit),
             Invoked::Failed(reason) => return Err(RuntimeError::Trap(reason)),
-            Invoked::Refused(_) | Invoked::Asks(_) => InvokeOutcome::Denied,
+            Invoked::Refused(_) => InvokeOutcome::Denied,
         })
     }
 
@@ -1280,11 +1285,10 @@ impl Core {
         };
         Ok(match answer {
             Invoked::Done(result) => InvokeOutcome::Done(result),
-            Invoked::Sent => InvokeOutcome::Done(Value::Unit),
+            Invoked::Pending(_) => InvokeOutcome::Done(Value::Unit),
             Invoked::Failed(reason) => return Err(RuntimeError::Trap(reason)),
-            // The action API said no, or asks the person first: nothing ran here. A host that asked
-            // keeps what it said, and answers the person's decision itself.
-            Invoked::Refused(_) | Invoked::Asks(_) => InvokeOutcome::Denied,
+            // The action API said no: nothing ran here.
+            Invoked::Refused(_) => InvokeOutcome::Denied,
         })
     }
 
@@ -1350,7 +1354,7 @@ impl Core {
         }
         let outcome = match self.drive(run, journal) {
             Ok(RunEnd::Done { journal, value }) => self.answer_parent(&journal, Ok(value)),
-            Ok(RunEnd::Suspended(suggestion)) => Ok(RunOutcome::Suspended(suggestion)),
+            Ok(RunEnd::Waits(waits)) => Ok(waits),
             Ok(RunEnd::Failed { journal, error }) => self.answer_parent(&journal, Err(error)),
             Err(error) => Err(error),
         };
@@ -1359,6 +1363,9 @@ impl Core {
             if !invocation.is_empty() {
                 let mut store = self.store.borrow_mut();
                 match &outcome {
+                    // A run waiting on another app's answer is still one action: what it wrote
+                    // stays apart until it ends, and a failure after the answer takes it all back.
+                    Ok(RunOutcome::Waits { .. }) => {}
                     Ok(_) => store.end_run(&invocation),
                     Err(_) => store.abort_run(&invocation),
                 }
@@ -1468,17 +1475,17 @@ impl Core {
                 Attempted::Suspended { journal: next } => {
                     journal = next;
                     match journal.pending.clone() {
-                        Some(Pending::Ask(suggestion)) => {
+                        Some(Pending::Call { call, .. }) => {
                             self.store.borrow_mut().save_journal(run, &journal)?;
-                            return Ok(RunEnd::Suspended(suggestion));
+                            let run = run.clone();
+                            return Ok(RunEnd::Waits(RunOutcome::Waits { run, call }));
                         }
                         Some(Pending::Step(step)) => {
-                            let waited = self.take_step(run, &mut journal, &step)?;
-                            if let Some(suggestion) = waited {
-                                // The step asks: the run now waits for the person, and a
-                                // resume goes on from here.
+                            if let Some(waits) = self.take_step(run, &mut journal, &step)? {
+                                // The step waits, on a person or on another app: a resume
+                                // goes on from here.
                                 self.store.borrow_mut().save_journal(run, &journal)?;
-                                return Ok(RunEnd::Suspended(suggestion));
+                                return Ok(RunEnd::Waits(waits));
                             }
                         }
                         None => {
@@ -1646,7 +1653,7 @@ impl Core {
         run: &RunId,
         journal: &mut Journal,
         step: &Step,
-    ) -> Result<Option<Suggestion>, RuntimeError> {
+    ) -> Result<Option<RunOutcome>, RuntimeError> {
         let aref = self.completed(&ActionRef {
             action: step.action.clone(),
             args: step.args.clone(),
@@ -1675,13 +1682,10 @@ impl Core {
                     action: aref.action.clone(),
                     result,
                 },
-                Ok(InvokeOutcome::Denied) => JournalEntry::Denied {
+                Ok(_) => JournalEntry::Denied {
                     action: step.action.clone(),
                     reason: "denied by authority".to_owned(),
                 },
-                Ok(InvokeOutcome::Suggested(_)) => {
-                    return Ok(Some(Self::ask(run, journal, &ctx, &aref)));
-                }
                 Err(error) => JournalEntry::Failed {
                     action: aref.action.clone(),
                     reason: error.to_string(),
@@ -1694,14 +1698,7 @@ impl Core {
         } else if self.invoker.borrow().is_some()
             && (self.delegates_own.get() || self.foreign_action(&aref.action))
         {
-            let invocation = self.invocation_of(&aref)?;
-            match self.delegated_step(&aref.action, &invocation)? {
-                Delegated::Ran(entry) => {
-                    journal.entries.push(*entry);
-                    Ok(None)
-                }
-                Delegated::Asks => Ok(Some(Self::ask(run, journal, &ctx, &aref))),
-            }
+            self.sent_step(run, journal, &aref, false)
         } else {
             let d = if step.seed {
                 Decision::Allow
@@ -1732,7 +1729,7 @@ impl Core {
                     });
                     Ok(None)
                 }
-                Decision::Ask => Ok(Some(Self::ask(run, journal, &ctx, &aref))),
+                Decision::Ask => self.sent_step(run, journal, &aref, true),
             }
         }
     }
@@ -1751,11 +1748,46 @@ impl Core {
             .all(|m| journal.chain.contains(m) || own.as_ref() == Some(m))
     }
 
-    /// Record that `run` waits for a person's answer to `aref`, and hand the suggestion out.
-    fn ask(run: &RunId, journal: &mut Journal, ctx: &ExecCtx, aref: &ActionRef) -> Suggestion {
-        let suggestion = ctx.asking(run, aref);
-        journal.pending = Some(Pending::Ask(suggestion.clone()));
-        suggestion
+    /// Send `aref` through the dispatch as a step of `run` (asking a person first when `asks`),
+    /// and journal what it came to: `Some` when the run waits on its answer.
+    fn sent_step(
+        &self,
+        run: &RunId,
+        journal: &mut Journal,
+        aref: &ActionRef,
+        asks: bool,
+    ) -> Result<Option<RunOutcome>, RuntimeError> {
+        match self.sent(aref, asks)? {
+            Delegated::Ran(entry) => {
+                journal.entries.push(*entry);
+                Ok(None)
+            }
+            Delegated::Waits(call) => {
+                let action = aref.action.clone();
+                journal.pending = Some(Pending::Call {
+                    call: call.clone(),
+                    action,
+                });
+                let run = run.clone();
+                Ok(Some(RunOutcome::Waits { run, call }))
+            }
+        }
+    }
+
+    /// Send `aref` through the dispatch, asking a person first when `asks`. A host with no
+    /// dispatch makes no call that needs a yes: it is refused.
+    fn sent(&self, aref: &ActionRef, asks: bool) -> Result<Delegated, RuntimeError> {
+        if asks && self.invoker.borrow().is_none() {
+            return Ok(Delegated::Ran(Box::new(JournalEntry::Denied {
+                action: aref.action.clone(),
+                reason: "nobody here can be asked".to_owned(),
+            })));
+        }
+        let mut invocation = self.invocation_of(aref)?;
+        if let crate::delegate::Invocation::Action { asks: asking, .. } = &mut invocation {
+            *asking = asks;
+        }
+        self.delegated_step(&aref.action, &invocation)
     }
 
     /// Run `step` as a run of its own, a change of its own, invoked by `run`: its outcome is
@@ -1767,7 +1799,7 @@ impl Core {
         journal: &mut Journal,
         ctx: &ExecCtx,
         aref: &ActionRef,
-    ) -> Result<Option<Suggestion>, RuntimeError> {
+    ) -> Result<Option<RunOutcome>, RuntimeError> {
         // The call is a step of the run: the run's effects before it and its calls after it
         // are the same on a device that runs the invocation again from the top, so what the
         // call does is held under the keys the first device used.
@@ -1791,81 +1823,50 @@ impl Core {
                 });
                 Ok(None)
             }
-            RunEnd::Suspended(suggestion) => {
+            RunEnd::Waits(waits) => {
                 self.store.borrow_mut().save_journal(run, journal)?;
-                Ok(Some(suggestion))
+                Ok(Some(waits))
             }
         }
     }
 
-    /// Answer a suggestion, and run on from it. Approving runs the suggested action with the
-    /// approver recorded; declining journals a refusal. A run then runs again from its journal.
+    /// Answer the call the run `run` made of another app's action and waits on with `answer`,
+    /// and run on from it: the code gets the result, or the refusal or failure as an error value.
     ///
     /// # Errors
     ///
-    /// `NotPending` when nothing waits on this run.
-    pub fn resolve(
+    /// `NotPending` when the run waits on no call; otherwise as running it on.
+    pub fn answer_call(
         &self,
         run: &RunId,
-        approver: &Actor,
-        resolution: Resolution,
+        answer: crate::delegate::Invoked,
     ) -> Result<RunOutcome, RuntimeError> {
-        let mut journal = self
+        use crate::delegate::Invoked;
+        let mut journal = self.waiting_journal(run)?;
+        let Some(Pending::Call { action, .. }) = journal.pending.take() else {
+            return Err(RuntimeError::NotPending(run.clone()));
+        };
+        journal.entries.push(match answer {
+            Invoked::Done(result) => JournalEntry::Invoked { action, result },
+            Invoked::Failed(reason) => JournalEntry::Failed { action, reason },
+            Invoked::Refused(reason) => JournalEntry::Denied { action, reason },
+            Invoked::Pending(_) => return Err(RuntimeError::NotPending(run.clone())),
+        });
+        self.store.borrow_mut().save_journal(run, &journal)?;
+        self.drive_chain(run, journal)
+    }
+
+    /// The journal of `run`, which waits on something.
+    fn waiting_journal(&self, run: &RunId) -> Result<Journal, RuntimeError> {
+        let journal = self
             .store
             .borrow_mut()
             .load_journal(run)?
             .ok_or_else(|| RuntimeError::NotFound(format!("run {run}")))?;
-        let pending = match journal.pending.take() {
-            Some(pending) if !journal.finished => pending,
-            _ => return Err(RuntimeError::NotPending(run.clone())),
-        };
-        let Pending::Ask(suggestion) = pending else {
-            // A step waits on no person: it runs as soon as the run gets to it.
-            journal.pending = Some(pending);
+        if journal.finished || journal.pending.is_none() {
             return Err(RuntimeError::NotPending(run.clone()));
-        };
-        // The wait split the run: what it wrote before the call was one action, and what it does
-        // on from the answer is another, under an invocation of its own.
-        journal.invocation = self.store.borrow_mut().fresh_id("i");
-        // The run goes on as itself: the effects the answer queues are keyed by its id, which a
-        // device that held no journal of it reads from the record and runs it under too.
-        let ctx = ExecCtx {
-            invoker: suggestion.invoker.clone(),
-            chain: suggestion.chain.clone(),
-            approved_by: Some(approver.clone()),
-            suggested_by: journal.suggested_by.clone(),
-            identity: Some(run.clone()),
-            from: journal.from.clone(),
-            at: journal.at.clone(),
-            gesture: None,
-        };
-        let aref = ActionRef::new(suggestion.action.clone(), suggestion.args.clone());
-        // A run that is only a suggestion waits no further: what it approves is its whole
-        // action, and the change it makes is its.
-        if journal.action.is_none() {
-            journal.finished = true;
-            self.store.borrow_mut().save_journal(run, &journal)?;
-            return match resolution {
-                Resolution::Approve => self.start_ctx(&ctx, &aref),
-                Resolution::Decline => Ok(RunOutcome::Done(Value::Error(format!(
-                    "declined by {approver}"
-                )))),
-            };
         }
-        match resolution {
-            Resolution::Approve => {
-                // Its chain already ends in the module that called it.
-                let aref = ActionRef::new(suggestion.action, suggestion.args);
-                if let Some(deeper) = self.run_step(run, &mut journal, &ctx, &aref)? {
-                    return Ok(RunOutcome::Suspended(deeper));
-                }
-            }
-            Resolution::Decline => journal.entries.push(JournalEntry::Denied {
-                action: suggestion.action,
-                reason: format!("declined by {approver}"),
-            }),
-        }
-        self.drive_chain(run, journal)
+        Ok(journal)
     }
 
     /// Run a read of a resource. A run that may invoke another action records the value in its
@@ -2096,6 +2097,7 @@ impl Core {
                     _ => None,
                 }),
             from: aref.from.clone(),
+            asks: false,
         })
     }
 
@@ -2120,10 +2122,7 @@ impl Core {
                 action: action.to_owned(),
                 result,
             })),
-            Invoked::Sent => Delegated::Ran(Box::new(JournalEntry::Invoked {
-                action: action.to_owned(),
-                result: self.unanswered(action),
-            })),
+            Invoked::Pending(call) => Delegated::Waits(call),
             Invoked::Failed(reason) => Delegated::Ran(Box::new(JournalEntry::Failed {
                 action: action.to_owned(),
                 reason,
@@ -2132,28 +2131,7 @@ impl Core {
                 action: action.to_owned(),
                 reason,
             })),
-            Invoked::Asks(_) => Delegated::Asks,
         })
-    }
-
-    /// The value the code goes on with for the action `action` sent to its app, which answers
-    /// there ([`crate::delegate::Invoked::Sent`]): its result type's empty value, a scalar's
-    /// zero, and nothing for any other.
-    fn unanswered(&self, action: &str) -> Value {
-        let ty = self
-            .registry
-            .borrow()
-            .action_package(action)
-            .and_then(|pkg| {
-                let result = pkg.action(action)?.result.as_deref()?;
-                parse_ty(result, &pkg.meta.app).ok()
-            });
-        match ty.and_then(|ty| ty.abi_repr()) {
-            Some(Repr::I64) => Value::Int(0),
-            Some(Repr::F64) => Value::Float(0.0),
-            Some(Repr::Bool) => Value::Bool(false),
-            Some(Repr::Handle) | None => Value::Unit,
-        }
     }
 
     /// `r.f = v` in a program: the field edit of `r`, sent to the host's invoker as an
@@ -2211,7 +2189,8 @@ impl Core {
             }
         };
         let (entry, failed) = match answer {
-            Invoked::Done(_) | Invoked::Sent => (
+            // A field edit is the app's own: what it changes comes back as its reading.
+            Invoked::Done(_) | Invoked::Pending(_) => (
                 JournalEntry::Invoked {
                     action,
                     result: Value::Unit,
@@ -2232,7 +2211,6 @@ impl Core {
                 },
                 Some(reason),
             ),
-            Invoked::Asks(_) => return Err(HostFail::Suspend),
         };
         self.journal_push(entry)?;
         match failed {
