@@ -884,7 +884,7 @@ const SENT_FILE: &[u8] = b"Move the launch to the fifth.\n";
 
 /// A model that reads what the message's file says through Files' `read-text`, then answers;
 /// each request it was sent is kept.
-fn reads_the_sent_file(content: String, asked: Arc<Mutex<Vec<ModelRequest>>>) -> Model {
+fn reads_the_sent_file(content: &str, asked: Arc<Mutex<Vec<ModelRequest>>>) -> Model {
     let read = answer(
         vec![Content::ToolCall(ToolCall {
             id: "call-1".into(),
@@ -962,10 +962,7 @@ async fn the_file_a_message_sends_reaches_the_turn_that_answers_it() {
     let agents = served
         .approving(&workspace, &[SCOUT])
         .await
-        .scripted(reads_the_sent_file(
-            content.clone(),
-            Arc::clone(&model_asked),
-        ));
+        .scripted(reads_the_sent_file(&content, Arc::clone(&model_asked)));
     let turn = answered_one(&agents, &workspace).await;
     assert!(
         turn.request.contains("when is the launch?"),

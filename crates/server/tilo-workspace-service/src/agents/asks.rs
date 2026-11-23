@@ -949,7 +949,7 @@ impl Agents {
                 continue;
             };
             let said = closing(answer, changed);
-            if let Err(error) = self.close_answer(workspace, &agent, &by, said).await {
+            if let Err(error) = self.close_answer(workspace, agent, &by, said).await {
                 // Nothing was done: the claim is given back, and the next look reads again.
                 tracing::warn!(%workspace, %error, "an answer to an agent's question was not closed");
                 if let Err(error) = self.workspaces.release_ask(&claimed) {

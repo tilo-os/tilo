@@ -793,6 +793,26 @@ impl Workspaces {
         Ok(())
     }
 
+    /// The keys a record another writer founds is founded under: a record that needs keys of
+    /// its own is founded under them, so even its empty base is not written in the clear. None
+    /// for a `whole` write, which is the record itself, and for a record that needs none.
+    pub(super) async fn founding_keys(
+        &self,
+        workspace: &GovernedWorkspace,
+        app: &str,
+        document: &str,
+        whole: bool,
+    ) -> Result<Option<DocumentKeys>, String> {
+        if whole
+            || !workspace
+                .peer()
+                .requires_document_keys(app, document, tilo_clock::wall())?
+        {
+            return Ok(None);
+        }
+        self.sealing_keys(workspace, app, document).await
+    }
+
     /// The keys the governor writes `record` of `app` with: in a workspace whose
     /// channels this server takes part in every new record is sealed from its
     /// first write, so its channel is opened first when it has none (its

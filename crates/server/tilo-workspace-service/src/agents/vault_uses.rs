@@ -630,7 +630,7 @@ impl ServerAgents {
                 UseAnswer::Always => "Allowed from now on.",
                 UseAnswer::No => "Not allowed, so I won't use it.",
             };
-            if let Err(error) = self.close_answer(workspace, &agent, &by, said).await {
+            if let Err(error) = self.close_answer(workspace, agent, &by, said).await {
                 // The answer was taken meanwhile: nothing is carried out, and the ask is spent.
                 tracing::warn!(%workspace, %error, "an answer about a vault use was not closed");
                 self.workspaces.use_not_asked(&claimed);

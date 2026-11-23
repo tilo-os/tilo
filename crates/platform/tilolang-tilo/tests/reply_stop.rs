@@ -81,7 +81,7 @@ fn a_working_answer_offers_its_asker_stop_and_stopping_moves_the_ask_on() {
     );
     settle(&ada);
     let ask_at = target(&ask);
-    let reply = call(&ada, &helper(), AGENT_APP, "answer", vec![ask.clone()]);
+    let reply = call(&ada, &helper(), AGENT_APP, "answer", vec![ask]);
     settle(&ada);
     assert_eq!(state(&ada, &ask_at), "working", "the agent took the turn");
 

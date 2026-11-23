@@ -193,21 +193,21 @@ fn around_and_private(
         .from
         .as_ref()
         .map(|from| asks::around(opened, from, AROUND));
-    let asker = match &asked.who {
+    let who_asked = match &asked.who {
         Some(asks::Actor::Member(who)) if who.person_id().is_some() => Some(who),
         _ => None,
     };
-    let private = asker.is_some_and(|asker| {
+    let private = who_asked.is_some_and(|who_asked| {
         let by_event = asked
             .from
             .as_ref()
             .and_then(crate::agents::events::event_named)
             .is_some();
         if by_event {
-            asks::direct_with(opened, asker, &asked.agent)
-                .is_some_and(|direct| asks::alone_with(opened, &direct, asker, &asked.agent))
+            asks::direct_with(opened, who_asked, &asked.agent)
+                .is_some_and(|direct| asks::alone_with(opened, &direct, who_asked, &asked.agent))
         } else {
-            asks::private_to(opened, asked, asker, &asked.agent)
+            asks::private_to(opened, asked, who_asked, &asked.agent)
         }
     });
     (around, private)
