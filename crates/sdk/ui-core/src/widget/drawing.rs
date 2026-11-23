@@ -463,6 +463,12 @@ impl Drawing {
     }
 
     /// The shapes as drawn at `now`: on their way while a reading moves, else as they are.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn drawn_at(&self, now: crate::time::Instant) -> Vec<Shape> {
+        self.shapes_at(now).unwrap_or_else(|| self.shapes.clone())
+    }
+
     fn shapes_at(&self, now: crate::time::Instant) -> Option<Vec<Shape>> {
         if !self.is_moving(now) {
             return None;

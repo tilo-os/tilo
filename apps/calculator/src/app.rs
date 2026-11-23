@@ -683,13 +683,15 @@ impl CalculatorApp {
                 self.model.view2d = v;
                 // Pin the world point under the cursor for the whole ease; the
                 // resample waits until it settles.
-                self.g2.begin_zoom(before, self.mouse);
+                self.g2
+                    .begin_zoom(self.model.view2d, before, self.mouse, self.theme.motion());
                 self.model_dirty = true;
             }
             Mode::Graph3d if self.g3.canvas_contains(self.mouse) => {
                 self.navigated = true;
                 self.model.view3d.zoom = (self.model.view3d.zoom * factor).clamp(0.25, 8.0);
-                self.g3.begin_zoom();
+                self.g3
+                    .begin_zoom(self.model.view3d.zoom, self.theme.motion());
                 self.model_dirty = true;
             }
             _ => {}

@@ -2966,3 +2966,7 @@ impl ui::widget::Decorator for AppWindow {
 #[cfg(test)]
 #[path = "window_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "motion_tests.rs"]
+mod motion_tests;

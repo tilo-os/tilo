@@ -31,6 +31,7 @@ mod named;
 mod placed;
 mod pose;
 mod presence;
+mod reading;
 mod rubber_band;
 mod scroll_to;
 mod source;
@@ -68,12 +69,13 @@ pub use kept::{
 pub(crate) use kept::{closing_window, frame_ended, kept_any};
 pub use named::{
     Ambient, Appear, Attention, CROSS_FADE, ControlChange, CrossFade, Disclose, Drill, DrillDepth,
-    Extent, Feedback, Float, Follow, ListChange, Mark, PanelSlide, Reading, Reveal, Snap, Speaking,
-    Sweep, Thumb, Trace, Transient, WindowMotion, Zoom, held_by_aim, stage, unit_opacity,
+    Extent, Feedback, Float, Follow, ListChange, Mark, PanelSlide, Reveal, Snap, Speaking, Sweep,
+    Thumb, Trace, Transient, WindowMotion, Zoom, held_by_aim, stage, unit_opacity,
 };
 pub use placed::Placed;
 pub use pose::Pose;
 pub use presence::Presence;
+pub use reading::{Reading, ReadingValue};
 pub use rubber_band::RubberBand;
 pub use scroll_to::{ScrollJump, ScrollTo};
 pub use source::{input_source, note_input, note_source, recent_input, source_of};

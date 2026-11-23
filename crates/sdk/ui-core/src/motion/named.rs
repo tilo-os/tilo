@@ -1291,21 +1291,8 @@ impl ControlChange {
     };
 }
 
-/// A drawn figure moving to its new reading: a ring's fill, a bar's height, a chart's line, each
-/// number of a drawing's shapes gliding from where it is drawn to where the new reading puts it.
-pub struct Reading;
-
-impl Reading {
-    pub const CHANGE: MotionSpec = MotionSpec {
-        enter: Pace::Base,
-        exit: Pace::Base,
-        reduced: Reduced::Lands,
-        shortcut: Shortcut::Context,
-    };
-}
-
 /// Ask the frame pump for frames until a motion that just started settles.
-fn ask_frames_until(settles: Option<Instant>) {
+pub(super) fn ask_frames_until(settles: Option<Instant>) {
     if let Some(until) = settles {
         super::clock::want_frames_until(until);
     }

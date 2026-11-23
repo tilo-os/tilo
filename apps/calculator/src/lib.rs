@@ -36,7 +36,6 @@ pub mod mathfield;
 pub mod model;
 pub mod plot_panel;
 pub mod resource;
-pub mod zoom;
 
 pub use app::CalculatorApp;
 pub use resource::{Calculator, CalculatorShell};

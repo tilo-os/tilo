@@ -437,9 +437,10 @@ view usage_ring(used: Float, caption: Text) {
 - **Motion:** when a shape's numbers change between two readings (an arc's end, a bar's height,
   a path's points), the widget moves them from where they are drawn to the new reading on the
   platform's `Reading` motion, in Rust, at native refresh: a reading taken mid-flight goes on from
-  where it is drawn, never jumps. A change of form (a shape added, a path through more points)
-  lands at once. `motion:` sets the pace (rung 3); reduced motion and a still theme land every
-  reading at once. A view never animates.
+  where it is drawn, never jumps or queues, whoever's change it is (the person's, another
+  member's, an agent's). A change of form lands at once. `motion:` sets the pace (rung 3); reduced motion and a still theme land every
+  reading at once. A view never animates; a Rust widget drawing a number takes it as a
+  `motion::ReadingValue` (Calculator's zoom, the volume bar).
 - **Retained and idle-free:** the shapes are props of a retained node, so a change of them is a
   patch of that node, and the widget paints them when its frame is drawn, like any widget. It
   asks for frames only while a reading moves, so an idle drawing costs nothing.
