@@ -1815,6 +1815,44 @@ impl<'a, H: ActionProvider + Sync, K: InvocationHooks> Runner<'a, H, K> {
         Ok(appearance)
     }
 
+    /// The arguments a step gives its action: each binding's value, leaving out a null bound to
+    /// an optional parameter that takes none, and the item a firing names when the step names
+    /// none itself.
+    fn supplied(
+        &self,
+        descriptor: &ActionDescriptor,
+        args: &BTreeMap<String, Binding>,
+    ) -> Result<Map<String, Value>, StepFailure> {
+        let mut supplied = Map::new();
+        for (name, binding) in args {
+            let Some(value) = self.evaluate(binding)? else {
+                continue;
+            };
+            // A null bound to an optional parameter that takes no null means
+            // "not given", as when a loop item has no parent to answer.
+            let omitted = value.is_null()
+                && descriptor
+                    .params
+                    .iter()
+                    .any(|p| p.name.as_ref() == name.as_str() && !p.required && !p.nullable);
+            if !omitted {
+                supplied.insert(name.clone(), value);
+            }
+        }
+        // A firing on an item kept elsewhere (a message in a person's own account) names that
+        // item instead of carrying it: each step is made from it, so the host runs a step only
+        // for a caller who may read it.
+        if !supplied.contains_key(FROM_ARGUMENT)
+            && let Some(from) = self
+                .inputs
+                .get(crate::EVENT_INPUT)
+                .and_then(|event| event.get(FROM_ARGUMENT))
+        {
+            supplied.insert(FROM_ARGUMENT.to_owned(), from.clone());
+        }
+        Ok(supplied)
+    }
+
     /// Everything up to the invocation itself: resolve the target, check the
     /// grant, bind the arguments and obtain any confirmation.
     async fn prepare(
@@ -1862,33 +1900,7 @@ impl<'a, H: ActionProvider + Sync, K: InvocationHooks> Runner<'a, H, K> {
                 reason: "the row offers no action".into(),
             });
         };
-        let mut supplied = Map::new();
-        for (name, binding) in args {
-            let Some(value) = self.evaluate(binding)? else {
-                continue;
-            };
-            // A null bound to an optional parameter that takes no null means
-            // "not given", as when a loop item has no parent to answer.
-            let omitted = value.is_null()
-                && descriptor
-                    .params
-                    .iter()
-                    .any(|p| p.name.as_ref() == name.as_str() && !p.required && !p.nullable);
-            if !omitted {
-                supplied.insert(name.clone(), value);
-            }
-        }
-        // A firing on an item kept elsewhere (a message in a person's own account) names that
-        // item instead of carrying it: each step is made from it, so the host runs a step only
-        // for a caller who may read it.
-        if !supplied.contains_key(FROM_ARGUMENT)
-            && let Some(from) = self
-                .inputs
-                .get(crate::EVENT_INPUT)
-                .and_then(|event| event.get(FROM_ARGUMENT))
-        {
-            supplied.insert(FROM_ARGUMENT.to_owned(), from.clone());
-        }
+        let supplied = self.supplied(descriptor, args)?;
         let granted = self.granted(app_id, action, descriptor, &supplied)?;
         if let tilo_actions::contract::Availability::Unavailable { code, reason } =
             &descriptor.contract.availability

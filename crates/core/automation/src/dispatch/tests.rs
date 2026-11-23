@@ -105,8 +105,7 @@ fn a_trigger_saved_under_an_apps_earlier_kind_fires_after_the_rename() {
     assert_eq!(
         out.firings.len(),
         1,
-        "the trigger saved under the earlier kind fired: {:#?}",
-        out
+        "the trigger saved under the earlier kind fired: {out:#?}"
     );
     // A kind that only starts like an earlier id is another app's: it fires nothing.
     let other = TriggerSpec::ResourceChanged {
@@ -434,7 +433,7 @@ tilo_test_env::scenario! {
         assert_eq!(out.firings.len(), 1);
         assert_eq!(out.firings[0].inputs["event"]["payload"]["content"], "yo");
         assert_eq!(out.firings[0].event, "so.tilo.discord/message-created/1188");
-        let mut elsewhere = event.clone();
+        let mut elsewhere = event;
         elsewhere.payload.insert("channel".into(), json!("7"));
         assert!(
             dispatch(&saved_as("b1", &shortcut), Event::Connector(&elsewhere))
