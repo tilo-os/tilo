@@ -21,8 +21,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tilolang_tilo::origin::{Origin, OriginCx};
 use tilolang_youtube::{
-    ChannelItem, ChannelPage, PlaylistItem, PlaylistPage, Scripted, SearchPage, Service,
-    ServiceError, TrendingPage, VideoItem, YouTubeOrigin,
+    Branding, ChannelItem, ChannelPage, CommentsPage, PlaylistItem, PlaylistPage, Scripted,
+    SearchFilter, SearchPage, SegmentPage, Service, ServiceError, TrendingPage, VideoItem, Votes,
+    YouTubeOrigin,
 };
 
 const TUBE: &str = "so.tilo.tube";
@@ -110,6 +111,10 @@ fn script() -> Scripted {
                 ],
             },
         )]),
+        comments: std::collections::BTreeMap::new(),
+        segments: std::collections::BTreeMap::new(),
+        branding: std::collections::BTreeMap::new(),
+        votes: std::collections::BTreeMap::new(),
         playlists: std::collections::BTreeMap::from([(
             "pl-phones".to_owned(),
             PlaylistPage {
@@ -297,6 +302,59 @@ fn a_search_writes_its_channels_playlists_and_videos_where_the_client_reads_them
     );
 }
 
+/// A search the app hands over with the filters it narrowed to is the same search: the query
+/// first, then the kind, the length and the date, each `any` for no filter.
+#[test]
+fn a_search_the_app_narrowed_is_asked_with_its_filters() {
+    let host = workspace();
+    let origin = tilolang_youtube::origin(Arc::new(script()), Arc::new(AtomicBool::new(false)));
+    origin.borrow_mut().deliver(
+        "youtube.search",
+        &serde_json::json!(["phone reviews", "video", "short", "week"]),
+    );
+    poll(&origin, &host);
+    assert_eq!(keys(&host, "channel"), ["UCmkbhd"], "the answer is written");
+    assert_eq!(text_of(&host, "search_state"), "done");
+}
+
+/// A stream the app asks for with the quality the person chose carries it: the video first, then
+/// the tallest picture, and what the service answers is written into the video the client holds.
+#[test]
+fn a_stream_asked_at_a_quality_is_written_onto_the_video() {
+    let host = workspace();
+    let origin = tilolang_youtube::origin(Arc::new(script()), Arc::new(AtomicBool::new(false)));
+    // The client holds the video its page asks the stream for.
+    origin
+        .borrow_mut()
+        .deliver("youtube.channel", &serde_json::json!("UCmkbhd"));
+    poll(&origin, &host);
+    origin
+        .borrow_mut()
+        .deliver("youtube.stream", &serde_json::json!(["v-phone", "480p"]));
+    poll(&origin, &host);
+    let root = host.root_of(TUBE).unwrap();
+    let tilolang_tilo::runtime::Value::List(videos) = host.runtime().read(&root, "videos").unwrap()
+    else {
+        panic!("the client holds its videos");
+    };
+    let stream = videos
+        .into_iter()
+        .filter_map(|item| match item {
+            tilolang_tilo::runtime::Value::Ref(r) => Some((*r.target).clone()),
+            _ => None,
+        })
+        .find(|at| {
+            host.runtime().read(at, "key").unwrap()
+                == tilolang_tilo::runtime::Value::text("v-phone")
+        })
+        .map(|at| host.runtime().read(&at, "stream").unwrap())
+        .expect("the video the stream was asked for");
+    assert_eq!(
+        stream,
+        tilolang_tilo::runtime::Value::text("https://media.example/v-phone.mp4")
+    );
+}
+
 /// The root's text field `name`, as the app reads it.
 fn text_of(host: &tilolang_tilo::host::Host, name: &str) -> String {
     let packages = host.packages();
@@ -399,7 +457,7 @@ fn a_second_answer_keeps_one_video_and_the_person_s_like() {
 fn a_failed_answer_writes_nothing() {
     struct Failing;
     impl Service for Failing {
-        fn search(&self, _: &str) -> Result<SearchPage, ServiceError> {
+        fn search(&self, _: &str, _: &SearchFilter) -> Result<SearchPage, ServiceError> {
             Err(ServiceError("unreachable".to_owned()))
         }
         fn channel(&self, _: &str) -> Result<ChannelPage, ServiceError> {
@@ -411,7 +469,19 @@ fn a_failed_answer_writes_nothing() {
         fn trending(&self) -> Result<TrendingPage, ServiceError> {
             Err(ServiceError("unreachable".to_owned()))
         }
-        fn stream(&self, _: &str) -> Result<String, ServiceError> {
+        fn stream(&self, _: &str, _: &str) -> Result<String, ServiceError> {
+            Err(ServiceError("unreachable".to_owned()))
+        }
+        fn comments(&self, _: &str) -> Result<CommentsPage, ServiceError> {
+            Err(ServiceError("unreachable".to_owned()))
+        }
+        fn segments(&self, _: &str) -> Result<SegmentPage, ServiceError> {
+            Err(ServiceError("unreachable".to_owned()))
+        }
+        fn branding(&self, _: &str) -> Result<Branding, ServiceError> {
+            Err(ServiceError("unreachable".to_owned()))
+        }
+        fn votes(&self, _: &str) -> Result<Votes, ServiceError> {
             Err(ServiceError("unreachable".to_owned()))
         }
     }

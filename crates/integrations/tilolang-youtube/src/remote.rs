@@ -7,7 +7,10 @@ use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::service::{ChannelPage, PlaylistPage, SearchPage, Service, ServiceError, TrendingPage};
+use crate::service::{
+    Branding, ChannelPage, CommentsPage, PlaylistPage, SearchFilter, SearchPage, SegmentPage,
+    Service, ServiceError, TrendingPage, Votes,
+};
 use crate::wire::{self, Ask, FromConnector};
 
 /// [`Service`] over the socket to the YouTube connector process.
@@ -75,11 +78,12 @@ impl RemoteService {
 }
 
 impl Service for RemoteService {
-    fn search(&self, query: &str) -> Result<SearchPage, ServiceError> {
+    fn search(&self, query: &str, filter: &SearchFilter) -> Result<SearchPage, ServiceError> {
         self.answered(
             &Ask::Search {
                 request: self.next.fetch_add(1, Ordering::Relaxed),
                 query: query.to_owned(),
+                filter: filter.clone(),
             },
             |answer| match answer {
                 FromConnector::Search { page, .. } => Some(page),
@@ -126,14 +130,67 @@ impl Service for RemoteService {
         )
     }
 
-    fn stream(&self, key: &str) -> Result<String, ServiceError> {
+    fn stream(&self, key: &str, quality: &str) -> Result<String, ServiceError> {
         self.answered(
             &Ask::Stream {
                 request: self.next.fetch_add(1, Ordering::Relaxed),
                 key: key.to_owned(),
+                quality: quality.to_owned(),
             },
             |answer| match answer {
                 FromConnector::Stream { url, .. } => Some(url),
+                _ => None,
+            },
+        )
+    }
+
+    fn comments(&self, key: &str) -> Result<CommentsPage, ServiceError> {
+        self.answered(
+            &Ask::Comments {
+                request: self.next.fetch_add(1, Ordering::Relaxed),
+                key: key.to_owned(),
+            },
+            |answer| match answer {
+                FromConnector::Comments { page, .. } => Some(page),
+                _ => None,
+            },
+        )
+    }
+
+    fn segments(&self, key: &str) -> Result<SegmentPage, ServiceError> {
+        self.answered(
+            &Ask::Segments {
+                request: self.next.fetch_add(1, Ordering::Relaxed),
+                key: key.to_owned(),
+            },
+            |answer| match answer {
+                FromConnector::Segments { page, .. } => Some(page),
+                _ => None,
+            },
+        )
+    }
+
+    fn branding(&self, key: &str) -> Result<Branding, ServiceError> {
+        self.answered(
+            &Ask::Branding {
+                request: self.next.fetch_add(1, Ordering::Relaxed),
+                key: key.to_owned(),
+            },
+            |answer| match answer {
+                FromConnector::Branding { page, .. } => Some(page),
+                _ => None,
+            },
+        )
+    }
+
+    fn votes(&self, key: &str) -> Result<Votes, ServiceError> {
+        self.answered(
+            &Ask::Votes {
+                request: self.next.fetch_add(1, Ordering::Relaxed),
+                key: key.to_owned(),
+            },
+            |answer| match answer {
+                FromConnector::Votes { page, .. } => Some(page),
                 _ => None,
             },
         )

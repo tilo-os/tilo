@@ -13,7 +13,7 @@
 //! the same channel or video twice.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -25,8 +25,8 @@ use tilolang_tilo::runtime::origin::OriginWrite;
 use tilolang_tilo::runtime::{Delivery, ResourceRef, Value};
 
 use crate::service::{
-    ChannelItem, ChannelPage, PlaylistItem, PlaylistPage, SearchPage, Service, ServiceError,
-    TrendingPage, VideoItem,
+    Branding, ChannelItem, ChannelPage, CommentsPage, PlaylistItem, PlaylistPage, SearchFilter,
+    SearchPage, SegmentPage, Service, ServiceError, TrendingPage, VideoItem, Votes,
 };
 
 /// What the origin reads of each youtube kind it keeps in step, from the package's metadata.
@@ -38,6 +38,13 @@ struct Types {
     channel: OriginType,
     video: OriginType,
     playlist: OriginType,
+    /// The comments, and the root's collection of them: a client that shows none leaves them
+    /// out, and the origin writes none.
+    comment: Option<OriginType>,
+    comments_field: Option<String>,
+    /// The `SponsorBlock` segments, and the root's collection of them.
+    segment: Option<OriginType>,
+    segments_field: Option<String>,
     root: ResourceRef,
     /// The root's own record, whose fields the app reads back: how its fetch stands, and why it
     /// is not in step (`trouble`, `online`), when the app declares them.
@@ -46,12 +53,16 @@ struct Types {
 
 /// A request handed to the service and not answered yet.
 enum Pending {
-    Search { query: String },
+    Search { query: String, filter: SearchFilter },
     Channel { key: String },
     Playlist { key: String },
     Subscriptions { keys: Vec<String> },
     Trending,
-    Stream { key: String },
+    Stream { key: String, quality: String },
+    Comments { key: String },
+    Segments { key: String },
+    Branding { key: String },
+    Votes { key: String },
 }
 
 /// What a request came back with.
@@ -63,6 +74,10 @@ enum Answered {
     /// The newest videos of each channel asked for, in the order asked.
     Subscriptions(Vec<ChannelPage>),
     Stream(String),
+    Comments(CommentsPage),
+    Segments(SegmentPage),
+    Branding(Branding),
+    Votes(Votes),
 }
 
 struct Waiting {
@@ -141,6 +156,11 @@ impl YouTubeOrigin {
             channel,
             video,
             playlist,
+            // Comments and segments are written only where the client shows them.
+            comment: kind("youtube.comment"),
+            comments_field: collection_of("Comment"),
+            segment: kind("youtube.segment"),
+            segments_field: collection_of("Segment"),
             // The root as the store made it: its id is the workspace's one resource of its
             // type, not the type's own id.
             root: host.root_of(app).ok()?,
@@ -164,14 +184,22 @@ impl YouTubeOrigin {
     /// A copy of `pending`, for the thread that asks it.
     fn clone_pending(pending: &Pending) -> Pending {
         match pending {
-            Pending::Search { query } => Pending::Search {
+            Pending::Search { query, filter } => Pending::Search {
                 query: query.clone(),
+                filter: filter.clone(),
             },
             Pending::Channel { key } => Pending::Channel { key: key.clone() },
             Pending::Playlist { key } => Pending::Playlist { key: key.clone() },
             Pending::Subscriptions { keys } => Pending::Subscriptions { keys: keys.clone() },
             Pending::Trending => Pending::Trending,
-            Pending::Stream { key } => Pending::Stream { key: key.clone() },
+            Pending::Stream { key, quality } => Pending::Stream {
+                key: key.clone(),
+                quality: quality.clone(),
+            },
+            Pending::Comments { key } => Pending::Comments { key: key.clone() },
+            Pending::Segments { key } => Pending::Segments { key: key.clone() },
+            Pending::Branding { key } => Pending::Branding { key: key.clone() },
+            Pending::Votes { key } => Pending::Votes { key: key.clone() },
         }
     }
 
@@ -216,11 +244,15 @@ impl YouTubeOrigin {
 /// What the service answered to `pending`.
 fn answer(service: &dyn Service, pending: &Pending) -> Result<Answered, ServiceError> {
     match pending {
-        Pending::Search { query } => service.search(query).map(Answered::Search),
+        Pending::Search { query, filter } => service.search(query, filter).map(Answered::Search),
         Pending::Channel { key } => service.channel(key).map(Answered::Channel),
         Pending::Playlist { key } => service.playlist(key).map(Answered::Playlist),
         Pending::Trending => service.trending().map(Answered::Trending),
-        Pending::Stream { key } => service.stream(key).map(Answered::Stream),
+        Pending::Stream { key, quality } => service.stream(key, quality).map(Answered::Stream),
+        Pending::Comments { key } => service.comments(key).map(Answered::Comments),
+        Pending::Segments { key } => service.segments(key).map(Answered::Segments),
+        Pending::Branding { key } => service.branding(key).map(Answered::Branding),
+        Pending::Votes { key } => service.votes(key).map(Answered::Votes),
         Pending::Subscriptions { keys } => {
             let mut pages = Vec::new();
             for key in keys {
@@ -318,6 +350,10 @@ impl Origin for YouTubeOrigin {
                 | "youtube.subscriptions"
                 | "youtube.trending"
                 | "youtube.stream"
+                | "youtube.comments"
+                | "youtube.segments"
+                | "youtube.branding"
+                | "youtube.votes"
         )
     }
 
@@ -346,20 +382,25 @@ impl Origin for YouTubeOrigin {
     }
 
     fn deliver(&mut self, capability: &str, payload: &serde_json::Value) -> Delivery {
+        let text = || payload.as_str().unwrap_or_default().to_owned();
         let pending = match capability {
-            "youtube.search" => Pending::Search {
-                query: payload.as_str().unwrap_or_default().to_owned(),
-            },
-            "youtube.channel" => Pending::Channel {
-                key: payload.as_str().unwrap_or_default().to_owned(),
-            },
-            "youtube.playlist" => Pending::Playlist {
-                key: payload.as_str().unwrap_or_default().to_owned(),
-            },
+            "youtube.search" => {
+                // A search carries the query and what it narrows to: a client that asks
+                // without filters hands the query alone.
+                let (query, filter) = search_ask(payload);
+                Pending::Search { query, filter }
+            }
+            "youtube.channel" => Pending::Channel { key: text() },
+            "youtube.playlist" => Pending::Playlist { key: text() },
             "youtube.trending" => Pending::Trending,
-            "youtube.stream" => Pending::Stream {
-                key: payload.as_str().unwrap_or_default().to_owned(),
-            },
+            "youtube.stream" => {
+                let (key, quality) = stream_ask(payload);
+                Pending::Stream { key, quality }
+            }
+            "youtube.comments" => Pending::Comments { key: text() },
+            "youtube.segments" => Pending::Segments { key: text() },
+            "youtube.branding" => Pending::Branding { key: text() },
+            "youtube.votes" => Pending::Votes { key: text() },
             "youtube.subscriptions" => Pending::Subscriptions {
                 // The channels the person followed when they asked for the feed: their keys, in
                 // the order the feed lists them.
@@ -379,6 +420,80 @@ impl Origin for YouTubeOrigin {
         }
         Delivery::Pending
     }
+}
+
+/// A search effect's payload: the query, and what it narrows to. A client that asks without
+/// filters hands the query alone, and one that asks with them hands the query, the kinds it
+/// shows, how long they run and how recent they are, in that order.
+fn search_ask(payload: &serde_json::Value) -> (String, SearchFilter) {
+    if let Some(query) = payload.as_str() {
+        return (query.to_owned(), SearchFilter::default());
+    }
+    let parts = payload.as_array().cloned().unwrap_or_default();
+    let part = |at: usize| {
+        parts
+            .get(at)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let first = part(0);
+    if first.is_empty() {
+        // An object names each part: what a client that thinks in records hands.
+        let field = |name: &str| {
+            payload
+                .get(name)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
+        };
+        return (
+            field("query"),
+            SearchFilter {
+                kind: field("kind"),
+                length: field("length"),
+                published: field("published"),
+            },
+        );
+    }
+    (
+        first,
+        SearchFilter {
+            kind: part(1),
+            length: part(2),
+            published: part(3),
+        },
+    )
+}
+
+/// A stream effect's payload: the video, and the tallest picture asked for. A client that names
+/// none asks for the best that fits.
+fn stream_ask(payload: &serde_json::Value) -> (String, String) {
+    if let Some(key) = payload.as_str() {
+        return (key.to_owned(), String::new());
+    }
+    if let Some(parts) = payload.as_array() {
+        let part = |at: usize| {
+            parts
+                .get(at)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
+        };
+        return (part(0), part(1));
+    }
+    (
+        payload
+            .get("video")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        payload
+            .get("quality")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+    )
 }
 
 impl YouTubeOrigin {
@@ -409,7 +524,11 @@ impl YouTubeOrigin {
                 break;
             };
             wrote |= Self::write_step(host, t, &waiting.pending, &answered);
-            self.reached(&answered);
+            // The community marks are extras over YouTube's own answer: their services being
+            // down says nothing of whether YouTube can be reached.
+            if core(&waiting.pending) {
+                self.reached(&answered);
+            }
         }
         wrote
     }
@@ -503,6 +622,10 @@ impl YouTubeOrigin {
             Ok(Answered::Stream(url)) => {
                 writes.extend(stream_writes(host, t, stream_key(pending), url));
             }
+            Ok(Answered::Comments(page)) => writes.extend(comments_writes(host, t, page)),
+            Ok(Answered::Segments(page)) => writes.extend(segments_writes(host, t, page)),
+            Ok(Answered::Branding(branding)) => writes.extend(branding_writes(host, t, branding)),
+            Ok(Answered::Votes(votes)) => writes.extend(votes_writes(host, t, votes)),
         }
         if writes.is_empty() {
             return Ok(false);
@@ -528,7 +651,11 @@ impl YouTubeOrigin {
             Pending::Channel { .. }
             | Pending::Playlist { .. }
             | Pending::Trending
-            | Pending::Stream { .. } => return,
+            | Pending::Stream { .. }
+            | Pending::Comments { .. }
+            | Pending::Segments { .. }
+            | Pending::Branding { .. }
+            | Pending::Votes { .. } => return,
         };
         let mut fields = Vec::new();
         put(&t.root_ty, &mut fields, what, Self::text(state));
@@ -731,9 +858,186 @@ fn stream_writes(host: &Host, t: &Types, key: &str, url: &str) -> Vec<OriginWrit
 
 fn stream_key(pending: &Pending) -> &str {
     match pending {
-        Pending::Stream { key } => key,
+        Pending::Stream { key, .. } => key,
         _ => "",
     }
+}
+
+/// Whether `pending` asks YouTube itself: a failure there says YouTube cannot be reached. The
+/// community services beside it (SponsorBlock, DeArrow, Return YouTube Dislike) and a video's
+/// comments are extras, whose being unreachable says nothing of YouTube's own answer.
+fn core(pending: &Pending) -> bool {
+    matches!(
+        pending,
+        Pending::Search { .. }
+            | Pending::Channel { .. }
+            | Pending::Playlist { .. }
+            | Pending::Subscriptions { .. }
+            | Pending::Trending
+            | Pending::Stream { .. }
+    )
+}
+
+/// A video's comments: each written where the client keeps them, keyed by the comment's own id,
+/// and the ones the video no longer has taken out. A client that shows no comments keeps none.
+fn comments_writes(host: &Host, t: &Types, page: &CommentsPage) -> Vec<OriginWrite> {
+    let (Some(ty), Some(field)) = (&t.comment, &t.comments_field) else {
+        return Vec::new();
+    };
+    let items: Vec<(String, Vec<(String, Value)>)> = page
+        .comments
+        .iter()
+        .map(|c| (c.key.clone(), comment_fields(ty, &page.video, c)))
+        .collect();
+    let kept: BTreeSet<&str> = page.comments.iter().map(|c| c.key.as_str()).collect();
+    let mut writes = gone_writes(host, t, ty, field, &page.video, |key| kept.contains(key));
+    writes.extend(upsert_writes(host, ty, &t.root, field, "key", &items));
+    writes
+}
+
+/// The fields of a comment the service named, as the package's kind declares them.
+fn comment_fields(
+    ty: &OriginType,
+    video: &str,
+    c: &crate::service::CommentItem,
+) -> Vec<(String, Value)> {
+    declared(
+        ty,
+        vec![
+            ("key", YouTubeOrigin::text(&c.key)),
+            ("video_key", YouTubeOrigin::text(video)),
+            ("author", YouTubeOrigin::text(&c.author)),
+            ("avatar", YouTubeOrigin::text(&c.avatar)),
+            ("text", YouTubeOrigin::text(&c.text)),
+            ("likes", Value::Int(c.likes)),
+            ("published", YouTubeOrigin::text(&c.published)),
+            ("pinned", Value::Bool(c.pinned)),
+            ("hearted", Value::Bool(c.hearted)),
+            ("replies", Value::Int(c.replies)),
+        ],
+    )
+}
+
+/// The items of the collection `field` of `owner` whose `video_key` is `video` and whose `key`
+/// `kept` refuses taken out: a comment or a segment the service no longer lists.
+fn gone_writes(
+    host: &Host,
+    t: &Types,
+    ty: &OriginType,
+    field: &str,
+    video: &str,
+    kept: impl Fn(&str) -> bool,
+) -> Vec<OriginWrite> {
+    items_in(host, &t.root, field)
+        .into_iter()
+        .filter(|item| {
+            read_text(host, item, ty, "video_key") == video
+                && !kept(&read_text(host, item, ty, "key"))
+        })
+        .map(|item| OriginWrite::Remove {
+            owner: t.root.clone(),
+            field: field.to_owned(),
+            item,
+        })
+        .collect()
+}
+
+/// The `SponsorBlock` segments of a video: the ones it plays replaced by what the service says
+/// now, each keyed by where it stands, so asking again rewrites them rather than piling up.
+fn segments_writes(host: &Host, t: &Types, page: &SegmentPage) -> Vec<OriginWrite> {
+    let (Some(ty), Some(field)) = (&t.segment, &t.segments_field) else {
+        return Vec::new();
+    };
+    // Every segment of the answer replaces the ones the client held for the video.
+    let items: Vec<(String, Vec<(String, Value)>)> = page
+        .segments
+        .iter()
+        .map(|s| {
+            let key = format!("{}:{}:{}", s.video_key, s.category, s.start);
+            (
+                key,
+                declared(
+                    ty,
+                    vec![
+                        (
+                            "key",
+                            YouTubeOrigin::text(&format!(
+                                "{}:{}:{}",
+                                s.video_key, s.category, s.start,
+                            )),
+                        ),
+                        ("video_key", YouTubeOrigin::text(&s.video_key)),
+                        ("category", YouTubeOrigin::text(&s.category)),
+                        ("start", Value::Int(whole_seconds(s.start))),
+                        ("end", Value::Int(whole_seconds(s.end))),
+                        ("votes", Value::Int(s.votes)),
+                    ],
+                ),
+            )
+        })
+        .collect();
+    let kept: BTreeSet<&str> = items.iter().map(|(key, _)| key.as_str()).collect();
+    let mut writes = gone_writes(host, t, ty, field, &page.video, |key| kept.contains(key));
+    writes.extend(upsert_writes(host, ty, &t.root, field, "key", &items));
+    writes
+}
+
+/// A segment's time in whole seconds, as the client's records keep it: SponsorBlock answers
+/// fractional seconds, and a skip a fraction of a second off is not seen.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a segment's time in whole seconds, which a skip reads"
+)]
+fn whole_seconds(at: f64) -> i64 {
+    at.round() as i64
+}
+
+/// `DeArrow`'s community title and picture of a video, written onto the video the client holds.
+fn branding_writes(host: &Host, t: &Types, branding: &Branding) -> Vec<OriginWrite> {
+    let Some(at) = items_in(host, &t.root, &t.videos_field)
+        .into_iter()
+        .find(|item| read_text(host, item, &t.video, "key") == branding.video)
+    else {
+        return Vec::new();
+    };
+    let mut fields = Vec::new();
+    put(
+        &t.video,
+        &mut fields,
+        "dearrow_title",
+        YouTubeOrigin::text(&branding.title),
+    );
+    put(
+        &t.video,
+        &mut fields,
+        "dearrow_thumbnail",
+        YouTubeOrigin::text(&branding.thumbnail),
+    );
+    if fields.is_empty() {
+        return Vec::new();
+    }
+    vec![OriginWrite::Set { target: at, fields }]
+}
+
+/// Return YouTube Dislike's estimate of how many people disliked a video, written onto it.
+fn votes_writes(host: &Host, t: &Types, votes: &Votes) -> Vec<OriginWrite> {
+    let Some(at) = items_in(host, &t.root, &t.videos_field)
+        .into_iter()
+        .find(|item| read_text(host, item, &t.video, "key") == votes.video)
+    else {
+        return Vec::new();
+    };
+    let mut fields = Vec::new();
+    put(
+        &t.video,
+        &mut fields,
+        "dislikes",
+        Value::Int(votes.dislikes),
+    );
+    if fields.is_empty() {
+        return Vec::new();
+    }
+    vec![OriginWrite::Set { target: at, fields }]
 }
 
 /// The fields an answer writes into a video of the kind, the search that found it included.

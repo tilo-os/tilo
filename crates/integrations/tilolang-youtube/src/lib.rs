@@ -33,8 +33,9 @@ pub use origin::YouTubeOrigin;
 #[cfg(unix)]
 pub use remote::RemoteService;
 pub use service::{
-    ChannelItem, ChannelPage, Live, PlaylistItem, PlaylistPage, Scripted, SearchPage, Service,
-    ServiceError, TrendingPage, VideoItem, scripted,
+    Branding, ChannelItem, ChannelPage, CommentItem, CommentsPage, Live, PlaylistItem,
+    PlaylistPage, Scripted, SearchFilter, SearchPage, SegmentItem, SegmentPage, Service,
+    ServiceError, TrendingPage, VideoItem, Votes, scripted,
 };
 
 /// The origin kept in step with YouTube over the connector at the far end of `stream`, waking

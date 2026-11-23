@@ -7,7 +7,10 @@ use std::io::{self, Read, Write};
 
 use serde::{Deserialize, Serialize};
 
-use crate::service::{ChannelPage, PlaylistPage, SearchPage, ServiceError, TrendingPage};
+use crate::service::{
+    Branding, ChannelPage, CommentsPage, PlaylistPage, SearchFilter, SearchPage, SegmentPage,
+    ServiceError, TrendingPage, Votes,
+};
 
 /// The largest frame either side accepts: a channel's page with its videos fits many times over.
 pub const MAX_FRAME: usize = 64 << 20;
@@ -17,11 +20,49 @@ const FRAMING: wire_frame::Framing = wire_frame::Framing::big_endian(MAX_FRAME);
 /// What the origin asks of the connector, under the id it knows it by.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Ask {
-    Search { request: u64, query: String },
-    Channel { request: u64, key: String },
-    Trending { request: u64 },
-    Stream { request: u64, key: String },
-    Playlist { request: u64, key: String },
+    Search {
+        request: u64,
+        query: String,
+        /// What the search narrows to; left out when it narrows nothing, so a plain search's
+        /// frame is what it always was.
+        #[serde(default, skip_serializing_if = "SearchFilter::is_any")]
+        filter: SearchFilter,
+    },
+    Channel {
+        request: u64,
+        key: String,
+    },
+    Trending {
+        request: u64,
+    },
+    Stream {
+        request: u64,
+        key: String,
+        /// The tallest picture asked for (`auto` for the best that fits); left out when the
+        /// ask names none.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        quality: String,
+    },
+    Playlist {
+        request: u64,
+        key: String,
+    },
+    Comments {
+        request: u64,
+        key: String,
+    },
+    Segments {
+        request: u64,
+        key: String,
+    },
+    Branding {
+        request: u64,
+        key: String,
+    },
+    Votes {
+        request: u64,
+        key: String,
+    },
 }
 
 /// The id a question is asked under.
@@ -32,12 +73,17 @@ pub const fn request_of(ask: &Ask) -> u64 {
         | Ask::Channel { request, .. }
         | Ask::Playlist { request, .. }
         | Ask::Trending { request }
-        | Ask::Stream { request, .. } => *request,
+        | Ask::Stream { request, .. }
+        | Ask::Comments { request, .. }
+        | Ask::Segments { request, .. }
+        | Ask::Branding { request, .. }
+        | Ask::Votes { request, .. } => *request,
     }
 }
 
-/// What the connector answers.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// What the connector answers. Its pages carry a segment's times as numbers, so it is compared
+/// as one but never ordered.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum FromConnector {
     Search {
         request: u64,
@@ -64,6 +110,22 @@ pub enum FromConnector {
         request: u64,
         page: PlaylistPage,
     },
+    Comments {
+        request: u64,
+        page: CommentsPage,
+    },
+    Segments {
+        request: u64,
+        page: SegmentPage,
+    },
+    Branding {
+        request: u64,
+        page: Branding,
+    },
+    Votes {
+        request: u64,
+        page: Votes,
+    },
 }
 
 /// What an answer answers, for a fault that says the connector answered another question.
@@ -75,6 +137,10 @@ pub const fn kind_of(answer: &FromConnector) -> &'static str {
         FromConnector::Playlist { .. } => "a playlist",
         FromConnector::Trending { .. } => "the trending list",
         FromConnector::Stream { .. } => "a stream",
+        FromConnector::Comments { .. } => "a video's comments",
+        FromConnector::Segments { .. } => "a video's segments",
+        FromConnector::Branding { .. } => "a video's community title",
+        FromConnector::Votes { .. } => "a video's votes",
         FromConnector::Failed { .. } => "a failure",
     }
 }
@@ -89,6 +155,10 @@ impl FromConnector {
             | Self::Playlist { request, .. }
             | Self::Trending { request, .. }
             | Self::Stream { request, .. }
+            | Self::Comments { request, .. }
+            | Self::Segments { request, .. }
+            | Self::Branding { request, .. }
+            | Self::Votes { request, .. }
             | Self::Failed { request, .. } => *request,
         }
     }
@@ -144,6 +214,7 @@ mod tests {
         let ask = Ask::Search {
             request: 7,
             query: "phone reviews".to_owned(),
+            filter: SearchFilter::default(),
         };
         {
             let mut file = std::fs::File::create(&path).expect("a file");
@@ -175,15 +246,30 @@ mod tests {
             b"\x00\x00\x00B{\"Stream\":{\"request\":9,\"url\":\"https://video.example/watch?v=abc\"}}";
         const FAILED_WIRE: &[u8] =
             b"\x00\x00\x00/{\"Failed\":{\"request\":7,\"reason\":\"unreachable\"}}";
+        // A narrowed search names what it narrows to after the query.
+        const FILTERED_WIRE: &[u8] = b"\x00\x00\x00\x6e{\"Search\":{\"request\":7,\"query\":\"phone reviews\",\"filter\":{\"kind\":\"video\",\"length\":\"short\",\"published\":\"week\"}}}";
 
         assert_wire_fixture(
             &Ask::Search {
                 request: 7,
                 query: "phone reviews".to_owned(),
+                filter: SearchFilter::default(),
             },
             SEARCH_WIRE,
         );
         assert_wire_fixture(&Ask::Trending { request: 8 }, TRENDING_WIRE);
+        assert_wire_fixture(
+            &Ask::Search {
+                request: 7,
+                query: "phone reviews".to_owned(),
+                filter: SearchFilter {
+                    kind: "video".to_owned(),
+                    length: "short".to_owned(),
+                    published: "week".to_owned(),
+                },
+            },
+            FILTERED_WIRE,
+        );
         assert_wire_fixture(
             &FromConnector::Stream {
                 request: 9,

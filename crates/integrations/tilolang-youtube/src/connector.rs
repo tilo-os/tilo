@@ -75,8 +75,12 @@ fn answer_each(mut stream: UnixStream, service: &dyn Service) {
 fn asked(service: &dyn Service, ask: &Ask) -> Result<FromConnector, String> {
     let failed = |error: crate::service::ServiceError| error.0;
     match ask {
-        Ask::Search { request, query } => {
-            let page = service.search(query).map_err(failed)?;
+        Ask::Search {
+            request,
+            query,
+            filter,
+        } => {
+            let page = service.search(query, filter).map_err(failed)?;
             Ok(FromConnector::Search {
                 request: *request,
                 page,
@@ -103,11 +107,43 @@ fn asked(service: &dyn Service, ask: &Ask) -> Result<FromConnector, String> {
                 page,
             })
         }
-        Ask::Stream { request, key } => {
-            let url = service.stream(key).map_err(failed)?;
+        Ask::Stream {
+            request,
+            key,
+            quality,
+        } => {
+            let url = service.stream(key, quality).map_err(failed)?;
             Ok(FromConnector::Stream {
                 request: *request,
                 url,
+            })
+        }
+        Ask::Comments { request, key } => {
+            let page = service.comments(key).map_err(failed)?;
+            Ok(FromConnector::Comments {
+                request: *request,
+                page,
+            })
+        }
+        Ask::Segments { request, key } => {
+            let page = service.segments(key).map_err(failed)?;
+            Ok(FromConnector::Segments {
+                request: *request,
+                page,
+            })
+        }
+        Ask::Branding { request, key } => {
+            let page = service.branding(key).map_err(failed)?;
+            Ok(FromConnector::Branding {
+                request: *request,
+                page,
+            })
+        }
+        Ask::Votes { request, key } => {
+            let page = service.votes(key).map_err(failed)?;
+            Ok(FromConnector::Votes {
+                request: *request,
+                page,
             })
         }
     }

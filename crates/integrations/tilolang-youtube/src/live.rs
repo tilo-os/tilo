@@ -23,8 +23,9 @@ use rustypipe::model::richtext::ToPlaintext;
 use rustypipe::model::{ChannelItem, PlaylistItem, VideoItem, YouTubeItem};
 
 use crate::service::{
-    ChannelItem as SaidChannel, ChannelPage, PlaylistItem as SaidPlaylist, PlaylistPage,
-    SearchPage, ServiceError, TrendingPage, VideoItem as SaidVideo,
+    Branding, ChannelItem as SaidChannel, ChannelPage, CommentItem as SaidComment, CommentsPage,
+    PlaylistItem as SaidPlaylist, PlaylistPage, SearchFilter, SearchPage, SegmentItem, SegmentPage,
+    ServiceError, TrendingPage, VideoItem as SaidVideo, Votes,
 };
 
 /// The one rustypipe client of the process, with the runtime its queries wait on.
@@ -251,11 +252,48 @@ impl LiveClient {
     }
 }
 
-/// What YouTube finds for `query`, split the way the client's search view lists it.
-pub fn search(client: &LiveClient, query: &str) -> Result<SearchPage, ServiceError> {
+/// What YouTube finds for `query`, narrowed by `filter`, split the way the client's search view
+/// lists it.
+pub fn search(
+    client: &LiveClient,
+    query: &str,
+    filter: &SearchFilter,
+) -> Result<SearchPage, ServiceError> {
     let q = client.query();
-    let found = client.block(tilo_innertube::search(&q, query))?;
+    let found = client.block(tilo_innertube::search_filter(
+        &q,
+        query,
+        &search_filter(filter),
+    ))?;
     Ok(page_of(client, query, found.items.items))
+}
+
+/// The filter a search narrows by, in rustypipe's own terms: each part the client names, and
+/// nothing for one it leaves `any`.
+fn search_filter(filter: &SearchFilter) -> rustypipe::param::search_filter::SearchFilter {
+    use rustypipe::param::search_filter::{ItemType, Length, SearchFilter as Rusty, UploadDate};
+    let mut narrowed = Rusty::new();
+    match filter.kind.as_str() {
+        "video" => narrowed = narrowed.item_type(ItemType::Video),
+        "channel" => narrowed = narrowed.item_type(ItemType::Channel),
+        "playlist" => narrowed = narrowed.item_type(ItemType::Playlist),
+        _ => {}
+    }
+    match filter.length.as_str() {
+        "short" => narrowed = narrowed.length(Length::Short),
+        "medium" => narrowed = narrowed.length(Length::Medium),
+        "long" => narrowed = narrowed.length(Length::Long),
+        _ => {}
+    }
+    match filter.published.as_str() {
+        "hour" => narrowed = narrowed.date(UploadDate::Hour),
+        "today" | "day" => narrowed = narrowed.date(UploadDate::Day),
+        "week" => narrowed = narrowed.date(UploadDate::Week),
+        "month" => narrowed = narrowed.date(UploadDate::Month),
+        "year" => narrowed = narrowed.date(UploadDate::Year),
+        _ => {}
+    }
+    narrowed
 }
 
 /// What the client's items become for the client: each still held as content, and every field
@@ -348,13 +386,308 @@ pub fn trending(client: &LiveClient) -> Result<TrendingPage, ServiceError> {
 }
 
 /// The address a video's bytes play from: the progressive stream carrying picture and sound,
-/// so a plain HTTP source can stream, seek and reach the end.
-pub fn stream(client: &LiveClient, key: &str) -> Result<String, ServiceError> {
+/// no taller than `quality` names (`auto` for the best that fits), so a plain HTTP source can
+/// stream, seek and reach the end.
+pub fn stream(client: &LiveClient, key: &str, quality: &str) -> Result<String, ServiceError> {
     let q = client.query();
     let player = client.block(tilo_innertube::player(&q, key))?;
-    tilo_innertube::whole_file_stream(&player.video_streams, None)
+    tilo_innertube::whole_file_stream(&player.video_streams, height_of(quality))
         .map(|stream| stream.url.clone())
         .ok_or_else(|| ServiceError(format!("YouTube serves no playable stream of {key}")))
+}
+
+/// The tallest picture a quality names, as `1080p` reads: `None` for `auto` (or nothing), the
+/// best that fits.
+#[must_use]
+pub fn height_of(quality: &str) -> Option<u32> {
+    let height = quality.strip_suffix('p').unwrap_or(quality);
+    height.parse().ok().filter(|height| *height > 0)
+}
+
+/// A video's comments, most liked first.
+pub fn comments(client: &LiveClient, key: &str) -> Result<CommentsPage, ServiceError> {
+    let q = client.query();
+    let details = client.block(tilo_innertube::video_details(&q, key))?;
+    let page = client.block(tilo_innertube::next_comments(&details.top_comments, &q))?;
+    let comments = page
+        .map(|page| page.items)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|comment| said_comment(client, key, comment))
+        .collect();
+    Ok(CommentsPage {
+        video: key.to_owned(),
+        comments,
+    })
+}
+
+fn said_comment(
+    client: &LiveClient,
+    video: &str,
+    comment: rustypipe::model::Comment,
+) -> SaidComment {
+    let (author, avatar) = comment.author.map_or_else(
+        || (String::new(), String::new()),
+        |c| (c.name, client.held_picture(&best_thumb(&c.avatar))),
+    );
+    SaidComment {
+        key: comment.id,
+        video_key: video.to_owned(),
+        author,
+        avatar,
+        text: plain(&comment.text),
+        likes: i64::from(comment.like_count.unwrap_or(0)),
+        published: comment.publish_date.map_or_else(
+            || "1970-01-01T00:00:00Z".to_owned(),
+            |at| {
+                at.to_offset(tilo_innertube::time::UtcOffset::UTC)
+                    .format(&tilo_innertube::time::format_description::well_known::Rfc3339)
+                    .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned())
+            },
+        ),
+        pinned: comment.pinned,
+        hearted: comment.hearted,
+        replies: i64::from(comment.reply_count),
+    }
+}
+
+/// `SponsorBlock`'s skip segments for a video.
+const SPONSOR_ENDPOINT: &str = "https://sponsor.ajay.app/api/skipSegments";
+/// `DeArrow`'s community titles and pictures.
+const DEARROW_ENDPOINT: &str = "https://sponsor.ajay.app/api/branding";
+/// Return YouTube Dislike's estimates.
+const DISLIKE_ENDPOINT: &str = "https://returnyoutubedislikeapi.com/votes";
+
+/// The `SponsorBlock` segments of a video, in the order they play.
+pub fn segments(client: &LiveClient, key: &str) -> Result<SegmentPage, ServiceError> {
+    let _ = client;
+    let categories = sponsor_categories();
+    let answer = get_json(
+        SPONSOR_ENDPOINT,
+        &[("videoID", key), ("categories", &categories)],
+    )?;
+    let segments = answer
+        .map(|value| parse_segments(key, &value))
+        .unwrap_or_default();
+    Ok(SegmentPage {
+        video: key.to_owned(),
+        segments,
+    })
+}
+
+/// The `SponsorBlock` categories a skip asks for: every kind it marks, as its own API names them.
+fn sponsor_categories() -> String {
+    serde_json::to_string(&[
+        "sponsor",
+        "selfpromo",
+        "interaction",
+        "intro",
+        "outro",
+        "preview",
+        "music_offtopic",
+        "filler",
+    ])
+    .unwrap_or_else(|_| "[]".to_owned())
+}
+
+/// The segments a `SponsorBlock` answer lists, each kept when its kind and times read, in the
+/// order they play.
+#[must_use]
+pub fn parse_segments(video: &str, answer: &serde_json::Value) -> Vec<SegmentItem> {
+    let Some(list) = answer.as_array() else {
+        // A video SponsorBlock holds no segment of answers `[]`, and one it does not know a
+        // 404 the caller already read as none.
+        return Vec::new();
+    };
+    let mut segments: Vec<SegmentItem> = list
+        .iter()
+        .filter_map(|segment| {
+            let category = segment.get("category")?.as_str()?.to_owned();
+            let times = segment.get("segment")?.as_array()?;
+            let start = times.first()?.as_f64()?;
+            let end = times.get(1)?.as_f64()?;
+            Some(SegmentItem {
+                video_key: video.to_owned(),
+                category,
+                start,
+                end,
+                votes: segment
+                    .get("votes")
+                    .and_then(serde_json::Value::as_i64)
+                    .unwrap_or(0),
+            })
+        })
+        .collect();
+    segments.sort_by(|a, b| {
+        a.start
+            .partial_cmp(&b.start)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    segments
+}
+
+/// `DeArrow`'s community title and picture of a video, as the client's own terms carry them:
+/// the picture is fetched and kept as this device's content, like every still.
+pub fn branding(client: &LiveClient, key: &str) -> Result<Branding, ServiceError> {
+    let answer = get_json(DEARROW_ENDPOINT, &[("videoID", key)])?;
+    let Some(answer) = answer else {
+        return Ok(Branding {
+            video: key.to_owned(),
+            ..Branding::default()
+        });
+    };
+    let (title, thumbnail) = parse_branding(key, &answer);
+    Ok(Branding {
+        video: key.to_owned(),
+        title,
+        thumbnail: thumbnail.map_or_else(String::new, |url| client.held_picture(&url)),
+    })
+}
+
+/// What a `DeArrow` answer calls a video: the best-voted title that is not the maker's own, and
+/// the timestamp a picture is taken at. A locked entry beats every unlocked one.
+#[must_use]
+pub fn parse_branding(key: &str, answer: &serde_json::Value) -> (String, Option<String>) {
+    fn score(entry: &serde_json::Value) -> Option<i64> {
+        if entry
+            .get("original")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+        {
+            return None;
+        }
+        let votes = entry
+            .get("votes")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0);
+        let locked = entry
+            .get("locked")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        if votes < 0 && !locked {
+            return None;
+        }
+        Some(if locked {
+            votes.saturating_add(1_000_000)
+        } else {
+            votes
+        })
+    }
+    let title = answer
+        .get("titles")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| Some((score(entry)?, entry)))
+                .max_by_key(|(votes, _)| *votes)
+                .and_then(|(_, entry)| entry.get("title")?.as_str())
+                .map(str::to_owned)
+        })
+        .unwrap_or_default();
+    let thumbnail = answer
+        .get("thumbnails")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| Some((score(entry)?, entry.get("timestamp")?.as_f64()?)))
+                .max_by_key(|(votes, _)| *votes)
+                .map(|(_, timestamp)| {
+                    format!(
+                        "https://dearrow-thumb.ajay.app/api/v1/getThumbnail?videoID={key}&time={timestamp}"
+                    )
+                })
+        });
+    (title, thumbnail)
+}
+
+/// Return YouTube Dislike's estimate for a video.
+pub fn votes(client: &LiveClient, key: &str) -> Result<Votes, ServiceError> {
+    let _ = client;
+    let answer = get_json(DISLIKE_ENDPOINT, &[("videoId", key)])?;
+    let votes =
+        answer
+            .as_ref()
+            .and_then(parse_votes)
+            .map_or_else(Votes::default, |(dislikes, likes)| Votes {
+                video: key.to_owned(),
+                dislikes,
+                likes,
+            });
+    Ok(votes)
+}
+
+/// What a Return YouTube Dislike answer says of the votes: the dislikes, and the likes when it
+/// carries them.
+#[must_use]
+pub fn parse_votes(answer: &serde_json::Value) -> Option<(i64, Option<i64>)> {
+    let dislikes = answer.get("dislikes")?.as_i64()?;
+    let likes = answer.get("likes").and_then(serde_json::Value::as_i64);
+    Some((dislikes, likes))
+}
+
+/// `url` with `query` asked as a query string: every byte outside the unreserved set is
+/// percent-encoded, as a category list of JSON needs.
+fn queried(url: &str, query: &[(&str, &str)]) -> String {
+    fn encoded(text: &str) -> String {
+        const HEX: &[u8; 16] = b"0123456789ABCDEF";
+        let mut out = String::new();
+        for byte in text.bytes() {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+                out.push(char::from(byte));
+            } else {
+                let high = usize::from(byte >> 4);
+                let low = usize::from(byte & 0x0f);
+                out.push('%');
+                out.push(char::from(*HEX.get(high).unwrap_or(&b'0')));
+                out.push(char::from(*HEX.get(low).unwrap_or(&b'0')));
+            }
+        }
+        out
+    }
+    let mut out = url.to_owned();
+    for (at, (key, value)) in query.iter().enumerate() {
+        out.push(if at == 0 { '?' } else { '&' });
+        out.push_str(&encoded(key));
+        out.push('=');
+        out.push_str(&encoded(value));
+    }
+    out
+}
+
+/// What `url`, asked with `query`, answers as JSON; `None` when the service holds nothing for
+/// it (an HTTP 404).
+fn get_json(url: &str, query: &[(&str, &str)]) -> Result<Option<serde_json::Value>, ServiceError> {
+    /// One client for the process, as the pictures' is: its connection pool and TLS setup are
+    /// the slow part, and a video's page asks three services at once.
+    static CLIENT: OnceLock<Option<tilo_net::http::BlockingClient>> = OnceLock::new();
+    let client = CLIENT.get_or_init(|| {
+        let built = tilo_net::http::blocking_client()
+            .timeout(std::time::Duration::from_secs(8))
+            .build()
+            .map_err(|error| tracing::warn!(%error, "no client for YouTube's community services"));
+        built.ok()
+    });
+    let Some(client) = client.as_ref() else {
+        return Err(ServiceError(
+            "no client for YouTube's community services".to_owned(),
+        ));
+    };
+    let response = client
+        .get(queried(url, query))
+        .send()
+        .map_err(|error| ServiceError(format!("{url}: {error}")))?;
+    if response.status().as_u16() == 404 {
+        return Ok(None);
+    }
+    let response = response
+        .error_for_status()
+        .map_err(|error| ServiceError(format!("{url}: {error}")))?;
+    let value: serde_json::Value = response
+        .json()
+        .map_err(|error| ServiceError(format!("{url}: {error}")))?;
+    Ok(Some(value))
 }
 
 fn said_video(v: VideoItem, client: &LiveClient) -> SaidVideo {
@@ -443,4 +776,101 @@ fn best_thumb(thumbs: &[rustypipe::model::Thumbnail]) -> String {
 #[must_use]
 pub fn plain(text: &impl ToPlaintext) -> String {
     text.to_plaintext()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The segments a SponsorBlock answer lists, in play order, and the categories it names.
+    #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "a segment's times are the fixture's own, read back as they were written"
+    )]
+    fn sponsor_segments_read_in_play_order() {
+        let answer = serde_json::json!([
+            {"category": "outro", "segment": [9.0, 10.0], "votes": 2},
+            {"category": "sponsor", "segment": [30.5, 45.0], "votes": 10}
+        ]);
+        let segments = parse_segments("abc", &answer);
+        assert_eq!(segments.len(), 2, "every listed segment is kept");
+        assert_eq!(segments[0].category, "outro");
+        assert_eq!(segments[1].start, 30.5);
+        assert_eq!(segments[1].end, 45.0);
+        assert_eq!(segments[1].votes, 10);
+        assert_eq!(segments[1].video_key, "abc");
+        assert_eq!(parse_segments("abc", &serde_json::json!([])).len(), 0);
+        assert_eq!(
+            parse_segments("abc", &serde_json::json!({"no": "list"})).len(),
+            0
+        );
+    }
+
+    /// DeArrow's best-voted entry names the video; the maker's own and its negatives do not,
+    /// and a locked entry beats every unlocked one.
+    #[test]
+    fn dearrow_branding_takes_the_community_vote() {
+        let answer = serde_json::json!({
+            "titles": [
+                {"title": "The maker's own", "original": true, "votes": 900},
+                {"title": "Unpopular", "votes": -4},
+                {"title": "What it is really about", "votes": 42}
+            ],
+            "thumbnails": [
+                {"timestamp": 12.5, "votes": 7},
+                {"timestamp": 40.0, "votes": -1}
+            ]
+        });
+        let (title, thumbnail) = parse_branding("abc", &answer);
+        assert_eq!(title, "What it is really about");
+        assert_eq!(
+            thumbnail.as_deref(),
+            Some("https://dearrow-thumb.ajay.app/api/v1/getThumbnail?videoID=abc&time=12.5")
+        );
+
+        let locked = serde_json::json!({
+            "titles": [
+                {"title": "Voted low", "votes": 9},
+                {"title": "Kept by its author", "votes": -3, "locked": true}
+            ]
+        });
+        assert_eq!(
+            parse_branding("xyz", &locked).0,
+            "Kept by its author",
+            "a locked title wins over a better-voted unlocked one"
+        );
+
+        assert_eq!(
+            parse_branding("xyz", &serde_json::json!({})),
+            (String::new(), None),
+            "an answer naming nothing changes nothing"
+        );
+    }
+
+    /// Return YouTube Dislike's answer, and a quality named as a height.
+    #[test]
+    fn votes_and_qualities_read() {
+        assert_eq!(
+            parse_votes(&serde_json::json!({"likes": 900, "dislikes": 42})),
+            Some((42, Some(900)))
+        );
+        assert_eq!(parse_votes(&serde_json::json!({"likes": 900})), None);
+        assert_eq!(height_of("auto"), None);
+        assert_eq!(height_of(""), None);
+        assert_eq!(height_of("1080p"), Some(1080));
+        assert_eq!(height_of("480"), Some(480));
+    }
+
+    /// A question's query string: a category list of JSON is encoded, a video id is not.
+    #[test]
+    fn a_query_string_is_encoded() {
+        assert_eq!(
+            queried(
+                "https://sponsor.ajay.app/api/skipSegments",
+                &[("videoID", "abc_1-2"), ("categories", "[\"sponsor\"]")]
+            ),
+            "https://sponsor.ajay.app/api/skipSegments?videoID=abc_1-2&categories=%5B%22sponsor%22%5D"
+        );
+    }
 }
