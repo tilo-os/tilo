@@ -780,7 +780,7 @@ type = "gui"
             }
             // phase: a_truncated_or_overlong_chunk_is_refused
             {
-                let mut truncated = objects.clone();
+                let mut truncated = objects;
                 truncated
                     .get_mut(&blob_object_name(&list.chunks[4].hash))
                     .unwrap()
@@ -791,7 +791,7 @@ type = "gui"
                         .read_to_end(&mut out)
                         .is_err()
                 );
-                let mut assembly = Reassembly::new(list.clone());
+                let mut assembly = Reassembly::new(list);
                 assert!(matches!(
                     assembly.update(&[0; 1025]),
                     Err(ChunkError::ChunkTooLong { .. })
