@@ -4,7 +4,19 @@
     clippy::expect_used,
     clippy::panic,
     clippy::indexing_slicing,
-    reason = "a failed unwrap or index in a test is its assertion"
+    clippy::too_many_lines,
+    clippy::similar_names,
+    clippy::single_match_else,
+    clippy::string_slice,
+    clippy::significant_drop_tightening,
+    clippy::many_single_char_names,
+    clippy::type_complexity,
+    clippy::unused_self,
+    clippy::unreachable,
+    clippy::future_not_send,
+    clippy::arithmetic_side_effects,
+    clippy::while_immutable_condition,
+    reason = "in a test these are the assertion, not a hazard; one scenario reads in order, and its names are its domain's"
 )]
 // One test binary instead of four: each tests/*.rs linked this whole crate as a
 // binary of its own. #[path] keeps the files where they are, and nextest runs
@@ -49,6 +61,18 @@ mod device_actions;
 mod device_host;
 #[path = "device_writes.rs"]
 mod device_writes;
+#[path = "files_collab.rs"]
+mod files_collab;
+#[path = "files_content.rs"]
+mod files_content;
+#[path = "files_import.rs"]
+mod files_import;
+#[path = "files_paths.rs"]
+mod files_paths;
+/// What the Files tests read of what a daemon keeps.
+mod files_support;
+#[path = "files_views.rs"]
+mod files_views;
 #[path = "support/guests.rs"]
 mod guests;
 /// The one fixture a test reaches a device's daemon through.
