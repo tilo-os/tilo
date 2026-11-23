@@ -510,7 +510,14 @@ impl Checker<'_> {
         let reads_state = names
             .iter()
             .any(|n| self.state_named(n).is_some() || self.clock_named(n));
-        if reads_state && !matches!(want, Ty::Action) {
+        // What an event carries is in place only when it fires: a value computed from it
+        // (`set(expr, x.expr)`) is computed then. Given as itself, it is filled in place.
+        let reads_event = !matches!(e.kind, ExprKind::Ident(_))
+            && names.iter().any(|n| {
+                self.lookup(n)
+                    .is_some_and(|(local, _)| self.st.event_values.contains(&local))
+            });
+        if (reads_state || reads_event) && !matches!(want, Ty::Action) {
             return self.at_event(e, want, &names);
         }
         self.expr_as(e, want)
@@ -536,10 +543,15 @@ impl Checker<'_> {
     ) -> Ex {
         let mut params = Vec::new();
         let mut args = Vec::new();
+        // The scalars an event carries come boxed until it fires; the function reads them plain.
+        let mut boxed = Vec::new();
         for name in names {
             let (ty, arg) = if let Some(state) = self.state_named(name) {
                 (state.ty.clone(), Self::state_at(&state))
             } else if let Some((local, ty)) = self.lookup(name) {
+                if self.st.event_scalars.contains(&local) {
+                    boxed.push(name.clone());
+                }
                 (ty.clone(), Ex::local(local, ty))
             } else {
                 continue;
@@ -561,6 +573,15 @@ impl Checker<'_> {
         self.st.ns.clone_from(&outer.ns);
         self.st.types.clone_from(&outer.types);
         self.st.press = true;
+        for name in &boxed {
+            if let Some((local, Ty::Option(inner))) = self.lookup(name) {
+                let plain = self.declare(name, (*inner).clone());
+                self.emit(Stmt::Set(
+                    plain,
+                    Self::unwrap_opt(Ex::local(local, Ty::Option(inner.clone())), &inner),
+                ));
+            }
+        }
         let value = self.expr_as(e, want);
         self.emit(Stmt::Return(Some(value)));
         let name = format!("{} at the event", outer.view_id);

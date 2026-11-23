@@ -1226,6 +1226,13 @@ fn fill_event_value(held: &mut Value, value: Option<&Value>) -> Result<(), ()> {
         // option (`set(editing, c)` on an `Option<Comment>`): the value stands where the
         // wrapper holds it, and the wrapper stays around what the event conveys.
         Value::Opt(Some(inner)) => fill_event_value(inner, value)?,
+        // A value the view computes from the event's (`set(expr, x.expr)`) runs once it fires,
+        // over the value it carries.
+        Value::AtEvent { args, .. } => {
+            for arg in args {
+                fill_event_value(arg, value)?;
+            }
+        }
         _ => {}
     }
     Ok(())

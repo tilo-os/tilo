@@ -190,6 +190,16 @@ it needs itself, and each item it inserts starts with its own type's initial con
 change. Content that would make itself again (a `Book` that starts with a `Book`) is refused.
 Nothing invokes an initial action by name, and no surface offers it.
 
+## Events
+
+A handler (`on activate(x: Calculation): ...`) is data the host fills with the event's value
+when it fires, never a closure. An action on a resource takes that value as it is
+(`open(x)`), so what it is called with is what the person chose. A `set` of
+the view's own declared state may compute from it, with field reads and `fn` calls:
+`set(expr, x.expr).then(set(fresh, false))` loads a past calculation into the editor. The new
+value is a function the runtime runs at the press, so it uses no action. View state is the
+person's presentation, so this never changes a resource outside an action.
+
 ## Opening
 
 What opening a resource does is an `opened action` on its type. The system's one open path runs

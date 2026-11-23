@@ -44,6 +44,8 @@ mod e2e_notes;
 mod e2e_todo;
 #[path = "effects.rs"]
 mod effects;
+#[path = "event_values.rs"]
+mod event_values;
 #[path = "filters.rs"]
 mod filters;
 #[path = "foreign_readings.rs"]

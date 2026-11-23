@@ -810,3 +810,89 @@ const REACTED: &str = r"type Post {
     reactions: Map<Set<Actor>>
 }
 ";
+
+const CALCULATIONS: &str = r#"type Calculation {
+    expr: Text
+    result: Text
+}
+
+type Calculator {
+    past: Collection<Calculation>
+}
+
+view calculation(x: Calculation) {
+    ui.Text("{x.expr} = {x.result}")
+}
+
+default view calculation for Calculation
+
+fn expression_of(x: Calculation) -> Text {
+    x.expr
+}
+
+action rerun(x: Calculation, expr: Text) {
+    x.expr = expr
+}
+
+/// The calculations as a list beside an editor; `HANDLER` is what activating one does.
+view home(c: Calculator) {
+    state expr: Text = ""
+    state fresh: Bool = true
+    ui.TextInput(bind: expr, placeholder: "Expression")
+    ui.VirtualList {
+        on activate(x: Calculation): HANDLER
+        for x in c.past {
+            ui.ListItem(item: x) {
+                ui.Text(x.expr)
+            }
+        }
+    }
+}
+"#;
+
+fn calculations(handler: &str) -> String {
+    CALCULATIONS.replace("HANDLER", handler)
+}
+
+tilo_test_env::scenario! {
+    /// What an event carries may set the view's own state through a pure expression: the editor
+    /// loads the calculation a person activates. Anything that changes a resource still takes the
+    /// value as it is, and nothing but a function computes the state's new value.
+    fn an_event_value_sets_view_state_through_a_pure_expression;
+
+    phase a_field_or_a_function_of_the_value_sets_the_views_state;
+    {
+        for handler in [
+            "set(expr, x.expr).then(set(fresh, false))",
+            "set(expr, expression_of(x))",
+            "set(fresh, x.result == \"\").then(open(x))",
+        ] {
+            let got = errors(&calculations(handler));
+            assert!(got.is_empty(), "`{handler}` is accepted: {got:#?}");
+        }
+    }
+
+    phase an_action_on_a_resource_still_takes_the_value_as_it_is;
+    {
+        let (code, message) = one_error(&calculations("rerun(x, x.expr)"));
+        assert_eq!(code, "E063");
+        assert!(message.contains("set(state, f(x))"), "{message}");
+        let (code, _) = one_error(&calculations("set(expr, \"\").then(rerun(x, x.expr))"));
+        assert_eq!(code, "E063", "a step of a chain that changes a resource");
+    }
+
+    phase the_state_set_is_the_views_own;
+    {
+        let (code, _) = one_error(&calculations("set(c, x.expr)"));
+        assert_eq!(code, "E063", "the view's parameter is no state of its own");
+    }
+
+    phase the_new_value_is_computed_without_acting;
+    {
+        let got = errors(&calculations("set(expr, rerun(x, \"\"))"));
+        assert!(
+            got.iter().any(|(code, _)| code == "E043"),
+            "the value is a function's, which uses no action: {got:#?}"
+        );
+    }
+}
