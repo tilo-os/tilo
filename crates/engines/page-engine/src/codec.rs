@@ -33,6 +33,8 @@ use tilo_webview::{
     PointerPoint, PointerStep, PointerStepKind, ScrollTarget, WebViewCommand,
 };
 
+use crate::Asks;
+
 /// How long a settle waits for the page to go quiet, and at most, by default.
 const SETTLE_QUIET_MS: u32 = 500;
 const SETTLE_TIMEOUT_MS: u32 = 10_000;
@@ -46,6 +48,8 @@ pub enum Ask {
     Page(PageRequest),
     /// The engine's own command: navigating, finding, zooming, answering a question.
     Command(WebViewCommand),
+    /// What the page waits on and last reported: its own state, which asks the page nothing.
+    Asks,
 }
 
 /// Read a request an app's action wrote.
@@ -244,6 +248,18 @@ pub fn decode(request: &str) -> Result<Ask, String> {
             allow: flag(&value, "allow"),
             by: tilo_webview::AnsweredBy::Person,
         }),
+        "answer_permission" => Ask::Command(WebViewCommand::PermissionDecision {
+            id: integer(&value, "id").unwrap_or_default(),
+            allow: flag(&value, "allow"),
+        }),
+        "dismiss_permission" => Ask::Command(WebViewCommand::PermissionDismissed {
+            id: integer(&value, "id").unwrap_or_default(),
+        }),
+        "context_menu_action" => Ask::Command(WebViewCommand::ContextMenuAction {
+            id: integer(&value, "id").unwrap_or_default(),
+            command: integer(&value, "command").unwrap_or_default(),
+        }),
+        "asks" => Ask::Asks,
         other => return Err(format!("a page request names no operation {other:?}")),
     })
 }
@@ -282,6 +298,126 @@ pub fn encode(result: &Result<PageReply, PageFailure>) -> String {
         })
         .to_string(),
     }
+}
+
+/// What the page waits on and last reported, as an app's action reads it.
+#[must_use]
+pub fn asks_json(asks: &Asks) -> String {
+    let dialog = asks.dialog.as_ref().map(|dialog| {
+        serde_json::json!({
+            "id": dialog.id,
+            "kind": match &dialog.kind {
+                tilo_webview::PageDialogKind::Alert => "alert",
+                tilo_webview::PageDialogKind::Confirm => "confirm",
+                tilo_webview::PageDialogKind::Prompt => "prompt",
+                tilo_webview::PageDialogKind::Leave { .. } => "leave",
+            },
+            "origin": &dialog.origin,
+            "message": &dialog.message,
+            "default_text": &dialog.default_text,
+        })
+    });
+    let sign_in = asks.sign_in.as_ref().map(|ask| {
+        serde_json::json!({
+            "id": ask.id,
+            "asker": &ask.asker,
+            "site": ask.site(),
+            "proxy": ask.proxy,
+            "realm": &ask.realm,
+            "scheme": &ask.scheme,
+            "retry": ask.retry,
+        })
+    });
+    let permission = asks.permission.as_ref().map(|(id, origin, rights)| {
+        serde_json::json!({"id": id, "origin": origin, "permissions": rights})
+    });
+    let held: Vec<serde_json::Value> = asks
+        .held
+        .iter()
+        .map(|held| {
+            serde_json::json!({
+                "id": held.id,
+                "kind": held.kind.as_str(),
+                "method": &held.method,
+                "origin": &held.origin,
+                "has_picture": held.capture.is_some(),
+            })
+        })
+        .collect();
+    let menu = asks.menu.as_ref().map(|menu| {
+        serde_json::json!({
+            "id": menu.id,
+            "x": menu.x,
+            "y": menu.y,
+            "link": &menu.link,
+            "items": menu_json(&menu.items),
+        })
+    });
+    let find = asks
+        .find
+        .map(|(active, count)| serde_json::json!({"active": active, "count": count}));
+    let downloads: Vec<serde_json::Value> = asks
+        .downloads
+        .iter()
+        .map(|download| {
+            serde_json::json!({
+                "id": download.id,
+                "state": &download.state,
+                "name": &download.name,
+                "url": &download.url,
+                "path": &download.path,
+                "retryable": download.retryable,
+                "received": download.received,
+                "total": download.total,
+                "error": &download.error,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "dialog": dialog,
+        "sign_in": sign_in,
+        "permission": permission,
+        "held": held,
+        "menu": menu,
+        "find": find,
+        "zoom": asks.zoom,
+        "fullscreen": asks.fullscreen,
+        "progress": asks.progress,
+        "title": &asks.title,
+        "loading": asks.loading,
+        "downloads": downloads,
+    })
+    .to_string()
+}
+
+/// A context menu's rows, nested as the engine offered them.
+fn menu_json(items: &[tilo_webview::ContextMenuItem]) -> Vec<serde_json::Value> {
+    items
+        .iter()
+        .map(|item| match item {
+            tilo_webview::ContextMenuItem::Command {
+                id,
+                label,
+                checked,
+                enabled,
+            } => serde_json::json!({
+                "command": id,
+                "label": label,
+                "checked": checked,
+                "enabled": enabled,
+            }),
+            tilo_webview::ContextMenuItem::Submenu {
+                label,
+                enabled,
+                items,
+            } => serde_json::json!({
+                "label": label,
+                "enabled": enabled,
+                "items": menu_json(items),
+            }),
+            tilo_webview::ContextMenuItem::Separator => serde_json::json!({"separator": true}),
+        })
+        .collect()
 }
 
 /// Why a request could not be made, in the shape an answer has.

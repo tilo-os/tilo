@@ -49,6 +49,14 @@ pub fn ask(page: &Page, request: &str) -> Result<Asked, String> {
             engine.send(command);
             Ok(Asked::Answered(codec::accepted()))
         }
+        codec::Ask::Asks => {
+            let mut held = page.borrow_mut();
+            let session = held
+                .as_mut()
+                .ok_or_else(|| "this window has no page".to_owned())?;
+            session.poll();
+            Ok(Asked::Answered(codec::asks_json(session.asks())))
+        }
         codec::Ask::Page(request) => {
             let mut held = page.borrow_mut();
             let session = held

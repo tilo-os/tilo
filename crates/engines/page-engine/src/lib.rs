@@ -8,6 +8,10 @@
 
 pub mod codec;
 
+mod asks;
+
+pub use asks::{Asks, Download, Menu};
+
 use std::collections::{BTreeMap, VecDeque};
 
 use tilo_webview::{
@@ -26,6 +30,9 @@ pub struct PageSession {
     answers: Vec<(u32, Result<PageReply, PageFailure>)>,
     /// The engine's other events, in the order they came, for the view to show.
     events: VecDeque<WebViewEvent>,
+    /// What the page waits on and last reported of itself, as its overlays and the app's records
+    /// read it: a dialog, a sign-in, a permission, a held request, its context menu.
+    asks: Asks,
 }
 
 impl PageSession {
@@ -37,6 +44,7 @@ impl PageSession {
             waiting: BTreeMap::new(),
             answers: Vec::new(),
             events: VecDeque::new(),
+            asks: Asks::default(),
         }
     }
 
@@ -82,7 +90,10 @@ impl PageSession {
                         self.answers.push((request_id, result));
                     }
                 }
-                other => self.events.push_back(other),
+                other => {
+                    self.asks.apply(&other);
+                    self.events.push_back(other);
+                }
             }
         }
     }
@@ -103,6 +114,12 @@ impl PageSession {
         self.waiting.contains_key(&action)
     }
 
+    /// What the page waits on and last reported of itself.
+    #[must_use]
+    pub fn asks(&self) -> &Asks {
+        &self.asks
+    }
+
     /// Whether the page has something for the window: an answer to carry, or an event to show.
     #[must_use]
     pub fn busy(&self) -> bool {
@@ -118,8 +135,9 @@ mod tests {
     /// A page's outline is asked once and answered once, and the page's own events stay theirs.
     #[test]
     fn an_answer_comes_once_and_the_pages_events_reach_its_view() {
-        let engine: SharedEngine = TestEngine::new();
-        let mut session = PageSession::new(engine.clone());
+        let test = TestEngine::new();
+        let engine: SharedEngine = test.clone();
+        let mut session = PageSession::new(engine);
         let action = session.ask(
             None,
             PageRequest::Outline {
@@ -136,7 +154,7 @@ mod tests {
         assert!(!session.waiting_for(action), "the action is answered");
 
         // What the page reports of itself is the view's, not an answer's: it waits in order.
-        engine.push_event(WebViewEvent::UriChanged("https://example.org/".to_owned()));
+        test.push_event(WebViewEvent::UriChanged("https://example.org/".to_owned()));
         session.poll();
         assert!(matches!(
             session.next_event(),
