@@ -5,7 +5,7 @@
 #   wine-test.sh units <imager-tests.exe>     the imager's unit tests
 #   wine-test.sh install <package-dir>        install the package silently, check what it
 #                                             installed, uninstall
-#   wine-test.sh runtime <tilo-runtime.exe>   the device daemon's CLI refuses Windows
+#   wine-test.sh runtime <tilo-runtime.exe>   the platform layer's tests, then the device daemon's CLI
 #
 # Wine is not Windows: the disk, volume and privilege APIs the media writer
 # uses are partial or missing there, so tests that need them are listed in
@@ -75,6 +75,18 @@ case "$mode" in
     # is partial: asking it to run the daemon must answer that it does not run
     # on Windows yet, in words, rather than crash or start half of one.
     runtime="${2:?the tilo-runtime.exe to run}"
+    # The platform layer's own tests first: pipes, account checks and the rest
+    # the daemon stands on, less what Wine cannot show (wine-skip.txt).
+    skips=()
+    while IFS=$'\t' read -r name _; do
+      case "$name" in ''|'#'*) continue ;; esac
+      skips+=(--skip "$name")
+    done < "$here/wine-skip.txt"
+    for tests in "$(dirname -- "$runtime")"/platform-tests/*.exe; do
+      printf 'running %s under Wine\n' "$(basename -- "$tests")"
+      timeout --kill-after=30 "${TILO_WINE_TEST_TIMEOUT:-600}" \
+        wine "$tests" --test-threads 1 --nocapture "${skips[@]}"
+    done
     set +e
     output="$(timeout --kill-after=30 300 wine "$runtime" \
       --profile 'C:\tilo-runtime-profile' 2>&1)"
