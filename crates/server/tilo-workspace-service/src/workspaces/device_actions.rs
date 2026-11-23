@@ -76,6 +76,10 @@ pub(crate) struct DeviceWork {
     governance: std::sync::OnceLock<std::sync::Weak<super::actions::Shared>>,
     /// The providers registered on this device: what another device's call naming one reaches.
     pub(super) providers: super::providers::Providers,
+    /// Whether agents from the person's other devices are let in, when a test says so
+    /// itself rather than reading the device's settings.
+    #[cfg(any(test, feature = "test-support"))]
+    agents_from_other_devices: std::sync::RwLock<Option<bool>>,
     runtime: tokio::runtime::Handle,
 }
 
@@ -298,6 +302,29 @@ impl DeviceWork {
         self.jobs.read_recover().clone()
     }
 
+    /// Whether this device lets agents from the person's other devices work here: what
+    /// the device's settings say now, or what a test said.
+    #[cfg_attr(
+        any(test, feature = "test-support"),
+        expect(
+            clippy::significant_drop_in_scrutinee,
+            reason = "the guard is released when the condition ends, and nothing waits while it is held"
+        )
+    )]
+    fn accepts_agents_from_other_devices(&self) -> bool {
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(accepts) = *self.agents_from_other_devices.read_recover() {
+            return accepts;
+        }
+        settings_store::mcp_server::accepts_own_devices(&settings_store::load())
+    }
+
+    /// Let agents from the person's other devices work here, or not, as a test says.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn accept_agents_from_other_devices(&self, accepts: bool) {
+        *self.agents_from_other_devices.write_recover() = Some(accepts);
+    }
+
     /// The device action service's work for the workspaces in `workspaces`.
     ///
     /// # Panics
@@ -315,6 +342,8 @@ impl DeviceWork {
             log: std::sync::Mutex::default(),
             governance: std::sync::OnceLock::new(),
             providers: super::providers::Providers::default(),
+            #[cfg(any(test, feature = "test-support"))]
+            agents_from_other_devices: std::sync::RwLock::default(),
             runtime: tokio::runtime::Handle::current(),
         })
     }
@@ -563,6 +592,9 @@ fn turn_of(request: &InvokeRequest, requester: [u8; 32]) -> Result<Turn, ActionC
         job: serde_json::from_value(asked).map_err(invalid)?,
     })
 }
+
+/// What an agent another of the person's devices handed here reads while this device takes none.
+const DEVICE_AGENTS_NOT_ACCEPTED: &str = "device-agents-not-accepted";
 
 /// How long a Linux run is left before it is looked at again, when its
 /// machine cannot say it changed.
@@ -817,6 +849,17 @@ impl ActionProvider for Answers {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        // An agent another of the person's devices handed its session to works here only while
+        // this device's settings let such agents in.
+        if caller.acting().handed && !self.work.accepts_agents_from_other_devices() {
+            return Pending::ready(Err(ActionCallError::Refused {
+                reason: crate::i18n::message(
+                    None,
+                    DEVICE_AGENTS_NOT_ACCEPTED,
+                    &tilo_history::FluentArgs::new(),
+                ),
+            }));
+        }
         if governed(&request.target.provider) {
             return self.0.govern(caller, request);
         }

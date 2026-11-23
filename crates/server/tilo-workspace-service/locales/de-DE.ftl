@@ -87,3 +87,5 @@ airdrop-error-source = AirDrop unterstützt eine lesbare reguläre Datei bis 16 
 airdrop-error-busy = Eine AirDrop-Übertragung läuft bereits. Vor einer weiteren Übertragung abbrechen.
 airdrop-error-failed = AirDrop-Übertragung fehlgeschlagen. Den Empfänger vor einem neuen Versuch erneut prüfen.
 airdrop-error-declined = Die AirDrop-Übertragung wurde vor dem Senden abgebrochen.
+
+device-agents-not-accepted = Dieses Gerät nimmt keine Agenten von deinen anderen Geräten an. Schalte „Agenten von meinen anderen Geräten annehmen“ in seinen Einstellungen unter Geräte ein.

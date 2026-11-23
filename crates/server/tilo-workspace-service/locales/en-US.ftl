@@ -87,3 +87,5 @@ airdrop-error-source = AirDrop accepts one readable regular file up to 16 MiB.
 airdrop-error-busy = Another AirDrop attempt is still running. Cancel it before starting another.
 airdrop-error-failed = AirDrop transfer failed. Verify the receiver again before a new attempt.
 airdrop-error-declined = AirDrop transfer was cancelled before sending.
+
+device-agents-not-accepted = This device doesn’t accept agents from your other devices. Turn on “Accept agents from my other devices” in its Settings, under Devices.

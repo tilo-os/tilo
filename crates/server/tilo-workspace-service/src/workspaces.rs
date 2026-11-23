@@ -1887,6 +1887,13 @@ impl Workspaces {
         self.inner.jobs.govern_with(governance);
     }
 
+    /// Let agents from the person's other devices work here, or not, as a test says
+    /// rather than this device's settings.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn accept_agents_from_other_devices(&self, accepts: bool) {
+        self.inner.jobs.accept_agents_from_other_devices(accepts);
+    }
+
     /// What this device answers a device of its workspaces on the device action service: the
     /// turns of work it takes, and the workspaces' governance. A device whose session answers that
     /// service in the host's place hands these requests here.

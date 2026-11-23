@@ -784,3 +784,77 @@ async fn desktop_founds_its_persons_workspace(
     drop(desktop_keys);
     person
 }
+
+/// The daemon keeping the workspaces answers an action through the device's dispatch: the
+/// same `Answers` its endpoint serves `tilo-actions/1` with, never a dispatch of the server's
+/// own.
+#[tokio::test]
+async fn a_server_answers_an_action_through_its_devices_dispatch() {
+    use std::sync::Arc;
+    use tilo_actions::remote::{
+        ActionProvider as _, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
+        TestProvider,
+    };
+
+    const PROVIDER: &str = "so.tilo.devices";
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let (server_key, server_cert) = enrol(&root, "home-server", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let server = tilo_server::daemon::Server::start_with_relay_mode(
+        tilo_server::ServerConfig::loopback(state.path().join("server")),
+        tilo_server::daemon::ServerIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_signing_key: server_key,
+            device_cert: server_cert.clone(),
+            revocations: RevocationList::new(),
+        },
+        iroh::RelayMode::Disabled,
+    )
+    .await
+    .unwrap();
+    let hosted = server
+        .workspaces()
+        .expect("the server has workspaces")
+        .clone();
+    let workspace = hosted.create("Home").await.unwrap().workspace;
+
+    let provided = Arc::new(TestProvider::new());
+    hosted.provide(PROVIDER, Arc::clone(&provided) as _);
+    let caller = tilo_workspace_service::service::local_caller(&server_cert)
+        .in_workspace(workspace.as_str());
+    let receipt = hosted
+        .device_actions()
+        .invoke(
+            &caller,
+            InvokeRequest {
+                invocation: tilo_actions::InvocationId::new(),
+                target: RemoteActionTarget {
+                    provider: PROVIDER.to_owned(),
+                    address: tilo_actions::ActionAddress::new("devices", "restart"),
+                },
+                argument: InvokeArgument::None,
+                context: None,
+                confirmation: None,
+                revision: None,
+                on_behalf_of: None,
+                wait_ms: None,
+                appearance: None,
+                signed: None,
+            },
+        )
+        .await
+        .expect("the device's dispatch answers")
+        .expect("the provider takes the action");
+    assert!(
+        matches!(receipt.status, ReceiptStatus::Completed { .. }),
+        "{:?}",
+        receipt.status
+    );
+    let asked = provided.callers().pop().expect("the provider was asked");
+    assert_eq!(
+        asked.device_public_key(),
+        Some(&server_cert.device_public_key),
+        "the provider sees the server's device ask"
+    );
+    server.shutdown().await;
+}

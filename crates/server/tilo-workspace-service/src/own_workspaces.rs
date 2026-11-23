@@ -173,6 +173,45 @@ mod tests {
     use crate::workspaces::tests::{governor, test_host};
     use tilo_actions::remote::ActionProvider as _;
 
+    /// An agent another of the person's devices handed its session to is refused, in this
+    /// device's words and with what to turn on, while this device takes no such agent.
+    #[tokio::test]
+    async fn another_devices_agent_is_refused_while_this_device_takes_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, cert) = governor();
+        let server = test_host(dir.path(), &key, &cert).await;
+        let created = server.workspaces().create("Home").await.unwrap();
+        server
+            .host()
+            .workspaces()
+            .accept_agents_from_other_devices(false);
+        let handed = local_caller(&cert)
+            .in_workspace(created.workspace.as_str())
+            .delegated_to("claude");
+        let pin = invocation(
+            RemoteActionTarget {
+                provider: "so.tilo.notes".into(),
+                address: ActionAddress::new("notes.notebook", "pin"),
+            },
+            Map::new(),
+        );
+        let refused = server
+            .host()
+            .workspaces()
+            .device_actions()
+            .invoke(&handed, pin)
+            .await
+            .expect("the dispatch answers")
+            .expect_err("this device takes no agent from another of the person's devices");
+        assert!(
+            refused
+                .to_string()
+                .contains("Accept agents from my other devices"),
+            "{refused}"
+        );
+        server.shutdown().await;
+    }
+
     /// A member device asks its workspace's governance on the device action service, as its
     /// holder's own device asks it in process: an invitation made there reaches it, with the
     /// invitation another device joins by.
