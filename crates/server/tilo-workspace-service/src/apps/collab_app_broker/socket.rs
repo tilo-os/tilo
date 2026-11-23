@@ -167,6 +167,7 @@ pub(super) fn bind_socket_stage(
     ))
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) fn rename_socket_noreplace(source: &Path, destination: &Path) -> std::io::Result<()> {
     match tilo_files::native::rename_file_noreplace(source, destination) {
         // Once the fallback hard link succeeds, the destination socket is
@@ -181,6 +182,14 @@ pub(super) fn rename_socket_noreplace(source: &Path, destination: &Path) -> std:
         )),
         Err(error) => Err(error),
     }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(super) fn rename_socket_noreplace(_: &Path, _: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "atomic no-replace broker socket publication is unsupported",
+    ))
 }
 
 pub(super) struct SocketStage {

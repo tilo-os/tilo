@@ -990,7 +990,7 @@ pub fn load_or_create_device_key(
 
 // Keep platform refusal in the claim operation so every outcome reaches the
 // caller's temporary-file cleanup without relying on a diverging result value.
-#[cfg(not(windows))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn claim_identity_name(source: &Path, destination: &Path) -> io::Result<()> {
     match tilo_files::native::rename_file_noreplace(source, destination) {
         // Once the fallback hard link succeeds, the destination holds the key
@@ -1001,6 +1001,14 @@ fn claim_identity_name(source: &Path, destination: &Path) -> io::Result<()> {
         ) => Ok(()),
         Err(error) => Err(error),
     }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn claim_identity_name(_: &Path, _: &Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "atomic no-replace identity publication is unsupported on this platform",
+    ))
 }
 
 /// Publish a complete device key exactly once.
