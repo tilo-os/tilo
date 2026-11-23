@@ -6110,6 +6110,11 @@
           }
         },
         {
+          "name": "live",
+          "doc": "Whether the source airs as it plays (an HLS or DASH manifest): the player says where it stands is live and a jump goes to the live edge rather than to a place in a recording.",
+          "type": "bool"
+        },
+        {
           "name": "repeat",
           "doc": "Whether it begins again when it ends.",
           "type": "bool"

@@ -276,48 +276,8 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase media_session_and_engine_events_reach_the_right_side_once;
+    phase engine_events_reach_the_right_side_once;
     {
-        {
-            let mut vp = VideoPlayer::new();
-            vp.duration_ms = 240_000;
-            vp.set_now_playing(NowPlaying {
-                track_id: "yt:abc123".into(),
-                title: "Runaway".into(),
-                artist: "Aurora".into(),
-                art_url: "https://img/a.jpg".into(),
-            });
-            vp.play();
-            let snap = vp.mpris_snapshot();
-            assert_eq!(
-                snap.status,
-                crate::mpris::PlaybackStatus::Playing,
-                "play → Playing on the bus"
-            );
-            assert_eq!(snap.title, "Runaway");
-            assert_eq!(snap.artist, "Aurora");
-            assert_eq!(snap.art_url, "https://img/a.jpg");
-            assert_eq!(snap.length_us, 240_000_000, "duration published as µs");
-            assert!(
-                snap.can_play && snap.can_pause && snap.can_seek,
-                "transport controls advertised"
-            );
-        }
-
-        {
-            let mut engine = media::MediaEngine::new_synthesized();
-            engine.open(media::Source::Remote {
-                url: "https://x/v.mp4".into(),
-            });
-            let mut vp = VideoPlayer::new().with_engine(engine);
-            vp.play();
-            assert!(vp.is_playing());
-            vp.apply_media_command(crate::mpris::MprisCommand::Pause);
-            assert!(!vp.is_playing(), "external Pause paused playback");
-            vp.apply_media_command(crate::mpris::MprisCommand::PlayPause);
-            assert!(vp.is_playing(), "external PlayPause resumed it");
-        }
-
         {
             let mut vp = VideoPlayer::new();
             vp.record_terminal_media_events([
@@ -1411,5 +1371,33 @@ fn a_german_shell_hears_the_transport_in_german() {
         hover(&mut vp, scrub).as_deref(),
         Some("Playback position"),
         "an English shell reads the source catalogue"
+    );
+}
+
+#[test]
+fn a_live_stream_has_no_place_to_scrub_and_its_jump_goes_to_its_edge() {
+    let mut engine = media::MediaEngine::new_synthesized();
+    engine.open(media::Source::Remote {
+        url: "https://x/live.m3u8".into(),
+    });
+    let mut vp = VideoPlayer::new().with_engine(engine);
+    vp.set_live(true);
+    assert!(vp.is_live(), "the player holds a live source as live");
+
+    let doc = AutoCommit::new();
+    let root = automerge::ROOT;
+    vp.sync(&doc, &root);
+    let edge = vp.duration_ms();
+    assert!(
+        edge > 0,
+        "the synthesized stream has a length to stand its edge at"
+    );
+
+    vp.seek_to_ms(0);
+    vp.sync(&doc, &root);
+    assert_eq!(
+        vp.position_ms(),
+        edge,
+        "a jump on a live stream goes to its live edge, not to the start of a recording"
     );
 }

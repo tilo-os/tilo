@@ -349,11 +349,17 @@ pub fn trending(client: &LiveClient) -> Result<TrendingPage, ServiceError> {
 
 /// The address a video's bytes play from: the progressive stream carrying picture and sound,
 /// so a plain HTTP source can stream, seek and reach the end.
+///
+/// A live broadcast has no whole-file stream — its bytes are segments appended as they air — so
+/// it plays from its adaptive manifest: the HLS playlist where the answer offers one, else the
+/// DASH one. The player reads either as a manifest and follows its live edge.
 pub fn stream(client: &LiveClient, key: &str) -> Result<String, ServiceError> {
     let q = client.query();
     let player = client.block(tilo_innertube::player(&q, key))?;
     tilo_innertube::whole_file_stream(&player.video_streams, None)
         .map(|stream| stream.url.clone())
+        .or_else(|| player.hls_manifest_url.clone())
+        .or_else(|| player.dash_manifest_url.clone())
         .ok_or_else(|| ServiceError(format!("YouTube serves no playable stream of {key}")))
 }
 

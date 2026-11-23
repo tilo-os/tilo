@@ -217,6 +217,9 @@ pub struct VideoPlayer {
     state: PlaybackState,
     position_ms: u64,
     duration_ms: u64,
+    /// Whether what plays is a live stream: no length to scrub, and a jump goes to its live edge
+    /// rather than to a place in a recording.
+    live: bool,
     buffering: u8,
     volume: f32,
     muted: bool,
@@ -265,7 +268,6 @@ pub struct VideoPlayer {
     gear_entries: Vec<usize>,
     menu_hit_rects: Vec<(MenuHit, Rect)>,
     now_playing: NowPlaying,
-    mpris: crate::mpris::MprisHandle,
     fullscreen_target: crate::fullscreen::FullscreenTarget,
 }
 
@@ -328,6 +330,7 @@ impl VideoPlayer {
             state: PlaybackState::Paused,
             position_ms: 0,
             duration_ms: PUSH_MODE_DEFAULT_DURATION_MS,
+            live: false,
             buffering: 100,
             volume: 0.8,
             muted: false,
@@ -364,7 +367,6 @@ impl VideoPlayer {
             gear_entries: Vec::new(),
             menu_hit_rects: Vec::new(),
             now_playing: NowPlaying::default(),
-            mpris: crate::mpris::MprisHandle::disabled(),
             fullscreen_target: crate::fullscreen::FullscreenTarget::Largest,
         }
     }
@@ -494,7 +496,6 @@ impl VideoPlayer {
         if self.now_playing != np {
             self.now_playing = np;
             self.describe_now_playing();
-            self.publish_mpris();
         }
     }
 
@@ -514,23 +515,7 @@ impl VideoPlayer {
         &self.now_playing
     }
 
-    /// Publish the player to the shell's media controls as `identity`.
-    /// The bus name is the launched package's; `app_id` names it only for an
-    /// app run outside a launcher (see [`crate::mpris::MprisConfig::new`]).
-    /// Without the `mpris` feature (or a session bus) this is an inert no-op,
-    /// so the call is always safe.
-    pub fn enable_mpris(&mut self, app_id: &str, identity: &str) {
-        let config = crate::mpris::MprisConfig::new(app_id, identity);
-        if let Some(engine) = self.engine.as_mut() {
-            engine.set_handoff_controller(Some(config.bus_name.clone()));
-        }
-        self.mpris = crate::mpris::MprisHandle::spawn(config, self.mpris_snapshot());
-    }
-
     pub fn pump_media_controls(&mut self) {
-        for cmd in self.mpris.drain_commands() {
-            self.apply_media_command(cmd);
-        }
         let pressed = self
             .engine
             .as_mut()
@@ -549,71 +534,6 @@ impl VideoPlayer {
                 _ => {}
             }
         }
-    }
-
-    fn apply_media_command(&mut self, cmd: crate::mpris::MprisCommand) {
-        use crate::mpris::MprisCommand as C;
-        match cmd {
-            C::Play => self.play(),
-            C::Pause => self.pause(),
-            C::PlayPause => self.toggle_play(),
-            C::Stop => {
-                self.pause();
-                self.state = PlaybackState::Stopped;
-            }
-            C::Seek(us) => {
-                let delta_ms = us / 1000;
-                let position = i64::try_from(self.position_ms).unwrap_or(i64::MAX);
-                let target = position.saturating_add(delta_ms).max(0);
-                self.seek_to_ms(u64::try_from(target).unwrap_or(0));
-            }
-            C::SetPosition(us) => {
-                self.seek_to_ms(u64::try_from(us.max(0)).unwrap_or(0) / 1000);
-            }
-            // Volume is a `0.0..=1.0` fraction (clamped again in
-            // `set_volume`), so the `f64 -> f32` narrowing cannot lose
-            // meaningful precision.
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "volume fraction in 0.0..=1.0; f32 precision is sufficient"
-            )]
-            C::SetVolume(v) => self.set_volume(v as f32),
-            C::Next | C::Previous | C::Raise | C::Quit => {}
-        }
-    }
-
-    fn mpris_snapshot(&self) -> crate::mpris::PlayerSnapshot {
-        use crate::mpris::{PlaybackStatus, PlayerSnapshot};
-        let status = match self.state {
-            PlaybackState::Playing => PlaybackStatus::Playing,
-            PlaybackState::Paused => PlaybackStatus::Paused,
-            PlaybackState::Stopped => PlaybackStatus::Stopped,
-        };
-        PlayerSnapshot {
-            status,
-            track_id: self.now_playing.track_id.clone(),
-            title: self.now_playing.title.clone(),
-            artist: self.now_playing.artist.clone(),
-            album: String::new(),
-            art_url: self.now_playing.art_url.clone(),
-            length_us: i64::try_from(self.duration_ms)
-                .unwrap_or(i64::MAX)
-                .saturating_mul(1000),
-            position_us: i64::try_from(self.position_ms)
-                .unwrap_or(i64::MAX)
-                .saturating_mul(1000),
-            volume: f64::from(self.effective_volume()),
-            can_next: false,
-            can_prev: false,
-            can_play: true,
-            can_pause: true,
-            can_seek: true,
-        }
-    }
-
-    fn publish_mpris(&mut self) {
-        let snap = self.mpris_snapshot();
-        self.mpris.publish(snap);
     }
 
     #[must_use]
@@ -735,9 +655,6 @@ impl VideoPlayer {
         }
         self.state = PlaybackState::Playing;
         self.dirty = true;
-        if self.mpris.is_active() {
-            self.publish_mpris();
-        }
     }
 
     pub fn pause(&mut self) {
@@ -746,9 +663,6 @@ impl VideoPlayer {
         }
         self.state = PlaybackState::Paused;
         self.dirty = true;
-        if self.mpris.is_active() {
-            self.publish_mpris();
-        }
     }
 
     pub fn toggle_play(&mut self) {
@@ -770,6 +684,20 @@ impl VideoPlayer {
         self.duration_ms
     }
 
+    /// Say whether what plays is a live stream, as the view that named its source knows: a
+    /// broadcast has no length to scrub and its jump goes to the live edge.
+    pub fn set_live(&mut self, live: bool) {
+        if self.live != live {
+            self.live = live;
+            self.dirty = true;
+        }
+    }
+
+    #[must_use]
+    pub fn is_live(&self) -> bool {
+        self.live
+    }
+
     /// Report where playback was moved to, as a share of its length (`0..=1`): what an app keeps
     /// as the place a video was left at.
     #[must_use]
@@ -787,9 +715,14 @@ impl VideoPlayer {
         }
     }
 
-    /// `ms` is clamped to the duration.
+    /// `ms` is clamped to the duration. A live stream has none to clamp to and no place to go
+    /// but its edge, so this drops to the edge instead.
     pub fn seek_to_ms(&mut self, ms: u64) {
         if !self.transport_enabled {
+            return;
+        }
+        if self.live {
+            self.seek_to_live_edge();
             return;
         }
         let target = ms.min(self.duration_ms);
@@ -802,9 +735,17 @@ impl VideoPlayer {
             report(share);
         }
         self.dirty = true;
-        if self.mpris.is_active() {
-            self.publish_mpris();
+    }
+
+    /// Jump to the live edge of a live stream: what "go back to live" does.
+    pub fn seek_to_live_edge(&mut self) {
+        if !self.transport_enabled {
+            return;
         }
+        if let Some(e) = &mut self.engine {
+            e.seek_to_live_edge();
+        }
+        self.dirty = true;
     }
 
     pub fn set_volume(&mut self, v: f32) {
@@ -814,9 +755,6 @@ impl VideoPlayer {
             e.set_volume(self.volume);
         }
         self.dirty = true;
-        if self.mpris.is_active() {
-            self.publish_mpris();
-        }
     }
 
     pub fn volume(&self) -> f32 {
@@ -943,7 +881,7 @@ impl VideoPlayer {
 
     fn paint_progress_line(&mut self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         self.progress_line_painted = Rect::ZERO;
-        if self.duration_ms == 0 || !self.has_media() || self.rect.width() <= 0.0 {
+        if self.live || self.duration_ms == 0 || !self.has_media() || self.rect.width() <= 0.0 {
             return;
         }
         let media = &theme.tokens.colors.media;
@@ -973,6 +911,24 @@ impl VideoPlayer {
             0.0
         } else {
             (f64_of_u64(self.position_ms) / f64_of_u64(self.duration_ms)).clamp(0.0, 1.0)
+        }
+    }
+
+    /// What the time label reads: where it stands of how long it runs, or, on a live stream with
+    /// no length, where it stands and that it is live.
+    fn time_text(&self) -> String {
+        if self.live {
+            if self.position_ms == 0 {
+                "Live".to_owned()
+            } else {
+                format!("{} · Live", format_ms(self.position_ms))
+            }
+        } else {
+            format!(
+                "{} / {}",
+                format_ms(self.position_ms),
+                format_ms(self.duration_ms)
+            )
         }
     }
 
@@ -1044,9 +1000,6 @@ impl VideoPlayer {
         }
         if let Some(picture) = element_picture {
             self.show_element_picture(picture);
-        }
-        if self.mpris.is_active() {
-            self.publish_mpris();
         }
     }
 
@@ -1240,11 +1193,7 @@ impl VideoPlayer {
             mid_y + icon * 0.5,
         );
 
-        let time_text = format!(
-            "{} / {}",
-            format_ms(self.position_ms),
-            format_ms(self.duration_ms)
-        );
+        let time_text = self.time_text();
         let time_style = theme.text(TextRole::Caption);
         let (tw, th) = text_renderer.measure_style(&time_text, None, &time_style);
         let (position_w, _) =
@@ -1298,13 +1247,17 @@ impl VideoPlayer {
             ink: theme.text_primary,
             ink_dim: theme.text_dim,
         };
-        self.paint_scrub_track(
-            scene,
-            transform,
-            &timeline_layout,
-            bar.x0 + pad,
-            bar.x1 - pad,
-        );
+        if self.live {
+            self.scrub_track_rect = Rect::ZERO;
+        } else {
+            self.paint_scrub_track(
+                scene,
+                transform,
+                &timeline_layout,
+                bar.x0 + pad,
+                bar.x1 - pad,
+            );
+        }
 
         let (play, mid_y, cluster_x0) =
             self.paint_large_transport_ends(scene, transform, theme, bar, pad, icon);
@@ -1387,11 +1340,7 @@ impl VideoPlayer {
         let (play, mid_y, cluster_x0, pad, icon) = layout;
         let colors = &theme.tokens.colors;
         let accent = colors.text_primary;
-        let time_text = format!(
-            "{} / {}",
-            format_ms(self.position_ms),
-            format_ms(self.duration_ms)
-        );
+        let time_text = self.time_text();
         let time_size = 12.0;
         let (time_w, _) = text_renderer.measure(&time_text, time_size, None);
         let time_x = play.x1 + pad;
@@ -1666,7 +1615,13 @@ impl VideoPlayer {
             self.time_label_rect = Rect::ZERO;
             time_x1
         };
-        self.paint_scrub_track(scene, transform, layout, track_x0, track_x1);
+        if self.live {
+            // A broadcast has no length to scrub: the label says where it stands and that it is
+            // live, and the track claims no pointer target.
+            self.scrub_track_rect = Rect::ZERO;
+        } else {
+            self.paint_scrub_track(scene, transform, layout, track_x0, track_x1);
+        }
     }
 
     fn paint_volume_slider(
