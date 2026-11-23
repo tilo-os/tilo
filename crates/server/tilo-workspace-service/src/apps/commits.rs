@@ -92,16 +92,18 @@ impl WorkspaceCommits for ServiceCommits {
         Box::pin(async move {
             let copies = copies.ok_or("this device's workspace service is not open")?;
             let committing = workspace.clone();
+            let (written_app, written_document, written_envelope) =
+                (app.clone(), document.clone(), envelope.clone());
             super::service_resources::on_the_service(
                 runtime,
                 Box::pin(async move {
                     copies
                         .commit_local_document(
                             &committing,
-                            &app,
-                            &document,
+                            &written_app,
+                            &written_document,
                             readers.as_deref(),
-                            envelope.clone(),
+                            written_envelope,
                         )
                         .await
                         .map_err(|refusal: WriteRefusal| refusal.to_string())

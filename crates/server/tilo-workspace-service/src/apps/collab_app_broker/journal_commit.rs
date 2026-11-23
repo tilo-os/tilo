@@ -4,6 +4,7 @@
 )]
 use super::*;
 
+#[derive(Clone)]
 pub(super) struct PreparedEffectCommit {
     pub(super) update: tilo_actions::InvocationUpdate,
     pub(super) workspace: String,

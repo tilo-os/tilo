@@ -290,7 +290,7 @@ impl SessionOwner {
                 envelope,
             } => {
                 let outcome =
-                    candidate.admit_local_app_document(app, record, (**envelope).clone(), now)?;
+                    candidate.admit_local_app_document(app, record, envelope.clone(), now)?;
                 if outcome.deferred || outcome.incomplete.is_some() {
                     return Err("local publication admission incomplete".into());
                 }

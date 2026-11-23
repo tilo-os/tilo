@@ -1319,7 +1319,8 @@ impl Workspaces {
         if !member {
             return self
                 .commit_own_document(workspace, app, document, readers, &envelope)
-                .await;
+                .await
+                .map_err(WriteRefusal::from);
         }
         if neighbour_wire::retention(&message, false).is_none() {
             return Err(WriteRefusal::Refused(
