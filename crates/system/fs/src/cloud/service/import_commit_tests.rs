@@ -23,10 +23,10 @@ fn pinned_commit_survives_expiry_restart_and_fences_recovery_against_writer() {
     let server = cloud_source_dav::fake::FakeDav::generic();
     let root = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
-    let mut store = accounts::AccountStore::new();
+    let mut store = accounts::person::AccountList::default();
     let mut account = accounts::Account::new("files-1", "webdav");
     account.config = server.account_config();
-    store.upsert(account.clone());
+    store.keep(&account).unwrap();
     let session = publish_credential(root.path(), "files-1", account);
     let launcher = InProcessLauncher::default();
     let mut service = CloudService::new(
@@ -75,15 +75,12 @@ fn pinned_commit_survives_expiry_restart_and_fences_recovery_against_writer() {
         ),
         CloudResponse::Error(_)
     ));
-    let mut account = store
-        .get(&accounts::AccountId::from("files-1"))
-        .unwrap()
-        .clone();
+    let mut account = store.account("files-1").unwrap();
     accounts::cloud_types::set_files_mode(
         &mut account.config,
         accounts::cloud_types::FilesMode::Import,
     );
-    store.upsert(account.clone());
+    store.keep(&account).unwrap();
     session.keep_account(account);
     service.reconcile();
     assert!(service.import_holds.contains_key("files-1"));

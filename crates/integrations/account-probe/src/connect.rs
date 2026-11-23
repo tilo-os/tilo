@@ -413,7 +413,9 @@ impl CloudFollowing<'_> {
                     },
                 }
             }
-            CloudStage::Oauth { page, canceller } => {
+            CloudStage::Oauth {
+                page, canceller, ..
+            } => {
                 if let Some(canceller) = canceller {
                     canceller.cancel();
                 }

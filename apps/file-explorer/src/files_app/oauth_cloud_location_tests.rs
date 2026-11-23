@@ -21,7 +21,21 @@ impl ui::framework::ResourceApp for AccountsOwner {
     }
 }
 
-type Accounts = ui::framework::WorkspaceResource<accounts::person::PersonAccounts>;
+type Accounts = ui::framework::WorkspaceResource<accounts::person::AccountList>;
+
+/// Save `account` into the workspace's accounts as Settings does.
+fn save(record: &Accounts, account: &accounts::Account) {
+    record
+        .invoke(&accounts::person::AccountList::SAVE_ACCOUNT.with((
+            account.id.to_string(),
+            account.type_id.to_string(),
+            account.display_name.clone(),
+            account.config.clone(),
+            account.enabled,
+            account.tint,
+        )))
+        .unwrap();
+}
 
 fn person() -> String {
     "fe".repeat(32)
@@ -33,14 +47,13 @@ fn fixture_record() -> (ui::framework::testing::TestApp<AccountsOwner>, Accounts
     let mut settings =
         ui::framework::testing::TestApp::<AccountsOwner>::for_person(&person()).unwrap();
     let kept = settings
-        .shared_workspace::<accounts::person::PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
+        .shared_workspace::<accounts::person::AccountList>(accounts::person::ACCOUNTS_OWNER)
         .unwrap();
     for (id, provider) in PROVIDERS {
         let mut account = accounts::Account::new(id, provider);
         account.display_name = "Cloud".into();
         account.config = serde_json::json!({"unsupported_private_field":"secret-sentinel"});
-        kept.invoke(&accounts::person::PersonAccounts::saving(&account))
-            .unwrap();
+        save(&kept, &account);
     }
     (settings, kept)
 }
@@ -144,16 +157,9 @@ fn disabled_and_removed_oauth_accounts(
     record: &Accounts,
 ) {
     let home = tempfile::tempdir().unwrap();
-    let mut disabled = record
-        .get()
-        .store()
-        .get(&accounts::AccountId::from("c-dropbox"))
-        .unwrap()
-        .clone();
+    let mut disabled = record.get().account("c-dropbox").unwrap();
     disabled.enabled = false;
-    record
-        .invoke(&accounts::person::PersonAccounts::saving(&disabled))
-        .unwrap();
+    save(record, &disabled);
     let mut widget = FileExplorerWidget::with_persistence_dirs(
         None,
         Some(home.path().to_owned()),
@@ -178,7 +184,7 @@ fn disabled_and_removed_oauth_accounts(
     }));
     record
         .invoke(
-            &accounts::person::PersonAccounts::REMOVE_ACCOUNT
+            &accounts::person::AccountList::REMOVE_ACCOUNT
                 .with(ui::tilo_resource::Id::from_raw("c-dropbox")),
         )
         .unwrap();
@@ -237,10 +243,10 @@ fn an_account_saved_to_the_persons_accounts_shows_in_files_places_live() {
         ui::framework::testing::TestApp::<crate::resource::FileExplorerShell>::for_person(&person())
             .unwrap();
     let kept = settings
-        .shared_workspace::<accounts::person::PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
+        .shared_workspace::<accounts::person::AccountList>(accounts::person::ACCOUNTS_OWNER)
         .unwrap();
     let read = files
-        .shared_workspace::<accounts::person::PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
+        .shared_workspace::<accounts::person::AccountList>(accounts::person::ACCOUNTS_OWNER)
         .expect("Files reads the workspace's accounts");
     assert_eq!(
         read.record().route(),
@@ -253,8 +259,7 @@ fn an_account_saved_to_the_persons_accounts_shows_in_files_places_live() {
     let mut account = accounts::Account::new("work-cloud", remote_accounts::NEXTCLOUD_TYPE);
     account.display_name = "Work cloud".into();
     account.config = serde_json::json!({"server_url": "https://cloud.example", "username": "ada"});
-    kept.invoke(&accounts::person::PersonAccounts::saving(&account))
-        .unwrap();
+    save(&kept, &account);
     read.record()
         .merge_peer_document(kept.record().document().unwrap())
         .unwrap();
@@ -266,7 +271,7 @@ fn an_account_saved_to_the_persons_accounts_shows_in_files_places_live() {
     );
 
     kept.invoke(
-        &accounts::person::PersonAccounts::REMOVE_ACCOUNT
+        &accounts::person::AccountList::REMOVE_ACCOUNT
             .with(ui::tilo_resource::Id::from_raw("work-cloud")),
     )
     .unwrap();

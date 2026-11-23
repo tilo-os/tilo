@@ -3143,7 +3143,9 @@ impl AccountsPane {
             if let Some(config) = account.config.as_object_mut() {
                 config.remove(accounts::cloud_types::MAIL_ACCOUNT_ID_KEY);
             }
-            updated_store.upsert(account);
+            updated_store
+                .keep(&account)
+                .expect("an account from the record keeps its id and type");
         }
         if let Err(error) = root.save_store(&updated_store) {
             let failed = format!("could not remove account metadata: {error}");
@@ -3644,7 +3646,7 @@ impl AccountsPane {
             if cloud {
                 let account = account.clone();
                 credential_store
-                    .file_credential_of(&account, true)
+                    .file_credential(&account, true)
                     .map(|_| "The provider accepted the saved sign-in".to_string())
                     .map_err(|error| error.to_string())
             } else {

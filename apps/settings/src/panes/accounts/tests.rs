@@ -85,8 +85,8 @@ fn a_drive_connected_elsewhere_shows_with_its_sign_in_and_remove_actions() {
         "provider": "google-drive",
         "files_mode": "import",
     });
-    let mut store = accounts::AccountStore::new();
-    store.upsert(account.clone());
+    let mut store = accounts::person::AccountList::default();
+    store.keep(&account).unwrap();
     root.save_store(&store).unwrap();
     let pane = AccountsPane::in_root(root.clone());
     let mut app = window_showing(pane);
@@ -847,8 +847,8 @@ fn an_interrupted_mode_change_offers_its_recovery_on_the_row() {
         "provider": "google-drive",
         "files_mode": "sync",
     });
-    let mut store = accounts::AccountStore::new();
-    store.upsert(account.clone());
+    let mut store = accounts::person::AccountList::default();
+    store.keep(&account).unwrap();
     root.save_store(&store).unwrap();
     root.sync_reporter(account.id.clone())
         .failed()
