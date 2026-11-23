@@ -12,8 +12,10 @@
 //! file reaches the running app, with its state.
 
 use std::path::PathBuf;
-use std::process::Command;
-use std::sync::mpsc;
+use std::process::{Child, Command};
+use std::sync::{Arc, Mutex, PoisonError, mpsc};
+
+use rustix::process::{Pid, Signal, WaitId, WaitIdOptions, waitid};
 
 use tilo_files::native::Watcher;
 
@@ -86,58 +88,40 @@ fn session_command(
     command
 }
 
-/// Have the process `command` starts stop as an interrupt stops it when this process ends in a way
-/// that runs none of its own code (a signal, a kill): the kernel sends it SIGTERM then.
-pub(crate) fn end_with_this_process(command: &mut Command) {
-    use std::os::unix::process::CommandExt as _;
-    let parent = rustix::process::getpid();
-    // SAFETY: runs in the forked child before exec, and calls only async-signal-safe system
-    // calls (prctl, getppid), allocating nothing.
-    unsafe {
-        command.pre_exec(move || {
-            rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::TERM))?;
-            // This process may have ended before the request: then
-            // nobody is left to signal, and the session must not
-            // start.
-            if rustix::process::getppid() != Some(parent) {
-                return Err(rustix::io::Errno::SRCH.into());
-            }
-            Ok(())
-        });
-    }
-}
-
-/// The session script this tool started, by a pidfd that names that process and no other.
-struct Started {
-    pidfd: std::os::fd::OwnedFd,
-}
+/// The session script this tool started. Dropping it stops the session, unless it has ended, and
+/// waits until it has.
+struct Started(Arc<Mutex<Child>>);
 
 impl Started {
-    fn new(child: &std::process::Child) -> Result<Self, String> {
-        let pid = i32::try_from(child.id())
-            .ok()
-            .and_then(rustix::process::Pid::from_raw)
-            .ok_or("the nested session has no process id")?;
-        let pidfd = rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty())
-            .map_err(|error| format!("watching the nested session: {error}"))?;
-        Ok(Self { pidfd })
+    /// Own `child`, and send `wakes` its end when it ends.
+    fn watch(child: Child, wakes: mpsc::Sender<Wake>) -> Self {
+        let pid = Pid::from_child(&child);
+        let child = Arc::new(Mutex::new(child));
+        let waiter = Arc::clone(&child);
+        std::thread::spawn(move || {
+            // Wait for the end without reaping it: the process id stays this child's until the
+            // lock's holder has seen it end, so a stop never signals another process.
+            let options = WaitIdOptions::EXITED | WaitIdOptions::NOWAIT;
+            while matches!(
+                waitid(WaitId::Pid(pid), options),
+                Err(rustix::io::Errno::INTR)
+            ) {}
+            let status = waiter.lock().unwrap_or_else(PoisonError::into_inner).wait();
+            let _ = wakes.send(Wake::Ended(status));
+        });
+        Self(child)
     }
 }
 
 impl Drop for Started {
     fn drop(&mut self) {
-        use rustix::event::{PollFd, PollFlags, poll};
-        let mut exited = [PollFd::new(&self.pidfd, PollFlags::IN)];
-        if poll(&mut exited, Some(&rustix::event::Timespec::default())).is_ok_and(|ready| ready > 0)
-        {
+        let mut child = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if !matches!(child.try_wait(), Ok(None)) {
             return;
         }
         eprintln!("==> stopping the nested session");
-        if rustix::process::pidfd_send_signal(&self.pidfd, rustix::process::Signal::TERM).is_err() {
-            return;
-        }
-        let mut exited = [PollFd::new(&self.pidfd, PollFlags::IN)];
-        while poll(&mut exited, None) == Err(rustix::io::Errno::INTR) {}
+        let _ = rustix::process::kill_process(Pid::from_child(&child), Signal::TERM);
+        let _ = child.wait();
     }
 }
 
@@ -203,22 +187,10 @@ pub fn run(options: &RunOptions) -> Result<(), String> {
     let ready = base.join("ready.json");
     let _ = std::fs::remove_file(&ready);
     let mut command = session_command(&repo, options, &base, &ready, &apps);
-    end_with_this_process(&mut command);
-    let mut child = command
+    let child = command
         .spawn()
         .map_err(|error| format!("starting the nested session: {error}"))?;
-    let _session = match Started::new(&child) {
-        Ok(session) => session,
-        Err(error) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(error);
-        }
-    };
-    let ended_sender = sender.clone();
-    std::thread::spawn(move || {
-        let _ = ended_sender.send(Wake::Ended(child.wait()));
-    });
+    let _session = Started::watch(child, sender.clone());
     wait_for_file(&ready, &wakes, &sender)?;
     dev.open()?;
     if let Some(bin) = dev.bin() {
@@ -248,23 +220,28 @@ mod tests {
         phase dropping_a_started_session_stops_it;
         // A run that ends, however it ends, stops the session it started and waits until it has.
         {
-            let mut child = Command::new("sleep")
+            let child = Command::new("sleep")
                 .arg("600")
                 .spawn_locked()
                 .expect("a process stands in for the session");
-            drop(Started::new(&child).expect("a pidfd"));
-            let status = child
-                .try_wait()
-                .expect("its status")
-                .expect("stopped before the drop returned");
+            let (sender, ends) = mpsc::channel();
+            drop(Started::watch(child, sender));
+            let Ok(Wake::Ended(status)) = ends.recv() else {
+                panic!("the session's end");
+            };
+            let status = status.expect("its status");
             assert!(!status.success(), "{status}");
         }
 
         phase a_session_that_ended_is_not_signalled;
         {
-            let mut child = Command::new("true").spawn_locked().expect("a process");
-            let started = Started::new(&child).expect("a pidfd");
-            assert!(child.wait().expect("its status").success());
+            let child = Command::new("true").spawn_locked().expect("a process");
+            let (sender, ends) = mpsc::channel();
+            let started = Started::watch(child, sender);
+            let Ok(Wake::Ended(status)) = ends.recv() else {
+                panic!("its end");
+            };
+            assert!(status.expect("its status").success());
             drop(started);
         }
     }
