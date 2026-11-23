@@ -201,9 +201,17 @@ const SECRETS_DIR_ENV: &str = "TILO_SECRETS_DIR";
 const MAX_SYMLINK_HOPS: usize = 40;
 
 /// The directories holding Tilo's own key material and trust roots, as this process's environment names
-/// them.
+/// them: the device daemon's profiles among them, which hold its store, its device's key and the
+/// sockets of a profile named apart, so no app with a grant over a home reaches them.
 pub fn private_store_roots() -> Vec<PathBuf> {
-    let mut roots = Vec::new();
+    let mut roots: Vec<PathBuf> = tilo_paths::machine::account_daemon_profile()
+        .into_iter()
+        .chain(
+            std::env::var_os(tilo_paths::machine::DAEMON_PROFILE_VAR)
+                .map(PathBuf::from)
+                .filter(|profile| profile.is_absolute()),
+        )
+        .collect();
     if let Some(config) = tilo_paths::xdg::config_home() {
         roots.push(config.join("tilo"));
     }

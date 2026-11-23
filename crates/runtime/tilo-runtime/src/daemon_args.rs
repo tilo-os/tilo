@@ -73,15 +73,8 @@ pub(crate) fn own_profile() -> io::Result<PathBuf> {
     if tilo_api::daemon::system_daemon() {
         return Ok(PathBuf::from(tilo_api::daemon::SYSTEM_PROFILE));
     }
-    let home =
-        tilo_paths::home().ok_or_else(|| invalid("HOME is missing; set TILO_RUNTIME_PROFILE"))?;
-    #[cfg(target_os = "macos")]
-    let suffix = "Library/Application Support/Tilo/runtime";
-    #[cfg(target_os = "windows")]
-    let suffix = "AppData/Local/Tilo/runtime";
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let suffix = ".local/state/tilo/runtime";
-    Ok(home.join(suffix))
+    tilo_paths::machine::account_daemon_profile()
+        .ok_or_else(|| invalid("HOME is missing; set TILO_RUNTIME_PROFILE"))
 }
 
 /// Parse native modes while preserving opaque application arguments.
