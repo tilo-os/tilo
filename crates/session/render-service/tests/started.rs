@@ -82,6 +82,32 @@ fn main() -> std::process::ExitCode {
     );
     drop(held);
     std::fs::remove_file(&scratch).unwrap();
+
+    // A machine where wgpu offers no adapter (here: only a backend Linux does not have) still
+    // gets a service, which draws on the CPU without a device.
+    let (broker, service) = Channel::pair().unwrap();
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .arg(MODE)
+        .env(tilo_render_service::RENDER_NODE_ENV, "")
+        .env("WGPU_BACKEND", "metal")
+        .env(
+            tilo_render_service::FONT_ROOTS_ENV,
+            tilo_font_catalog::checkout_root(),
+        )
+        .stdin(std::process::Stdio::from(
+            service.as_fd().try_clone_to_owned().unwrap(),
+        ))
+        .spawn()
+        .unwrap();
+    drop(service);
+    let ready = broker.recv::<FromService>().unwrap().message;
+    assert!(
+        matches!(&ready, FromService::Ready { gpu: false, device } if device == "CPU rasterizer"),
+        "with no adapter the service still starts, drawing without a device: {ready:?}"
+    );
+    drop(broker);
+    let status = child.wait().unwrap();
+    assert!(status.success(), "it ends with its broker: {status}");
     println!("the render service starts on the socket it is handed: ok");
     std::process::ExitCode::SUCCESS
 }

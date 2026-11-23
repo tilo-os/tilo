@@ -31,7 +31,7 @@ use tilo_render_protocol::{
     FontId, ImageId, LayerId, Limits, PROTOCOL_VERSION, SurfaceId, WireError,
 };
 use tilo_render_service::broker::{FromService, ToService};
-use tilo_render_service::{Config, serve};
+use tilo_render_service::{Config, FontFiles, Service, serve};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect as KRect};
 use vello::peniko::{Blob, Color, Fill, FontData, ImageAlphaType, ImageData};
@@ -259,8 +259,30 @@ fn filled(color: Color, rect: KRect) -> Scene {
 
 #[test]
 fn frames_come_back_as_buffers_with_the_app_s_pixels() {
-    let broker = start(Limits::default());
-    let mut app = connect(&broker, 1, "so.tilo.calculator");
+    frames_come_back_with_the_app_s_pixels(&start(Limits::default()));
+}
+
+/// A machine where wgpu offers no adapter at all still shows its apps: the
+/// service rasterizes every frame on the CPU, without a device, and the app
+/// gets the same pixels.
+#[test]
+fn with_no_gpu_adapter_frames_are_rasterized_on_the_cpu() {
+    let (broker, service) = Channel::pair().unwrap();
+    let fonts = FontFiles::new(
+        &[tilo_font_catalog::checkout_root()],
+        Some(&tilo_font_catalog::checkout_root()),
+    );
+    std::thread::spawn(move || Service::new(None, fonts, Limits::default()).run(&service));
+    let ready = broker.recv::<FromService>().unwrap().message;
+    assert!(
+        matches!(&ready, FromService::Ready { gpu: false, device } if device == "CPU rasterizer"),
+        "no device, so the CPU draws into shared memory: {ready:?}"
+    );
+    frames_come_back_with_the_app_s_pixels(&broker);
+}
+
+fn frames_come_back_with_the_app_s_pixels(broker: &Channel) {
+    let mut app = connect(broker, 1, "so.tilo.calculator");
 
     // A full frame: red everywhere, a picture and some text on it.
     let mut scene = filled(

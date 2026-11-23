@@ -30,6 +30,8 @@ gbm = { version = "0.18", default-features = false, features = ["drm-support"] }
 rustix = { workspace = true, features = ["event", "fs", "mm", "net", "process", "std", "time"] }
 libc.workspace = true
 tilo-sandbox-core = { path = "../../platform/sandbox-core" }
+# The session-wide budget of extra devices a CPU driver's warm-up compiles on.
+tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 # The runtime bundles the apps run on carry the product font catalog.
 runtime-bundle = { path = "../../packaging/runtime-bundle" }
 

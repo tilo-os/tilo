@@ -78,7 +78,9 @@ struct Ready {
 
 /// The service's state.
 pub struct Service {
-    gpu: Gpu,
+    /// The device frames are drawn on; `None` rasterizes every frame on the
+    /// CPU into shared memory.
+    gpu: Option<Gpu>,
     fonts: FontFiles,
     limits: Limits,
     connections: HashMap<u64, Connection>,
@@ -90,7 +92,7 @@ pub struct Service {
 }
 
 impl Service {
-    pub fn new(gpu: Gpu, fonts: FontFiles, limits: Limits) -> Self {
+    pub fn new(gpu: Option<Gpu>, fonts: FontFiles, limits: Limits) -> Self {
         Self {
             gpu,
             fonts,
@@ -106,8 +108,8 @@ impl Service {
     pub fn run(mut self, broker: &Channel) -> Result<(), ChannelError> {
         broker.send(
             &FromService::Ready {
-                device: self.gpu.adapter.name.clone(),
-                gpu: self.gpu.dmabufs(),
+                device: renderer(self.gpu.as_ref()).name,
+                gpu: self.gpu.as_ref().is_some_and(Gpu::dmabufs),
             },
             &[],
         )?;
@@ -163,7 +165,7 @@ impl Service {
             }
             self.serve_held();
             self.finish_pass();
-            if let Some(reason) = self.gpu.lost() {
+            if let Some(reason) = self.gpu.as_ref().and_then(Gpu::lost) {
                 return Err(ChannelError::Io(std::io::Error::other(format!(
                     "the GPU device was lost: {reason}"
                 ))));
@@ -274,7 +276,7 @@ impl Service {
                         limits,
                         catalog: self.fonts.catalog(),
                         font_roots,
-                        renderer: renderer(&self.gpu),
+                        renderer: renderer(self.gpu.as_ref()),
                     },
                     &[],
                 );
@@ -299,7 +301,7 @@ impl Service {
                 {
                     refuse(connection.peer(), Refusal::OverLimit("surfaces".to_owned()));
                 } else {
-                    let on_cpu = self.gpu.software;
+                    let on_cpu = self.gpu.as_ref().is_none_or(|gpu| gpu.software);
                     connection
                         .surfaces
                         .insert(surface, Surface::new(opaque, formats, on_cpu));
@@ -523,7 +525,7 @@ impl Service {
             return Drawn::Dropped(error.into());
         }
         let registry = &connection.registry;
-        let gpu = &mut self.gpu;
+        let gpu = self.gpu.as_mut();
         let drawn = tilo_rt::panic_boundary::isolate(|| {
             surface.rasterize(gpu, &mut frame, registry, tenant_changed)
         });
@@ -554,7 +556,7 @@ impl Service {
         let Some(surface) = connection.surfaces.get_mut(&surface_id) else {
             return;
         };
-        match surface.ensure_buffers(&self.gpu) {
+        match surface.ensure_buffers(self.gpu.as_ref()) {
             Ok(false) => {}
             Ok(true) => {
                 if let Some(set) = &surface.buffers {
@@ -578,7 +580,7 @@ impl Service {
                 return;
             }
         }
-        match surface.deliver(&self.gpu, &damage) {
+        match surface.deliver(self.gpu.as_ref(), &damage) {
             Ok(Some(delivered)) => self.ready.push(Ready {
                 connection: id,
                 surface: surface_id,
@@ -611,7 +613,7 @@ impl Service {
             return;
         };
         let peer = (channel, app_id.as_str());
-        match surface.deliver(&self.gpu, &pending.damage) {
+        match surface.deliver(self.gpu.as_ref(), &pending.damage) {
             Ok(Some(delivered)) => self.ready.push(Ready {
                 connection: id,
                 surface: surface_id,
@@ -631,7 +633,7 @@ impl Service {
             return;
         }
         let started = Instant::now();
-        if !self.gpu.finish() {
+        if self.gpu.as_ref().is_some_and(|gpu| !gpu.finish()) {
             // Nothing of this pass was drawn: the GPU stopped or was lost, and `run` ends the
             // service for the broker to start another; apps send their frames again.
             self.ready.clear();
@@ -671,7 +673,13 @@ impl Service {
     /// After a panic while drawing, vello's state is not trusted: build the
     /// renderer again (its pipelines are cached by the driver).
     fn rebuild_renderer(&mut self) {
-        match self.gpu.rebuild_renderer() {
+        let Some(gpu) = self.gpu.as_mut() else {
+            // Nothing of a CPU rasterizer outlives its frame but the canvas,
+            // which the surface keeps.
+            self.last_tenant = None;
+            return;
+        };
+        match gpu.rebuild_renderer() {
             // Nothing drawable is left: the broker starts another service,
             // whose pipelines are built from nothing.
             Err(error) => {
@@ -685,12 +693,20 @@ impl Service {
 
 /// What draws the frames, in wgpu's words: the app's toolkit reports it in
 /// its log, so "why is this app on lavapipe" is answered by the service.
-fn renderer(gpu: &Gpu) -> Renderer {
-    Renderer {
-        name: gpu.adapter.name.clone(),
-        device_type: format!("{:?}", gpu.adapter.device_type),
-        backend: format!("{:?}", gpu.adapter.backend),
-        driver: gpu.adapter.driver.clone(),
+fn renderer(gpu: Option<&Gpu>) -> Renderer {
+    match gpu {
+        Some(gpu) => Renderer {
+            name: gpu.adapter.name.clone(),
+            device_type: format!("{:?}", gpu.adapter.device_type),
+            backend: format!("{:?}", gpu.adapter.backend),
+            driver: gpu.adapter.driver.clone(),
+        },
+        None => Renderer {
+            name: "CPU rasterizer".to_owned(),
+            device_type: "Cpu".to_owned(),
+            backend: "none".to_owned(),
+            driver: "no GPU adapter".to_owned(),
+        },
     }
 }
 fn send(
