@@ -23,10 +23,9 @@
 #
 # The env-runtime is sealed from the tree built from the tree's own RPM package set, as a run's dev images get
 # theirs: TILO_ENV_RUNTIME_TREES names the directory holding
-# env-runtime-tree-ARCH.tar. Without those trees the session takes the runtime
-# published for this tree's definition (os/dev/resolve-env-runtime.sh), as a
-# Tilo image of the tree ships it; with none published either, the session has
-# no env-runtime and Terminal has no environment to start a shell in.
+# env-runtime-tree-ARCH.tar, which the image-env-runtime-dev-tree check
+# publishes. Without it the script stops rather than resolving a registry
+# image by name, which is egress no check pins.
 #
 # With Browser among the apps, the Chromium engine it renders with is built
 # too (scripts/browser/build-host.py, CMake and the pinned CEF SDK) and staged
@@ -52,7 +51,8 @@ if [[ -n ${TILO_ENV_RUNTIME_TREES:-} ]]; then
     [[ -f $env_runtime_trees/env-runtime-tree-$arch.tar && -f $env_runtime_trees/env-runtime-rpms-$arch.txt ]] \
         || { echo "no env-runtime tree for $arch in $env_runtime_trees" >&2; exit 1; }
 else
-    echo "TILO_ENV_RUNTIME_TREES is not set: the session gets the published env-runtime, if there is one" >&2
+    echo 'the env-runtime tree comes from the image-env-runtime-dev-tree check; run through `t test nested-session` or `t exec --needs nested-session`' >&2
+    exit 1
 fi
 target=$(realpath -m "${CARGO_TARGET_DIR:-target}")
 out=${out:-$target/nested-session}
@@ -220,30 +220,9 @@ build_thin() {
 env_runtime=$target/nested-session-env-runtime
 seal_env_runtime() {
     rm -rf "$env_runtime"
-    if [[ -z $env_runtime_trees ]]; then
-        published_env_runtime
-        return
-    fi
     local began=$SECONDS
     bash tools/ci/publish/env-runtime.sh dev "$arch" "$env_runtime_trees" "$target/$host_profile" "$env_runtime"
     printf 'sealed the env-runtime in %s s\n' "$((SECONDS - began))"
-}
-# Without trees to seal, the runtime published for this tree's definition
-# (os/dev/resolve-env-runtime.sh: the registry's image of that fingerprint,
-# its signature checked) is the one a Tilo image of this tree ships: its
-# /env-runtime directory is what install-env-runtime.sh installs from.
-published_env_runtime() {
-    local ref container
-    if ! ref=$(bash os/dev/resolve-env-runtime.sh); then
-        echo "no env-runtime is published for os/Containerfile.env-runtime and no trees were given: Terminal opens no shell" >&2
-        return 0
-    fi
-    podman pull --quiet "$ref" >/dev/null || return 1
-    container=$(podman create --quiet "$ref" true) || return 1
-    podman cp "$container:/env-runtime" "$env_runtime"
-    local copied=$?
-    podman rm --force "$container" >/dev/null
-    return "$copied"
 }
 
 # The Browser's Chromium engine (scripts/browser/build-host.py: the pinned CEF
