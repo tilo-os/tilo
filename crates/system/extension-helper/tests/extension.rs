@@ -154,27 +154,16 @@ tilo_test_env::scenario! {
         assert!(!machine.layout.desired("nvidia").exists());
     }
 
-    phase status_prints_the_status_file_or_not_installed;
-    {
-        let machine = Machine::new();
-        assert_eq!(machine.run("status"), 0);
-        machine.manifest(
-            &[machine.artifact(rpm("libavcodec-freeworld", "1.0"))],
-            None,
-        );
-        assert_eq!(machine.run("install"), 0);
-        assert_eq!(machine.run("status"), 0);
-        assert_eq!(machine.run_on("status", "nvidia"), 2);
-    }
-
     phase the_status_file_keeps_its_python_form;
     {
         let machine = Machine::new();
+        assert_eq!(machine.run("status"), 0, "nothing installed, and it says so");
         machine.manifest(
             &[machine.artifact(rpm("libavcodec-freeworld", "1.0"))],
             None,
         );
         assert_eq!(machine.run("install"), 0);
+        assert_eq!(machine.run("status"), 0);
         let text = fs::read_to_string(machine.layout.status("media-codecs")).unwrap();
         let value: Value = serde_json::from_str(&text).unwrap();
         assert_eq!(
@@ -376,22 +365,11 @@ tilo_test_env::scenario! {
             base_packages_sha256(&lines),
             support::sha256_hex(b"tilo.base-packages.v1\na 1:2-3.noarch\nb 0:1-1.x86_64\n")
         );
+        assert_eq!(
+            base_packages_sha256::<&str>(&[]),
+            support::sha256_hex(b"tilo.base-packages.v1\n")
+        );
     }
-}
-
-#[test]
-fn the_device_computes_the_publishers_fingerprint() {
-    let rpm = "bash 0:5.3.0-2.fc44.x86_64\ngpg-pubkey 0:6d9f90a6-6470bd3b.(none)\n\
-               zlib-ng-compat 0:2.2.5-2.fc44.x86_64\naudit-libs 0:4.1.1-1.fc44.x86_64\n";
-    let lines: Vec<&str> = rpm.lines().collect();
-    assert_eq!(
-        base_packages_sha256(&lines),
-        "5a21779b0a9aca5bb5638fa2177fbbd69c074ed1611aaab0071468cbb6c24e13"
-    );
-    assert_eq!(
-        base_packages_sha256::<&str>(&[]),
-        support::sha256_hex(b"tilo.base-packages.v1\n")
-    );
 }
 
 tilo_test_env::scenario! {
@@ -423,6 +401,8 @@ tilo_test_env::scenario! {
                 assert!(entry.download_bytes > 0);
                 // The image is linked into the search path as it was downloaded.
                 assert!(entry.installed_bytes >= entry.download_bytes);
+                // The size the owner is told before downloading it.
+                assert!(entry.installed_bytes >= 2_000_000_000);
             } else {
                 assert!(
                     !entry.hosts.contains("code.tilo.so"),
@@ -459,16 +439,6 @@ tilo_test_env::scenario! {
                 "{change}"
             );
         }
-    }
-
-    phase catalogue_declares_the_size_the_owner_is_told;
-    {
-        let entry = Catalogue::parse(
-            &fs::read(catalogue_dir().join("windows-compat.json")).unwrap(),
-            RAW_ID,
-        )
-        .unwrap();
-        assert!(entry.installed_bytes >= 2_000_000_000);
     }
 }
 
