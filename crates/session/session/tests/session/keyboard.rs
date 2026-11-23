@@ -550,3 +550,126 @@ fn the_keyboard_shows_and_hides_by_its_published_action() {
         reading(session)["visible"] == true
     });
 }
+
+/// A control of the session's API by name, and where it stands.
+type Control = (String, (f64, f64, f64, f64));
+
+/// The keys of the keyboard on `display`, each with where it stands: the single-letter controls of
+/// the session's API in the lower half of the display, where the keyboard stands.
+fn keys_on(session: &Session, display: (i32, i32, i32, i32)) -> Vec<Control> {
+    let low = f64::from(display.1) + f64::from(display.3) * 0.5;
+    controls(session)
+        .into_iter()
+        .filter(|(name, rect)| {
+            name.chars().count() == 1 && name.chars().all(char::is_alphabetic) && rect.1 >= low
+        })
+        .collect()
+}
+
+/// Every control of the session's API by name and place: what a person's tools, an agent and a
+/// test find and press.
+fn controls(session: &Session) -> Vec<Control> {
+    session
+        .controls()
+        .into_iter()
+        .map(|control| (control.name, control.rect))
+        .collect()
+}
+
+/// The keyboard's keys are controls of a window like any other's: the session's API lists them
+/// where the person sees them, and a press of one through it types into the field the keyboard
+/// serves, as a tap on it does. The desktop's own controls stand as they did beside it.
+#[test]
+fn the_keyboards_keys_are_listed_and_pressed_through_the_sessions_api() {
+    const APP: &str = "org.example.Notes";
+    let _settled = ui::motion::testing::settled();
+    let home = private_home();
+    let mut environment = tilo_test_env::ScopedEnv::new();
+    environment.set("XDG_RUNTIME_DIR", home.path());
+    let mut session = keyboard_session(&home.path().join("collab.sock"), OnScreenKeyboard::Auto);
+    let mut client = mapped(&mut session, APP);
+    let (_, rect) = resting_window(&mut session, APP);
+    let on = display_of(&mut session, rect);
+    let display = display_rect(&mut session, &on);
+    assert!(
+        keys_on(&session, display).is_empty(),
+        "no keyboard, no keys: {:?}",
+        controls(&session)
+    );
+
+    // A finger into the window's field: the keyboard comes up for it.
+    finger(&mut session, middle(rect));
+    pump(&mut session, &mut [&mut client], |session, _| {
+        session.surfaces().running(keyboard::SURFACE)
+    });
+    type_until_the_keyboard_is_up(&mut session, &mut client);
+    pump(&mut session, &mut [&mut client], |session, _| {
+        !keys_on(session, display).is_empty()
+    });
+    let keys = keys_on(&session, display);
+    let namespace = tilo_session::surfaces::namespace(keyboard::SURFACE);
+    let (kx, ky, kw, kh) = session
+        .compositor()
+        .layer_rect(&namespace)
+        .expect("the keyboard stands on the display");
+    let (left, top) = (f64::from(kx), f64::from(ky));
+    let (right, bottom) = (f64::from(kx + kw) + 0.5, f64::from(ky + kh) + 0.5);
+    for (name, (x, y, w, h)) in &keys {
+        assert!(
+            *x >= left && *y >= top && x + w <= right && y + h <= bottom,
+            "key {name} at {:?} stands where the keyboard is drawn, {:?}",
+            (x, y, w, h),
+            (kx, ky, kw, kh)
+        );
+    }
+    assert!(
+        keys.len() >= 20,
+        "the keyboard's letters are listed, each as a control: {keys:?}"
+    );
+
+    // A press of a key through the API types it into the field, as the keyboard types a tap.
+    let (letter, _) = keys
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("q"))
+        .or_else(|| keys.first())
+        .cloned()
+        .expect("a key");
+    session
+        .press_action(&letter, ui::window_targets::TargetAction::Activate)
+        .unwrap_or_else(|error| panic!("the key {letter} is pressed: {error}"));
+    pump(&mut session, &mut [&mut client], |_, clients| {
+        let seen = &clients[0].seen;
+        format!("{}{}", seen.committed, seen.composed).eq_ignore_ascii_case(&letter)
+    });
+
+    // Beside the keyboard the desktop's controls stand as they did: put away, the keyboard takes
+    // its keys with it and leaves the rest where it found them.
+    let up = controls(&session);
+    session
+        .invoke_with_actor(
+            &crate::common::as_person("ada"),
+            KEYBOARD,
+            "set-visible",
+            &serde_json::json!({ "visible": false }),
+        )
+        .expect("the keyboard is put away");
+    pump(&mut session, &mut [&mut client], |session, _| {
+        keys_on(session, display).is_empty()
+    });
+    let away = controls(&session);
+    for control in &away {
+        assert!(
+            up.contains(control),
+            "the desktop's control {control:?} stood as it does while the keyboard was up: {up:?}"
+        );
+    }
+    let gone: Vec<&Control> = up
+        .iter()
+        .filter(|control| !away.contains(control))
+        .collect();
+    assert!(
+        gone.iter()
+            .all(|(_, (x, y, w, h))| *x >= left && *y >= top && x + w <= right && y + h <= bottom),
+        "only the keyboard's own controls went with it: {gone:?}"
+    );
+}

@@ -439,7 +439,9 @@ impl App {
             .into_iter()
             .collect::<HashSet<_>>();
         let Some(mut client) = self.floating.client.take() else {
-            return self.drain_unhosted_floating_requests();
+            let pressed = self.serve_surface_window();
+            let drained = self.drain_unhosted_floating_requests();
+            return pressed || drained;
         };
 
         let mut changed = false;

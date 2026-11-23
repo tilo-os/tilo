@@ -7,16 +7,23 @@
 //! A surface is still an app that does things, so it is also handed one end of an actions socket:
 //! on it the session answers the actions it publishes ([`ActionApi`]) and asks the surface to run
 //! one of its own, both as [`RemoteActionMessage`]s of the protocol every app speaks to its host.
-//! Those are the only messages: what a surface shows it reads from the resources it holds, and what
-//! was done is said in actions.
+//! Beside them go the two a desktop window says and hears on its `shell-ui` connection about the
+//! controls it shows by name, which a surface app's window, placed by the session itself, has no
+//! such connection for: the app lists its window's controls
+//! ([`FloatingSurfaceClientMessage::WindowTargets`]) and the session presses one
+//! ([`FloatingSurfaceHostMessage::PressTarget`]), so its window is published as every other window
+//! is ([`SurfaceWindow`]). Those are the only messages: what a surface shows it reads from the
+//! resources it holds, and what was done is said in actions.
 //!
 //! [`Compositor::connect_trusted_client`]: tilo_compositor::Compositor::connect_trusted_client
 
+use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::os::fd::AsRawFd as _;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::Instant;
 
@@ -28,10 +35,13 @@ use tilo_actions::remote::{
     RemoteActionMessage, RemoteActionTarget,
 };
 use tilo_compositor::Compositor;
+use tilo_session_core::surfaces::{Look, Published};
 use ui::collaboration::ExportedAction;
+use ui::floating_surface::{FloatingSurfaceClientMessage, FloatingSurfaceHostMessage};
 use ui::host_operation::ResourceOperationStart;
 use ui::surface_peer::FRAMING;
 use ui::surface_services::{ACTIONS_FD_ENV, APP_ID_ENV, SOCKET_ENV, WORKSPACE_ENV};
+use ui::window_targets::{TargetAction, WindowControl, WindowTarget};
 
 /// Where on an output a surface app's window stands, lowest first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -461,12 +471,180 @@ struct Running {
     /// The display of the app's own, while it listens: what the app reaches the compositor on
     /// beside its window's connection. It listens until the app is gone, and nothing else reads it.
     _display: Option<tilo_compositor::SurfaceDisplay>,
+    /// Its window as the session publishes it: what it shows by name, and where.
+    window: Rc<RefCell<SurfaceWindow>>,
+}
+
+/// What the session says to a surface app on its actions socket: the action protocol every app
+/// speaks to its host, or a press on a control its window shows by name, as the shell says one to a
+/// window on its `shell-ui` connection.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a message is made, sent once and dropped; boxing only adds noise to each one"
+)]
+enum Told {
+    Action(RemoteActionMessage),
+    Window(FloatingSurfaceHostMessage),
+}
+
+/// What a surface app says on its actions socket: the action protocol, or the controls its window
+/// shows by name now ([`FloatingSurfaceClientMessage::WindowTargets`]).
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a message is read, taken in once and dropped; boxing only adds noise to each one"
+)]
+enum Heard {
+    Action(RemoteActionMessage),
+    Targets(Vec<WindowTarget>),
+}
+
+/// A surface app's window, published as every window the session shows is
+/// ([`tilo_session_core::surfaces::Surfaces::controls`]): the controls its app says the window
+/// shows by name, where the compositor stands the window, and the app a press on one goes to. The
+/// on-screen keyboard's keys, quick settings' switches and a lock screen's field are found and
+/// pressed by a person's tools, an agent or a test as a desktop window's buttons are.
+///
+/// It is one surface of the session's API like the others, under their rules: a locked session
+/// offers only the lock's own API, and a surface app's window is never that, so nothing of it is
+/// reached through the API while the session is locked.
+pub struct SurfaceWindow {
+    /// The surface app it is the window of, as the session names it.
+    name: String,
+    /// The app it runs as.
+    app_id: String,
+    /// The layer surface it is, as the compositor names it.
+    namespace: String,
+    /// The layer it stands on.
+    layer: Layer,
+    /// The controls its app last said the window shows, in the window's own logical coordinates.
+    targets: Vec<WindowTarget>,
+    /// Where the window stands on the desktop now (`x, y, w, h`, logical), while the person sees
+    /// it; `None` while it is hidden or stands nowhere yet.
+    rect: Option<(i32, i32, i32, i32)>,
+    /// The app's actions socket while it runs: where a press goes.
+    outgoing: Option<mpsc::Sender<Told>>,
+}
+
+impl SurfaceWindow {
+    fn of(surface: &Surface) -> Self {
+        Self {
+            name: surface.name.clone(),
+            app_id: surface.app_id.clone(),
+            namespace: surface.namespace.clone(),
+            layer: surface.layer,
+            targets: Vec::new(),
+            rect: None,
+            outgoing: None,
+        }
+    }
+
+    /// Its app ended: the window shows nothing until the app is started again.
+    fn ended(&mut self) {
+        self.targets.clear();
+        self.rect = None;
+        self.outgoing = None;
+    }
+
+    /// Ask the app to act on `target` as `action` says, as the shell asks a window.
+    fn send_press(&self, target: &WindowTarget, action: TargetAction) -> Result<(), String> {
+        let outgoing = self
+            .outgoing
+            .as_ref()
+            .ok_or_else(|| format!("{} is not running", self.name))?;
+        outgoing
+            .send(Told::Window(FloatingSurfaceHostMessage::PressTarget {
+                name: target.name.clone(),
+                role: target.role.clone(),
+                identity: target.identity.clone(),
+                action,
+            }))
+            .map_err(|_| format!("{} is not running", self.name))
+    }
+}
+
+impl Published for SurfaceWindow {
+    /// Its app publishes its actions on its own socket: the window adds none.
+    fn resources(&mut self) -> Vec<tilo_actions::ResourceSpec> {
+        Vec::new()
+    }
+
+    fn invoke(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        _arguments: &serde_json::Map<String, serde_json::Value>,
+        _look: &mut Look<'_>,
+    ) -> Result<ResourceOperationStart, tilo_actions::ApiError> {
+        Err(tilo_actions::ApiError::Unknown(address.clone()))
+    }
+
+    /// Its app's own process exports its accessibility tree.
+    fn accessible_labels(&mut self) -> Vec<String> {
+        Vec::new()
+    }
+
+    fn controls(&mut self) -> Vec<WindowControl> {
+        let Some((x, y, _, _)) = self.rect else {
+            return Vec::new();
+        };
+        self.targets
+            .iter()
+            .map(|target| {
+                let [x0, y0, x1, y1] = target.rect;
+                WindowControl {
+                    name: target.name.clone(),
+                    identity: target.identity.clone(),
+                    rect: (f64::from(x) + x0, f64::from(y) + y0, x1 - x0, y1 - y0),
+                    level: target.level,
+                    selected: target.selected,
+                }
+            })
+            .collect()
+    }
+
+    fn press(&mut self, name: &str) -> Result<(), String> {
+        self.press_action(name, TargetAction::Activate)
+    }
+
+    fn press_action(&mut self, name: &str, action: TargetAction) -> Result<(), String> {
+        let target = self
+            .targets
+            .iter()
+            .find(|target| target.name == name && target.actions.contains(&action))
+            .ok_or_else(|| format!("{} shows no control named {name}", self.name))?;
+        self.send_press(target, action)
+    }
+
+    fn press_identity(&mut self, identity: &str, action: TargetAction) -> Result<(), String> {
+        let target = self
+            .targets
+            .iter()
+            .find(|target| {
+                target.identity.as_deref() == Some(identity) && target.actions.contains(&action)
+            })
+            .ok_or_else(|| format!("{} shows no control doing {identity}", self.name))?;
+        self.send_press(target, action)
+    }
+
+    /// The surface app and the layer its window stands on.
+    fn a11y_name(&self) -> Option<String> {
+        Some(format!(
+            "{} ({}, {} layer)",
+            self.app_id,
+            self.namespace,
+            self.layer.name()
+        ))
+    }
+
+    /// Only while the person sees it: a hidden keyboard has no keys to press.
+    fn offered(&self) -> bool {
+        self.rect.is_some() && self.outgoing.is_some()
+    }
 }
 
 /// The session's end of a surface app's actions socket.
 struct Connection {
-    outgoing: mpsc::Sender<RemoteActionMessage>,
-    incoming: mpsc::Receiver<RemoteActionMessage>,
+    outgoing: mpsc::Sender<Told>,
+    incoming: mpsc::Receiver<Heard>,
     /// How each invocation the session asked the surface to run stands.
     asked: HashMap<u64, InvocationState>,
     /// The invocation id the app named each ask with, back to the session's id for it: an answer
@@ -654,7 +832,7 @@ impl Connection {
     }
 
     fn send(&self, message: RemoteActionMessage) {
-        if self.outgoing.send(message).is_err() {
+        if self.outgoing.send(Told::Action(message)).is_err() {
             // The app went away: its exit is reported by the process side.
             tracing::debug!("a surface app's actions socket is closed");
         }
@@ -664,18 +842,25 @@ impl Connection {
 /// Read messages from the surface off `stream` until it closes, waking the session's loop for each.
 fn read_messages(
     mut stream: UnixStream,
-    incoming: &mpsc::Sender<RemoteActionMessage>,
+    incoming: &mpsc::Sender<Heard>,
     wake: Option<&tilo_service::Wake>,
 ) {
     loop {
         let Some(body) = FRAMING.read(&mut stream).ok().flatten() else {
             return;
         };
-        let Ok(frame) = RemoteActionFrame::decode(&body) else {
+        let heard = if let Ok(frame) = RemoteActionFrame::decode(&body) {
+            Heard::Action(frame.message)
+        } else if let Ok(FloatingSurfaceClientMessage::WindowTargets { mut targets, .. }) =
+            serde_json::from_slice(&body)
+        {
+            targets.truncate(ui::window_targets::MAX_TARGETS);
+            Heard::Targets(targets)
+        } else {
             tracing::warn!("a surface app sent a message that is not one");
             return;
         };
-        if incoming.send(frame.message).is_err() {
+        if incoming.send(heard).is_err() {
             return;
         }
         if let Some(wake) = wake {
@@ -685,9 +870,17 @@ fn read_messages(
 }
 
 /// Write messages for the surface to `stream` until the session closes it.
-fn write_messages(mut stream: UnixStream, outgoing: &mpsc::Receiver<RemoteActionMessage>) {
-    while let Ok(message) = outgoing.recv() {
-        let Ok(body) = RemoteActionFrame::new(message).encode() else {
+fn write_messages(mut stream: UnixStream, outgoing: &mpsc::Receiver<Told>) {
+    while let Ok(told) = outgoing.recv() {
+        let body = match told {
+            Told::Action(message) => RemoteActionFrame::new(message)
+                .encode()
+                .map_err(|error| error.to_string()),
+            Told::Window(message) => {
+                serde_json::to_vec(&message).map_err(|error| error.to_string())
+            }
+        };
+        let Ok(body) = body else {
             tracing::warn!("a message to a surface app did not encode");
             return;
         };
@@ -713,9 +906,48 @@ pub struct Surfaces {
     /// What wakes the session's loop when a surface app says something, so an app's answer is taken
     /// the instant it arrives.
     wake: Option<tilo_service::Wake>,
+    /// Each surface app's window as the session publishes it, by the app's name: one for the
+    /// session's life, which shows what the app's latest start says.
+    windows: Vec<Rc<RefCell<SurfaceWindow>>>,
+    /// The windows made since the session last took them, for its API to publish.
+    unpublished: Vec<Rc<RefCell<SurfaceWindow>>>,
 }
 
 impl Surfaces {
+    /// The windows of the surface apps started since the last call, which the session's API
+    /// publishes from now on beside every other surface's ([`SurfaceWindow`]).
+    pub fn take_unpublished(&mut self) -> Vec<Rc<RefCell<SurfaceWindow>>> {
+        std::mem::take(&mut self.unpublished)
+    }
+
+    /// Read where the compositor stands each surface app's window now, and whether the person
+    /// sees it: what a caller of the session's API finds its controls by.
+    pub fn place(&self, compositor: &Compositor) {
+        for app in &self.running {
+            let mut window = app.window.borrow_mut();
+            window.rect = compositor
+                .layer_visible(&window.namespace)
+                .then(|| compositor.layer_rect(&window.namespace))
+                .flatten();
+        }
+    }
+
+    /// The window of `surface`, made the first time it starts.
+    fn window_of(&mut self, surface: &Surface) -> Rc<RefCell<SurfaceWindow>> {
+        if let Some(window) = self
+            .windows
+            .iter()
+            .find(|window| window.borrow().name == surface.name)
+        {
+            *window.borrow_mut() = SurfaceWindow::of(surface);
+            return Rc::clone(window);
+        }
+        let window = Rc::new(RefCell::new(SurfaceWindow::of(surface)));
+        self.windows.push(Rc::clone(&window));
+        self.unpublished.push(Rc::clone(&window));
+        window
+    }
+
     /// The session's launch records and the socket it serves its services on, which every surface
     /// app started from here on is told of. Without a socket, a surface reads nothing of the
     /// session: it is a window only. `wake` ends the loop's wait when a surface says something.
@@ -841,12 +1073,15 @@ impl Surfaces {
         // What the surface offers the desktop is what it lists when asked,
         // as any host asks a directory it serves.
         actions.list();
+        let window = self.window_of(surface);
+        window.borrow_mut().outgoing = Some(actions.outgoing.clone());
         self.running.push(Running {
             name: surface.name.clone(),
             child,
             started: Instant::now(),
             actions,
             _display: display,
+            window,
         });
         Ok(())
     }
@@ -903,6 +1138,7 @@ impl Surfaces {
                         lived = ?app.started.elapsed(),
                         "a surface app exited"
                     );
+                    app.window.borrow_mut().ended();
                     exited.push(app.name);
                 }
                 Ok(None) => running.push(app),
@@ -923,7 +1159,15 @@ impl Surfaces {
             // A surface publishes its actions once it has mounted: until it has listed them, the
             // session asks again.
             app.actions.list_if_silent();
-            while let Ok(message) = app.actions.incoming.try_recv() {
+            while let Ok(heard) = app.actions.incoming.try_recv() {
+                let message = match heard {
+                    Heard::Action(message) => message,
+                    // What the window shows by name now: what the session's API lists of it.
+                    Heard::Targets(targets) => {
+                        app.window.borrow_mut().targets = targets;
+                        continue;
+                    }
+                };
                 match message {
                     // What the surface offers: the session asked for it.
                     RemoteActionMessage::CatalogueResponse {
@@ -1045,6 +1289,7 @@ impl Surfaces {
             return;
         };
         let mut app = self.running.remove(place);
+        app.window.borrow_mut().ended();
         let _ = app.child.kill();
         crate::connectors::reap(app.child);
         tracing::info!(surface = %app.name, "stopped a surface app");
@@ -1053,6 +1298,7 @@ impl Surfaces {
     /// Stop every surface app the session runs.
     pub fn stop_all(&mut self) {
         for mut app in self.running.drain(..) {
+            app.window.borrow_mut().ended();
             let _ = app.child.kill();
             crate::connectors::reap(app.child);
         }

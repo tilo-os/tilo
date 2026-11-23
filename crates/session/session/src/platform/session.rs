@@ -2148,7 +2148,16 @@ impl Session {
             self.surfaces
                 .start_or_log(&mut self.compositor, surface, &workspace);
         }
+        self.publish_surface_windows();
         Ok(())
+    }
+
+    /// Publish the windows of the surface apps started since the last call as every window the
+    /// session shows is: their controls are found and pressed through the session's API.
+    fn publish_surface_windows(&mut self) {
+        for window in self.surfaces.take_unpublished() {
+            self.shared.published.add(window);
+        }
     }
 
     /// Bring the displays in line with the person's layout and the way up
@@ -2343,8 +2352,11 @@ impl Session {
         surface: &crate::surfaces::Surface,
     ) -> Result<(), crate::surfaces::StartError> {
         let workspace = self.shared.active_workspace_id();
-        self.surfaces
-            .start(&mut self.compositor, surface, &workspace)
+        let started = self
+            .surfaces
+            .start(&mut self.compositor, surface, &workspace);
+        self.publish_surface_windows();
+        started
     }
 
     /// Stop the surface app `name`, if it runs.

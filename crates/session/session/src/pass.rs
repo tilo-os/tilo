@@ -256,6 +256,7 @@ impl Session {
         // panel is sent the reading of this pass.
         self.surfaces.poll();
         self.surfaces.serve(&mut self.shared.published);
+        self.surfaces.place(&self.compositor);
         // The windows shared with the workspaces: what the person asked,
         // what the live session brought, and the frames of the ones on screen.
         self.follow_window_shares();

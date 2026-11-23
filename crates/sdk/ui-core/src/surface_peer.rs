@@ -1,6 +1,14 @@
 //! A surface app's actions on the session that places its window. The shell's own
 //! surfaces (the bar, the shell, the panels, a sheet) are ordinary apps run as processes
 //! of their own.
+//!
+//! The session places a surface app's window itself, so the window has no `shell-ui`
+//! connection of a desktop window's: what its content shows by name
+//! ([`crate::window_targets`]) and a press the session asks of one of those controls
+//! travel here instead, as the same messages a window says and hears there
+//! ([`FloatingSurfaceClientMessage::WindowTargets`],
+//! [`FloatingSurfaceHostMessage::PressTarget`]). A person's tools, an agent and a test then
+//! find and press the keys of the on-screen keyboard as they do a window's buttons.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, mpsc};
@@ -13,6 +21,8 @@ use tilo_actions::remote::{
 use tilo_lock::MutexRecover as _;
 
 use crate::collaboration::{CollabEvent, CollabRequest, PeerTransport};
+use crate::floating_surface::{FloatingSurfaceClientMessage, FloatingSurfaceHostMessage};
+use crate::window_targets::{TargetAction, WindowTarget};
 
 static FRAME: std::sync::LazyLock<std::sync::Mutex<Option<Arc<std::sync::Mutex<Frame>>>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
@@ -27,6 +37,69 @@ struct Frame {
     route: crate::collaboration::SurfaceTable,
     offered: Option<Vec<tilo_actions::api::ActionDescriptor>>,
     owed: bool,
+    /// The presses the session asked of the window's controls, not taken yet.
+    presses: VecDeque<Press>,
+    /// The way to the session's end of the socket: what the window shows by name goes
+    /// there.
+    said: Option<mpsc::Sender<Said>>,
+}
+
+/// One message to the session: the action protocol every app speaks to its host, or what
+/// the window shows by name.
+enum Said {
+    Action(RemoteActionMessage),
+    Window(FloatingSurfaceClientMessage),
+}
+
+impl From<RemoteActionMessage> for Said {
+    fn from(message: RemoteActionMessage) -> Self {
+        Self::Action(message)
+    }
+}
+
+/// A control of this surface's window the session pressed, as it named it: the control's
+/// name and role as the window listed it, or what it does, and how it is acted on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Press {
+    pub name: String,
+    pub role: String,
+    pub identity: Option<String>,
+    pub action: TargetAction,
+}
+
+/// Whether this process is a surface app the session reaches over its actions socket.
+#[must_use]
+pub fn hosted() -> bool {
+    FRAME.lock_recover().is_some()
+}
+
+/// Tell the session what this surface's window shows by name now: the controls its
+/// accessibility tree exports, in the window's own logical coordinates.
+pub fn publish_targets(targets: Vec<WindowTarget>) {
+    let Some(frame) = FRAME.lock_recover().clone() else {
+        return;
+    };
+    let frame = frame.lock_recover();
+    if let Some(said) = &frame.said
+        && said
+            .send(Said::Window(FloatingSurfaceClientMessage::WindowTargets {
+                targets,
+                instance: None,
+            }))
+            .is_err()
+    {
+        tracing::debug!("the session closed the actions socket");
+    }
+}
+
+/// The presses the session asked of this surface's window since the last call.
+#[must_use]
+pub fn take_presses() -> Vec<Press> {
+    let Some(frame) = FRAME.lock_recover().clone() else {
+        return Vec::new();
+    };
+    let mut frame = frame.lock_recover();
+    frame.presses.drain(..).collect()
 }
 
 /// Publish what this surface offers now, as its frame ends: the resources the app draws
@@ -56,7 +129,7 @@ pub use runtime_portal::surface_actions::FRAMING;
 /// The app's end of the connection to its session. Cloneable pieces are not: the reader
 /// thread owns the receiving half.
 pub struct SurfacePeer {
-    outgoing: mpsc::Sender<RemoteActionMessage>,
+    outgoing: mpsc::Sender<Said>,
     app_id: String,
     frame: Arc<std::sync::Mutex<Frame>>,
     acknowledged: Option<crate::collaboration::RouteSpec>,
@@ -90,14 +163,18 @@ impl SurfacePeer {
         // A long-lived protocol client of its own, on threads of its own: it reads
         // whenever the session speaks, and a message waiting must wake the app even when
         // nothing else asks it for a frame.
+        let frame: Arc<std::sync::Mutex<Frame>> = Arc::new(std::sync::Mutex::new(Frame {
+            said: Some(outgoing.clone()),
+            ..Frame::default()
+        }));
         let reading = Arc::clone(&wake);
+        let pressed = Arc::clone(&frame);
         let _ = tilo_rt::spawn_thread("surface-actions", move || {
-            read_messages(reader, &incoming_sender, &reading);
+            read_messages(reader, &incoming_sender, &pressed, &reading);
         });
         let _ = tilo_rt::spawn_thread("surface-actions-writes", move || {
             write_messages(writer, &writes);
         });
-        let frame: Arc<std::sync::Mutex<Frame>> = Arc::default();
         *FRAME.lock_recover() = Some(Arc::clone(&frame));
         Self {
             outgoing,
@@ -200,7 +277,7 @@ impl PeerTransport for SurfacePeer {
             }
             CollabRequest::RemoteAction { message } => self
                 .outgoing
-                .send(message)
+                .send(message.into())
                 .map_err(|_| String::from("the session closed the actions socket")),
             CollabRequest::UpdateInvocation { id, update } => {
                 let Some(invocation) = self.asked.remove(&id) else {
@@ -208,11 +285,14 @@ impl PeerTransport for SurfacePeer {
                 };
                 let state = tilo_actions::remote::InvocationState::new(invocation, update);
                 self.outgoing
-                    .send(RemoteActionMessage::Update {
-                        invocation,
-                        state: Some(state),
-                        correlation: None,
-                    })
+                    .send(
+                        RemoteActionMessage::Update {
+                            invocation,
+                            state: Some(state),
+                            correlation: None,
+                        }
+                        .into(),
+                    )
                     .map_err(|_| String::from("the session closed the actions socket"))
             }
             CollabRequest::PublishActionSurface { delta } => {
@@ -241,7 +321,7 @@ impl PeerTransport for SurfacePeer {
     fn poll(&mut self) -> Vec<CollabEvent> {
         while let Ok(message) = self.incoming.try_recv() {
             if let Some(reply) = self.answer(message) {
-                let _ = self.outgoing.send(reply);
+                let _ = self.outgoing.send(reply.into());
             }
         }
         let owes = {
@@ -252,7 +332,7 @@ impl PeerTransport for SurfacePeer {
             let page = self.catalogue(&CatalogueQuery::default());
             let _ = self
                 .outgoing
-                .send(RemoteActionMessage::CatalogueChanged { page });
+                .send(RemoteActionMessage::CatalogueChanged { page }.into());
         }
         self.received.drain(..).collect()
     }
@@ -261,17 +341,32 @@ impl PeerTransport for SurfacePeer {
 fn read_messages(
     mut reader: Reader,
     incoming: &mpsc::Sender<RemoteActionMessage>,
+    frame: &Arc<std::sync::Mutex<Frame>>,
     wake: &Arc<std::sync::Mutex<Option<Box<dyn Fn() + Send + Sync>>>>,
 ) {
     loop {
         let Some(body) = reader.read().ok().flatten() else {
             return;
         };
-        let Ok(frame) = RemoteActionFrame::decode(&body) else {
+        if let Ok(message) = RemoteActionFrame::decode(&body) {
+            if incoming.send(message.message).is_err() {
+                return;
+            }
+        } else if let Ok(FloatingSurfaceHostMessage::PressTarget {
+            name,
+            role,
+            identity,
+            action,
+        }) = serde_json::from_slice(&body)
+        {
+            frame.lock_recover().presses.push_back(Press {
+                name,
+                role,
+                identity,
+                action,
+            });
+        } else {
             tracing::warn!("the session sent a message that is not one");
-            return;
-        };
-        if incoming.send(frame.message).is_err() {
             return;
         }
         // The app may be resting: what the session said waits for a frame that would
@@ -282,9 +377,17 @@ fn read_messages(
     }
 }
 
-fn write_messages(mut writer: Writer, outgoing: &mpsc::Receiver<RemoteActionMessage>) {
-    while let Ok(message) = outgoing.recv() {
-        let Ok(body) = RemoteActionFrame::new(message).encode() else {
+fn write_messages(mut writer: Writer, outgoing: &mpsc::Receiver<Said>) {
+    while let Ok(said) = outgoing.recv() {
+        let body = match said {
+            Said::Action(message) => RemoteActionFrame::new(message)
+                .encode()
+                .map_err(|error| error.to_string()),
+            Said::Window(message) => {
+                serde_json::to_vec(&message).map_err(|error| error.to_string())
+            }
+        };
+        let Ok(body) = body else {
             tracing::warn!("a message to the session did not encode");
             return;
         };

@@ -205,6 +205,22 @@ impl App {
         client: &mut FloatingSurfaceServiceClient,
         instance: Option<u64>,
     ) -> Result<(), String> {
+        let Some(targets) = self.window_targets_to_tell() else {
+            return Ok(());
+        };
+        client.send(
+            &crate::floating_surface::FloatingSurfaceClientMessage::WindowTargets {
+                targets,
+                instance,
+            },
+        )
+    }
+
+    /// What this window's content offers by name, when it differs from what
+    /// the shell was told last: `None` for a pass whose tree changed nothing.
+    /// What it answers is what the shell is told from now on.
+    #[cfg(feature = "native")]
+    fn window_targets_to_tell(&mut self) -> Option<Vec<WindowTarget>> {
         // A tree its own consumers already refreshed on this pass is read as
         // it stands; one something marked stale is walked here, as they would.
         if !self.semantic_tree_current() {
@@ -212,21 +228,40 @@ impl App {
         }
         let revision = self.accessibility.semantic_tree_revision;
         if self.floating.window_targets_told == Some(revision) {
-            return Ok(());
+            return None;
         }
         // What this window's own controls are, as they stand at `revision`.
         let targets = self.window_targets();
         self.floating.window_targets_told = Some(revision);
         if self.floating.window_targets_sent.was(&targets) {
-            return Ok(());
+            return None;
         }
-        client.send(
-            &crate::floating_surface::FloatingSurfaceClientMessage::WindowTargets {
-                targets: targets.clone(),
-                instance,
-            },
-        )?;
-        self.floating.window_targets_sent = Told::Was(targets);
-        Ok(())
+        self.floating.window_targets_sent = Told::Was(targets.clone());
+        Some(targets)
+    }
+
+    /// A surface app's window, which the session places itself and reaches
+    /// over the surface's actions socket rather than a `shell-ui` connection
+    /// ([`crate::surface_peer`]): it is told what the window offers by name,
+    /// and the presses it asked of those controls are acted on here, as a
+    /// desktop window acts on the shell's. Whether a press changed anything.
+    #[cfg(feature = "native")]
+    pub(super) fn serve_surface_window(&mut self) -> bool {
+        if !crate::surface_peer::hosted() {
+            return false;
+        }
+        let mut pressed = false;
+        for press in crate::surface_peer::take_presses() {
+            pressed |= self.press_window_target(
+                &press.name,
+                &press.role,
+                press.identity.as_deref(),
+                press.action,
+            );
+        }
+        if let Some(targets) = self.window_targets_to_tell() {
+            crate::surface_peer::publish_targets(targets);
+        }
+        pressed
     }
 }
