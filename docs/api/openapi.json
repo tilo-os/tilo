@@ -34012,7 +34012,6 @@
             "enum": [
               "live",
               "liked",
-              "watch_later",
               "trending"
             ],
             "type": "string"
@@ -34051,7 +34050,7 @@
           }
         },
         "required": [],
-        "description": "Keeps the video to watch later, or takes it off the list."
+        "description": "Puts the video on the workspace's watch queue, or takes it off. A video put on it goes after\nthe ones already waiting, so the queue plays in the order people added to it."
       },
       "tl.so.tilo.tube.Video.play.Arguments": {
         "type": "object",
@@ -34081,7 +34080,13 @@
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Takes one video out of the history."
+        "description": "Takes one video out of the person's own history."
+      },
+      "tl.so.tilo.tube.Video.retry_playback.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Asks the service for where the video's bytes play from again, after the player could not show\nthem: the address the client holds is the service's alone to write, and the answer it gives\nnow is what the player opens."
       },
       "tl.so.tilo.tube.Playlist.$create.Arguments": {
         "type": "object",
@@ -34137,6 +34142,18 @@
         "required": [],
         "description": "What the outside service said is taken in."
       },
+      "tl.so.tilo.tube.Playlist.refresh_playlist.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Asks the service for what the playlist holds, in its maker's order."
+      },
+      "tl.so.tilo.tube.Playlist.play_playlist.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Plays the playlist from its first video."
+      },
       "tl.so.tilo.tube.Subscription.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -34182,6 +34199,107 @@
         "description": "A bound control changes the field it shows."
       },
       "tl.so.tilo.tube.Subscription.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
+      "tl.so.tilo.tube.QueuedVideo.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.tube.QueuedVideo.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "key"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.tube.QueuedVideo.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.tube.QueuedVideo.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
+      "tl.so.tilo.tube.PlaybackPrefs.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.tube.PlaybackPrefs.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "quality"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.tube.PlaybackPrefs.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "autoplay",
+              "captions"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.tube.PlaybackPrefs.$origin.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
@@ -34294,11 +34412,65 @@
         "required": [],
         "description": "What the outside service said is taken in."
       },
+      "tl.so.tilo.tube.YouTube.play_queue.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Plays the queue from its oldest video: what was put on it first plays first."
+      },
       "tl.so.tilo.tube.YouTube.delete_history.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Deletes the watch history: everything the person watched."
+        "description": "Deletes the person's own watch history, and the entries carried from before it recorded\nmembers, which this history shows them; nobody else's."
+      },
+      "tl.so.tilo.tube.YouTube.set_autoplay.Arguments": {
+        "type": "object",
+        "properties": {
+          "on": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "on"
+        ],
+        "description": "Each of these keeps one of the person's own playback preferences: the record is theirs, made\nthe first time they set one, and every other member reads their own."
+      },
+      "tl.so.tilo.tube.YouTube.set_speed.Arguments": {
+        "type": "object",
+        "properties": {
+          "speed": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "speed"
+        ],
+        "description": "How fast videos play for the person: 0.25 to 3, 1 for the usual speed."
+      },
+      "tl.so.tilo.tube.YouTube.set_quality.Arguments": {
+        "type": "object",
+        "properties": {
+          "quality": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "quality"
+        ],
+        "description": "The tallest picture the person wants, as YouTube names it; `auto` takes the best that fits."
+      },
+      "tl.so.tilo.tube.YouTube.set_captions.Arguments": {
+        "type": "object",
+        "properties": {
+          "on": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "on"
+        ],
+        "description": "Whether videos show their captions for the person."
       },
       "tl.so.tilo.tube.YouTube.search.Arguments": {
         "type": "object",
@@ -42506,6 +42678,12 @@
     },
     {
       "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Video",
+      "action": "retry_playback",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Video.retry_playback.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
       "resource": "tl.so.tilo.tube.Playlist",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.tube.Playlist.$create.Arguments"
@@ -42530,6 +42708,18 @@
     },
     {
       "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Playlist",
+      "action": "refresh_playlist",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Playlist.refresh_playlist.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Playlist",
+      "action": "play_playlist",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Playlist.play_playlist.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
       "resource": "tl.so.tilo.tube.Subscription",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.tube.Subscription.$create.Arguments"
@@ -42551,6 +42741,54 @@
       "resource": "tl.so.tilo.tube.Subscription",
       "action": "$origin",
       "arguments": "#/components/schemas/tl.so.tilo.tube.Subscription.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.QueuedVideo",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.QueuedVideo.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.QueuedVideo",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.QueuedVideo.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.QueuedVideo",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.QueuedVideo.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.QueuedVideo",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.QueuedVideo.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.PlaybackPrefs",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.PlaybackPrefs.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.PlaybackPrefs",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.PlaybackPrefs.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.PlaybackPrefs",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.PlaybackPrefs.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.PlaybackPrefs",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.PlaybackPrefs.$origin.Arguments"
     },
     {
       "app": "so.tilo.tube",
@@ -42603,8 +42841,38 @@
     {
       "app": "so.tilo.tube",
       "resource": "tl.so.tilo.tube.YouTube",
+      "action": "play_queue",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.play_queue.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
       "action": "delete_history",
       "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.delete_history.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
+      "action": "set_autoplay",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.set_autoplay.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
+      "action": "set_speed",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.set_speed.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
+      "action": "set_quality",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.set_quality.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
+      "action": "set_captions",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.set_captions.Arguments"
     },
     {
       "app": "so.tilo.tube",
