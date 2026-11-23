@@ -112,6 +112,7 @@ pub mod outbox;
 pub mod owner;
 pub mod owner_commit;
 pub mod workspace_documents;
+pub mod workspace_view;
 
 pub mod durability;
 

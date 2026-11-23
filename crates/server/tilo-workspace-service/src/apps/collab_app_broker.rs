@@ -37,6 +37,7 @@ mod journal_commit;
 use journal_commit::*;
 use routing::*;
 mod session;
+mod shell;
 use catalogue::*;
 use session::*;
 use socket::*;

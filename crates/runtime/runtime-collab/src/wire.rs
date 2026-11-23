@@ -27,6 +27,7 @@ use crate::{
 
 #[cfg(feature = "client")]
 pub mod client;
+pub mod shell;
 
 /// Both directions' framing.
 pub const FRAMING: wire_frame::Framing = wire_frame::Framing::little_endian(64 << 20);
@@ -146,6 +147,9 @@ pub enum Operation {
         action: String,
         arguments: Vec<u8>,
     },
+    /// What the person's shell asks of the device, on a connection the host admitted as that
+    /// shell by its account ([`shell`]), answered as [`Reply::Shell`].
+    Shell(shell::ShellCall),
 }
 
 /// Who joins which channel.
@@ -471,6 +475,8 @@ pub enum Reply {
     },
     /// What a [`Operation::Invoke`] did.
     Receipt(Receipt),
+    /// The answer to a [`Operation::Shell`].
+    Shell(shell::ShellReply),
 }
 
 /// What invoking an action of one of the session's published resources did.

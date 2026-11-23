@@ -810,6 +810,9 @@ pub struct ProcessServices {
     /// The device's one store, which apps write and read their resources in; without it those
     /// commands are refused.
     pub resources: Option<Arc<dyn ResourceServices>>,
+    /// What the person's shell is answered with, on a connection admitted as that shell by its
+    /// account ([`crate::apps::shell`]); without it no connection is the shell.
+    pub shell: Option<Arc<crate::apps::shell::ShellServices>>,
 }
 
 impl ProcessServices {

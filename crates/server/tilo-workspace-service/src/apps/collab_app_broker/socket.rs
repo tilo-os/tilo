@@ -356,6 +356,20 @@ impl Drop for SocketOwnership {
 pub(super) async fn has_collab_launch_marker(
     stream: &tokio::net::UnixStream,
 ) -> Result<bool, BrokerError> {
+    Ok(peeked_marker(stream).await? == launcher::services::COLLAB_LAUNCH_MAGIC)
+}
+
+/// Whether the peer on `stream` opens as a person's shell
+/// ([`runtime_collab::wire::shell::SHELL_MAGIC`]), peeked without consuming it.
+pub(super) async fn has_shell_marker(stream: &tokio::net::UnixStream) -> Result<bool, BrokerError> {
+    Ok(peeked_marker(stream).await? == *runtime_collab::wire::shell::SHELL_MAGIC)
+}
+
+/// The first bytes the peer on `stream` sent, as long as a marker, without consuming them: waited
+/// for as long as the peer has not begun, and for `LAUNCH_MARKER_COMPLETION` once it has.
+async fn peeked_marker(
+    stream: &tokio::net::UnixStream,
+) -> Result<[u8; launcher::services::COLLAB_LAUNCH_MAGIC.len()], BrokerError> {
     let incomplete =
         || BrokerError::failed("collaboration peer sent an incomplete protocol header".into());
     // A peer that has not begun is waited for as before; one that began has
@@ -378,7 +392,7 @@ pub(super) async fn has_collab_launch_marker(
         match stream.try_io(tokio::io::Interest::READABLE, || {
             peek_launch_marker(stream, &mut partial)
         }) {
-            Ok(marker) => return Ok(marker == launcher::services::COLLAB_LAUNCH_MAGIC),
+            Ok(marker) => return Ok(marker),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 if partial {
                     if ready.is_read_closed() {

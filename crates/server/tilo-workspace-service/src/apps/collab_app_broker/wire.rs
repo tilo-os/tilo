@@ -1639,6 +1639,8 @@ pub(super) struct WireConnection {
     /// What joins channels for this connection. A connection without one
     /// only holds the channels opened for it.
     service: Option<Rc<AppConnection>>,
+    /// The person this connection is the shell of, when the broker admitted it as one.
+    shell: Option<super::shell::Shell>,
     channels: RefCell<HashMap<Handle, Rc<ChannelSession>>>,
     /// The handle this connection opened on the session's published
     /// resources, once it asked for them.
@@ -1685,9 +1687,24 @@ impl WireConnection {
     pub(super) fn new(
         service: Option<Rc<AppConnection>>,
     ) -> (Rc<Self>, mpsc::UnboundedReceiver<HostFrame>) {
+        Self::opened(service, None)
+    }
+
+    /// A connection the broker admitted as `shell`, and the queue of the frames it sends.
+    pub(super) fn shell(
+        shell: super::shell::Shell,
+    ) -> (Rc<Self>, mpsc::UnboundedReceiver<HostFrame>) {
+        Self::opened(None, Some(shell))
+    }
+
+    fn opened(
+        service: Option<Rc<AppConnection>>,
+        shell: Option<super::shell::Shell>,
+    ) -> (Rc<Self>, mpsc::UnboundedReceiver<HostFrame>) {
         let (frames, outgoing) = mpsc::unbounded_channel();
         let connection = Rc::new(Self {
             service,
+            shell,
             channels: RefCell::default(),
             published: Cell::default(),
             next_handle: Cell::new(1),
@@ -1735,6 +1752,16 @@ impl WireConnection {
     /// host publishes anything at all, and the broker state a granted
     /// reading is decided from.
     fn publishing(&self) -> Result<Publishing, String> {
+        // The person's shell reads how their workspaces stand.
+        if let Some(shell) = &self.shell {
+            return Ok(Publishing {
+                published: Arc::clone(&shell.services.standing),
+                caller: crate::apps::services::Caller {
+                    app_id: crate::apps::shell::SHELL_APP.to_owned(),
+                    workspace: String::new(),
+                },
+            });
+        }
         let unlaunched = || "this connection speaks for no launched app".to_owned();
         let service = self.service.as_ref().ok_or_else(unlaunched)?;
         let published = service
@@ -1960,6 +1987,7 @@ impl WireConnection {
                         )
                     }),
             )),
+            Operation::Shell(call) => Box::pin(super::shell::answer(self.shell.clone(), call)),
             request => {
                 let result = self.dispatch(id, request);
                 let _ = self.frames.send(HostFrame::Reply { id, result });
@@ -2005,7 +2033,8 @@ impl WireConnection {
             | Operation::LiveActivity { .. }
             | Operation::Admit { .. }
             | Operation::ControlInput { .. }
-            | Operation::Launch { .. } => Err("answered when done".into()),
+            | Operation::Launch { .. }
+            | Operation::Shell(_) => Err("answered when done".into()),
             // Both are answered by `call`, which waits for the session.
             Operation::Snapshot { .. } | Operation::Invoke { .. } => {
                 Err("answered when done".into())

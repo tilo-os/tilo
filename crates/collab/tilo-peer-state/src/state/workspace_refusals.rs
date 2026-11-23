@@ -22,7 +22,7 @@ use tilo_desktop_model::projection::WORKSPACE_WRITE_REFUSALS_KEY;
 /// change writes, the changes it would have carried, and why — the same shape a server's refusal
 /// of a change has (`tilo_server_protocol::transport::Envelope::ChangeRefused`), so a reader tells
 /// one from the other by its words, never by which device spoke.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ChangeRefused {
     /// The workspace the change was written in.
     pub workspace_id: String,

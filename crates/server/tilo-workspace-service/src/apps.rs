@@ -33,6 +33,7 @@ pub mod service_reads;
 pub mod service_resources;
 pub mod service_writes;
 pub mod services;
+pub mod shell;
 
 pub use broker_error::{BrokerError, BrokerErrorKind};
 pub use certificate_authority::CertificateAuthority;

@@ -43,6 +43,7 @@ use tilo_workspace_keys::{KeyAccess, KeyProvider};
 use crate::identity;
 use crate::membership_check::MembershipCheck;
 use crate::workspace_keys;
+pub use tilo_peer_state::workspace_view::{Holder, Hosting, NotDeletable};
 
 mod documents;
 #[cfg(test)]
@@ -51,19 +52,6 @@ pub(crate) use documents::page_holder;
 /// The engine's record, under this device's state directory: the name an earlier build kept it
 /// under, so the state it wrote is still read.
 const FILE: &str = "workspaces.json";
-
-/// Why a workspace is not the person's to delete here, when it is not.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NotDeletable {
-    /// This device does not hold it.
-    NotHeld,
-    /// Someone else is still in it, so it is not this device's to delete.
-    OthersInIt,
-    /// Another of the person's devices holds it too: deleting it here would not delete it for them.
-    OtherDevice,
-    /// It belongs to someone else.
-    NotOwner,
-}
 
 /// The part an invitation brings someone in at: a role, and whether it also makes them an
 /// administrator (an Editor with every governance action).
@@ -152,17 +140,6 @@ pub enum SealKeys {
     NoSecretStore,
 }
 
-/// Who hosts a workspace this device holds, as its record says ([`Engine::hosting`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Hosting {
-    /// The host's name, as its person gave it; empty when the record names no host.
-    pub host: String,
-    /// The host is this device.
-    pub here: bool,
-    /// This device is the workspace's member: its host took it in.
-    pub admitted: bool,
-}
-
 /// Whether a workspace admitted this device, as this device's copy of it says.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Admission {
@@ -235,26 +212,6 @@ pub struct Engine {
     /// When the links out of each workspace lapse, as its holder lists them: a joiner redeeming
     /// one dials this device, which stays dialable while one is open ([`Self::invitations_open`]).
     open_links: std::sync::Mutex<std::collections::BTreeMap<WorkspaceId, Vec<u64>>>,
-}
-
-/// One holder of a workspace, as a member's device reads it off the holder's
-/// own signed address ([`Engine::holders`]).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Holder {
-    /// Its device key, hex.
-    pub device: String,
-    /// What it calls itself: its server's name from its person's admin
-    /// workspace, or its site's name; its device's label when it names none.
-    pub label: String,
-    /// Whether it holds the workspace's keys: it reads the workspace. A store
-    /// holds its ciphertext and reads none of it.
-    pub reads: bool,
-    /// Whether the machine under it is rented from a cloud provider, whose
-    /// operator can read what it holds.
-    pub cloud: bool,
-    /// Whether it has a moderation agent for the workspace, which a person
-    /// who governs the workspace may turn on.
-    pub moderates: bool,
 }
 
 /// What a workspace's holder answers an ask of its governance, once it has.

@@ -1918,3 +1918,57 @@ pub(crate) mod testing {
         (client, Host { reader, writer })
     }
 }
+
+/// The person's shell's connection to the device's broker (`crate::wire::shell`): the device's
+/// documents, its actions, and how its workspaces stand, asked as the person its account is
+/// signed in as. Cheap to clone.
+#[cfg(unix)]
+#[derive(Clone)]
+pub struct ShellClient {
+    client: CollabClient,
+}
+
+#[cfg(unix)]
+impl ShellClient {
+    /// Open the shell's connection over `stream`, already connected to the broker's socket, and
+    /// what resolves once it ended. Its frames are carried by a task spawned on the current
+    /// runtime.
+    ///
+    /// # Errors
+    /// The marker could not be sent.
+    pub async fn open(
+        mut stream: tokio::net::UnixStream,
+    ) -> Result<(Self, ConnectionEnd), NotAvailable> {
+        use tokio::io::AsyncWriteExt as _;
+        stream.write_all(crate::wire::shell::SHELL_MAGIC).await?;
+        let (client, end) = CollabClient::connected(stream);
+        Ok((Self { client }, end))
+    }
+
+    /// Ask the device `call`.
+    ///
+    /// # Errors
+    /// The broker refused it, or the connection failed.
+    pub async fn call(
+        &self,
+        call: crate::wire::shell::ShellCall,
+    ) -> Result<crate::wire::shell::ShellReply, NotAvailable> {
+        match self
+            .client
+            .client
+            .call(Operation::Shell(call))
+            .await
+            .map_err(failure)?
+        {
+            Reply::Shell(reply) => Ok(reply),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// How the person's workspaces stand: the resources of
+    /// `tilo_workspace_service::workspace_view`, read and watched.
+    #[must_use]
+    pub fn standing(&self) -> ServicesHandle {
+        self.client.services()
+    }
+}
