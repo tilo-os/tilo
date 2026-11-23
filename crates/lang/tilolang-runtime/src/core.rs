@@ -548,6 +548,9 @@ impl Core {
             | WebText | BytesLength => self.web_import(imp, a),
             FilePart | FileSize | FileText | FileFiles => self.file_import(imp, a),
             FileOfText | FileOfBytes | FileAt | FileZip => self.file_make(imp, a),
+            FileImageInfo | FileCrop | FileTurn | FileResize | FileEncode | FileThumbnail => {
+                self.image_import(imp, a)
+            }
             ClipboardCopyText | ClipboardCopyImage | ClipboardPasteText | ClipboardPasteImage => {
                 self.clipboard_import(imp, a)
             }
