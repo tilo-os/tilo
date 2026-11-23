@@ -118,6 +118,55 @@ class Failed(Exception):
     """A step that could not be carried out; its item is reported failed with this reason."""
 
 
+KEYBOARD_ROWS = ["1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm"]
+
+
+def key_positions(tsv: str) -> dict[str, tuple[int, int]]:
+    """Where the on-screen keyboard's keys are, from tesseract's TSV: the key labels it
+    finds, completed from the keyboard's layout (ui::passcode_keyboard: rows of equal keys,
+    each row centred, the digit row on top and Enter on the right of the last row)."""
+    rows = KEYBOARD_ROWS
+    found: dict[str, list[tuple[float, float]]] = {}
+    for line in tsv.splitlines()[1:]:
+        cols = line.split("\t")
+        if len(cols) == 12 and len(cols[11].strip()) == 1:
+            left, top, width, height = map(float, cols[6:10])
+            found.setdefault(cols[11].strip().lower(), []).append((left + width / 2,
+                                                                     top + height / 2))
+    # The digits are the keyboard's top row, above every letter: tesseract also reads a "1"
+    # out of the bottom row's `?123` key, and that one is not the row.
+    letter_top = min((y for row in rows[1:] for k in row for _, y in found.get(k, [])), default=None)
+    if letter_top is None:
+        raise Failed("tesseract found no letter key of the on-screen keyboard")
+    digits = [(rows[0].index(k), at) for k in rows[0] for at in found.get(k, [])
+              if at[1] < letter_top]
+    if len(digits) < 2:
+        raise Failed(f"tesseract found {len(digits)} of the on-screen keyboard's digit keys")
+    # The row itself is the lowest of those: one key read a little high is still in it.
+    top_y = max(y for _, (_, y) in digits)
+    digits = [(i, (x, y)) for i, (x, y) in digits if abs(y - top_y) < 20]
+    (i0, (x0, _)), (i1, (x1, _)) = min(digits), max(digits)
+    if i0 == i1:
+        raise Failed("tesseract found one digit key only")
+    pitch = (x1 - x0) / (i1 - i0)
+    centre = x0 - (i0 - 4.5) * pitch
+    # Each letter's row is known, so every letter found gives the distance between rows.
+    pitches = sorted((y - top_y) / r for r in (1, 2, 3) for k in rows[r]
+                     for _, y in found.get(k, []) if y > top_y + pitch * 0.5)
+    if not pitches:
+        raise Failed("tesseract found no letter key below the digit row")
+    row_pitch = pitches[len(pitches) // 2]
+    keys = {}
+    for r, row in enumerate(rows):
+        for i, k in enumerate(row):
+            keys[k] = (round(centre + (i - (len(row) - 1) / 2) * pitch),
+                       round(top_y + r * row_pitch))
+    # Enter is two units wide at the right of the last row; its centre sits about 3.5 key
+    # pitches right of the middle whatever the gap between keys.
+    keys["\n"] = (round(centre + 3.5 * pitch), round(top_y + 4 * row_pitch))
+    return keys
+
+
 # The guest's memory, in MiB: TILO_MEM, or 8 GiB where the machine holds that beside what its own
 # QEMU and this check use; a check's VM can hold less (t books it from what its runs used), and a
 # guest asked for more than it holds never starts ("cannot set up guest memory").
@@ -1683,44 +1732,10 @@ cryptsetup close e2e-target
 
     def touch_keys(self, path: Path) -> dict[str, tuple[int, int]]:
         """Where the on-screen keyboard's keys are on a screenshot: the key labels tesseract
-        finds, completed from the keyboard's layout (ui::passcode_keyboard: rows of equal keys,
-        each row centred, the digit row on top and Enter on the right of the last row)."""
-        rows = ["1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm"]
+        finds, completed from the keyboard's layout ([`key_positions`])."""
         tsv = subprocess.run(["tesseract", str(path), "stdout", "--psm", "11", "tsv"],
                              capture_output=True, text=True).stdout
-        found: dict[str, list[tuple[float, float]]] = {}
-        for line in tsv.splitlines()[1:]:
-            cols = line.split("\t")
-            if len(cols) == 12 and len(cols[11].strip()) == 1:
-                left, top, width, height = map(float, cols[6:10])
-                found.setdefault(cols[11].strip().lower(), []).append((left + width / 2,
-                                                                         top + height / 2))
-        # The digit row is the lowest row whose digits line up; letters lie below it.
-        digits = [(rows[0].index(k), at) for k in rows[0] for at in found.get(k, [])]
-        if len(digits) < 2:
-            raise Failed(f"tesseract found {len(digits)} of the on-screen keyboard's digit keys")
-        top_y = max(y for _, (_, y) in digits)
-        digits = [(i, (x, y)) for i, (x, y) in digits if abs(y - top_y) < 20]
-        (i0, (x0, _)), (i1, (x1, _)) = min(digits), max(digits)
-        if i0 == i1:
-            raise Failed("tesseract found one digit key only")
-        pitch = (x1 - x0) / (i1 - i0)
-        centre = x0 - (i0 - 4.5) * pitch
-        # Each letter's row is known, so every letter found gives the distance between rows.
-        pitches = sorted((y - top_y) / r for r in (1, 2, 3) for k in rows[r]
-                         for _, y in found.get(k, []) if y > top_y + pitch * 0.5)
-        if not pitches:
-            raise Failed("tesseract found no letter key below the digit row")
-        row_pitch = pitches[len(pitches) // 2]
-        keys = {}
-        for r, row in enumerate(rows):
-            for i, k in enumerate(row):
-                keys[k] = (round(centre + (i - (len(row) - 1) / 2) * pitch),
-                           round(top_y + r * row_pitch))
-        # Enter is two units wide at the right of the last row; its centre sits about 3.5 key
-        # pitches right of the middle whatever the gap between keys.
-        keys["\n"] = (round(centre + 3.5 * pitch), round(top_y + 4 * row_pitch))
-        return keys
+        return key_positions(tsv)
 
     @staticmethod
     def words_at(path: Path, *words: str) -> tuple[int, int] | None:
