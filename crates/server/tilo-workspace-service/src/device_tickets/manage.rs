@@ -24,8 +24,8 @@ impl TicketServer {
     /// The person's devices, as their own workspace's record lists them: `{"devices":
     /// [FleetDevice]}`, this one marked current. This device and the keys it knows itself
     /// ([`Issuer::known`]) are listed whether or not the record has them yet. A device is online
-    /// when it is this one, presence here says so ([`Issuer::present`]), or it holds a live
-    /// session with this device's workspace service.
+    /// when it is this one, presence here says so ([`Issuer::present`]), or it holds a link
+    /// this device's workspace service admitted.
     ///
     /// # Errors
     /// This device has no identity yet.
@@ -40,7 +40,7 @@ impl TicketServer {
         let (mut devices, browsers, names): (Vec<Listed>, BTreeMap<_, _>, BTreeMap<_, _>) =
             match self.0.issuer.servers() {
                 Some(workspaces) => {
-                    present.extend(workspaces.present_devices().await);
+                    present.extend(workspaces.present_devices());
                     (
                         workspaces.devices_of(&person).await.listed(&person),
                         workspaces.tab_groups(&person).await,

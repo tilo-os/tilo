@@ -36,7 +36,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::servers::person_workspace_id;
 use tilo_server_protocol::workspaces::{
     KeepingDeviceAddress, MAX_BROWSER_DEVICES, MAX_PERSONAL_DEVICES, PersonalBrowser,
-    PersonalDevice, PersonalList, PersonalWorkspace,
+    PersonalList, PersonalWorkspace,
 };
 use tilo_user_identity::{
     DeviceCert, RevocationEntry, WorkspaceDirectory, WorkspaceMeta, verify_device_cert,
@@ -585,21 +585,20 @@ impl Workspaces {
             .unwrap_or_default()
     }
 
-    /// The devices present here now: each holds a live session with a
-    /// workspace this host serves, as presence counts a device here.
-    pub(crate) async fn present_devices(&self) -> std::collections::BTreeSet<[u8; 32]> {
-        let held: Vec<crate::workspace::SharedWorkspace> = self
-            .inner
-            .host
-            .workspaces
-            .lock()
-            .await
-            .values()
-            .cloned()
-            .collect();
+    /// The devices present here now: each holds a link a workspace this host
+    /// serves admitted and has not ended, as presence counts a device here.
+    pub(crate) fn present_devices(&self) -> std::collections::BTreeSet<[u8; 32]> {
+        let admitted = self.inner.link_remotes.lock_recover().clone();
         let mut present = std::collections::BTreeSet::new();
-        for workspace in held {
-            present.extend(workspace.lock().await.subscribed_devices().copied());
+        for (workspace_id, remotes) in admitted {
+            let Some(link) = self.inner.direct.link(workspace_id) else {
+                continue;
+            };
+            present.extend(
+                remotes
+                    .into_iter()
+                    .filter(|remote| link.ended_link(*remote).is_none()),
+            );
         }
         present
     }
