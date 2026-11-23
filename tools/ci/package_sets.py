@@ -19,10 +19,15 @@ import sys
 
 # Example apps.
 EXAMPLE_APPS = "examples/apps/"
-# Patched vendored crates with test suites of their own. The workspace builds
-# them only as path dependencies, so its tests never run theirs;
-# tools/ci/test-vendored-crates.sh does.
-VENDORED_TEST_CRATES = ("vendor/automerge", "vendor/vello_encoding")
+# Patched vendored crates with test suites of their own, mapped to the paths
+# those tests read. The workspace builds them only as path dependencies, so its
+# tests never run theirs; tools/ci/test-vendored-crates.sh tests its keys when
+# given no argument, and tools/ci/affected_packages.py selects each crate when
+# any of its input paths changes.
+VENDORED_TEST_CRATES: dict[str, tuple[str, ...]] = {
+    "vendor/automerge": ("vendor/automerge/", "vendor/automerge-test/"),
+    "vendor/vello_encoding": ("vendor/vello_encoding/",),
+}
 
 
 def android_apps(packages: dict[str, dict]) -> set[str]:

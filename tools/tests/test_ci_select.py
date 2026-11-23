@@ -498,28 +498,31 @@ class SelectorTests(unittest.TestCase):
         )
 
     def test_vendored_crate_tests_follow_their_own_files_only(self):
+        from ci import package_sets
         self.setUp()
+        self.assertIs(ci_select.VENDORED_TEST_CRATES, package_sets.VENDORED_TEST_CRATES)
         def plan(changes, **options):
             return ci_select.make_plan(self.metadata, self.root, changes, 2, **options)
         every = sorted(ci_select.VENDORED_TEST_CRATES)
-        self.assertIn("vendor/automerge", every)
-        for changes, options in (
-                (["vendor/automerge/src/op_set2/op_set/op_id_index.rs"], {}),
-                (["vendor/automerge/Cargo.toml", "base/src/lib.rs"], {}),
+        self.assertEqual(every, ["vendor/automerge", "vendor/vello_encoding"])
+        for changes, options, expected in (
+                (["vendor/automerge/src/op_set2/op_set/op_id_index.rs"], {}, ["vendor/automerge"]),
+                (["vendor/automerge/Cargo.toml", "base/src/lib.rs"], {}, ["vendor/automerge"]),
                 # The helpers its tests assert through.
-                (["vendor/automerge-test/src/lib.rs"], {}),
-                ([ci_select.VENDORED_TEST_RUNNER], {}),
-                (["base/src/lib.rs"], {"force_full": True})):
+                (["vendor/automerge-test/src/lib.rs"], {}, ["vendor/automerge"]),
+                (["vendor/vello_encoding/src/lib.rs"], {}, ["vendor/vello_encoding"]),
+                (["vendor/vello_encoding/Cargo.toml", "base/src/lib.rs"], {}, ["vendor/vello_encoding"]),
+                ([ci_select.VENDORED_TEST_RUNNER], {}, every),
+                (["base/src/lib.rs"], {"force_full": True}, every)):
             with self.subTest(changes=changes, options=options):
                 reached = plan(changes, **options)
                 self.assertTrue(reached["vendored_required"])
-                self.assertEqual(reached["vendored"],
-                                 every if changes[0] == ci_select.VENDORED_TEST_RUNNER
-                                 or options else ["vendor/automerge"])
+                self.assertEqual(reached["vendored"], expected)
         # Workspace crates, the workspace lock, other vendored crates and a push
         # to main that runs every path suite leave them to the nightly.
         for changes, options in ((["base/src/lib.rs"], {}), (["Cargo.lock"], {}),
                                  (["vendor/automerge-other/src/lib.rs"], {}),
+                                 (["vendor/vello_encoding-other/src/lib.rs"], {}),
                                  (["vendor/iroh/src/lib.rs"], {}),
                                  (["crates/doc/tilo-automerge/src/lib.rs"], {}),
                                  (["base/src/lib.rs"], {"all_suites": True})):
@@ -536,16 +539,17 @@ class SelectorTests(unittest.TestCase):
                                           "vendored": set()})["vendored"], [])
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "outputs"
-            ci_select.emit_github(plan(fork), output)
+            ci_select.emit_github(plan(["vendor/vello_encoding/src/lib.rs"]), output)
+            ci_select.emit_github(plan(["base/src/lib.rs"], force_full=True), output)
             ci_select.emit_github(plan(["base/src/lib.rs"]), output)
             lines = output.read_text().splitlines()
         self.assertEqual(
             [line for line in lines if line.startswith("vendored_")],
-            ["vendored_required=true", "vendored_crates=vendor/automerge",
+            ["vendored_required=true", "vendored_crates=vendor/vello_encoding",
+             "vendored_required=true", f"vendored_crates={' '.join(every)}",
              "vendored_required=false", "vendored_crates="],
         )
-        # Every registered crate exists, runs as its own workspace, and is
-        # what the runner tests when given no argument.
+        # Every registered crate exists and runs as its own workspace.
         for crate, inputs in ci_select.VENDORED_TEST_CRATES.items():
             with self.subTest(crate=crate):
                 self.assertIn(f"{crate}/", inputs)
@@ -553,8 +557,6 @@ class SelectorTests(unittest.TestCase):
                               (REPO_ROOT / crate / "Cargo.toml").read_text().splitlines())
                 for path in inputs:
                     self.assertTrue((REPO_ROOT / path).is_dir(), path)
-        runner = (REPO_ROOT / ci_select.VENDORED_TEST_RUNNER).read_text()
-        self.assertIn("from ci.package_sets import VENDORED_TEST_CRATES", runner)
 
     def test_dependency_graph_selects_owners_and_dependants_or_falls_back_to_full(self):
         with self.subTest(phase='reverse dependency closure'):

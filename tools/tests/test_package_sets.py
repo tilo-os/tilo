@@ -1,5 +1,7 @@
 """The package sets t's checks lint and build (tools/ci/package_sets.py)."""
 from pathlib import Path
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -133,12 +135,52 @@ class PackageSetsTests(unittest.TestCase):
                           "tilo-workspace-service"})
 
     def test_vendored_test_crates_are_workspaces_the_runner_tests_by_default(self):
-        for crate in package_sets.VENDORED_TEST_CRATES:
+        self.assertIsInstance(package_sets.VENDORED_TEST_CRATES, dict)
+        self.assertIn("vendor/automerge", package_sets.VENDORED_TEST_CRATES)
+        self.assertIn("vendor/vello_encoding", package_sets.VENDORED_TEST_CRATES)
+        for crate, inputs in package_sets.VENDORED_TEST_CRATES.items():
             with self.subTest(crate=crate):
                 self.assertTrue(crate.startswith("vendor/"))
+                self.assertIn(f"{crate}/", inputs)
                 self.assertIn("[workspace]", (ROOT / crate / "Cargo.toml").read_text().splitlines())
-        runner = (ROOT / "tools/ci/test-vendored-crates.sh").read_text()
-        self.assertIn("from ci.package_sets import VENDORED_TEST_CRATES", runner)
+                for path in inputs:
+                    self.assertTrue((ROOT / path).is_dir(), path)
+        # Running the runner with no arguments tests every registered crate.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "tools/ci").mkdir(parents=True)
+            shutil.copy2(ROOT / "tools/ci/package_sets.py", root / "tools/ci/package_sets.py")
+            shutil.copy2(ROOT / "tools/ci/test-vendored-crates.sh",
+                         root / "tools/ci/test-vendored-crates.sh")
+            (root / "Cargo.lock").write_text("version = 4\n")
+            for crate in package_sets.VENDORED_TEST_CRATES:
+                (root / crate).mkdir(parents=True)
+                (root / crate / "Cargo.toml").write_text("[workspace]\n")
+            stub_bin = root / "bin"
+            stub_bin.mkdir()
+            log = root / "ran.txt"
+            cargo = stub_bin / "cargo"
+            cargo.write_text(
+                "#!/bin/sh\n"
+                'printf "%s:%s\\n" "$(pwd -P)" "$*" >> "$STUB_LOG"\n'
+            )
+            cargo.chmod(0o755)
+            env = dict(os.environ)
+            env["PATH"] = os.pathsep.join([str(stub_bin), str(Path(sys.executable).parent),
+                                           env.get("PATH", "")])
+            env["STUB_LOG"] = str(log)
+            result = subprocess.run(
+                ["bash", str(root / "tools/ci/test-vendored-crates.sh")],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            root_real = root.resolve()
+            ran = [
+                (Path(line.split(":", 1)[0]).resolve().relative_to(root_real).as_posix(),
+                 line.split(":", 1)[1])
+                for line in log.read_text().splitlines()
+            ]
+        self.assertEqual(ran, [(crate, "test") for crate in package_sets.VENDORED_TEST_CRATES])
 
     def test_an_unknown_set_is_refused(self):
         result = subprocess.run([sys.executable, str(ROOT / "tools/ci/package_sets.py"), "desktop"],
