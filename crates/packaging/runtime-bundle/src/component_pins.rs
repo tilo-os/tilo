@@ -98,7 +98,11 @@ impl BundleTrust {
     /// # Errors
     /// The final manifest matches neither a trusted publisher nor an exact retained identity.
     pub fn check(&self, manifest: &crate::BundleManifest) -> std::io::Result<()> {
-        if !self.is_configured()
+        // A Linux image without a list accepts any signed bundle. A Mac always has one, in the
+        // Tilo.app it runs from ([`tilo_paths::runtime_publishers`]), so a Mac without it trusts
+        // no runtime.
+        let unlisted_accepts = cfg!(not(target_os = "macos"));
+        if (unlisted_accepts && !self.is_configured())
             || manifest.publisher_hex.as_ref().is_some_and(|publisher| {
                 self.publishers
                     .as_ref()
@@ -189,15 +193,12 @@ fn load_for(
 
 /// The list of runtime publishers this device accepts: the launcher's
 /// developer override (`TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE`) when set,
-/// else the image's ([`crate::TRUSTED_PUBLISHERS_FILE`]).
+/// else the system's ([`tilo_paths::runtime_publishers`]).
 #[must_use]
 pub fn trusted_publishers_file() -> std::path::PathBuf {
     std::env::var_os("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE")
         .filter(|value| !value.is_empty())
-        .map_or_else(
-            || std::path::PathBuf::from(crate::TRUSTED_PUBLISHERS_FILE),
-            std::path::PathBuf::from,
-        )
+        .map_or_else(tilo_paths::runtime_publishers, std::path::PathBuf::from)
 }
 
 fn denied() -> std::io::Error {

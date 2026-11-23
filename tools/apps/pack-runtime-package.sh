@@ -2,7 +2,12 @@
 # Seal a signed runtime bundle as the registry package that offers it.
 #
 #   pack-runtime-package.sh <bundle-dir> <package-id> <name> <package-version> \
-#       <publisher-identity.json> <bin-dir> <out-dir>
+#       <publisher-identity.json> <bin-dir> <out-dir> [<platform>]
+#
+# <platform> is `macos` for a bundle of Mac binaries, which the package then
+# offers only to Macs; without it the package is a Linux runtime's. A bundle
+# of universal binaries names each architecture in its `arch` (`aarch64+x86_64`)
+# and the package declares a build for each.
 #
 # <bin-dir> holds tilo-app-package and tilo-runtime-bundle. The package is
 # `kind = "runtime"`; its payload is the bundle directory (bundle.toml and the
@@ -22,14 +27,28 @@ version=$4
 identity=$5
 bin_dir=$6
 out=$7
+platform=${8:-}
 
 "$bin_dir/tilo-runtime-bundle" verify "$bundle" --require-signature >&2
 bundle_version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' "$bundle/bundle.toml" | head -1)
 arch=$(sed -n 's/^arch = "\([^"]*\)"$/\1/p' "$bundle/bundle.toml" | head -1)
-case "$arch" in
-    x86_64) isa='x86_64 = "v3"' ;;
-    aarch64) isa='aarch64 = "aarch64"' ;;
-    *) printf 'pack-runtime-package: unsupported arch %s\n' "${arch:-none}" >&2; exit 1 ;;
+isa=
+IFS=+ read -r -a held <<<"$arch"
+for one in "${held[@]}"; do
+    case "$one" in
+        # A Mac's Intel binaries run on every Intel Mac; Linux builds take x86-64-v3.
+        x86_64)
+            level=v3
+            [[ $platform != macos ]] || level=baseline
+            isa+="x86_64 = \"$level\""$'\n' ;;
+        aarch64) isa+=$'aarch64 = "aarch64"\n' ;;
+        *) printf 'pack-runtime-package: unsupported arch %s\n' "${arch:-none}" >&2; exit 1 ;;
+    esac
+done
+case "$platform" in
+    '') platforms= ;;
+    macos) platforms=$'platforms = ["macos"]\nplatform-reason = "Its binaries are Mac binaries."' ;;
+    *) printf 'pack-runtime-package: unsupported platform %s\n' "$platform" >&2; exit 1 ;;
 esac
 [[ $bundle_version =~ ^[0-9A-Za-z][0-9A-Za-z.+-]*$ ]] || {
     printf 'pack-runtime-package: unexpected bundle version %s\n' "${bundle_version:-none}" >&2
@@ -48,10 +67,10 @@ category = "System"
 version = "$version"
 kind = "runtime"
 provides = "$runtime_name/$bundle_version"
+$platforms
 
 [package.isa]
 $isa
-
 [publisher]
 identity = "ed25519:$pubkey"
 signature = ""
@@ -96,7 +115,7 @@ type = "cli"
 bin = "lib/lib64/ld-linux-x86-64.so.2"
 TOML
 fi
-file="${package_id##*.}-$version-$arch.tapp"
+file="${package_id##*.}-$version-${arch//+/-}.tapp"
 "$bin_dir/tilo-app-package" pack --manifest "$work/manifest.toml" --payload "$bundle" \
     --identity "$identity" --output "$work/$file" >&2
 "$bin_dir/tilo-app-package" verify --trusted-key "$pubkey" "$work/$file" >&2

@@ -102,12 +102,7 @@ pub(super) fn record_package(
 fn trusted_runtime_publishers(
     bundle: &Path,
 ) -> Result<runtime_bundle::component_pins::BundleTrust, Error> {
-    let path = std::env::var_os("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE")
-        .filter(|value| !value.is_empty())
-        .map_or_else(
-            || PathBuf::from(runtime_bundle::TRUSTED_PUBLISHERS_FILE),
-            PathBuf::from,
-        );
+    let path = runtime_bundle::component_pins::trusted_publishers_file();
     runtime_bundle::component_pins::load_for_bundle(&path, bundle)
         .map_err(|error| Error::RuntimeBundle(error.to_string()))
 }

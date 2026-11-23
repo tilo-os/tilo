@@ -44,7 +44,7 @@ fn prior_trust(root: &Path, manifest: &BundleManifest) -> Result<bool, DaemonErr
         .publisher_hex
         .as_deref()
         .ok_or_else(|| invalid("unsigned runtime"))?;
-    let operator = match fs::read_to_string(runtime_bundle::TRUSTED_PUBLISHERS_FILE) {
+    let operator = match fs::read_to_string(tilo_paths::runtime_publishers()) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(error) => return Err(invalid(error)),

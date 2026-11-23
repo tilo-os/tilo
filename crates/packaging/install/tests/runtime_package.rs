@@ -363,6 +363,51 @@ tilo_test_env::scenario! {
         assert_eq!(std::fs::read(installed.join(loader)).unwrap(), b"loader");
     }
 
+    phase a_runtime_installs_only_where_it_has_code_from_a_publisher_this_device_trusts;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let env = Env::new();
+        let (runtime_key, runtime_identity) = identity_file(&env, "runtime-publisher");
+        let (_, stranger_identity) = identity_file(&env, "stranger");
+        env.trust(&[&runtime_key]);
+        let binary = env.path("tilolang-app");
+        std::fs::write(&binary, b"runtime binary").unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let host = runtime_bundle::host_arch();
+        let other = if host == "aarch64" { "x86_64" } else { "aarch64" };
+        let install = |version: &str, arch: &str, identity: &Path| {
+            let bundle = env.path(&format!("bundle-{version}"));
+            runtime_bundle::build_binaries_bundle(
+                &bundle,
+                version,
+                Some(arch),
+                Some(identity),
+                std::slice::from_ref(&binary),
+                &[],
+            )
+            .unwrap();
+            let package = env.runtime_tapp(version, &bundle, &format!("tilolang/{version}"));
+            env.cmd(&["install", package.to_str().unwrap(), "--allow-self-signed"])
+        };
+
+        let (ok, out) = install("0.1.0+elsewhere", other, &runtime_identity);
+        assert!(!ok, "a build with no code for this machine installed: {out}");
+        assert!(out.contains("does not match host arch"), "{out}");
+        assert!(!env.installed_bundle("0.1.0+elsewhere").exists());
+
+        let universal = format!("{host}+{other}");
+        let (ok, out) = install("0.1.0+stranger", &universal, &stranger_identity);
+        assert!(!ok, "a runtime from a publisher this device does not trust installed: {out}");
+        assert!(out.contains("does not trust the runtime publisher"), "{out}");
+        assert!(!env.installed_bundle("0.1.0+stranger").exists());
+
+        // Universal binaries hold this machine's code, from the trusted publisher.
+        let (ok, out) = install("0.1.0+universal", &universal, &runtime_identity);
+        assert!(ok, "{out}");
+        runtime_bundle::verify_bundle(&env.installed_bundle("0.1.0+universal"))
+            .expect("the installed universal runtime verifies");
+    }
+
     phase an_app_installs_only_beside_the_runtime_build_it_links;
     {
         let env = Env::new();

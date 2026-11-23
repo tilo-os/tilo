@@ -1184,12 +1184,9 @@ pub(crate) fn load_trusted_publishers_for_bundle(
     runtime_bundle::component_pins::load_for_bundle(&path, bundle)
 }
 
-/// The image's runtime trusted-publisher list.
-pub const TRUSTED_PUBLISHERS_FILE: &str = "/etc/tilo/runtime-bundle-trusted-publishers.txt";
-
 /// Where the trusted-publisher list is read from, given the override the build's check let through.
 fn trusted_publishers_path_from(allowed_override: Option<std::ffi::OsString>) -> PathBuf {
-    allowed_override.map_or_else(|| PathBuf::from(TRUSTED_PUBLISHERS_FILE), PathBuf::from)
+    allowed_override.map_or_else(tilo_paths::runtime_publishers, PathBuf::from)
 }
 
 #[cfg(test)]
@@ -1233,7 +1230,7 @@ mod dev_override_tests {
                 TRUSTED_PUBLISHERS_FILE_ENV,
                 Some("/tmp/attacker-publishers.txt".into()),
             ));
-            assert_eq!(path, Path::new(TRUSTED_PUBLISHERS_FILE));
+            assert_eq!(path, tilo_paths::runtime_publishers());
         }
         {
             let path = trusted_publishers_path_from(dev_override_from(
