@@ -350,9 +350,9 @@ async fn a_write_costs_the_same_in_a_folder_of_five_thousand_files() {
         super::support::wait_keyed(link, &index).await;
     }
     let mut writer = Writer {
+        namespace: laptop_folder(&writer_link),
         link: writer_link,
         workspace: company.workspace.clone(),
-        namespace: Namespace::new("laptop").unwrap(),
         sent: BTreeMap::new(),
         bytes: 0,
         writes: 0,
@@ -592,9 +592,9 @@ async fn a_checkout_is_never_refused_and_never_holds_another_member_up() {
 
     let began = Instant::now();
     let mut writer = Writer {
+        namespace: laptop_folder(&checkout),
         link: checkout,
         workspace: company.workspace.clone(),
-        namespace: Namespace::new("laptop").unwrap(),
         sent: BTreeMap::new(),
         bytes: 0,
         writes: 0,
@@ -676,4 +676,15 @@ async fn a_checkout_is_never_refused_and_never_holds_another_member_up() {
     for link in [reader.link, writer.link, other] {
         link.close();
     }
+}
+
+/// The folder the laptop behind `link` mounts, on the person's certified device: each change
+/// of its tree names them, as the computer's own mount does.
+fn laptop_folder(link: &Link) -> Namespace {
+    let cert = &link.engine().identity().device_cert;
+    Namespace::new(tilo_fs::namespace::MountAuthor::person(
+        hex::encode(cert.device_public_key),
+        tilo_actions::MemberId::person(tilo_actions::PersonId::from_root(cert.user_public_key)),
+    ))
+    .unwrap()
 }

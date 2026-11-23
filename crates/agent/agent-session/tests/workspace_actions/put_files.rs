@@ -657,7 +657,7 @@ async fn a_put_file_goes_into_the_tree_a_computer_wrote_first() {
     // writes it — each record of it founded with the empty genesis and then
     // its changes, the chunk first because the tree's own record names it —
     // sealed as every write of the workspace is.
-    let mut folder = tilo_fs::Namespace::new(hex::encode(computer.cert.device_public_key)).unwrap();
+    let mut folder = super::resource_support::computer_folder(&computer.cert);
     folder
         .create_file(tilo_fs::ROOT_INO, "contract.txt", None, 0, 1)
         .unwrap();
@@ -875,7 +875,7 @@ async fn a_tree_a_computer_founds_after_the_service_found_none_is_read_and_writt
     assert!(!before.contains("contract.txt"), "{before}");
 
     // The laptop's mounted folder founds the tree with a file in it.
-    let mut folder = tilo_fs::Namespace::new(hex::encode(computer.cert.device_public_key)).unwrap();
+    let mut folder = super::resource_support::computer_folder(&computer.cert);
     folder
         .create_file(tilo_fs::ROOT_INO, "contract.txt", None, 0, 1)
         .unwrap();

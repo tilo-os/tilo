@@ -188,7 +188,7 @@ async fn beside_an_import() {
     .await;
     page.create("so.tilo.tasks");
     page.create("so.tilo.contacts");
-    let mut folder = tilo_fs::Namespace::new(hex::encode(computer.cert.device_public_key)).unwrap();
+    let mut folder = super::resource_support::computer_folder(&computer.cert);
     for index in 0..FILES {
         folder
             .create_file(tilo_fs::ROOT_INO, format!("f{index:03}.txt"), None, 0, 1)

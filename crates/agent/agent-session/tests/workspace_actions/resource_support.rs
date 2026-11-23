@@ -5,6 +5,16 @@ use tilo_server::workspaces::{IssueInvitationRequest, Workspaces};
 use tilo_session_client::{Cmd, Outbox};
 use tilo_user_identity::DeviceCert;
 
+/// The folder a person's computer mounts, the device `cert` certifies: each change of its tree
+/// names the person, as the computer's own mount does.
+pub(super) fn computer_folder(cert: &DeviceCert) -> tilo_fs::Namespace {
+    tilo_fs::Namespace::new(tilo_fs::namespace::MountAuthor::person(
+        hex::encode(cert.device_public_key),
+        ui::permissions::MemberId::person(hex::encode(cert.user_public_key)),
+    ))
+    .unwrap()
+}
+
 pub(super) async fn open_admitted_peer(
     hosted: &Hosted,
     device: &Device,

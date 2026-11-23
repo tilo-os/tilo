@@ -269,8 +269,15 @@ pub async fn put_file(
     name: &str,
     bytes: &[u8],
 ) -> Result<(), String> {
+    // The folder of the person's certified device: every change it writes names them, as the
+    // computer's own mount does.
+    let cert = &peer.engine().identity().device_cert;
+    let mount = tilo_fs::namespace::MountAuthor::person(
+        hex::encode(cert.device_public_key),
+        tilo_actions::MemberId::person(tilo_actions::PersonId::from_root(cert.user_public_key)),
+    );
     let mut namespace =
-        tilo_fs::namespace::Namespace::new("device").map_err(|error| error.to_string())?;
+        tilo_fs::namespace::Namespace::new(mount).map_err(|error| error.to_string())?;
     let content = iroh_blobs::Hash::from_bytes(blake3::hash(bytes).into());
     namespace
         .create_file(
