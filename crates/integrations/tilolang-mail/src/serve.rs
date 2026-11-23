@@ -271,7 +271,7 @@ impl Connector {
             message,
         } = asked
         {
-            self.send(session, request, &account, message);
+            self.send(session, request, &account, *message);
             return;
         }
         let Some(attached) = self.sessions.get_mut(&session) else {
@@ -691,7 +691,7 @@ mod tests {
         ToConnector::Send {
             request,
             account: ME.into(),
-            message: message.clone(),
+            message: Box::new(message.clone()),
         }
     }
 

@@ -52,7 +52,8 @@ pub enum ToConnector {
     Send {
         request: Request,
         account: String,
-        message: Outgoing,
+        /// Boxed: a message with its files is far larger than any other request.
+        message: Box<Outgoing>,
     },
     Watch {
         account: String,
@@ -115,11 +116,11 @@ mod tests {
         let sent = ToConnector::Send {
             request: uuid::Uuid::new_v4(),
             account: "sam@rivera.example".into(),
-            message: Outgoing {
+            message: Box::new(Outgoing {
                 to: "ada@analytical.example".into(),
                 subject: "Re: Launch plan".into(),
                 ..Outgoing::default()
-            },
+            }),
         };
         let mut bytes = Vec::new();
         write(&mut bytes, &sent).unwrap();
@@ -165,11 +166,11 @@ mod tests {
             &ToConnector::Send {
                 request: id,
                 account: "sam@rivera.example".into(),
-                message: Outgoing {
+                message: Box::new(Outgoing {
                     to: "ada@analytical.example".into(),
                     subject: "Re: Launch plan".into(),
                     ..Outgoing::default()
-                },
+                }),
             },
             SEND_WIRE,
         );

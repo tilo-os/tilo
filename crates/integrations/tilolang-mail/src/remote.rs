@@ -154,7 +154,7 @@ impl MailConnector for RemoteConnector {
         self.ask(account, |request| ToConnector::Send {
             request,
             account: account.to_owned(),
-            message,
+            message: Box::new(message),
         })
         .ok_or(Unmade::EngineStopped)
     }
