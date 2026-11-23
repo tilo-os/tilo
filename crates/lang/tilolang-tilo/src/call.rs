@@ -139,8 +139,9 @@ fn invocation_record_call(invocation: &Invocation) -> Option<Result<Json, String
     let workspace = target.doc.clone();
     Some(Ok(json!({
         "app": app,
-        // The record's own app answers it, under the provider the workspace publishes it as.
-        "provider": app,
+        // The workspace's invocations provider answers an invocation record's actions; the
+        // record's app names it in the catalogue tree, not the provider that runs it.
+        "provider": tilo_actions::remote::workspace_invocations::PROVIDER,
         "workspace": workspace,
         "resource": record,
         "action": action,
