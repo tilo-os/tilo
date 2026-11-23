@@ -98,7 +98,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
 
     /// `path` as the address the tools list the resource at, when it is
     /// written as the reference a person types (`#12`), or ends in the number
-    /// a listing shows an item by (`tasks/Issues/1`, the `#1` a person reads):
+    /// a listing shows an item by (`notes/Todo/1`, the `#1` a person reads):
     /// what the workspace's search finds for it, named by the path `tilo_ls`
     /// writes. Any other path is itself.
     pub(super) async fn expand_reference(&self, path: &str) -> Result<String, Failure> {

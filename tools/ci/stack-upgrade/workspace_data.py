@@ -150,8 +150,8 @@ def fill() -> dict:
     for text in messages:
         act(workspace, f"{CHAT_CHANNEL}#send", body=text)
     tasks = ["Carry the data forward", "A second task"]
-    act(workspace, "tasks/Issues#create", title=tasks[0], body="Written before the upgrade")
-    act(workspace, "tasks/Issues#create", title=tasks[1], status="in-progress")
+    act(workspace, "so.tilo.tasks#new_task", title=tasks[0], body="Written before the upgrade")
+    act(workspace, "so.tilo.tasks#new_task", title=tasks[1], status="in-progress")
     act(workspace, "notes/Notes#new-note", title="Upgrade note")
     content = call(
         "POST", f"/v1/workspaces/{workspace}/uploads", raw=b"A plan, written before the upgrade.\n" * 40
@@ -202,7 +202,7 @@ def fill() -> dict:
     return {
         "workspace": workspace,
         CHAT_CHANNEL: messages,
-        "tasks": [f"tasks/{title}" for title in tasks],
+        "tasks": [f"so.tilo.tasks/{title}" for title in tasks],
         "notes": ["notes/Upgrade note"],
         "files": ["docs/plan-before-upgrade.txt"],
         "mail/Messages": [mail, *received],

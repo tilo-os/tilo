@@ -2258,7 +2258,7 @@ mod tests {
             }
             // A `do` takes its options after the action, `--json` among them:
             // wherever the parser puts it, the call asks for JSON.
-            let cli = Cli::try_parse_from(["tilo", "-w", "jane-doe", "do", "tasks#create", "--json"])
+            let cli = Cli::try_parse_from(["tilo", "-w", "jane-doe", "do", "so.tilo.tasks#new_task", "--json"])
                 .expect("do takes --json after the action");
             let Cmd::Do { args, .. } = cli.cmd else {
                 panic!("do");

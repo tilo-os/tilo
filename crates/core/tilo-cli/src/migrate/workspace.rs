@@ -1,7 +1,8 @@
 //! The workspaces a migration from this computer lands in: the one this computer's device is in,
 //! through the service `tilo login` leaves running, which holds the device's one session with the
-//! workspace for every `tilo mcp` and `tilo` command of this computer ([`crate::service`]), or a
-//! hosted one through Tilo's actions, as the key this computer keeps calls them ([`crate::api`]).
+//! workspace for every `tilo mcp` and `tilo` command of this computer (`tilo-runtime`,
+//! [`crate::service`]), or a hosted one through Tilo's API with the key this computer holds
+//! ([`crate::api`]).
 
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
@@ -213,10 +214,21 @@ impl Workspace for Held {
         // The device's own API, over the session this computer already holds: the person's
         // calls are answered as the person there, never as the agent a migration acts as.
         if self.own.is_none() {
-            let workspace = crate::api::entered_workspace(crate::api::Reach::default())?
-                .map(|(workspace, _)| workspace)
-                .ok_or_else(|| anyhow!(crate::login::NOT_LOGGED_IN))?;
-            self.own = Some(Hosted::connect(crate::api::Reach::default(), &workspace)?);
+            let workspace = crate::api::entered_workspace(crate::api::Reach {
+                api: None,
+                key_file: None,
+                json: false,
+            })?
+            .map(|(workspace, _)| workspace)
+            .ok_or_else(|| anyhow!(crate::login::NOT_LOGGED_IN))?;
+            self.own = Some(Hosted::connect(
+                crate::api::Reach {
+                    api: None,
+                    key_file: None,
+                    json: false,
+                },
+                &workspace,
+            )?);
         }
         self.own
             .as_mut()
@@ -278,10 +290,11 @@ impl Workspace for Held {
     }
 }
 
-/// The workspace through Tilo's actions, as a key file this computer keeps (`--key-file`) calls
-/// them, or this computer's own login through its daemon.
+/// The workspace through Tilo's API, with the key this computer holds: a hosted workspace reached
+/// over HTTPS (`TILO_API_KEY`, and the server `--api` names), or in process as this computer's own
+/// key (`--key-file`, or the one `tilo login` kept).
 pub struct Hosted {
-    client: crate::api::Calls,
+    client: crate::api::Client,
     workspace: String,
     runtime: tokio::runtime::Runtime,
 }
@@ -293,10 +306,7 @@ impl Hosted {
     /// The key reaches no such workspace, or the workspace list could not be read.
     pub fn connect(reach: crate::api::Reach<'_>, named: &str) -> Result<Self> {
         let runtime = runtime()?;
-        let client = runtime.block_on(crate::api::Calls::open_with(
-            reach,
-            crate::mcp::reach_daemon,
-        ))?;
+        let client = crate::api::Client::open(reach)?;
         let workspace = runtime.block_on(client.workspace_id(named))?;
         Ok(Self {
             client,
@@ -311,12 +321,8 @@ impl Hosted {
     /// The key reaches no such workspace, or the workspace list could not be read.
     pub fn workspace_id(reach: crate::api::Reach<'_>, named: &str) -> Result<String> {
         let runtime = runtime()?;
-        runtime.block_on(async {
-            crate::api::Calls::open_with(reach, crate::mcp::reach_daemon)
-                .await?
-                .workspace_id(named)
-                .await
-        })
+        let client = crate::api::Client::open(reach)?;
+        runtime.block_on(client.workspace_id(named))
     }
 
     /// `answer` as the answer an action that ran gives.
@@ -342,11 +348,10 @@ impl Hosted {
         loop {
             let answer = self
                 .runtime
-                .block_on(self.client.invocation(
-                    Some(&self.workspace),
-                    &invocation,
-                    INVOCATION_WAIT,
-                ))
+                .block_on(
+                    self.client
+                        .invocation(&self.workspace, &invocation, INVOCATION_WAIT),
+                )
                 .map_err(|error| Self::refused(error, action))?;
             match status(&answer) {
                 "ok" => return Ok(Self::answered(&answer)),
@@ -412,7 +417,9 @@ impl Workspace for Hosted {
                 resource,
                 verb,
                 &args,
-                (&run.id, &run.title, &step),
+                &run.id,
+                &run.title,
+                &step,
             )) {
                 Ok(answer) => answer,
                 Err(error) => {
@@ -447,7 +454,7 @@ impl Workspace for Hosted {
             .runtime
             .block_on(
                 self.client
-                    .act(Some(&self.workspace), resource, verb, &args, action),
+                    .act(&self.workspace, resource, verb, &args, action),
             )
             .map_err(|error| Self::refused(error, action))?;
         match status(&answer) {
@@ -464,7 +471,7 @@ impl Workspace for Hosted {
             .runtime
             .block_on(
                 self.client
-                    .act(Some(&self.workspace), path, action, &args, &named),
+                    .act(&self.workspace, path, action, &args, &named),
             )
             .map_err(|error| Self::refused(error, &named))?;
         match status(&answer) {
@@ -617,7 +624,7 @@ mod tests {
             },
         })]);
         let answer = workspace
-            .act(&run(), "tasks/tasks.issues#create", json!({"title": "x"}))
+            .act(&run(), "so.tilo.tasks#new_task", json!({"title": "x"}))
             .expect("it ran");
         assert!(answer.said("already"));
     }
@@ -641,5 +648,212 @@ mod tests {
             .map(str::to_owned);
         drop(calls);
         assert_eq!(last.as_deref(), Some("tilo_put_finish"));
+    }
+
+    const WORKSPACE: &str = "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b";
+
+    /// The API a hosted run reaches, as one key of a person's.
+    fn keyed() -> tilo_test_env::ScopedEnv {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(crate::api::KEY_ENV, "tilo_sk_test");
+        env
+    }
+
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "every route answers, and the handler's shape is an option"
+    )]
+    fn reply(status: u16, body: &Value) -> Option<test_http::Reply> {
+        Some(
+            test_http::Reply::status(status)
+                .header("content-type", "application/json")
+                .body(body.to_string()),
+        )
+    }
+
+    fn hosted(server: &test_http::Responder) -> Hosted {
+        let url = server.url();
+        Hosted::connect(
+            crate::api::Reach {
+                api: Some(&url),
+                key_file: None,
+                json: false,
+            },
+            "Studio",
+        )
+        .expect("the workspace")
+    }
+
+    fn hosted_run() -> Invocation {
+        Invocation {
+            id: "migrate-linear-1".into(),
+            title: "From Linear: Engineering".into(),
+        }
+    }
+
+    #[test]
+    fn a_hosted_step_is_one_invocation_under_its_own_idempotency_key() {
+        let _key = keyed();
+        let server = test_http::Responder::handle(|request: &test_http::Request| {
+            match (request.method.as_str(), request.target.as_str()) {
+                ("POST", "/v1/resources/account/workspaces/actions/list") => reply(
+                    200,
+                    &json!({"result": {"workspaces": [{"id": WORKSPACE, "name": "Studio"}]}}),
+                ),
+                ("POST", route) if route.ends_with("/uploads") => {
+                    reply(201, &json!({"content": "tilo.content:abc"}))
+                }
+                ("POST", _) => reply(
+                    200,
+                    &json!({"status": "ok", "result": {"taken": true},
+                        "resources": ["tasks.tracker/issues/1"]}),
+                ),
+                _ => reply(
+                    404,
+                    &json!({"error": {"code": "not_found", "message": "no such route"}}),
+                ),
+            }
+        });
+        let mut workspace = hosted(&server);
+        let args = json!({"title": "x"});
+        let action = "so.tilo.tasks#new_project";
+        let answer = workspace
+            .act(&hosted_run(), action, args.clone())
+            .expect("the workspace took it");
+        assert!(answer.said("taken"));
+        assert_eq!(
+            answer.result().and_then(|result| result.get("taken")),
+            Some(&json!(true)),
+            "the action's value is what it answered"
+        );
+
+        let sent = server.drain_requests();
+        assert_eq!(
+            sent.len(),
+            2,
+            "the workspace is named, then the action runs"
+        );
+        let step = &sent[1];
+        assert_eq!(
+            step.target,
+            format!("/v1/workspaces/{WORKSPACE}/resources/so.tilo.tasks/actions/create")
+        );
+        assert_eq!(step.header("tilo-invocation"), Some("migrate-linear-1"));
+        assert_eq!(
+            step.header("tilo-invocation-title"),
+            Some("From Linear: Engineering")
+        );
+        let key = step.header("idempotency-key").expect("a step id");
+        assert_eq!(key, step_id("migrate-linear-1", action, &args).as_str());
+        assert_eq!(step.header("prefer"), Some("wait=60"));
+
+        // The same step asked again goes under the same key, so the workspace runs it once.
+        workspace
+            .act(&hosted_run(), action, args)
+            .expect("the workspace answered the same step");
+        let sent = server.drain_requests();
+        assert_eq!(
+            sent.last()
+                .and_then(|again| again.header("idempotency-key")),
+            Some(key)
+        );
+
+        // An upload names the content the workspace kept it under.
+        assert_eq!(
+            workspace.put(b"hello").expect("it is kept"),
+            "tilo.content:abc"
+        );
+    }
+
+    #[test]
+    fn a_step_the_person_has_to_allow_is_waited_on_at_its_invocation() {
+        let _key = keyed();
+        let server = test_http::Responder::handle(|request: &test_http::Request| {
+            match (request.method.as_str(), request.target.as_str()) {
+                ("POST", "/v1/resources/account/workspaces/actions/list") => reply(
+                    200,
+                    &json!({"result": {"workspaces": [{"id": WORKSPACE, "name": "Studio"}]}}),
+                ),
+                ("POST", route) if route.contains("/actions/") => reply(
+                    202,
+                    &json!({"status": "pending", "invocation": "step-1",
+                        "ask": {"url": "https://tilo.test/ask/step-1"}}),
+                ),
+                ("GET", route)
+                    if route.starts_with("/v1/workspaces/")
+                        && route.contains("/invocations/step-1") =>
+                {
+                    reply(200, &json!({"status": "ok", "result": {"allowed": true}}))
+                }
+                _ => reply(
+                    404,
+                    &json!({"error": {"code": "not_found", "message": "no such route"}}),
+                ),
+            }
+        });
+        let mut workspace = hosted(&server);
+        let answer = workspace
+            .act(
+                &hosted_run(),
+                "notes/notes.pages#import-markdown",
+                json!({"url": "https://example.test/"}),
+            )
+            .expect("the person allowed it");
+        assert!(answer.said("allowed"), "the held answer is the action's");
+
+        let sent = server.drain_requests();
+        let waited = sent.last().expect("the invocation is asked about");
+        assert_eq!(waited.method, "GET");
+        assert_eq!(
+            waited.target,
+            format!("/v1/workspaces/{WORKSPACE}/invocations/step-1?wait={INVOCATION_WAIT}")
+        );
+    }
+
+    #[test]
+    fn undoing_a_run_asks_the_api_and_takes_back_its_step() {
+        let _key = keyed();
+        let server = test_http::Responder::handle(|request: &test_http::Request| {
+            match (request.method.as_str(), request.target.as_str()) {
+                ("POST", "/v1/resources/account/workspaces/actions/list") => reply(
+                    200,
+                    &json!({"result": {"workspaces": [{"id": WORKSPACE, "name": "Studio"}]}}),
+                ),
+                ("POST", route) if route.ends_with("/actions/history") => reply(
+                    200,
+                    &json!({"status": "ok", "result": {"versions": [
+                        {"change": "c1",
+                         "actor": {"id": "agent:tilo", "declared": "migrate-linear-1"}},
+                    ]}}),
+                ),
+                ("POST", route) if route.ends_with("/actions/undo") => {
+                    reply(200, &json!({"status": "ok", "result": {}}))
+                }
+                _ => reply(
+                    404,
+                    &json!({"error": {"code": "not_found", "message": "no such route"}}),
+                ),
+            }
+        });
+        let mut workspace = hosted(&server);
+        assert_eq!(
+            tilo_migrate::engine::undo_in(
+                &mut workspace,
+                "so.tilo.tasks",
+                "migrate-linear-1"
+            )
+            .expect("the record answered"),
+            tilo_migrate::engine::RunInHistory::InEffect("c1".to_owned())
+        );
+        let sent = server.drain_requests();
+        let undo = sent.last().expect("the undo runs in the record");
+        assert_eq!(
+            undo.target,
+            format!("/v1/workspaces/{WORKSPACE}/resources/so.tilo.tasks/actions/undo")
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&undo.body).expect("the step"),
+            json!({"step": "c1"})
+        );
     }
 }

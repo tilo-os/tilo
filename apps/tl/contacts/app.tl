@@ -107,6 +107,23 @@ primary action new_contact(book: Book, name: Text = "") -> Contact (
     book.contacts.insert(Contact(name: name))
 }
 
+/// Finds the contact the workspace keeps under `name`, or adds one: what brings someone in from
+/// another service — a task given to them before they joined — to one card, however many imports
+/// name them.
+action named_or_new(book: Book, name: Text) -> Contact (
+    icon: .user_plus,
+    label: "Find or add a contact",
+    did: "found a contact",
+) {
+    let trimmed = name.trim()
+    require not trimmed.is_empty() "Name the contact"
+    if let found = book.contacts.find(c -> c.name.lower() == trimmed.lower()) {
+        found
+    } else {
+        book.contacts.insert(Contact(name: trimmed))
+    }
+}
+
 /// Renames a contact.
 action rename(c: Contact, name: Text) (icon: .pencil, label: "Rename", did: "renamed a contact") {
     c.name = name

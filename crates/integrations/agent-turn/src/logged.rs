@@ -204,7 +204,7 @@ mod tests {
         assert_eq!(
             refusal(
                 "invalid_arguments: required argument `title` was not supplied",
-                &json!({"path": "tasks#create", "args": {}})
+                &json!({"path": "so.tilo.tasks#new_task", "args": {}})
             ),
             "invalid_arguments: required argument `title` was not supplied"
         );

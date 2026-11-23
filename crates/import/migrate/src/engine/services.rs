@@ -50,6 +50,11 @@ const TASKS_APP: &str = "so.tilo.tasks";
 const TASKS: &str = "tl:so.tilo.tasks";
 /// The app that keeps the comments a task's thread holds, as its path starts.
 const DISCUSSION: &str = "so.tilo.lang.discussion";
+/// The app that keeps the workspace's address book, where someone given a task before they
+/// joined is kept as a contact.
+const CONTACTS: &str = "so.tilo.contacts";
+/// What Contacts finds or adds, by name, as a task's contact assignee names them.
+const NAMED_OR_NEW: &str = "named_or_new";
 /// Tasks' own actions: a project, its kind and its name.
 const NEW_PROJECT: &str = "new_project";
 const RENAME: &str = "rename";
@@ -65,6 +70,8 @@ const SET_STATUS: &str = "set_status";
 const ESTIMATE: &str = "estimate";
 const SCHEDULE: &str = "schedule";
 const LABEL: &str = "label";
+const RELATE: &str = "relate";
+const ASSIGN: &str = "assign";
 /// What a task's thread takes, in the Discussion app.
 const COMMENT: &str = "comment";
 /// How many items an import hands over at once.
@@ -544,8 +551,8 @@ fn land_mail(review: &Review, lander: &mut Lander<'_>) -> Result<()> {
 
 /// What a source's imports made in the workspace, kept beside its journal so a later import finds it:
 /// the Tasks task each issue became and the project or area each team and project became, by
-/// their pages and keys, the relations said in the tasks' threads, and the relations waiting for
-/// the issue they point at.
+/// their pages and keys, the relations linked between tasks, and the relations waiting for the
+/// issue they point at.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Kept {
     /// The Tasks task each issue became, by its page on the service, at its address there
@@ -559,7 +566,7 @@ pub struct Kept {
     /// key.
     #[serde(default)]
     pub areas: BTreeMap<String, KeptArea>,
-    /// Relations said in the tasks' threads, as `from-page\u{0}to-page`.
+    /// Relations linked between tasks, as `from-page\u{0}to-page`.
     #[serde(default)]
     pub links: std::collections::BTreeSet<String>,
     /// Relations whose other issue had not come over yet, by that issue's page: the page of the
@@ -793,6 +800,11 @@ impl Landing<'_, '_> {
         format!("{TASKS_APP}/{address}")
     }
 
+    /// The address of the contact `id` of Contacts, as a task's assignee names it.
+    fn contact_address(id: &str) -> String {
+        format!("tl:{CONTACTS}:{id}")
+    }
+
     /// The project or area `group` became, made now if no import made it yet: a project in Linear
     /// (a milestone in Forgejo) becomes a project, a team (a repository) an area, each named as
     /// the service names it.
@@ -968,7 +980,30 @@ impl Landing<'_, '_> {
                 self.act(&path, LABEL, json!({"name": label}))?;
             }
         }
+        // Someone given the issue before they joined the workspace is a contact of its book:
+        // found by the name the service had for them, or added, and the task is theirs.
+        if let Some(name) = issue.assignee.as_deref().and_then(|who| who.strip_prefix("outside:")) {
+            match self.assign_contact(&path, name) {
+                // The workspace keeps no address book here: the issue still lands, unassigned.
+                Err(error) if refused_for_good(&error) => {}
+                other => other?,
+            }
+        }
         Ok(())
+    }
+
+    /// Give the task at `path` to the contact called `name`: the one the address book keeps, or
+    /// a card added for them.
+    fn assign_contact(&mut self, path: &str, name: &str) -> Result<()> {
+        let made = self.act(CONTACTS, NAMED_OR_NEW, json!({"name": name}))?;
+        let contact = created_id(&made)
+            .ok_or_else(|| anyhow!("Contacts made no card for {name}: {made:?}"))?;
+        self.act(
+            path,
+            ASSIGN,
+            json!({"who": null, "contact": Self::contact_address(&contact)}),
+        )
+        .map(drop)
     }
 
     /// Land `issues`: the issues first, then their comments, the sub-issues waiting for them and
@@ -1082,8 +1117,8 @@ impl Landing<'_, '_> {
         Ok(())
     }
 
-    /// Say on each of `issues` how it relates to the issues here it relates to, and those that
-    /// waited for it: a line in its thread, which is what the workspace has to say a relation.
+    /// Link each of `issues` to the issues here it relates to, and those that waited for it, with
+    /// how they relate: a typed link between the two tasks, which both their pages draw.
     fn link_all(
         &mut self,
         issues: &[&IncomingIssue],
@@ -1119,14 +1154,14 @@ impl Landing<'_, '_> {
             let Some(address) = self.kept.issues.get(&from).cloned() else {
                 continue;
             };
-            let said = format!("{} {}", relation_words(&kind), reference_of(&to));
-            let mut args = serde_json::Map::new();
-            args.insert("text".into(), json!(said));
-            args.insert(
-                tilo_actions::params::FROM_ARGUMENT.into(),
-                made_from(&address),
-            );
-            match self.act(DISCUSSION, COMMENT, Value::Object(args)) {
+            let Some(other) = self.kept.issues.get(&to).cloned() else {
+                continue;
+            };
+            match self.act(
+                &Self::task_path(&address),
+                RELATE,
+                json!({"other": other, "how": relation_words(&kind)}),
+            ) {
                 Ok(_) => {
                     self.kept.links.insert(pair);
                 }

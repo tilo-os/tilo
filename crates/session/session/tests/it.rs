@@ -69,6 +69,8 @@ mod clipboard_fabric;
 mod clipboard_files;
 #[path = "clipboard_reading.rs"]
 mod clipboard_reading;
+#[path = "closed_tasks.rs"]
+mod closed_tasks;
 #[path = "collab.rs"]
 mod collab;
 #[path = "controllers.rs"]
@@ -203,6 +205,8 @@ mod profile_name;
 mod questions;
 #[path = "refused_writes.rs"]
 mod refused_writes;
+#[path = "refounded_workspace.rs"]
+mod refounded_workspace;
 #[path = "region_formats.rs"]
 mod region_formats;
 #[path = "repl_api.rs"]
@@ -211,6 +215,8 @@ mod repl_api;
 mod rotation;
 #[path = "search.rs"]
 mod search;
+#[path = "second_device.rs"]
+mod second_device;
 #[path = "service_sessions.rs"]
 mod service_sessions;
 #[path = "services.rs"]

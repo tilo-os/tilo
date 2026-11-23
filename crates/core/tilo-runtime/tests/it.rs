@@ -84,8 +84,6 @@ mod device_writes;
 mod files_collab;
 #[path = "files_content.rs"]
 mod files_content;
-#[path = "files_import.rs"]
-mod files_import;
 #[path = "files_paths.rs"]
 mod files_paths;
 /// What the Files tests read of what a daemon keeps.

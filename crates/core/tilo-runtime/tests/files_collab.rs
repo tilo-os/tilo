@@ -248,7 +248,7 @@ fn a_slow_read_leaves_its_thread_answering() {
                 .tool(
                     &workspace,
                     "tilo_do",
-                    &json!({"path": "tasks#open", "args": {}}),
+                    &json!({"path": "so.tilo.tasks#open", "args": {}}),
                 )
                 .await,
         );
@@ -258,7 +258,7 @@ fn a_slow_read_leaves_its_thread_answering() {
                 .tool(
                     &workspace,
                     "tilo_do",
-                    &json!({"path": "tasks/tasks.issues#create",
+                    &json!({"path": "so.tilo.tasks#new_task",
                         "args": {"title": "First"}}),
                 )
                 .await,

@@ -47,45 +47,29 @@ async fn act(key: &host::Key, base: &str, resource: &str, action: &str, args: &V
     reply["result"].clone()
 }
 
-/// An issue's description, as long as one written in a tracker: a few kilobytes, so a part holds
-/// a couple of hundred and a tracker of thousands is kept in many, as a moved-in one is.
-fn description(at: usize) -> String {
-    format!(
-        "What issue {at} is about, as it was written there. {}",
-        "The service keeps its work beside its peers. ".repeat(50)
-    )
-}
-
 async fn fill(key: &host::Key, base: &str, size: usize) {
     for start in (0..size).step_by(LIST) {
         let end = (start + LIST).min(size);
-        let list: Vec<Value> = (start..end)
-            .map(|at| {
-                let mut entry = json!({
-                    "key": format!("k{}", at - start + 1),
-                    "title": format!("Issue {at}"),
-                    "body": description(at),
-                    "status": "todo",
-                    "labels": ["Migration"],
-                });
-                if at % 6 == 5
-                    && at > start
-                    && let Some(fields) = entry.as_object_mut()
-                {
-                    fields.insert("under".into(), json!(format!("k{}", at - start)));
-                }
-                entry
-            })
+        let titles: Vec<Value> = (start..end)
+            .map(|at| json!(format!("Issue {at}")))
             .collect();
         act(
             key,
             base,
-            "tasks/tasks.issues",
-            "create-many",
-            &json!({"issues": list}),
+            "so.tilo.tasks",
+            "new_tasks",
+            &json!({"titles": titles}),
         )
         .await;
     }
+}
+
+/// How many resources `rows` stand for, each once: a row of one task carries its actions with it.
+fn resources(rows: &[Value]) -> usize {
+    rows.iter()
+        .filter_map(|row| row["id"].as_str())
+        .collect::<std::collections::HashSet<_>>()
+        .len()
 }
 
 fn quantile(took: &[Duration], quantile: f64) -> Duration {
@@ -109,7 +93,7 @@ async fn every_page(key: &host::Key, base: &str, limit: usize) -> (Vec<Value>, V
         let began = Instant::now();
         let (status, page) = key
             .get(&format!(
-                "{base}/resources?path=tasks/Issues&limit={limit}{at}"
+                "{base}/resources?path=so.tilo.tasks/tl:so.tilo.tasks&limit={limit}{at}"
             ))
             .await;
         took.push(began.elapsed());
@@ -149,7 +133,7 @@ async fn workspace_for(host: &host::Host, name: &str) -> String {
 /// The person's own tracker in `workspace`, opened and filled with `size` issues; its API base.
 async fn tracker(key: &host::Key, workspace: &str, size: usize) -> String {
     let base = format!("/v1/workspaces/{workspace}");
-    act(key, &base, "tasks", "open", &json!({})).await;
+    act(key, &base, "so.tilo.tasks", "open", &json!({})).await;
     fill(key, &base, size).await;
     base
 }
@@ -165,7 +149,7 @@ fn listing_a_tracker_costs_each_page_its_rows_at_any_size() {
             // The first page builds what the listing reads; every page after it
             // pays its own rows.
             let (status, warm) = key
-                .get(&format!("{base}/resources?path=tasks/Issues&limit=40"))
+                .get(&format!("{base}/resources?path=so.tilo.tasks/tl:so.tilo.tasks&limit=40"))
                 .await;
             assert_eq!(status, 200, "{warm}");
             // What one call of the API costs before it reads a row: a listing of
@@ -174,7 +158,7 @@ fn listing_a_tracker_costs_each_page_its_rows_at_any_size() {
             for _ in 0..5 {
                 let began = Instant::now();
                 let (status, _) = key
-                    .get(&format!("{base}/resources?path=tasks&limit=40"))
+                    .get(&format!("{base}/resources?path=so.tilo.tasks&limit=40"))
                     .await;
                 base_took.push(began.elapsed());
                 assert_eq!(status, 200);
@@ -188,7 +172,7 @@ fn listing_a_tracker_costs_each_page_its_rows_at_any_size() {
                 let (rows, took) = every_page(&key, &base, limit).await;
                 let total = began.elapsed();
                 assert_eq!(
-                    rows.len(),
+                    resources(&rows),
                     size,
                     "every issue is listed once at {size} issues, {limit} a page"
                 );
@@ -218,7 +202,7 @@ fn listing_a_tracker_costs_each_page_its_rows_at_any_size() {
                 // A page answers a thousand rows (the listing's bound): a tracker this size is
                 // listed in two calls, and each is still one answer's worth of memory.
                 let (status, page) = key
-                    .get(&format!("{base}/resources?path=tasks/Issues&limit=1000"))
+                    .get(&format!("{base}/resources?path=so.tilo.tasks/tl:so.tilo.tasks&limit=1000"))
                     .await;
                 assert_eq!(status, 200, "{page}");
                 assert_eq!(
@@ -264,10 +248,10 @@ fn a_tracker_is_listed_whole_from_its_records() {
                 began.elapsed()
             );
             let names: std::collections::HashSet<&str> =
-                rows.iter().filter_map(|row| row["name"].as_str()).collect();
+                rows.iter().filter_map(|row| row["label"].as_str()).collect();
             assert_eq!(
-                (rows.len(), names.len()),
-                (SIZE, SIZE),
+                names.len(),
+                SIZE,
                 "every issue is listed once, {limit} a page"
             );
         }
@@ -284,7 +268,7 @@ fn a_listing_right_after_a_member_is_invited_costs_what_any_listing_does() {
         let workspace = host.workspace().to_owned();
         let key = host.key("Mover");
         let base = tracker(&key, &workspace, SIZE).await;
-        let listing = format!("{base}/resources?path=tasks/Issues&limit=40");
+        let listing = format!("{base}/resources?path=so.tilo.tasks/tl:so.tilo.tasks&limit=40");
         let list = || async {
             let began = Instant::now();
             let (status, page) = key.get(&listing).await;
@@ -336,7 +320,7 @@ fn another_apps_listing_waits_for_no_tracker_taking_in_its_parts() {
         let workspace = host.workspace().to_owned();
         let key = host.key("Mover");
         let base = format!("/v1/workspaces/{workspace}");
-        act(&key, &base, "tasks", "open", &json!({})).await;
+        act(&key, &base, "so.tilo.tasks", "open", &json!({})).await;
         act(&key, &base, "contacts", "open", &json!({})).await;
         fill(&key, &base, SIZES[1]).await;
 
@@ -353,7 +337,7 @@ fn another_apps_listing_waits_for_no_tracker_taking_in_its_parts() {
             alone.push(list_contacts().await);
         }
         let alone = quantile(&alone, 0.5);
-        let issues = format!("{base}/resources?path=tasks/Issues&limit=40");
+        let issues = format!("{base}/resources?path=so.tilo.tasks/tl:so.tilo.tasks&limit=40");
         let tracker = async {
             let began = Instant::now();
             let (status, page) = key.get(&issues).await;
@@ -396,23 +380,23 @@ fn a_trackers_listing_holds_no_other_request() {
             "/v1/workspaces/{}",
             workspace_for(host.as_ref(), "Elsewhere").await
         );
-        act(&key, &other, "tasks", "open", &json!({})).await;
+        act(&key, &other, "so.tilo.tasks", "open", &json!({})).await;
 
         let mut alone = Vec::new();
         for _ in 0..3 {
             let began = Instant::now();
             let (status, page) = key
-                .get(&format!("{other}/resources?path=tasks&limit=40"))
+                .get(&format!("{other}/resources?path=so.tilo.tasks&limit=40"))
                 .await;
             assert_eq!(status, 200, "{page}");
             alone.push(began.elapsed());
         }
         let alone = quantile(&alone, 0.5);
-        let nearest = format!("{other}/resources?path=tasks?limit=40");
+        let nearest = format!("{other}/resources?path=so.tilo.tasks?limit=40");
         let tracker = async {
             let began = Instant::now();
             let (status, page) = key
-                .get(&format!("{base}/resources?path=tasks/Issues&limit=40"))
+                .get(&format!("{base}/resources?path=so.tilo.tasks/tl:so.tilo.tasks&limit=40"))
                 .await;
             (status, page, began.elapsed())
         };

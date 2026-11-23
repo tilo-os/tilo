@@ -459,11 +459,11 @@ mod tests {
              /v1/workspaces/…/resources/notes/Todo/actions/rename {\"title\":\"<title>\"}"
         );
         // What the caller gave is kept, each value as the command reads one.
-        let given = "tilo_do {\"path\":\"tasks#create\",\"args\":{\"count\":3,\
+        let given = "tilo_do {\"path\":\"so.tilo.tasks#new_task\",\"args\":{\"count\":3,\
             \"detail\":{\"kind\":\"login\"},\"title\":\"Buy plums\"}}";
         assert_eq!(
             said(given, Surface::Cli),
-            "tilo do tasks#create count=3 detail='{\"kind\":\"login\"}' title='Buy plums'"
+            "tilo do so.tilo.tasks#new_task count=3 detail='{\"kind\":\"login\"}' title='Buy plums'"
         );
         // A listing and an invocation, each with what it names.
         let listings = "Calls that work:\n  tilo_ls {\"path\":\"notes/Todo\"}\n  tilo_ls {}";

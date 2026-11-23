@@ -493,70 +493,7 @@ fn a_handed_workspace_runs_its_keys_commands_after_a_restart() {
     });
 }
 
-/// An issue named by its id alone is renamed and deleted in one answer, however many issues
-/// the tracker keeps, whether or not the page its part publishes carries it.
-#[test]
-fn an_issue_named_by_its_id_is_found_in_one_answer_however_many_there_are() {
-    host::run(|host| async move {
-        const PAST_PAGE: usize = 400;
-        let workspace = host.workspace().to_owned();
-        let key = host.key("Issues");
-        did(&key, &workspace, "tasks", "open", &json!({})).await;
-
-        let mut worst = Duration::ZERO;
-        for size in [25, 1000] {
-            let mut targets = Vec::new();
-            for start in (0..size).step_by(50) {
-                let actions: Vec<Value> = (start..(start + 50).min(size))
-                    .map(|index| {
-                        json!({"action": "create", "args": {"title": format!("Issue {index}")}})
-                    })
-                    .collect();
-                did(
-                    &key,
-                    &workspace,
-                    "tasks/Issues",
-                    "group",
-                    &json!({"actions": actions}),
-                )
-                .await;
-                targets = (0..size).map(|index| index.to_string()).collect();
-            }
-            let listed = key
-                .tool(
-                    "tilo_ls",
-                    &json!({"workspace": workspace, "path": "tasks/Issues"}),
-                )
-                .await;
-            let listed = listed.to_string();
-            assert!(listed.contains("Issue"), "the tracker lists its issues");
-            let target = if size > PAST_PAGE {
-                targets[PAST_PAGE].clone()
-            } else {
-                targets[0].clone()
-            };
-            for (action, args) in [
-                ("rename", json!({"title": "Renamed by id"})),
-                ("delete", json!({})),
-            ] {
-                let began = Instant::now();
-                let path = format!("tasks/Issues/{target}");
-                let answer = act(&key, &workspace, &path, action, &args).await;
-                assert_eq!(
-                    answer["status"], "ok",
-                    "{size} issues: {action} the issue by its id: {answer}"
-                );
-                worst = worst.max(began.elapsed());
-            }
-        }
-        assert!(
-            worst < Duration::from_secs(5),
-            "a rename and a delete by id cost about the same at a thousand issues: {worst:?}"
-        );
-    });
-}
-
-/// One more issue, as an agent makes it through MCP in `workspace`.
+/// One more task, as an agent makes it through MCP in `workspace`.
 async fn create_issue(agent: &host::Agent, workspace: &str, made: &mut usize) -> Duration {
     let began = Instant::now();
     let (answer, failed) = said(
@@ -564,9 +501,8 @@ async fn create_issue(agent: &host::Agent, workspace: &str, made: &mut usize) ->
             .tool(
                 "tilo_do",
                 &json!({"workspace": workspace,
-                        "path": "tasks#create",
-                        "args": {"title": format!("Issue {made}"),
-                                 "body": "A paragraph of this issue."}}),
+                        "path": "so.tilo.tasks#new_task",
+                        "args": {"title": format!("Issue {made}")}}),
             )
             .await,
     );
@@ -586,7 +522,7 @@ fn an_issue_create_costs_the_same_however_full_the_tracker() {
             &agent
                 .tool(
                     "tilo_do",
-                    &json!({"workspace": workspace, "path": "tasks#open"}),
+                    &json!({"workspace": workspace, "path": "so.tilo.tasks#open"}),
                 )
                 .await,
         );

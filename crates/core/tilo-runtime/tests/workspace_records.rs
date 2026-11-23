@@ -66,7 +66,7 @@ fn a_create_answers_the_issue_it_made_and_the_issue_reads_back() {
                 &agent
                     .tool(
                         "tilo_do",
-                        &json!({"path": "tasks#create", "args": {"title": title}}),
+                        &json!({"path": "so.tilo.tasks#new_task", "args": {"title": title}}),
                     )
                     .await,
             );
@@ -80,7 +80,7 @@ fn a_create_answers_the_issue_it_made_and_the_issue_reads_back() {
         );
         let (issues, is_error) = said(
             &agent
-                .tool("tilo_read", &json!({"path": "tasks/Issues"}))
+                .tool("tilo_read", &json!({"path": "so.tilo.tasks/tl:so.tilo.tasks"}))
                 .await,
         );
         assert!(!is_error, "{issues}");
@@ -100,7 +100,7 @@ fn the_first_write_into_an_empty_chain_is_taken() {
             &agent
                 .tool(
                     "tilo_do",
-                    &json!({"path": "tasks#create", "args": {"title": "Ship the launch"}}),
+                    &json!({"path": "so.tilo.tasks#new_task", "args": {"title": "Ship the launch"}}),
                 )
                 .await,
         );
@@ -153,25 +153,25 @@ fn a_write_under_the_oldest_of_many_issues_lands() {
         {
             let agent = host.agent();
             for first in (0..2200).step_by(200) {
-                let issues: Vec<Value> = (first..first + 200)
-                    .map(|at| json!({"title": format!("Issue {at}"), "body": "What it is about."}))
+                let titles: Vec<Value> = (first..first + 200)
+                    .map(|at| json!(format!("Issue {at}")))
                     .collect();
                 let answer = agent
                     .tool(
                         "tilo_do",
-                        &json!({"path": "tasks#create-many", "args": {"issues": issues}}),
+                        &json!({"path": "so.tilo.tasks#new_tasks", "args": {"titles": titles}}),
                     )
                     .await;
                 let (text, is_error) = said(&answer);
-                assert!(!is_error, "the workspace takes create-many: {text}");
-                let made = field(&answer, "made");
+                assert!(!is_error, "the workspace takes new_tasks: {text}");
+                let made = field(&answer, "resources");
                 assert_eq!(
                     made.as_array().map(Vec::len),
                     Some(200),
                     "a create answers what it made: {text}"
                 );
                 if oldest.is_null() {
-                    oldest = made[0]["id"].clone();
+                    oldest = made[0].clone();
                 }
             }
         }
@@ -184,8 +184,13 @@ fn a_write_under_the_oldest_of_many_issues_lands() {
                 &agent
                     .tool(
                         "tilo_do",
-                        &json!({"path": "tasks#create",
-                                "args": {"title": "Under the oldest", "parent": oldest}}),
+                        &json!({
+                            "path": format!(
+                                "so.tilo.tasks/{}#add_subtask",
+                                oldest.as_str().unwrap_or_default()
+                            ),
+                            "args": {"title": "Under the oldest"},
+                        }),
                     )
                     .await,
             );
@@ -273,7 +278,7 @@ fn a_commenter_comments_and_a_moderator_makes_a_channel() {
         let filed = owner
             .tool(
                 "tilo_do",
-                &json!({"path": "tasks#create", "args": {"title": "Ship the launch"}}),
+                &json!({"path": "so.tilo.tasks#new_task", "args": {"title": "Ship the launch"}}),
             )
             .await;
         let (words, is_error) = said(&filed);

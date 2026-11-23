@@ -5,6 +5,7 @@ app so.tilo.tasks "Tasks" (
     keywords: ["tasks", "issues", "issue tracker", "kanban", "board", "to-do", "todo", "tickets", "projects", "agent tasks"],
 )
 
+use so.tilo.contacts as contacts
 use so.tilo.lang.discussion as discussion
 use so.tilo.notes as notes
 
@@ -205,8 +206,11 @@ type Task {
     at: Option<Time> = .none
     /// When to tell whoever is doing it that its moment came, if a reminder is set.
     remind: Option<Time> = .none
-    /// Who is doing it.
+    /// Who is doing it: a member of the workspace, a person or an agent.
     assignee: Option<Actor> = .none
+    /// Who is doing it when they are not a member: someone the workspace keeps in touch with,
+    /// from its Contacts book. A task is a member's or a contact's, never both.
+    contact: Option<contacts.Contact> = .none
     /// Who gave it to the agent it is assigned to.
     assigned_by: Option<Actor> = .none
     /// When it was given to that agent.
@@ -235,6 +239,9 @@ type Task {
     waiting_until: Option<Time> = .none
     /// The automation that ends its wait early, when one does.
     waiting_on: Text = ""
+    /// The tasks this one relates to, with how they relate: where the workspace's links between
+    /// tasks are kept.
+    related: Collection<Related>
 
     search {
         filter "All issues" = number >= 0 (icon: .list_tree)
@@ -251,7 +258,7 @@ type Task {
         filter "Done" = status == .done or status == .cancelled (icon: .circle_check)
         filter "Assigned to me" = assignee == workspace.me
             and not (status == .done or status == .cancelled) (icon: .user)
-        filter "Nobody yet" = assignee == .none
+        filter "Nobody yet" = assignee == .none and contact == .none
             and not (status == .done or status == .cancelled) (icon: .circle_dashed)
         filter "Agent work" = assigned_by != .none
             and not (status == .done or status == .cancelled) (icon: .bot)
@@ -274,7 +281,18 @@ type Task {
         hide work
         hide waiting_until
         hide waiting_on
+        hide contact
+        hide related
     }
+}
+
+/// One task another relates to, and how they relate: `blocks`, `blocked by`, `duplicate of`,
+/// and so on.
+type Related {
+    /// The task it relates to.
+    task: Task
+    /// How they relate, in the service's words where it came from one.
+    how: Text
 }
 
 /// The workspace's tasks and projects.
@@ -766,12 +784,19 @@ action unfile(t: Task) (label: "Inbox", icon: .inbox, group: "Move to project") 
     t.project = .none
 }
 
-/// Gives a task to someone, or to nobody. Who gave it to an agent, and when, stay on the task:
-/// the assignment is the change the agent's own turn is triggered by.
-action assign(t: Task, who: Option<Actor>) uses time (label: "Assign", icon: .user) {
+/// Gives a task to someone, or to nobody: a member of the workspace by their actor, or someone
+/// the workspace keeps in touch with by their contact. Who gave it to an agent, and when, stay
+/// on the task: the assignment is the change the agent's own turn is triggered by.
+action assign(
+    t: Task,
+    who: Option<Actor> = .none,
+    contact: Option<contacts.Contact> = .none,
+) uses time (label: "Assign", icon: .user) {
+    require not (who != .none and contact != .none) "A task is a member's or a contact's, not both"
     require not (who?.kind() == .agent and held_back(t)) "The pieces in work already fill what this task lets work at once"
-    require t.assignee != who "It is theirs already"
+    require not (t.assignee == who and t.contact == contact) "It is theirs already"
     t.assignee = who
+    t.contact = contact
     t.assigned_by = if who != .none { .some(invoker) } else { .none }
     t.assigned_at = if who != .none { .some(now) } else { .none }
 }
@@ -784,12 +809,27 @@ action assign_many(chosen: List<Task>, who: Option<Actor>) uses time (
 ) {
     require not chosen.is_empty() "Choose the tasks to assign"
     for t in chosen {
-        if t.assignee != who {
+        if t.assignee != who or t.contact != .none {
             t.assignee = who
+            t.contact = .none
             t.assigned_by = if who != .none { .some(invoker) } else { .none }
             t.assigned_at = if who != .none { .some(now) } else { .none }
         }
     }
+}
+
+/// Links a task to another, with how they relate: the workspace's own link between two tasks,
+/// which the page of the task it relates to draws too.
+action relate(t: Task, other: Task, how: Text) (icon: .link, label: "Relate to…", did: "linked a task") {
+    require t != other "A task does not relate to itself"
+    require not t.related.any(r -> r.task == other and r.how == how) "They are related already"
+    t.related.insert(Related(task: other, how: how))
+}
+
+/// Takes a relation off a task.
+destructive action unrelate(t: Task, relation: Related) (icon: .x, label: "Remove relation") {
+    require t.related.any(r -> r == relation) "It has no such relation"
+    t.related.remove(relation)
 }
 
 /// Gives a task a label.
@@ -1232,6 +1272,7 @@ fn copied(t: Task, parent: Option<Task>) -> Task {
         at: t.at,
         remind: t.remind,
         assignee: t.assignee,
+        contact: t.contact,
         assigned_by: t.assigned_by,
         assigned_at: t.assigned_at,
         project: t.project,
@@ -1244,6 +1285,7 @@ fn copied(t: Task, parent: Option<Task>) -> Task {
         waiting_for: t.waiting_for,
         waiting_until: t.waiting_until,
         waiting_on: t.waiting_on,
+        related: t.related,
     )
     copy
 }
@@ -1722,14 +1764,22 @@ view task_card(t: Task, p: Option<Project>) {
 /// One task as a row, leaving out what the window and the row over it already say: the project
 /// the window is of (`none` for a place that gathers the tasks of every project), and the day
 /// the row's group is headed by.
-view task_row(t: Task, project: Option<Project>, day: Bool, under: Option<Task>) {
+/// Where a row says the task stands: the project it is in, when that is not the window's, and
+/// who it is a contact's.
+fn placed(t: Task, project: Option<Project>) -> Option<Text> {
     let place = if t.project != project { t.project?.name }
+    if let c = t.contact {
+        .some(if let p = place { "{p} · {c.name}" } else { c.name })
+    } else { place }
+}
+
+view task_row(t: Task, project: Option<Project>, day: Bool, under: Option<Task>) {
     let due: Option<Date> = if day { .none } else { own_due(t, under) }
     row(
         t.title,
         checkbox: t.done,
         check: check(t),
-        secondary: place,
+        secondary: placed(t, project),
         note: proposal_note(t),
         meta: due,
         mark: t.priority,
@@ -1743,7 +1793,7 @@ view task_summary(t: Task) {
         t.title,
         checkbox: t.done,
         check: check(t),
-        secondary: t.project?.name,
+        secondary: placed(t, .none),
         meta: t.due,
         mark: t.priority,
         avatar: t.assignee,
@@ -1824,6 +1874,15 @@ template view task_body(t: Task) {
                     }
                 }
             }
+            if let c = t.contact {
+                row(gap: .related, align: .center) {
+                    ui.Avatar(name: c.name)
+                    ui.Text(c.name)
+                    ui.Button("Nobody", icon: .user_minus) {
+                        on press: assign(t, .none)
+                    }
+                }
+            }
             stack(lead: 1) {
                 std.origin(t)
                 ui.BlockEditor(bind: t.notes, placeholder: "Anything worth remembering about it.")
@@ -1864,6 +1923,13 @@ template view task_body(t: Task) {
                     }
                     ui.MenuItem("No reminder", icon: .bell_off, checked: t.remind == .none) {
                         on choose: remind_clear(t)
+                    }
+                }
+            }
+            if not t.related.is_empty() {
+                section("Related") {
+                    for r in t.related {
+                        ui.ListRow(r.task.title, item: r.task, secondary: r.how, icon: .link)
                     }
                 }
             }

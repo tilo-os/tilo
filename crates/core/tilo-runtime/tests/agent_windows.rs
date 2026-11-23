@@ -10,14 +10,14 @@ use serde_json::{Value, json};
 use crate::agent_fixture::{act, ls, said};
 use crate::host;
 
-/// What the paragraph in Writer's document says.
+/// What the note in the sheets app says.
 const TITLE: &str = "Launch plan for Friday";
 /// The longest a write may take, or a read of a window.
 const WRITE_WITHIN: Duration = Duration::from_secs(3);
 const READ_BOUND: Duration = Duration::from_secs(5);
 
-/// The agent lists the workspace and its apps, makes a paragraph, and writes in the document:
-/// what it made is read back from the workspace by a key of the person's, as another device sees it.
+/// The agent lists the workspace and its apps, makes a sheet, and writes in the workbook: what it
+/// made is read back from the workspace by a key of the person's, as another device sees it.
 #[test]
 fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_sees() {
     host::run(|host| async move {
@@ -26,23 +26,18 @@ fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_sees() 
         assert!(!failed, "{apps}");
         assert!(
             apps.lines()
-                .any(|line| line.starts_with("word-processor ") && line.ends_with("running")),
-            "the workspace lists Writer, the app the person's page opened: {apps}"
+                .any(|line| line.starts_with("sheets ") && line.ends_with("running")),
+            "the workspace lists the sheets the person's page opened: {apps}"
         );
-        let (made, failed) = act(
-            &agent,
-            "word-processor#append-paragraph",
-            json!({"text": "Budget"}),
-        )
-        .await;
-        assert!(!failed, "the agent writes a paragraph: {made}");
+        let (made, failed) = act(&agent, "sheets#new-sheet", json!({"name": "Budget"})).await;
+        assert!(!failed, "the agent makes a sheet: {made}");
         let (wrote, failed) = act(
             &agent,
             "word-processor#append-paragraph",
             json!({"text": "Hello"}),
         )
         .await;
-        assert!(!failed, "the agent writes in the document: {wrote}");
+        assert!(!failed, "the agent writes in the workbook: {wrote}");
 
         // Another device of the person's reads what the agent wrote.
         let workspace = host.workspace().to_owned();
@@ -58,78 +53,73 @@ fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_sees() 
             matches!(listed, Ok(tilo_actions::InvocationUpdate::Succeeded { .. })),
             "the person's other device reaches the workspace: {listed:?}"
         );
-        let (document, failed) = said(
+        let (workbook, failed) = said(
             &agent
                 .tool("tilo_read", &json!({"path": "word-processor"}))
                 .await,
         );
         assert!(
-            !failed && document.contains("Hello"),
-            "the document reads what the agent wrote: {document}"
+            !failed && workbook.contains("Hello"),
+            "the workbook reads what the agent wrote: {workbook}"
         );
     });
 }
 
-/// The agent opens Writer and writes a paragraph: the Writer window reaches the person's
-/// layout as a member's open puts it there, named as the agent's run's.
+/// The agent opens Sheets and makes a sheet: the Sheets window reaches the person's layout as a
+/// member's open puts it there, named as the agent's run's.
 #[test]
 fn an_app_an_agent_opens_reaches_the_persons_layout() {
     host::run(|host| async move {
         let agent = host.agent();
-        let (opened, failed) = act(&agent, "word-processor#open", json!({})).await;
-        assert!(!failed, "the agent opens Writer: {opened}");
-        let (wrote, failed) = act(
-            &agent,
-            "word-processor#append-paragraph",
-            json!({"text": "First"}),
-        )
-        .await;
-        assert!(!failed, "the agent writes a paragraph: {wrote}");
+        let (opened, failed) = act(&agent, "sheets#open", json!({})).await;
+        assert!(!failed, "the agent opens Sheets: {opened}");
+        let (wrote, failed) = act(&agent, "sheets#new-sheet", json!({})).await;
+        assert!(!failed, "the agent makes a sheet: {wrote}");
         let (apps, failed) = ls(&agent, None).await;
         assert!(!failed, "{apps}");
         assert!(
             apps.lines()
-                .any(|line| line.starts_with("word-processor ") && line.ends_with("running")),
+                .any(|line| line.starts_with("sheets ") && line.ends_with("running")),
             "the window the agent opened is on the person's layout: {apps}"
         );
     });
 }
 
 /// The same on a host someone else runs, which is no member of the person's workspace: the
-/// agent's Writer window reaches the person's layout all the same.
+/// agent's Sheets window reaches the person's layout all the same.
 #[test]
 fn an_app_an_agent_opens_on_another_persons_host_reaches_the_persons_layout() {
     host::run(|host| async move {
         // The daemon founds the person's own workspace and serves no other person's: the agent's
-        // open of Writer is what a guest's page would see reach the layout.
+        // open of Sheets is what a guest's page would see reach the layout.
         let agent = host.agent();
-        let (opened, failed) = act(&agent, "word-processor#open", json!({})).await;
+        let (opened, failed) = act(&agent, "sheets#open", json!({})).await;
         assert!(
             !failed,
-            "an agent on a host someone else runs opens Writer, and its window reaches the \
+            "an agent on a host someone else runs opens Sheets, and its window reaches the \
              person's layout: {opened}"
         );
     });
 }
 
-/// An agent opens Writer, which it started without a window: its open alone, before the agent
-/// changes anything, puts Writer's window in front of the person.
+/// An agent opens Sheets, which it started without a window: its open alone, before the agent
+/// changes anything, puts Sheets' window in front of the person.
 #[test]
 fn an_agents_open_of_a_running_app_shows_its_window_on_the_persons_layout() {
     host::run(|host| async move {
         let agent = host.agent();
-        let (started, failed) = act(&agent, "word-processor#start", json!({})).await;
-        assert!(!failed, "the agent starts Writer: {started}");
-        let (opened, failed) = act(&agent, "word-processor#open", json!({})).await;
-        assert!(!failed, "the agent opens the running Writer: {opened}");
+        let (started, failed) = act(&agent, "sheets#start", json!({})).await;
+        assert!(!failed, "the agent starts Sheets: {started}");
+        let (opened, failed) = act(&agent, "sheets#open", json!({})).await;
+        assert!(!failed, "the agent opens the running Sheets: {opened}");
         assert!(
-            opened.starts_with("ok: word-processor is running"),
-            "Writer ran already: {opened}"
+            opened.starts_with("ok: sheets is running"),
+            "Sheets ran already: {opened}"
         );
     });
 }
 
-/// An agent opens Writer in a workspace whose layout the serving device does not keep: the open
+/// An agent opens Sheets in a workspace whose layout the serving device does not keep: the open
 /// answers at once, and nothing answers as though a window were shown.
 #[test]
 fn an_agents_open_with_no_layout_asks_the_persons_page() {
@@ -140,12 +130,12 @@ fn an_agents_open_with_no_layout_asks_the_persons_page() {
             .ask(
                 "tools/call",
                 json!({"name": "tilo_do",
-                       "arguments": {"path": "word-processor#open"},
+                       "arguments": {"path": "sheets#open"},
                        "_meta": {"so.tilo.mcp": {"structured": true}}}),
             )
             .await;
         let result = &answer["result"];
-        assert_eq!(result["isError"], false, "Writer is open: {answer}");
+        assert_eq!(result["isError"], false, "Sheets is open: {answer}");
         assert!(
             result["structuredContent"].get("not_shown").is_none(),
             "the view is asked for, which is no failure: {answer}"
@@ -169,10 +159,10 @@ fn an_agents_writes_answer_without_waiting_out_a_timeout() {
         assert!(!failed, "{apps}");
         let mut slow = Vec::new();
         for (path, args) in [
-            ("tasks#create", json!({"title": "First"})),
-            ("tasks#create", json!({"title": "Second"})),
-            ("word-processor#append-paragraph", json!({"text": "Third"})),
-            ("word-processor#open", json!({})),
+            ("so.tilo.tasks#new_task", json!({"title": "First"})),
+            ("so.tilo.tasks#new_task", json!({"title": "Second"})),
+            ("sheets#new-sheet", json!({})),
+            ("sheets#open", json!({})),
         ] {
             let asked = Instant::now();
             let (answer, failed) = act(&agent, path, args).await;
@@ -189,42 +179,34 @@ fn an_agents_writes_answer_without_waiting_out_a_timeout() {
     });
 }
 
-/// The person's page keeps Writer's window: the agent lists it among what is open, reads its
+/// The person's page keeps Sheets' window: the agent lists it among what is open, reads its
 /// lines, and is shown its picture as a PNG image beside them.
 #[test]
 fn an_agent_lists_and_reads_the_window_a_persons_page_holds() {
     host::run(|host| async move {
         let agent = host.agent();
-        let (made, failed) = act(
-            &agent,
-            "word-processor#append-paragraph",
-            json!({"text": TITLE}),
-        )
-        .await;
+        let (made, failed) = act(&agent, "sheets#new-sheet", json!({"name": TITLE})).await;
         assert!(
             !failed,
-            "the agent writes the paragraph the person's window shows: {made}"
+            "the agent makes the sheet the person's window shows: {made}"
         );
         let (apps, failed) = ls(&agent, None).await;
         assert!(!failed, "{apps}");
         assert!(
-            apps.lines().any(|line| line.starts_with("word-processor ")
-                && line.ends_with("running, Ada works in it")),
-            "the person's Writer is listed as running, with them working in it: {apps}"
+            apps.lines()
+                .any(|line| line.starts_with("sheets ")
+                    && line.ends_with("running, Ada works in it")),
+            "the person's Sheets is listed as running, with them working in it: {apps}"
         );
 
         // Its lines say what it shows: the sheet the person made, named as they named it.
         let first = Instant::now();
-        let (lines, failed) = said(
-            &agent
-                .tool("tilo_view", &json!({"path": "word-processor"}))
-                .await,
-        );
+        let (lines, failed) = said(&agent.tool("tilo_view", &json!({"path": "sheets"})).await);
         let first = first.elapsed();
         assert!(!failed, "{lines}");
         assert!(
             lines.contains(TITLE),
-            "the view shows the person's document: {lines}"
+            "the view shows the person's sheet: {lines}"
         );
         assert!(
             first < READ_BOUND,
@@ -233,10 +215,7 @@ fn an_agent_lists_and_reads_the_window_a_persons_page_holds() {
 
         // Its picture comes as an image the agent looks at, beside the same lines.
         let answer = agent
-            .tool(
-                "tilo_view",
-                &json!({"path": "word-processor", "picture": true}),
-            )
+            .tool("tilo_view", &json!({"path": "sheets", "picture": true}))
             .await;
         let blocks: Vec<&Value> = answer["result"]["content"]
             .as_array()

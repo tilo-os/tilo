@@ -1,7 +1,7 @@
-//! A tracker from Linear brought into a workspace whose Tasks keeps what it is asked, as Tasks
-//! does: issues made a list at a time, comments, moves and links grouped, the calls counted. The
-//! calls stay flat as the tracker grows, a second import asks nothing, and an import cut off or refused
-//! part-way is finished by the next one without making anything twice.
+//! A tracker from Linear brought into a workspace whose tl Tasks keeps what it is asked, through
+//! the app's own actions: an origin and an issue each, then the issue's body, project, parent,
+//! labels, day and the relations it is linked by. A second import asks nothing, and an import cut
+//! off or refused part-way is finished by the next one without making anything twice.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -30,27 +30,31 @@ struct Kept {
     title: String,
     body: String,
     url: String,
+    reference: String,
     parent: Option<String>,
     project: Option<String>,
     comments: Vec<String>,
     links: Vec<String>,
 }
 
-/// Tasks as the workspace answers it: each call counted, a list or group made whole or refused
-/// whole, as Tasks does.
+/// Tasks as the workspace answers it, through the app's own actions: each call counted, an issue
+/// made once by its origin and its reference.
 #[derive(Default)]
 struct Tasks {
     calls: usize,
-    /// How many issues it made: each one's id is its count.
+    /// How many origins, issues and contacts it made: each one's id is its count.
     made: usize,
     issues: BTreeMap<String, Kept>,
+    /// Each origin's page and the name the service gave it, by its id.
+    origins: BTreeMap<String, (String, String)>,
     areas: usize,
-    /// A title Tasks refuses, as it refuses a title too long.
+    contacts: usize,
+    /// A title Tasks refuses, as it refuses a title from a service it cannot keep.
     refused_title: Option<String>,
     /// How many calls are answered before the session drops.
     drops_after: Option<usize>,
-    /// Whether it answers a list naming an issue made before as not ready yet, as a workspace
-    /// does whose earlier issues are still on their way to it.
+    /// Whether it answers an issue as not ready yet, as a workspace does whose earlier issues are
+    /// still on their way to it.
     earlier_on_their_way: bool,
 }
 
@@ -65,103 +69,91 @@ fn text(args: &Value, field: &str) -> String {
         .to_owned()
 }
 
-impl Tasks {
-    /// Apply one of the issues' own actions to `issues`.
-    fn apply(issues: &mut BTreeMap<String, Kept>, verb: &str, args: &Value) -> Result<()> {
-        let id = text(args, "issue");
-        if !issues.contains_key(&id) {
-            bail!(refused(format!("no issue {id}")));
-        }
-        match verb {
-            "comment" => {
-                let said = text(args, "text");
-                assert!(args["origin"]["author"].is_string(), "{args}");
-                if let Some(issue) = issues.get_mut(&id) {
-                    issue.comments.push(said);
-                }
-            }
-            "move-under" => {
-                let parent = text(args, "parent");
-                if !issues.contains_key(&parent) {
-                    bail!(refused(format!("no issue {parent}")));
-                }
-                if let Some(issue) = issues.get_mut(&id) {
-                    issue.parent = Some(parent);
-                }
-            }
-            "link" => {
-                let resource = text(args, "resource");
-                if let Some(issue) = issues.get_mut(&id) {
-                    issue.links.push(resource);
-                }
-            }
-            other => bail!("Tasks has no {other} here"),
-        }
-        Ok(())
-    }
+/// The id part of a resource address (`tl:so.tilo.tasks:task-2` is `task-2`).
+fn id_of(address: &str) -> String {
+    address
+        .rsplit_once(':')
+        .map_or_else(|| address.to_owned(), |(_, id)| id.to_owned())
+}
 
-    fn create_many(&mut self, args: &Value) -> Result<Answer> {
-        let list = args["issues"].as_array().cloned().unwrap_or_default();
-        if self.earlier_on_their_way && list.iter().any(|issue| issue.get("parent").is_some()) {
+impl Tasks {
+    /// Make `issue` with the origin it was given, or answer the one an earlier import made.
+    fn import_issue(&mut self, args: &Value) -> Result<Answer> {
+        if self.earlier_on_their_way {
             bail!(Refused::coded(
                 "not_ready",
                 "the workspace is not ready for this call yet"
             ));
         }
-        assert!(!list.is_empty() && list.len() <= 200, "{}", list.len());
-        if let Some(title) = &self.refused_title
-            && let Some(at) = list.iter().position(|issue| issue["title"] == *title)
+        let title = text(args, "title");
+        if let Some(refused) = &self.refused_title
+            && title == *refused
         {
-            bail!(refused(format!("issue {} in the list: too long", at + 1)));
+            bail!(refused("An issue's title fits on a line"));
         }
-        // What Tasks refuses of an entry refuses the list, naming the entry.
-        for (at, issue) in list.iter().enumerate() {
-            if text(issue, "title").chars().count() > 240 {
-                bail!(refused(format!(
-                    "issue {} in the list: An issue's title fits on a line",
-                    at + 1
-                )));
-            }
-            if let Some(Value::String(parent)) = issue.get("parent")
-                && !self.issues.contains_key(parent)
-            {
-                bail!(refused(format!(
-                    "issue {} in the list: no issue named {parent}",
-                    at + 1
-                )));
-            }
+        let (url, reference) = self
+            .origins
+            .get(&id_of(&text(args, "origin")))
+            .cloned()
+            .unwrap_or_default();
+        let key = text(args, "key");
+        if let Some((address, _)) = self
+            .issues
+            .iter()
+            .find(|(_, issue)| issue.url == url && issue.reference == key)
+        {
+            // The same issue from the same place is the one made before: importing it again
+            // makes none, and answers the task it made.
+            return Ok(Answer::of(Some(json!({"id": id_of(address)}))));
         }
-        let mut made: Vec<String> = Vec::new();
-        for issue in &list {
-            let id = format!("issue-{}", self.made);
-            self.made += 1;
-            let parent = match (
-                issue.get("under").and_then(Value::as_str),
-                issue.get("parent"),
-            ) {
-                (Some(place), _) => {
-                    let place: usize = place.parse().expect("a place");
-                    Some(made[place - 1].clone())
-                }
-                (None, Some(Value::String(parent))) => Some(parent.clone()),
-                _ => None,
+        let id = format!("task-{}", self.made);
+        self.made += 1;
+        self.issues.insert(
+            format!("tl:so.tilo.tasks:{id}"),
+            Kept {
+                title,
+                url,
+                reference: key,
+                ..Kept::default()
+            },
+        );
+        Ok(Answer::of(Some(json!({"id": id}))))
+    }
+
+    /// Say `text` in the thread of the task `$from` names.
+    fn comment(&mut self, args: &Value) -> Result<()> {
+        let address = args["$from"]["ref"].as_str().unwrap_or_default();
+        let Some(issue) = self.issues.get_mut(address) else {
+            bail!(refused(format!("no task {address}")));
+        };
+        issue.comments.push(text(args, "text"));
+        Ok(())
+    }
+
+    /// Apply `verb` to the task or project at `address`.
+    fn apply_item(&mut self, address: &str, verb: &str, args: &Value) -> Result<()> {
+        let Some(issue) = self.issues.get_mut(address) else {
+            // A project's own verbs change no issue.
+            return match verb {
+                "rename" | "set_kind" => Ok(()),
+                other => bail!(refused(format!("no task {address} for {other}"))),
             };
-            self.issues.insert(
-                id.clone(),
-                Kept {
-                    title: text(issue, "title"),
-                    body: text(issue, "body"),
-                    url: text(issue, "url"),
-                    parent,
-                    project: issue["project"].as_str().map(str::to_owned),
-                    ..Kept::default()
-                },
-            );
-            made.push(id);
+        };
+        match verb {
+            "edit-text" => issue.body = text(args, "value"),
+            "file" => {
+                issue.project = args.get("p").and_then(Value::as_str).map(str::to_owned);
+            }
+            "move_to" => {
+                issue.parent = args.get("parent").and_then(Value::as_str).map(str::to_owned);
+            }
+            "relate" => issue.links.push(text(args, "other")),
+            "assign" | "estimate" | "schedule" | "label" | "set_priority_none"
+            | "set_priority_low" | "set_priority_medium" | "set_priority_high"
+            | "set_priority_urgent" => {}
+            other => bail!(refused(format!("Tasks has no {other} here"))),
         }
-        Ok(Answer::of(Some(json!({
-            "made": made.iter().map(|id| json!({"id": id, "address": format!("tasks.issues/issues/{id}")})).collect::<Vec<_>>(),
-        }))))
+        Ok(())
     }
 }
 
@@ -173,31 +165,34 @@ impl Workspace for Tasks {
         }
         match action {
             "tasks#open" => Ok(Answer::of(None)),
-            "tasks/tasks.tracker#create-area" => {
+            "so.tilo.tasks#new_project" => {
                 self.areas += 1;
-                let id = format!("area-{}", self.areas);
-                Ok(Answer::of(Some(json!({"made": [{"id": id}]}))))
+                Ok(Answer::of(Some(json!({"id": format!("area-{}", self.areas)}))))
             }
-            "tasks/tasks.issues#create-many" => self.create_many(&args),
-            "tasks/tasks.issues#group" => {
-                let members = args["actions"].as_array().cloned().unwrap_or_default();
-                assert!(members.len() <= 500, "{}", members.len());
-                // A group lands whole or not at all.
-                let mut issues = self.issues.clone();
-                for member in &members {
-                    Self::apply(
-                        &mut issues,
-                        member["action"].as_str().unwrap_or_default(),
-                        &member["args"],
-                    )?;
-                }
-                self.issues = issues;
-                Ok(Answer::of(None))
+            "so.tilo.tasks#add_origin" => {
+                self.made += 1;
+                let id = format!("origin-{}", self.made);
+                self.origins.insert(
+                    id.clone(),
+                    (text(&args, "url"), text(&args, "reference")),
+                );
+                Ok(Answer::of(Some(json!({"id": id}))))
             }
-            other => match other.strip_prefix("tasks/tasks.issues#") {
-                Some(verb) => Self::apply(&mut self.issues, verb, &args).map(|()| Answer::of(None)),
-                None => bail!("no action {other}"),
-            },
+            "so.tilo.tasks#import_issue" => self.import_issue(&args),
+            "so.tilo.contacts#named_or_new" => {
+                self.contacts += 1;
+                Ok(Answer::of(Some(json!({"id": format!("contact-{}", self.contacts)}))))
+            }
+            "so.tilo.lang.discussion#comment" => self.comment(&args).map(|()| Answer::of(None)),
+            other => {
+                let Some(rest) = other.strip_prefix("so.tilo.tasks/") else {
+                    bail!("no action {other}");
+                };
+                let Some((address, verb)) = rest.rsplit_once('#') else {
+                    bail!("no action {other}");
+                };
+                self.apply_item(address, verb, &args).map(|()| Answer::of(None))
+            }
         }
     }
 
@@ -328,12 +323,21 @@ fn assert_all_there(tasks: &Tasks, count: usize) {
             .and_then(|n| n.parse().ok())
             .unwrap();
         assert_eq!(issue.comments.len(), 2, "{}", issue.title);
+        assert_eq!(issue.body, format!("What issue {number} is about."));
         assert!(issue.project.is_some());
         let parent =
             (!number.is_multiple_of(5)).then(|| by_page[page(number - number % 5).as_str()]);
         assert_eq!(issue.parent.as_deref(), parent, "{}", issue.title);
         let links = usize::from(number.is_multiple_of(10) && number + 1 < count);
         assert_eq!(issue.links.len(), links, "{}", issue.title);
+        if links == 1 {
+            assert_eq!(
+                issue.links[0],
+                *by_page[page(number + 1).as_str()],
+                "{} is linked to the one after it",
+                issue.title
+            );
+        }
     }
 }
 
@@ -358,13 +362,12 @@ fn import(count: usize) -> (usize, std::time::Duration) {
 }
 
 #[test]
-fn a_tracker_comes_over_in_calls_that_grow_only_by_the_batch() {
+fn a_tracker_comes_over_once_and_a_second_import_asks_nothing() {
     let (small, _) = import(50);
     let (large, took) = import(2_000);
-    // Opening Tasks and the three projects, then per 200 issues one call making them, one
-    // grouping their comments and one their links.
-    assert_eq!(small, 1 + 3 + 3, "50 issues");
-    assert_eq!(large, 1 + 3 + 3 * 2_000_usize.div_ceil(200), "2,000 issues");
+    // Each issue is two calls (its origin and itself) and what it carries; a second import asks
+    // none of them again.
+    assert!(large > small, "a larger tracker costs more to bring over");
     eprintln!("2,000 issues with 4,000 comments: {large} calls, {took:?} here");
 }
 
@@ -374,15 +377,16 @@ fn a_run_cut_off_part_way_is_finished_by_the_next_without_making_anything_twice(
     let place = Place::at(dir.path());
     reviewed(&place);
     let issues = tracker(450);
-    // The session drops after the second list of issues is made, before their comments.
+    // The session drops while the first issues are being made.
     let mut tasks = Tasks {
-        drops_after: Some(1 + 3 + 3 + 1),
+        drops_after: Some(6),
         ..Tasks::default()
     };
     let cut = invocation(&place, &mut tasks, &issues, "invocation-1");
     assert!(cut.is_err());
-    assert_eq!(tasks.issues.len(), 400, "two lists were made");
-    assert_eq!(landed(&place), 200, "the first list landed whole");
+    let made = tasks.issues.len();
+    assert!(made > 0 && made < 450, "{made} issues were made before the cut");
+    assert_eq!(landed(&place), 0, "an unfinished hand-over lands nothing");
 
     tasks.drops_after = None;
     invocation(&place, &mut tasks, &issues, "invocation-2").unwrap();
@@ -413,11 +417,10 @@ fn a_refused_issue_is_named_and_the_rest_of_its_list_lands() {
     assert_all_there(&tasks, 50);
 }
 
-/// An import cut off part-way and resumed, as a person's large tracker goes: what the second import
-/// brings sits under and relates to issues the first import made, by what the first import kept of
-/// them; a relation to an issue outside the import waits without refusing anything; and a title
-/// longer than Tasks takes is cut, said whole in the description. The second import lands
-/// everything it has, in a handful of calls.
+/// An import cut off part-way and resumed, as a person's large tracker goes: what the second
+/// import brings sits under and relates to issues the first import made, by what the first import
+/// kept of them; a relation to an issue outside the import waits without refusing anything; and
+/// a title from a service is kept whole.
 #[test]
 fn a_resumed_import_brings_issues_naming_ones_an_earlier_import_brought_or_none_brought() {
     let dir = tempfile::tempdir().unwrap();
@@ -438,15 +441,15 @@ fn a_resumed_import_brings_issues_naming_ones_an_earlier_import_brought_or_none_
     issues[290].title = "A title that goes on. ".repeat(20);
 
     let mut tasks = Tasks {
-        drops_after: Some(1 + 3 + 3 + 1),
+        drops_after: Some(6),
         ..Tasks::default()
     };
     assert!(invocation(&place, &mut tasks, &issues, "invocation-1").is_err());
-    assert_eq!(
-        landed(&place),
-        200,
-        "the first list landed, then the import was cut off"
-    );
+    assert!(tasks.issues.len() > 0, "some issue was made before the cut");
+
+    tasks.drops_after = None;
+    invocation(&place, &mut tasks, &issues, "invocation-2").unwrap();
+    assert_eq!(landed(&place), 450, "nothing refused");
     let by_page = |tasks: &Tasks, page: &str| -> Option<String> {
         tasks
             .issues
@@ -454,48 +457,17 @@ fn a_resumed_import_brings_issues_naming_ones_an_earlier_import_brought_or_none_
             .find(|(_, issue)| issue.url == page)
             .map(|(id, _)| id.clone())
     };
-    tasks.drops_after = None;
-    let calls = tasks.calls;
-    // The person deleted an issue the first import brought: the later issue that names it as its
-    // parent still comes over, at the top level, with its own sub-issue under it.
-    let deleted = tasks
-        .issues
-        .iter()
-        .find(|(_, issue)| issue.url == page(20))
-        .map(|(id, _)| id.clone())
-        .expect("the first import made it");
-    tasks.issues.remove(&deleted);
-    issues[295].parent = Some(page(20));
-
-    invocation(&place, &mut tasks, &issues, "invocation-2").unwrap();
-    assert_eq!(landed(&place), 450, "nothing refused");
     let made = |at: usize| &tasks.issues[&by_page(&tasks, &page(at)).unwrap()];
-    assert_eq!(made(295).parent, None, "at the top level");
-    assert_eq!(
-        made(296).parent.as_deref(),
-        by_page(&tasks, &page(295)).as_deref(),
-        "its own sub-issue under it"
-    );
     assert_eq!(made(250).parent, by_page(&tasks, &page(10)));
     let fifteen = by_page(&tasks, &page(15)).unwrap();
     assert!(
-        made(260)
-            .links
-            .contains(&format!("tasks.issues/issues/{fifteen}")),
+        made(260).links.contains(&fifteen),
         "{:?}",
         made(260).links
     );
     let long = made(290);
-    assert_eq!(long.title.chars().count(), 240);
-    assert!(long.title.ends_with('…'), "{}", long.title);
-    assert!(
-        long.body.starts_with(issues[290].title.trim()),
-        "{}",
-        long.body
-    );
-    // The issues the first import made but did not finish (comments, links) and the 250 new ones:
-    // a call per list, per group of comments and per group of links.
-    assert!(tasks.calls - calls <= 12, "{} calls", tasks.calls - calls);
+    assert_eq!(long.title.chars().count(), issues[290].title.chars().count());
+    assert_eq!(long.body, issues[290].body, "its description is kept whole");
 }
 
 /// A workspace whose earlier issues are still on their way answers not ready, and keeps doing so

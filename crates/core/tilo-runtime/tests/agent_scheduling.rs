@@ -15,17 +15,10 @@ const LIST: usize = 125;
 const STREAMS: usize = 4;
 
 fn listed_issues(first: usize, count: usize) -> Value {
-    let list: Vec<Value> = (first..first.saturating_add(count))
-        .map(|at| {
-            json!({
-                "title": format!("Imported issue {at}"),
-                "body": format!("What issue {at} is about, as it was written there."),
-                "status": "todo",
-                "labels": ["Migration"],
-            })
-        })
+    let titles: Vec<Value> = (first..first.saturating_add(count))
+        .map(|at| json!(format!("Imported issue {at}")))
         .collect();
-    json!({ "issues": list })
+    json!({ "titles": titles })
 }
 
 fn median(times: &mut [Duration]) -> Duration {
@@ -41,7 +34,7 @@ fn a_persons_requests_go_before_an_agents_bulk_import() {
         let import = host.agent();
         let (first, failed) = act(
             &import,
-            "tasks/tasks.issues#create-many",
+            "so.tilo.tasks#new_tasks",
             listed_issues(0, LIST),
         )
         .await;
@@ -59,14 +52,16 @@ fn a_persons_requests_go_before_an_agents_bulk_import() {
             async move {
                 let started = Instant::now();
                 let (status, answer) = person
-                    .get(&format!("/v1/workspaces/{workspace}/resources/tasks"))
+                    .get(&format!("/v1/workspaces/{workspace}/resources/so.tilo.tasks"))
                     .await;
                 let listing = started.elapsed();
                 assert_eq!(status, 200, "{answer}");
                 let started = Instant::now();
                 let (status, written) = person
                     .post(
-                        &format!("/v1/workspaces/{workspace}/resources/tasks/actions/create"),
+                        &format!(
+                            "/v1/workspaces/{workspace}/resources/so.tilo.tasks/actions/new_task"
+                        ),
                         &json!({"title": "The person's own issue"}),
                     )
                     .await;
@@ -87,7 +82,7 @@ fn a_persons_requests_go_before_an_agents_bulk_import() {
                     let started = Instant::now();
                     let (error, failed) = act(
                         &agent,
-                        "tasks/tasks.issues#create-many",
+                        "so.tilo.tasks#new_tasks",
                         listed_issues(first, LIST),
                     )
                     .await;

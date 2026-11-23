@@ -33,16 +33,16 @@ fn a_computers_own_tasks_are_made_and_answered_done() {
                 &computer
                     .tool(
                         "tilo_do",
-                        &json!({"path": "tasks#create", "args": {"title": title}}),
+                        &json!({"path": "so.tilo.tasks#new_task", "args": {"title": title}}),
                     )
                     .await,
             );
-            assert!(!is_error, "tasks#create {title} as the person: {answer}");
+            assert!(!is_error, "so.tilo.tasks#new_task {title} as the person: {answer}");
             assert!(!answer.contains("pending"), "{title} settled: {answer}");
         }
         let (issues, is_error) = said(
             &computer
-                .tool("tilo_read", &json!({"path": "tasks/Issues"}))
+                .tool("tilo_read", &json!({"path": "so.tilo.tasks/tl:so.tilo.tasks"}))
                 .await,
         );
         assert!(!is_error, "{issues}");
@@ -67,7 +67,7 @@ fn a_members_device_takes_what_its_role_lets_it() {
         let filed = owner
             .tool(
                 "tilo_do",
-                &json!({"path": "tasks#create", "args": {"title": "First"}}),
+                &json!({"path": "so.tilo.tasks#new_task", "args": {"title": "First"}}),
             )
             .await;
         let (words, is_error) = said(&filed);
