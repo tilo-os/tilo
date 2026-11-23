@@ -43,6 +43,36 @@ pub fn is_text(name: &str) -> bool {
     TEXT_MIMES.contains(&name)
 }
 
+/// Whether `token` is a valid MIME type or subtype token (non-empty, at most
+/// 127 bytes, ASCII letters, digits, or `!#$&^_.+-`).
+#[must_use]
+pub fn valid_mime_token(token: &str) -> bool {
+    !token.is_empty()
+        && token.len() <= 127
+        && token.bytes().all(|b| {
+            b.is_ascii_alphanumeric()
+                || matches!(
+                    b,
+                    b'!' | b'#' | b'$' | b'&' | b'^' | b'_' | b'.' | b'+' | b'-'
+                )
+        })
+}
+
+/// Whether `mime` is a non-wildcard `<type>/<subtype>` MIME type as given,
+/// without trimming or case folding.
+#[must_use]
+pub fn valid_mime(mime: &str) -> bool {
+    let Some((top, subtype)) = mime.split_once('/') else {
+        return false;
+    };
+    mime.len() <= 255
+        && !subtype.contains('/')
+        && top != "*"
+        && subtype != "*"
+        && valid_mime_token(top)
+        && valid_mime_token(subtype)
+}
+
 /// The MIME type of files ending in `.extension` (without the dot, any case),
 /// or `None` for an extension with no known type.
 #[must_use]
@@ -117,5 +147,33 @@ mod tests {
             assert!(mime.contains('/'), "{extension}: {mime}");
             assert_eq!(from_ext(extension), Some(mime));
         }
+    }
+
+    #[test]
+    fn valid_mime_and_tokens_judge_text_as_given() {
+        assert!(valid_mime_token("text"));
+        assert!(valid_mime_token("vnd.api+json"));
+        assert!(valid_mime_token("A0!#$&^_.+-"));
+        assert!(valid_mime_token(&"a".repeat(127)));
+        assert!(!valid_mime_token(""));
+        assert!(!valid_mime_token(&"a".repeat(128)));
+        assert!(!valid_mime_token("*"));
+        assert!(!valid_mime_token(" text"));
+        assert!(!valid_mime_token("a/b"));
+
+        assert!(valid_mime("text/plain"));
+        assert!(valid_mime("Text/HTML"));
+        assert!(valid_mime("application/vnd.api+json"));
+        assert!(valid_mime(&format!(
+            "{}/{}",
+            "a".repeat(127),
+            "b".repeat(127)
+        )));
+        assert!(!valid_mime(" text/plain "));
+        assert!(!valid_mime("text"));
+        assert!(!valid_mime("text/*"));
+        assert!(!valid_mime("*/plain"));
+        assert!(!valid_mime("text/plain/extra"));
+        assert!(!valid_mime("text/plain; charset=utf-8"));
     }
 }

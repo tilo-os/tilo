@@ -34,6 +34,8 @@ threshold-identity = { version = "0.1.0", path = "../../collab/threshold-identit
 collab-types           = { version = "0.1.0", path = "../../collab/collab-types" }
 # Canonical registry target spellings, shared with the manifest's `[target]`.
 registry-types = { version = "0.1.0", path = "../registry-types" }
+# Shared MIME type syntax validation for `[providers].mime`.
+tilo-mime = { version = "0.1.0", path = "../../platform/tilo-mime" }
 
 blake3.workspace = true
 getrandom.workspace = true

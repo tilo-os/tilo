@@ -13,7 +13,7 @@ pub use crate::manifest::{
     ContinuityContract, ContinuityFacet, ContinuitySemanticSchema, EntrypointType, PortalPolicy,
     Requirement, ServiceReq,
 };
-use crate::validate::{valid_extension, valid_mime, valid_scheme};
+use crate::validate::{valid_extension, valid_scheme};
 
 pub const KIND_APP: &str = "app";
 /// `[package].kind` for a headless component the desktop starts and
@@ -140,7 +140,7 @@ impl TryFrom<Manifest> for ManifestView {
             .mime
             .into_iter()
             .map(|mime| mime.trim().to_ascii_lowercase())
-            .filter(|mime| valid_mime(mime))
+            .filter(|mime| tilo_mime::valid_mime(mime))
             .collect();
         let opens_secondary = providers.secondary;
         let opens_schemes = providers
