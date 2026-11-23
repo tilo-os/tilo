@@ -206,7 +206,7 @@
       "ops": [
         {
           "open": {
-            "app": "so.tilo.lang.tasks",
+            "app": "so.tilo.tasks",
             "deadline": 30
           }
         }

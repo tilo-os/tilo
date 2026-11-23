@@ -163,9 +163,17 @@
     "to": "tilo.invocations workspace.invocations#resolve",
     "test": "crates/core/actions/tests/asked_resolve.rs:362"
   },
+  "so.tilo.tasks tasks.issues#activate-window": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks#activate-window",
+    "test": "crates/lang/tilolang-process/tests/process.rs:775"
+  },
   "so.tilo.tasks tasks.issues#add-label": {
     "to": "so.tilo.tasks tl.so.tilo.tasks.Task#label",
     "test": "crates/lang/tilolang-tilo/tests/tasks_features.rs:866"
+  },
+  "so.tilo.tasks tasks.issues#apply": {
+    "to": "tilo.invocations workspace.invocations#resolve",
+    "test": "crates/core/actions/tests/asked_resolve.rs:362"
   },
   "so.tilo.tasks tasks.issues#assign": {
     "to": "so.tilo.tasks tl.so.tilo.tasks.Task#assign",
@@ -174,6 +182,10 @@
   "so.tilo.tasks tasks.issues#attach": {
     "to": "so.tilo.tasks tl.so.tilo.tasks.Task#attach",
     "test": "crates/lang/tilolang-tilo/tests/tasks_features.rs:237"
+  },
+  "so.tilo.tasks tasks.issues#checkpoint": {
+    "to": "so.tilo.activity activity.window#checkpoint",
+    "test": "crates/sdk/tilo-app/src/framework/root/tests.rs:55"
   },
   "so.tilo.tasks tasks.issues#comment": {
     "to": "so.tilo.lang.discussion tl.so.tilo.lang.discussion.Comments#comment",
@@ -195,9 +207,21 @@
     "to": "so.tilo.tasks tl.so.tilo.tasks.Task#detach",
     "test": "crates/lang/tilolang-tilo/tests/tasks_features.rs:244"
   },
+  "so.tilo.tasks tasks.issues#diff": {
+    "to": "so.tilo.activity activity.window#diff",
+    "test": "crates/sdk/tilo-app/src/framework/root/tests.rs:57"
+  },
   "so.tilo.tasks tasks.issues#field-edit": {
     "to": "so.tilo.tasks tl.so.tilo.tasks.Task#edit-text",
     "test": "crates/lang/tilolang-tilo/tests/tasks.rs:2901"
+  },
+  "so.tilo.tasks tasks.issues#group": {
+    "to": "tilo.invocations workspace.invocations#resolve",
+    "test": "crates/core/actions/tests/asked_resolve.rs:362"
+  },
+  "so.tilo.tasks tasks.issues#history": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks#history",
+    "test": "crates/core/collaboration/src/history_source/verbs.rs:522"
   },
   "so.tilo.tasks tasks.issues#link": {
     "to": "so.tilo.tasks tl.so.tilo.tasks.Task#relate",
@@ -211,6 +235,22 @@
     "to": "so.tilo.tasks tl.so.tilo.tasks.Task#indent",
     "test": "crates/lang/tilolang-tilo/tests/tasks.rs:1109"
   },
+  "so.tilo.tasks tasks.issues#open": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Tasks#open",
+    "test": "crates/lang/tilolang-tilo/tests/tasks.rs:596"
+  },
+  "so.tilo.tasks tasks.issues#open-issue": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Task#open",
+    "test": "crates/lang/tilolang-tilo/tests/tasks.rs:1016"
+  },
+  "so.tilo.tasks tasks.issues#open-link": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks#open-link",
+    "test": "crates/lang/tilolang-process/tests/process.rs:2475"
+  },
+  "so.tilo.tasks tasks.issues#outline": {
+    "to": "so.tilo.session desktop.window#read",
+    "test": "crates/desktop/session/src/window_share/tests.rs:973"
+  },
   "so.tilo.tasks tasks.issues#place": {
     "to": "so.tilo.tasks tl.so.tilo.tasks.Task#file",
     "test": "crates/lang/tilolang-tilo/tests/tasks.rs:415"
@@ -219,13 +259,37 @@
     "to": "so.tilo.tasks tl.so.tilo.tasks.Task#schedule",
     "test": "crates/lang/tilolang-tilo/tests/tasks_time.rs:30"
   },
+  "so.tilo.tasks tasks.issues#read": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks#read",
+    "test": "crates/lang/tilolang-process/tests/process.rs:774"
+  },
+  "so.tilo.tasks tasks.issues#redo": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks#redo",
+    "test": "crates/lang/tilolang-process/tests/process.rs:732"
+  },
   "so.tilo.tasks tasks.issues#rename": {
     "to": "so.tilo.tasks tl.so.tilo.tasks.Task#retitle",
     "test": "crates/lang/tilolang-tilo/tests/tasks.rs:2901"
   },
+  "so.tilo.tasks tasks.issues#render": {
+    "to": "so.tilo.session desktop.window#look",
+    "test": "crates/desktop/session/src/window_share/tests.rs:987"
+  },
+  "so.tilo.tasks tasks.issues#restore": {
+    "to": "so.tilo.activity workspace.activity#restore",
+    "test": "apps/activity/tests/app.rs:59"
+  },
+  "so.tilo.tasks tasks.issues#restore-reviewed": {
+    "to": "so.tilo.activity activity.window#restore-reviewed",
+    "test": "crates/sdk/tilo-app/src/framework/root/tests.rs:53"
+  },
   "so.tilo.tasks tasks.issues#resume": {
     "to": "so.tilo.tasks tl.so.tilo.tasks.Task#resume",
     "test": "crates/lang/tilolang-tilo/tests/tasks_features.rs:377"
+  },
+  "so.tilo.tasks tasks.issues#review-restore": {
+    "to": "so.tilo.activity activity.window#review-restore",
+    "test": "crates/sdk/tilo-app/src/framework/root/tests.rs:54"
   },
   "so.tilo.tasks tasks.issues#session-began": {
     "to": "so.tilo.tasks tl.so.tilo.tasks.Task#session_began",
@@ -251,6 +315,22 @@
     "to": "so.tilo.tasks tl.so.tilo.tasks.Task#file",
     "test": "crates/lang/tilolang-tilo/tests/tasks.rs:199"
   },
+  "so.tilo.tasks tasks.issues#share-link": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks#share-link",
+    "test": "crates/lang/tilolang-tilo/tests/share.rs:82"
+  },
+  "so.tilo.tasks tasks.issues#show-board": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Tasks#open-board",
+    "test": "crates/lang/tilolang-tilo/tests/tasks.rs:888"
+  },
+  "so.tilo.tasks tasks.issues#show-list": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Tasks#open",
+    "test": "crates/lang/tilolang-tilo/tests/tasks.rs:596"
+  },
+  "so.tilo.tasks tasks.issues#show-thread": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Task#open",
+    "test": "crates/lang/tilolang-tilo/tests/tasks.rs:1016"
+  },
   "so.tilo.tasks tasks.issues#start": {
     "to": "so.tilo.tasks tl.so.tilo.tasks.Task#set_status",
     "test": "crates/lang/tilolang-tilo/tests/tasks_features.rs:142"
@@ -259,9 +339,25 @@
     "to": "so.tilo.tasks tl.so.tilo.tasks.Task#stop",
     "test": "crates/lang/tilolang-tilo/tests/tasks_features.rs:444"
   },
+  "so.tilo.tasks tasks.issues#undo": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks#undo",
+    "test": "crates/lang/tilolang-process/tests/window/hosted/history_undo.rs:130"
+  },
   "so.tilo.tasks tasks.issues#wait": {
     "to": "so.tilo.tasks tl.so.tilo.tasks.Task#wait",
     "test": "crates/lang/tilolang-tilo/tests/tasks_features.rs:357"
+  },
+  "so.tilo.tasks tasks.tracker#activate-window": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks#activate-window",
+    "test": "crates/lang/tilolang-process/tests/process.rs:775"
+  },
+  "so.tilo.tasks tasks.tracker#apply": {
+    "to": "tilo.invocations workspace.invocations#resolve",
+    "test": "crates/core/actions/tests/asked_resolve.rs:362"
+  },
+  "so.tilo.tasks tasks.tracker#checkpoint": {
+    "to": "so.tilo.activity activity.window#checkpoint",
+    "test": "crates/sdk/tilo-app/src/framework/root/tests.rs:55"
   },
   "so.tilo.tasks tasks.tracker#create-area": {
     "to": "so.tilo.tasks tl.so.tilo.tasks.Tasks#new_project",
@@ -271,9 +367,21 @@
     "to": "so.tilo.tasks tl.so.tilo.tasks.Project#remove_project",
     "test": "crates/lang/tilolang-tilo/tests/tasks.rs:206"
   },
+  "so.tilo.tasks tasks.tracker#diff": {
+    "to": "so.tilo.activity activity.window#diff",
+    "test": "crates/sdk/tilo-app/src/framework/root/tests.rs:57"
+  },
   "so.tilo.tasks tasks.tracker#field-edit": {
     "to": "so.tilo.tasks tl.so.tilo.tasks.Project#edit-text",
     "test": "crates/lang/tilolang-tilo/tests/tasks_places.rs:31"
+  },
+  "so.tilo.tasks tasks.tracker#group": {
+    "to": "tilo.invocations workspace.invocations#resolve",
+    "test": "crates/core/actions/tests/asked_resolve.rs:362"
+  },
+  "so.tilo.tasks tasks.tracker#history": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks#history",
+    "test": "crates/core/collaboration/src/history_source/verbs.rs:522"
   },
   "so.tilo.tasks tasks.tracker#involve": {
     "to": "so.tilo.tasks tl.so.tilo.tasks.Project#involve",
@@ -283,6 +391,30 @@
     "to": "so.tilo.tasks tl.so.tilo.tasks.Tasks#new_project",
     "test": "crates/lang/tilolang-tilo/tests/tasks_features.rs:100"
   },
+  "so.tilo.tasks tasks.tracker#open": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Tasks#open",
+    "test": "crates/lang/tilolang-tilo/tests/tasks.rs:596"
+  },
+  "so.tilo.tasks tasks.tracker#open-issue": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Task#open",
+    "test": "crates/lang/tilolang-tilo/tests/tasks.rs:1016"
+  },
+  "so.tilo.tasks tasks.tracker#open-link": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks#open-link",
+    "test": "crates/lang/tilolang-process/tests/process.rs:2475"
+  },
+  "so.tilo.tasks tasks.tracker#outline": {
+    "to": "so.tilo.session desktop.window#read",
+    "test": "crates/desktop/session/src/window_share/tests.rs:973"
+  },
+  "so.tilo.tasks tasks.tracker#read": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks#read",
+    "test": "crates/lang/tilolang-process/tests/process.rs:774"
+  },
+  "so.tilo.tasks tasks.tracker#redo": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks#redo",
+    "test": "crates/lang/tilolang-process/tests/process.rs:732"
+  },
   "so.tilo.tasks tasks.tracker#remove-person": {
     "to": "so.tilo.tasks tl.so.tilo.tasks.Project#remove_person",
     "test": "crates/lang/tilolang-tilo/tests/tasks.rs:2922"
@@ -291,9 +423,45 @@
     "to": "so.tilo.tasks tl.so.tilo.tasks.Project#rename",
     "test": "crates/lang/tilolang-tilo/tests/tasks_places.rs:31"
   },
+  "so.tilo.tasks tasks.tracker#render": {
+    "to": "so.tilo.session desktop.window#look",
+    "test": "crates/desktop/session/src/window_share/tests.rs:987"
+  },
+  "so.tilo.tasks tasks.tracker#restore": {
+    "to": "so.tilo.activity workspace.activity#restore",
+    "test": "apps/activity/tests/app.rs:59"
+  },
+  "so.tilo.tasks tasks.tracker#restore-reviewed": {
+    "to": "so.tilo.activity activity.window#restore-reviewed",
+    "test": "crates/sdk/tilo-app/src/framework/root/tests.rs:53"
+  },
+  "so.tilo.tasks tasks.tracker#review-restore": {
+    "to": "so.tilo.activity activity.window#review-restore",
+    "test": "crates/sdk/tilo-app/src/framework/root/tests.rs:54"
+  },
   "so.tilo.tasks tasks.tracker#set-kind": {
     "to": "so.tilo.tasks tl.so.tilo.tasks.Project#set_kind",
     "test": "crates/lang/tilolang-tilo/tests/tasks_features.rs:201"
+  },
+  "so.tilo.tasks tasks.tracker#share-link": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks#share-link",
+    "test": "crates/lang/tilolang-tilo/tests/share.rs:82"
+  },
+  "so.tilo.tasks tasks.tracker#show-board": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Tasks#open-board",
+    "test": "crates/lang/tilolang-tilo/tests/tasks.rs:888"
+  },
+  "so.tilo.tasks tasks.tracker#show-list": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Tasks#open",
+    "test": "crates/lang/tilolang-tilo/tests/tasks.rs:596"
+  },
+  "so.tilo.tasks tasks.tracker#show-thread": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks.Task#open",
+    "test": "crates/lang/tilolang-tilo/tests/tasks.rs:1016"
+  },
+  "so.tilo.tasks tasks.tracker#undo": {
+    "to": "so.tilo.tasks tl.so.tilo.tasks#undo",
+    "test": "crates/lang/tilolang-process/tests/window/hosted/history_undo.rs:130"
   },
   "so.tilo.terminal tilo.ui.control#activate": {
     "to": "so.tilo.terminal terminal.session#restart",
