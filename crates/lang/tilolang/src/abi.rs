@@ -401,6 +401,10 @@ imports! {
     Base64Decode = "base64_decode" ([H] -> [H]);
     FileAt = "file_at" ([H, H] -> [H]);
     FileZip = "file_zip" ([H, H] -> [H]);
+    // A document file read as the Markdown an editor shows, and Markdown written as a document
+    // file of the format named, each a `Result` of its text or of the file.
+    FileMarkdown = "file_markdown" ([H] -> [H]);
+    FileOfDocument = "file_of_document" ([H, H, H] -> [H]);
     // A file's pixels: what its container says (an `Option` of the host's `ImageInfo`), and the
     // crop, turn, resize and encode a program applies, each a `Result` of the new file.
     FileImageInfo = "file_image_info" ([H] -> [H]);

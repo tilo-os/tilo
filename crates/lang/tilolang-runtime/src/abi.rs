@@ -348,6 +348,8 @@ imports! {
     (Base64Decode, "base64_decode", "i", "i"),
     (FileAt, "file_at", "ii", "i"),
     (FileZip, "file_zip", "ii", "i"),
+    (FileMarkdown, "file_markdown", "i", "i"),
+    (FileOfDocument, "file_of_document", "iii", "i"),
     (FileImageInfo, "file_image_info", "i", "i"),
     (FileCrop, "file_crop", "iffff", "i"),
     (FileTurn, "file_turn", "il", "i"),

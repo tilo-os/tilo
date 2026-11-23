@@ -2755,6 +2755,23 @@ impl Checker<'_> {
     /// `File`'s methods: `File.of_text(name, text)`, `File.of_bytes(name, bytes)`, `File.at(name,
     /// address)` and `File.zip(name, files)`.
     fn file_type_method(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
+        if name.name == "of_document" {
+            let [named, markdown, format] = args else {
+                self.err(
+                    "E022",
+                    span,
+                    "`File.of_document` takes the file's name, the document as Markdown and the format: `File.of_document(\"Notes.docx\", markdown, \"docx\")`",
+                );
+                for a in args {
+                    let _ = self.expr(&a.value, None);
+                }
+                return Ex::error();
+            };
+            let named = self.expr_as(&named.value, &Ty::Text);
+            let markdown = self.expr_as(&markdown.value, &Ty::Text);
+            let format = self.expr_as(&format.value, &Ty::Text);
+            return Ex::host(Imp::FileOfDocument, vec![named, markdown, format], Ty::File);
+        }
         if name.name == "of_sheets" {
             let [named, workbook, format] = args else {
                 self.err(
@@ -2815,7 +2832,7 @@ impl Checker<'_> {
                     "E027",
                     name.span,
                     format!(
-                        "`File` has `of_text`, `of_bytes`, `of_sheets`, `at`, `zip` and `open`, not `{other}`: a file is made of what an action holds, as `File.of_text(\"Notes.md\", text)`"
+                        "`File` has `of_text`, `of_bytes`, `of_sheets`, `of_document`, `at`, `zip` and `open`, not `{other}`: a file is made of what an action holds, as `File.of_text(\"Notes.md\", text)`"
                     ),
                 );
                 for a in args {
@@ -3189,6 +3206,13 @@ impl Checker<'_> {
             }
             (Ty::File, "text") if args.is_empty() => Ex::host(
                 Imp::FileText,
+                vec![r],
+                Ty::Result(Box::new(Ty::Text), Box::new(Ty::Text)),
+            ),
+            // A document file as the Markdown an editor shows: by the format its name ends in,
+            // a Word, OpenDocument, RTF, EPUB, HTML or Markdown file; plain text as itself.
+            (Ty::File, "markdown") if args.is_empty() => Ex::host(
+                Imp::FileMarkdown,
                 vec![r],
                 Ty::Result(Box::new(Ty::Text), Box::new(Ty::Text)),
             ),

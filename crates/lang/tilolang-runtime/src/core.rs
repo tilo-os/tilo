@@ -29,7 +29,8 @@ use Imp::{
     DayPart, DayShift, DayStartOfWeek, DayWeekday, Describe, DescribeRef, DurationText, Earlier,
     EditField, EntryParts, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH,
     EnumSetI, EventPart, EventValue, FieldChanged, FileAt, FileBook, FileBookCover, FileBookInfo,
-    FileCopy, FileCrop, FileEncode, FileFiles, FileImageInfo, FileList, FileMkdir, FileMove,
+    FileCopy, FileCrop, FileEncode, FileFiles, FileImageInfo, FileList, FileMarkdown, FileMkdir,
+    FileMove, FileOfDocument,
     FileOfBytes, FileOfText, FileOpen, FileOpenPath, FilePart, FileReadPath, FileRemove,
     FileRename, FileResize, FileRestore, FileSize, FileStat, FileText, FileThumbnail, FileTrash,
     FileTrashEntries, FileTurn, FileWatch, FileWrite, FileZip, FilterLit, Filters, Find,
@@ -595,6 +596,7 @@ impl Core {
             FilePart | FileSize | FileText | FileFiles | FileBook | FileBookInfo
             | FileBookCover | SheetFile => self.file_import(imp, a),
             FileOfText | FileOfBytes | FileAt | FileZip | SheetOfFile => self.file_make(imp, a),
+            FileMarkdown | FileOfDocument => self.document_import(imp, a),
             FileImageInfo | FileCrop | FileTurn | FileResize | FileEncode | FileThumbnail => {
                 self.image_import(imp, a)
             }

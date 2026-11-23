@@ -173,6 +173,22 @@ view file_menu(d: Document) {
             on choose: file.save(export_html(d), name: "{file_name(d)}.html")
         }
         ui.MenuSeparator()
+        ui.MenuItem("Save as Word (.docx)…", icon: .download) {
+            on choose: file.save(export_document(d, "docx"), name: "{file_name(d)}.docx")
+        }
+        ui.MenuItem("Save as OpenDocument (.odt)…", icon: .download) {
+            on choose: file.save(export_document(d, "odt"), name: "{file_name(d)}.odt")
+        }
+        ui.MenuItem("Save as rich text (.rtf)…", icon: .download) {
+            on choose: file.save(export_document(d, "rtf"), name: "{file_name(d)}.rtf")
+        }
+        ui.MenuItem("Save as EPUB…", icon: .download) {
+            on choose: file.save(export_document(d, "epub"), name: "{file_name(d)}.epub")
+        }
+        ui.MenuItem("Export as PDF…", icon: .download) {
+            on choose: file.save(export_document(d, "pdf"), name: "{file_name(d)}.pdf")
+        }
+        ui.MenuSeparator()
         ui.MenuItem("Start from a letter", icon: .file_text) {
             on choose: new_document(d, "letter")
         }

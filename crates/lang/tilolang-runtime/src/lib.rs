@@ -50,6 +50,7 @@ mod num;
 pub mod origin;
 pub mod paging;
 pub mod pdf;
+pub mod document;
 pub mod place;
 pub mod platform;
 pub mod program;

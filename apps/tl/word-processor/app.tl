@@ -352,21 +352,47 @@ action comment_on(d: Document, text: RichText) (
     discussion.comment(discussion.comments, text).made_from(d)
 }
 
-/// Opens a file into the document: Markdown as it stands, and plain text as one paragraph a
-/// line. Opening a file is one change, which the person takes back as any other.
+/// Opens a file into the document: a Word, OpenDocument, RTF, EPUB or HTML file read by the
+/// device's codecs as the Markdown the editor shows, Markdown as it stands, and plain text as
+/// one paragraph a line. A file no codec here reads is refused with what it is. Opening a file
+/// is one change, which the person takes back as any other.
 action open_document(d: Document, file: File) -> Document (
     icon: .file_plus,
     label: "Open document",
-    opens: ["text/markdown", "text/plain", .md, .markdown, .txt],
+    opens: [
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.oasis.opendocument.text",
+        "application/rtf",
+        "application/epub+zip",
+        "text/html",
+        "text/markdown",
+        "text/plain",
+        .docx,
+        .odt,
+        .rtf,
+        .epub,
+        .html,
+        .md,
+        .markdown,
+        .txt,
+    ],
 ) {
-    let markdown = match file.text() {
-        .ok(said) => if format_of(file.name) == "text" { plain_markdown(said) } else { said },
-        .err(_) => return d,
+    // A plain text file is one paragraph a line, as a word processor reads one; every other
+    // format is read by the device's codecs, as the Markdown an editor shows.
+    let read = if format_of(file.name) == "text" { file.text() } else { file.markdown() }
+    match read {
+        .ok(said) => {
+            let markdown = if format_of(file.name) == "text" { plain_markdown(said) } else { said }
+            d.body = RichText.from_markdown(markdown)
+            d.title = stem_of(file.name)
+            d.started = "blank"
+            d
+        }
+        .err(why) => {
+            require false why
+            d
+        }
     }
-    d.body = RichText.from_markdown(markdown)
-    d.title = stem_of(file.name)
-    d.started = "blank"
-    d
 }
 
 /// Plain text as Markdown: every line a paragraph of its own, as a word processor reads one.
@@ -396,6 +422,15 @@ action export_content(d: Document) -> File (icon: .download, label: "Export the 
 /// The document as a plain-text file: its words, a paragraph a line.
 action export_text(d: Document) -> File (icon: .download, label: "Export as plain text") {
     File.of_text("{file_name(d)}.txt", d.body.text)
+}
+
+/// The document as a Word, OpenDocument, RTF, EPUB or PDF file, named by its title: what a
+/// person sends someone who does not write in Tilo. The bytes are the device's codecs'.
+action export_document(d: Document, format: Text) -> File (
+    icon: .download,
+    label: "Export the document",
+) {
+    File.of_document("{file_name(d)}.{format}", markdown_of(d), format)
 }
 
 /// The document as one HTML page: its headings, lists and paragraphs, and its words.
