@@ -911,12 +911,16 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   `tilo.invocations` record: id, status, who called it, target, changes and
   output, with `get`, `cancel`, `undo` and `output` on it. Every projection
   and view reads that record, and the toolkit checks its revision.
-  The admission journal (guarded digests, prepared outside effects,
-  idempotency and crash recovery) is the running device's own log in the
-  one store, under the same id. It never syncs and is read only by
-  admission and recovery. No other record of a call exists: the call's
-  certificates are the signed call itself, and who holds the work comes
-  from `work::takes_turn`, not from a lease beside it.
+  The broker's pending entry is that record; nothing else keeps a list of
+  calls in flight. The admission journal (guarded digests, prepared outside
+  effects, idempotency and crash recovery) is the running device's own log
+  in a device-only part of the one store, under the same id. It never syncs
+  and is read only by admission and recovery. A call from another device
+  carries its signed call; a call on the same device is admitted by the
+  daemon from who is on the other end of its socket, with no signing step
+  added. A caller whose connection ends cancels its call: that is the
+  record's status, not a lease beside it. `work::takes_turn` only places
+  work that leaves the starting device.
 
 ### What goes
 
