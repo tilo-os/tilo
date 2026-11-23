@@ -318,7 +318,9 @@ filter) is declared in its view and kept in that window's entry in the
 workspace layout. That way it follows the window to another device. Each
 declared field gets a typed action on the window, so an agent, the palette
 or a script can set it like any other action. Apps declare the state and
-never store it themselves.
+never store it themselves. Only the person whose window it is can read its
+state, unless they share the window. Text a person is writing is never
+window state: a draft is a resource, with history.
 
 ## The rule for every piece
 
