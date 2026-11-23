@@ -27,11 +27,34 @@ fn is_document(ext: &str) -> bool {
 }
 
 pub fn read_file(path: &Path) -> Result<Vec<u8>, String> {
-    read_bounded(path)
+    read_file_with_limit(path, MAX_FILE_BYTES)
 }
 
-fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
-    let metadata = std::fs::metadata(path).map_err(|error| {
+fn too_large(path: &Path, limit: u64) -> String {
+    crate::i18n::CATALOG.t_args(
+        "files-too-large",
+        &[
+            ("path", ui::i18n::ArgValue::Text(path.display().to_string())),
+            ("limit", ui::i18n::ArgValue::Text(ui::format::memory(limit))),
+        ],
+    )
+}
+
+fn is_a_folder(path: &Path) -> String {
+    crate::i18n::CATALOG.t_args(
+        "files-is-a-folder",
+        &[("path", ui::i18n::ArgValue::Text(path.display().to_string()))],
+    )
+}
+
+fn open_failure(path: &Path, error: &std::io::Error) -> String {
+    if crate::model::read_availability(path).is_some_and(|availability| availability.unavailable())
+    {
+        format!(
+            "{} is unavailable until a device that keeps it is online",
+            path.display()
+        )
+    } else {
         crate::i18n::CATALOG.t_args(
             "files-cannot-read",
             &[
@@ -39,26 +62,35 @@ fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
                 ("detail", ui::i18n::ArgValue::Text(error.to_string())),
             ],
         )
-    })?;
+    }
+}
+
+fn read_file_with_limit(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) => {
+            if path.is_dir() {
+                return Err(is_a_folder(path));
+            }
+            return Err(open_failure(path, &error));
+        }
+    };
+    let metadata = file
+        .metadata()
+        .map_err(|error| open_failure(path, &error))?;
     if metadata.is_dir() {
-        return Err(crate::i18n::CATALOG.t_args(
-            "files-is-a-folder",
-            &[("path", ui::i18n::ArgValue::Text(path.display().to_string()))],
-        ));
+        return Err(is_a_folder(path));
     }
-    if metadata.len() > MAX_FILE_BYTES {
-        return Err(crate::i18n::CATALOG.t_args(
-            "files-too-large",
-            &[
-                ("path", ui::i18n::ArgValue::Text(path.display().to_string())),
-                (
-                    "limit",
-                    ui::i18n::ArgValue::Text(ui::format::memory(MAX_FILE_BYTES)),
-                ),
-            ],
-        ));
+    if metadata.len() > limit {
+        return Err(too_large(path, limit));
     }
-    std::fs::read(path).map_err(|error| read_failure(path, &error))
+    tilo_files::read_from(file, limit).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::FileTooLarge {
+            too_large(path, limit)
+        } else {
+            read_failure(path, &error)
+        }
+    })
 }
 
 fn read_failure(path: &Path, error: &std::io::Error) -> String {
@@ -107,7 +139,7 @@ pub fn read_text(path: &Path) -> Result<FileText, String> {
             path.display()
         ));
     }
-    let bytes = read_bounded(path)?;
+    let bytes = read_file(path)?;
     if ext == "pdf" {
         return pdf_text(&bytes).map(|text| FileText {
             format: "pdf",
@@ -267,6 +299,32 @@ mod tests {
                     .contains("cannot be read as text")
             );
             assert!(read_text(root.path()).unwrap_err().contains("is a folder"));
+        }
+
+        phase bounded_reads_refuse_missing_oversized_and_growing_sources;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let missing = root.path().join("missing.txt");
+            assert!(read_file(&missing).is_err());
+
+            let exact = root.path().join("exact.txt");
+            std::fs::write(&exact, b"12345678").unwrap();
+            assert_eq!(read_file_with_limit(&exact, 8).unwrap(), b"12345678");
+
+            let one_over = root.path().join("over.txt");
+            std::fs::write(&one_over, b"123456789").unwrap();
+            let refused = read_file_with_limit(&one_over, 8).unwrap_err();
+            assert!(refused.contains("larger than"), "{refused}");
+
+            #[cfg(unix)]
+            {
+                let zero = Path::new("/dev/zero");
+                assert_eq!(std::fs::metadata(zero).unwrap().len(), 0);
+                let refused = read_file_with_limit(zero, 16).unwrap_err();
+                assert!(refused.contains("larger than"), "{refused}");
+                let refused = read_file(zero).unwrap_err();
+                assert!(refused.contains("larger than"), "{refused}");
+            }
         }
     }
 }
