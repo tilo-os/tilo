@@ -309,6 +309,9 @@ fn control_identity_from_spec(
     }
 }
 
+/// The identity a draft accrues over the resources its control target resolves to: read by the
+/// window's History, which a page has none of.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn control_draft_identity(
     root: &dyn Widget,
     doc: &AutoCommit,
