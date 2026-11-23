@@ -18,7 +18,7 @@
 use super::commits::{RecordCreation, ServiceCommits};
 use super::ticket::Tickets;
 use super::workspaces::{MemberListGrants, Opening, ServiceWorkspaces, block_on_owned};
-use super::{host_runs, presence, take_work};
+use super::{host_runs, take_work};
 use crate::personal_devices::PersonalDevices;
 use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, apps, host, profile};
 use collab_types::workspace_grant::WorkspaceGrant;
@@ -122,9 +122,6 @@ pub struct Daemon {
     tickets: Arc<Tickets>,
     /// Every invocation this device was asked for, however it was asked.
     invocations: Arc<Invocations>,
-    /// The agent sessions this device's MCP server serves now: who is here, beside the
-    /// workspace's own roster.
-    who_is_here: Arc<presence::WhoIsHere>,
     /// The device this daemon is, as the API it serves locally acts.
     key: SigningKey,
     cert: DeviceCert,
@@ -839,7 +836,6 @@ impl Daemon {
             _kept: kept,
             tickets,
             invocations,
-            who_is_here: Arc::new(presence::WhoIsHere::default()),
             key: identity.key.clone(),
             cert: identity.cert,
             account: Mutex::new(None),
@@ -1086,6 +1082,10 @@ fn broker_services(
         // The person's shortcuts, saved into the workspaces this device holds and run here: the
         // same store the trigger runner arms them from, so a computer keeps its shortcuts with
         // no desktop session open on it.
+        // Who is present on which device, as this device's workspaces hear it: their links, and
+        // the agent sessions this daemon serves.
+        present_devices: Some(Arc::new(parts.workspaces.copies().clone())
+            as Arc<dyn tilo_workspace_service::workspaces::PresentDevices>),
         shortcut_library: Some(Arc::new(super::shortcuts::Shortcuts::new(
             parts.workspaces.copies().clone(),
             parts.workspaces.device_cert().clone(),
@@ -1256,7 +1256,6 @@ impl Daemon {
             })),
             tickets: Some(Arc::clone(&self.tickets)),
             invocations: Arc::clone(&self.invocations),
-            who_is_here: Some(Arc::clone(&self.who_is_here)),
         })
     }
 }
@@ -1301,7 +1300,6 @@ impl Daemon {
             // another device in ([`RuntimeActionProvider::is_the_person`]).
             tickets: Some(Arc::clone(&self.tickets)),
             invocations: Arc::clone(&self.invocations),
-            who_is_here: Some(Arc::clone(&self.who_is_here)),
         })
     }
 }
@@ -1927,10 +1925,6 @@ pub struct RuntimeActionProvider {
     /// The device's record of every invocation it was asked for: what following, waiting on and
     /// stopping one asks, wherever the call came in.
     invocations: Arc<Invocations>,
-    /// The agent sessions this device's MCP server serves, for a host that serves them: what
-    /// who is here adds beside the workspace's roster, and what a stop action ends. `None` for a
-    /// host that serves no connection of its own.
-    who_is_here: Option<Arc<presence::WhoIsHere>>,
 }
 
 struct AdmittedRuntimeSession {
@@ -2082,10 +2076,8 @@ impl RuntimeActionProvider {
             let run = tilo_mcp::agent_id(&caller);
             // The connection is here from the moment it opens, before it asks anything, and
             // says what it is when its client does.
-            if let (Some(who_is_here), Some(execution)) =
-                (&provider.who_is_here, caller.execution_id())
-            {
-                who_is_here.opened(
+            if let Some(execution) = caller.execution_id() {
+                provider.workspaces.copies().agent_opened(
                     &execution.to_string(),
                     &workspace,
                     tilo_mcp::session_api::UNNAMED_CLIENT,
@@ -2154,7 +2146,6 @@ impl RuntimeActionProvider {
             })),
             tickets: self.tickets.clone(),
             invocations: Arc::clone(&self.invocations),
-            who_is_here: self.who_is_here.clone(),
         };
         Ok((run, caller))
     }
@@ -2211,7 +2202,7 @@ fn whichever_first(
 /// this device serves it: `None` for a session it does not serve, whose stop is somebody
 /// else's to answer.
 fn stop_session(
-    who_is_here: &presence::WhoIsHere,
+    workspaces: &tilo_workspace_service::workspaces::Workspaces,
     workspace: &str,
     request: &InvokeRequest,
 ) -> Option<InvocationReceipt> {
@@ -2220,7 +2211,7 @@ fn stop_session(
     };
     let stop: tilo_actions::remote::mcp_server::AgentSessionRef =
         serde_json::from_value(serde_json::Value::Object(argument.clone())).ok()?;
-    if !who_is_here.stop(workspace, &stop.session) {
+    if !workspaces.stop_agent(workspace, &stop.session) {
         return None;
     }
     Some(InvocationReceipt {
@@ -2396,8 +2387,10 @@ impl ActionProvider for RuntimeActionProvider {
 
     fn retire_execution(&self, caller: &Caller) {
         // The connection ended, so its session leaves who is here.
-        if let (Some(who_is_here), Some(execution)) = (&self.who_is_here, caller.execution_id()) {
-            who_is_here.closed(&execution.to_string());
+        if let Some(execution) = caller.execution_id() {
+            self.workspaces
+                .copies()
+                .agent_closed(&execution.to_string());
         }
         if let Some(session) = &self.session {
             if caller
@@ -2418,7 +2411,7 @@ impl ActionProvider for RuntimeActionProvider {
     /// The connection's client named itself (`Claude Code`): who is here calls its session so
     /// from now on.
     fn introduced(&self, caller: &Caller, client: &str) {
-        let (Some(session), Some(who_is_here)) = (&self.session, &self.who_is_here) else {
+        let Some(session) = &self.session else {
             return;
         };
         // Only the run's own connection may say what it is, and the person's own run is no agent.
@@ -2426,7 +2419,9 @@ impl ActionProvider for RuntimeActionProvider {
             return;
         }
         if let Some(execution) = caller.execution_id() {
-            who_is_here.named(&execution.to_string(), client);
+            self.workspaces
+                .copies()
+                .agent_named(&execution.to_string(), client);
         }
         // The workspace's record of its agents calls the agent what its client names itself,
         // keeping the id every run of it shares: a person reads "Claude Code" in the roster, not
@@ -2537,18 +2532,20 @@ impl ActionProvider for RuntimeActionProvider {
         //
         // A session the person stopped is ended for good: what its connection asks next reaches
         // nothing.
-        if let (Some(who_is_here), Some(execution)) = (&self.who_is_here, caller.execution_id())
-            && who_is_here.ended(&execution.to_string())
+        if let Some(execution) = caller.execution_id()
+            && self
+                .workspaces
+                .copies()
+                .agent_stopped(&execution.to_string())
         {
             return Pending::ready(Err(ActionCallError::NotPermitted));
         }
         // The person stops one of the agent sessions this device serves, as their card asks:
         // the session leaves who is here and answers no more.
-        if let Some(who_is_here) = &self.who_is_here
-            && request.target
-                == tilo_actions::remote::mcp_server::target(tilo_actions::remote::mcp_server::STOP)
+        if request.target
+            == tilo_actions::remote::mcp_server::target(tilo_actions::remote::mcp_server::STOP)
             && self.is_the_person(caller)
-            && let Some(receipt) = stop_session(who_is_here, &self.workspace, &request)
+            && let Some(receipt) = stop_session(self.workspaces.copies(), &self.workspace, &request)
         {
             return Pending::ready(Ok(receipt));
         }
@@ -2626,10 +2623,10 @@ impl ActionProvider for RuntimeActionProvider {
             .action_observe(&on_this_device(caller), id)
     }
 
-    /// Who is in the workspace, as the desktop's roster names them: routed
-    /// and authorized exactly as [`Self::observe`], and empty for a host
-    /// that keeps no roster. A device that serves its person's agent
-    /// sessions lists them beside the roster, from the moment each connects.
+    /// Who is in the workspace, as the desktop's roster names them with the
+    /// presence of this device's workspaces beside it: routed and authorized
+    /// exactly as [`Self::observe`], and empty for a session whose host keeps
+    /// no roster.
     fn here(&self, caller: &Caller) -> Option<Vec<tilo_actions::remote::Here>> {
         let listed = if let Some(session) = &self.session {
             session.check(caller, &self.workspaces).ok()?;
@@ -2644,20 +2641,10 @@ impl ActionProvider for RuntimeActionProvider {
             }
             self.broker.state().here(&on_this_device(caller))
         };
-        if listed.is_none() && self.who_is_here.is_none() {
-            return None;
+        if self.session.is_some() {
+            return Some(listed.unwrap_or_default());
         }
-        let mut here = listed.unwrap_or_default();
-        if let Some(who_is_here) = &self.who_is_here {
-            who_is_here.add_here(&self.workspace, &mut here);
-        }
-        // The devices each is present on, as this device's links hear them.
-        tilo_workspace_service::workspaces::PresentDevices::attach(
-            self.workspaces.copies(),
-            &self.workspace,
-            &mut here,
-        );
-        Some(here)
+        listed
     }
 
     /// Where the session's workspace stands, for a caller of it: authorized
@@ -2699,15 +2686,14 @@ impl ActionProvider for RuntimeActionProvider {
         if !matches!(scope, tilo_actions::remote::WatchScope::Here) {
             return followed;
         }
-        let Some(who_is_here) = &self.who_is_here else {
-            return followed;
-        };
-        // A session opening, naming itself or leaving is news to who is here, as the roster's
-        // own changes are.
-        let sessions = who_is_here.changed().map(|()| Ok(()));
+        // Presence moving (an agent session opening, naming itself or leaving, a device coming
+        // or going) is news to who is here, as the roster's own changes are.
+        let (wake, moved) = tilo_actions::remote::ResourceWake::new();
+        tilo_workspace_service::workspaces::on_presence_change(&wake);
+        let moved = moved.map(|()| Ok(()));
         Some(match followed {
-            Some(followed) => whichever_first(followed, sessions),
-            None => sessions,
+            Some(followed) => whichever_first(followed, moved),
+            None => moved,
         })
     }
 
@@ -3202,7 +3188,6 @@ fn serve_key_sessions(
                 session: None,
                 tickets: None,
                 invocations: Arc::clone(invocations),
-                who_is_here: None,
             },
             workspace: workspace.to_owned(),
             actor: actor.to_owned(),

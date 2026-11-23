@@ -167,7 +167,7 @@ pub mod machine_secrets;
 mod record_reads;
 pub use record_reads::RecordReads;
 mod personal;
-pub use personal::{PresentDevices, presence_changed, present_on};
+pub use personal::{PresentDevices, on_presence_change, presence_changed, present_on};
 mod weak;
 pub use weak::WeakWorkspaces;
 mod publication;
@@ -1044,6 +1044,8 @@ struct WorkspacesInner {
     link_remotes: std::sync::Mutex<
         std::collections::BTreeMap<WorkspaceId, std::collections::BTreeSet<[u8; 32]>>,
     >,
+    /// The agent sessions this device serves, present on it while each connection lasts.
+    agent_sessions: personal::AgentSessions,
     /// What the workspaces kept here hold, read and written in process.
     records: crate::workspace_documents::WorkspaceDocuments,
     /// The apps this host serves, when its embedder serves any: what a request
@@ -1474,6 +1476,7 @@ impl Workspaces {
                 store,
                 direct,
                 link_remotes: std::sync::Mutex::default(),
+                agent_sessions: personal::AgentSessions::default(),
                 records,
                 member: member::Members::default(),
                 executions: Arc::new(run_admission::ExecutionPins::new()),
