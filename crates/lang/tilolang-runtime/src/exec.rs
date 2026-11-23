@@ -1876,24 +1876,26 @@ impl Core {
         let Some(Pending::Call { action, .. }) = journal.pending.take() else {
             return Err(RuntimeError::NotPending(run.clone()));
         };
-        if let Invoked::Refused(reason) = answer {
-            journal.finished = true;
-            journal.entries.push(JournalEntry::Denied {
-                action,
-                reason: reason.clone(),
-            });
-            self.store.borrow_mut().save_journal(run, &journal)?;
-            if !journal.invocation.is_empty() {
-                self.store.borrow_mut().abort_run(&journal.invocation);
-            }
-            return Err(RuntimeError::Denied(reason));
-        }
-        journal.entries.push(match answer {
+        let entry = match answer {
             Invoked::Done(result) => JournalEntry::Invoked { action, result },
             Invoked::Failed(reason) => JournalEntry::Failed { action, reason },
-            Invoked::Refused(_) => unreachable!("a refusal ended the run above"),
             Invoked::Pending(_) => return Err(RuntimeError::NotPending(run.clone())),
-        });
+            // A refusal is the invocation as a whole not happening: the run ends refused, and
+            // what it wrote is taken back out.
+            Invoked::Refused(reason) => {
+                journal.finished = true;
+                journal.entries.push(JournalEntry::Denied {
+                    action,
+                    reason: reason.clone(),
+                });
+                self.store.borrow_mut().save_journal(run, &journal)?;
+                if !journal.invocation.is_empty() {
+                    self.store.borrow_mut().abort_run(&journal.invocation);
+                }
+                return Err(RuntimeError::Denied(reason));
+            }
+        };
+        journal.entries.push(entry);
         self.store.borrow_mut().save_journal(run, &journal)?;
         self.drive_chain(run, journal)
     }
