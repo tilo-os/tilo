@@ -562,7 +562,6 @@ doc = false
 "input-0_9_1" = { package = "input", version = "^0.9.1", default-features = false, features = ["libinput_1_11", "libinput_1_14", "libinput_1_15", "libinput_1_19", "udev"] }
 "input-sys-1_18_0" = { package = "input-sys", version = "^1.18.0", default-features = false, features = ["libinput_1_11", "libinput_1_14", "libinput_1_15", "libinput_1_19"] }
 "insta-1_49_0" = { package = "insta", version = "^1.49.0", default-features = false, features = ["colors", "console", "default", "pest", "pest_derive", "redactions", "serde"] }
-"install" = { path = "../../../crates/packaging/install", default-features = false, features = [] }
 "install-plan" = { path = "../../../crates/session/install-plan", default-features = false, features = [] }
 "install-profile-model" = { path = "../../../crates/session/install-profile-model", default-features = false, features = ["model"] }
 "intl-memoizer-0_5_3" = { package = "intl-memoizer", version = "^0.5.3", default-features = false, features = [] }
@@ -2033,7 +2032,6 @@ doc = false
 "inout-0_1_4" = { package = "inout", version = "^0.1.4", default-features = false, features = [] }
 "inout-0_2_2" = { package = "inout", version = "^0.2.2", default-features = false, features = ["block-padding"] }
 "inplace-vec-builder-0_1_1" = { package = "inplace-vec-builder", version = "^0.1.1", default-features = false, features = ["smallvec"] }
-"install" = { path = "../../../crates/packaging/install", default-features = false, features = [] }
 "intl-memoizer-0_5_3" = { package = "intl-memoizer", version = "^0.5.3", default-features = false, features = [] }
 "intl_pluralrules-7_0_2" = { package = "intl_pluralrules", version = "^7.0.2", default-features = false, features = [] }
 "inventory-0_3_25" = { package = "inventory", version = "^0.3.25", default-features = false, features = [] }
@@ -2485,7 +2483,6 @@ doc = false
 "tilo-net" = { path = "../../../crates/platform/tilo-net", default-features = false, features = ["blocking", "default", "http", "json", "proxy-host", "sockets", "webtransport"] }
 "tilo-nm" = { path = "../../../crates/system/tilo-nm", default-features = false, features = [] }
 "tilo-oauth" = { path = "../../../crates/system/tilo-oauth", default-features = false, features = ["client", "default", "fake"] }
-"tilo-os-search" = { path = "../../../crates/runtime/os-search", default-features = false, features = [] }
 "tilo-paths" = { path = "../../../crates/platform/tilo-paths", default-features = false, features = [] }
 "tilo-peer-state" = { path = "../../../crates/collab/tilo-peer-state", default-features = false, features = ["test-support"] }
 "tilo-platform-caps" = { path = "../../../crates/platform/tilo-platform-caps", default-features = false, features = [] }
@@ -2499,7 +2496,6 @@ doc = false
 "tilo-sandbox" = { path = "../../../crates/platform/tilo-sandbox", default-features = false, features = [] }
 "tilo-sandbox-core" = { path = "../../../crates/system/sandbox-core", default-features = false, features = ["test-support"] }
 "tilo-seal" = { path = "../../../crates/system/tilo-seal", default-features = false, features = [] }
-"tilo-search" = { path = "../../../crates/sdk/search", default-features = false, features = ["disk"] }
 "tilo-secret-vault" = { path = "../../../crates/system/secret-vault", default-features = false, features = [] }
 "tilo-secrets" = { path = "../../../crates/platform/tilo-secrets", default-features = false, features = [] }
 "tilo-selector" = { path = "../../../crates/platform/tilo-selector", default-features = false, features = [] }
@@ -3221,7 +3217,6 @@ doc = false
 "input-0_9_1" = { package = "input", version = "^0.9.1", default-features = false, features = ["libinput_1_11", "libinput_1_14", "libinput_1_15", "libinput_1_19", "udev"] }
 "input-sys-1_18_0" = { package = "input-sys", version = "^1.18.0", default-features = false, features = ["libinput_1_11", "libinput_1_14", "libinput_1_15", "libinput_1_19"] }
 "insta-1_49_0" = { package = "insta", version = "^1.49.0", default-features = false, features = ["colors", "console", "default", "pest", "pest_derive", "redactions", "serde"] }
-"install" = { path = "../../../crates/packaging/install", default-features = false, features = [] }
 "install-plan" = { path = "../../../crates/session/install-plan", default-features = false, features = [] }
 "install-profile-model" = { path = "../../../crates/session/install-profile-model", default-features = false, features = ["model"] }
 "intl-memoizer-0_5_3" = { package = "intl-memoizer", version = "^0.5.3", default-features = false, features = [] }
@@ -4691,7 +4686,6 @@ doc = false
 "inout-0_1_4" = { package = "inout", version = "^0.1.4", default-features = false, features = [] }
 "inout-0_2_2" = { package = "inout", version = "^0.2.2", default-features = false, features = ["block-padding"] }
 "inplace-vec-builder-0_1_1" = { package = "inplace-vec-builder", version = "^0.1.1", default-features = false, features = ["smallvec"] }
-"install" = { path = "../../../crates/packaging/install", default-features = false, features = [] }
 "intl-memoizer-0_5_3" = { package = "intl-memoizer", version = "^0.5.3", default-features = false, features = [] }
 "intl_pluralrules-7_0_2" = { package = "intl_pluralrules", version = "^7.0.2", default-features = false, features = [] }
 "inventory-0_3_25" = { package = "inventory", version = "^0.3.25", default-features = false, features = [] }
@@ -5143,7 +5137,6 @@ doc = false
 "tilo-net" = { path = "../../../crates/platform/tilo-net", default-features = false, features = ["blocking", "default", "http", "json", "proxy-host", "sockets", "webtransport"] }
 "tilo-nm" = { path = "../../../crates/system/tilo-nm", default-features = false, features = [] }
 "tilo-oauth" = { path = "../../../crates/system/tilo-oauth", default-features = false, features = ["client", "default", "fake"] }
-"tilo-os-search" = { path = "../../../crates/runtime/os-search", default-features = false, features = [] }
 "tilo-paths" = { path = "../../../crates/platform/tilo-paths", default-features = false, features = [] }
 "tilo-peer-state" = { path = "../../../crates/collab/tilo-peer-state", default-features = false, features = ["test-support"] }
 "tilo-platform-caps" = { path = "../../../crates/platform/tilo-platform-caps", default-features = false, features = [] }
@@ -5157,7 +5150,6 @@ doc = false
 "tilo-sandbox" = { path = "../../../crates/platform/tilo-sandbox", default-features = false, features = [] }
 "tilo-sandbox-core" = { path = "../../../crates/system/sandbox-core", default-features = false, features = ["test-support"] }
 "tilo-seal" = { path = "../../../crates/system/tilo-seal", default-features = false, features = [] }
-"tilo-search" = { path = "../../../crates/sdk/search", default-features = false, features = ["disk"] }
 "tilo-secret-vault" = { path = "../../../crates/system/secret-vault", default-features = false, features = [] }
 "tilo-secrets" = { path = "../../../crates/platform/tilo-secrets", default-features = false, features = [] }
 "tilo-selector" = { path = "../../../crates/platform/tilo-selector", default-features = false, features = [] }

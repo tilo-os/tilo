@@ -3,7 +3,11 @@
 
 use std::fs;
 
-use crate::{BlobDir, BlobFetcher, Candidate, Checked, Error, PackageStore};
+use tilo_app_package::BlobFetcher;
+
+use super::runtime::{BlobDir, record_package};
+use super::{Candidate, Checked, Error, Outcome, Report};
+use crate::{Catalog, PackageStore};
 
 /// Under the packs' root: one directory per installed version. Each locale's entry links to its
 /// current one.
@@ -12,21 +16,27 @@ const VERSIONS: &str = ".versions";
 /// Record the pack in the package store, so `update` finds it like any app, then switch its
 /// locale's entry under [`tilo_paths::language_packs_dir`] to the new catalogues in one rename: a
 /// reader sees the old catalogues or the new, never a mix.
-pub(crate) fn install_language_pack(
+pub(super) fn install(
     store: &PackageStore,
+    catalog: &Catalog,
     candidate: &Candidate,
     checked: &Checked,
     dry_run: bool,
     payload: Option<&dyn BlobFetcher>,
+    report: &mut Report,
 ) -> Result<(), Error> {
     let locale = tilo_app_package::language_pack_locale(checked.id())
         .ok_or_else(|| Error::Policy(format!("{} names no locale", checked.id())))?;
     let root = tilo_paths::language_packs_dir().ok_or(Error::NoDataDir)?;
     if dry_run {
-        println!("plan: install language pack {locale}");
-        println!("  package   : {} {}", checked.id(), checked.version());
-        println!("  into      : {}", root.display());
-        println!("(nothing was written)");
+        report.line(format!("plan: install language pack {locale}"));
+        report.line(format!(
+            "  package   : {} {}",
+            checked.id(),
+            checked.version()
+        ));
+        report.line(format!("  into      : {}", root.display()));
+        report.line("(nothing was written)");
         return Ok(());
     }
     fs::create_dir_all(&root)?;
@@ -76,7 +86,9 @@ pub(crate) fn install_language_pack(
             }
         };
         let unpacked = tree.join(&directory);
-        if !crate::record_package(store, candidate, checked, false, false, &sink)? {
+        if !record_package(
+            store, catalog, candidate, checked, false, false, &sink, report,
+        )? {
             return Ok(());
         }
         let versions = root.join(VERSIONS);
@@ -100,11 +112,12 @@ pub(crate) fn install_language_pack(
         if let Some(previous) = previous {
             let _ = fs::remove_dir_all(root.join(previous));
         }
-        println!(
+        report.outcome = Outcome::LanguagePack;
+        report.line(format!(
             "installed language pack {} {}",
             checked.id(),
             checked.version()
-        );
+        ));
         Ok(())
     })();
     let _ = fs::remove_dir_all(&staging);

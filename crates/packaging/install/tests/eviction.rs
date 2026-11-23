@@ -4,7 +4,7 @@
 
 use std::time::{Duration, UNIX_EPOCH};
 
-use install::gc::{Report, Request, collect, written_since};
+use package_store::gc::{Report, Request, collect, written_since};
 use package_store::{Admission, Catalog, InstalledPackage, PackageStore};
 use runtime_bundle::gc::BundleRoot;
 use tilo_app_package::SigningIdentity;

@@ -9,9 +9,13 @@
 
 #[path = "common/mod.rs"]
 mod common;
+#[path = "../src/local_package/fixture.rs"]
+mod fixture;
 
 #[path = "gc_removes_tried_under_pressure.rs"]
 mod gc_removes_tried_under_pressure;
+#[path = "install_entries_agree.rs"]
+mod install_entries_agree;
 #[path = "install_resolves_round_trip.rs"]
 mod install_resolves_round_trip;
 #[path = "language_packs.rs"]

@@ -128,14 +128,12 @@ tilo-action-policy = { path = "../../collab/action-policy" }
 # Tests whose subject is the environment itself (session variables, service
 # and store lookups) scope their changes through it and restore them.
 tilo-test-env = { path = "../../dev/test-env" }
-# An installed package launches from the store the desktop reads.
+# An installed package launches from the store the desktop reads; the lease
+# tests interleave a launch with the collection after an update.
 package-store = { path = "../package-store", features = ["store"] }
 ed25519-dalek.workspace = true
 # Kernel probes proving the resolved seccomp profile is what the kernel enforces.
 tilo-sandbox-core = { path = "../../system/sandbox-core", features = ["test-support"] }
-# The collection `tilo-install` runs after an update, interleaved with a
-# launch by the lease tests.
-install = { path = "../install" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # A sandboxed app's real AT-SPI bridge behind the launcher's AT-SPI proxy

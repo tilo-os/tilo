@@ -2,7 +2,7 @@
 //! nothing names, and runtime bundles no installed package runs on.
 //!
 //! It runs when something changed — after `install`, `update` and `uninstall`, and on `gc` — never
-//! on a timer. What a running app has mounted stays ([`package_store::mounts`]), and so do pinned
+//! on a timer. What a running app has mounted stays ([`crate::mounts`]), and so do pinned
 //! packages and pinned runtimes. The size cap never evicts an app a launch is opening, nor the apps
 //! the change it follows just wrote ([`Request::keep`]).
 //!
@@ -14,8 +14,8 @@ use std::collections::BTreeSet;
 use std::io;
 use std::path::Path;
 
-use package_store::mounts::InUse;
-use package_store::{Catalog, InstalledPackage, Orphans, PackageStore};
+use crate::mounts::InUse;
+use crate::{Catalog, InstalledPackage, Orphans, PackageStore};
 use runtime_bundle::gc::{BundleRoot, Collected, Holds, Options};
 
 /// Where the launcher mounts a runtime inside an app's sandbox
@@ -193,7 +193,7 @@ pub fn retained_runtimes(packages: &Path) -> io::Result<BTreeSet<String>> {
         if !entry.file_type()?.is_dir() || !record {
             continue;
         }
-        let path = entry.path().join(package_store::layout::MANIFEST_FILE);
+        let path = entry.path().join(crate::layout::MANIFEST_FILE);
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
@@ -288,7 +288,7 @@ mod tests {
             let user = tmp.path().join("user");
             let catalog = Catalog::at(
                 &user,
-                Some(package_store::SystemStore {
+                Some(crate::SystemStore {
                     data_dir: system.clone(),
                     payload_dir: system.join("payloads"),
                     interfaces: None,

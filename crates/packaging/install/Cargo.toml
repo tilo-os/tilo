@@ -12,10 +12,6 @@ description = "One-shot install / launch / list / remove for Tilo packages."
 name = "tilo-install"
 path = "src/main.rs"
 
-[lib]
-name = "install"
-path = "src/lib.rs"
-
 [features]
 # Honour the developer-only environment overrides (`package_store::dev_env`)
 # in a release build: the session's system store and publisher list, by which
@@ -24,7 +20,6 @@ dev-overrides = ["package-store/dev-overrides"]
 
 [dependencies]
 tilo-clock = { path = "../../platform/tilo-clock" }
-fnv.workspace = true
 tilo-paths.workspace = true
 tilo-app-package = { path = "../tilo-app-package" }
 # The one installed-package registry and content store, shared with the
@@ -34,17 +29,12 @@ runtime-bundle = { path = "../runtime-bundle" }
 clap.workspace = true
 hex.workspace = true
 serde_json.workspace = true
-toml.workspace = true
-thiserror.workspace = true
 semver.workspace = true
 # Payload blobs a thin package does not carry, from a registry server.
 app-registry = { path = "../app-registry" }
 # `update` resolves a newer version through the store client's registries
 # and catalogue: the same path `app update` takes.
 app-cli = { path = "../app-cli" }
-# The sidecar contract the PATH shim reads; its library half has no
-# dependencies beyond serde.
-cli-shim = { path = "../cli-shim" }
 
 # Registers the runtime's GNOME Shell and KRunner search providers.
 
@@ -58,6 +48,7 @@ tilo-os-search = { path = "../../runtime/os-search" }
 getrandom.workspace = true
 ed25519-dalek.workspace = true
 tempfile.workspace = true
+toml.workspace = true
 test-http = { path = "../../dev/test-http" }
 # A sealed runtime needs a filesystem with fs-verity; the test says so where
 # there is none.

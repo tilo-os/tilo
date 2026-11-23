@@ -171,8 +171,16 @@ fn review_with_trust(
 }
 
 #[cfg(feature = "service")]
-/// Revalidate review and current process trust, then use the canonical installer.
-pub fn install(bytes: &[u8], root: &str, archive_hash: &str) -> Result<String, String> {
+/// Revalidate review and current process trust, then install through the one installer, which
+/// verifies the package again: an install, or an update of the installed version.
+pub fn install(
+    store: &package_store::PackageStore,
+    catalog: &package_store::Catalog,
+    bytes: &[u8],
+    root: &str,
+    archive_hash: &str,
+) -> Result<package_store::installer::Selected, String> {
+    use package_store::installer;
     let checked = review(bytes)?;
     if checked.root != root || checked.archive_hash != archive_hash {
         return Err("The package changed since review; review the file again".into());
@@ -180,41 +188,23 @@ pub fn install(bytes: &[u8], root: &str, archive_hash: &str) -> Result<String, S
     let mut staged = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
     staged.write_all(bytes).map_err(|e| e.to_string())?;
     staged.flush().map_err(|e| e.to_string())?;
-    let mut command = std::process::Command::new(app_cli::install::tilo_install_bin());
-    if app_cli::installed_version(&checked.manifest.package.id)?.is_some() {
-        command.args(["update", &checked.manifest.package.id, "--from"]);
-        command.arg(staged.path());
-    } else {
-        command.arg("install").arg(staged.path());
-    }
-    command.args([
-        "--require-package-root",
-        &checked.root,
-        "--require-attestor",
-        &checked.attestor,
-    ]);
-    let output = bounded_command::run_prepared(
-        command,
+    let trust = installer::Trust {
+        require_package_root: Some(checked.root.clone()),
+        require_attestor: Some(checked.attestor.clone()),
+        ..installer::Trust::default()
+    };
+    let report = installer::install_or_update(
+        store,
+        catalog,
+        &installer::Candidate::staged(staged.path(), "local file"),
+        &trust,
         None,
-        1024 * 1024,
-        std::time::Duration::from_secs(120),
     )
-    .map_err(|e| e.to_string())?;
-    if !output.status.success() {
-        let diagnostic = crate::service::safe_host_diagnostic(&output.stderr);
-        return Err(format!(
-            "The trusted local package could not be installed: {diagnostic}"
-        ));
+    .map_err(|error| format!("The trusted local package could not be installed: {error}"))?;
+    match report.selected {
+        Some(selected) if selected.root == checked.root => Ok(selected),
+        _ => Err("Installation retained a different selected version; the reviewed root was not activated".into()),
     }
-    let selected = package_store::Catalog::from_env()
-        .map_err(|e| e.to_string())?
-        .find(&checked.manifest.package.id)
-        .map_err(|e| e.to_string())?
-        .ok_or("The installed package is unavailable")?;
-    if selected.package_id().map(|id| id.to_hex()).as_deref() != Some(checked.root.as_str()) {
-        return Err("Installation retained a different selected version; the reviewed root was not activated".into());
-    }
-    Ok(checked.root)
 }
 
 #[cfg(test)]

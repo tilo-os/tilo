@@ -1,4 +1,5 @@
-//! `package-store` — the device's installed packages.
+//! `package-store` — the device's installed packages, and the one implementation of installing
+//! one ([`installer`]).
 
 pub mod catalog;
 pub mod dev_env;
@@ -14,7 +15,17 @@ pub mod size_limit;
 #[cfg(feature = "store")]
 mod content;
 #[cfg(feature = "store")]
+pub mod gc;
+#[cfg(feature = "store")]
 mod image;
+#[cfg(feature = "store")]
+pub mod installer;
+#[cfg(feature = "store")]
+pub mod runtime_blobs;
+#[cfg(feature = "store")]
+pub mod shim;
+#[cfg(feature = "store")]
+pub mod state;
 #[cfg(feature = "store")]
 mod store;
 

@@ -16,7 +16,7 @@ use package_store::{Catalog, InstalledPackage, PackageStore, Pinning};
 use tilo_app_id::apps::STORE as STORE_APP_ID;
 use tilo_app_package::id::PackageId;
 
-/// What `tilo-install` runs after every install, update and uninstall, and at every start of the
+/// What runs after every install, update and uninstall, and at every start of the
 /// daemon (a new image or a swapped userspace changes the system store without any install
 /// running): the store's size cap, payload trees and staging nothing names, and runtime builds no
 /// installed app runs any more. A tree a launch holds stays, and so do the apps `keep` names.
@@ -36,9 +36,9 @@ pub fn collect_after_change(
             return;
         }
     };
-    let request = ::install::gc::Request::after_change(max_store_bytes)
+    let request = package_store::gc::Request::after_change(max_store_bytes)
         .keeping(keep.iter().map(|id| (*id).to_owned()));
-    match ::install::gc::collect(store, catalog, &runtimes, request) {
+    match package_store::gc::collect(store, catalog, &runtimes, request) {
         Ok(report) => tracing::debug!(
             freed_bytes = report.freed_bytes(),
             evicted = report.evicted.len(),
@@ -976,13 +976,17 @@ impl PackageServiceServer {
                     ));
                 }
                 let id = blocking(move || {
-                    let root = crate::local_package::install(
+                    let selected = crate::local_package::install(
+                        &store,
+                        &catalog,
                         &tapp_bytes,
                         &reviewed_root,
                         &reviewed_archive_hash,
                     )
                     .map_err(failed)?;
-                    format!("tapp:{root}")
+                    // Best-effort: the package is already committed.
+                    collect_after_change(&store, &catalog, max_bytes, &[selected.id.as_str()]);
+                    format!("tapp:{}", selected.root)
                         .parse::<PackageId>()
                         .map_err(|_| Error::failed("Invalid local package root".into()))
                 })
