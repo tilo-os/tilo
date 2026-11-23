@@ -43,6 +43,7 @@ keep() {
     (cd "$from" && find . -maxdepth 6 -type f \
         \( -name '*.json' -o -name '*.png' -o -name '*.log' -o -name '*.md' \) \
         -size -20M -exec cp --parents -t "$out" {} +)
+    echo "app-walk: kept $(find "$out" -name '*.png' | wc -l) of $(find "$from" -name '*.png' | wc -l) snapshots" >&2
     # Each session's own logs say what an app did, and why one did not open: the walk's logs
     # are only the launcher's word for the session, which ends with it. Each keeps its own name
     # (state-tl-session.log, state-tl-pipewire.log): the session's and its sound's are apart.

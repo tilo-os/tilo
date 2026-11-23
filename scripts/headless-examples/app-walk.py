@@ -1763,11 +1763,18 @@ class Walk:
         except Failed:
             overlays = {}
         for part, shown in overlays.items():
-            if shown:
-                try:
+            if not shown:
+                continue
+            try:
+                if part == "search":
+                    # The launcher draws search and is the one to close it, not the
+                    # session: the shell's search with nothing asked toggles it, as
+                    # its key does.
+                    self.session.invoke(SHELL, SHELL_RESOURCE, "search", {})
+                else:
                     self.session.invoke(SHELL, "desktop:overlays", "close-surface", {"part": part})
-                except Failed:
-                    pass
+            except Failed as error:
+                print(f"  reset: closing {part} was refused: {error}", file=sys.stderr)
         try:
             until_value("nothing to stand over the desktop", lambda: not any(
                 ((self.session.state_dump().get("chrome") or {}).get("overlays") or {}).values()), 10)
