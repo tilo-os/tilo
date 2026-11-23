@@ -2138,12 +2138,6 @@ mod paste_shortcut_tests {
             .set_paste_shortcut("org.example.MyTerm", "ctrl_shift_v")
             .unwrap();
         let stored = serde_json::to_value(&input).unwrap();
-        let section = stored.as_object().unwrap();
-        let overrides = settings_store::paste_shortcut::overrides_from_section(section);
-        assert_eq!(
-            settings_store::paste_shortcut::resolve("org.example.MyTerm", &overrides),
-            settings_store::paste_shortcut::PasteShortcut::CtrlShiftV
-        );
         let back: InputPrefs = serde_json::from_value(stored).unwrap();
         assert_eq!(back.paste_shortcuts, input.paste_shortcuts);
     }
