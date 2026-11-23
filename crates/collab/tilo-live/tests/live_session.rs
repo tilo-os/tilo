@@ -2446,8 +2446,8 @@ async fn a_removed_members_media_stops_end_to_end_and_the_other_session_carries_
 
 /// A silent voice stream costs the relay a fraction of a speaking one: Opus DTX sends a
 /// comfort-noise update every 400 ms while nobody speaks, where speech is one object every 20 ms,
-/// and the relay forwards what the publisher sends and adds no copy on a clean hop. A second of
-/// silence is therefore a small multiple less than a second of speech, by objects and by bytes.
+/// and the relay forwards what the publisher sends once and adds nothing on a clean hop. A second
+/// of silence is therefore a small multiple less than a second of speech, by objects and by bytes.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_silent_voice_stream_costs_the_relay_a_fraction_of_a_speaking_one() {
     // One second of each, as the encoder sends them: fifty 20 ms speech frames, and the three
@@ -2482,23 +2482,27 @@ async fn a_silent_voice_stream_costs_the_relay_a_fraction_of_a_speaking_one() {
     .unwrap();
     wait_until("both sessions admitted", || relay.counters().accepted == 2);
 
+    // Each object is waited for before the next, so what arrives is exactly what was sent: a burst
+    // on a loaded machine cannot hide a drop or pass one off as two.
     let mut sequence = 1_u32;
+    let mut speaking = Vec::new();
     for _ in 0..SPEECH_OBJECTS {
+        let before = speaking.len();
         a.publish(Track::Audio, sequence, &voice(sequence, &[7; SPEECH_BYTES]))
             .unwrap();
         sequence = sequence.saturating_add(1);
+        wait_until("a speech frame reaches the other device", || {
+            speaking.extend(
+                heard(&b, Track::Audio)
+                    .into_iter()
+                    .filter(|object| object.sender == a_key),
+            );
+            speaking.len() > before
+        });
     }
-    let mut speaking = Vec::new();
-    wait_until("one second of speech reaches the other device", || {
-        speaking.extend(
-            heard(&b, Track::Audio)
-                .into_iter()
-                .filter(|object| object.sender == a_key),
-        );
-        speaking.len() >= SPEECH_OBJECTS
-    });
-
+    let mut silent = Vec::new();
     for _ in 0..SILENCE_OBJECTS {
+        let before = silent.len();
         a.publish(
             Track::Audio,
             sequence,
@@ -2506,16 +2510,15 @@ async fn a_silent_voice_stream_costs_the_relay_a_fraction_of_a_speaking_one() {
         )
         .unwrap();
         sequence = sequence.saturating_add(1);
+        wait_until("a comfort-noise update reaches the other device", || {
+            silent.extend(
+                heard(&b, Track::Audio)
+                    .into_iter()
+                    .filter(|object| object.sender == a_key),
+            );
+            silent.len() > before
+        });
     }
-    let mut silent = Vec::new();
-    wait_until("one second of silence reaches the other device", || {
-        silent.extend(
-            heard(&b, Track::Audio)
-                .into_iter()
-                .filter(|object| object.sender == a_key),
-        );
-        silent.len() >= SILENCE_OBJECTS
-    });
 
     let bytes =
         |objects: &[Heard]| -> usize { objects.iter().map(|object| object.body.len()).sum() };
