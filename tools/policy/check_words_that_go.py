@@ -229,31 +229,23 @@ def judged_sources(root: Path, staged) -> list[tuple[Path, str]]:
     ]
 
 
-def in_head(root: Path, names: set[str]) -> set[str]:
-    """Which of `names` the tree before this commit already holds."""
-    names = {name for name in names if name}
-    if not names:
-        return set()
-    # One `git grep` for the lot (`-h`: the lines, not their files), so a commit
-    # that touches many files still answers in one process.
-    lines = git(
-        root,
-        "grep",
-        "-h",
-        "-F",
-        "-w",
-        *[argument for name in sorted(names) for argument in ("-e", name)],
-        "HEAD",
-        "--",
-        *[f"*{suffix}" for suffix in LANGUAGES],
-        *[f":(exclude){top}/**" for top in sorted(SKIPPED_TOPS)],
-        *[f":(exclude)**/{part}/**" for part in sorted(SKIPPED_PARTS)],
-        empty=(1,),
-    ).decode("utf-8", errors="replace")
-    held = set()
-    for line in lines.splitlines():
-        held.update(IDENT.findall(line))
-    return names & held
+def held_by_the_tree(baseline: dict) -> set[str]:
+    """The names a whole-tree pass last accepted, as its baseline records them.
+
+    The staged run answers "did the tree hold this name before this commit" from
+    the baseline rather than by searching HEAD: the whole-tree run passes only
+    while every name of the tree's rows is listed there, and `--update` records
+    exactly those names, the row's text literals among them. A name the tree
+    gained since the last `--update` is one the whole-tree run is already red on,
+    and a commit that uses it is refused until that run records it, which is what
+    the red asks for. No commit costs a walk over HEAD: the tree around it was
+    judged by the run that wrote the baseline.
+    """
+    held: set[str] = set()
+    for row in baseline.values():
+        if isinstance(row, dict):
+            held.update(name for name in row.get("names", ()) if isinstance(name, str))
+    return held
 
 
 def head_texts(root: Path, relatives: list[Path]) -> dict[Path, str]:
@@ -286,8 +278,14 @@ def head_texts(root: Path, relatives: list[Path]) -> dict[Path, str]:
     return texts
 
 
-def staged_problems(root: Path, rows: list[dict]) -> list[str]:
-    """The row names a commit adds: ones neither its own files nor the tree held."""
+def staged_problems(root: Path, rows: list[dict], held: set[str]) -> list[str]:
+    """The row names a commit adds: ones neither its own files nor the tree held.
+
+    `held` is what the tree already held ([`held_by_the_tree`]), so a commit is
+    charged only with what it introduces. Nothing here walks HEAD or the tree:
+    the commit's own texts come from the index, their earlier ones from HEAD in
+    one `git cat-file`, and the rest from the baseline.
+    """
     staged = judged(root, staged=True)
     literals = sorted({text for row in rows for text in row.get("text", [])})
     added: Counter[str] = Counter()
@@ -318,16 +316,14 @@ def staged_problems(root: Path, rows: list[dict]) -> list[str]:
             if split[identifier] in whole or any(holds(split[identifier], run) for run in runs)
         }
 
-    # Only a name that holds a row's words can be reported, so only those are looked up in the
-    # tree. A commit's ordinary identifiers (`if`, `let`, `total`) are never asked about: one
-    # `git grep` with a pattern for each of them took minutes on a commit of a few lines.
+    # Only a name that holds a row's words can be reported, and one the tree already held is
+    # not new: both answers come from the baseline, never from a walk over HEAD, so a commit
+    # costs the same whether the tree around it is large or small.
     rejected = {row["row"]: holding(row.get("idents", [])) for row in rows}
-    held = in_head(root, {name for names in rejected.values() for name in names})
-    known = in_head(root, {literal for literal in literals if added_texts[literal]})
     problems = []
     for row in rows:
         names = rejected[row["row"]] - held
-        names |= {text for text in row.get("text", []) if added_texts[text] and text not in known}
+        names |= {text for text in row.get("text", []) if added_texts[text] and text not in held}
         if names:
             problems.append(f"'{row['row']}': new names {', '.join(sorted(names))}")
     return problems
@@ -346,8 +342,9 @@ def main(argv: list[str]) -> int:
         for row in named
         if row not in spec
     ]
+    baseline = json.loads(BASELINE.read_text(encoding="utf-8")) if BASELINE.exists() else {}
     if STAGED_FLAG in argv:
-        problems += staged_problems(ROOT, rows)
+        problems += staged_problems(ROOT, rows, held_by_the_tree(baseline))
         for problem in problems:
             print(problem)
         if problems:
@@ -360,7 +357,6 @@ def main(argv: list[str]) -> int:
         print("words that go: this commit adds no name the table rejects", file=sys.stderr)
         return 0
     counts = count(ROOT, rows)
-    baseline = json.loads(BASELINE.read_text(encoding="utf-8")) if BASELINE.exists() else {}
     if "--print" in argv:
         print(f"{'names':>6} {'uses':>7} {'lines':>6} {'generic':>8}  row")
         for row in named:
