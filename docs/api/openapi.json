@@ -30179,9 +30179,13 @@
       },
       "tl.so.tilo.notes.Note.new_child.Arguments": {
         "type": "object",
-        "properties": {},
+        "properties": {
+          "words": {
+            "type": "string"
+          }
+        },
         "required": [],
-        "description": "Starts a note inside `n`'s own, after the notes it already holds: the note the window has\nopen too, so a person writing one starts the note it stands under without finding its row.\nIt is `n`'s action, so the window offers it for the note it shows and its row offers it."
+        "description": "Starts a note inside `n`'s own, after the notes it already holds, titled `words` when the\ncaller knows them already (a `/page` in one of `n`'s blocks names the page it makes with the\nwords that stood there): the note the window has open too, so a person writing one starts the\nnote it stands under without finding its row. It is `n`'s action, so the window offers it for\nthe note it shows and its row offers it."
       },
       "tl.so.tilo.notes.Note.pin.Arguments": {
         "type": "object",
@@ -30774,6 +30778,12 @@
         "required": [],
         "description": "The notebook as a zip, one Markdown file for each note: a note's own under the folder of the\nnote it stands in, and the pictures it shows in its own `images` folder beside it. That is the\nshape the import reads, so the notebook comes back as the tree it is, titles, bodies and\npictures alike."
       },
+      "tl.so.tilo.notes.Notebook.export_notebook_markdown.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The notebook as one Markdown document: each note a heading one level deeper than the note it\nstands under (six at the deepest), its body beneath, and the notes under it after it — the\nnotebook read as one text, in the order the tree keeps it."
+      },
       "tl.so.tilo.notes.Notebook.import_markdown.Arguments": {
         "type": "object",
         "properties": {
@@ -30812,6 +30822,32 @@
         ],
         "description": "Imports a page another service held as a note, keeping whose words it is and where it stood\nthere: what `tilo migrate` calls for each page it brings over, and what a person's own import\nof a file does without a service's words. A page imported by its address there again opens the\nnote it made, whatever the page says now; the note stands under the note of the folder its\nfile's path names."
       },
+      "tl.so.tilo.notes.Notebook.import_text.Arguments": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "markdown": {
+            "type": "string"
+          },
+          "pictures": {
+            "items": {},
+            "type": "array"
+          },
+          "links": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "title",
+          "markdown"
+        ],
+        "description": "Imports a note given as words rather than a file: its title, its body as Markdown, the\npictures it shows and the notes its links lead to. A caller holding a page as text — a\nscript, an agent, a migration — makes the note without writing a file first: `pictures` are\nthe files the body names as `![alt](name)`, each by the name it came in as, which the note\nkeeps so an export writes it beside the note again; `links` names, by the path a link leads\nto, the note it opens. The note stands at the top of the tree."
+      },
       "tl.so.tilo.notes.Notebook.import_archive.Arguments": {
         "type": "object",
         "properties": {
@@ -30820,7 +30856,7 @@
         "required": [
           "file"
         ],
-        "description": "Imports a zip of pages as notes under the notebook, a page under the page that held it, in one\nchange: undo takes the whole import back. That is this app's own notebook written out, a\nNotion export, and what `tilo migrate` brings from a wiki: a page per `.md` file, its pictures\nbeside it, and a database beside it as a `.csv` that becomes a table at its page. Each page's\ntitle is its first heading, or its file's name; the pictures a page shows are the files it\nstands beside, a reference read from the page's own folder, and a link to a page of the archive\nis the reference to the note that page made. A migration says where each page came from in its\nown file beside the pages, and a page that is imported already keeps the note it made."
+        "description": "Imports a notebook another tool wrote: a zip of pages, or the JSON a Notion API page listing\nanswers. A zip comes in under the notebook, a page under the page that held it, in one change:\nundo takes the whole import back. That is this app's own notebook written out, a Notion export,\nand what `tilo migrate` brings from a wiki: a page per `.md` file, its pictures beside it, and a\ndatabase beside it as a `.csv` that becomes a table at its page. Each page's title is its first\nheading, or its file's name; the pictures a page shows are the files it stands beside, a\nreference read from the page's own folder, and a link to a page of the archive is the reference\nto the note that page made. A migration says where each page came from in its own file beside\nthe pages, and a page that is imported already keeps the note it made. A listing carries no\nfiles, so each of its pages is a note at the top of the tree."
       },
       "tl.so.tilo.notes.Notebook.import_dropped.Arguments": {
         "type": "object",
@@ -30833,7 +30869,7 @@
         "required": [
           "files"
         ],
-        "description": "Files dropped on the notebook come in one at a time. A Markdown file becomes a note. An\narchive becomes the pages it holds, whether the notebook's own written out or another app's\nexport. One action, so undo takes the whole drop back at once."
+        "description": "Files dropped on the notebook come in one at a time. A Markdown file becomes a note. An\narchive or a Notion page listing becomes the pages it holds, whether the notebook's own\nwritten out or another app's export. One action, so undo takes the whole drop back at once."
       },
       "tl.so.tilo.shell.Shell.$create.Arguments": {
         "type": "object",
@@ -41355,6 +41391,12 @@
     {
       "app": "so.tilo.notes",
       "resource": "tl.so.tilo.notes.Notebook",
+      "action": "export_notebook_markdown",
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Notebook.export_notebook_markdown.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Notebook",
       "action": "import_markdown",
       "arguments": "#/components/schemas/tl.so.tilo.notes.Notebook.import_markdown.Arguments"
     },
@@ -41363,6 +41405,12 @@
       "resource": "tl.so.tilo.notes.Notebook",
       "action": "import_page",
       "arguments": "#/components/schemas/tl.so.tilo.notes.Notebook.import_page.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Notebook",
+      "action": "import_text",
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Notebook.import_text.Arguments"
     },
     {
       "app": "so.tilo.notes",

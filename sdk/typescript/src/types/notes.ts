@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.notes@cd7120a0391e71c9";
+export const SURFACE = "so.tilo.notes@bf1ef65383103ec7";
 
 /** The arguments of `pin`. */
 export interface PinArgs {
@@ -138,8 +138,10 @@ export interface Note extends tilo.Resource {
   zex2vawx: string;  // page
   rnhwkv6z: string;  // created
   "2od7mwir": string;  // updated
-  /** Starts a note inside `n`'s own, after the notes it already holds: the note the window has open too, so a person writing one starts the note it stands under without finding its row. It is `n`'s action, so the window offers it for the note it shows and its row offers it. */
-  new_child(): Promise<Note>;
+  /** Starts a note inside `n`'s own, after the notes it already holds, titled `words` when the caller knows them already (a `/page` in one of `n`'s blocks names the page it makes with the words that stood there): the note the window has open too, so a person writing one starts the note it stands under without finding its row. It is `n`'s action, so the window offers it for the note it shows and its row offers it. */
+  new_child(args?: {
+    words?: string;
+  }): Promise<Note>;
   /** Pins or unpins a note. */
   pin(args?: {
     pinned?: boolean;
@@ -277,6 +279,8 @@ export interface Notebook extends tilo.Resource {
   }): Promise<Note>;
   /** The notebook as a zip, one Markdown file for each note: a note's own under the folder of the note it stands in, and the pictures it shows in its own `images` folder beside it. That is the shape the import reads, so the notebook comes back as the tree it is, titles, bodies and pictures alike. */
   export_notebook(): Promise<unknown>;
+  /** The notebook as one Markdown document: each note a heading one level deeper than the note it stands under (six at the deepest), its body beneath, and the notes under it after it — the notebook read as one text, in the order the tree keeps it. */
+  export_notebook_markdown(): Promise<unknown>;
   /** Imports a Markdown file as a note, or opens the note that file already made: a note keeps the address of the file it came from, so importing the same file twice makes one note. The note stands under the note of the folder its file's path names — `Q3 plan/Ideas.md` under `Q3 plan.md` — and at the top of the tree when its path names no folder. Its title is the document's first heading, or the file's name; the heading it says the title with is not said again in its body. */
   import_markdown(args: {
     file: unknown;
@@ -290,13 +294,20 @@ export interface Notebook extends tilo.Resource {
     created?: string;
     updated?: string;
   }): Promise<Note>;
-  /** Imports a zip of pages as notes under the notebook, a page under the page that held it, in one change: undo takes the whole import back. That is this app's own notebook written out, a Notion export, and what `tilo migrate` brings from a wiki: a page per `.md` file, its pictures beside it, and a database beside it as a `.csv` that becomes a table at its page. Each page's title is its first heading, or its file's name; the pictures a page shows are the files it stands beside, a reference read from the page's own folder, and a link to a page of the archive is the reference to the note that page made. A migration says where each page came from in its own file beside the pages, and a page that is imported already keeps the note it made. */
+  /** Imports a note given as words rather than a file: its title, its body as Markdown, the pictures it shows and the notes its links lead to. A caller holding a page as text — a script, an agent, a migration — makes the note without writing a file first: `pictures` are the files the body names as `![alt](name)`, each by the name it came in as, which the note keeps so an export writes it beside the note again; `links` names, by the path a link leads to, the note it opens. The note stands at the top of the tree. */
+  import_text(args: {
+    title: string;
+    markdown: string;
+    pictures?: unknown[];
+    links?: Record<string, string>;
+  }): Promise<Note>;
+  /** Imports a notebook another tool wrote: a zip of pages, or the JSON a Notion API page listing answers. A zip comes in under the notebook, a page under the page that held it, in one change: undo takes the whole import back. That is this app's own notebook written out, a Notion export, and what `tilo migrate` brings from a wiki: a page per `.md` file, its pictures beside it, and a database beside it as a `.csv` that becomes a table at its page. Each page's title is its first heading, or its file's name; the pictures a page shows are the files it stands beside, a reference read from the page's own folder, and a link to a page of the archive is the reference to the note that page made. A migration says where each page came from in its own file beside the pages, and a page that is imported already keeps the note it made. A listing carries no files, so each of its pages is a note at the top of the tree. */
   import_archive(args: {
     file: unknown;
   }): Promise<void>;
   /** Runs `import_archive` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   import_archiveMany(items: ImportArchiveArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Files dropped on the notebook come in one at a time. A Markdown file becomes a note. An archive becomes the pages it holds, whether the notebook's own written out or another app's export. One action, so undo takes the whole drop back at once. */
+  /** Files dropped on the notebook come in one at a time. A Markdown file becomes a note. An archive or a Notion page listing becomes the pages it holds, whether the notebook's own written out or another app's export. One action, so undo takes the whole drop back at once. */
   import_dropped(args: {
     files: unknown[];
   }): Promise<void>;
@@ -306,7 +317,7 @@ export interface Notebook extends tilo.Resource {
 
 /** The actions `Notebook` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const NOTEBOOK_ACTIONS = ["new_note", "move_to", "move_toMany", "move_after", "move_afterMany", "duplicate", "sort_children", "sort_childrenMany", "delete", "deleteMany", "append_to_note", "append_to_noteMany", "file_note", "export_notebook", "import_markdown", "import_page", "import_archive", "import_archiveMany", "import_dropped", "import_droppedMany"] as const;
+export const NOTEBOOK_ACTIONS = ["new_note", "move_to", "move_toMany", "move_after", "move_afterMany", "duplicate", "sort_children", "sort_childrenMany", "delete", "deleteMany", "append_to_note", "append_to_noteMany", "file_note", "export_notebook", "export_notebook_markdown", "import_markdown", "import_page", "import_text", "import_archive", "import_archiveMany", "import_dropped", "import_droppedMany"] as const;
 
 /** The `tl.so.tilo.notes.Notebook` kind at `path`. */
 export function notebook(ws: tilo.Workspace, path: string): Notebook {

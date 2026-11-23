@@ -143,7 +143,7 @@ ImportDroppedArgs = TypedDict("ImportDroppedArgs", {
 
 class Note(Resource):
     """Note — `tl.so.tilo.notes.Note`."""
-    __surface__ = "so.tilo.notes@cd7120a0391e71c9"
+    __surface__ = "so.tilo.notes@bf1ef65383103ec7"
     dpj7scfe: str  # title
     olsyp3aw: str  # body
     pmjerv63: dict[str, str]  # images
@@ -167,9 +167,15 @@ class Note(Resource):
     def _2od7mwir(self, value: str) -> None:
         self.edit("2od7mwir", value=value)
 
-    def new_child(self) -> Note:
-        """Starts a note inside `n`'s own, after the notes it already holds: the note the window has open too, so a person writing one starts the note it stands under without finding its row. It is `n`'s action, so the window offers it for the note it shows and its row offers it."""
-        return self.action("new_child")
+    def new_child(self,
+        *,
+        words: str | None = None,
+    ) -> Note:
+        """Starts a note inside `n`'s own, after the notes it already holds, titled `words` when the caller knows them already (a `/page` in one of `n`'s blocks names the page it makes with the words that stood there): the note the window has open too, so a person writing one starts the note it stands under without finding its row. It is `n`'s action, so the window offers it for the note it shows and its row offers it."""
+        args: dict[str, Any] = {}
+        if words is not None:
+            args["words"] = words
+        return self.action("new_child", **args)
 
     def pin(self,
         *,
@@ -300,7 +306,7 @@ class Note(Resource):
 
 class Notebook(Resource):
     """Notebook — `tl.so.tilo.notes.Notebook`."""
-    __surface__ = "so.tilo.notes@cd7120a0391e71c9"
+    __surface__ = "so.tilo.notes@bf1ef65383103ec7"
     tmqqtkeb: list[Entry[Note]]  # notes
     qgq6mcy7: list[Entry[Note]]  # set_aside
 
@@ -392,6 +398,10 @@ class Notebook(Resource):
         """The notebook as a zip, one Markdown file for each note: a note's own under the folder of the note it stands in, and the pictures it shows in its own `images` folder beside it. That is the shape the import reads, so the notebook comes back as the tree it is, titles, bodies and pictures alike."""
         return self.action("export_notebook")
 
+    def export_notebook_markdown(self) -> Any:
+        """The notebook as one Markdown document: each note a heading one level deeper than the note it stands under (six at the deepest), its body beneath, and the notes under it after it — the notebook read as one text, in the order the tree keeps it."""
+        return self.action("export_notebook_markdown")
+
     def import_markdown(self, *, file: Any) -> Note:
         """Imports a Markdown file as a note, or opens the note that file already made: a note keeps the address of the file it came from, so importing the same file twice makes one note. The note stands under the note of the folder its file's path names — `Q3 plan/Ideas.md` under `Q3 plan.md` — and at the top of the tree when its path names no folder. Its title is the document's first heading, or the file's name; the heading it says the title with is not said again in its body."""
         return self.action("import_markdown", file=file)
@@ -417,8 +427,25 @@ class Notebook(Resource):
             args["updated"] = updated
         return self.action("import_page", **args)
 
+    def import_text(self,
+        *,
+        title: str,
+        markdown: str,
+        pictures: list[Any] | None = None,
+        links: dict[str, str] | None = None,
+    ) -> Note:
+        """Imports a note given as words rather than a file: its title, its body as Markdown, the pictures it shows and the notes its links lead to. A caller holding a page as text — a script, an agent, a migration — makes the note without writing a file first: `pictures` are the files the body names as `![alt](name)`, each by the name it came in as, which the note keeps so an export writes it beside the note again; `links` names, by the path a link leads to, the note it opens. The note stands at the top of the tree."""
+        args: dict[str, Any] = {}
+        args["title"] = title
+        args["markdown"] = markdown
+        if pictures is not None:
+            args["pictures"] = pictures
+        if links is not None:
+            args["links"] = links
+        return self.action("import_text", **args)
+
     def import_archive(self, *, file: Any) -> None:
-        """Imports a zip of pages as notes under the notebook, a page under the page that held it, in one change: undo takes the whole import back. That is this app's own notebook written out, a Notion export, and what `tilo migrate` brings from a wiki: a page per `.md` file, its pictures beside it, and a database beside it as a `.csv` that becomes a table at its page. Each page's title is its first heading, or its file's name; the pictures a page shows are the files it stands beside, a reference read from the page's own folder, and a link to a page of the archive is the reference to the note that page made. A migration says where each page came from in its own file beside the pages, and a page that is imported already keeps the note it made."""
+        """Imports a notebook another tool wrote: a zip of pages, or the JSON a Notion API page listing answers. A zip comes in under the notebook, a page under the page that held it, in one change: undo takes the whole import back. That is this app's own notebook written out, a Notion export, and what `tilo migrate` brings from a wiki: a page per `.md` file, its pictures beside it, and a database beside it as a `.csv` that becomes a table at its page. Each page's title is its first heading, or its file's name; the pictures a page shows are the files it stands beside, a reference read from the page's own folder, and a link to a page of the archive is the reference to the note that page made. A migration says where each page came from in its own file beside the pages, and a page that is imported already keeps the note it made. A listing carries no files, so each of its pages is a note at the top of the tree."""
         return self.action("import_archive", file=file)
 
     def import_archive_many(self, items: list[ImportArchiveArgs]) -> list[dict[str, Any]]:
@@ -426,7 +453,7 @@ class Notebook(Resource):
         return self.many("import_archive", items)
 
     def import_dropped(self, *, files: list[Any]) -> None:
-        """Files dropped on the notebook come in one at a time. A Markdown file becomes a note. An archive becomes the pages it holds, whether the notebook's own written out or another app's export. One action, so undo takes the whole drop back at once."""
+        """Files dropped on the notebook come in one at a time. A Markdown file becomes a note. An archive or a Notion page listing becomes the pages it holds, whether the notebook's own written out or another app's export. One action, so undo takes the whole drop back at once."""
         return self.action("import_dropped", files=files)
 
     def import_dropped_many(self, items: list[ImportDroppedArgs]) -> list[dict[str, Any]]:
@@ -435,10 +462,10 @@ class Notebook(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"new_note", "move_to", "move_to_many", "move_after", "move_after_many", "duplicate", "sort_children", "sort_children_many", "delete", "delete_many", "append_to_note", "append_to_note_many", "file_note", "export_notebook", "import_markdown", "import_page", "import_archive", "import_archive_many", "import_dropped", "import_dropped_many"})
+    __actions__ = frozenset({"new_note", "move_to", "move_to_many", "move_after", "move_after_many", "duplicate", "sort_children", "sort_children_many", "delete", "delete_many", "append_to_note", "append_to_note_many", "file_note", "export_notebook", "export_notebook_markdown", "import_markdown", "import_page", "import_text", "import_archive", "import_archive_many", "import_dropped", "import_dropped_many"})
 
 
 class Notes(Resource):
     """Notes — `tl.so.tilo.notes`."""
-    __surface__ = "so.tilo.notes@cd7120a0391e71c9"
+    __surface__ = "so.tilo.notes@bf1ef65383103ec7"
 
