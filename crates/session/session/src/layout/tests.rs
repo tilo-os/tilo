@@ -2044,7 +2044,6 @@ fn a_layout_is_read_again_for_a_write_of_it_not_for_a_write_elsewhere() {
             tilo_identity::identity_store::DeviceIdentity::kept(cert.clone(), key),
             Some(state.path()),
             std::iter::empty(),
-            crate::platform::membership_check::of_this_session(),
         )
         .expect("this device's engine opens"),
     );
