@@ -79,6 +79,12 @@ pub struct Sound {
     pub uses: Vec<Use>,
     /// The sound cards, and the profiles each offers.
     pub hardware: Vec<Card>,
+    /// A stereo output here can play as one mix: the sound service mixes it
+    /// down. Settings shows its mono control where this is true.
+    pub mono_output: bool,
+    /// The device can record a microphone with echo cancellation: the
+    /// cancelling config is installed and a microphone is there.
+    pub echo_cancellation: bool,
     /// Actions taken and not yet answered by the device, by id.
     pub pending: Vec<String>,
     /// Why the last change did not happen, until the next one.

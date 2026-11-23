@@ -338,10 +338,13 @@ fn run(bin: &str, args: &[String]) -> Result<String, String> {
 #[cfg(unix)]
 impl AudioRuntimeControl for RealAudioRuntime {
     fn capabilities(&self) -> RuntimeCapabilities {
-        let pulse = command_works("pactl", &["info"]);
+        // What the runtime can do is what the device's sound server answers:
+        // a graph that reads here is one whose outputs can be mixed, routed
+        // and played through. No second sound system's command decides it.
+        let pipewire = crate::audio::try_enumerate().is_ok();
         RuntimeCapabilities {
-            balance: pulse,
-            mono_output: pulse,
+            balance: pipewire,
+            mono_output: pipewire,
             channel_test: command_works("pw-play", &["--version"]),
             microphone_meter: crate::audio::record::available(),
             echo_cancellation: echo_cancel_config_installed()
@@ -602,8 +605,10 @@ pub use crate::audio::{ECHO_CANCEL_NODE_PREFIX, ECHO_CANCEL_SOURCE_NAME};
 const ECHO_CANCEL_RESTART_BACKOFF: Duration = Duration::from_secs(5);
 const ECHO_CANCEL_MAX_BACKOFF_STEPS: u32 = 12;
 
+/// Whether the echo-cancelling microphone's `PipeWire` config is installed here, so the service
+/// can offer one.
 #[cfg(unix)]
-fn echo_cancel_config_installed() -> bool {
+pub fn echo_cancel_config_installed() -> bool {
     let mut dirs = Vec::new();
     if let Some(dir) = std::env::var_os("PIPEWIRE_CONFIG_DIR") {
         dirs.push(std::path::PathBuf::from(dir));

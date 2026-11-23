@@ -648,7 +648,6 @@ pub struct AudioModel {
     sounds: Option<Arc<dyn SoundResource>>,
     sound: Sound,
     runtime: Arc<dyn AudioRuntimeControl>,
-    runtime_caps: RuntimeCapabilities,
     sound_themes: Vec<SoundTheme>,
     event_sounds_available: bool,
     /// Why the resource could not be reached; the controls then are not
@@ -677,16 +676,15 @@ pub struct AudioModel {
 const MIC_TEST: std::time::Duration = std::time::Duration::from_secs(8);
 
 /// What the Sound area reads: the session's sound resource, the reading it
-/// began at, and what the audio runtime here can do. Opening the resource
-/// waits for that reading, so the window's warm-up makes the read off the UI
-/// thread.
+/// began at, and what the audio service says it can do beside the devices
+/// themselves. Opening the resource waits for that reading, so the window's
+/// warm-up makes the read off the UI thread.
 pub(crate) struct AudioRead {
     sounds: Option<Arc<dyn SoundResource>>,
     sound: Sound,
     /// Why the session could not be reached: no reading is shown, and
     /// nothing is made up in its place.
     error: Option<String>,
-    runtime_caps: RuntimeCapabilities,
     sound_themes: Vec<SoundTheme>,
     event_sounds_available: bool,
 }
@@ -727,7 +725,6 @@ impl AudioRead {
             sounds,
             sound,
             error,
-            runtime_caps: RealAudioRuntime.capabilities(),
             sound_themes: media::event_sound::installed_themes(),
             event_sounds_available: media::event_sound::sound_backend()
                 != media::event_sound::SoundBackend::Unavailable,
@@ -802,15 +799,19 @@ fn reading_of(reading: &str) -> Result<Sound, String> {
 }
 
 impl AudioModel {
+    /// The mono control: the audio service mixes a stereo output down to one,
+    /// which it says in its reading, and the output in use is stereo.
     fn offers_mono(&self) -> bool {
-        self.runtime_caps.mono_output
+        self.sound.mono_output
             && self
                 .output_device()
                 .is_some_and(|device| device.channels == 2)
     }
 
+    /// The echo-cancelling microphone: the audio service can record one, and
+    /// there is a microphone to record from.
     fn offers_echo_cancellation(&self) -> bool {
-        self.runtime_caps.echo_cancellation && !self.sound.inputs.is_empty()
+        self.sound.echo_cancellation && !self.sound.inputs.is_empty()
     }
 
     fn from_read(sections: crate::sections::Sections, read: AudioRead) -> Self {
@@ -818,7 +819,6 @@ impl AudioModel {
             sounds,
             sound,
             error,
-            runtime_caps,
             sound_themes,
             event_sounds_available,
         } = read;
@@ -832,7 +832,6 @@ impl AudioModel {
             sounds,
             sound,
             runtime: Arc::new(RealAudioRuntime),
-            runtime_caps,
             sound_themes,
             event_sounds_available,
             volume_error: error.clone(),
@@ -861,7 +860,6 @@ impl AudioModel {
             sounds: None,
             sound: Sound::default(),
             runtime: Arc::new(NoopAudioRuntime),
-            runtime_caps: RuntimeCapabilities::default(),
             sound_themes: Vec::new(),
             event_sounds_available: false,
             volume_error: None,
@@ -1612,7 +1610,6 @@ mod tests {
                 sounds: Some(Arc::clone(&sounds) as Arc<dyn SoundResource>),
                 sound: Sound::default(),
                 error: None,
-                runtime_caps: RuntimeCapabilities::default(),
                 sound_themes: Vec::new(),
                 event_sounds_available: false,
             },

@@ -188,6 +188,8 @@ mod tests {
                 muted: false,
             }],
             hardware: Vec::new(),
+            mono_output: false,
+            echo_cancellation: false,
             pending: Vec::new(),
             problem: None,
         }

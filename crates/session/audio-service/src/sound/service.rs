@@ -107,10 +107,28 @@ impl Sound {
                 .collect(),
             uses: uses.iter().map(Use::from).collect(),
             hardware: graph.hardware.iter().map(Card::from).collect(),
+            // What this device's sound makes possible, read from the graph
+            // the service already keeps: a stereo output to mix down, and a
+            // microphone beside the cancelling config. A view asks the
+            // service instead of the machine.
+            mono_output: output.is_some_and(|device| device.channels >= 2),
+            echo_cancellation: echo_cancellation_possible(graph),
             pending: Vec::new(),
             problem: None,
         }
     }
+}
+
+/// Whether the device can record with echo cancellation: the cancelling
+/// config is installed and there is a microphone to record with.
+#[cfg(unix)]
+fn echo_cancellation_possible(graph: &AudioGraph) -> bool {
+    media::audio_runtime::echo_cancel_config_installed() && !graph.sources.is_empty()
+}
+
+#[cfg(not(unix))]
+fn echo_cancellation_possible(_: &AudioGraph) -> bool {
+    false
 }
 
 /// One read of the audio graph: the graph, and who is using the camera or
