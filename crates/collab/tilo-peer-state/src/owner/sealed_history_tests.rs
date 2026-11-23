@@ -264,10 +264,7 @@ async fn without_compaction_keys_a_full_sealed_history_waits() {
         .unwrap();
     let typed_keys = typed(&document);
     assert!(typed_keys.contains(&refused_key), "the held write landed");
-    assert!(
-        typed_keys.contains(&"k-after".to_owned()),
-        "the next one landed"
-    );
+    assert!(typed_keys.contains("k-after"), "the next one landed");
 }
 
 /// The frame a write is kept as carries the record's signed write, sealed.

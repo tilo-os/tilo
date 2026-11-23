@@ -658,12 +658,12 @@ fn read(
     let history = owner
         .with_current(workspace, |view| {
             let mut opener = |write: &collab_types::SignedOp| FixtureKeys::open(write, keys);
-            let opened = view
+            let kept = view
                 .peer()
                 .publication()
                 .opened_history(APP, RECORD, &mut opener)
                 .expect("the record is held");
-            Ok(opened.writes.len())
+            Ok(kept.writes.len())
         })
         .unwrap();
     (typed, history)
