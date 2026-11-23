@@ -430,8 +430,9 @@ pub fn certify_refused(error: &tilo_actions::remote::ActionCallError) -> String 
 /// the device whose key is `key` and whose certificate `cert` the person's root signed here: a
 /// computer that holds the root needs no ticket, since nobody else is asked to certify it. The
 /// server's own list of the person's workspaces names the one the login enters first (`asked`,
-/// else [`choose_workspace`]'s); the daemon serving the login then takes every other one of that
-/// list in as well, and answers the server's asks for the content it holds of them.
+/// else [`choose_workspace`]'s), and the server puts this device in that workspace's roster; the
+/// daemon serving the login then takes every other one of that list in as well, and answers the
+/// server's asks for the content it holds of them.
 ///
 /// # Errors
 /// `host` names no address, the server is not reached or refuses this device, or it keeps no
@@ -467,22 +468,31 @@ pub async fn log_in_at(
     };
     let signed = signed_over_iroh(&device, &address)?;
     let session = Entered::connect(&signed, Arc::new(key.clone()));
-    let listed = async {
+    let chosen = async {
         session.connected().await.map_err(|refusal| {
             debug_why("dialing the server", &refusal);
             anyhow!("{refusal}")
         })?;
-        session
+        let listed = session
             .personal_list(
                 &tilo_server_session::workspaces::WorkspaceLabels::new(),
                 None,
             )
             .await
-            .map_err(|refusal| anyhow!("{refusal}"))
+            .map_err(|refusal| anyhow!("{refusal}"))?;
+        let (workspace, name) = choose_workspace(&listed.workspaces, asked)?;
+        // Entered here, the server puts this device in the workspace's roster, as a ticket's
+        // issuer does for the device it certifies: the server's sync with this device's own copy
+        // of the workspace checks the roster before it reads a frame of it.
+        session
+            .enter_workspace(&workspace, "")
+            .await
+            .map_err(|refusal| anyhow!("{refusal}"))?;
+        anyhow::Ok((workspace, name))
     }
     .await;
     session.close();
-    let (workspace, name) = choose_workspace(&listed?.workspaces, asked)?;
+    let (workspace, name) = chosen?;
     Ok(Device {
         workspace,
         workspace_name: Some(name).filter(|name| !name.trim().is_empty()),
