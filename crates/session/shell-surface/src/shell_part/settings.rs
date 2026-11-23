@@ -62,7 +62,8 @@ impl ShellPart {
             .map_err(|error| error.to_string())?;
         match outcome {
             tilolang_tilo::runtime::InvokeOutcome::Done(_) => {}
-            tilolang_tilo::runtime::InvokeOutcome::Suggested(_) => {
+            tilolang_tilo::runtime::InvokeOutcome::Waits { .. }
+            | tilolang_tilo::runtime::InvokeOutcome::Asked(_) => {
                 return Err(format!("`{action}` waits for a person's approval"));
             }
             tilolang_tilo::runtime::InvokeOutcome::Denied => {

@@ -8,6 +8,7 @@ mod cases {
     use std::rc::Rc;
 
     use crate::common::*;
+    use tilolang_runtime::delegate::Invoked;
     use tilolang_runtime::{InvokeOutcome, ModelHost, Pending, RunOutcome, Runtime, Store, Value};
 
     fn incs(w: &World, c: &tilolang_runtime::ResourceRef) -> usize {
@@ -80,22 +81,18 @@ mod cases {
             assert_eq!(invocations(&w, &c).len(), 2);
         }
 
-        phase a_run_that_waits_for_its_calls_is_one_action_across_the_answers;
+        phase a_run_keeps_its_journal_across_the_answers;
         {
             let (w, c) = world();
             let InvokeOutcome::Waits { run, .. } = run(&w, "ask", vec![Value::resource(&c)]) else {
                 panic!("the stranger's call asks first");
             };
-            let RunOutcome::Waits { .. } = w.dispatch.allow(&w.rt, &run) else {
+            let RunOutcome::Waits { run: second, .. } = w.dispatch.allow(&w.rt, &run) else {
                 panic!("the second call asks too");
             };
+            assert_eq!(second, run, "the same run waits on the second call");
             w.dispatch.allow(&w.rt, &run);
-            let calls = invocations(&w, &c);
-            assert_eq!(calls.len(), 2);
-            assert_eq!(
-                calls[0], calls[1],
-                "the whole run stays one action across the answers"
-            );
+            assert_eq!(incs(&w, &c), 2, "each call ran once");
         }
     }
 
@@ -201,11 +198,18 @@ mod cases {
                     (stranger_wasm(), stranger_meta()),
                 ],
             );
+            // The first call was asked before the restart, so its invocation is gone with the
+            // host that asked it; its answer is known here. The run goes on to its second call,
+            // which the new host's dispatch is asked about.
             let dispatch = Dispatch::new();
             rt.set_foreign_invoker(dispatch.clone());
-            let RunOutcome::Waits { .. } = dispatch.allow(&rt, &run) else {
+            rt.invoke_action(&me(), ("inc", vec![Value::resource(&c)]))
+                .unwrap();
+            let RunOutcome::Waits { .. } = rt.answer_call(&run, Invoked::Done(Value::Unit)).unwrap()
+            else {
                 panic!("expected the second call to ask");
             };
+            assert_eq!(dispatch.asked().0, "inc");
             let out = dispatch.allow(&rt, &run);
             assert_eq!(out, RunOutcome::Done(Value::Int(2)));
         }

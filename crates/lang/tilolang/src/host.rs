@@ -723,7 +723,7 @@ pub fn host_meta() -> PackageMeta {
         types: std::iter::once(TypeMeta {
             id: INVOCATION_TYPE.to_string(),
             name: "Invocation".to_string(),
-            doc: "An action a block applied, and what became of it.".to_string(),
+            doc: "An action a block applied, or one that waits for a person's answer, and what became of it.".to_string(),
             fields: vec![
                 field("action", "Text", "The id of the action."),
                 field("name", "Text", "Its name."),

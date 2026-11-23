@@ -14,7 +14,7 @@
 //!   `invocation` node drawn from the recorded resource (`state` of `pending` before the host
 //!   has recorded one, then `done`, `asked`, `declined`, `failed` or `denied`, plus
 //!   `action`, `app`, `result`, the `invocation` reference and `can_resolve`), holding the
-//!   action's proposal view while it is a suggestion and the action has one.
+//!   action's proposal view while it is proposed and the action has one.
 //! * `data`: the block was a value; the child is its default rendering.
 //! * `error`: the source did not compile or the block failed; the child is an `error` node
 //!   with one `text` child per diagnostic.
@@ -369,7 +369,7 @@ impl Core {
             props.push(("result", Value::text(&rec.result)));
         }
         let mut children = Vec::new();
-        if rec.state == "asked" {
+        if rec.state == "asked" && rec.proposed {
             props.push(("run", Value::text(&rec.run)));
             props.push((
                 "can_resolve",
@@ -404,7 +404,7 @@ impl Core {
             .into_iter()
             .map(|link| link.of)
             .filter_map(|at| match self.read_invocation(&at) {
-                Ok(rec) if rec.state == "asked" => Some((at, rec)),
+                Ok(rec) if rec.state == "asked" && rec.proposed => Some((at, rec)),
                 _ => None,
             })
             .collect()

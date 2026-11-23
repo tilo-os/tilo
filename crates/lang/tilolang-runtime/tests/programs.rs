@@ -17,7 +17,6 @@ mod cases {
     struct World {
         rt: Runtime,
         auth: SimpleAuthority,
-        todo: App,
         list: ResourceRef,
         notes: Vec<ResourceRef>,
     }
@@ -79,7 +78,6 @@ mod cases {
         World {
             rt,
             auth,
-            todo,
             list,
             notes,
         }

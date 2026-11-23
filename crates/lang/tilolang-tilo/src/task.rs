@@ -273,6 +273,7 @@ impl TaskSession {
                 native,
                 published,
                 addresses: crate::platform_apps::session_addresses()?,
+                workspace: None,
             },
             steps: Rc::clone(&steps),
         });
@@ -1469,6 +1470,7 @@ mod tests {
             author: None,
             target: Some(record),
             from: None,
+            asks: false,
         };
         let answer = invoker.invoke(&invocation);
         assert!(

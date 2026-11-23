@@ -39,6 +39,12 @@ impl Callees {
     /// # Errors
     /// What the code is told instead of a call.
     pub fn call(&self, invocation: &Invocation) -> Result<Json, Answered> {
+        // An invocation record's own action: the record's address names the workspace it is in
+        // and its id there, and the app that workspace publishes answers the verb there. No
+        // package of this host has to know the app.
+        if let Some(call) = invocation_record_call(invocation) {
+            return call.map_err(Answered::Failed);
+        }
         let app = invocation.app();
         let meta = self
             .apps
@@ -97,6 +103,50 @@ impl Callees {
             _ => id,
         }
     }
+}
+
+/// The call an action of the host package makes on an invocation record: the record's own verb,
+/// in the app the workspace its address names publishes, with the workspace beside the record's
+/// id there. `None` for an invocation on anything else.
+fn invocation_record_call(invocation: &Invocation) -> Option<Result<Json, String>> {
+    let Invocation::Action {
+        app,
+        action,
+        args,
+        target: Some(target),
+        ..
+    } = invocation
+    else {
+        return None;
+    };
+    if target.ty != tilolang::INVOCATION_TYPE {
+        return None;
+    }
+    let mut arguments = serde_json::Map::new();
+    for (name, value) in args {
+        let value = match value {
+            Value::Opt(None) => continue,
+            Value::Opt(Some(inner)) => inner.as_ref(),
+            other => other,
+        };
+        let json = match tilolang_runtime::value::to_argument(value) {
+            Ok(json) => json,
+            Err(error) => return Some(Err(format!("`{name}` does not send: {error}"))),
+        };
+        arguments.insert(name.clone(), json);
+    }
+    let record = target.item.clone().unwrap_or_else(|| target.doc.clone());
+    let workspace = target.doc.clone();
+    Some(Ok(json!({
+        "app": app,
+        // The record's own app answers it, under the provider the workspace publishes it as.
+        "provider": app,
+        "workspace": workspace,
+        "resource": record,
+        "action": action,
+        "arguments": arguments,
+        "published": true,
+    })))
 }
 
 /// Whether the parameter `name` of the action `action` of `meta` is a flag (`Bool`, or an

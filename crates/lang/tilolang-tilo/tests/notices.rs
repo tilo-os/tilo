@@ -6,9 +6,8 @@ use crate::fixtures::Workspace;
 use serde_json::{Map, Value as Json, json};
 use tilo_service::notice::{Closed, Notice};
 use tilo_service::{Service, Started};
-use tilolang_runtime::{Actor, InvokeOutcome, Meta, Resolution, Value};
+use tilolang_runtime::{Actor, InvokeOutcome, Meta, Value};
 use tilolang_tilo::host::Host;
-use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::resource_service::ResourceService;
 
 use crate::fixtures::{Replica, action_id};
@@ -22,8 +21,6 @@ const TASKS: (&str, &str) = (
     include_str!("../../../../apps/tl/tasks/app.ids"),
 );
 const TASKS_APP: &str = "so.tilo.tasks";
-
-const WORKSPACE: &str = "workspace";
 
 /// What one device showed and took back, and what its platform said of the notifications it
 /// closed, as the notifications service would.

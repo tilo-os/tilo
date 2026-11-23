@@ -3,10 +3,9 @@
 
 use crate::fixtures::Workspace;
 use tilolang_runtime::store::Store as _;
-use tilolang_runtime::{Actor, InvokeOutcome, MemorySink, Resolution, Value};
+use tilolang_runtime::{Actor, MemorySink, Resolution, Value};
 
 use crate::fixtures::Replica;
-use tilolang_tilo::meta::MetaExt as _;
 
 const LETTERS: &str = include_str!("../../tilolang/tests/fixtures/letters/app.tl");
 const LETTERS_IDS: &str = include_str!("../../tilolang/tests/fixtures/letters/app.ids");

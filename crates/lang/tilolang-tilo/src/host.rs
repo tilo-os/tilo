@@ -173,11 +173,10 @@ pub(crate) struct HostInner {
     authority: TiloAuthority,
     viewer: Actor,
     packages: RefCell<Vec<Rc<Package>>>,
-    /// Runs waiting for the window to ask a person: what an agent's code raised on the API, and
-    /// what the person's own press stopped at.
+    /// The calls carried plans wait on, each for its embedder to register and answer.
     pub(crate) suspended: RefCell<std::collections::VecDeque<Waiting>>,
-    /// What the run of the action being planned stopped at, for its person's window to ask them
-    /// once the plan is the change the document commits ([`Self::plan`]).
+    /// What the run of the action being planned stopped at, for its embedder to register once the
+    /// plan is the change the document commits ([`Self::plan`]).
     stopped: RefCell<Option<Waiting>>,
     /// What each action's plan last returned, by the action: the value its invocation returns,
     /// a resource as the reference it made. Publishing what an app offers plans every action, so
@@ -1048,9 +1047,10 @@ impl Host {
         self.inner.admit_agent(caller);
     }
 
-    /// The next run waiting on a person, for the window to ask them about.
+    /// The next call a carried plan waits on, with the run that waits on it (`None` when the
+    /// call is the whole of the work): what the embedder registers so the answer resumes it.
     #[must_use]
-    pub fn take_suspended(&self) -> Option<Waiting> {
+    pub fn take_waiting(&self) -> Option<Waiting> {
         self.inner.suspended.borrow_mut().pop_front()
     }
 

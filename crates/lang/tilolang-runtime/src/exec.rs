@@ -1223,7 +1223,15 @@ impl Core {
         };
         let id = target.target.id_string();
         let published = self.published.borrow();
-        let Some(verb) = published.get(&id, &aref.action) else {
+        // A record addressed with the workspace it is in is published under its id there.
+        let verb = published.get(&id, &aref.action).or_else(|| {
+            target
+                .target
+                .item
+                .as_deref()
+                .and_then(|item| published.get(item, &aref.action))
+        });
+        let Some(verb) = verb else {
             // Declared by the host and published by no resource here: nothing in this host can
             // run it, and saying so is better than a module that is not there.
             return declared.is_some().then(|| {
