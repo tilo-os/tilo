@@ -91,6 +91,64 @@ struct SleepLock {
     awaiting: bool,
 }
 
+/// Live power-profile readings bridged from the session's power service
+/// ([`tilo_power_mgmt::PowerBridge`]) into [`tilo_system_service::SystemService`].
+struct LivePowerProfiles(tilo_power_mgmt::PowerBridge);
+
+impl tilo_system_service::device::PowerProfiles for LivePowerProfiles {
+    fn snapshot(
+        &self,
+    ) -> (
+        Vec<tilo_system_service::model::PowerMode>,
+        Option<tilo_system_service::model::PowerMode>,
+    ) {
+        let (profiles, active) = self.0.profiles_snapshot();
+        let mut modes = Vec::new();
+        for name in profiles {
+            if let Some(mode) = os_actions::PowerProfile::from_cli(&name)
+                .map(tilo_system_service::model::power_mode)
+                && !modes.contains(&mode)
+            {
+                modes.push(mode);
+            }
+        }
+        let mode = active
+            .as_deref()
+            .and_then(os_actions::PowerProfile::from_cli)
+            .map(tilo_system_service::model::power_mode);
+        (modes, mode)
+    }
+
+    fn revision(&self) -> u64 {
+        self.0.profiles_moved()
+    }
+
+    fn on_change(&self, wake: tilo_service::Wake) {
+        self.0.on_profiles_change(wake);
+    }
+}
+
+/// Build the session's system service, following `power`'s live daemon bridge
+/// when this session has one, or polling the machine's daemons directly when it
+/// does not (as in a headless session).
+///
+/// # Errors
+/// The system service's worker thread did not start.
+pub fn system_service(
+    system: Arc<dyn tilo_system_service::device::System>,
+    wake: Option<tilo_service::Wake>,
+    power: Option<&PowerLink>,
+) -> std::io::Result<tilo_system_service::SystemService> {
+    match power {
+        Some(link) => tilo_system_service::SystemService::with_power_profiles(
+            system,
+            wake,
+            Arc::new(LivePowerProfiles(link.bridge().clone())),
+        ),
+        None => tilo_system_service::SystemService::new(system, wake),
+    }
+}
+
 /// Start the session's power from `options` : the policy its link was made with — the one the
 /// settings loader resolved — applied to the idle timers now and again whenever the person changes
 /// their settings.

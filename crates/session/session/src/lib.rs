@@ -337,6 +337,8 @@ pub mod portal_link;
 #[cfg(target_os = "linux")]
 mod power;
 #[cfg(target_os = "linux")]
+pub use power::system_service;
+#[cfg(target_os = "linux")]
 mod press_outside;
 #[cfg(target_os = "linux")]
 mod projection;

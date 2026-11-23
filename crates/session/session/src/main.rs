@@ -1260,9 +1260,14 @@ fn services(
     if !machine.is_owned() {
         return (services, following);
     }
+    let mut active_power = None;
     if let Some(link) = power {
+        let live = link.clone();
         match tilo_session_power::SessionPower::start(link) {
-            Ok(power) => services.push(Box::new(power)),
+            Ok(power) => {
+                active_power = Some(live);
+                services.push(Box::new(power));
+            }
             Err(error) => tracing::warn!(%error, "the power service did not start"),
         }
     }
@@ -1276,9 +1281,10 @@ fn services(
         }
         Err(error) => tracing::warn!(%error, "connectivity service not started"),
     }
-    match tilo_system_service::SystemService::new(
+    match tilo_session::system_service(
         Arc::new(tilo_system_service::device::OsSystem),
         Some(wake.handle()),
+        active_power.as_ref(),
     ) {
         Ok(mut system) => {
             if let Err(error) = system.follow_location() {

@@ -253,6 +253,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     struct FakeSystem {
         power: std::sync::Mutex<tilo_system_service::model::Power>,
+        power_reads: std::sync::atomic::AtomicUsize,
         refusal: std::sync::Mutex<Option<String>>,
         changes: std::sync::Mutex<Vec<tilo_system_service::device::Change>>,
     }
@@ -267,6 +268,7 @@ mod tests {
                     mode: Some(PowerMode::Balanced),
                     ..Power::default()
                 }),
+                power_reads: std::sync::atomic::AtomicUsize::new(0),
                 refusal: std::sync::Mutex::new(None),
                 changes: std::sync::Mutex::new(Vec::new()),
             })
@@ -275,12 +277,22 @@ mod tests {
         fn changes(&self) -> Vec<tilo_system_service::device::Change> {
             self.changes.lock().expect("changes lock").clone()
         }
+
+        fn power_reads(&self) -> usize {
+            self.power_reads.load(std::sync::atomic::Ordering::SeqCst)
+        }
     }
 
     #[cfg(target_os = "linux")]
     impl tilo_system_service::device::System for FakeSystem {
         fn power(&self) -> tilo_system_service::model::Power {
+            self.power_reads
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.power.lock().expect("power lock").clone()
+        }
+
+        fn user_switching(&self) -> bool {
+            self.power.lock().expect("power lock").user_switching
         }
 
         fn update(&self) -> tilo_system_service::update::Update {
@@ -717,6 +729,189 @@ mod tests {
         assert_eq!(
             fake_system.changes(),
             vec![Change::PowerMode(PowerMode::Saver)]
+        );
+    }
+
+    /// Mount both `SessionPower` and `SystemService` wired through a shared `PowerLink`.
+    #[cfg(target_os = "linux")]
+    fn live_power_session(
+        state: &std::path::Path,
+        app_wire: &std::path::Path,
+        person_id: &str,
+        workspace_id: &str,
+        fake_system: &std::sync::Arc<FakeSystem>,
+        profiles: Vec<String>,
+        active: &str,
+    ) -> (tilo_session_power::PowerLink, crate::Session) {
+        let power_link = tilo_session_power::PowerLink::default();
+        power_link.bridge().note_profiles(profiles);
+        power_link.bridge().note_active_profile(active);
+        let power_service =
+            tilo_session_power::SessionPower::without_daemons(power_link.clone()).expect("power");
+        let mut system_service = crate::power::system_service(
+            std::sync::Arc::clone(fake_system)
+                as std::sync::Arc<dyn tilo_system_service::device::System>,
+            None,
+            Some(&power_link),
+        )
+        .expect("system");
+        tilo_service::Service::settle(&mut system_service);
+        let session = power_session(
+            state,
+            app_wire,
+            person_id,
+            workspace_id,
+            vec![Box::new(power_service), Box::new(system_service)],
+        );
+        (power_link, session)
+    }
+
+    /// With a `PowerLink`, a profile change arriving from the daemon reaches the `power`
+    /// reading live without waiting for a poll of `System::power`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_daemon_profile_change_reaches_power_without_polling() {
+        const WORKSPACE: &str = "3b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5f";
+
+        let _settled = ui::motion::testing::settled();
+        let state = tempfile::tempdir().expect("a state directory");
+        let (_env, _identity_root, person_id) = governed_workspace(state.path(), WORKSPACE);
+        let app_wire = tempfile::tempdir().expect("a directory to serve live power actions in");
+
+        let fake_system = FakeSystem::new();
+        // Give the test double a different mode so any poll of `System::power` would disagree.
+        *fake_system.power.lock().expect("power lock") = tilo_system_service::model::Power {
+            modes: vec![tilo_system_service::model::PowerMode::Performance],
+            mode: Some(tilo_system_service::model::PowerMode::Performance),
+            user_switching: true,
+            ..tilo_system_service::model::Power::default()
+        };
+        let (power_link, mut session) = live_power_session(
+            state.path(),
+            app_wire.path(),
+            &person_id,
+            WORKSPACE,
+            &fake_system,
+            vec!["balanced".into(), "power-saver".into()],
+            "balanced",
+        );
+
+        let reading = session
+            .read(tilo_system_service::POWER)
+            .expect("power reading");
+        assert_eq!(reading["modes"], serde_json::json!(["balanced", "saver"]));
+        assert_eq!(reading["mode"], serde_json::json!("balanced"));
+        assert_eq!(reading["user-switching"], serde_json::json!(true));
+
+        // The daemon changes profile externally; one session step surfaces it without polling.
+        power_link.bridge().note_active_profile("power-saver");
+        session.step(Duration::from_millis(1)).expect("a frame");
+
+        let updated = session
+            .read(tilo_system_service::POWER)
+            .expect("updated power reading");
+        assert_eq!(updated["mode"], serde_json::json!("saver"));
+        assert_eq!(updated["modes"], serde_json::json!(["balanced", "saver"]));
+        assert_eq!(
+            fake_system.power_reads(),
+            0,
+            "the system service never polled System::power()"
+        );
+    }
+
+    /// What `power` lists as `modes` is exactly what `power#set-power-mode` accepts,
+    /// including after the daemon changes the advertised profile list.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn power_modes_and_set_power_mode_stay_in_step_when_the_daemon_list_changes() {
+        use tilo_system_service::device::Change;
+        use tilo_system_service::model::PowerMode;
+
+        const WORKSPACE: &str = "4b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b60";
+
+        let _settled = ui::motion::testing::settled();
+        let state = tempfile::tempdir().expect("a state directory");
+        let (_env, _identity_root, person_id) = governed_workspace(state.path(), WORKSPACE);
+        let app_wire = tempfile::tempdir().expect("a directory to serve live mode-list actions in");
+        let fake_system = FakeSystem::new();
+        let (power_link, mut session) = live_power_session(
+            state.path(),
+            app_wire.path(),
+            &person_id,
+            WORKSPACE,
+            &fake_system,
+            vec!["balanced".into(), "power-saver".into()],
+            "balanced",
+        );
+
+        assert_eq!(
+            session.read(tilo_system_service::POWER).expect("power")["modes"],
+            serde_json::json!(["balanced", "saver"])
+        );
+        assert_eq!(
+            session.invoke(
+                tilo_system_service::POWER,
+                "set-power-mode",
+                &single_arg("mode", "performance"),
+            ),
+            Err(tilo_actions::ApiError::InvalidArguments(
+                "this device offers no power mode performance".to_owned()
+            ))
+        );
+
+        // The daemon now advertises performance and balanced, without power-saver.
+        power_link
+            .bridge()
+            .note_profiles(vec!["performance".into(), "balanced".into()]);
+        session.step(Duration::from_millis(1)).expect("a frame");
+        assert_eq!(
+            session.read(tilo_system_service::POWER).expect("power")["modes"],
+            serde_json::json!(["performance", "balanced"])
+        );
+        assert!(
+            session
+                .invoke(
+                    tilo_system_service::POWER,
+                    "set-power-mode",
+                    &single_arg("mode", "performance"),
+                )
+                .is_ok(),
+            "performance is accepted once the daemon advertises it"
+        );
+        let _ = settled_power(&mut session);
+        assert_eq!(
+            fake_system.changes(),
+            vec![Change::PowerMode(PowerMode::Performance)]
+        );
+        assert_eq!(
+            session.invoke(
+                tilo_system_service::POWER,
+                "set-power-mode",
+                &single_arg("mode", "saver"),
+            ),
+            Err(tilo_actions::ApiError::InvalidArguments(
+                "this device offers no power mode saver".to_owned()
+            )),
+            "saver is refused once the daemon no longer advertises it"
+        );
+
+        // When the daemon advertises no profiles, the action becomes unavailable.
+        power_link.bridge().note_profiles(Vec::new());
+        session.step(Duration::from_millis(1)).expect("a frame");
+        assert_eq!(
+            session.read(tilo_system_service::POWER).expect("power")["modes"],
+            serde_json::json!([])
+        );
+        assert_eq!(
+            session.invoke(
+                tilo_system_service::POWER,
+                "set-power-mode",
+                &single_arg("mode", "balanced"),
+            ),
+            Err(tilo_actions::ApiError::Unavailable {
+                code: "no_power_daemon".to_owned(),
+                reason: "This device offers no power modes".to_owned(),
+            })
         );
     }
 
