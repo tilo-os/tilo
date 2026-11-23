@@ -526,23 +526,24 @@ pub(super) async fn narrow_agent(
 
 /// Answer the turn `message` gives the agent in `workspace`, on the server, with `model`.
 async fn answered(served: &Served, workspace: &str, message: &Id, model: Model) {
-    answered_knowing(served, workspace, message, model, None).await;
+    answered_knowing(served, (workspace, None), message, model, None).await;
 }
 
 /// [`answered`], by agents told that the devices `placed` holds are the server's own, where
-/// they are told any.
+/// they are told any. The agent acts for `person`, a root and a device of theirs, and they
+/// approve it; where none is named it acts for Ada.
 async fn answered_knowing(
     served: &Served,
-    workspace: &str,
+    (workspace, person): (&str, Option<(&SigningKey, &crate::support::Device)>),
     message: &Id,
     model: Model,
     placed: Option<tilo_server::environment::EnvironmentRegistry>,
 ) {
-    let agents = served
-        .alive
-        .approving(workspace, &[SCOUT])
-        .await
-        .scripted(model);
+    let agents = match person {
+        Some(person) => Box::pin(served.alive.approving_as(person, workspace, &[SCOUT], &[])).await,
+        None => Box::pin(served.alive.approving(workspace, &[SCOUT])).await,
+    }
+    .scripted(model);
     let agents = if let Some(placed) = placed {
         agents.knowing_placed(placed)
     } else {

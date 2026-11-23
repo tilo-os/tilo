@@ -1530,31 +1530,6 @@ mod views;
 #[path = "hosted_initiative.rs"]
 mod hosted_initiative;
 
-/// The member's root signs one approver command for `server`. A member's
-/// page holds their root, so the commands it sends carry that signature and
-/// no device certificate of its own.
-fn member_approval(
-    root: &SigningKey,
-    request: tilo_server_protocol::certify::ApproverRequest,
-) -> tilo_server_protocol::certify::MemberApproval {
-    use ed25519_dalek::Signer as _;
-    let user_public_key = root.verifying_key().to_bytes();
-    let issued_at_ns = tilo_clock::unix_now_ns();
-    let digest = tilo_server_protocol::certify::MemberApproval::signed_digest(
-        &user_public_key,
-        issued_at_ns,
-        &request,
-    )
-    .unwrap();
-    tilo_server_protocol::certify::MemberApproval {
-        user_public_key,
-        issued_at_ns,
-        request,
-        signature: root.sign(&digest).to_bytes(),
-        device: None,
-    }
-}
-
 /// A member of the host's workspace, not the host's own person, keeps an
 /// agent on it: they make it from their page, approve its grant with their
 /// own root from another device, and the turn that answers works for them.
@@ -1618,7 +1593,7 @@ async fn a_members_own_agent_on_the_host_works_for_them() {
         "the member asks for their own agent's grant: {asked:?}"
     );
     let approver = MemberApprover::new(ServerAddress::at(server.server.node_addr()));
-    let approve = |request| member_approval(&member, request);
+    let approve = |request| crate::harness::hosted::member_approval(&member, request);
     let ApproverReply::DelegateProposals(proposals) = approver
         .ask(&approve(ApproverRequest::DelegateProposals))
         .await

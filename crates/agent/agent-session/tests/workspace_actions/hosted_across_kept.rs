@@ -125,7 +125,7 @@ impl Kept {
         let placed = server_of(&self.served).environments();
         asked_by(
             &self.served,
-            &self.own.0,
+            (&self.own.0, Some((&self.bo.0, &self.bo.1))),
             (&self.bo.0, &self.bo.1),
             (words, calls),
             Some(&placed),
@@ -185,7 +185,7 @@ async fn on_a_server_that_keeps_peoples_own_workspaces_a_persons_assistant_lists
     let placed = server_of(&kept.served).environments();
     let shown = asked_by(
         &kept.served,
-        &kept.shared.0,
+        (&kept.shared.0, None),
         (&kept.served.ada, &kept.served.devices.1),
         ("Which other workspaces am I in?", &hers),
         Some(&placed),
@@ -250,7 +250,7 @@ async fn once_somebody_else_is_in_a_persons_own_workspace_their_assistant_says_w
     let placed = server_of(&kept.served).environments();
     let shown = asked_by(
         &kept.served,
-        &kept.own.0,
+        (&kept.own.0, Some((&kept.bo.0, &kept.bo.1))),
         (&cy, &cy_device),
         ("Which other workspaces is Bo in?", &his),
         Some(&placed),

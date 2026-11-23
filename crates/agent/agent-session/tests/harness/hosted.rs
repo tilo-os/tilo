@@ -17,8 +17,10 @@ use tilo_agent_session::{AgentService, AppCatalogue, FeedbackReviewer};
 use tilo_server::certify::{ApproverDecision, ApproverReply, ConfirmationAnswer};
 use tilo_server::daemon::{Server, ServerIdentity};
 use tilo_server::web::{TlsSource, WebConfig, WebHandle};
-use tilo_server_client::Approver;
+use tilo_server_client::{Approver, MemberApprover, MemberServer as _, ServerAddress};
 use tilo_server_protocol::certify::PendingConfirmation;
+use tilo_server_protocol::certify::{ApproverRequest, MemberApproval};
+use tilo_session_client::Outbox as _;
 use tilo_user_identity::{CertificationPolicy, RevocationList, issue_device_cert};
 
 use crate::support::Device;
@@ -84,15 +86,15 @@ impl std::ops::Deref for Hosted {
 
 impl Hosted {
     /// The agents this host runs, each of `agents` of `workspace` approved for every app the
-    /// way the host's own person, their person, approves one: asked for from their page and
-    /// decided on their laptop through the host's approval, and joined under its own key before
-    /// this returns. An agent joined already is left as it is.
+    /// way the host's own person, their person, approves one: asked for from the page of a
+    /// laptop of theirs and decided with their root, and joined under its own key before this
+    /// returns. An agent joined already is left as it is.
     pub async fn approving(
         &self,
         workspace: &str,
         agents: &[&str],
     ) -> tilo_workspace_service::agents::ServerAgents {
-        Box::pin(self.approving_for(workspace, agents, &[])).await
+        Box::pin(self.approved((&self.root, None), workspace, agents, &[])).await
     }
 
     /// [`Self::approving`], each of `agents` approved for `apps` alone; none names every app.
@@ -102,28 +104,48 @@ impl Hosted {
         agents: &[&str],
         apps: &[&str],
     ) -> tilo_workspace_service::agents::ServerAgents {
-        let root = &self.root;
-        let laptop = crate::support::enrol(
-            root,
-            "laptop",
-            tilo_user_identity::DeviceCapabilities::primary(),
-        );
-        let endpoint = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
-            .bind()
-            .await
-            .unwrap();
-        let mut approver = Approver::connect(
-            &endpoint,
-            self.server.node_addr(),
-            laptop.cert.clone(),
-            &laptop.key,
-            &RevocationList::new(),
-        )
-        .await
-        .unwrap();
-        let mut page =
-            crate::harness::page::Page::open_at(&self.server, &laptop, &self.host, workspace).await;
+        Box::pin(self.approved((&self.root, None), workspace, agents, apps)).await
+    }
+
+    /// [`Self::approving_for`] by the person of `root`, whom each of `agents` acts for and who
+    /// alone manages its grant, asked for from the page of `device`, a device of theirs the
+    /// workspace admitted.
+    pub async fn approving_as(
+        &self,
+        (root, device): (&SigningKey, &Device),
+        workspace: &str,
+        agents: &[&str],
+        apps: &[&str],
+    ) -> tilo_workspace_service::agents::ServerAgents {
+        Box::pin(self.approved((root, Some(device)), workspace, agents, apps)).await
+    }
+
+    async fn approved(
+        &self,
+        (root, device): (&SigningKey, Option<&Device>),
+        workspace: &str,
+        agents: &[&str],
+        apps: &[&str],
+    ) -> tilo_workspace_service::agents::ServerAgents {
         let workspace_id = tilo_server_protocol::WorkspaceId::parse(workspace).unwrap();
+        let mut page = if let Some(device) = device {
+            let peer = crate::harness::page::Page::session(&self.server, device, &self.host);
+            let events = peer.events();
+            crate::support::ready(&[&peer]).await;
+            peer.send(tilo_session_client::Cmd::Join(workspace_id))
+                .unwrap();
+            crate::support::admitted_to(&peer, workspace_id).await;
+            crate::harness::page::Page::joined((peer, events), device, &self.host, workspace)
+        } else {
+            let laptop = crate::support::enrol(
+                root,
+                "laptop",
+                tilo_user_identity::DeviceCapabilities::primary(),
+            );
+            crate::harness::page::Page::open_at(&self.server, &laptop, &self.host, workspace).await
+        };
+        let approver = MemberApprover::new(ServerAddress::at(self.server.node_addr()));
+        let ask = async |request| approver.ask(&member_approval(root, request)).await.unwrap();
         let acts_for = root.verifying_key().to_bytes();
         let link = self.server.agent_link();
         let sessions = &self.roster.sessions;
@@ -140,28 +162,28 @@ impl Hosted {
                 ),
                 "{agent}'s grant is asked for: {asked:?}"
             );
-            let proposal = approver
-                .list_agent_proposals()
-                .await
-                .unwrap()
+            let ApproverReply::DelegateProposals(proposals) =
+                ask(ApproverRequest::DelegateProposals).await
+            else {
+                panic!("{agent}'s person is shown what it proposes");
+            };
+            let proposal = proposals
                 .into_iter()
                 .find(|proposal| proposal.proposal.delegate.agent_id() == Some(*agent))
                 .unwrap();
-            let pending = approver
-                .list_pending()
-                .await
-                .unwrap()
+            let ApproverReply::Pending(pending) = ask(ApproverRequest::ListPending).await else {
+                panic!("{agent}'s person is shown its request");
+            };
+            let pending = pending
                 .into_iter()
                 .find(|entry| entry.request_digest == proposal.request_digest)
                 .unwrap();
             assert_eq!(
-                approver
-                    .decide(
-                        proposal.request_digest,
-                        issue_delegate(root, &pending, &proposal.proposal),
-                    )
-                    .await
-                    .unwrap(),
+                ask(ApproverRequest::Decide {
+                    request_digest: proposal.request_digest,
+                    decision: issue_delegate(root, &pending, &proposal.proposal),
+                })
+                .await,
                 ApproverReply::Decided
             );
             let deadline = tilo_test_env::hang_deadline();
@@ -179,6 +201,22 @@ impl Hosted {
             std::sync::Arc::new(self.server.agent_link()),
             self.roster.sessions.clone(),
         )
+    }
+}
+
+/// `request` as the person of `root` signs it: what any device holding their root sends the
+/// host, with no device certificate of its own.
+pub fn member_approval(root: &SigningKey, request: ApproverRequest) -> MemberApproval {
+    use ed25519_dalek::Signer as _;
+    let user_public_key = root.verifying_key().to_bytes();
+    let issued_at_ns = tilo_clock::unix_now_ns();
+    let digest = MemberApproval::signed_digest(&user_public_key, issued_at_ns, &request).unwrap();
+    MemberApproval {
+        user_public_key,
+        issued_at_ns,
+        request,
+        signature: root.sign(&digest).to_bytes(),
+        device: None,
     }
 }
 
