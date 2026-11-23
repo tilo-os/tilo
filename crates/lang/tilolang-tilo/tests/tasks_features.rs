@@ -599,6 +599,66 @@ fn a_task_page_shows_its_number_and_its_status() {
     assert!(shown.contains("#1"), "and its number: {shown}");
 }
 
+/// The page of a task keeps every command it offers behind the "…" beside its title: the host
+/// reads what the task's type declares, so the page names them without the view drawing them.
+#[test]
+fn the_task_page_offers_the_tasks_commands_beside_its_title() {
+    let (ada, root) = workspace();
+    let one = task(&ada, &root, "Shown");
+    ada.commit();
+    let view_id = ada
+        .host
+        .package(APP)
+        .unwrap()
+        .meta
+        .views
+        .iter()
+        .find(|view| view.name == "task_page")
+        .unwrap()
+        .id
+        .clone();
+    let view = ada
+        .host
+        .runtime()
+        .open_view(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            &view_id,
+            vec![one],
+        )
+        .unwrap();
+    let more = view
+        .tree()
+        .of_kind("ui.MenuButton")
+        .into_iter()
+        .find(|node| node.key.ends_with("~more"))
+        .unwrap_or_else(|| {
+            panic!(
+                "the page keeps its commands behind a \"…\": {:#?}",
+                view.tree()
+            )
+        });
+    let commands: Vec<String> = more
+        .of_kind("ui.MenuItem")
+        .into_iter()
+        .filter_map(|item| match item.props.get("label") {
+            Some(Value::Text(label)) => Some(label.clone()),
+            _ => None,
+        })
+        .collect();
+    for wanted in [
+        "Complete", "Today", "Tomorrow", "No date", "Priority", "Delete",
+    ] {
+        assert!(
+            commands.iter().any(|command| command == wanted),
+            "the page offers {wanted}: {commands:?}"
+        );
+    }
+    assert!(
+        commands.iter().any(|command| command.starts_with("Assign")),
+        "the page offers the command that asks who does it: {commands:?}"
+    );
+}
+
 #[test]
 fn labels_are_given_to_one_task_and_to_a_group() {
     let (ada, root) = workspace();
