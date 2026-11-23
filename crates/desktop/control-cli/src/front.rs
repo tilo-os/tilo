@@ -535,7 +535,7 @@ pub const FROM_INPUT: &str = "@-";
 ///
 /// # Errors
 /// The sentence that names a word that is no `name=value`, or a value that
-/// could not be read from standard input.
+/// could not be read from standard input or was empty there.
 pub fn arguments(words: &[String]) -> Result<Map<String, Value>, String> {
     arguments_reading(words, &mut std::io::stdin().lock())
 }
@@ -543,7 +543,8 @@ pub fn arguments(words: &[String]) -> Result<Map<String, Value>, String> {
 /// [`arguments`], a `name=@-` value read from `input`.
 ///
 /// # Errors
-/// As [`arguments`]; more than one value named to be read from `input`.
+/// As [`arguments`]; more than one value named to be read from `input`, or
+/// `input` empty, which would set an empty value (an empty secret) by mistake.
 pub fn arguments_reading(
     words: &[String],
     input: &mut dyn std::io::Read,
@@ -564,7 +565,13 @@ pub fn arguments_reading(
             input.read_to_string(&mut text).map_err(|error| {
                 format!("“{key}” could not be read from standard input: {error}")
             })?;
-            Value::String(text.trim_end_matches(['\n', '\r']).to_owned())
+            let text = text.trim_end_matches(['\n', '\r']);
+            if text.is_empty() {
+                return Err(format!(
+                    "“{key}” was read from standard input, which was empty."
+                ));
+            }
+            Value::String(text.to_owned())
         } else {
             read_value(value)
         };

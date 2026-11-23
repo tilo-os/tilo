@@ -398,6 +398,13 @@ fn a_value_written_at_dash_is_read_from_standard_input_as_text() {
         arguments_reading(&["a=@-".into(), "b=@-".into()], &mut input).unwrap_err(),
         "Only one value is read from standard input; “b” is a second."
     );
+    for empty in [&b""[..], &b"\n"[..]] {
+        let mut input = empty;
+        assert_eq!(
+            arguments_reading(&["key=@-".into()], &mut input).unwrap_err(),
+            "“key” was read from standard input, which was empty."
+        );
+    }
 }
 
 #[test]
