@@ -76,8 +76,9 @@ WALKS = HERE / "app-walks"
 ID_SEP = "\x1f"
 VARIANTS = ("rust", "tl")
 # How long a person waits for an app that is on their device, from asking for it to the frame
-# that shows its window: the product's bar for every app, held to each open that starts the app
-# in a walk (`Walk.opens`), read from the session's own launch timings.
+# that shows its window: the product's bar for every app. Each walk records the opens that started
+# its app (`Walk.opens`), read from the session's own launch timings; the `app-walk/open` check
+# holds them to the bar (`--opens`), apart from the walks, which are red for their flows alone.
 OPEN_BAR_MS = 100
 # The shell's own verbs: a window is focused and closed by the tab it holds.
 SHELL = "so.tilo.session"
@@ -450,6 +451,32 @@ def provider_addresses(said: str) -> dict:
         name, _, value = line.partition("=")
         if name and value:
             found[name.strip().lower().replace("_", "-")] = value.strip()
+    return found
+
+
+def machine_sample() -> dict:
+    """How busy the machine the walk runs on is now: its one-minute load and its cores, and the
+    CPU time counters an open's share of stolen time is read from (on a virtual machine, the time
+    its host ran something else while this machine had work: the node's own contention, which
+    the machine's load does not show)."""
+    with open("/proc/stat") as stat:
+        times = [int(t) for t in stat.readline().split()[1:9]]
+    return {"at": time.time(), "load": os.getloadavg()[0], "cpus": os.cpu_count(),
+            "steal": times[7], "total": sum(times)}
+
+
+def machine_during(samples: list[dict], at: float) -> dict:
+    """The machine beside an open at `at`: its load and cores at the ask before it, and the share
+    of its CPU time its host took from that ask to the next sample."""
+    before = [s for s in samples if s["at"] <= at + 0.05]
+    if not before:
+        return {}
+    start = before[-1]
+    after = next((s for s in samples if s["at"] > start["at"]), None)
+    found = {"load": round(start["load"], 1), "cpus": start["cpus"]}
+    if after is not None and after["total"] > start["total"]:
+        found["steal_pct"] = round(100 * (after["steal"] - start["steal"])
+                                   / (after["total"] - start["total"]), 1)
     return found
 
 
@@ -870,8 +897,16 @@ class Walk:
         # launches of its app the log records after it.
         self.began_epoch = time.time()
         # Whether a step asked for this walk's app: a walk that did and finds no open of it in the
-        # session's launch timings is red, not a pass with nothing measured.
+        # session's launch timings records that, rather than nothing measured.
         self.asked_open = False
+        # How busy the machine was at each ask for this walk's app, and when the walk read its
+        # opens: what each open's time is read beside.
+        self.samples: list[dict] = []
+
+    def asking(self) -> None:
+        """A step asks for this walk's app now."""
+        self.asked_open = True
+        self.samples.append(machine_sample())
 
     def opens(self) -> list[dict]:
         """Every open in this walk that started its app, as the session's launch timings
@@ -890,6 +925,7 @@ class Walk:
                 continue
             key = (line.get("launch_generation", ""), line.get("launch_id", ""))
             by_launch.setdefault(key, {})[line["stage"]] = line
+        samples = [*self.samples, machine_sample()]
         found = []
         for (_generation, launch_id), stages in by_launch.items():
             if "spawned" not in stages:
@@ -902,6 +938,7 @@ class Walk:
                 record["ms"] = round(int(stages["presented"]["request_to_first_present_us"]) / 1000)
             else:
                 record["never_shown"] = True
+            record.update(machine_during(samples, stages["spawned"]["epoch"]))
             found.append(record)
         if self.asked_open and not found:
             found.append({"open": "cold", "never_shown": True, "unlogged": True})
@@ -944,7 +981,7 @@ class Walk:
         """Open the app through the desktop's own launcher. Without `wait`, the
         walk goes on the moment the launcher takes it: what a person presses
         before the app is ready."""
-        self.asked_open = True
+        self.asking()
         self.session.open(self.v["id"])
         if wait:
             until_value(f"the window of {self.v['id']}", self.window_of, deadline)
@@ -1065,7 +1102,7 @@ class Walk:
             # launch is a cold one, and the window left behind is theirs.
             self.close_window()
         began = time.monotonic()
-        self.asked_open = True
+        self.asking()
         self.session.open(self.v["id"])
 
         def shown():
@@ -2014,7 +2051,8 @@ class Walk:
                 self.session.invoke(SHELL, SHELL_RESOURCE, "force-quit-app",
                                     {"tab": str(window["tab"])})
                 until_value(f"{ident} to end", lambda: not self.session.processes(ident), 30)
-        self.asked_open = self.asked_open or ident == self.v.get("id")
+        if ident == self.v.get("id"):
+            self.asking()
         self.session.launch(ident, 120)
         until_value(f"the window of {ident}",
                     lambda: next((w for w in self.session.windows()
@@ -2615,17 +2653,54 @@ def open_words(opened: dict) -> str:
         where += f", window mapped {opened['map_ms']} ms after that"
     if "ms" not in opened:
         return f"never shown ({where})"
+    if "load" in opened:
+        where += f"; load {opened['load']} on {opened['cpus']} cores"
+        if "steal_pct" in opened:
+            where += f", {opened['steal_pct']}% of the CPU taken by the host"
     over = " over the bar" if opened["ms"] > OPEN_BAR_MS else ""
     return f"{opened['ms']} ms{over} ({where})"
 
 
-def slow_opens(report: dict) -> list[str]:
-    """Each open of the walk over the open bar, or never shown, in words for its verdict."""
-    return [f"{report['walk']} {variant} {walked['app']} {opened['open']} open: "
-            f"{open_words(opened)}; the bar is {OPEN_BAR_MS} ms"
-            for variant, walked in report["variants"].items()
-            for opened in walked.get("opens") or []
-            if opened.get("ms", OPEN_BAR_MS + 1) > OPEN_BAR_MS]
+def hold_opens(root: Path, out: Path) -> int:
+    """The `app-walk/open` check: every open the walks under `root` recorded (each `walk.json`
+    their checks kept), one row per app and open, held to the open bar. Writes the rows as a page
+    (`opens.md`) and as data (`opens.json`) into `out`; 1 when an open is over the bar, was never
+    shown, or a walk could not read its session's launch timings."""
+    rows = []
+    unread = []
+    for path in sorted(root.glob("**/walk.json")):
+        if out in path.parents:
+            continue
+        report = json.loads(path.read_text())
+        for variant, walked in (report.get("variants") or {}).items():
+            if "opens_unread" in walked:
+                unread.append(f"{report['walk']} {variant}: the session's launch timings could not "
+                              f"be read: {walked['opens_unread']}")
+            for opened in walked.get("opens") or []:
+                rows.append({"walk": report["walk"], "variant": variant, "app": walked["app"],
+                             **opened})
+    slow = [row for row in rows if row.get("ms", OPEN_BAR_MS + 1) > OPEN_BAR_MS]
+    lines = [f"# Opens against the {OPEN_BAR_MS} ms bar", "",
+             "From asking for an app to the frame that shows its window, in each walk that opened "
+             "it: the cold open, and each open after the app was quit.", "",
+             "| App | Version | Open | Time | Where it went |", "|---|---|---|---|---|"]
+    for row in sorted(rows, key=lambda r: (r["app"], r["variant"], r["open"] != "cold")):
+        time_cell = f"{row['ms']} ms" if "ms" in row else "never shown"
+        lines.append(f"| {row['app']} | {row['variant']} | {row['open']} | {time_cell} | "
+                     f"{open_words(row)} |")
+    lines += ["", *[f"- {line}" for line in unread], ""]
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "opens.md").write_text("\n".join(lines))
+    (out / "opens.json").write_text(json.dumps(rows, indent=1) + "\n")
+    for row in rows:
+        print(f"{'SLOW-OPEN' if row in slow else 'open'} {row['app']} {row['variant']} "
+              f"{row['open']}: {open_words(row)}", file=sys.stderr)
+    for line in unread:
+        print(f"SLOW-OPEN {line}", file=sys.stderr)
+    if not rows and not unread:
+        print("FAIL: no walk under it recorded an open", file=sys.stderr)
+        return 1
+    return 1 if slow or unread else 0
 
 
 def load_walk(name: str | None, path: str | None = None) -> tuple[Path, dict]:
@@ -2873,7 +2948,12 @@ def main() -> int:
                         help="write OUT/index.md from a run's outputs (scripts/headless-examples/walk.sh)")
     parser.add_argument("--baseline-dir", type=Path,
                         help="with --side-by-side: the baseline run's outputs")
+    parser.add_argument("--opens", type=Path, metavar="WALKS",
+                        help="hold every open the walks under WALKS recorded to the open bar, "
+                             f"{OPEN_BAR_MS} ms, writing opens.md to --out (the app-walk/open check)")
     options = parser.parse_args()
+    if options.opens:
+        return hold_opens(options.opens.resolve(), (options.out or Path.cwd()).resolve())
     if options.side_by_side:
         out = (options.out or Path.cwd()).resolve()
         print(write_side_by_side(options.side_by_side.resolve(),
@@ -2995,14 +3075,6 @@ def main() -> int:
                         print(f"REGRESSION {walk_name} {regression['version']} {regression['step']}: "
                               f"{regression['why']}", file=sys.stderr)
                     verdict = verdict or (1 if comparison["regressions"] else 0)
-            for slow in slow_opens(report):
-                print(f"SLOW-OPEN {slow}", file=sys.stderr)
-                verdict = 1
-            for variant, walked in report["variants"].items():
-                if "opens_unread" in walked:
-                    print(f"SLOW-OPEN {walk_name} {variant}: the session's launch timings could "
-                          f"not be read: {walked['opens_unread']}", file=sys.stderr)
-                    verdict = 1
             times = {v: f.get("walk_ms") for v, f in report["variants"].items()}
             print(f"==> {walk_name}: walked in {times} ms", file=sys.stderr)
             printed.append({"walk": str(where / "walk.json"), "report": str(report_path),

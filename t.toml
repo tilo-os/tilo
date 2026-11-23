@@ -6575,6 +6575,20 @@ dispatch_inputs = { only = "", discover = "" }
 [check.matrix]
 app = ["apps", "capabilities", "capabilities-unused", "capabilities-unused-agent", "capabilities-unused-styles", "capture", "devices", "displays-across-devices", "notes", "settings", "shell", "tube"]
 
+# Every app's open against the product's bar, 100 ms from asking for an app on the device to the
+# frame that shows its window: the cold open and each open after a quit, as the walks of the apps
+# recorded them from their sessions' launch timings, one row per app and open with how busy the
+# machine was beside it (scripts/headless-examples/app-walk.py --opens). Apart from the walks, which
+# are red for their flows alone: a slow open is red here, and never hides a broken flow there.
+# The rows: `t outputs app-walk/open --to DIR` (opens.md).
+[[check]]
+name = "app-walk/open"
+run = "python3 -I -B scripts/headless-examples/app-walk.py --opens /target/app-walk --out /target/app-walk/open"
+needs = ["app-walk/apps", "app-walk/notes", "app-walk/tube"]
+outputs = ["/target/app-walk/open/**"]
+timeout_secs = 300
+on = ["dispatch", "idle"]
+
 # `cargo headless --check` and `cargo desktop --check` (tools/tilo-local) on the session the
 # nested-session check built: each starts the development session the way a developer does, asks
 # it something (its actions; its window, opened on a throwaway headless Tilo in place of the

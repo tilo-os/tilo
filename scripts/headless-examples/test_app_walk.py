@@ -7,6 +7,7 @@ here, on the walk's own helpers and on every step file in `app-walks/`.
 """
 import importlib.util
 import json
+import time
 import unittest
 from pathlib import Path
 
@@ -740,7 +741,11 @@ class HoldingEachOpenToTheBar(unittest.TestCase):
 
     @staticmethod
     def line(at: str, message: str) -> str:
-        return f"2026-11-23T10:00:{at}Z  INFO tilo::launch_latency: {message}"
+        """A line the session logs `at` seconds from now: after the walk asked, as the session's
+        lines of an open always are."""
+        from datetime import datetime, timezone
+        when = datetime.fromtimestamp(time.time() + int(at), timezone.utc)
+        return f"{when.strftime('%Y-%m-%dT%H:%M:%S.%f')}Z  INFO tilo::launch_latency: {message}"
 
     def opened(self, launch: int, at: str, spawn_us: int, present_us: int | None,
                app: str = APP, generation: int = 41) -> list[str]:
@@ -762,17 +767,32 @@ class HoldingEachOpenToTheBar(unittest.TestCase):
         walked.began_epoch = 0
         return walked
 
-    def report(self, opens) -> dict:
-        return {"walk": "gallery", "variants": {"tl": {"app": self.APP, "opens": opens}}}
+    @staticmethod
+    def timed(opens: list[dict]) -> list[tuple]:
+        return [(o["open"], o.get("ms"), o["spawn_ms"], o.get("map_ms")) for o in opens]
+
+    def held(self, *walked) -> tuple[int, str, list]:
+        """The `app-walk/open` check over walks that recorded these opens, as their checks keep
+        them: its verdict, its page and its rows."""
+        import tempfile
+        root = Path(tempfile.mkdtemp(prefix="app-walk-opens-"))
+        for index, opens in enumerate(walked):
+            where = root / f"walk-{index}"
+            where.mkdir()
+            (where / "walk.json").write_text(json.dumps(
+                {"walk": "gallery", "variants": {"tl": {"app": self.APP, "opens": opens}}}))
+        verdict = walk.hold_opens(root, root / "open")
+        return (verdict, (root / "open" / "opens.md").read_text(),
+                json.loads((root / "open" / "opens.json").read_text()))
 
     def test_the_first_open_is_cold_and_each_later_one_follows_a_quit(self):
         walked = self.walk_with(self.opened(1, "01", 9000, 80000)
                                 + self.opened(2, "05", 8000, 95000)
                                 + self.opened(3, "09", 7000, 60000, app="so.tilo.notes"))
-        self.assertEqual(walked.opens(), [
-            {"open": "cold", "launch_id": "1", "spawn_ms": 9, "map_ms": 31, "ms": 80},
-            {"open": "after a quit", "launch_id": "2", "spawn_ms": 8, "map_ms": 31, "ms": 95}])
-        self.assertEqual(walk.slow_opens(self.report(walked.opens())), [])
+        self.assertEqual(self.timed(walked.opens()),
+                         [("cold", 80, 9, 31), ("after a quit", 95, 8, 31)])
+        verdict, _page, rows = self.held(walked.opens())
+        self.assertEqual((verdict, len(rows)), (0, 2))
 
     def test_a_restarted_session_s_launches_are_not_taken_for_earlier_ones(self):
         walked = self.walk_with(self.opened(1, "01", 9000, 80000)
@@ -780,31 +800,46 @@ class HoldingEachOpenToTheBar(unittest.TestCase):
         self.assertEqual([(o["open"], o["ms"]) for o in walked.opens()],
                          [("cold", 80), ("after a quit", 95)])
 
+    def test_each_open_says_how_busy_the_machine_was(self):
+        walked = self.walk_with(self.opened(1, "01", 9000, 80000))
+        walked.asking()
+        opened, = walked.opens()
+        self.assertGreaterEqual(opened["cpus"], 1)
+        self.assertGreaterEqual(opened["load"], 0)
+        self.assertIn(f"load {opened['load']} on {opened['cpus']} cores", walk.open_words(opened))
+
     def test_an_open_over_the_bar_is_red_with_its_numbers(self):
         walked = self.walk_with(self.opened(1, "01", 9000, 80000)
                                 + self.opened(2, "05", 41000, 412000))
-        slow = walk.slow_opens(self.report(walked.opens()))
-        self.assertEqual(len(slow), 1)
-        self.assertIn("after a quit open: 412 ms over the bar", slow[0])
-        self.assertIn("launcher started after 41 ms", slow[0])
-        self.assertIn(f"the bar is {walk.OPEN_BAR_MS} ms", slow[0])
+        verdict, page, _rows = self.held(walked.opens())
+        self.assertEqual(verdict, 1)
+        self.assertIn("| after a quit | 412 ms | 412 ms over the bar (launcher started after 41 ms",
+                      page)
+        self.assertIn(f"against the {walk.OPEN_BAR_MS} ms bar", page)
 
     def test_an_open_never_shown_is_red(self):
         walked = self.walk_with(self.opened(1, "01", 9000, None))
-        self.assertEqual(walk.slow_opens(self.report(walked.opens())),
-                         [f"gallery tl {self.APP} cold open: never shown (launcher started after "
-                          f"9 ms, window mapped 31 ms after that); the bar is "
-                          f"{walk.OPEN_BAR_MS} ms"])
+        verdict, page, _rows = self.held(walked.opens())
+        self.assertEqual(verdict, 1)
+        self.assertIn("| cold | never shown | never shown (launcher started after 9 ms", page)
 
     def test_an_open_asked_for_and_not_in_the_timings_is_red_not_a_pass(self):
         walked = self.walk_with([])
         self.assertEqual(walked.opens(), [])
         walked.asked_open = True
-        slow = walk.slow_opens(self.report(walked.opens()))
-        self.assertEqual(len(slow), 1)
-        self.assertIn("record no open of it", slow[0])
+        verdict, page, _rows = self.held(walked.opens())
+        self.assertEqual(verdict, 1)
+        self.assertIn("record no open of it", page)
 
-    def test_the_page_lists_each_open_against_the_bar(self):
+    def test_walks_that_recorded_no_open_are_red_not_a_pass(self):
+        self.assertEqual(self.held([])[0], 1)
+
+    def test_each_walk_s_opens_are_rows_of_the_one_check(self):
+        cold = self.walk_with(self.opened(1, "01", 9000, 70000)).opens()
+        verdict, _page, rows = self.held(cold, cold)
+        self.assertEqual((verdict, len(rows)), (0, 2))
+
+    def test_the_walk_s_page_lists_each_open_against_the_bar(self):
         import tempfile
         out = Path(tempfile.mkdtemp(prefix="app-walk-test-"))
         walked = self.walk_with(self.opened(1, "01", 9000, 412000))
@@ -813,7 +848,6 @@ class HoldingEachOpenToTheBar(unittest.TestCase):
                                       "opens": walked.opens()}}}
         page = walk.write_report(report, out).read_text()
         self.assertIn("**tl** cold: 412 ms over the bar", page)
-
 
 if __name__ == "__main__":
     unittest.main()
