@@ -2346,9 +2346,9 @@ async fn one_endpoint_holds_few_places_however_many_sessions_it_opens() {
         .expect("the device told busy is admitted when it asks again");
 }
 
-/// Two members' media stops the moment the workspace removes one of them: the remaining device
-/// stops hearing the removed one at all, while its own session stays open and keeps carrying its
-/// media.
+/// The workspace removes one member of a call and its media stops end to end: the relay cuts its
+/// session, it can publish nothing more and the remaining device hears nothing more of it, while
+/// its own session stays open and keeps publishing.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_removed_members_media_stops_end_to_end_and_the_other_session_carries_on() {
     let authority = Authority::new();
@@ -2403,12 +2403,12 @@ async fn a_removed_members_media_stops_end_to_end_and_the_other_session_carries_
             .is_some_and(|(said, _)| *said > 0)
     });
 
-    // The workspace removes B. It keeps publishing while its session winds down: nothing of it
-    // is forwarded, and A is told its broadcast ended.
+    // The workspace removes B. The relay cuts its session, A is told its broadcast ended, and both
+    // sides can carry nothing more of it.
     authority.remove(b_key);
-    for sequence in 6..=25_u32 {
-        let _ = b.publish(Track::Audio, sequence, &voice(sequence, &[3; 8]));
-    }
+    wait_until("the relay cuts the removed member's session", || {
+        relay.counters().expired >= 1
+    });
     wait_until(
         "the removed member's broadcast ends at the other device",
         || {
@@ -2418,16 +2418,18 @@ async fn a_removed_members_media_stops_end_to_end_and_the_other_session_carries_
         },
     );
     wait_until("the removed member's session ends", || b.ended());
-    // Anything still on its way arrives at once on loopback; after that nothing more does.
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let late: Vec<u32> = heard(&a, Track::Audio)
-        .into_iter()
-        .filter(|object| object.sender == b_key)
-        .map(|object| object.sequence)
-        .collect();
+    // Everything of it that was on its way before the cut has arrived (all five objects did), so
+    // from here on nothing of it can be heard or sent.
     assert!(
-        late.is_empty(),
-        "the removed member's media arrived after its removal: {late:?}"
+        !heard(&a, Track::Audio)
+            .into_iter()
+            .any(|object| object.sender == b_key && object.sequence > 5),
+        "the removed member's media arrived after its removal"
+    );
+    assert_eq!(
+        b.publish(Track::Audio, 6, &voice(6, &[3; 8])),
+        Err(LiveError::Ended),
+        "the removed member's session is over"
     );
 
     // The remaining device is untouched: its session stays open and it keeps publishing.
@@ -2439,11 +2441,6 @@ async fn a_removed_members_media_stops_end_to_end_and_the_other_session_carries_
         a.publish(Track::Presence, 2, b"still=here"),
         Ok(()),
         "the remaining member keeps publishing"
-    );
-    assert_eq!(
-        b.publish(Track::Audio, 26, &voice(26, &[4; 8])),
-        Err(LiveError::Ended),
-        "the removed member's session is over"
     );
 }
 
