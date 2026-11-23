@@ -17,6 +17,28 @@ struct Receipt {
     #[serde(skip_serializing_if = "Option::is_none")]
     device_public_key: Option<[u8; 32]>,
 }
+pub(super) fn arguments(
+    args: impl IntoIterator<Item = OsString>,
+) -> io::Result<BTreeMap<String, PathBuf>> {
+    let mut args = args.into_iter();
+    let mut values = BTreeMap::new();
+    while let Some(name) = args.next() {
+        let name = name.to_str().ok_or_else(failed)?;
+        if !["--package", "--quarantine", "--system-root"].contains(&name)
+            || values.contains_key(name)
+        {
+            return Err(failed());
+        }
+        let value =
+            crate::setup::helper_arguments::strict_path(args.next().ok_or_else(failed)?, failed)?;
+        values.insert(name.to_owned(), value);
+    }
+    if values.len() != 3 {
+        return Err(failed());
+    }
+    Ok(values)
+}
+
 /// Authenticate the selected setup and publish only its enrolled machine ownership.
 /// Legacy root-key backups authenticate without changing machine files. The
 /// privileged caller owns the mounted target and repairs canonical public/group
@@ -30,24 +52,7 @@ pub fn run(
     if rustix::process::geteuid().as_raw() != 0 {
         return Err(failed());
     }
-    let mut args = args.into_iter();
-    let mut values = BTreeMap::new();
-    while let Some(name) = args.next() {
-        let name = name.to_str().ok_or_else(failed)?;
-        if !["--package", "--quarantine", "--system-root"].contains(&name)
-            || values.contains_key(name)
-        {
-            return Err(failed());
-        }
-        let value = PathBuf::from(args.next().ok_or_else(failed)?);
-        if !value.is_absolute() {
-            return Err(failed());
-        }
-        values.insert(name.to_owned(), value);
-    }
-    if values.len() != 3 {
-        return Err(failed());
-    }
+    let values = arguments(args)?;
     private_parent(&values["--package"])?;
     private_parent(&values["--quarantine"])?;
     let mut password = Zeroizing::new(Vec::new());
