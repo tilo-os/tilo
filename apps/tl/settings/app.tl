@@ -704,22 +704,3 @@ fn battery_words(state: device.BatteryState) -> Text {
         "Plugged in"
     }
 }
-
-/// How the battery stands, in a word.
-fn battery_words(state: device.BatteryState) -> Text {
-    if state == .charging {
-        "Charging"
-    } else if state == .discharging {
-        "On the battery"
-    } else if state == .empty {
-        "Empty"
-    } else if state == .full {
-        "Full"
-    } else if state == .pending_charge {
-        "About to charge"
-    } else if state == .pending_discharge {
-        "About to drain"
-    } else {
-        "Plugged in"
-    }
-}
