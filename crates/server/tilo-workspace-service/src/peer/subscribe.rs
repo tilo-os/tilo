@@ -72,12 +72,22 @@ pub(super) async fn handle_subscribe(
                 .map_err(|_| PeerError::Protocol("the session's writer ended".into()))?;
         }
         // A device over its link is replayed the workspace's records it may read, less those it
-        // is sent when it opens them. A session that stands in for one is sent the same, so a
-        // record a page never opened is still one it holds.
-        for envelope in admin
+        // is sent when it opens them. A session that stands in for one is sent the same, and
+        // holds each record from then on, so a record a page never opened is still one it
+        // follows.
+        for (envelope, holds) in admin
             .eager_records(workspace_id, peer.device_public_key)
             .await
         {
+            for channel in holds {
+                admin.watch_record(
+                    workspace_id,
+                    peer.device_public_key,
+                    session.outbound,
+                    session.disconnect,
+                    channel,
+                );
+            }
             session
                 .outbound
                 .send(envelope)

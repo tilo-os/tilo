@@ -15,6 +15,13 @@ use tokio::sync::mpsc;
 use super::Workspaces;
 use crate::transport::Envelope;
 
+/// A chain's newest part a subscription replays: its index, the channels the session holds it
+/// by, and the frames kept of it.
+type ChainHead = (u64, Vec<[u8; 32]>, Vec<Envelope>);
+
+/// Each chain the workspace's store keeps, by the app and base its parts name.
+type Chains = std::collections::BTreeMap<(String, String), ChainHead>;
+
 /// Every connection that opened a record, by workspace.
 #[derive(Default)]
 pub(crate) struct OpenedRecords(std::sync::Mutex<BTreeMap<WorkspaceId, Vec<Opened>>>);
@@ -110,6 +117,7 @@ impl OpenedRecords {
         &self,
         workspace: WorkspaceId,
         may_read: impl Fn([u8; 32]) -> bool,
+        hold: Option<[u8; 32]>,
         envelope: &Envelope,
     ) -> usize {
         let mut sessions = self.0.lock_recover();
@@ -117,13 +125,16 @@ impl OpenedRecords {
             return 0;
         };
         let mut reached = 0_usize;
-        opened.retain(|opened| {
+        opened.retain_mut(|opened| {
             if !may_read(opened.device) {
                 return true;
             }
             match opened.outbound.try_send(envelope.clone()) {
                 Ok(()) => {
                     reached = reached.saturating_add(1);
+                    if let Some(hold) = hold {
+                        opened.channels.insert(hold);
+                    }
                     true
                 }
                 Err(mpsc::error::TrySendError::Full(_)) => {
@@ -150,6 +161,7 @@ impl OpenedRecords {
         workspace: WorkspaceId,
         channels: &BTreeSet<[u8; 32]>,
         may_read: impl Fn([u8; 32]) -> bool,
+        hold: Option<[u8; 32]>,
         envelope: &Envelope,
     ) -> usize {
         let mut sessions = self.0.lock_recover();
@@ -157,13 +169,16 @@ impl OpenedRecords {
             return 0;
         };
         let mut reached = 0_usize;
-        opened.retain(|opened| {
+        opened.retain_mut(|opened| {
             if opened.channels.is_disjoint(channels) || !may_read(opened.device) {
                 return true;
             }
             match opened.outbound.try_send(envelope.clone()) {
                 Ok(()) => {
                     reached = reached.saturating_add(1);
+                    if let Some(hold) = hold {
+                        opened.channels.insert(hold);
+                    }
                     true
                 }
                 // The write is in the store: the connection reads the record
@@ -256,6 +271,7 @@ impl Workspaces {
             self.inner.opened_records.deliver_to_all(
                 workspace,
                 |device| device != author && link.reads_of(device)(message),
+                None,
                 &envelope,
             );
             return;
@@ -276,6 +292,7 @@ impl Workspaces {
             self.inner.opened_records.deliver_to_all(
                 workspace,
                 |device| device != author,
+                None,
                 &envelope,
             );
             return;
@@ -296,23 +313,24 @@ impl Workspaces {
         };
         // A record every device is replayed goes to every session of the workspace, as a link
         // to the session's device hands it: one it never opened is a record it holds all the
-        // same, until it reads it. A record sent when opened, or a part of one, goes to the
-        // sessions that opened it.
-        if matches!(
-            neighbour_wire::document_sync(document_id),
-            neighbour_wire::DocumentSync::Eager
-        ) {
+        // same, until it reads it.
+        let own = neighbour_wire::app_document_group(app_id, document_id);
+        let sync = neighbour_wire::document_sync(document_id);
+        if matches!(sync, neighbour_wire::DocumentSync::Eager) {
             self.inner.opened_records.deliver_to_all(
                 workspace,
                 |device| device != author && link.reads_of(device)(message),
+                Some(own),
                 &envelope,
             );
             return;
         }
-        let mut channels =
-            BTreeSet::from([neighbour_wire::app_document_group(app_id, document_id)]);
-        if let neighbour_wire::DocumentSync::Part { base, .. } =
-            neighbour_wire::document_sync(document_id)
+        // A part of a chained record goes to the sessions that hold it, and the part that is the
+        // chain's head also to the sessions that follow the chain: one that held the part before
+        // held the chain, and holds this part from now on.
+        let mut channels = BTreeSet::from([own]);
+        if let neighbour_wire::DocumentSync::Part { base, index } = sync
+            && is_chain_head(&link, app_id, base, index)
         {
             channels.insert(neighbour_wire::app_document_group(
                 app_id,
@@ -323,19 +341,22 @@ impl Workspaces {
             workspace,
             &channels,
             |device| link.reads_of(device)(message),
+            Some(own),
             &envelope,
         );
     }
 
-    /// `workspace`'s records a joining device is replayed, as the sessions that read it over a
-    /// session take them: every record that is not sent when opened, each frame the store keeps
-    /// of it, as the frames a link replays. A session that opened none of them holds them all
-    /// the same, as a device over its link does; one sent when opened waits to be asked for.
+    /// What a session that subscribes is sent from `workspace`: each record a device over its
+    /// link is replayed — every record that is not sent when opened, and each chain's newest
+    /// part — with the channels the session holds from then on. A session that opened none of
+    /// them holds them all the same, as a device over its link does; a record sent when opened
+    /// waits to be asked for. A chain's head is held with the chain, so the parts after it reach
+    /// the session too.
     pub(crate) async fn eager_records(
         &self,
         workspace: WorkspaceId,
         device: [u8; 32],
-    ) -> Vec<Envelope> {
+    ) -> Vec<(Envelope, Vec<[u8; 32]>)> {
         let Some(link) = self.inner.direct.link(workspace) else {
             return Vec::new();
         };
@@ -345,26 +366,79 @@ impl Workspaces {
             return Vec::new();
         };
         let reads = link.reads_of(device);
-        let mut envelopes = Vec::new();
+        let mut replayed: Vec<(Envelope, Vec<[u8; 32]>)> = Vec::new();
+        // Each chain's newest part the store keeps, by the app and base it names.
+        let mut heads = Chains::new();
         for body in bodies {
             let Ok(message) = neighbour_wire::NeighbourMsg::decode(&body.body) else {
                 continue;
             };
-            let neighbour_wire::NeighbourMsg::AppDocument { document_id, .. } = &message else {
+            let neighbour_wire::NeighbourMsg::AppDocument {
+                app_id,
+                document_id,
+                ..
+            } = &message
+            else {
                 continue;
             };
-            if !matches!(
-                neighbour_wire::document_sync(document_id),
-                neighbour_wire::DocumentSync::Eager
-            ) || !reads(&message)
-            {
+            if !reads(&message) {
                 continue;
             }
-            if let Some(envelope) = crate::peer::records::delta_of(workspace, body.author, &message)
-            {
-                envelopes.push(envelope);
+            let Some(envelope) = crate::peer::records::delta_of(workspace, body.author, &message)
+            else {
+                continue;
+            };
+            let own = neighbour_wire::app_document_group(app_id, document_id);
+            match neighbour_wire::document_sync(document_id) {
+                neighbour_wire::DocumentSync::Eager => replayed.push((envelope, vec![own])),
+                neighbour_wire::DocumentSync::Part { base, index } => {
+                    let held = vec![
+                        own,
+                        neighbour_wire::app_document_group(
+                            app_id,
+                            &neighbour_wire::chain_head(base),
+                        ),
+                    ];
+                    let newest = heads
+                        .entry((app_id.clone(), base.to_owned()))
+                        .or_insert_with(|| (index, held.clone(), Vec::new()));
+                    if index > newest.0 {
+                        newest.0 = index;
+                        newest.1 = held;
+                        newest.2.clear();
+                    }
+                    if index == newest.0 {
+                        newest.2.push(envelope);
+                    }
+                }
+                _ => {}
             }
         }
-        envelopes
+        for (_, (_, held, envelopes)) in heads {
+            for envelope in envelopes {
+                replayed.push((envelope, held.clone()));
+            }
+        }
+        replayed
     }
+}
+
+/// Whether part `index` of `base` is the newest part of `app`'s chain this workspace knows: the
+/// one a session that follows the chain is sent. A part the workspace has not taken in yet (a
+/// host's own write) is the newest by what is known.
+fn is_chain_head(
+    link: &tilo_peer_state::direct::DirectSync,
+    app: &str,
+    base: &str,
+    index: u64,
+) -> bool {
+    link.read(crate::documents::listing)
+        .iter()
+        .all(|(held, record)| {
+            !matches!(
+                neighbour_wire::document_sync(record),
+                neighbour_wire::DocumentSync::Part { base: held_base, index: held_index }
+                    if *held == app && held_base == base && held_index > index
+            )
+        })
 }
