@@ -37,7 +37,13 @@ class RegistryMetadataTests(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 entries = sorted(output.glob("*.json"))
-                self.assertEqual(len(entries), 60)
+                # The fleet is the catalog's own list: every app it names ships an entry,
+                # whether it is a Rust app's manifest or the package the language builds.
+                import tomllib
+                catalog = tomllib.loads(
+                    (ROOT / "dist/apps/registry-metadata.toml").read_text(encoding="utf-8")
+                )["apps"]
+                self.assertEqual(len(entries), len(catalog))
                 # Every screenshot, including the Notes image fixture, is archived.
                 # Observe the exact icon output and the original Settings image pin.
                 self.assertEqual({path.name for path in media.iterdir()},
@@ -47,7 +53,7 @@ class RegistryMetadataTests(unittest.TestCase):
                 self.assertEqual(settings["images"]["en"][-1]["url"],
                                  "https://apps.tilo.so/artifacts/tilo/generic/tilo-app-metadata/"
                                  "bd5d23b61827b873b51daf0d84e09db582104b5a93c617c733a5c282191eb96f/settings.png")
-                image_count = 0
+                icon_count = 0
                 for path in entries:
                     entry = json.loads(path.read_text(encoding="utf-8"))
                     with self.subTest(app=path.stem):
@@ -59,7 +65,10 @@ class RegistryMetadataTests(unittest.TestCase):
                         self.assertIn("en", entry["supported_languages"])
                         self.assertTrue(entry["images"]["en"])
                         self.assertEqual(entry["source_url"], "https://code.tilo.so/tilo/tilo")
-                        image_count += len(entry["images"]["en"])
+                        icons = [image for image in entry["images"]["en"]
+                                 if image["kind"] == "icon"]
+                        self.assertEqual(len(icons), 1, f"{path.stem}: one icon")
+                        icon_count += len(icons)
                         archive_file = ROOT / "apps" / path.stem / "shots" / "archive.json"
                         archived = json.loads(archive_file.read_text()) if archive_file.exists() else []
                         archive_urls = {item["url"] for item in archived}
@@ -71,12 +80,12 @@ class RegistryMetadataTests(unittest.TestCase):
                             else:
                                 self.assertEqual(image["kind"], "screenshot")
                                 self.assertIn(image["url"], archive_urls)
-                self.assertEqual(image_count, 84)
+                self.assertEqual(icon_count, len(entries))
         with self.subTest(phase='audit reports the intended generic fleet'):
             result = self.run_tool("audit")
             self.assertEqual(result.returncode, 0, result.stderr)
             report = json.loads(result.stdout)
-            self.assertEqual(report["count"], 60)
+            self.assertEqual(report["count"], len(catalog))
             self.assertIn("browser", report["apps"])
             self.assertIn("messages", report["apps"])
             self.assertIn("chip-design", report["apps"])

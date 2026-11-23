@@ -55,9 +55,43 @@ def load_catalog(path: Path) -> dict[str, dict[str, str]]:
     return parsed
 
 
+#: The `app` header a tilolang package opens with: its id and the name it gives itself.
+APP_HEADER = re.compile(
+    r'^app\s+(?P<id>[A-Za-z0-9_.-]+)\s+"(?P<name>[^"]*)"\s*\(', re.MULTILINE
+)
+
+
+def tl_package(root: Path, app: str) -> tuple[Path, dict[str, str]] | None:
+    """The tilolang package that is the app `app`: its directory and what its `app` header
+    declares. An app ships as a package the language builds, so it has no `tilo-app.toml` of its
+    own; the id is the same one its Rust predecessor answered by."""
+    packages = root / "apps" / "tl"
+    if not packages.is_dir():
+        return None
+    wanted = f"so.tilo.{app}"
+    for directory in sorted(packages.iterdir()):
+        source = directory / "app.tl"
+        if not source.is_file():
+            continue
+        text = source.read_text(encoding="utf-8")
+        header = APP_HEADER.search(text)
+        if header is None or header.group("id") != wanted:
+            continue
+        fields = {"id": header.group("id"), "name": header.group("name")}
+        category = re.search(r"^\s*category:\s*\.([a-z_]+)", text, re.MULTILINE)
+        if category is not None:
+            fields["category"] = category.group(1).replace("_", " ").capitalize()
+        tagline = re.search(r'^\s*tagline:\s*"([^"]*)"', text, re.MULTILINE)
+        if tagline is not None:
+            fields["tagline"] = tagline.group(1)
+        return directory, fields
+    return None
+
+
 def taglines(root: Path, app: str) -> dict[str, str]:
-    """The app's tag line per language, from `search/<tag>.ftl`'s `app-tagline`:
-    the same message the packer signs into `[package.taglines]`."""
+    """The app's tag line per language: a Rust app's own `search/<tag>.ftl`'s `app-tagline`, or
+    the tilolang package's `app` header, which says it in English. A language the app does not
+    translate its tag line in falls back to English as the entry is written."""
     search = root / "apps" / app / "search"
     found: dict[str, str] = {}
     if search.is_dir():
@@ -68,8 +102,12 @@ def taglines(root: Path, app: str) -> dict[str, str]:
                 key, value = line.split("=", 1)
                 if key.strip() == TAGLINE_MESSAGE and value.strip():
                     found[source.stem.split("-")[0].lower()] = value.strip()
+    if not found:
+        package = tl_package(root, app)
+        if package is not None and package[1].get("tagline", "").strip():
+            found["en"] = package[1]["tagline"].strip()
     if "en" not in found:
-        die(f"{app}: apps/{app}/search/en.ftl needs an {TAGLINE_MESSAGE} message")
+        die(f"{app}: apps/{app}/search/en.ftl or the app's package needs an {TAGLINE_MESSAGE}")
     for tag, value in found.items():
         if len(value) > MAX_TAGLINE_CHARS or "\n" in value:
             die(f"{app}: the {tag} tag line must be one line of at most {MAX_TAGLINE_CHARS} characters")
@@ -79,6 +117,9 @@ def taglines(root: Path, app: str) -> dict[str, str]:
 def manifest(root: Path, app: str) -> dict:
     path = root / "apps" / app / "tilo-app.toml"
     if not path.is_file():
+        package = tl_package(root, app)
+        if package is not None:
+            return package[1]
         die(f"missing manifest for {app}: {path}")
     data = tomllib.loads(path.read_text(encoding="utf-8"))
     package = data.get("package", {})
@@ -89,18 +130,18 @@ def manifest(root: Path, app: str) -> dict:
     return package
 
 
-def fleet(root: Path) -> list[str]:
-    return sorted(path.parent.name for path in (root / "apps").glob("*/tilo-app.toml"))
-
-
 def languages(root: Path, app: str) -> list[str]:
-    locale_dir = root / "apps" / app / "locales"
     tags = {"en"}
-    if locale_dir.is_dir():
-        for source in locale_dir.iterdir():
-            match = LANGUAGE_FILE.match(source.name)
-            if match:
-                tags.add(match.group(1).lower())
+    dirs = [root / "apps" / app / "locales"]
+    package = tl_package(root, app)
+    if package is not None:
+        dirs.append(package[0] / "locales")
+    for locale_dir in dirs:
+        if locale_dir.is_dir():
+            for source in locale_dir.iterdir():
+                match = LANGUAGE_FILE.match(source.name)
+                if match:
+                    tags.add(match.group(1).lower())
     return sorted(tags)
 
 
@@ -197,12 +238,18 @@ def build_one(root: Path, app: str, copy: dict[str, str], media_base: str,
             "kind": "screenshot", "url": image_url,
             "alt": f"{name} screenshot {number}",
         })
+    said = taglines(root, app)
+    supported = languages(root, app)
     entry = {
         "name": {"en": name},
         "description": {"en": copy["description"]},
-        "tagline": taglines(root, app),
+        # A language the app translates its tag line in says its own; every other language the
+        # store shows reads English, the language the entry always has.
+        "tagline": {
+            tag: said.get(tag, said["en"]) for tag in sorted({"en", "de", *supported})
+        },
         "images": {"en": images},
-        "supported_languages": languages(root, app),
+        "supported_languages": supported,
         "source_url": SOURCE_URL,
     }
     if not entry["images"]["en"]:
@@ -214,15 +261,9 @@ def build_one(root: Path, app: str, copy: dict[str, str], media_base: str,
 
 def validate(root: Path, catalog: Path) -> tuple[dict[str, dict[str, str]], list[str]]:
     copy = load_catalog(catalog)
-    apps = fleet(root)
-    missing, extra = sorted(set(apps) - set(copy)), sorted(set(copy) - set(apps))
-    if missing or extra:
-        detail = []
-        if missing:
-            detail.append("missing=" + ", ".join(missing))
-        if extra:
-            detail.append("unknown=" + ", ".join(extra))
-        die("registry metadata coverage mismatch: " + "; ".join(detail))
+    # The catalog names the fleet a person downloads: an app ships as a Rust app's manifest or
+    # as the package the language builds, and one that has neither is no app at all.
+    apps = sorted(copy)
     for app in apps:
         manifest(root, app)
         taglines(root, app)
