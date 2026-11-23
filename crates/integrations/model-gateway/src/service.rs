@@ -91,9 +91,6 @@ const VISION_APP: &str = "so.tilo.vision";
 /// The desktop's report composer: its review asks a model which words of a
 /// report are personal, a completion without tools, as Chat's are.
 const FEEDBACK_APP: &str = "so.tilo.feedback-composer";
-/// The session's history: what its changes were, and the names over the runs
-/// of them, asked as one completion without tools, as Chat's are.
-use tilo_app_id::apps::ACTIVITY as ACTIVITY_APP;
 const MAX_VISION_IMAGE_BYTES: usize = 1024 * 1024;
 /// Face batches are intentionally small.  A large library is scanned as
 /// bounded background batches by Photos, never materialized into one giant
