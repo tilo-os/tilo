@@ -3,6 +3,7 @@ app so.tilo.tasks "Tasks" (
     category: .office,
     tagline: "Issues of the workspace, on a list and a board",
     keywords: ["tasks", "issues", "issue tracker", "kanban", "board", "to-do", "todo", "tickets", "projects", "agent tasks"],
+    previously: so.tilo.lang.tasks,
 )
 
 use so.tilo.lang.discussion as discussion
@@ -106,15 +107,15 @@ type Wait {
 /// Why a task's work stopped.
 enum StoppedWhy {
     /// It could not go on: the line says what failed.
-    failed
+    failed (icon: .circle_alert, tone: .danger)
     /// Its budget in money is spent.
-    budget
+    budget (icon: .gauge, tone: .warning)
     /// Its budget in working time is spent.
-    time
+    time (icon: .clock, tone: .warning)
     /// Its agent sessions were interrupted and did not come back.
-    lost_worker
+    lost_worker (icon: .circle_pause, tone: .danger)
     /// A person stopped it.
-    person
+    person (icon: .user)
 }
 
 /// That a task's work stopped, and why.
@@ -965,12 +966,15 @@ fn latest(a: Option<Time>, b: Option<Time>) -> Option<Time> {
 
 /// Ends every wait a task is on: what it waited for came, which `cause` says in a few words, and
 /// whoever is doing it goes on with it.
-action resume(t: Task, cause: Text = "") uses time (
+action resume(t: Task, cause: Text = "", on: Text = "") uses time (
     label: "Stop waiting",
     icon: .play,
     did: "went on with",
     group: "Plan",
 ) {
+    // A wait is ended by what it waits for: an automation that ended an older wait says so, and
+    // ends nothing newer that another one holds.
+    require on == "" or t.waiting_on == on "That wait has passed"
     applies t.waiting_for != "" or t.waiting_until != .none "It waits for nothing"
     if let w = t.work {
         t.work = Work(

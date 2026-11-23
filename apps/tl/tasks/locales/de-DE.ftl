@@ -695,8 +695,11 @@ d-ab4v7pl5 = Nicht mehr warten
     .doc = Beendet jedes Warten einer Aufgabe: das Erwartete kam, was `cause` in wenigen Worten sagt, und wer sie macht, macht weiter.
     .did = weitergearbeitet
     .w-it-waits-for-nothing = Sie wartet auf nichts
+    .w-that-wait-has-passed = Dieses Warten ist vorbei
 
 d-ab4v7pl5-cause = Ursache
+
+d-ab4v7pl5-on = An
 
 d-tji6xijt = Arbeitsplatz
     .doc = Setzt, wo das Arbeitsmaterial einer Aufgabe liegt: der Ordner ihrer Arbeit und die Notiz, die ihre Sitzungen schreiben.
@@ -814,6 +817,8 @@ d-2b46hb6u = importiert Dateien
 d-tk5t43h6 = importiert einen Vorgang
 
 d-fnc6zwh7 = wartet
+
+d-yxyh2v24 = macht weiter
 
 d-pgzbwzsm = beginnt eine Sitzung
 

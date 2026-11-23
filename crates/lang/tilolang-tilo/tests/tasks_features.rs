@@ -441,6 +441,63 @@ fn a_session_begins_only_where_the_task_may_still_be_worked() {
     );
 }
 
+/// An automation that ends a wait says which wait it ends: an older one's resume is refused
+/// while a newer wait holds the task.
+#[test]
+fn an_old_automations_resume_is_refused_while_a_newer_wait_holds() {
+    let (ada, root) = workspace();
+    let one = task(&ada, &root, "Waiting");
+    for (what, automation) in [
+        ("the first reply", "automation-1"),
+        ("the second reply", "automation-2"),
+    ] {
+        call(
+            &ada,
+            "wait",
+            vec![
+                one.clone(),
+                Value::text(what),
+                none(),
+                case(&ada, "WaitKind", "change"),
+                Value::text(automation),
+            ],
+        );
+    }
+    ada.commit();
+    assert!(
+        refused(
+            &ada,
+            "resume",
+            vec![
+                one.clone(),
+                Value::text("the first came"),
+                Value::text("automation-1"),
+            ],
+        ),
+        "an older automation ends no newer wait"
+    );
+    assert_eq!(
+        read(&ada, &one, "waiting_for"),
+        Value::text("the second reply"),
+        "the newer wait still holds"
+    );
+    call(
+        &ada,
+        "resume",
+        vec![
+            one.clone(),
+            Value::text("the second came"),
+            Value::text("automation-2"),
+        ],
+    );
+    ada.commit();
+    assert_eq!(
+        read(&ada, &one, "waiting_for"),
+        Value::text(""),
+        "the wait it names ends"
+    );
+}
+
 /// Work on a task's pieces ends its wait once every piece is through: closed, waiting for a
 /// person to look, or stopped.
 #[test]

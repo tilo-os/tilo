@@ -723,8 +723,11 @@ d-ab4v7pl5 = Stop waiting
     .doc = Ends every wait a task is on: what it waited for came, which `cause` says in a few words, and whoever is doing it goes on with it.
     .did = went on with
     .w-it-waits-for-nothing = It waits for nothing
+    .w-that-wait-has-passed = That wait has passed
 
 d-ab4v7pl5-cause = Cause
+
+d-ab4v7pl5-on = On
 
 d-tji6xijt = Working place
     .doc = Sets where a task's working material is: the folder of its work, and the note its sessions write.
@@ -842,6 +845,8 @@ d-2b46hb6u = Import files~present
 d-tk5t43h6 = Import issue~present
 
 d-fnc6zwh7 = Wait~present
+
+d-yxyh2v24 = Resume~present
 
 d-pgzbwzsm = Session began~present
 
