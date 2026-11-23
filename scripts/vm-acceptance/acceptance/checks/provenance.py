@@ -82,12 +82,13 @@ def _unit_said(vm, unit: str) -> str:
     exited ...`, `Failed to start ...`) are dropped: they say it failed, never
     why."""
     out = vm.exec(
-        f"journalctl --user -u {shlex.quote(unit)} -b -o cat --no-pager -n 200 2>&1",
+        f"journalctl --user -u {shlex.quote(unit)} -b -o cat --no-pager -n 200",
         check=False)
     manager = (f"{unit}: ", f"Failed to start {unit}", f"Started {unit}",
                f"Stopping {unit}", f"Stopped {unit}")
     said = [line.strip() for line in out.splitlines()
-            if line.strip() and not line.startswith(manager)]
+            if line.strip() and line.strip() != "-- No entries --"
+            and not line.startswith(manager)]
     return " | ".join(said[-3:])[:600]
 
 
@@ -118,10 +119,14 @@ def services(ctx, res):
         "systemctl --user list-units --failed --plain --no-legend")
     failed = [line.split()[0] for line in failed_out.splitlines() if line.strip()]
     try:
-        # Only the marker lines: the boot's whole user journal is larger than a
-        # `tilo-vm` command returns, and the rest of it says nothing about restarts.
+        # One line proves the user journal readable; only then may its silence mean
+        # healthy. The marker query is bounded: the boot's whole user journal is larger
+        # than a `tilo-vm` command returns, and the rest of it says nothing about
+        # restarts. journalctl exits 1 when nothing matched, which here is the answer.
+        ctx.vm.exec("journalctl --user -b -o cat --no-pager -n 1")
         journal = ctx.vm.exec(
-            f"journalctl --user -b -o cat --no-pager --grep {shlex.quote(RESTART_MARKER)}")
+            f"journalctl --user -b -o cat --no-pager --grep {shlex.quote(RESTART_MARKER)} "
+            "|| test $? -eq 1")
     except VmError as exc:
         # Some images have no readable user journal. Keep the live-counter fallback,
         # but every query must succeed before an empty result can mean healthy.
