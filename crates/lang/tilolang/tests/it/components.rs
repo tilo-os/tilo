@@ -896,3 +896,68 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+const CLOCKS: &str = r#"type Stopwatch {
+    elapsed: Int = 0
+    running: Bool = false
+    laps: List<Int>
+}
+
+type Clocks {
+    stopwatch: Stopwatch
+    NEXT
+}
+
+root Clocks
+
+view clocks(c: Clocks) {
+    ui.Text("{c.stopwatch.elapsed}")
+}
+
+default view clocks for Clocks
+"#;
+
+fn clocks(next: &str, more: &str) -> String {
+    format!("{}\n{more}", CLOCKS.replace("NEXT", next))
+}
+
+tilo_test_env::scenario! {
+    /// A record field a resource is made without starts as a record of its own, from its fields'
+    /// defaults: the checker refuses one that cannot start that way where the field is left out,
+    /// never a read that finds nothing.
+    fn a_record_field_left_out_starts_from_its_defaults;
+
+    phase a_record_of_defaults_is_held_by_a_root;
+    {
+        let got = errors(&clocks("", ""));
+        assert!(got.is_empty(), "{got:#?}");
+    }
+
+    phase a_held_record_with_a_field_without_a_default_is_refused;
+    {
+        let got = errors(&clocks("alarm: Alarm", "type Alarm {\n    rings: Actor\n}"));
+        assert!(
+            got.iter().any(|(code, m)| code == "E019"
+                && m.contains("without `alarm`")
+                && m.contains("the `rings` of a `Alarm` has no default")),
+            "{got:#?}"
+        );
+    }
+
+    phase a_held_record_that_holds_itself_again_is_refused;
+    {
+        let got = errors(&clocks("alarm: Alarm", "type Alarm {\n    clocks: Clocks\n}"));
+        assert!(
+            got.iter().any(|(code, m)| code == "E019" && m.contains("would never end")),
+            "{got:#?}"
+        );
+    }
+
+    phase a_record_given_where_it_is_made_is_a_reference_as_before;
+    {
+        let more = "type Alarm {\n    rings: Actor\n}\n\ntype Ring {\n    alarm: Alarm\n}\n\ntype Rings {\n    rings: Collection<Ring>\n}\n\naction ring(r: Rings, a: Alarm) {\n    r.rings.insert(Ring(alarm: a))\n}\n\naction loose(r: Rings) {\n    r.rings.insert(Ring())\n}";
+        let got = errors(&clocks("", more));
+        assert_eq!(got.len(), 1, "only the making that leaves it out: {got:#?}");
+        assert!(got[0].1.contains("a `Ring` made without `alarm`"), "{got:#?}");
+    }
+}

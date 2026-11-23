@@ -198,6 +198,14 @@ it needs itself, and each item it inserts starts with its own type's initial con
 change. Content that would make itself again (a `Book` that starts with a `Book`) is refused.
 Nothing invokes an initial action by name, and no surface offers it.
 
+A field of a record type holds a reference. When a resource is made without it (a root, or
+`Clocks()` inserted without `stopwatch:`), it starts holding a record of its own, built from its
+type's defaults: `type Clocks { stopwatch: Stopwatch }` reads `clocks.stopwatch.elapsed` as `0`
+from the start. That record is kept in the holder's document, so it has the same readers,
+history, sync and removal. It is the same record on every device that makes the holder. The
+checker refuses it where the making leaves the field out and the record cannot start on its own:
+a field of it has no default, it would hold itself again, or it belongs to another app.
+
 ## Events
 
 A handler (`on activate(x: Calculation): ...`) is data the host fills with the event's value

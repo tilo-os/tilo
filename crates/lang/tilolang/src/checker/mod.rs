@@ -8,6 +8,7 @@ mod call;
 mod component;
 mod enums;
 mod expr;
+mod held;
 mod methods;
 mod native;
 mod optional;
@@ -436,6 +437,7 @@ fn lower(
         funcs.push(c.run_default(action, d.param, written));
     }
     initial_cycle(c.diags, &initials);
+    c.check_held_roots(module);
     c.check_proposals(module);
     c.check_one_command();
     let mut views = Vec::new();

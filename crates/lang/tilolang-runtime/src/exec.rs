@@ -566,9 +566,18 @@ impl Core {
                 .and_then(|ty| ty.origin.as_deref())
                 .is_some_and(tilolang::origin::is_derived)
         });
+        let holds = {
+            let registry = self.registry.borrow();
+            registry
+                .type_info(&new.ty)
+                .is_some_and(|(_, info)| crate::held::holds_any(&info))
+        };
         let Some(pkg) = pkg.filter(|_| {
             !derived
-                && (initial.is_some() || !migrations.is_empty() || !new.text_defaults.is_empty())
+                && (initial.is_some()
+                    || holds
+                    || !migrations.is_empty()
+                    || !new.text_defaults.is_empty())
         }) else {
             let mut store = self.store.borrow_mut();
             return Ok(match id {
@@ -614,6 +623,23 @@ impl Core {
                 .mark_migrated_in(txn, id, migration)?;
         }
         let mut touched = std::collections::BTreeSet::from([made.id_string()]);
+        // The records its fields hold are made with it, before its initial content reads them.
+        let ty = self
+            .registry
+            .borrow()
+            .type_info(&new.ty)
+            .map(|(_, info)| info);
+        if let Some(ty) = ty.filter(|ty| crate::held::holds_any(ty)) {
+            let held = self
+                .make_held(&made, &ty, &|_| false, &|at, m| {
+                    self.store
+                        .borrow_mut()
+                        .apply(txn, at, m)
+                        .map_err(|e| e.to_string())
+                })
+                .map_err(RuntimeError::Package)?;
+            touched.extend(held);
+        }
         let mut at = None;
         if let Some(initial) = initial {
             // The package's own code writes it, in a frame of its own over the making's

@@ -54,6 +54,8 @@ mod event_values;
 mod filters;
 #[path = "foreign_readings.rs"]
 mod foreign_readings;
+#[path = "held_records.rs"]
+mod held_records;
 #[path = "interpolation.rs"]
 mod interpolation;
 #[path = "json.rs"]

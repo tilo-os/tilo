@@ -151,7 +151,7 @@ impl Checker<'_> {
         }
         if let Some(t) = env.own_type(name).filter(|_| !self.in_std()) {
             let key = t.key.clone();
-            return self.construct(&key, args);
+            return self.construct(&key, args, span);
         }
         if name == "RichText" {
             return self.builtin_rich_text(args, span);
@@ -300,7 +300,7 @@ impl Checker<'_> {
             name: name.name.clone(),
         };
         if env.type_info(&key).is_some() {
-            return self.construct(&key, args);
+            return self.construct(&key, args, span);
         }
         let names: Vec<&str> = env
             .callables
@@ -826,7 +826,7 @@ impl Checker<'_> {
     }
 
     /// `Todo(title: "x")`: a record value, not yet a resource.
-    fn construct(&mut self, key: &TypeKey, args: &[ast::Arg]) -> Ex {
+    fn construct(&mut self, key: &TypeKey, args: &[ast::Arg], span: Span) -> Ex {
         let env = self.env;
         let Some(info) = env.type_info(key) else {
             return Ex::error();
@@ -923,6 +923,8 @@ impl Checker<'_> {
                 Ty::Unit,
             )));
         }
+        // A record field it leaves out starts holding a record of its own when it is made.
+        self.check_held(key, &given, span);
         Ex::new(Ek::Seq(stmts, Box::new(Ex::local(tmp, ty.clone()))), ty)
     }
 

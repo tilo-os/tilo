@@ -30,6 +30,7 @@ pub mod error;
 mod exec;
 pub mod foreign;
 pub mod handles;
+pub mod held;
 mod host_res;
 mod host_rich;
 mod host_ui;
