@@ -294,6 +294,10 @@ pub fn overlays_surface() -> tilo_resource::surface::Surface {
 /// What [`overlays_surface`] describes of the stack's reading.
 #[derive(tilo_resource::JsonSchema)]
 #[allow(dead_code, reason = "read by the schema it describes, never in Rust")]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is a surface of its own, read by the view it is for"
+)]
 struct OverlaysSurface {
     /// The surface the shell shows over the windows: `none` at rest, or `overview`, `switcher`,
     /// `launcher`, `centre`, `quick-settings`, `workspaces`, `composer` or `conversation`.
@@ -411,6 +415,10 @@ struct Row {
 
 /// The surface stack as it reads: what stands over the windows, topmost first.
 #[derive(Debug, Serialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is a surface of its own, read by the view it is for"
+)]
 struct StackReading {
     stack: Vec<Surface>,
     here: &'static str,
