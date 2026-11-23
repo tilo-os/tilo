@@ -175,7 +175,9 @@ mod cases {
             )
             .unwrap();
         let button = of_kind(view.tree(), "ui.Button")[0].key.clone();
-        let InvokeOutcome::Asked(_) = view.press(&button).unwrap() else {
+        // The action is the cleanup's own, so it runs up to the foreign removal it asks about:
+        // the run waits, and the dispatch is asked for the removal.
+        let InvokeOutcome::Waits { .. } = view.press(&button).unwrap() else {
             panic!("the action asks before it removes");
         };
         assert_eq!(w.dispatch.asked().0, w.todo.action("remove"));

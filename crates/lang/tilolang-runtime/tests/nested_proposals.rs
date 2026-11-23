@@ -139,6 +139,8 @@ default view letters for Box
                 Value::Bool(true),
                 "the reply ran up to the send"
             );
+            // What the person's yes does: the dispatch runs the call as them.
+            p.auth.grant_outside(&p.app.action("send"));
             let out = p.dispatch.allow(&p.rt, &run);
             assert!(
                 matches!(out, RunOutcome::Done(_)),
