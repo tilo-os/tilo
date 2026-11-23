@@ -286,7 +286,7 @@ impl ServedWrites {
 
 /// The extension of the file beside a member copy's workspace naming the
 /// device it syncs with ([`member_of`]).
-const MEMBER: &str = "member";
+pub(super) const MEMBER: &str = "member";
 
 /// How long after the link ends this device dials that device again.
 const REDIAL: std::time::Duration = std::time::Duration::from_secs(5);

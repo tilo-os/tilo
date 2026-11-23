@@ -1603,7 +1603,7 @@ pub(super) struct WireConnection {
     /// What joins channels for this connection. A connection without one
     /// only holds the channels opened for it.
     service: Option<Rc<AppConnection>>,
-    /// The person this connection is the shell of, when the broker admitted it as one.
+    /// The person this connection is the shell of, when the daemon's dispatch admitted it as one.
     shell: Option<super::shell::Shell>,
     channels: RefCell<HashMap<Handle, Rc<ChannelSession>>>,
     /// The handle this connection opened on the session's published
@@ -1654,7 +1654,7 @@ impl WireConnection {
         Self::opened(service, None)
     }
 
-    /// A connection the broker admitted as `shell`, and the queue of the frames it sends.
+    /// A connection the daemon's dispatch admitted as `shell`, and the queue of the frames it sends.
     pub(super) fn shell(
         shell: super::shell::Shell,
     ) -> (Rc<Self>, mpsc::UnboundedReceiver<HostFrame>) {

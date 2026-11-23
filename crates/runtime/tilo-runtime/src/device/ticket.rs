@@ -27,6 +27,7 @@ use tilo_actions::{
     ActionContract, ActionDescriptor, ActionFailure, ActionKind, ActionOutput, ActionParam,
     ExecutionLocus, InputSpec, InvocationId, InvocationUpdate, OperationKind, ParamType,
 };
+use tilo_desktop_model::WorkspaceId;
 use tilo_device_identity::login::{
     ALREADY_A_PERSONS, APPROVE, Device, Direction, Entry, FOUND, ISSUE, LOG_IN, PENDING, PROVIDER,
     Place, REPORTED, RESOURCE, Reached, Report, TICKET_LIFETIME_NS, Ticket,
@@ -253,13 +254,6 @@ pub(crate) fn descriptor(
 /// keeps, or a test's own.
 pub(crate) type RootSource = Arc<dyn Fn() -> Result<Option<SigningIdentity>> + Send + Sync>;
 
-/// A workspace this daemon founded and governs, which a computer added here enters through it.
-#[derive(Clone)]
-pub(crate) struct Founded {
-    pub workspace: String,
-    pub name: String,
-}
-
 /// What the daemon supplies the ticket server: its endpoint, the device it is, the server it
 /// enters through (once it knows one), the person's root, and the workspace service a certified
 /// computer's entry is written through.
@@ -271,8 +265,9 @@ struct Daemon {
     home: Option<Arc<super::home::Home>>,
     /// The person's root, when this computer holds it: what approves a computer a ticket adds.
     root: RootSource,
-    /// The workspace founded here, when this computer has no login: a computer it adds enters it.
-    founded: Option<Founded>,
+    /// The person's workspace here: on a computer no ticket made, the one a computer it adds
+    /// enters. `None` where this computer holds none another computer can enter.
+    first: Option<Arc<super::first_workspace::FirstWorkspace>>,
     /// The workspace service this daemon's device writes a certified computer's entry through,
     /// and the session it asks its host through while it is a member.
     workspaces: Option<Arc<ServiceWorkspaces>>,
@@ -281,25 +276,35 @@ struct Daemon {
 
 impl Daemon {
     /// Where a computer this ticket adds enters: the server this device enters through, or, on
-    /// one no ticket made, the workspace founded here through this daemon's endpoint.
-    fn entered(&self) -> Result<Entry, String> {
+    /// one no ticket made, the person's workspace here through this daemon's endpoint, founded
+    /// now when they have none yet.
+    async fn entered(&self) -> Result<Entry, String> {
         if let Some(here) = self.home.as_ref().and_then(|home| home.get()) {
             return tilo_api::daemon::enter::login_entry(&here);
         }
-        let founded = self.founded.as_ref().ok_or_else(|| {
+        let first = self.first.as_ref().ok_or_else(|| {
             "This computer holds no workspace another computer can enter.".to_owned()
         })?;
+        let workspace = first.found().await?;
+        let name = self
+            .workspaces
+            .as_ref()
+            .zip(WorkspaceId::parse(&workspace))
+            .and_then(|(workspaces, id)| workspaces.workspace(id))
+            .map(|described| described.name);
         // The session a computer enters over proves the certificate the workspace service runs
         // under, which is the device's own unless the service has one of its own.
         let server_cert = self.workspaces.as_ref().map_or_else(
             || self.cert.clone(),
             |service| service.copies().serving_certificate().clone(),
         );
-        Ok(tilo_api::daemon::enter::founded_entry(
+        let mut entry = tilo_api::daemon::enter::founded_entry(
             &self.endpoint,
-            (founded.workspace.clone(), founded.name.clone()),
+            (workspace, String::new()),
             server_cert,
-        ))
+        );
+        entry.workspace_name = name;
+        Ok(entry)
     }
 }
 
@@ -322,7 +327,7 @@ impl Issuer for Daemon {
     }
 
     fn entry(&self) -> BoxFuture<'_, Result<Entry, String>> {
-        Box::pin(std::future::ready(self.entered()))
+        Box::pin(self.entered())
     }
 
     fn servers(&self) -> Option<Workspaces> {
@@ -350,7 +355,7 @@ impl Issuer for Daemon {
                         service.copies(),
                         (session, cert),
                         None,
-                        self.founded.is_some(),
+                        self.first.as_ref().is_some_and(|first| first.founds()),
                     )
                     .await
                 }
@@ -485,7 +490,7 @@ impl Tickets {
         endpoint: Endpoint,
         home: Option<Arc<super::home::Home>>,
         root: RootSource,
-        founded: Option<Founded>,
+        first: Option<Arc<super::first_workspace::FirstWorkspace>>,
         workspaces: Option<Arc<ServiceWorkspaces>>,
         place: Place,
         service: ActionService,
@@ -496,7 +501,7 @@ impl Tickets {
             endpoint: endpoint.clone(),
             home: home.clone(),
             root,
-            founded,
+            first,
             workspaces: workspaces.clone(),
             service,
         }));

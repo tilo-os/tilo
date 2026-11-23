@@ -115,7 +115,7 @@ tilo_test_env::scenario! {
                 for _ in 0..2 {
                     let (stream, _) = listener.accept().unwrap();
                     super::serve_connection(
-                        stream.try_clone().unwrap(),
+                        &stream.try_clone().unwrap(),
                         stream,
                         &std::sync::Arc::new(tilo_mcp::McpServer::for_person(
                             host.clone(),
@@ -170,7 +170,7 @@ tilo_test_env::scenario! {
             let host = host.clone();
             std::thread::spawn(move || {
                 super::serve_connection(
-                    served.try_clone().unwrap(),
+                    &served.try_clone().unwrap(),
                     served,
                     &std::sync::Arc::new(tilo_mcp::McpServer::for_person(
                         host,
@@ -907,11 +907,11 @@ fn the_system_daemon_answers_each_account_as_who_signed_in() {
                 "",
             ))
         }),
-        status: super::Status {
+        status: std::sync::Arc::new(|| super::Status {
             version: 1,
             pid: std::process::id(),
             workspace: "home".into(),
-        },
+        }),
         search: std::sync::Arc::new(std::sync::OnceLock::new()),
         media: None,
         other_devices: None,
@@ -953,6 +953,32 @@ fn the_system_daemon_answers_each_account_as_who_signed_in() {
         (answer["result"]["isError"] == true, text)
     };
     let status = |uid: u32| ask(uid, json!({"native": "status"}));
+    // A seat action whose answer may carry a descriptor: its text, and the descriptor.
+    let act_handed = |uid: u32, path: &str, args: Value| {
+        PEER.store(uid, Ordering::SeqCst);
+        let stream = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let request = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "tilo_do", "arguments": {"path": path, "args": args}}});
+        writeln!(&stream, "{request}").unwrap();
+        let (mut line, fd) = runtime_portal::fd_transport::recv_with_fd(&stream).unwrap();
+        while line.last() != Some(&b'\n') {
+            let mut rest = Vec::new();
+            io::BufReader::new(&stream)
+                .read_until(b'\n', &mut rest)
+                .unwrap();
+            line.extend(rest);
+        }
+        let answer: Value = serde_json::from_slice(&line).unwrap();
+        assert_ne!(answer["result"]["isError"], true, "{answer}");
+        let text = answer["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        (text, fd)
+    };
 
     // Before anyone signed in, Ada's account is a stranger: no person, and the device alone.
     let unknown = who(ADA);
@@ -985,9 +1011,35 @@ fn the_system_daemon_answers_each_account_as_who_signed_in() {
         json!({"person": hex::encode([3; 32]), "uid": ADA, "proof": proof_of(ADA)}),
     );
     assert!(failed, "{why}");
-    let (failed, signed_in) = act(ROOT, "seats#signed-in", signing_in);
-    assert!(!failed, "{signed_in}");
+    // A person who arrives has a workspace found for them, unless their session hands over the
+    // ones their desktop kept, and root is handed the link her shell is admitted by, with its
+    // answer, for the session it starts.
+    let shells = std::sync::Arc::new(Linked::default());
+    native.seats.serve(std::sync::Arc::clone(&shells) as _);
+    let mut importing = signing_in.clone();
+    importing["importing"] = json!(true);
+    let (signed_in, link) = act_handed(ROOT, "seats#signed-in", importing);
     assert!(signed_in.contains(&hex::encode(person)), "{signed_in}");
+    assert_eq!(
+        shells.arrivals.load(Ordering::SeqCst),
+        0,
+        "the desktop's workspace is hers"
+    );
+    shells.reaches(link.expect("the answer carries her shell's link"));
+    let (signed_in, link) = act_handed(ROOT, "seats#signed-in", signing_in);
+    assert!(signed_in.contains(&hex::encode(person)), "{signed_in}");
+    assert_eq!(
+        shells.arrivals.load(Ordering::SeqCst),
+        1,
+        "she is found a workspace"
+    );
+    shells.reaches(link.expect("each sign-in carries a link of its own"));
+    // A daemon of the system's starts no shell itself: root starts each with the link it got.
+    let started = ask(
+        ADA,
+        json!({"native": "shells#start", "args": ["-c", "exit 0"], "env": {}}),
+    );
+    assert!(started["error"].is_string(), "{started}");
 
     // Ada is her person now, and served; Bob still a stranger; root the device, no person.
     assert_eq!(who(ADA)["person"], hex::encode(person));
@@ -1106,4 +1158,151 @@ fn a_daemon_in_this_process_stops_and_starts_again_on_its_device() {
             "nothing answers there after the {start} start stopped"
         );
     }
+}
+
+/// A person's shells as a test serves them: each sign-in counted unless it imports, and each
+/// link a pair whose other end the test keeps; a shell is started as `/bin/sh` with what it asks.
+#[derive(Default)]
+struct Linked {
+    arrivals: std::sync::atomic::AtomicUsize,
+    ends: std::sync::Mutex<Vec<std::os::unix::net::UnixStream>>,
+}
+
+impl Linked {
+    /// Whether `link` is the other end of the newest link made.
+    fn reaches(&self, link: std::os::fd::OwnedFd) {
+        use io::{Read as _, Write as _};
+        let mut link = std::os::unix::net::UnixStream::from(link);
+        let mut end = self.ends.lock().unwrap().pop().unwrap();
+        end.write_all(b"shell").unwrap();
+        let mut read = [0; 5];
+        link.read_exact(&mut read).unwrap();
+        assert_eq!(
+            &read, b"shell",
+            "the handed descriptor is the link the daemon made"
+        );
+    }
+}
+
+impl crate::seats::Shells for Linked {
+    fn arrived(&self, importing: bool) -> io::Result<std::os::unix::net::UnixStream> {
+        if !importing {
+            self.arrivals
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        let (ours, theirs) = std::os::unix::net::UnixStream::pair()?;
+        self.ends.lock().unwrap().push(ours);
+        Ok(theirs)
+    }
+
+    fn start(
+        &self,
+        args: Vec<std::ffi::OsString>,
+        env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+    ) -> io::Result<std::process::Child> {
+        std::process::Command::new("/bin/sh")
+            .args(args)
+            .env_clear()
+            .envs(env)
+            .spawn()
+    }
+}
+
+/// A daemon that runs as its person's own account starts their shell when that account asks, and
+/// answers how it ended; no other account starts one, and a request that asks for one founds
+/// nothing.
+#[test]
+fn the_persons_own_daemon_starts_their_shell_when_their_account_asks() {
+    use io::{BufRead as _, Write as _};
+    use serde_json::{Value, json};
+    use std::sync::atomic::Ordering;
+    use tilo_api::daemon::admission::Admission;
+    const DAEMON: u32 = 1000;
+    const OTHER: u32 = 1001;
+
+    let dir = tempfile::tempdir().unwrap();
+    let keys = tilo_device_identity::IdentityPaths::under(dir.path().join("identity"));
+    let (key, _) = tilo_device_identity::persist::load_or_create_device_key(&keys).unwrap();
+    let answers = crate::device::unclaimed::DeviceOnly::new(
+        key,
+        tilo_device_identity::login::Place::at(dir.path().join("login"), keys),
+    );
+    let admission: &'static Admission = Box::leak(Box::new(Admission::new(DAEMON, false)));
+    let native = std::sync::Arc::new(super::Native::new(answers, test_peer, admission));
+    // The person's endpoint founds their workspace as a connection is admitted to it.
+    let founded = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    native.serve_the_person(super::Endpoint::<crate::device::unclaimed::DeviceOnly> {
+        session_factory: {
+            let founded = std::sync::Arc::clone(&founded);
+            std::sync::Arc::new(move || {
+                founded.fetch_add(1, Ordering::SeqCst);
+                Err(io::Error::other("no workspace in this test"))
+            })
+        },
+        status: std::sync::Arc::new(|| super::Status {
+            version: 1,
+            pid: std::process::id(),
+            workspace: String::new(),
+        }),
+        search: std::sync::Arc::new(std::sync::OnceLock::new()),
+        media: None,
+        other_devices: None,
+    });
+    native.seats.serve(std::sync::Arc::new(Linked::default()));
+    let socket = dir.path().join("native.sock");
+    let listener = tilo_files::native::private::bind_socket(&socket).unwrap();
+    {
+        let native = std::sync::Arc::clone(&native);
+        std::thread::spawn(move || native.accept(&listener));
+    }
+    // A connection of `uid`'s.
+    let connect = |uid: u32| {
+        PEER.store(uid, Ordering::SeqCst);
+        let stream = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        (io::BufReader::new(stream.try_clone().unwrap()), stream)
+    };
+    // One request on `connection`, and its answer.
+    let ask = |connection: &mut (
+        io::BufReader<std::os::unix::net::UnixStream>,
+        std::os::unix::net::UnixStream,
+    ),
+               request: &Value| {
+        writeln!(connection.1, "{request}").unwrap();
+        let mut line = String::new();
+        connection
+            .0
+            .read_line(&mut line)
+            .expect("the daemon answers");
+        serde_json::from_str::<Value>(&line).unwrap()
+    };
+
+    let start =
+        json!({"native": "shells#start", "args": ["-c", "exit \"$CODE\""], "env": {"CODE": "7"}});
+    let mut person = connect(DAEMON);
+    let started = ask(&mut person, &start);
+    let pid = started["pid"].clone();
+    assert!(pid.is_u64(), "{started}");
+    let ended = ask(&mut person, &json!({"native": "shells#wait", "pid": pid}));
+    assert_eq!(
+        ended["code"], 7,
+        "the shell ran as asked, and its end is told: {ended}"
+    );
+    assert_eq!(
+        founded.load(Ordering::SeqCst),
+        0,
+        "starting a shell founds nothing"
+    );
+
+    // A shell is waited for once, and only one this daemon started.
+    let again = ask(
+        &mut connect(DAEMON),
+        &json!({"native": "shells#wait", "pid": pid}),
+    );
+    assert!(again["error"].is_string(), "{again}");
+    // Another account starts no shell of this person's.
+    let refused = ask(&mut connect(OTHER), &start);
+    assert!(refused["error"].is_string(), "{refused}");
 }

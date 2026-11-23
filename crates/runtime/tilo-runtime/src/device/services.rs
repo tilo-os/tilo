@@ -59,15 +59,9 @@ const COLLABORATION_HISTORY: &str = "state/tilo/collaboration/history";
 /// The broker's durable invocation journal: a retried invocation id never
 /// starts twice, across restarts too.
 pub(super) const INVOCATION_JOURNAL: &str = "invocations";
-/// Where a computer with no login keeps the id of the workspace founded on it for a person, in
-/// the device's directory: this, then the person's key in hex. A root that comes to this computer
-/// later founds a workspace of its own, never enters one another person founded here.
-const FOUNDED: &str = "workspace-of-";
 /// Where the device's workspace service and key service keep their state, in the device's
 /// directory.
 const OWN: &str = "own";
-/// What the workspace founded on a computer with no login is called.
-const FOUNDED_NAME: &str = "Home";
 /// What a daemon says on a computer that holds no Tilo identity and has no login.
 pub const SET_UP_FIRST: &str = "This computer has no Tilo identity yet: set up Tilo first, with \
      `tilo login` and the code from your Tilo tab (Set up with your agent).";
@@ -78,9 +72,13 @@ pub struct Daemon {
     // replacement of the runtime that supplied its policy time.
     policy_origin: tilo_workspace_service::apps::policy_clock::PolicyOrigin,
     broker: BrokerHandle,
+    /// The links of the shells this daemon starts ([`Self::start_shell`]).
+    #[cfg(unix)]
+    shell_links: Arc<tilo_workspace_service::apps::shell::ShellLinks>,
     workspaces: Arc<ServiceWorkspaces>,
     _identity: IdentityBrokerHandle,
-    workspace: String,
+    /// The person's workspace here, once there is one.
+    first: Arc<super::first_workspace::FirstWorkspace>,
     actor: String,
     identity_socket: PathBuf,
     blob_socket: PathBuf,
@@ -183,6 +181,55 @@ pub(crate) fn found_a_person(keys: &tilo_device_identity::IdentityPaths) -> io::
 }
 
 impl Daemon {
+    /// A new shell link: a connection to this daemon's dispatch that it opens itself and admits as
+    /// the shell of the person this device acts for, by a one-use secret no other process ever
+    /// sees. Whoever holds it is the shell; hand it only to the shell this daemon starts.
+    ///
+    /// # Errors
+    /// The dispatch's socket does not take the connection.
+    #[cfg(unix)]
+    pub fn shell_link(&self) -> io::Result<std::os::unix::net::UnixStream> {
+        use runtime_collab::wire::shell::SHELL_MAGIC;
+        use std::io::Write as _;
+        let secret = self
+            .shell_links
+            .make(tilo_workspace_service::apps::shell::ShellCaller {
+                person: self.workspaces.device_cert().user_public_key,
+            });
+        let mut link = std::os::unix::net::UnixStream::connect(self.broker.app_socket())?;
+        link.write_all(SHELL_MAGIC)?;
+        link.write_all(&secret)?;
+        Ok(link)
+    }
+
+    /// Start `command` as the person's shell, handed the link this daemon made for it
+    /// ([`runtime_collab::wire::shell::SHELL_FD_ENV`]): the daemon starts the shell itself, so the
+    /// link passes from it to that one process and to no other of the account.
+    ///
+    /// # Errors
+    /// No link could be made, or the shell did not start.
+    #[cfg(target_os = "linux")]
+    pub fn start_shell(&self, mut command: Command) -> io::Result<Child> {
+        use std::os::fd::AsRawFd as _;
+        /// Where the shell finds its link.
+        const SHELL_FD: i32 = 3;
+        let link = self.shell_link()?;
+        launcher::inherit::hand_down(&mut command, vec![(link.as_raw_fd(), SHELL_FD)], false);
+        command.env(
+            runtime_collab::wire::shell::SHELL_FD_ENV,
+            SHELL_FD.to_string(),
+        );
+        let child = command.spawn()?;
+        drop(link);
+        Ok(child)
+    }
+
+    /// The person's own workspace here, once one was founded or moved in: asking founds none.
+    #[must_use]
+    pub fn first_workspace(&self) -> Option<&str> {
+        self.first.get()
+    }
+
     /// The workspaces this device holds, through its opened workspace service.
     #[must_use]
     pub fn workspaces(&self) -> &tilo_workspace_service::workspaces::Workspaces {
@@ -299,8 +346,9 @@ impl Daemon {
                 .upgrade()
                 .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
             let policy_time = daemon.policy_origin.capture().map_err(io::Error::other)?;
+            let workspace = daemon.first.found_blocking().map_err(io::Error::other)?;
             let (host, caller) = daemon.action_provider()?.agent_session(
-                &daemon.workspace,
+                &workspace,
                 &daemon.actor,
                 &policy_time,
                 |person| {
@@ -358,16 +406,9 @@ impl Daemon {
         let dev = matches!(serving, Serving::Dev);
         let actor = identity.person();
         let joined = identity.joined();
-        let (workspace_id, founded) = if joined {
-            (
-                tilo_server_protocol::servers::person_workspace_id(&identity.cert.user_public_key),
-                None,
-            )
-        } else {
-            let founded = founded_workspace(identity.place.dir(), &identity.cert.user_public_key)?;
-            (founded.to_string(), Some(founded))
-        };
-        let apps = Arc::new(apps::Apps::from_env(root, sockets, &workspace_id));
+        // A computer no ticket made governs its person's workspace itself.
+        let governs = !joined;
+        let apps = Arc::new(apps::Apps::from_env(root, sockets));
         let brokers = Arc::new(Mutex::new(channels(root)));
         let fanout = Arc::new(FanoutState::new());
         // What apps may found records with here: the kinds their installed
@@ -382,7 +423,7 @@ impl Daemon {
         // The device's workspace service, holding the member copies of the
         // workspaces the login takes part in, or the workspace founded here.
         stage("opening the device's workspace service");
-        let key_sessions = founded.map(|_| crate::key_sessions::KeySessions::new());
+        let key_sessions = governs.then(crate::key_sessions::KeySessions::new);
         let port = configured_port()?.or_else(|| joined.then_some(take_work::PORT));
         let endpoint = listen_endpoint(&identity.key, port)?;
         let workspaces = open_workspaces(
@@ -401,12 +442,16 @@ impl Daemon {
         let take_work = joined
             .then(|| take_work::Server::from_login(home.get().as_ref()))
             .flatten();
-        if let Some(founded) = founded {
-            tilo_rt::app()
-                .handle()
-                .block_on(workspaces.found(founded, FOUNDED_NAME))
-                .map_err(io::Error::other)?;
-        }
+        // The person's workspace here: their own on a device a ticket made, else the one this
+        // computer founds for them the first time they need one.
+        let person_workspace = joined
+            .then(|| tilo_server_protocol::servers::person_workspace_id(&identity.cert.user_public_key));
+        let first = super::first_workspace::FirstWorkspace::open(
+            Arc::clone(&workspaces),
+            person_workspace.as_deref(),
+            identity.place.dir(),
+            &identity.cert.user_public_key,
+        )?;
         // What the person granted apps in a workspace, as the service that holds its governance
         // answers: what every launch here hands the app it starts.
         apps.keep_launch_grants(Arc::clone(&workspaces) as Arc<dyn apps::LaunchGrantsSource>);
@@ -433,10 +478,7 @@ impl Daemon {
                 workspaces.endpoint(),
                 joined.then(|| Arc::clone(&home)),
                 Arc::new(super::person::root),
-                founded.map(|workspace| super::ticket::Founded {
-                    workspace: workspace.to_string(),
-                    name: FOUNDED_NAME.to_owned(),
-                }),
+                Some(Arc::clone(&first)),
                 Some(Arc::clone(&workspaces)),
                 identity.place.clone(),
                 actions.clone(),
@@ -452,7 +494,7 @@ impl Daemon {
             workspaces: &workspaces,
             take_work,
             actions,
-            host: founded.map(|_| workspaces.service().as_ref()),
+            host: governs.then(|| workspaces.service().as_ref()),
         });
         // What is the person's alone is kept in their own workspace, read and written here on
         // this daemon's runtime once its service holds it: their devices, and the answers they
@@ -476,6 +518,8 @@ impl Daemon {
         // bytes, which the broker's record content reads and keeps through them.
         let files_daemons = Arc::new(tilo_workspace_service::files::socket::Daemons::default());
         stage("starting the collaboration broker");
+        #[cfg(unix)]
+        let shell_links = Arc::default();
         let (policy_origin, broker) = start_broker(
             BrokerParts {
                 root,
@@ -486,6 +530,8 @@ impl Daemon {
                 creation: Arc::clone(&creation),
                 person: actor.clone(),
                 files: Arc::clone(&files_daemons),
+                #[cfg(unix)]
+                shell_links: &shell_links,
             },
             brokers,
             fanout,
@@ -500,7 +546,7 @@ impl Daemon {
                 key_sessions,
                 &broker,
                 &workspaces,
-                (&workspace_id, &actor),
+                (&first, &actor),
                 &policy_origin,
             )?;
         }
@@ -517,12 +563,12 @@ impl Daemon {
                     device: identity.cert.device_public_key,
                 },
             },
-            taking,
-            founded,
+            taking || governs,
             stage,
         );
         if let Some(replicas) = &replicas {
             let _ = replica_slot.set(Arc::downgrade(replicas));
+            first.show_files_in(replicas);
         }
         // Device control is this device's own resource: its steps run as the units the image
         // ships, so a person's grant on `devices/<this>/vm` reaches them from boot. A device
@@ -546,11 +592,13 @@ impl Daemon {
             _files_tree: files_tree,
             policy_origin,
             broker,
+            #[cfg(unix)]
+            shell_links,
             other_devices: other_devices(&workspaces),
             apps,
             workspaces,
             _identity: identity_broker,
-            workspace: workspace_id,
+            first,
             actor,
             identity_socket,
             blob_socket: sockets.join(BLOB_SOCKET),
@@ -565,30 +613,6 @@ impl Daemon {
             place,
             _lock: lock,
         })
-    }
-}
-
-/// The workspace founded on this computer for `person`, as it has no login: the one an earlier
-/// start founded for them, kept in the device's directory `dir`, or a new one.
-fn founded_workspace(dir: &Path, person: &[u8; 32]) -> io::Result<WorkspaceId> {
-    let path = dir.join(format!("{FOUNDED}{}", hex::encode(person)));
-    match std::fs::read_to_string(&path) {
-        Ok(kept) => WorkspaceId::parse(kept.trim()).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("{} names no workspace", path.display()),
-            )
-        }),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            let founded = WorkspaceId::new();
-            tilo_files::native::atomic::write_with_mode(
-                &path,
-                founded.to_string().as_bytes(),
-                0o600,
-            )?;
-            Ok(founded)
-        }
-        Err(error) => Err(error),
     }
 }
 
@@ -709,6 +733,9 @@ struct BrokerParts<'a> {
     person: String,
     /// The files daemons mounting this device's workspaces, whose stores keep their files' bytes.
     files: Arc<tilo_workspace_service::files::socket::Daemons>,
+    /// The links of the shells this daemon starts.
+    #[cfg(unix)]
+    shell_links: &'a Arc<tilo_workspace_service::apps::shell::ShellLinks>,
 }
 
 /// Start the collaboration broker over this profile's services.
@@ -814,12 +841,12 @@ fn broker_services(
         // endpoints ask again when it says a channel changed.
         group_keys: Some(parts.keys.clone()),
         action_offload,
-        // The person's desktop session: their workspaces' documents, governance and standing,
+        // The person's desktop session: their workspaces' documents, key access, membership and standing,
         // reached through this device alone.
         #[cfg(unix)]
         shell: Some(Arc::new(super::shell::services(
             parts.workspaces,
-            parts.apps,
+            parts.shell_links,
         ))),
         ..ProcessServices::default()
     })
@@ -870,15 +897,16 @@ impl RuntimeServices for Daemon {
         self.other_devices.clone()
     }
 
-    fn workspace(&self) -> &str {
-        &self.workspace
+    /// The person's workspace here, founded now on a computer with no login that has none yet.
+    fn workspace(&self) -> io::Result<String> {
+        self.first.found_blocking().map_err(io::Error::other)
     }
 
     fn mcp_workspace(&self, requested: Option<&str>) -> io::Result<String> {
-        let workspace = requested.unwrap_or(&self.workspace);
-        if workspace == self.workspace {
-            return Ok(self.workspace.clone());
-        }
+        let Some(workspace) = requested.filter(|workspace| Some(*workspace) != self.first.get())
+        else {
+            return self.workspace();
+        };
         self.workspaces
             .action_workspace(&self.actor, workspace)
             .map_err(|error| io::Error::new(io::ErrorKind::PermissionDenied, error))
@@ -888,8 +916,12 @@ impl RuntimeServices for Daemon {
         &self.actor
     }
 
+    /// The person's provider in their workspace here, once there is one: none is founded for it.
     fn action_provider(&self) -> io::Result<RuntimeActionProvider> {
-        self.provider_for(&self.workspace)
+        let workspace = self.first.get().ok_or_else(|| {
+            io::Error::other("this computer holds no workspace of its person's yet")
+        })?;
+        self.provider_for(workspace)
     }
 
     fn mcp_session_factory(
@@ -907,24 +939,24 @@ impl RuntimeServices for Daemon {
     }
 
     fn launch(&self, app_id: &str, command: Command) -> io::Result<Child> {
-        let child = host::launch(
+        let workspace = self.workspace()?;
+        host::launch(
             command,
             app_id,
-            &self.workspace,
+            &workspace,
             &host::ServiceSockets {
                 collab: self.broker.app_socket(),
                 identity: &self.identity_socket,
                 blobs: &self.blob_socket,
             },
-        )?;
-        self.apps.handed_connections(child.id(), app_id);
-        Ok(child)
+        )
     }
 
     fn media(&self) -> Option<Arc<dyn tilo_mcp::MediaReader>> {
+        let first = Arc::clone(&self.first);
         Some(Arc::new(profile::BlobMedia::new(
             &self.blob_socket,
-            &self.workspace,
+            Box::new(move || first.found_blocking().map_err(io::Error::other)),
         )))
     }
 }
@@ -978,7 +1010,7 @@ impl tilo_api::session::Here for Daemon {
             .map(|workspace| tilo_api::session::held(workspace.id().to_string(), workspace.name))
             .collect();
         // The one this computer enters through first: what a command that names none acts in.
-        kept.sort_by_key(|workspace| workspace.id != self.workspace);
+        kept.sort_by_key(|workspace| Some(workspace.id.as_str()) != self.first.get());
         kept
     }
 
@@ -1029,7 +1061,7 @@ impl tilo_api::session::Here for Daemon {
     fn leave(&self, workspace: &str) -> tilo_api::session::Asked<'_, ()> {
         let workspace = workspace.to_owned();
         Box::pin(async move {
-            if workspace == self.workspace {
+            if Some(workspace.as_str()) == self.first.get() {
                 return Err(
                     "this computer enters through this workspace: it keeps it for as long as it \
                      is the person's device"
@@ -1063,6 +1095,29 @@ impl tilo_api::session::Here for Daemon {
             done.complete(());
         });
         Some(answer)
+    }
+
+    /// Only this device's own person, on this device, hands it what its desktop kept: never an
+    /// agent of theirs, another device, or anyone else.
+    fn import(&self, by: &Caller, carried: serde_json::Value) -> tilo_api::session::Imported {
+        let own = by.user_public_key() == Some(&self.cert.user_public_key)
+            && by.device_public_key() == Some(&self.cert.device_public_key)
+            && by.agent_name().is_none()
+            && !by.is_session_delegated();
+        let workspaces = Arc::clone(&self.workspaces);
+        let first = Arc::clone(&self.first);
+        Box::pin(async move {
+            if !own {
+                return Err(
+                    "only this device's own person takes its desktop's workspaces in".into(),
+                );
+            }
+            let carried = serde_json::from_value::<super::workspaces::Carried>(carried)
+                .map_err(|error| format!("what the desktop handed over does not read: {error}"))?;
+            let (imported, moved) = workspaces.import(carried).await?;
+            first.moved_in(&moved)?;
+            Ok(imported)
+        })
     }
 }
 
@@ -1240,9 +1295,9 @@ impl RuntimeActionProvider {
         agent: impl FnOnce(&[u8; 32]) -> (String, String),
     ) -> io::Result<(Self, Caller)> {
         let workspaces = Arc::clone(&self.workspaces);
-        let (workspace, actor) = (workspace.to_owned(), actor.to_owned());
+        let (admitted, actor) = (workspace.to_owned(), actor.to_owned());
         let admission =
-            block_on_owned(async move { workspaces.admit_execution(&workspace, &actor).await })
+            block_on_owned(async move { workspaces.admit_execution(&admitted, &actor).await })
                 .map_err(io::Error::other)?;
         let caller = admission.caller().clone();
         let (Some(person), Some(user), Some(workspace)) = (
@@ -1263,7 +1318,7 @@ impl RuntimeActionProvider {
             .map_err(io::Error::other)?;
         let run = Self {
             broker: self.broker.clone(),
-            workspace: self.workspace.clone(),
+            workspace: workspace.to_owned(),
             workspaces: self.workspaces.clone(),
             apps: self.apps.clone(),
             session: Some(Arc::new(AdmittedRuntimeSession {
@@ -1693,7 +1748,6 @@ struct TakenFiles<'a> {
 fn take_work_files(
     parts: &TakenFiles<'_>,
     takes: bool,
-    founded: Option<WorkspaceId>,
     stage: &mut dyn FnMut(&str),
 ) -> Option<Arc<take_work::files::Replicas>> {
     let home = tilo_paths::home()?;
@@ -1721,7 +1775,7 @@ fn take_work_files(
         .workspaces
         .held()
         .into_iter()
-        .filter(|_| takes || founded.is_some())
+        .filter(|_| takes)
         .collect();
     if !workspaces.is_empty() {
         stage("showing the workspaces' files");
@@ -1807,14 +1861,14 @@ fn start_triggers(broker: &BrokerHandle, workspaces: &ServiceWorkspaces) {
         ));
 }
 
-/// Answer the record actions of the workspace founded here (`workspace`, as
-/// `actor`) for the person's keys from `broker` from now on. The host opened
-/// before the broker and refused them as not running yet until now.
+/// Answer the record actions of the person's workspace governed here (`first`, as `actor`) for
+/// the person's keys from the daemon's dispatch from now on, once there is one. The host opened
+/// before the dispatch and refused them as not running yet until now.
 fn serve_key_sessions(
     key_sessions: &crate::key_sessions::KeySessions,
     broker: &BrokerHandle,
     workspaces: &Arc<ServiceWorkspaces>,
-    (workspace, actor): (&str, &str),
+    (first, actor): (&Arc<super::first_workspace::FirstWorkspace>, &str),
     policy_origin: &tilo_workspace_service::apps::policy_clock::PolicyOrigin,
 ) -> io::Result<()> {
     let broker = broker
@@ -1826,15 +1880,18 @@ fn serve_key_sessions(
             workspaces.device_cert(),
         )),
         Arc::new(host_runs::HostRuns {
-            provider: RuntimeActionProvider {
-                broker,
-                workspace: workspace.to_owned(),
-                workspaces: Arc::clone(workspaces),
-                apps: None,
-                session: None,
-                tickets: None,
-            },
-            workspace: workspace.to_owned(),
+            provider: Box::new({
+                let workspaces = Arc::clone(workspaces);
+                move |workspace| RuntimeActionProvider {
+                    broker: broker.clone(),
+                    workspace: workspace.to_owned(),
+                    workspaces: Arc::clone(&workspaces),
+                    apps: None,
+                    session: None,
+                    tickets: None,
+                }
+            }),
+            first: Arc::clone(first),
             actor: actor.to_owned(),
             policy_time: policy_origin.capture().map_err(io::Error::other)?,
         }),

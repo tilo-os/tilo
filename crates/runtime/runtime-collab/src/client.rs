@@ -1919,7 +1919,7 @@ pub(crate) mod testing {
     }
 }
 
-/// The person's shell's connection to the device's broker (`crate::wire::shell`): the device's
+/// The person's shell's connection to the daemon's dispatch (`crate::wire::shell`): the device's
 /// documents, its actions, and how its workspaces stand, asked as the person its account is
 /// signed in as. Cheap to clone.
 #[cfg(unix)]
@@ -1930,25 +1930,51 @@ pub struct ShellClient {
 
 #[cfg(unix)]
 impl ShellClient {
-    /// Open the shell's connection over `stream`, already connected to the broker's socket, and
-    /// what resolves once it ended. Its frames are carried by a task spawned on the current
-    /// runtime.
+    /// Open the shell's connection over `link`, the shell link the daemon made and handed this
+    /// process ([`Self::inherited`]), and what resolves once it ended. Its frames are carried by a
+    /// task spawned on the current runtime.
     ///
     /// # Errors
-    /// The marker could not be sent.
-    pub async fn open(
-        mut stream: tokio::net::UnixStream,
-    ) -> Result<(Self, ConnectionEnd), NotAvailable> {
-        use tokio::io::AsyncWriteExt as _;
-        stream.write_all(crate::wire::shell::SHELL_MAGIC).await?;
-        let (client, end) = CollabClient::connected(stream);
+    /// Never yet: the daemon admitted the link when it made it.
+    #[allow(
+        clippy::unused_async,
+        reason = "a connection's start is awaited, as every other client's is"
+    )]
+    pub async fn open(link: tokio::net::UnixStream) -> Result<(Self, ConnectionEnd), NotAvailable> {
+        let (client, end) = CollabClient::connected(link);
         Ok((Self { client }, end))
+    }
+
+    /// The shell link the daemon handed this process when it started it
+    /// ([`crate::wire::shell::SHELL_FD_ENV`]), taken once; `None` in a process the daemon did not
+    /// start as the shell.
+    ///
+    /// # Errors
+    /// The handed descriptor is no socket this process can use.
+    pub fn inherited() -> Option<std::io::Result<std::os::unix::net::UnixStream>> {
+        static TAKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let fd: std::os::fd::RawFd = std::env::var(crate::wire::shell::SHELL_FD_ENV)
+            .ok()?
+            .parse()
+            .ok()?;
+        if TAKEN.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return None;
+        }
+        // SAFETY: the daemon handed this descriptor to the process for the shell link alone, and
+        // the flag above lets it be owned exactly once.
+        let link =
+            unsafe { <std::os::unix::net::UnixStream as std::os::fd::FromRawFd>::from_raw_fd(fd) };
+        // It was handed down for this process's exec alone: no program the shell starts keeps it.
+        let taken = rustix::io::fcntl_setfd(&link, rustix::io::FdFlags::CLOEXEC)
+            .map_err(std::io::Error::from)
+            .and_then(|()| link.set_nonblocking(true));
+        Some(taken.map(|()| link))
     }
 
     /// Ask the device `call`.
     ///
     /// # Errors
-    /// The broker refused it, or the connection failed.
+    /// The daemon refused it, or the connection failed.
     pub async fn call(
         &self,
         call: crate::wire::shell::ShellCall,

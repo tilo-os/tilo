@@ -2,6 +2,14 @@
 //! account signed in as which person (the actions `seats#signed-in` and `seats#left`, root's
 //! alone to call), and who a connection is (`{"native": "account#who"}`).
 //!
+//! A person's shell reaches the daemon only by a link the daemon made for it
+//! ([`crate::device::services::Daemon::shell_link`]). Under the system unit root starts each
+//! session, so `seats#signed-in` answers the link beside its reply, as a descriptor on the
+//! connection, and root hands it to the session it starts. A daemon that runs as the person's own
+//! account starts the shell itself when that account asks (`{"native": "shells#start"}`), and
+//! answers when it ended (`{"native": "shells#wait"}`): the link passes from the daemon to the
+//! shell and to no other process.
+//!
 //! The account a connection comes from is the kernel's account of its peer ([`peer_uid`]), and
 //! the daemon's admission ([`tilo_api::daemon::admission`]) says what it acts as. Which person an
 //! account is, root says when the account signs in, and the daemon never guesses it from the uid:
@@ -10,9 +18,13 @@
 //! proof ([`tilo_identity::local_person`]), signed by that person for this device's key and this
 //! account: an account cannot name a person it is not.
 
+use std::collections::HashMap;
+use std::ffi::OsString;
 use std::io;
+use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
-use std::sync::Arc;
+use std::process::Child;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::{Value, json};
 use tilo_actions::remote::{
@@ -20,6 +32,8 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionAddress, ActionParam, ParamType};
 use tilo_api::daemon::admission::{Admission, Admitted, ROOT};
+use tilo_lock::MutexRecover as _;
+use tilo_mcp::lines::Answer;
 
 use crate::device::unclaimed::DeviceOnly;
 
@@ -29,12 +43,18 @@ const SEATS: &str = "seats";
 pub(crate) const PROVIDER: &str = "tilo.seats";
 /// What the seats' catalogue is.
 const REVISION: &str = "tilo.seats/1";
-/// Say an account signed in: `{person, uid, proof}`, the person's key and its proof as hex.
+/// Say an account signed in: `{person, uid, proof, importing?}`, the person's key and its proof
+/// as hex, and whether the account's session hands over what its desktop kept.
 const SIGNED_IN: &str = "signed-in";
 /// Say an account's session ended: `{uid}`.
 const LEFT: &str = "left";
 /// Who this connection is: `{person?, device, label?, claimed}`.
 const WHO: &str = "account#who";
+/// Start the person's shell: `{args, env}`, the shell's arguments and environment, answered
+/// `{pid}`.
+const START: &str = "shells#start";
+/// Wait for a shell the daemon started to end: `{pid}`, answered `{code?, signal?}` once it ended.
+const WAIT: &str = "shells#wait";
 /// Why anyone but root is refused the seats' actions.
 pub(crate) const ROOT_ALONE: &str = "only root says who signed in on this computer, or who left";
 
@@ -92,6 +112,11 @@ fn rows() -> Vec<CatalogueRow> {
                     ParamType::Text,
                     "The account's local person proof, as hex.",
                 ),
+                ActionParam::optional(
+                    "importing",
+                    ParamType::Boolean,
+                    "Whether the account's session hands over the workspaces its desktop kept.",
+                ),
             ],
         )),
         row(action(
@@ -134,12 +159,33 @@ pub(crate) struct Seat {
     pub(crate) admitted: Admitted,
 }
 
+/// What the daemon does for the person its seats admit, once their services run.
+pub(crate) trait Shells: Send + Sync {
+    /// The person signed in on a seat: find them their workspace, unless their session hands
+    /// over the ones their desktop kept (`importing`), and make the link their shell is admitted
+    /// by.
+    ///
+    /// # Errors
+    /// No link could be made.
+    fn arrived(&self, importing: bool) -> io::Result<UnixStream>;
+
+    /// Start the person's shell with `args` and `env`, handed its link.
+    ///
+    /// # Errors
+    /// The shell did not start.
+    fn start(&self, args: Vec<OsString>, env: Vec<(OsString, OsString)>) -> io::Result<Child>;
+}
+
 /// The daemon's seats: its admission, and the device it answers for.
 #[derive(Clone)]
 pub(crate) struct Seats {
     admission: &'static Admission,
     device: DeviceOnly,
     uid_of: UidOf,
+    /// What the daemon does for its person once their services run.
+    shells: Arc<OnceLock<Arc<dyn Shells>>>,
+    /// The shells this daemon started, by pid, until one is waited for.
+    started: Arc<Mutex<HashMap<u32, Child>>>,
 }
 
 impl Seats {
@@ -148,7 +194,14 @@ impl Seats {
             admission,
             device,
             uid_of,
+            shells: Arc::default(),
+            started: Arc::default(),
         }
+    }
+
+    /// Serve the person's shells with `shells` from now on: what a sign-in and a shell's start do.
+    pub(crate) fn serve(&self, shells: Arc<dyn Shells>) {
+        let _ = self.shells.set(shells);
     }
 
     /// Who the connection `stream` is. One whose account the kernel does not say is a stranger.
@@ -168,19 +221,108 @@ impl Seats {
         }
     }
 
-    /// Who the connection is, when `request` asks (`{"native": "account#who"}`); `None` for any
-    /// other request.
-    pub(crate) fn answer(&self, seat: Seat, request: &Value) -> Option<Value> {
-        (request.get("native").and_then(Value::as_str) == Some(WHO)).then(|| self.who(seat))
+    /// What the seats answer `request` with, when it is theirs: who the connection is
+    /// (`account#who`), or a shell started or waited for (`shells#start`, `shells#wait`); `None`
+    /// for any other request.
+    pub(crate) fn answer(&self, seat: Seat, request: &Value) -> Option<Answer<'static>> {
+        let ready = |answer: Value| Answer::InOrder(Box::pin(async move { Ok(Some(answer)) }));
+        let refused = |why: String| ready(json!({"error": why}));
+        match request.get("native").and_then(Value::as_str)? {
+            WHO => Some(ready(self.who(seat))),
+            START => Some(
+                self.start(seat, request)
+                    .map_or_else(refused, |pid| ready(json!({"pid": pid}))),
+            ),
+            WAIT => Some(self.wait(seat, request).unwrap_or_else(refused)),
+            _ => None,
+        }
     }
 
-    /// The seat action `action` with `args`, as the account `seat` asks it: root's alone.
-    fn act(&self, seat: Seat, action: &str, args: &Value) -> Result<Value, String> {
+    /// Whether `request` is the seats' own, answered by [`Self::answer`].
+    pub(crate) fn asks(request: &Value) -> bool {
+        matches!(
+            request.get("native").and_then(Value::as_str),
+            Some(WHO | START | WAIT)
+        )
+    }
+
+    /// Whether the account `seat` starts its person's shell through this daemon: the account a
+    /// person's own daemon runs as. The system's daemon starts none; root starts each session,
+    /// with the link `seats#signed-in` answers.
+    fn starts_shells(&self, seat: Seat) -> Result<&Arc<dyn Shells>, String> {
+        if self.admission.system() {
+            return Err("this computer starts its person's shell when they sign in".to_owned());
+        }
+        if seat.admitted != Admitted::Device {
+            return Err("only the account this daemon runs as starts its shell".to_owned());
+        }
+        self.shells
+            .get()
+            .ok_or_else(|| "this daemon's person's services are still starting".to_owned())
+    }
+
+    /// Start the person's shell as `request` says (`{args, env}`): its pid.
+    fn start(&self, seat: Seat, request: &Value) -> Result<u32, String> {
+        let shells = self.starts_shells(seat)?;
+        let args = request
+            .get("args")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(OsString::from)
+            .collect();
+        let env = request
+            .get("env")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+            .filter_map(|(name, value)| Some((name.into(), value.as_str()?.into())))
+            .collect();
+        let child = shells
+            .start(args, env)
+            .map_err(|error| format!("the shell did not start: {error}"))?;
+        let pid = child.id();
+        self.started.lock_recover().insert(pid, child);
+        Ok(pid)
+    }
+
+    /// Wait for the shell `request` names (`{pid}`) to end: how it ended.
+    fn wait(&self, seat: Seat, request: &Value) -> Result<Answer<'static>, String> {
+        self.starts_shells(seat)?;
+        let pid = request
+            .get("pid")
+            .and_then(Value::as_u64)
+            .and_then(|pid| u32::try_from(pid).ok())
+            .ok_or("a wait names the shell by its pid")?;
+        let mut child = self
+            .started
+            .lock_recover()
+            .remove(&pid)
+            .ok_or_else(|| format!("this daemon started no shell {pid}"))?;
+        Ok(Answer::Overlapping(Box::pin(async move {
+            let status = tokio::task::spawn_blocking(move || child.wait())
+                .await
+                .map_err(io::Error::other)??;
+            let signal = std::os::unix::process::ExitStatusExt::signal(&status);
+            Ok(Some(json!({"code": status.code(), "signal": signal})))
+        })))
+    }
+
+    /// The seat action `action` with `args`, as the account `seat` asks it: root's alone. A
+    /// descriptor the answer carries is left in `handed`, to go with it.
+    fn act(
+        &self,
+        seat: Seat,
+        action: &str,
+        args: &Value,
+        handed: &Mutex<Option<OwnedFd>>,
+    ) -> Result<Value, String> {
         if seat.uid != ROOT {
             return Err(ROOT_ALONE.to_owned());
         }
         match action {
-            SIGNED_IN => self.signed_in(seat, args),
+            SIGNED_IN => self.signed_in(seat, args, handed),
             LEFT => uid_in(args).and_then(|uid| {
                 self.admission
                     .left(seat.uid, uid)
@@ -190,7 +332,12 @@ impl Seats {
         }
     }
 
-    fn signed_in(&self, seat: Seat, request: &Value) -> Result<Value, String> {
+    fn signed_in(
+        &self,
+        seat: Seat,
+        request: &Value,
+        handed: &Mutex<Option<OwnedFd>>,
+    ) -> Result<Value, String> {
         let uid = uid_in(request)?;
         let hex_in = |field: &str| {
             request
@@ -205,7 +352,20 @@ impl Seats {
             hex_in("proof").ok_or("a sign-in names the account's local person proof, as hex")?;
         self.person_proven(person, uid, &proof)?;
         self.admission.signed_in(seat.uid, uid, person)?;
-        Ok(json!({"person": hex::encode(person)}))
+        let importing = request.get("importing").and_then(Value::as_bool) == Some(true);
+        // The link the session root starts is admitted by: none while the person's services
+        // still start, and that session then reaches nothing of theirs.
+        let link = self.shells.get().and_then(|shells| {
+            shells
+                .arrived(importing)
+                .inspect_err(|error| {
+                    tracing::warn!(%error, "the person who signed in has no link for their shell");
+                })
+                .ok()
+        });
+        let shell = link.is_some();
+        *handed.lock_recover() = link.map(OwnedFd::from);
+        Ok(json!({"person": hex::encode(person), "shell": shell}))
     }
 
     /// Whether `person` is the one this device serves, and `proof` theirs for the account `uid`.
@@ -271,11 +431,54 @@ fn uid_in(request: &Value) -> Result<u32, String> {
 pub(crate) struct Seated {
     pub(crate) seat: Seat,
     pub(crate) seats: Arc<Seats>,
+    /// A descriptor an answer on this connection carries, until it is written with it.
+    pub(crate) handed: Arc<Mutex<Option<OwnedFd>>>,
 }
 
 impl Seated {
+    /// `seat`, served by `seats`.
+    pub(crate) fn new(seat: Seat, seats: Arc<Seats>) -> Self {
+        Self {
+            seat,
+            seats,
+            handed: Arc::default(),
+        }
+    }
+
     /// The seat action `action` with `args`, as this connection asks it.
     pub(crate) fn act(&self, action: &str, args: &Value) -> Result<Value, String> {
-        self.seats.act(self.seat, action, args)
+        self.seats.act(self.seat, action, args, &self.handed)
+    }
+
+    /// What the seats answer `request` with on this connection, when it is theirs.
+    pub(crate) fn answer(&self, request: &Value) -> Option<Answer<'static>> {
+        self.seats.answer(self.seat, request)
+    }
+}
+
+/// A connection's writer that sends the descriptor an answer carries ([`Seated::handed`]) with
+/// the first bytes written after it.
+pub(crate) struct Handing<'a> {
+    pub(crate) stream: &'a UnixStream,
+    pub(crate) handed: Option<&'a Mutex<Option<OwnedFd>>>,
+}
+
+impl io::Write for Handing<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let fd = self
+            .handed
+            .filter(|_| !bytes.is_empty())
+            .and_then(|handed| handed.lock_recover().take());
+        match fd {
+            Some(fd) => {
+                runtime_portal::fd_transport::send_with_fd(self.stream, bytes, &fd)?;
+                Ok(bytes.len())
+            }
+            None => io::Write::write(&mut &*self.stream, bytes),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        io::Write::flush(&mut &*self.stream)
     }
 }

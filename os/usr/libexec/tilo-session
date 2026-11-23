@@ -29,6 +29,20 @@
 set -euo pipefail
 ulimit -c 0
 
+# The link the person's shell reaches this computer's Tilo service by, which pam_tilo was handed
+# at sign-in and names in TILO_SHELL_FD: kept at descriptor 6 and handed to the first compositor
+# run alone. No other process this wrapper starts keeps it.
+shell_link=0
+case "${TILO_SHELL_FD:-}" in
+  '' | *[!0-9]*) ;;
+  6) shell_link=1 ;;
+  *)
+    eval "exec 6<&$TILO_SHELL_FD $TILO_SHELL_FD<&-"
+    shell_link=1
+    ;;
+esac
+unset TILO_SHELL_FD
+
 readonly SYSTEMCTL=/usr/bin/systemctl
 readonly DBUS_UPDATE=/usr/bin/dbus-update-activation-environment
 readonly COMPOSITOR_BIN=/usr/bin/tilo-session
@@ -275,7 +289,14 @@ request_restart() {
 }
 
 run_managed() {
-  "$@" &
+  if [ "$shell_link" = 1 ]; then
+    TILO_SHELL_FD=6 "$@" &
+    # The link admits one shell: the run that took it. A run after a restart starts without it.
+    exec 6<&-
+    shell_link=0
+  else
+    "$@" 6<&- &
+  fi
   shell_pid=$!
   last_pid=$shell_pid
   local status
@@ -423,7 +444,7 @@ start_flight_record() {
   exec 3<>"$flight_pipe"
   TILO_FLIGHT_RECORD_READY="$flight_ready" \
     "$FLIGHT_RECORDER" "$flight_log" "$("$DATE" --iso-8601=seconds)" "$$" "$compositor_bin" \
-    <"$flight_pipe" 3<&- &
+    <"$flight_pipe" 3<&- 6<&- &
   flight_relay_pid=$!
   exec 4>"$flight_pipe" 3<&-
   # Wait until the recorder is ready (or died), so the compositor never runs

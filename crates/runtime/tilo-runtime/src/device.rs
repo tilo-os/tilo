@@ -30,6 +30,7 @@ mod content;
 pub mod control;
 mod files_tree;
 pub(crate) mod home;
+pub(crate) mod first_workspace;
 mod host_runs;
 #[cfg(target_os = "linux")]
 pub mod package_runs;

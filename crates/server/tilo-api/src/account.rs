@@ -6,7 +6,8 @@
 //!
 //! - `account/workspaces#list {labels?}`, `#create {name, labels?, id?}`,
 //!   `#branch {workspace, name, labels?, id?}`, `#rename {workspace, name}`,
-//!   `#delete {workspace}`, `#unattended {workspace, on}`;
+//!   `#delete {workspace}`, `#unattended {workspace, on}`, and on a computer's own Tilo service
+//!   `#import {sealed_with?, groups?, workspaces?}`, which takes in once what its desktop kept;
 //! - `account/keys#list`, `#create {name, workspace?, expires_in?}`,
 //!   `#mint {workspace, name?, expires_in?}`, `#revoke {grant}`;
 //! - `account/usage#read`;
@@ -99,6 +100,7 @@ enum Op {
     LeaveWorkspace,
     JoinWorkspace,
     Unattended,
+    ImportWorkspaces,
     ListKeys,
     CreateKey,
     MintKey,
@@ -138,7 +140,7 @@ const fn verb(
     }
 }
 
-const VERBS: [Verb; 18] = [
+const VERBS: [Verb; 19] = [
     verb(
         WORKSPACES,
         "list",
@@ -242,6 +244,42 @@ const VERBS: [Verb; 18] = [
                     "on",
                     ParamType::Boolean,
                     "true asks the person to allow it; false asks again from the next command.",
+                ),
+            ]
+        },
+    ),
+    verb(
+        WORKSPACES,
+        "import",
+        "Take in, once, the workspaces and keys this computer's desktop kept itself",
+        ActionKind::Outside,
+        Op::ImportWorkspaces,
+        || {
+            vec![
+                ActionParam::optional(
+                    "sealed_with",
+                    ParamType::Secret,
+                    "The key the desktop's key groups were sealed with, in hex.",
+                ),
+                ActionParam::optional(
+                    "groups",
+                    ParamType::Object,
+                    "Each file of the desktop's key groups by name, its bytes in hex.",
+                ),
+                ActionParam::optional(
+                    "workspaces",
+                    ParamType::Array,
+                    "The workspaces it took part in: {workspace, name, hint?}.",
+                ),
+                ActionParam::optional(
+                    "founds_person_workspace",
+                    ParamType::Boolean,
+                    "Whether it was still to found its person's own workspace.",
+                ),
+                ActionParam::optional(
+                    "service",
+                    ParamType::Secret,
+                    "What its own workspace service governed, with the key it wrote under.",
                 ),
             ]
         },
@@ -812,6 +850,17 @@ impl Account {
         }
         let key = match &self.0.reach {
             Reach::Forwarded(key) => Arc::clone(key),
+            // What a desktop kept itself is taken in by the device it is on, never by a server.
+            Reach::Here(here) if op == Op::ImportWorkspaces => {
+                return match here.import(&self.0.caller, args.clone()).await {
+                    Ok(imported) => Outcome::Ok(imported),
+                    Err(error) => failed(
+                        "refused",
+                        error,
+                        "the desktop keeps its workspaces and asks again on its next start",
+                    ),
+                };
+            }
             Reach::Here(here) => return here_answers(here.as_ref(), &server, op, args).await,
         };
         match op {
@@ -847,6 +896,11 @@ impl Account {
                 "unavailable",
                 "a webhook is kept by the server itself",
                 "try again shortly",
+            ),
+            Op::ImportWorkspaces => failed(
+                "unavailable",
+                "a server takes in no desktop's workspaces",
+                "run this on the computer whose desktop kept them",
             ),
         }
     }

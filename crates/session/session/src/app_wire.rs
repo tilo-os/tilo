@@ -1366,8 +1366,9 @@ fn broker_services(
         // Apps write and read their resources in this device's one store, which holds every
         // workspace's: no app keeps a store of its own.
         resources,
-        // The person's shell connects to the device daemon's broker, which answers it.
-        shell: BrokerService::unserved("the device daemon's broker answers the person's shell"),
+        shell: BrokerService::unserved(
+            "the person's shell is answered by this computer's Tilo service, never by a session",
+        ),
         // The steps only this session may take for the person: the
         // workspace's activity the Activity app reads, a ticket for a new
         // computer, administering their identities and the devices trusted

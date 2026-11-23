@@ -1,12 +1,12 @@
-//! The person's shell, as this device's daemon answers it on its broker
+//! The person's shell, as this device's daemon answers it on its dispatch
 //! (`tilo_workspace_service::apps::shell`): the desktop session of the person signed in on this
 //! computer, which reaches their workspaces through the daemon and never on its own.
 //!
-//! - Who a shell is: a process of the account this daemon runs as, which the launcher did not
-//!   start as an app ([`Accounts`]).
+//! - Who a shell is: the process the daemon started as the shell, holding the link it made for it
+//!   (`Daemon::start_shell`); no other process, whatever account it runs as.
 //! - Its documents: the daemon's own reads and writes of the workspaces it holds, each write
 //!   sealed with the keys of the document's group this device reads and signed as the device.
-//! - Its asks: a workspace's governance action is answered where this device keeps the
+//! - Its asks: a workspace's key access and membership action is answered where this device keeps the
 //!   workspace, and asked of the device keeping it over tilo-actions/1 otherwise; the host's own
 //!   operations are this device's workspace service's ([`Actions`]).
 //! - How its workspaces stand: [`Standing`], read again whenever a workspace changes.
@@ -24,70 +24,37 @@ use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::workspace_view::{LIST, Listed, resource};
 use tilo_workspace_service::apps::services::{PublishedResources, Reading, ResourceWatch};
 use tilo_workspace_service::apps::shell::{
-    ShellAccounts, ShellActions, ShellCaller, ShellInvoked, ShellPeer, ShellServices,
+    ShellActions, ShellCaller, ShellInvoked, ShellLinks, ShellServices,
 };
 use tilo_workspace_service::device_documents::{ServiceDocuments, ServiceWrites};
 use tilo_workspace_service::workspaces::standing;
 use tokio::sync::{Notify, mpsc, oneshot};
 
 use super::workspaces::ServiceWorkspaces;
-use crate::apps::Apps;
 
-/// What this device's broker answers its person's shell with, read again as `workspaces`
+/// What this device's dispatch answers its person's shell with, read again as `workspaces`
 /// changes.
-pub(crate) fn services(workspaces: &Arc<ServiceWorkspaces>, apps: &Arc<Apps>) -> ShellServices {
+pub(crate) fn services(
+    workspaces: &Arc<ServiceWorkspaces>,
+    links: &Arc<ShellLinks>,
+) -> ShellServices {
     let standing = Standing::new(Arc::clone(workspaces));
     standing.follow();
     let copies = workspaces.copies().clone();
     ShellServices {
-        accounts: Arc::new(Accounts {
-            uid: own_uid(),
-            person: workspaces.device_cert().user_public_key,
-            apps: Arc::clone(apps),
-        }),
+        links: Arc::clone(links),
         documents: Arc::new(ServiceDocuments::of(copies.clone())),
         writes: Arc::new(ServiceWrites::of(copies.clone())),
-        document_writes: Arc::new(move || copies.document_writes()),
+        document_writes: Arc::new({
+            let copies = copies.clone();
+            move || copies.document_writes()
+        }),
+        workspaces: copies,
         actions: Arc::new(Actions {
             workspaces: Arc::clone(workspaces),
             changed: Arc::clone(&standing.changed),
         }),
         standing,
-    }
-}
-
-/// The account this daemon runs as.
-fn own_uid() -> u32 {
-    rustix::process::geteuid().as_raw()
-}
-
-/// Who is this device's person's shell: a process of the account the daemon runs as, which the
-/// launcher did not start as an app. An app runs under its person's account too, and would
-/// otherwise reach the device's own writes.
-pub(crate) struct Accounts {
-    uid: u32,
-    person: [u8; 32],
-    apps: Arc<Apps>,
-}
-
-impl ShellAccounts for Accounts {
-    fn admit(&self, peer: ShellPeer) -> Result<ShellCaller, String> {
-        if peer.uid != self.uid {
-            return Err(format!(
-                "this device's Tilo serves the account it runs as ({}), not account {}",
-                self.uid, peer.uid
-            ));
-        }
-        if self.apps.started_as_app(peer.pid) {
-            return Err(format!(
-                "process {} is an app this device started, and an app is never the shell",
-                peer.pid
-            ));
-        }
-        Ok(ShellCaller {
-            person: self.person,
-            uid: peer.uid,
-        })
     }
 }
 
@@ -138,7 +105,9 @@ async fn ask(
     }
     let workspace = tilo_actions::remote::workspace_governance_operation(&request.target.address)
         .map(|(workspace, _)| workspace.to_owned())
-        .ok_or("the shell asks a workspace's governance or the host, and nothing else")?;
+        .ok_or(
+            "the shell asks a workspace's key access and membership or the host, and nothing else",
+        )?;
     let id = WorkspaceId::parse(&workspace).ok_or("that is not a workspace")?;
     // A workspace this device keeps answers here, as it answers every member's device.
     if workspaces.copies().administers_workspace(&workspace).await {
@@ -263,7 +232,7 @@ impl Standing {
         standing
     }
 
-    /// Read again whenever a workspace changes here: its governance decided something, another
+    /// Read again whenever a workspace changes here: its key access or membership changed, another
     /// device's write was taken in, this device took a workspace in, or a shell's ask settled.
     fn follow(self: &Arc<Self>) {
         let copies = self.workspaces.copies().clone();
@@ -271,11 +240,11 @@ impl Standing {
             let changed = Arc::clone(changed);
             move || changed.notify_one()
         };
-        let mut governance = copies.governance_changes();
+        let mut decided = copies.governance_changes();
         let governed = tell(&self.changed);
         tilo_rt::app().spawn(async move {
             while !matches!(
-                governance.recv().await,
+                decided.recv().await,
                 Err(tokio::sync::broadcast::error::RecvError::Closed)
             ) {
                 governed();

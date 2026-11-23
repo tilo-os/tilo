@@ -865,7 +865,7 @@ pub(super) async fn drive_connection(
         peer_id,
     };
     let mut stream = stream;
-    // A person's shell, where this broker answers one, opens with its own marker.
+    // A person's shell, where this dispatch answers one, opens with its own marker.
     if worker.is_none()
         && let Some(shell) = state.services.shell.clone()
         && super::socket::has_shell_marker(&stream).await?

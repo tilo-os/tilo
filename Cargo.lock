@@ -21496,6 +21496,7 @@ dependencies = [
  "tilo-peer-state",
  "tilo-render-protocol",
  "tilo-rt",
+ "tilo-secrets",
  "tilo-server",
  "tilo-server-client",
  "tilo-server-protocol",

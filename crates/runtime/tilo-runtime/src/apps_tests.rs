@@ -136,11 +136,18 @@ fn canonical_temp() -> (tempfile::TempDir, PathBuf) {
     (temp, root)
 }
 
+/// The apps installed in `store`, launched into [`WORKSPACE`] with no grants.
 fn apps(store: &Store, root: &Path, candidates: Vec<PathBuf>) -> Apps {
+    let apps = installed(store, root, candidates);
+    apps.keep_launch_grants(Arc::new(Granted(Vec::new())));
+    apps
+}
+
+/// The apps installed in `store`, before the workspace service answers what they are granted.
+fn installed(store: &Store, root: &Path, candidates: Vec<PathBuf>) -> Apps {
     Apps::new(
         Some(store.catalog()),
         root,
-        WORKSPACE,
         root.join("support"),
         candidates,
     )
@@ -170,6 +177,10 @@ impl LaunchGrantsSource for Granted {
             sandbox: self.0.clone(),
         }
     }
+
+    fn serves(&self, workspace: &str) -> bool {
+        workspace == WORKSPACE
+    }
 }
 
 tilo_test_env::scenario! {
@@ -184,7 +195,7 @@ tilo_test_env::scenario! {
             &reachable_manifest(VIEWER, "allowlist", &["mail.example.com", "calendar.example.com"]),
             &[("probe", b"binary")],
         );
-        let apps = Arc::new(apps(&store, &root, Vec::new()));
+        let apps = Arc::new(installed(&store, &root, Vec::new()));
         let granted = CapOverride::grant(
             Grantee::person("person-7"),
             Scope::NetHost("mail.example.com".into()),
@@ -194,7 +205,7 @@ tilo_test_env::scenario! {
         apps.keep_launch_grants(Arc::new(Granted(vec![granted])));
         let app = apps.launchable(VIEWER).unwrap();
         let manifest = launcher::manifest::read_manifest(&app.manifest_path).unwrap();
-        let (plan, egress) = apps.launch_capabilities(&app, &manifest);
+        let (plan, egress) = apps.launch_capabilities(&app, WORKSPACE, &manifest);
         assert_eq!(plan.net_hosts, vec!["mail.example.com".to_owned()]);
         let policy = egress
             .policy()
@@ -216,7 +227,7 @@ tilo_test_env::scenario! {
         let apps = apps(&store, &root, Vec::new());
         let app = apps.launchable(VIEWER).unwrap();
         let manifest = launcher::manifest::read_manifest(&app.manifest_path).unwrap();
-        let (_, egress) = apps.launch_capabilities(&app, &manifest);
+        let (_, egress) = apps.launch_capabilities(&app, WORKSPACE, &manifest);
         assert!(
             matches!(egress, launcher::egress_proxy::EgressDecision::Blocked),
             "a launch without a grant reaches nothing, got {egress:?}"
@@ -277,7 +288,7 @@ tilo_test_env::scenario! {
             .unwrap_err();
         assert!(err.contains("not installed"), "{err}");
 
-        let empty = Apps::new(None, &root, WORKSPACE, PathBuf::new(), Vec::new());
+        let empty = Apps::new(None, &root, PathBuf::new(), Vec::new());
         assert!(empty.applications().is_empty());
     }
 
@@ -543,7 +554,7 @@ tilo_test_env::scenario! {
     // workspace `open` learns which instance it started.
     {
         let root = std::env::temp_dir();
-        let apps = Apps::new(None, &root, WORKSPACE, PathBuf::new(), Vec::new());
+        let apps = Apps::new(None, &root, PathBuf::new(), Vec::new());
         let mut child = std::process::Command::new("/bin/sleep")
             .arg("30")
             .spawn_locked()

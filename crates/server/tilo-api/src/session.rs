@@ -138,6 +138,16 @@ pub trait Here: Send + Sync {
     fn workspaces_changed(&self) -> Option<tilo_actions::remote::Pending<()>> {
         None
     }
+
+    /// Take in, once, what a desktop of this device kept of its person's workspaces itself
+    /// (`account/workspaces#import`), asked by `by`: what was taken in. A host that keeps no
+    /// device's workspaces refuses it.
+    fn import(&self, by: &tilo_actions::remote::Caller, carried: Value) -> Imported {
+        let _ = (by, carried);
+        Box::pin(std::future::ready(Err(
+            "only this computer's own Tilo service takes in a desktop's workspaces".to_owned(),
+        )))
+    }
 }
 
 /// What a [`Here`] or an [`AccountServer`] answers, once it did.
@@ -154,6 +164,10 @@ pub trait AccountServer: Send + Sync {
         arguments: Map<String, Value>,
     ) -> Asked<'_, Value>;
 }
+
+/// What [`Here::import`] answers once it took in a desktop's workspaces.
+pub type Imported =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, String>> + Send>>;
 
 /// A workspace a desktop keeps, as the account lists it: the person's own.
 #[must_use]

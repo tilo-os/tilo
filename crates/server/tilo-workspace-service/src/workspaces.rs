@@ -69,6 +69,8 @@ pub use member::{AdmittedWrite, MemberDevice, MemberMaterial};
 mod run_admission;
 pub use run_admission::{Refusal, SessionAdmission};
 mod carried;
+mod moving_in;
+pub use moving_in::{MovedIn, MovingService, MovingWorkspace, moved_out, moving_out};
 mod host_invitations;
 mod hosts;
 use carried::Carried;
@@ -1623,6 +1625,17 @@ impl Workspaces {
     pub(super) async fn stop_serving(&self, workspace_id: WorkspaceId) {
         self.inner.host.access.stop(workspace_id).await;
         crate::workspace_io::evict(&self.inner.host.workspaces, workspace_id).await;
+    }
+
+    /// Every workspace kept here, served from here or taken part in.
+    pub async fn ids(&self) -> Vec<WorkspaceId> {
+        self.inner
+            .workspaces
+            .lock()
+            .await
+            .keys()
+            .filter_map(|workspace| WorkspaceId::parse(workspace))
+            .collect()
     }
 
     /// Every workspace this server governs.

@@ -88,22 +88,19 @@ pub trait RuntimeServices: Sized {
         ))
     }
 
-    /// The workspace every app of this profile joins.
-    fn workspace(&self) -> &str;
+    /// The workspace every app of this profile joins, once the person has one here.
+    ///
+    /// # Errors
+    /// The person has no workspace here, and none can be founded for them.
+    fn workspace(&self) -> io::Result<String>;
 
     /// Select the fixed audience of a host-configured MCP endpoint. This
     /// never enrolls a workspace or changes grants. Hosts supporting shared workspaces
     /// must check their current certified admission and the profile actor.
-    fn mcp_workspace(&self, requested: Option<&str>) -> io::Result<String> {
-        let workspace = requested.unwrap_or_else(|| self.workspace());
-        if workspace != self.workspace() {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "this runtime has no admitted MCP audience for that workspace",
-            ));
-        }
-        Ok(workspace.to_owned())
-    }
+    ///
+    /// # Errors
+    /// The runtime has no admitted audience for `requested`.
+    fn mcp_workspace(&self, requested: Option<&str>) -> io::Result<String>;
 
     /// The profile's fixed actor, as which MCP callers act.
     fn actor(&self) -> &str;

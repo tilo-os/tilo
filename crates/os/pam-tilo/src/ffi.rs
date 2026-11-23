@@ -39,6 +39,8 @@ unsafe extern "C" {
         ...
     ) -> c_int;
     fn pam_syslog(pamh: *const PamHandle, priority: c_int, fmt: *const c_char, ...);
+    fn pam_getenv(pamh: *mut PamHandle, name: *const c_char) -> *const c_char;
+    fn pam_putenv(pamh: *mut PamHandle, name_value: *const c_char) -> c_int;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -134,6 +136,23 @@ impl Handle {
             return Err(Status::from_code(rc));
         }
         Self::text(token).map(Zeroizing::new).ok_or(Status::AuthErr)
+    }
+
+    /// The variable `name` of the session's environment, as the stack set it.
+    pub fn env(&self, name: &CStr) -> Option<String> {
+        // SAFETY: a live handle and a NUL-terminated name; libpam owns the answer.
+        Self::text(unsafe { pam_getenv(self.0.as_ptr(), name.as_ptr()) })
+    }
+
+    /// Set `name=value` in the environment of the session the application starts.
+    pub fn put_env(&self, name: &str, value: &str) -> Result<(), String> {
+        let pair = CString::new(format!("{name}={value}"))
+            .map_err(|_| format!("{name} would hold a NUL"))?;
+        // SAFETY: a live handle and a NUL-terminated `name=value`, which libpam copies.
+        match unsafe { pam_putenv(self.0.as_ptr(), pair.as_ptr()) } {
+            0 => Ok(()),
+            rc => Err(format!("libpam did not set {name}: {rc}")),
+        }
     }
 
     /// An item an earlier call left, without asking.

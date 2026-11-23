@@ -20,7 +20,8 @@ use tilo_device_identity::login::{
 use tilo_peer_state::actions::{ACTIONS_ALPN, ActionService, NoActions};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
-use super::ticket::{Founded, RootSource, Tickets};
+use super::first_workspace::FirstWorkspace;
+use super::ticket::{RootSource, Tickets};
 
 /// A device `root` certified, and its key.
 fn enrol(
@@ -432,10 +433,7 @@ async fn a_device_with_the_persons_root_and_no_login_adds_a_computer_into_the_wo
         issuer.endpoint(),
         None,
         root,
-        Some(Founded {
-            workspace: workspace.to_string(),
-            name: "Home".into(),
-        }),
+        Some(FirstWorkspace::founded(Arc::clone(&issuer), workspace)),
         Some(Arc::clone(&issuer)),
         place,
         actions.clone(),

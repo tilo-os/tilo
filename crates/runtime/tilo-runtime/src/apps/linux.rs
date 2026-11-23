@@ -24,6 +24,7 @@ const MAX_SOCKET_PATH: usize = 107;
 pub(super) fn launch(
     apps: &Apps,
     app: &InstalledApp,
+    workspace: &str,
     sockets: &Sockets,
     original: &super::original::OriginalLaunch,
 ) -> Result<Launch, String> {
@@ -31,7 +32,7 @@ pub(super) fn launch(
     let wayland = wayland_socket()?;
     let runtime_dir = service_directory(&apps.root, sockets)
         .map_err(|error| format!("refusing to launch: the launcher's services: {error}"))?;
-    let identity = tilo_identity::store::selected_identity_path(&apps.workspace)
+    let identity = tilo_identity::store::selected_identity_path(workspace)
         .map_err(|error| format!("refusing to launch: the workspace identity: {error}"))?;
     let mut command = Command::new(&launcher);
     command
@@ -41,7 +42,7 @@ pub(super) fn launch(
         .arg("--payload-root")
         .arg(&app.payload_root)
         .arg("--workspace-id")
-        .arg(&apps.workspace)
+        .arg(workspace)
         .arg("--app-id")
         .arg(app.app_id.as_str())
         .arg("--expected-package-hash")
@@ -56,7 +57,7 @@ pub(super) fn launch(
     let capabilities = launcher::capabilities::write_capability_file(
         &apps.root.join("tilo/capabilities"),
         app.app_id.as_str(),
-        &apps.app_grants(app),
+        &apps.app_grants(app, workspace),
     )
     .map_err(|error| format!("refusing to launch {}: its grants: {error}", app.app_id))?;
     if let Some(path) = capabilities {

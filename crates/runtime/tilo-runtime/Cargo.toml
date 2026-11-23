@@ -195,6 +195,8 @@ ed25519-dalek.workspace = true
 # The cluster of a person's own records, which their store's key is.
 collab-types = { path = "../../collab/collab-types" }
 tempfile.workspace = true
+# The secret store a desktop kept its key groups' master key in, kept in memory by a test.
+tilo-secrets.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
 # A server on this machine's loopback, which is what a test's devices relay through.
 test-server = { path = "../../../tools/test-server" }

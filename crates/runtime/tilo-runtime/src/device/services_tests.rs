@@ -381,7 +381,7 @@ fn sdk_apps_join_the_daemon_and_publish_to_mcp() {
     let session = Daemon::start_reporting(&root, &mut |_| {}).unwrap();
     // Just started on a new profile, with nothing written yet: the host acts as
     // the person this computer holds, in the workspace it founded for them.
-    let identity = tilo_identity::store::identity_for_workspace(session.workspace())
+    let identity = tilo_identity::store::identity_for_workspace(&session.workspace().unwrap())
         .unwrap()
         .unwrap();
     assert_eq!(session.actor(), identity.person_id());
@@ -423,7 +423,10 @@ fn sdk_apps_join_the_daemon_and_publish_to_mcp() {
     let listed = tilo_rt::try_app()
         .unwrap()
         .block_on(async {
-            let server = session.mcp_session_factory(session.workspace()).unwrap()().unwrap();
+            let server = session
+                .mcp_session_factory(&session.workspace().unwrap())
+                .unwrap()()
+            .unwrap();
             server
                 .handle(json!({
                     "jsonrpc": "2.0",
@@ -478,7 +481,7 @@ const WRITTEN: &str = "written by an SDK app";
 /// write stops on the way there, so a write that never arrives is explained.
 fn written(session: &Daemon) -> Result<Option<String>, String> {
     use automerge::ReadDoc as _;
-    let workspace = WorkspaceId::parse(session.workspace())
+    let workspace = WorkspaceId::parse(&session.workspace().map_err(|error| error.to_string())?)
         .ok_or_else(|| "the session names no workspace".to_owned())?;
     let record = ui::resource::DocumentId::for_file_document(
         uuid::Uuid::parse_str(WRITER_RECORD).map_err(|error| error.to_string())?,
@@ -681,7 +684,7 @@ fn the_session_hands_its_workspace_service_a_route_that_asks_the_workspaces_devi
         .action_offload()
         .expect("the session asks its workspaces' devices")
         .clone();
-    let session_workspace = session.workspace().to_owned();
+    let session_workspace = session.workspace().unwrap();
     // The broker asks the workspace's other devices to take the turn, and with
     // none of them there runs it here.
     assert_eq!(
@@ -770,7 +773,6 @@ fn a_grant_is_a_change_to_the_member_list() {
         apps: Arc::new(crate::apps::Apps::from_env(
             directory.path(),
             directory.path(),
-            &placed.to_string(),
         )),
     };
     let workspace = placed.to_string();
@@ -970,10 +972,12 @@ fn a_configured_port_is_the_one_the_endpoint_binds() {
     );
 }
 
-const SHELL_TEST: &str = "device::services::tests::the_persons_shell_reaches_its_workspaces_through_the_daemon_and_an_app_is_never_the_shell";
-const SHELL_APP_HELPER: &str = "TILO_DAEMON_SHELL_APP_HELPER";
+const SHELL_TEST: &str = "device::services::tests::the_shell_the_daemon_starts_reaches_its_workspaces_and_no_other_process_of_the_account_does";
+/// The role a child of [`SHELL_TEST`] plays: `shell`, started by the daemon as the shell, or
+/// `other:<socket>`, any other process of the account, which dials the dispatch's socket itself.
+const SHELL_HELPER: &str = "TILO_DAEMON_SHELL_HELPER";
 
-/// The daemon's broker as `shell` asks it `call`, failing on any refusal.
+/// The daemon's dispatch as `shell` asks it `call`, failing on any refusal.
 #[cfg(unix)]
 async fn shell_asks(
     shell: &runtime_collab::ShellClient,
@@ -992,7 +996,7 @@ async fn shell_asks(
     clippy::too_many_lines,
     reason = "the daemon serves its profile for the whole scenario, read as one walk"
 )]
-fn the_persons_shell_reaches_its_workspaces_through_the_daemon_and_an_app_is_never_the_shell() {
+fn the_shell_the_daemon_starts_reaches_its_workspaces_and_no_other_process_of_the_account_does() {
     use automerge::ReadDoc as _;
     use runtime_collab::wire::shell::{ShellCall, ShellRead, ShellReply};
     use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT};
@@ -1002,18 +1006,9 @@ fn the_persons_shell_reaches_its_workspaces_through_the_daemon_and_an_app_is_nev
             .build()
             .unwrap()
     };
-    // Helper role: an app the daemon started, which opens a connection of its own to the broker
-    // and says it is the shell.
-    if let Some(socket) = std::env::var_os(SHELL_APP_HELPER) {
-        runtime().block_on(async {
-            let stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
-            let (shell, _) = runtime_collab::ShellClient::open(stream).await.unwrap();
-            let answer = shell.call(ShellCall::Workspaces).await;
-            assert!(
-                answer.is_err(),
-                "an app the daemon started is refused as the shell, not answered {answer:?}"
-            );
-        });
+    if let Some(role) = std::env::var_os(SHELL_HELPER) {
+        let role = role.into_string().unwrap();
+        runtime().block_on(shell_helper(&role));
         return;
     }
     let Some(root) = isolated_root(SHELL_TEST) else {
@@ -1021,10 +1016,12 @@ fn the_persons_shell_reaches_its_workspaces_through_the_daemon_and_an_app_is_nev
     };
     let session = Daemon::start_in_dev_mode(&root, &mut |_| {}).unwrap();
     let socket = session.broker.app_socket().to_path_buf();
-    let workspace = session.workspace().to_owned();
+    let workspace = session.workspace().unwrap();
+    let link = session.shell_link().unwrap();
     runtime().block_on(async {
-        let stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
-        let (shell, _) = runtime_collab::ShellClient::open(stream).await.unwrap();
+        link.set_nonblocking(true).unwrap();
+        let link = tokio::net::UnixStream::from_std(link).unwrap();
+        let (shell, _) = runtime_collab::ShellClient::open(link).await.unwrap();
         // The person's workspaces, as the device holds them and as their standing reads.
         let ShellReply::Workspaces(held) = shell_asks(&shell, ShellCall::Workspaces).await else {
             panic!("the daemon lists the workspaces it holds");
@@ -1123,25 +1120,151 @@ fn the_persons_shell_reaches_its_workspaces_through_the_daemon_and_an_app_is_nev
                 .is_sealed_document(DESKTOP_APP, DESKTOP_DOCUMENT),
             "the daemon sealed the shell's write with the layout's group keys"
         );
+        // The resources of an app the shell runs itself, and the workspace's accounts.
+        let counted = shell_asks(
+            &shell,
+            ShellCall::Resources {
+                workspace: workspace.clone(),
+                app: WRITER_APP.to_owned(),
+                // `tilo_resource_store::wire::Command::Count`, as the shell sends it.
+                command: json!({ "Count": { "kind": WRITER_KIND, "filters": [] } }).to_string(),
+            },
+        )
+        .await;
+        assert!(
+            matches!(&counted, ShellReply::Resources(Ok(_))),
+            "the daemon runs the shell's resource command: {counted:?}"
+        );
+        let ShellReply::Vault(forgot) = shell_asks(
+            &shell,
+            ShellCall::Vault(runtime_collab::wire::shell::VaultCall::Forget {
+                workspace: workspace.clone(),
+                account: "nobody@example.org".to_owned(),
+            }),
+        )
+        .await
+        else {
+            panic!("the daemon answers the shell's vault ask");
+        };
+        assert_eq!(
+            forgot.map(|answer| answer.0),
+            Ok("false".to_owned()),
+            "an account the workspace never had is not forgotten"
+        );
     });
-    // An app the daemon started is refused, though it runs as the same account.
-    let log = root.join("shell-app.log");
-    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    // Any other process of the account, which dials the dispatch itself, is refused; the shell
+    // the daemon starts is admitted by the link it hands it.
+    let other = std::process::Command::new(std::env::current_exe().unwrap());
+    let mut other = shell_child(&root, other, &format!("other:{}", socket.display()));
+    let status = other.0.spawn().unwrap().wait().unwrap();
+    assert!(
+        status.success()
+            && std::fs::read_to_string(&other.1)
+                .unwrap()
+                .contains("test result: ok. 1 passed"),
+        "another process of the account is not the shell: {}",
+        std::fs::read_to_string(&other.1).unwrap_or_default()
+    );
+    #[cfg(target_os = "linux")]
+    {
+        let shell = std::process::Command::new(std::env::current_exe().unwrap());
+        let (command, log) = shell_child(&root, shell, "shell");
+        let status = session.start_shell(command).unwrap().wait().unwrap();
+        let logs = std::fs::read_to_string(&log).unwrap_or_default();
+        assert!(
+            status.success() && logs.contains("test result: ok. 1 passed"),
+            "the shell the daemon starts reaches its workspaces: {logs}"
+        );
+    }
+}
+
+/// `command` running [`SHELL_TEST`] as the child `role`, and the file its output goes to.
+fn shell_child(
+    root: &Path,
+    mut command: std::process::Command,
+    role: &str,
+) -> (std::process::Command, PathBuf) {
+    let log = root.join(format!(
+        "shell-{}.log",
+        role.split(':').next().unwrap_or(role)
+    ));
     command
         .args(["--exact", SHELL_TEST, "--nocapture"])
-        .env(SHELL_APP_HELPER, &socket)
+        .env(SHELL_HELPER, role)
         .env(tilo_test_env::hang::HANG_BOUND_ENV, helper_hang_bound())
         .stdin(Stdio::null())
         .stdout(Stdio::from(std::fs::File::create(&log).unwrap()))
         .stderr(Stdio::null());
-    let status = session
-        .launch("dev.tilo.pretender", command)
-        .unwrap()
-        .wait()
-        .unwrap();
-    let logs = std::fs::read_to_string(&log).unwrap_or_default();
-    assert!(
-        status.success() && logs.contains("test result: ok. 1 passed"),
-        "the app's shell connection is refused: {logs}"
-    );
+    (command, log)
+}
+
+/// What the child of [`SHELL_TEST`] playing `role` checks.
+#[cfg(unix)]
+async fn shell_helper(role: &str) {
+    use runtime_collab::wire::shell::{SHELL_MAGIC, SHELL_SECRET_BYTES, ShellCall, ShellReply};
+    use tokio::io::AsyncWriteExt as _;
+    if role == "shell" {
+        let link = runtime_collab::ShellClient::inherited()
+            .expect("the daemon handed its shell a link")
+            .unwrap();
+        let (shell, _) =
+            runtime_collab::ShellClient::open(tokio::net::UnixStream::from_std(link).unwrap())
+                .await
+                .unwrap();
+        let answer = shell.call(ShellCall::Workspaces).await;
+        assert!(
+            matches!(&answer, Ok(ShellReply::Workspaces(held)) if !held.is_empty()),
+            "the shell the daemon started is answered: {answer:?}"
+        );
+        return;
+    }
+    let socket = role.strip_prefix("other:").expect("a role this test plays");
+    let workspace = WorkspaceId::new().to_string();
+    let membership = tilo_actions::remote::InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        target: tilo_actions::remote::RemoteActionTarget::workspace_governance(
+            &workspace,
+            "membership",
+        ),
+        argument: InvokeArgument::None,
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    let asks = [
+        ShellCall::Read {
+            workspace: workspace.clone(),
+            app: "so.tilo.desktop".to_owned(),
+            resource: String::new(),
+            since: None,
+        },
+        ShellCall::Write {
+            workspace: workspace.clone(),
+            app: "so.tilo.desktop".to_owned(),
+            document: String::new(),
+            readers: None,
+            founding: true,
+            snapshot: true,
+            changes: automerge::AutoCommit::new().save(),
+        },
+        ShellCall::Invoke {
+            request: serde_json::to_string(&membership).unwrap(),
+        },
+    ];
+    for ask in asks {
+        // As a shell link opens, with a secret the daemon never made.
+        let mut stream = tokio::net::UnixStream::connect(socket).await.unwrap();
+        stream.write_all(SHELL_MAGIC).await.unwrap();
+        stream.write_all(&[7; SHELL_SECRET_BYTES]).await.unwrap();
+        let (shell, _) = runtime_collab::ShellClient::open(stream).await.unwrap();
+        let answer = shell.call(ask.clone()).await;
+        assert!(
+            answer.is_err(),
+            "a process the daemon did not start as the shell is refused {ask:?}, not answered {answer:?}"
+        );
+    }
 }
