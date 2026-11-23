@@ -485,9 +485,8 @@ impl Served {
     }
 }
 
-/// The record reads this host's action service answers: each goes whole to the app action
-/// server, whose reader is the device's one ([`ResourceReads`]), deciding it for who asks as it
-/// decides a local app's, an agent's or another device's.
+/// The record reads the apps this host serves answer, for a caller the host holds no certificate
+/// for in the workspace: each goes whole to the app action server, which decides it for who asks.
 struct ServedReads(Served);
 
 impl ServedReads {
