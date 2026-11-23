@@ -186,6 +186,7 @@ fn fact_sections(info: &AboutInfo) -> Vec<SettingsSection> {
 
 crate::area::pane_area! {
     AboutArea;
+    crate::area::serves!(About);
     fn poll(&self) {
         AboutArea::poll(self);
     }

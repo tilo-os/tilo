@@ -20,7 +20,10 @@ use provider_settings_ui::widgets::{
     Item, SettingsSection, error_row, note, page_of, rows, section, section_with, value_row,
 };
 
-crate::area::pane_area!(Software);
+crate::area::pane_area! {
+    Software;
+    crate::area::serves!(Accessibility);
+}
 
 pub(crate) fn software(app: &crate::settings_app::SettingsApp) -> Software {
     app.areas()

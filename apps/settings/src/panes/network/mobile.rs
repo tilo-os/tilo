@@ -35,6 +35,7 @@ crate::effects::effect_family!(MobileEffect => answer);
 
 crate::area::pane_area! {
     MobileArea;
+    crate::area::serves!(Network);
     fn poll(&self) {
         MobileArea::poll(self);
     }

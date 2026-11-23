@@ -44,6 +44,10 @@ crate::effects::effect_family!(AccountsEffect => answer);
 
 crate::area::pane_area! {
     AccountsArea;
+    fn rows_published(&self) -> bool {
+        true
+    }
+    crate::area::serves!(ExternalAccounts);
     fn poll(&self) {
         AccountsArea::poll(self);
     }

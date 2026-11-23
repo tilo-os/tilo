@@ -26,7 +26,13 @@ use ui::storage::SettingsCache;
 
 crate::effects::effect_family!(DefaultAppsEffect => answer);
 
-crate::area::pane_area!(DefaultAppsArea);
+crate::area::pane_area! {
+    DefaultAppsArea;
+    fn rows_published(&self) -> bool {
+        true
+    }
+    crate::area::serves!(DefaultApps);
+}
 
 pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&DefaultAppsArea> {
     app.areas().find()

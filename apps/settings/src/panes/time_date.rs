@@ -33,6 +33,7 @@ crate::effects::effect_family!(TimeDateEffect => answer);
 
 crate::area::pane_area! {
     TimeDateArea;
+    crate::area::serves!(TimeDate);
     fn warm(&self) {
         TimeDateArea::warm(self);
     }
