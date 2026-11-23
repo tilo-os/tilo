@@ -52,7 +52,7 @@ use tilo_actions::remote::invocation_record::Invocations;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueResource, CatalogueRow, ConfirmedInvocation, InvocationReceipt, InvocationState,
-    InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionTarget, pending,
+    InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionTarget, WatchScope, pending,
     person_models,
 };
 use tilo_actions::{
@@ -855,6 +855,47 @@ impl Account {
                 .collect()),
             Outcome::Failed { message, .. } => Err(message),
             _ => Err("the keys were not listed".into()),
+        }
+    }
+
+    /// What wakes when a record changes in a workspace the keys are read from: each workspace's
+    /// own wait for a change of its records ([`ActionProvider::changed`]), the one its watches
+    /// already follow, so a key revoked or recorded on another device, arriving by sync, is
+    /// seen as it lands.
+    async fn records_changed(&self) -> Vec<Pending<Result<(), ActionCallError>>> {
+        match &self.0.reach {
+            Reach::Forwarded(connection) => {
+                let Ok(workspaces) = connection
+                    .server()
+                    .labelled(connection, &WorkspaceLabels::new())
+                    .await
+                else {
+                    return Vec::new();
+                };
+                let caller = Caller::local_person("tilo api");
+                let mut changes = Vec::new();
+                for workspace in workspaces {
+                    if let Ok(id) = connection.server().enter(connection, &workspace.id).await
+                        && let Some(changed) = connection
+                            .device
+                            .actions(id)
+                            .changed(&caller, WatchScope::Records)
+                    {
+                        changes.push(changed);
+                    }
+                }
+                changes
+            }
+            Reach::Here(here, key) => here
+                .workspaces(key.cert())
+                .iter()
+                .filter_map(|workspace| here.enter(&workspace.id, key).ok())
+                .filter_map(|reached| {
+                    reached
+                        .provider
+                        .changed(&self.0.caller, WatchScope::Records)
+                })
+                .collect(),
         }
     }
 
@@ -1852,6 +1893,27 @@ impl tilo_actions::remote::ResourceReads for AccountReads {
                     reason: "the server is stopping".into(),
                 })?;
         server.store.watch(wake);
+        // And whenever a record changes in a workspace the keys are read from, until the reader
+        // stops waiting.
+        if let Some(runtime) = &self.account.0.runtime {
+            let (account, wake) = (self.account.clone(), wake.clone());
+            runtime.spawn(async move {
+                let changes = account.records_changed().await;
+                if changes.is_empty() {
+                    return;
+                }
+                let changed = futures_util::future::select_all(changes);
+                let abandoned = async {
+                    while wake.waiting() {
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    }
+                };
+                tokio::select! {
+                    _ = changed => wake.wake(),
+                    () = abandoned => {}
+                }
+            });
+        }
         Ok(())
     }
 

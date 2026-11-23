@@ -1000,4 +1000,298 @@ mod tests {
         assert!(stream.next().await.is_none());
         assert!(stream.next().await.is_none(), "it stays ended");
     }
+
+    /// The keys' record of the person's account, as two devices of theirs keep it: one workspace
+    /// both hold, whose record of the keys each device's account reads, and which wakes whoever
+    /// waits for its records to change when a revocation lands, as sync landing it does.
+    mod synced_keys {
+        use crate::server::ServerError;
+        use crate::session::{AccountAnswer, AccountHere, Here, Reached, Workspace};
+        use collab_types::workspace_grant::WorkspaceGrant;
+        use std::sync::{Arc, Mutex};
+        use tilo_actions::InvocationId;
+        use tilo_actions::remote::{
+            ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery,
+            InvocationReceipt, InvocationState, InvokeRequest, Pending, WatchScope, pending,
+        };
+
+        pub(super) const WORKSPACE: &str = "6f1d3a52-5c1b-4c3e-9a3e-0d2f6a7b8c9d";
+
+        /// The workspace's record of the keys, and who waits for it to change.
+        #[derive(Default)]
+        pub(super) struct Record {
+            pub(super) grants: Mutex<Vec<WorkspaceGrant>>,
+            waiting: Mutex<Vec<tilo_actions::remote::Completer<Result<(), ActionCallError>>>>,
+        }
+
+        impl Record {
+            fn changed(&self) {
+                for waiting in std::mem::take(&mut *self.waiting.lock().unwrap()) {
+                    waiting.complete(Ok(()));
+                }
+            }
+        }
+
+        /// A device of the person holding the workspace.
+        pub(super) struct Device(pub(super) Arc<Record>);
+
+        /// The workspace as the device serves it: only its wait for a change matters here.
+        struct Served(Arc<Record>);
+
+        impl ActionProvider for Served {
+            fn query(
+                &self,
+                _: &Caller,
+                _: CatalogueQuery,
+            ) -> Pending<Result<CataloguePage, ActionCallError>> {
+                Pending::ready(Ok(CataloguePage::default()))
+            }
+
+            fn invoke(
+                &self,
+                _: &Caller,
+                _: InvokeRequest,
+            ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+                Pending::ready(Err(ActionCallError::UnknownAction))
+            }
+
+            fn observe(&self, _: &Caller, _: &InvocationId) -> Option<InvocationState> {
+                None
+            }
+
+            fn changed(
+                &self,
+                _: &Caller,
+                scope: WatchScope,
+            ) -> Option<Pending<Result<(), ActionCallError>>> {
+                matches!(scope, WatchScope::Records).then(|| {
+                    let (done, changed) = pending();
+                    self.0.waiting.lock().unwrap().push(done);
+                    changed
+                })
+            }
+        }
+
+        fn kept() -> Vec<Workspace> {
+            vec![crate::session::held(WORKSPACE.into(), "Ada's".into())]
+        }
+
+        impl Here for Device {
+            fn workspaces(&self, _: &tilo_user_identity::DeviceCert) -> Vec<Workspace> {
+                kept()
+            }
+
+            fn enter(
+                &self,
+                workspace: &str,
+                _: &crate::grant_key::GrantKey,
+            ) -> Result<Reached, String> {
+                (workspace == WORKSPACE)
+                    .then(|| Reached {
+                        provider: Arc::new(Served(Arc::clone(&self.0))),
+                        person: String::new(),
+                        tasks: None,
+                    })
+                    .ok_or_else(|| format!("{workspace} is not kept here"))
+            }
+
+            fn account_here(&self) -> Option<&dyn AccountHere> {
+                Some(self)
+            }
+        }
+
+        fn unused<T: Send + 'static>() -> AccountAnswer<Result<T, ServerError>> {
+            Box::pin(async { Err(ServerError::NoAccountHere) })
+        }
+
+        impl AccountHere for Device {
+            fn workspaces(&self, _: &crate::grant_key::GrantKey) -> Vec<Workspace> {
+                kept()
+            }
+
+            fn create(
+                &self,
+                _: crate::grant_key::GrantKey,
+                _: String,
+                _: tilo_server_protocol::workspaces::WorkspaceLabels,
+                _: Option<uuid::Uuid>,
+            ) -> AccountAnswer<Result<Workspace, ServerError>> {
+                unused()
+            }
+
+            fn branch(
+                &self,
+                _: crate::grant_key::GrantKey,
+                _: String,
+                _: String,
+                _: tilo_server_protocol::workspaces::WorkspaceLabels,
+                _: Option<uuid::Uuid>,
+            ) -> AccountAnswer<Result<Workspace, ServerError>> {
+                unused()
+            }
+
+            fn rename(
+                &self,
+                _: crate::grant_key::GrantKey,
+                _: String,
+                _: String,
+            ) -> AccountAnswer<Result<Workspace, ServerError>> {
+                unused()
+            }
+
+            fn delete(
+                &self,
+                _: crate::grant_key::GrantKey,
+                _: String,
+            ) -> AccountAnswer<Result<(), ServerError>> {
+                unused()
+            }
+
+            fn unattended(
+                &self,
+                _: crate::grant_key::GrantKey,
+                _: String,
+                _: bool,
+            ) -> AccountAnswer<Result<bool, ServerError>> {
+                unused()
+            }
+
+            fn keys(
+                &self,
+                _: crate::grant_key::GrantKey,
+            ) -> AccountAnswer<Result<Vec<WorkspaceGrant>, ServerError>> {
+                let grants = self.0.grants.lock().unwrap().clone();
+                Box::pin(async move { Ok(grants) })
+            }
+
+            fn revoke_key(
+                &self,
+                _: crate::grant_key::GrantKey,
+                workspace: String,
+                grant: String,
+            ) -> AccountAnswer<Result<bool, ServerError>> {
+                let mut changed = false;
+                if workspace == WORKSPACE {
+                    for held in self.0.grants.lock().unwrap().iter_mut() {
+                        if held.id == grant && held.revoked_ms.is_none() {
+                            held.revoked_ms = Some(crate::now_ms());
+                            changed = true;
+                        }
+                    }
+                }
+                if changed {
+                    self.0.changed();
+                }
+                Box::pin(async move { Ok(changed) })
+            }
+        }
+    }
+
+    /// A key the person revokes on one of their devices wakes whoever follows their keys' record
+    /// on another: the revocation lands in the workspace both keep, and the follower reads the
+    /// keys without it as it lands, long before its wait would have ended.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_key_revoked_on_one_device_wakes_a_follower_of_the_keys_on_another() {
+        use std::sync::Arc;
+        let (person, _) = UserIdentity::generate("Ada", 1);
+        let device = |seed: u8, label: &str| {
+            let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+            let now = tilo_clock::unix_now_ns();
+            let mut cert = DeviceCert {
+                user_public_key: person.verifying_key().to_bytes(),
+                device_public_key: key.verifying_key().to_bytes(),
+                device_label: label.into(),
+                capabilities: DeviceCapabilities::member(),
+                issued_at_ns: now.saturating_sub(60_000_000_000),
+                expires_at_ns: Some(now.saturating_add(3600 * 1_000_000_000)),
+                signature: [0; 64],
+                issuer: None,
+            };
+            tilo_user_identity::sign_device_cert(&mut cert, &person).unwrap();
+            (key, cert)
+        };
+        let record = Arc::new(synced_keys::Record::default());
+        record.grants.lock().unwrap().push(
+            serde_json::from_value(serde_json::json!({
+                "id": "visa-backend",
+                "person": hex::encode(person.verifying_key().to_bytes()),
+                "device": hex::encode([7; 32]),
+                "name": "Visa backend",
+                "created_ms": 1,
+            }))
+            .unwrap(),
+        );
+        let on = |seed: u8, label: &str| {
+            let (key, cert) = device(seed, label);
+            Direct::here(
+                Arc::new(synced_keys::Device(Arc::clone(&record))),
+                key,
+                cert,
+                label,
+            )
+            .unwrap()
+        };
+        let (laptop, phone) = (on(31, "Ada's laptop"), on(32, "Ada's phone"));
+        let read = |direct: &Direct, after: Option<String>| {
+            let mut arguments = serde_json::json!({"path": crate::account::KEYS_RECORD});
+            if let Some(after) = after {
+                arguments["after"] = after.into();
+            }
+            let request = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "tilo_read", "arguments": arguments}});
+            async move {
+                let answer = direct.mcp(request).await.unwrap();
+                let read = answer["result"]["structuredContent"].clone();
+                assert!(read["revision"].is_string(), "{answer}");
+                read
+            }
+        };
+        let names = |read: &serde_json::Value| -> Vec<String> {
+            read["records"][0]["value"]["keys"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|key| key["grant"].as_str().unwrap().to_owned())
+                .collect()
+        };
+
+        let first = read(&phone, None).await;
+        assert!(
+            names(&first).contains(&"visa-backend".to_owned()),
+            "{first}"
+        );
+        let revision = first["revision"].as_str().unwrap().to_owned();
+        let phone = Arc::new(phone);
+        let following = tokio::spawn({
+            let phone = Arc::clone(&phone);
+            async move {
+                let began = std::time::Instant::now();
+                let read = read(&phone, Some(revision)).await;
+                (read, began.elapsed())
+            }
+        });
+        // The follower waits before the laptop revokes, so only the revocation can wake it.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert!(!following.is_finished(), "nothing changed yet");
+
+        let revoke = serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "tilo_do",
+                "arguments": {"path": "account/keys/visa-backend#revoke", "args": {}}}});
+        let revoked = laptop.mcp(revoke).await.unwrap();
+        assert_eq!(
+            revoked["result"]["structuredContent"]["result"]["revoked"], "visa-backend",
+            "{revoked}"
+        );
+
+        let (followed, waited) =
+            tokio::time::timeout(std::time::Duration::from_secs(10), following)
+                .await
+                .expect("the revocation wakes the follower")
+                .unwrap();
+        assert!(
+            !names(&followed).contains(&"visa-backend".to_owned()),
+            "{followed}"
+        );
+        assert!(waited < std::time::Duration::from_secs(10), "{waited:?}");
+    }
 }
