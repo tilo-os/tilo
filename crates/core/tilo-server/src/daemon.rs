@@ -567,8 +567,9 @@ impl Server {
             trust_policy: cfg.trust_policy.clone(),
             max_workspace_grants: cfg.max_workspace_grants,
             apps,
-            // A server serves other people's workspaces; it joins none as a member.
-            member: None,
+            // Its member copies act as its own device, as every device's do: a workspace of
+            // its person's that another device serves, it keeps as a member copy, entering it
+            // as their device the way their other devices do.
             ..config
         }
     }
@@ -1914,6 +1915,136 @@ mod tests {
         );
         restarted.shutdown().await;
         primary.shutdown().await;
+    }
+
+    /// A server of the person's, freshly started and handed their workspace, keeps a workspace
+    /// their list gains that another device of theirs serves: it enters it as their device, a
+    /// member copy of that device's, with nothing set up on it by hand.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_fresh_server_keeps_a_listed_workspace_another_device_serves() {
+        let (root, user) = UserIdentity::generate("owner", 1);
+        let certified = |label: &str, seed: u64, capabilities: DeviceCapabilities| {
+            let (key, device) = DeviceIdentity::generate(label, seed);
+            let mut cert = DeviceCert {
+                user_public_key: user.public_key,
+                device_public_key: device.public_key,
+                device_label: device.label,
+                capabilities,
+                issued_at_ns: 4,
+                expires_at_ns: None,
+                signature: [0; 64],
+                issuer: None,
+            };
+            sign_device_cert(&mut cert, &root).unwrap();
+            ServerIdentity {
+                user_public_key: user.public_key,
+                device_signing_key: key,
+                device_cert: cert,
+                revocations: RevocationList::new(),
+            }
+        };
+        let server_identity = certified("attic", 2, DeviceCapabilities::member());
+        let server_cert = server_identity.device_cert.clone();
+        let desk_identity = certified("desk", 3, DeviceCapabilities::primary());
+        let desk_device = desk_identity.device_cert.device_public_key;
+        let server_state = tempfile::tempdir().unwrap();
+        let server = Server::start(
+            ServerConfig {
+                state_root: server_state.path().to_path_buf(),
+                trust_policy: TrustPolicy::AllowMatchingUser,
+                services: crate::mesh::ServiceCapabilities::personal_server(),
+                packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
+                ..ServerConfig::default()
+            }
+            .on_loopback(),
+            server_identity,
+        )
+        .await
+        .unwrap();
+        let desk_state = tempfile::tempdir().unwrap();
+        let desk = Server::start(
+            ServerConfig {
+                state_root: desk_state.path().to_path_buf(),
+                services: crate::mesh::ServiceCapabilities::personal_server(),
+                ..ServerConfig::default()
+            }
+            .on_loopback(),
+            desk_identity,
+        )
+        .await
+        .unwrap();
+        let (kept, desk_workspaces) = (
+            server.workspaces().expect("the server keeps workspaces"),
+            desk.workspaces().expect("the desk keeps workspaces"),
+        );
+
+        // The desk founds the person's workspace, enters the server among their servers and
+        // hands it the workspace, as the person's device hands every server of theirs.
+        crate::servers::found(desk_workspaces).await.unwrap();
+        crate::servers::admit(desk_workspaces, &server_cert, &server.node_addr())
+            .await
+            .unwrap();
+        desk_workspaces
+            .attach_server(
+                &crate::servers::person_workspace_id(&user.public_key),
+                server_cert.device_public_key,
+                server.node_addr(),
+                tilo_peer_state::CopyRole::KeyHolder,
+            )
+            .await
+            .unwrap();
+
+        // A workspace the desk serves joins the person's list.
+        let made = desk_workspaces.create("Desk").await.unwrap().workspace;
+        let hint = desk_workspaces
+            .hosts(&made)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|hint| hint.host.device_public_key == desk_device)
+            .expect("the desk signs where it serves the workspace");
+        crate::workspaces::fixtures::list_workspace(desk_workspaces, &made, "Desk", &hint).await;
+
+        let server_device = server_cert.device_public_key;
+        tilo_test_env::within(
+            "the server keeps the person's workspace and reads its entry there",
+            async {
+                while !(crate::servers::holds_person_workspace(kept).await
+                    && crate::servers::read(kept)
+                        .await
+                        .is_ok_and(|servers| servers.active(&server_device).is_some()))
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            },
+        )
+        .await;
+        tilo_test_env::within("the person's list reaches the server", async {
+            while !crate::workspaces::fixtures::lists(kept, &made).await {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        // The server keeps it on its own. Should it not, entering it by hand says why, so the
+        // failure names the cause rather than only that it waited.
+        let on_its_own = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+            while !kept.is_member(&made).await.unwrap_or(false) {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        if on_its_own.is_err() {
+            let by_hand = kept
+                .hold_as_member(WorkspaceId::parse(&made).unwrap(), &hint)
+                .await;
+            panic!(
+                "the server did not keep the workspace its person's list gained; entering it \
+                 by hand as their device says {by_hand:?}; holding it already: {}",
+                kept.state(&made).await.is_some()
+            );
+        }
+        server.shutdown().await;
+        desk.shutdown().await;
     }
 
     #[test]

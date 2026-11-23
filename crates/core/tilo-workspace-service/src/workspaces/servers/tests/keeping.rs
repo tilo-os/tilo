@@ -11,12 +11,11 @@ use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
 use tilo_resource::Id;
-use tilo_user_identity::{DeviceCapabilities, WorkspaceDirectory};
+use tilo_user_identity::DeviceCapabilities;
 
 use super::super::keeping::keep_listed;
 use super::super::{Servers, apply, device_id, read};
-use crate::workspaces::fixtures::{TestHost, device_cert, governor, test_host};
-use crate::workspaces::personal::WORKSPACES;
+use crate::workspaces::fixtures::{TestHost, device_cert, governor, list_workspace, test_host};
 use crate::workspaces::{MemberDevice, Workspaces, person_workspace};
 use tilo_server_protocol::servers::person_workspace_id;
 
@@ -49,40 +48,6 @@ async fn server(state: &std::path::Path) -> (TestHost, [u8; 32]) {
     .await
     .expect("the server is entered among the person's servers");
     (host, cert.device_public_key)
-}
-
-/// Name `workspace`, kept by the device `hint` signs for, in the person's list on `server`, as
-/// a device of theirs writes the list.
-async fn list(server: &Workspaces, workspace: &str, hint: &tilo_peer_state::join::TransportHint) {
-    let cert = server.serving_certificate().clone();
-    let id = tilo_user_identity::WorkspaceId::parse(workspace).unwrap();
-    let hint = postcard::to_stdvec(hint).unwrap();
-    person_workspace::edit_document_on(
-        server,
-        &person_workspace_id(&cert.user_public_key),
-        WORKSPACES,
-        move |document| {
-            let mut directory = WorkspaceDirectory::load(
-                cert.user_public_key,
-                cert.device_public_key,
-                &document.save(),
-            )
-            .map_err(|error| error.to_string())?;
-            directory
-                .add_workspace(id, "Desk")
-                .map_err(|error| error.to_string())?;
-            directory
-                .set_host_hint(id, [9; 32], &hint)
-                .map_err(|error| error.to_string())?;
-            let mut source = automerge::AutoCommit::load(&directory.save())
-                .map_err(|error| error.to_string())?;
-            tilo_automerge::ApplyIncoming::merge_incoming(document, &mut source)
-                .map(drop)
-                .map_err(|error| error.to_string())
-        },
-    )
-    .await
-    .expect("the list names the workspace");
 }
 
 /// Wait until `kept` says what `server` keeps of `workspace`, which only the change it
@@ -128,7 +93,7 @@ async fn a_server_keeps_each_listed_workspace_until_its_entry_says_not() {
         "the server keeps nothing the list does not name"
     );
 
-    list(workspaces, &made.workspace, &hint).await;
+    list_workspace(workspaces, &made.workspace, "Desk", &hint).await;
     keeps(
         workspaces,
         &made.workspace,

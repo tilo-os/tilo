@@ -71,9 +71,9 @@ pub struct ServiceConfig {
     /// invitation's address, so the link it hands out names where it is reached from any
     /// network. The default holds nothing back, so an invitation names the endpoint's address.
     pub reachability: Reachability,
-    /// The device this service's member copies act as, when the embedder
-    /// keeps it on a device that serves the workspaces that device joined as
-    /// a member: `None` for a server, which joins none.
+    /// The device this service's member copies act as: the device the embedder
+    /// runs on, which keeps a workspace of its person's that another device
+    /// serves as a member copy. `None` for a service that joins none.
     pub member: Option<Arc<crate::workspaces::MemberDevice>>,
     /// The app surfaces the device knows, which the stores of its workspaces declare the
     /// resource types and verbs of: the process's own ([`collab_types::app_surface::Surfaces::process`]),

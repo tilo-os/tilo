@@ -52,8 +52,8 @@ pub struct Device<'a> {
 /// The service's member copies act as `device`, and that is set here rather than left to each
 /// embedder: a device that holds a member copy syncs it with the device serving it, and a
 /// service opened without its device keeps the copy and never syncs it. Every device's service
-/// is opened through here, so none of them can diverge; only a server, which serves other
-/// people's workspaces and joins none as a member, configures it away.
+/// is opened through here, so none of them can diverge, a server among them: it keeps a
+/// workspace of its person's that another device serves as a member copy too.
 ///
 /// # Errors
 /// The device cannot certify the service's own key, or the service's store cannot be opened.
@@ -68,8 +68,8 @@ pub async fn open(
         Some(itself) => itself,
         None => ServiceIdentity::beside_device(&store, device.cert, &**device.signer).await?,
     };
-    // A person's own device takes nobody else's work, and its member copies act as it; a
-    // server's `configure` says otherwise.
+    // A person's own device takes nobody else's work, unless `configure` says otherwise, and
+    // its member copies act as it.
     let config = configure(ServiceConfig {
         member: Some(Arc::new(MemberDevice {
             cert: device.cert.clone(),

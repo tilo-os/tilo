@@ -433,6 +433,78 @@ impl GroupKeys for TestGroupKeys {
     }
 }
 
+/// Name `workspace` as `name` in the person's list of workspaces, kept by the device `hint`
+/// signs for, as a device of the person's that keeps their own workspace (`writer`) writes
+/// the list.
+///
+/// # Panics
+///
+/// `writer` keeps no copy of its person's workspace, or the list could not be written.
+pub async fn list_workspace(
+    writer: &Workspaces,
+    workspace: &str,
+    name: &str,
+    hint: &tilo_peer_state::join::TransportHint,
+) {
+    let cert = writer.serving_certificate().clone();
+    let id = tilo_user_identity::WorkspaceId::parse(workspace).unwrap();
+    let name = name.to_owned();
+    let host = hint.host.device_public_key;
+    let hint = postcard::to_stdvec(hint).unwrap();
+    super::person_workspace::edit_document_on(
+        writer,
+        &tilo_server_protocol::servers::person_workspace_id(&cert.user_public_key),
+        super::personal::WORKSPACES,
+        move |document| {
+            let mut directory = tilo_user_identity::WorkspaceDirectory::load(
+                cert.user_public_key,
+                cert.device_public_key,
+                &document.save(),
+            )
+            .map_err(|error| error.to_string())?;
+            directory
+                .add_workspace(id, &name)
+                .map_err(|error| error.to_string())?;
+            directory
+                .set_host_hint(id, host, &hint)
+                .map_err(|error| error.to_string())?;
+            let mut source = automerge::AutoCommit::load(&directory.save())
+                .map_err(|error| error.to_string())?;
+            tilo_automerge::ApplyIncoming::merge_incoming(document, &mut source)
+                .map(drop)
+                .map_err(|error| error.to_string())
+        },
+    )
+    .await
+    .expect("the person's list names the workspace");
+}
+
+/// Whether the person's list of workspaces, as `reader`'s copy of their workspace has it, names
+/// `workspace`: `false` while the list has not reached it.
+pub async fn lists(reader: &Workspaces, workspace: &str) -> bool {
+    let cert = reader.serving_certificate().clone();
+    let Ok(Some(bytes)) = super::person_workspace::document_on(
+        reader,
+        &tilo_server_protocol::servers::person_workspace_id(&cert.user_public_key),
+        super::personal::WORKSPACES,
+    )
+    .await
+    else {
+        return false;
+    };
+    tilo_user_identity::WorkspaceDirectory::load(
+        cert.user_public_key,
+        cert.device_public_key,
+        &bytes,
+    )
+    .is_ok_and(|directory| {
+        directory
+            .list_workspaces()
+            .iter()
+            .any(|listed| listed.id.to_string() == workspace)
+    })
+}
+
 /// A certified host of `cert`'s device keeping its state under `state_root`,
 /// taking part in its workspaces' channels as every server that governs
 /// workspaces does: what its members seal it opens, and what it writes itself
