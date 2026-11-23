@@ -289,6 +289,11 @@ view appearance_pane() {
     }
     ui.Section("Reading") {
         setting(
+            "Wallpaper",
+            "The picture the desktop stands on; empty follows the theme",
+            ui.TextInput(bind: a.wallpaper, placeholder: "Follow the theme"),
+        )
+        setting(
             "Distinguish similar letters",
             "Set I, l, 1, 0 and O apart in all text",
             ui.Toggle(bind: a.distinct_letters),
@@ -636,6 +641,23 @@ view power_pane() {
             "Sleep locks the screen",
             "Ask for the person's key when it wakes",
             ui.Toggle(bind: prefs.lock_on_sleep),
+        )
+    }
+    ui.Section("What the device's buttons do") {
+        setting(
+            "Closing the lid",
+            "What happens when a laptop's lid is shut",
+            ui.EnumField(bind: prefs.lid_close_action, label: "Closing the lid"),
+        )
+        setting(
+            "The power button",
+            "What pressing it does",
+            ui.EnumField(bind: prefs.power_key_action, label: "The power button"),
+        )
+        setting(
+            "When the battery is critical",
+            "What the device does as it runs out",
+            ui.EnumField(bind: prefs.critical_action, label: "Critical battery action"),
         )
     }
     ui.Section("When the battery is low") {
