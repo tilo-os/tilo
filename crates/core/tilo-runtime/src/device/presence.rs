@@ -1,15 +1,12 @@
 //! The device's presence: its one session with its person's server, which shows the person's
-//! agent present on their card there and tells this daemon when the person stopped it from that
-//! card, and the agent sessions this daemon is serving here, from the moment each connection
-//! opens until its session ends.
+//! agent present on their card there, and the agent sessions this daemon is serving here, from
+//! the moment each connection opens until its session ends.
 //!
 //! Agents' calls never enter the server session: each `tilo mcp` connection is answered by the
 //! daemon's own workspaces, as the person's apps are ([`crate::daemon`]). A page of the
 //! workspace reads the sessions it serves in who is here, beside the workspace's own roster:
 //! present and waiting before they ask anything, staying while their sessions last however long
-//! they go quiet, and gone as soon as a session ends or the person stops it. Every connection
-//! open when the person stopped the agent answers that they did; a connection that starts after
-//! it is a new conversation, and the device enters again for it.
+//! they go quiet, and gone as soon as a session ends or the person stops it.
 //!
 //! The sessions are keyed by the execution the connection was admitted in, so the caller a
 //! connection hands this device is all it takes to find its session again: what the workspace
@@ -35,8 +32,6 @@ use super::workspaces::ServiceWorkspaces;
 
 /// How long entering the workspace may take.
 const ENTERING: Duration = Duration::from_secs(25);
-/// What the host's session says once the person stopped this agent from its card.
-const STOPPED: &str = "agent-run-stopped";
 /// The longest the daemon waits, as it goes, for its session to close: the host then sees the
 /// connection end at once, and takes the agent down, rather than after the connection's silence
 /// ends. A session's endpoint gives its packet relay up to three seconds to hear it go, and a
@@ -49,26 +44,9 @@ pub(crate) struct Session {
 }
 
 impl Session {
-    /// What every call says once the person stopped the agent from its card.
-    fn stopped(&self) -> Option<String> {
-        self.device
-            .session()
-            .status()
-            .failures
-            .into_iter()
-            .find(|failure| failure.code == STOPPED)
-            .map(|failure| {
-                format!(
-                    "{} Start a new conversation with your agent to go on.",
-                    failure.message
-                )
-            })
-    }
-
-    /// Whether it still serves: it is live, or the person stopped its agent, which the connections
-    /// open then go on hearing.
+    /// Whether it still serves.
     fn serves(&self) -> bool {
-        self.device.is_live() || self.stopped().is_some()
+        self.device.is_live()
     }
 }
 
@@ -97,8 +75,6 @@ pub(crate) struct Presence {
     runtime: tokio::runtime::Handle,
     /// How many agent connections opened.
     opened: AtomicU64,
-    /// The last connection open when the person stopped the agent, and what they hear.
-    stopped: Mutex<Option<(u64, String)>>,
 }
 
 impl Presence {
@@ -116,7 +92,6 @@ impl Presence {
             entering: tokio::sync::Mutex::new(()),
             runtime: tokio::runtime::Handle::current(),
             opened: AtomicU64::new(0),
-            stopped: Mutex::new(None),
         }))
     }
 
@@ -185,13 +160,9 @@ impl Presence {
     /// An agent connection opens: the device enters for it when it is not in the workspace, and
     /// enters anew in place of a session whose agent the person stopped.
     pub(crate) fn visit(self: &Arc<Self>) -> Visit {
-        let stopped = self.note_stop();
         let visit = Visit(self.opened.fetch_add(1, Ordering::SeqCst).saturating_add(1));
         let presence = Arc::clone(self);
         self.runtime.spawn(async move {
-            if stopped {
-                presence.close().await;
-            }
             if let Err(why) = presence.session().await {
                 tracing::debug!(%why, "this computer is not in its workspace for an agent");
             }
@@ -199,37 +170,14 @@ impl Presence {
         visit
     }
 
-    /// Whether the person stopped the agent of the current session, keeping that every
-    /// connection open by now hears it.
-    fn note_stop(&self) -> bool {
-        let Some(said) = self.current().and_then(|session| session.stopped()) else {
-            return false;
-        };
-        *self.stopped.lock_recover() = Some((self.opened.load(Ordering::SeqCst), said));
-        true
-    }
-
-    /// The answer to `request` on `visit` when it is not the workspace's: every call once the
-    /// person stopped the agent, and the person's account (`account/…`: their workspaces and
-    /// keys), which Tilo's API answers as for any key of theirs. Any other request back, for the
-    /// connection's own session.
+    /// The answer to `request` on `visit` when it is not the workspace's: the person's account
+    /// (`account/…`: their workspaces and keys), which Tilo's API answers as for any key of
+    /// theirs. Any other request back, for the connection's own session.
     pub(crate) fn answer_first(
         &self,
-        visit: &Visit,
+        _visit: &Visit,
         request: Value,
     ) -> Result<Answer<'static>, Value> {
-        self.note_stop();
-        let stopped = self
-            .stopped
-            .lock_recover()
-            .as_ref()
-            .filter(|(last, _)| visit.0 <= *last)
-            .map(|(_, said)| said.clone());
-        if let Some(said) = stopped {
-            return Ok(Answer::Overlapping(Box::pin(async move {
-                Ok(unreachable_answer(&request, &said))
-            })));
-        }
         if !account_call(&request) {
             return Err(request);
         }
