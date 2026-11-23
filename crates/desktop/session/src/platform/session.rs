@@ -624,6 +624,9 @@ impl Session {
         // The same handle, for the pass that keeps one surface up at a time.
         let one_surface = surfaces.clone();
         let shell_surfaces = surfaces.clone();
+        // The strips list's flag, for the keys Escape reaches before the surfaces move into the
+        // pass that draws them.
+        let strips_flag = Rc::clone(&surfaces.strips);
         // What the keys ask the panel's own app, which the surface loop hands
         // the running app each pass. A device whose shell draws the panel has
         // one; the shell's own view of the quick settings answers its own keys.
@@ -1125,6 +1128,7 @@ impl Session {
                 },
                 overlays: overlays.clone(),
                 launcher: options.shell.then(|| handle.clone()),
+                strips: options.shell.then(|| Rc::clone(&strips_flag)),
             },
         );
 

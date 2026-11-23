@@ -31,6 +31,7 @@ use crate::common::{HEIGHT, PERSON, WIDTH, key, press, type_text};
 /// The Down and Enter keys, as the compositor's keyboard reads them.
 const KEY_DOWN: u32 = 108;
 const KEY_ENTER: u32 = 28;
+const KEY_ESCAPE: u32 = 1;
 
 /// An action host that keeps what it was asked to run: what a launcher's row or a welcome card
 /// reaches.
@@ -401,6 +402,27 @@ fn the_strips_verb_lists_the_workspaces_strips_and_a_strip_is_chosen() {
     });
     until(&mut session, "the list put away", |session| {
         !labels(session).contains("Done")
+    });
+}
+
+#[test]
+fn escape_puts_the_strips_list_away() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session_with(Rc::new(Asked::default()), &[("so.tilo.notes", "Notes")]);
+    until(&mut session, "the bar to name its strip", |session| {
+        session.layout_reading().rows.iter().any(|row| row.current)
+    });
+    session
+        .invoke("desktop:chrome", "show-strips", &Map::new())
+        .expect("the strips list opens");
+    until(&mut session, "the strips list", |session| {
+        labels(session).contains("New strip")
+    });
+    // The chrome keeps the list, so no surface of the stack hears Escape: the session puts it
+    // away itself, as it puts away the surface a key closes.
+    key(&mut session, KEY_ESCAPE);
+    until(&mut session, "the strips list put away", |session| {
+        !labels(session).contains("New strip")
     });
 }
 

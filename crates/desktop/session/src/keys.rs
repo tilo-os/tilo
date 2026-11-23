@@ -388,6 +388,9 @@ pub(crate) struct SessionKeys {
     /// The row the launcher's keys reached, and the query it was reached in: a new search starts
     /// again from its first row.
     launcher_at: RefCell<(String, Option<usize>)>,
+    /// Whether the shell that draws the screen shows its strips list, which the chrome keeps as it
+    /// keeps the bar: nothing else in the stack closes it, so Escape does here.
+    strips: Option<Rc<Cell<bool>>>,
     /// The shortcut resources whose chords are held down, by key.
     held: RefCell<BTreeMap<u32, String>>,
     /// The controller the person last drove the desktop with, which a press of their own replaces:
@@ -407,6 +410,14 @@ impl SessionKeys {
         launcher: Option<tilo_desktop_surface::DesktopHandle>,
     ) -> Self {
         self.launcher = launcher;
+        self
+    }
+
+    /// The strips list of a shell that draws its own screen: Escape puts it away, as it puts away
+    /// the surface the stack holds, because the chrome keeps this one and no surface hears it.
+    #[must_use]
+    pub(crate) fn with_strips(mut self, strips: Option<Rc<Cell<bool>>>) -> Self {
+        self.strips = strips;
         self
     }
 
@@ -436,6 +447,7 @@ impl SessionKeys {
             overlays: session.overlays,
             launcher: None,
             launcher_at: RefCell::new((String::new(), None)),
+            strips: None,
             held: RefCell::new(BTreeMap::new()),
             controller,
             controller_keys,
@@ -460,6 +472,23 @@ impl SessionKeys {
         (press.bare == Key::Named(NamedKey::Escape))
             .then(|| self.overlays.escape())
             .flatten()
+    }
+
+    /// Whether `press` puts away the strips list a shell drawing the screen shows: Escape, when
+    /// nothing the stack holds stands above it. The chrome keeps the list, as it keeps its bar, so
+    /// the session closes it where it reads the key.
+    fn closes_the_strips_list(&self, press: &Press) -> bool {
+        let Some(strips) = &self.strips else {
+            return false;
+        };
+        if !press.pressed || press.bare != Key::Named(NamedKey::Escape) || !strips.get() {
+            return false;
+        }
+        if self.overlays.escape().is_some() {
+            return false;
+        }
+        strips.set(false);
+        true
     }
 
     /// Whether `press` is the display sheet's chord, which puts the sheet up: Super+P, as the
@@ -710,7 +739,7 @@ impl SessionKeys {
         if let Some(claim) = self.switcher.claim(press, locked, inhibited) {
             return claim;
         }
-        if self.closes_the_top_surface(press).is_some() {
+        if self.closes_the_strips_list(press) || self.closes_the_top_surface(press).is_some() {
             return KeyClaim::Take;
         }
         // A chord that runs a saved shortcut is the session's, as a chord of the desktop's own
