@@ -889,6 +889,33 @@ any of them is added.
 | tilo-control row dialect, `legacy_rows`, `param_row` | a second wire for actions | the one call |
 | REST clients in our code (`tilo-api` `client.rs`, SDK HTTP runtimes) | our code calling our REST edge | calls over iroh |
 
+## Code layout
+
+The crates are grouped by what they are, so the core stays small and
+everything else is visibly optional:
+
+- `crates/core/`: the foundation (wire types, crypto, identity, keys,
+  documents, the one store) and the device daemon. Nothing per app, no
+  importers, no product features.
+- `crates/ui/`: the UI library, which knows nothing about Tilo.
+- `crates/sdk/`: the app SDK over the core and the UI library, for tilolang
+  and Rust.
+- `crates/lang/`: tilolang's compiler, runtime and process.
+- `crates/desktop/`: the compositor, a session that is a client of the
+  daemon, the portal and the desktop's system services. The shell is a
+  tilolang app.
+- `crates/os/`, `crates/vm/`, `crates/compat/`, `crates/integrations/`:
+  product subsystems (install and boot, hardware, VMs and sandboxes, Windows
+  programs, messaging bridges, cloud mounts), each optional and none linked
+  by the core.
+- `crates/engines/`: PDF, media, document codecs and search, shared by apps.
+- `crates/import/`: everything that reads another product's data, behind
+  `tilo migrate`.
+- `tools/`: the dev VM, app CLIs, examples and test fakes.
+
+A crate moves to its group in the push that removes what it duplicates, not
+as a separate rename.
+
 ## Plan
 
 Each piece's "What goes" table is the work. This table says where it
