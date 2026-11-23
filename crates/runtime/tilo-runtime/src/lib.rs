@@ -22,6 +22,7 @@ mod i18n;
 pub mod key_sessions;
 pub mod offload;
 mod os_search;
+pub mod other_devices;
 pub mod personal_devices;
 pub mod profile;
 pub mod unix;
@@ -84,6 +85,12 @@ pub trait RuntimeServices: Sized {
     fn actor(&self) -> &str;
 
     fn action_provider(&self) -> io::Result<Self::ActionProvider>;
+
+    /// The person's other devices, as this host reaches them; `None` for a host that reaches
+    /// none, which offers an agent no device to work on.
+    fn other_devices(&self) -> Option<crate::other_devices::OtherDevices> {
+        None
+    }
 
     /// Construct one transport run for this exact configured audience: the person's agent,
     /// under a key of its own. Client labels never enter.
