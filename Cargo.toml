@@ -5,7 +5,6 @@ exclude = [
     "vendor/leveldb-sys",
     "vendor/hexane",
     "vendor/buffa-build",
-    "vendor/swarm-discovery",
     "tools/web/wasm-split",
     "fuzz",
     # A wasm32 library `tilolang bench --library` runs; built by its own build.sh.
@@ -1672,11 +1671,6 @@ hexane = { path = "vendor/hexane" }
 # The content store's metadata database keeps the page cache its owner bounds, not redb's
 # Build outputs must not become Cargo inputs; see vendor/buffa-build/PROVENANCE.md.
 buffa-build = { path = "vendor/buffa-build" }
-# A multicast send failure on the shared IPv4 and IPv6 sockets is said once,
-# as 0.6.6 says one on an interface socket, so a network that refuses multicast
-# does not bury the log. See
-# vendor/swarm-discovery/PROVENANCE.md.
-swarm-discovery = { path = "vendor/swarm-discovery" }
 # Verify Cast TLS handshake signatures and bound cancellation; identity
 # authentication remains a separate explicit trust decision. See provenance.
 fcast-sender-sdk = { path = "vendor/fcast-sender-sdk" }

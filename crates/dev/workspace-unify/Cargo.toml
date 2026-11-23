@@ -32,7 +32,6 @@ doc = false
 "activity" = { path = "../../../apps/activity", default-features = false, features = ["samples"] }
 "activity-model" = { path = "../../../apps/activity-model", default-features = false, features = [] }
 "activity-model-wasm" = { path = "../../../apps/activity-model-wasm", default-features = false, features = [] }
-"acto-0_8_2" = { package = "acto", version = "^0.8.2", default-features = false, features = ["tokio"] }
 "adblock-0_12_1" = { package = "adblock", version = "^0.12.1", default-features = false, features = ["addr", "content-blocking", "embedded-domain-resolver", "full-regex-handling"] }
 "addr-0_15_6" = { package = "addr", version = "^0.15.6", default-features = false, features = ["psl"] }
 "addr2line-0_25_1" = { package = "addr2line", version = "^0.25.1", default-features = false, features = [] }
@@ -1062,7 +1061,6 @@ doc = false
 "smallvec-1_15_1" = { package = "smallvec", version = "^1.15.1", default-features = false, features = ["const_generics", "const_new", "serde", "union", "write"] }
 "smithay-0_7_0" = { package = "smithay", path = "../../../vendor/smithay", default-features = false, features = ["aliasable", "backend_drm", "backend_egl", "backend_gbm", "backend_libinput", "backend_session", "backend_session_libseat", "backend_udev", "backend_winit", "cc", "desktop", "drm", "drm-ffi", "encoding_rs", "gbm", "gl_generator", "input", "libloading", "libseat", "pixman", "pkg-config", "renderer_gl", "renderer_multi", "renderer_pixman", "scopeguard", "tempfile", "udev", "wayland-client", "wayland-cursor", "wayland-egl", "wayland-protocols", "wayland-protocols-misc", "wayland-protocols-wlr", "wayland-server", "wayland_frontend", "winit", "x11rb", "x11rb_event_source", "xwayland"] }
 "smithay-client-toolkit-0_20_0" = { package = "smithay-client-toolkit", version = "^0.20.0", default-features = false, features = ["bytemuck", "calloop", "calloop-wayland-source", "default", "pkg-config", "xkbcommon"] }
-"smol_str-0_1_24" = { package = "smol_str", version = "^0.1.24", default-features = false, features = [] }
 "smol_str-0_3_6" = { package = "smol_str", version = "^0.3.6", default-features = false, features = ["default", "serde", "std"] }
 "smoothutf8-0_2_3" = { package = "smoothutf8", version = "^0.2.3", default-features = false, features = ["simdutf8"] }
 "snippets" = { path = "../../../apps/snippets", default-features = false, features = [] }
@@ -1101,7 +1099,6 @@ doc = false
 "subtle-2_6_1" = { package = "subtle", version = "^2.6.1", default-features = false, features = ["const-generics", "default", "i128", "std"] }
 "svg_fmt-0_4_5" = { package = "svg_fmt", version = "^0.4.5", default-features = false, features = [] }
 "svgtypes-0_16_1" = { package = "svgtypes", version = "^0.16.1", default-features = false, features = ["default", "std"] }
-"swarm-discovery-0_6_6" = { package = "swarm-discovery", path = "../../../vendor/swarm-discovery", default-features = false, features = [] }
 "swash-0_2_10" = { package = "swash", version = "^0.2.10", default-features = false, features = ["render", "scale", "std"] }
 "swipe" = { path = "../../../crates/system/swipe", default-features = false, features = [] }
 "symphonia-0_5_5" = { package = "symphonia", version = "^0.5.5", default-features = false, features = ["flac", "mp3", "ogg", "symphonia-bundle-flac", "symphonia-bundle-mp3", "symphonia-codec-vorbis", "symphonia-format-ogg", "vorbis"] }
@@ -1649,7 +1646,6 @@ doc = false
 [target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.build-dependencies]
 "account-credentials" = { path = "../../../crates/system/account-credentials", default-features = false, features = ["default", "hints", "hugging-face", "store"] }
 "accounts" = { path = "../../../crates/system/accounts", default-features = false, features = ["person", "sign-ins-fixture"] }
-"acto-0_8_2" = { package = "acto", version = "^0.8.2", default-features = false, features = ["tokio"] }
 "adblock-0_12_1" = { package = "adblock", version = "^0.12.1", default-features = false, features = ["addr", "content-blocking", "embedded-domain-resolver", "full-regex-handling"] }
 "addr-0_15_6" = { package = "addr", version = "^0.15.6", default-features = false, features = ["psl"] }
 "adler2-2_0_1" = { package = "adler2", version = "^2.0.1", default-features = false, features = [] }
@@ -2390,7 +2386,6 @@ doc = false
 "slab-0_4_12" = { package = "slab", version = "^0.4.12", default-features = false, features = ["default", "std"] }
 "slotmap-1_1_1" = { package = "slotmap", version = "^1.1.1", default-features = false, features = ["std"] }
 "smallvec-1_15_1" = { package = "smallvec", version = "^1.15.1", default-features = false, features = ["const_generics", "const_new", "serde", "union", "write"] }
-"smol_str-0_1_24" = { package = "smol_str", version = "^0.1.24", default-features = false, features = [] }
 "smol_str-0_3_6" = { package = "smol_str", version = "^0.3.6", default-features = false, features = ["default", "serde", "std"] }
 "smoothutf8-0_2_3" = { package = "smoothutf8", version = "^0.2.3", default-features = false, features = ["simdutf8"] }
 "socket2-0_6_3" = { package = "socket2", version = "^0.6.3", default-features = false, features = ["all"] }
@@ -2416,7 +2411,6 @@ doc = false
 "subtle-2_6_1" = { package = "subtle", version = "^2.6.1", default-features = false, features = ["const-generics", "default", "i128", "std"] }
 "svg_fmt-0_4_5" = { package = "svg_fmt", version = "^0.4.5", default-features = false, features = [] }
 "svgtypes-0_16_1" = { package = "svgtypes", version = "^0.16.1", default-features = false, features = ["default", "std"] }
-"swarm-discovery-0_6_6" = { package = "swarm-discovery", path = "../../../vendor/swarm-discovery", default-features = false, features = [] }
 "syn-2_0_117" = { package = "syn", version = "^2.0.117", default-features = false, features = ["clone-impls", "default", "derive", "extra-traits", "fold", "full", "parsing", "printing", "proc-macro", "visit", "visit-mut"] }
 "syn-3_0_9" = { package = "syn", version = "^3.0.9", default-features = false, features = ["clone-impls", "default", "derive", "extra-traits", "fold", "full", "parsing", "printing", "proc-macro", "visit", "visit-mut"] }
 "sync_wrapper-1_0_2" = { package = "sync_wrapper", version = "^1.0.2", default-features = false, features = ["futures", "futures-core"] }
@@ -2696,7 +2690,6 @@ doc = false
 "activity" = { path = "../../../apps/activity", default-features = false, features = ["samples"] }
 "activity-model" = { path = "../../../apps/activity-model", default-features = false, features = [] }
 "activity-model-wasm" = { path = "../../../apps/activity-model-wasm", default-features = false, features = [] }
-"acto-0_8_2" = { package = "acto", version = "^0.8.2", default-features = false, features = ["tokio"] }
 "adblock-0_12_1" = { package = "adblock", version = "^0.12.1", default-features = false, features = ["addr", "content-blocking", "embedded-domain-resolver", "full-regex-handling"] }
 "addr-0_15_6" = { package = "addr", version = "^0.15.6", default-features = false, features = ["psl"] }
 "addr2line-0_25_1" = { package = "addr2line", version = "^0.25.1", default-features = false, features = [] }
@@ -3726,7 +3719,6 @@ doc = false
 "smallvec-1_15_1" = { package = "smallvec", version = "^1.15.1", default-features = false, features = ["const_generics", "const_new", "serde", "union", "write"] }
 "smithay-0_7_0" = { package = "smithay", path = "../../../vendor/smithay", default-features = false, features = ["aliasable", "backend_drm", "backend_egl", "backend_gbm", "backend_libinput", "backend_session", "backend_session_libseat", "backend_udev", "backend_winit", "cc", "desktop", "drm", "drm-ffi", "encoding_rs", "gbm", "gl_generator", "input", "libloading", "libseat", "pixman", "pkg-config", "renderer_gl", "renderer_multi", "renderer_pixman", "scopeguard", "tempfile", "udev", "wayland-client", "wayland-cursor", "wayland-egl", "wayland-protocols", "wayland-protocols-misc", "wayland-protocols-wlr", "wayland-server", "wayland_frontend", "winit", "x11rb", "x11rb_event_source", "xwayland"] }
 "smithay-client-toolkit-0_20_0" = { package = "smithay-client-toolkit", version = "^0.20.0", default-features = false, features = ["bytemuck", "calloop", "calloop-wayland-source", "default", "pkg-config", "xkbcommon"] }
-"smol_str-0_1_24" = { package = "smol_str", version = "^0.1.24", default-features = false, features = [] }
 "smol_str-0_3_6" = { package = "smol_str", version = "^0.3.6", default-features = false, features = ["default", "serde", "std"] }
 "smoothutf8-0_2_3" = { package = "smoothutf8", version = "^0.2.3", default-features = false, features = ["simdutf8"] }
 "snippets" = { path = "../../../apps/snippets", default-features = false, features = [] }
@@ -3765,7 +3757,6 @@ doc = false
 "subtle-2_6_1" = { package = "subtle", version = "^2.6.1", default-features = false, features = ["const-generics", "default", "i128", "std"] }
 "svg_fmt-0_4_5" = { package = "svg_fmt", version = "^0.4.5", default-features = false, features = [] }
 "svgtypes-0_16_1" = { package = "svgtypes", version = "^0.16.1", default-features = false, features = ["default", "std"] }
-"swarm-discovery-0_6_6" = { package = "swarm-discovery", path = "../../../vendor/swarm-discovery", default-features = false, features = [] }
 "swash-0_2_10" = { package = "swash", version = "^0.2.10", default-features = false, features = ["render", "scale", "std"] }
 "swipe" = { path = "../../../crates/system/swipe", default-features = false, features = [] }
 "symphonia-0_5_5" = { package = "symphonia", version = "^0.5.5", default-features = false, features = ["flac", "mp3", "ogg", "symphonia-bundle-flac", "symphonia-bundle-mp3", "symphonia-codec-vorbis", "symphonia-format-ogg", "vorbis"] }
@@ -4313,7 +4304,6 @@ doc = false
 [target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.build-dependencies]
 "account-credentials" = { path = "../../../crates/system/account-credentials", default-features = false, features = ["default", "hints", "hugging-face", "store"] }
 "accounts" = { path = "../../../crates/system/accounts", default-features = false, features = ["person", "sign-ins-fixture"] }
-"acto-0_8_2" = { package = "acto", version = "^0.8.2", default-features = false, features = ["tokio"] }
 "adblock-0_12_1" = { package = "adblock", version = "^0.12.1", default-features = false, features = ["addr", "content-blocking", "embedded-domain-resolver", "full-regex-handling"] }
 "addr-0_15_6" = { package = "addr", version = "^0.15.6", default-features = false, features = ["psl"] }
 "adler2-2_0_1" = { package = "adler2", version = "^2.0.1", default-features = false, features = [] }
@@ -5053,7 +5043,6 @@ doc = false
 "slab-0_4_12" = { package = "slab", version = "^0.4.12", default-features = false, features = ["default", "std"] }
 "slotmap-1_1_1" = { package = "slotmap", version = "^1.1.1", default-features = false, features = ["std"] }
 "smallvec-1_15_1" = { package = "smallvec", version = "^1.15.1", default-features = false, features = ["const_generics", "const_new", "serde", "union", "write"] }
-"smol_str-0_1_24" = { package = "smol_str", version = "^0.1.24", default-features = false, features = [] }
 "smol_str-0_3_6" = { package = "smol_str", version = "^0.3.6", default-features = false, features = ["default", "serde", "std"] }
 "smoothutf8-0_2_3" = { package = "smoothutf8", version = "^0.2.3", default-features = false, features = ["simdutf8"] }
 "socket2-0_6_3" = { package = "socket2", version = "^0.6.3", default-features = false, features = ["all"] }
@@ -5079,7 +5068,6 @@ doc = false
 "subtle-2_6_1" = { package = "subtle", version = "^2.6.1", default-features = false, features = ["const-generics", "default", "i128", "std"] }
 "svg_fmt-0_4_5" = { package = "svg_fmt", version = "^0.4.5", default-features = false, features = [] }
 "svgtypes-0_16_1" = { package = "svgtypes", version = "^0.16.1", default-features = false, features = ["default", "std"] }
-"swarm-discovery-0_6_6" = { package = "swarm-discovery", path = "../../../vendor/swarm-discovery", default-features = false, features = [] }
 "syn-2_0_117" = { package = "syn", version = "^2.0.117", default-features = false, features = ["clone-impls", "default", "derive", "extra-traits", "fold", "full", "parsing", "printing", "proc-macro", "visit", "visit-mut"] }
 "syn-3_0_9" = { package = "syn", version = "^3.0.9", default-features = false, features = ["clone-impls", "default", "derive", "extra-traits", "fold", "full", "parsing", "printing", "proc-macro", "visit", "visit-mut"] }
 "sync_wrapper-1_0_2" = { package = "sync_wrapper", version = "^1.0.2", default-features = false, features = ["futures", "futures-core"] }
