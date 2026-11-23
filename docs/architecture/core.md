@@ -432,7 +432,9 @@ There are seven ways to add a device:
   device's transport and state: the link between a person's devices,
   presence, the media relay (`tilo-live`), the nearby spool, the speaker
   group's clock and the resources they write. What needs the seat (capture,
-  encoding, input injection, playout, drawing) stays in the session. The
+  encoding, input injection, a window's sound, drawing) stays in the session.
+  A speaker group plays through the device's audio service, so a headless
+  device can play in one. The
   session publishes it as a provider at `devices/<id>/session/…` over
   `daemon.sock` and opens no endpoint of its own. With no session running,
   those actions answer that the device can't do it now, and wake still
@@ -998,7 +1000,7 @@ everything else is visibly optional:
   core library never links them.
 - `crates/desktop/`: the compositor, a session that is a client of the
   daemon, the portal, and what needs a seat (capture, encoding, input,
-  playout, drawing). The shell is a tilolang app.
+  drawing). The shell is a tilolang app.
 - `crates/os/`, `crates/vm/`, `crates/compat/`, `crates/integrations/`:
   product subsystems (install and boot, hardware, VMs and sandboxes, Windows
   programs, messaging bridges, cloud mounts), each optional and none linked
