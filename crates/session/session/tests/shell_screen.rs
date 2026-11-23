@@ -1424,10 +1424,10 @@ fn the_about_sheet_opens_from_the_chromes_verb() {
 /// it opens there, in the place the workspace lists it in.
 #[test]
 fn a_window_on_another_device_says_where_it_runs_in_its_place() {
-    let _settled = ui::motion::testing::settled();
     use tilo_desktop_model::{
         Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
     };
+    let _settled = ui::motion::testing::settled();
     let tab = Tab {
         id: 40,
         title: "Launch checklist".into(),
