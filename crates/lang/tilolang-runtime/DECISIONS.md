@@ -282,7 +282,7 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   its `len` property holding how many the list has. The card's `count:` says how many
   there are and pressing the card opens its resource for the rest. Before, a board's cards built
   and drew every row of three 10k lists.
-- **The native host** (`apps/tilolang`). The list column of a `list` frame is a `VirtualList`
+- **The native host** (`crates/lang/tilolang-process`, its windows). The list column of a `list` frame is a `VirtualList`
   over the list's row keys: it asks for the rows it shows (visible and overscan) with
   `row(list, i)` and forgets the rest with `hide_rows`. A poll's patches are sorted by where
   they show: rows inserted, removed or moved are the list's model changes; a change inside a

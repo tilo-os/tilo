@@ -14,14 +14,14 @@ use tilolang::source::{write_catalogue, write_ids};
 use tilolang::{OsEntropy, PackageMeta};
 use tilolang_tilo::bundle::{Bundle, ICON_FILE};
 
-pub const RUNTIME_BIN: &str = "bin/tilolang-app";
+pub const RUNTIME_BIN: &str = "bin/tilolang-process";
 pub const DEFAULT_TILOLANG_RUNTIME: &str =
     concat!("tilolang/", env!("CARGO_PKG_VERSION"), "+tilolang");
 pub const DEFAULT_TILO_RUNTIME: &str = "tilo-runtime/2026.07";
 
-/// Where a tilolang app runs: where its runtime runs (`apps/tilolang/tilo-runtime.toml`), as a
-/// Linux binary baked into the OS image, as a macOS binary shipped in Tilo.app, and as its web
-/// bundle in a browser tab. A package names it, so a runtime that narrows narrows its apps too.
+/// Where a tilolang app runs: where its runtime runs (`crates/lang/tilolang-process/tilo-runtime.toml`), as a
+/// Linux binary baked into the OS image, as a macOS binary shipped in Tilo.app, and on a web page
+/// (`tilolang-web`). A package names it, so a runtime that narrows narrows its apps too.
 pub const PLATFORMS: &str = "[\"linux\", \"macos\", \"web\"]";
 
 /// What a build makes of the package in a directory and the packages it uses.

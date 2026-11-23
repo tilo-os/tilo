@@ -728,8 +728,8 @@ RUN --mount=type=secret,id=publisher_identity \
       && if [ "$tilolang_packages" != 0 ]; then \
            . /build/tools/apps/tilolang_packages.sh \
            && tilolang_version="$(tilolang_runtime_version /out)" \
-           && tilolang_bake_runtime /out/tilo-runtime-bundle /out/thin-apps/tilolang-app \
-                /out/tilolang-process /out/runtime-bundle-identity.json \
+           && tilolang_bake_runtime /out/tilo-runtime-bundle /out/thin-apps/tilolang-process \
+                /out/runtime-bundle-identity.json \
                 "/usr/lib/tilo-runtime/$tilolang_version" "$tilolang_version"; \
          fi \
       && rm -f /out/runtime-bundle-identity.json; \

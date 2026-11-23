@@ -402,7 +402,6 @@
   "tilo-youtube-engine": {"libraries": 0, "tests": 2851944},
   "tilo-zone-globe": {"libraries": 1550626, "tests": 110484600},
   "tilolang": {"libraries": 0, "tests": 48642576},
-  "tilolang-app": {"libraries": 9527665, "tests": 1057872112},
   "tilolang-cli": {"libraries": 62808754, "tests": 2808751096},
   "tilolang-process": {"libraries": 8578683, "tests": 1678401544},
   "tilolang-lex": {"libraries": 1095682, "tests": 2851896},

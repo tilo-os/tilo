@@ -37,7 +37,7 @@ save to two points too:
 
 The app still renders on the session's headless compositor (`--software`), as a plain client,
 so the numbers include the compositor's presentation. It runs the checkout's `fast` profile
-`target/fast/tilolang-app`, the binary the loop's own runtime build makes, and `--tool` and
+`target/fast/tilolang-process`, the binary the loop's own runtime build makes, and `--tool` and
 `--runtime` pick another. `--busy N` keeps N CPU-bound processes running for the measurement, so
 the medians also show the loop under load; the load average is printed with every sample.
 
@@ -74,7 +74,7 @@ PRESENTED = re.compile(r"tilo-display-frame \{.*\}")
 BUILT = re.compile(r"built in (\d+) ms, (\w+) in (\d+) ms")
 # The line of the runtime's source each runtime run edits: a comment, so the build is a real
 # incremental rebuild of the crate with nothing else changed.
-RUNTIME_SOURCE = REPO / "apps/tilolang/src/updates.rs"
+RUNTIME_SOURCE = REPO / "crates/lang/tilolang-process/src/window/updates.rs"
 RUNTIME_MARK = "// tilolang-dev-loops: runtime run"
 
 
@@ -182,13 +182,15 @@ class Tail:
 
 
 def tilolang_app_pids(session_pid: int) -> set[int]:
-    """The tilolang-app processes under the session."""
+    """The tilolang windows' processes under the session."""
     found = set()
     for proc in Path("/proc").iterdir():
         if not proc.name.isdigit():
             continue
         try:
-            if os.readlink(proc / "exe").endswith("/tilolang-app") and descends(int(proc.name), session_pid):
+            if (os.readlink(proc / "exe").endswith("/tilolang-process")
+                    and b"TILO_PACKAGE_ID=" in (proc / "environ").read_bytes()
+                    and descends(int(proc.name), session_pid)):
                 found.add(int(proc.name))
         except OSError:
             continue
@@ -480,15 +482,16 @@ def main() -> int:
     if args.desktop:
         unattach(state)
         tool = (args.tool or REPO / "target/fast/tilolang").resolve()
-        runtime = (args.runtime or REPO / "target/fast/tilolang-app").resolve()
+        runtime = (args.runtime or REPO / "target/fast/tilolang-process").resolve()
         if not args.no_build:
             run(["cargo", "build", "--profile", "fast", "--locked",
                  "-p", "tilolang-cli", "--bin", "tilolang"], cwd=REPO)
             run(["cargo", "build", "--profile", "fast", "--locked",
-                 "-p", "tilolang-app", "--bin", "tilolang-app"], cwd=REPO)
+                 "-p", "tilolang-process", "--bin", "tilolang-process",
+                 "--features", "app-launch"], cwd=REPO)
         for binary in (tool, runtime):
             if not binary.is_file():
-                raise Failed(f"no {binary} (build tilolang-cli and tilolang-app with --profile fast)")
+                raise Failed(f"no {binary} (build tilolang-cli and tilolang-process with --profile fast)")
     else:
         tool = (args.tool or REPO / "target/nested/tilolang").resolve()
         if not args.no_build:

@@ -718,7 +718,7 @@ readers = [
 [[cargo]]
 package = "tilo-app-package"
 # Every app's search taglines are checked in each shipped language.
-inputs = ["apps/*/Cargo.toml", "apps/*/tilo-app.toml", "apps/*/tilo-runtime.toml", "apps/*/search/*.ftl"]
+inputs = ["apps/*/Cargo.toml", "apps/*/tilo-app.toml", "crates/lang/*/tilo-runtime.toml", "apps/*/search/*.ftl"]
 readers = [
   "crates/packaging/tilo-app-package/tests/app_manifests.rs",
   "crates/packaging/tilo-app-package/src/validate.rs",
@@ -731,15 +731,6 @@ package = "tilo-api"
 # change to either checks and tests the other.
 inputs = ["os/containers/tilo-api/host-info.json"]
 readers = ["crates/server/tilo-api/src/tests.rs"]
-
-[[cargo]]
-package = "tilolang-app"
-# The tests compile the built-in tilolang packages (source and ids lock).
-inputs = ["apps/tl/"]
-readers = [
-  "apps/tilolang/tests/hosted/tasks_board.rs",
-  "apps/tilolang/tests/support.rs",
-]
 
 [[cargo]]
 package = "tilolang"
@@ -763,7 +754,7 @@ inputs = [
   "crates/platform/tilolang-tilo/tests/native-chat/",
   "apps/tl/",
   "apps/pdf-viewer/surface.toml",
-  "apps/tilolang/tilo-runtime.toml",
+  "crates/lang/tilolang-process/tilo-runtime.toml",
 ]
 readers = [
   "crates/lang/tilolang-cli/src/layout_check/stage.rs",
@@ -885,7 +876,8 @@ readers = [
 package = "tilolang-process"
 # The host compiles built-in packages and embeds the app window's catalogues and the toolkit's (the
 # words its dates and clocks are written in), and its task's tests hold native apps' packages from
-# their surfaces, as a session hands them, and the notebooks the native Notes app kept.
+# their surfaces, as a session hands them, and the notebooks the native Notes app kept. The window
+# tests compile the built-in packages (source and ids lock).
 inputs = [
   "apps/tl/",
   "apps/tl/gallery/",
@@ -902,6 +894,8 @@ readers = [
   "crates/lang/tilolang-process/tests/process.rs",
   "crates/lang/tilolang-process/tests/process/native_notes.rs",
   "crates/lang/tilolang-process/tests/workspace_mail.rs",
+  "crates/lang/tilolang-process/tests/window/hosted/tasks_board.rs",
+  "crates/lang/tilolang-process/tests/window/support.rs",
 ]
 
 

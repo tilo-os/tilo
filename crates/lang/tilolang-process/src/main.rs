@@ -1,28 +1,100 @@
-//! `tilolang-process`: the process the session starts as a tilolang host, for one workspace and author.
+//! `tilolang-process`: the one binary of the tilolang runtime bundle, in the role it was started
+//! for (`tilolang_process`):
 //!
-//! It holds its api (its process link, `TILO_SVC_PROCESS_FD`) and its storage
-//! (`TILO_TILOLANG_PROCESS_STORAGE`) and nothing else. It waits on the API, its instances' windows,
-//! its own wake and a stop, and runs a frame of every instance when one of them has something for
-//! it. It ends when the session closes its api and its last window is gone, or when it is asked to
-//! stop: both drop the instances.
+//! - with a process link (`TILO_SVC_PROCESS_FD`): the host of a workspace's instances of an app,
+//!   which the device starts, or of a task's programs, which `tilo` starts;
+//! - with an origin (`TILO_TILOLANG_CONNECTOR`): that origin's connector, which the system runs
+//!   for an app whose types hold an outside service's resources;
+//! - with a page link (`TILO_TILOLANG_PAGE`): a window a device shows on a web page;
+//! - otherwise: the windows of the package the launcher names with `TILO_PACKAGE_ID` and
+//!   `TILO_APP_MODULE`. The language's command line (`tilolang build`, `tilolang run`) is a
+//!   separate tool, `crates/lang/tilolang-cli`.
 //!
 //! Its Windows body does not exist yet: a session hands the host its process link by passing a
-//! descriptor, which needs named pipes and handle duplication. Until then the host refuses in
+//! descriptor, which needs named pipes and handle duplication. Until then the binary refuses in
 //! words where it would take that link.
+
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
 
 #[cfg(unix)]
 mod host;
 
-/// Run the host until the session ends it.
 #[cfg(unix)]
 fn main() -> std::process::ExitCode {
+    #[cfg(feature = "app-launch")]
+    if std::env::var_os(runtime_portal::process_link::FD_ENV).is_none() {
+        return launched();
+    }
     host::main()
 }
 
-/// The tilolang host is not started on Windows yet: the process link a session hands it is a
-/// descriptor, and nothing here receives one yet.
+/// The role an app's launch starts: the connector of the origin it names, or the windows of its
+/// package.
+#[cfg(all(unix, feature = "app-launch"))]
+fn launched() -> std::process::ExitCode {
+    // The system runs this app's connector for an outside service in a process of its own,
+    // with no window and no package of its own: the app's instances in the tilolang host reach
+    // it. It needs no module, so this comes before the package is installed. It has no window
+    // to log beside, so its own log is all a failure in it says: the session reads what it
+    // writes to stderr.
+    if let Ok(origin) = std::env::var(tilolang_mail::CONNECTOR_ORIGIN_ENV) {
+        tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::new(
+                tilo_startup_metrics::log_directives(std::env::var("RUST_LOG").ok().as_deref()),
+            ))
+            .with_writer(std::io::stderr)
+            .init();
+        return match run_connector(&origin) {
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("tilolang: {error}");
+                std::process::ExitCode::from(2)
+            }
+        };
+    }
+    // A window a device shows on a web page draws nothing: it answers the device on its page
+    // link, and needs no package of its own, since its instance runs in the app's process.
+    if let Ok(named) = std::env::var(runtime_portal::process_link::PAGE_ENV) {
+        return match tilolang_process::window::shown_on_page::serve_from_env(&named) {
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("tilolang: the page's window: {error}");
+                std::process::ExitCode::from(2)
+            }
+        };
+    }
+    if let Err(error) = tilolang_process::window::install_from_env() {
+        eprintln!("tilolang: {error}");
+        return std::process::ExitCode::from(2);
+    }
+    ui::launch::run_or_exit(&tilolang_process::window::launch_spec());
+    std::process::ExitCode::SUCCESS
+}
+
+/// Run the connector of the origin `origin` this process was started as
+/// (`TILO_TILOLANG_CONNECTOR`), on the API the launcher handed it, until the session closes
+/// the API: the origin's own connector, from the crate that implements it.
+#[cfg(all(unix, feature = "app-launch"))]
+fn run_connector(origin: &str) -> Result<(), String> {
+    match origin {
+        "imap" => tilolang_mail::run_connector(origin),
+        "caldav" => tilolang_calendar::run_connector(origin),
+        "youtube" => {
+            let service: std::sync::Arc<dyn tilolang_youtube::Service> =
+                std::sync::Arc::new(tilolang_youtube::Live::new());
+            tilolang_youtube::connector::run(&service)
+        }
+        other => Err(format!("there is no connector for the origin `{other}`")),
+    }
+}
+
+/// Nothing is started on Windows yet: the process link a session hands the host is a descriptor,
+/// and a session hands a window its workspace over one too.
 #[cfg(windows)]
 fn main() -> std::process::ExitCode {
-    eprintln!("tilolang-process: the tilolang host does not run on Windows yet");
+    eprintln!("tilolang-process: the tilolang runtime does not run on Windows yet");
     std::process::ExitCode::from(2)
 }

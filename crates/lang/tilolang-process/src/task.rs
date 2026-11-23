@@ -56,8 +56,8 @@ fn shown_for_a_person(kind: &str, value: &str) -> String {
         kind,
         value,
         &moment,
-        ui::format::region::current(),
-        ui::format::words(),
+        ui_core::format::region::current(),
+        ui_core::format::words(),
     )
 }
 
@@ -69,8 +69,8 @@ fn sentence_for_a_person(kind: &str, value: &str) -> String {
         kind,
         value,
         &moment,
-        ui::format::region::current(),
-        ui::format::words(),
+        ui_core::format::region::current(),
+        ui_core::format::words(),
     )
 }
 

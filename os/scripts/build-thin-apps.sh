@@ -9,7 +9,7 @@ REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 EXCLUDE_PACKAGES=" ${EXCLUDE_PACKAGES:-} "
 INCLUDE_PACKAGES=" ${INCLUDE_PACKAGES:-} "
 BUILD_PACKAGES=" ${BUILD_PACKAGES:-} "
-# Runtime bundles' binaries (apps/*/tilo-runtime.toml, by package) that join the graph beside
+# Runtime bundles' binaries (crates/lang/*/tilo-runtime.toml, by package) that join the graph beside
 # every app, as an app does: the image's packing bakes the tilolang runtime from the graph
 # whose libruntime_dylib.so it ships, so it is built in that one build, not a second.
 WITH_RUNTIMES=" ${WITH_RUNTIMES:-} "
@@ -56,7 +56,7 @@ binary_packages=()
 build_targets=()
 selected_crates=()
 app_profiles=()
-# A runtime bundle's binary (apps/*/tilo-runtime.toml: the tilolang runtime,
+# A runtime bundle's binary (crates/lang/*/tilo-runtime.toml: the tilolang runtime,
 # which every tilolang app's entrypoint executes) joins the graph only when
 # BUILD_PACKAGES or WITH_RUNTIMES names it (the nested session, `tilolang dev`,
 # an image that ships tilolang packages).
@@ -64,7 +64,7 @@ app_profiles=()
 # role names its worker crate directly, and builds its tilo-home-export below.
 capture_worker=()
 [ "$BUILD_ROLE" = home-capture ] && capture_worker=("$REPO/apps/imager/Cargo.toml")
-for manifest in "$REPO"/apps/*/tilo-app.toml "$REPO"/apps/*/tilo-runtime.toml ${capture_worker[@]+"${capture_worker[@]}"}; do
+for manifest in "$REPO"/apps/*/tilo-app.toml "$REPO"/crates/lang/*/tilo-runtime.toml ${capture_worker[@]+"${capture_worker[@]}"}; do
     [ -f "$manifest" ] || continue
     dir="$(dirname "$manifest")"
     package="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$dir/Cargo.toml" | head -1)"

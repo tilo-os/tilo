@@ -28,7 +28,7 @@ usage:
       develop the package as an ordinary window on this desktop: every saved .tl file is
       compiled, published to the running app and taken over with its state (the same window,
       its records, scroll and selection); a compile error is printed and the app keeps running.
-      The app's records persist across runs. Without --runtime the tool builds tilolang-app
+      The app's records persist across runs. Without --runtime the tool builds tilolang-process
       from the checkout with cargo, and again on every change of its sources, restarting the
       window on it with its state.
       With --session, develop it in a running nested session instead (SESSION: its --ready

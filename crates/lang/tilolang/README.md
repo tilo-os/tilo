@@ -996,8 +996,8 @@ and writes each as a signed `.tapp`:
 - the manifest, generated from the `app` declaration: the package id is the app id, its name
   and `category:` are the app's, its `icon:` (a platform glyph, `.file_text`) is drawn into the
   payload's `icon.svg` and signed as `[package] icon`;
-- the entrypoint: `[entrypoint] runtime = "tilolang/<version>"`, `bin = "bin/tilolang-app"`. The
-  launcher runs the tilolang runtime bundle's binary (`apps/tilolang`) and points it at the
+- the entrypoint: `[entrypoint] runtime = "tilolang/<version>"`, `bin = "bin/tilolang-process"`. The
+  launcher runs the tilolang runtime bundle's binary (`crates/lang/tilolang-process`) and points it at the
   package's payload with `TILO_APP_MODULE`;
 - the payload: `app.wasm`, `app.ids`, the compiled modules of the packages it uses (`imports/`), the
   `surface.toml` generated from the metadata (declaring the kinds it reads from the packages it

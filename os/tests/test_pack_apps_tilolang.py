@@ -2,7 +2,7 @@
 
 A tilolang app is a package under apps/tl that `tilolang build` compiles and
 signs into a `.tapp`; it executes the tilolang runtime bundle
-(apps/tilolang/tilo-runtime.toml), baked beside the Tilo runtime by
+(crates/lang/tilolang-process/tilo-runtime.toml), baked beside the Tilo runtime by
 tools/apps/tilolang_packages.sh and required by `tilo-install` before it installs
 a package naming it. The image's packing must install the packages its app set
 planned (`tools/apps/app_release.py`), through the same `tilo-install` a Rust
@@ -192,42 +192,24 @@ printf '%s\\n' "$*" > '{log}'
 mkdir -p "$(python3 -c 'import sys; a=sys.argv[1:]; print(a[a.index("--out") + 1])' "$@")"
 ''')
             bundle.chmod(0o755)
-            for name in ('tilolang-app', 'tilolang-process'):
-                (root / name).write_text('')
+            (root / 'tilolang-process').write_text('')
             out = root / 'runtimes/0.1.0+tilolang'
             child = subprocess.run(
                 ['bash', '-c', 'set -euo pipefail; . "$1"; shift; tilolang_bake_runtime "$@"',
-                 'bash', str(HELPER), str(bundle), str(root / 'tilolang-app'),
-                 str(root / 'tilolang-process'), str(root / 'identity.json'), str(out),
-                 '0.1.0+tilolang'],
+                 'bash', str(HELPER), str(bundle), str(root / 'tilolang-process'),
+                 str(root / 'identity.json'), str(out), '0.1.0+tilolang'],
                 capture_output=True, text=True)
             self.assertEqual(child.returncode, 0, child.stderr)
             invocation = log.read_text()
             self.assertIn('build --binaries-only', invocation)
             self.assertIn('--version 0.1.0+tilolang', invocation)
-            self.assertIn(f'--include-bin {root}/tilolang-app', invocation)
             self.assertIn(f'--include-bin {root}/tilolang-process', invocation)
+            self.assertEqual(invocation.count('--include-bin'), 1)
             self.assertIn(f'--identity {root}/identity.json', invocation)
             self.assertIn(f'--out {out}', invocation)
             self.assertTrue(out.is_dir(), 'the bundle is written where the launcher looks')
             # The binary the bundle executes is executable, as the launcher runs it.
-            self.assertTrue(os.access(root / 'tilolang-app', os.X_OK))
-            self.assertNotIn('--arch', invocation)
-            self.assertNotIn('--include ', invocation)
-
-            # A Mac's runtime: universal binaries, and the libraries they load beside them.
-            libraries = root / 'gstreamer'
-            libraries.mkdir()
-            child = subprocess.run(
-                ['bash', '-c', 'set -euo pipefail; . "$1"; shift; tilolang_bake_runtime "$@"',
-                 'bash', str(HELPER), str(bundle), str(root / 'tilolang-app'),
-                 str(root / 'tilolang-process'), str(root / 'identity.json'), str(out),
-                 '0.1.0+tilolang', 'aarch64+x86_64', str(libraries)],
-                capture_output=True, text=True)
-            self.assertEqual(child.returncode, 0, child.stderr)
-            invocation = log.read_text()
-            self.assertIn('--arch aarch64+x86_64', invocation)
-            self.assertIn(f'--include {libraries}', invocation)
+            self.assertTrue(os.access(root / 'tilolang-process', os.X_OK))
 
     def test_the_runtime_version_is_the_one_the_manifest_provides(self):
         # The version every package names in `optional-runtimes` is the one the
@@ -237,7 +219,7 @@ mkdir -p "$(python3 -c 'import sys; a=sys.argv[1:]; print(a[a.index("--out") + 1
              'bash', str(HELPER), str(REPO)],
             capture_output=True, text=True)
         self.assertEqual(child.returncode, 0, child.stderr)
-        manifest = (REPO / 'apps/tilolang/tilo-runtime.toml').read_text()
+        manifest = (REPO / 'crates/lang/tilolang-process/tilo-runtime.toml').read_text()
         self.assertIn(f'provides = "tilolang/{child.stdout.strip()}"', manifest)
 
 
@@ -248,14 +230,14 @@ class PayloadTreeTests(unittest.TestCase):
         source = root / 'compiled'
         for name in ('libruntime_dylib.so', 'tilo-runtime-account-capability', 'runtime-engines',
                      'tilo-runtime-bundle', 'tilo-app-package', 'tilo-install', 'tilo-cli-shim',
-                     'tilolang-process'):
+                     'thin-apps/tilolang-process'):
             (source / name).parent.mkdir(parents=True, exist_ok=True)
             (source / name).write_text('')
         for name in ('apps', 'language-packs'):
             (source / name).mkdir()
-        (source / 'apps/tilolang').mkdir()
-        (source / 'apps/tilolang/tilo-runtime.toml').write_text(
-            (REPO / 'apps/tilolang/tilo-runtime.toml').read_text())
+        runtime = source / 'crates/lang/tilolang-process/tilo-runtime.toml'
+        runtime.parent.mkdir(parents=True)
+        runtime.write_text((REPO / 'crates/lang/tilolang-process/tilo-runtime.toml').read_text())
         (source / 'app-plan.json').write_text(json.dumps({
             'tilolang': [{'app': 'tl-notes', 'dir': 'apps/tl/notes', 'id': NOTES,
                           'version': '0.1.0', 'runtime': TILOLANG_RUNTIME}]
@@ -273,7 +255,8 @@ class PayloadTreeTests(unittest.TestCase):
             root = Path(directory)
             result = self.compile_tree(root, tilolang_packages=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            for name in ('tilolang', 'tilolang-process', 'app-plan.json'):
+            for name in ('tilolang', 'thin-apps/tilolang-process', 'app-plan.json',
+                         'crates/lang/tilolang-process/tilo-runtime.toml'):
                 self.assertTrue((root / 'compiled-apps' / name).exists(), name)
 
     def test_a_plan_naming_tilolang_packages_without_the_compiler_is_refused(self):

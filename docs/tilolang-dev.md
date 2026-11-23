@@ -5,7 +5,7 @@ Two loops:
 - **The app loop.** Save a `.tl` file. The running app shows the change in about
   50 ms, with its state: its resources, its view state, the scroll,
   the selection and the open item.
-- **The runtime loop.** Change the runtime (`apps/tilolang`, `tilolang-tilo`,
+- **The runtime loop.** Change the runtime (`tilolang-process`, `tilolang-tilo`,
   `tilolang-runtime`) and build it. The running app restarts on the new runtime,
   almost all of it the build. Its resources are still there.
 
@@ -33,7 +33,7 @@ and start the loop:
 target/fast/tilolang dev apps/tl/tasks --search apps/tl
 ```
 
-The first start builds `tilolang-app` from the checkout in the same profile (an ordinary
+The first start builds `tilolang-process` from the checkout in the same profile (an ordinary
 build; a thin build runs only against a session's runtime library) and opens the package's
 window. `--runtime BIN` runs a binary you built yourself instead, and a new build of it
 restarts the window on it.
@@ -196,7 +196,7 @@ that changes is which verified module the host interprets. The code is in
 
 On the desktop there is no session to hand anything over: the tool runs the app itself and
 publishes into a directory of its own, private to the person, which the app reads
-(`apps/tilolang/src/updates.rs`, the generation protocol of `crates/lang/tilo-app-module`).
+(`crates/lang/tilolang-process/src/window/updates.rs`, the generation protocol of `crates/lang/tilo-app-module`).
 
 ## The runtime loop
 
@@ -208,8 +208,9 @@ Let `tilolang dev` build the runtime (or give `--runtime BIN` a binary of your o
 target/fast/tilolang dev apps/tl/tasks --search apps/tl
 ```
 
-On every change of `apps/tilolang`, `tilolang-tilo`, `tilolang-runtime` or `tilolang` it
-runs `cargo build --locked --profile fast -p tilolang-app --bin tilolang-app`, and when the build
+On every change of `tilolang-process`, `tilolang-tilo`, `tilolang-runtime` or `tilolang` it
+runs `cargo build --locked --profile fast -p tilolang-process --bin tilolang-process --features
+app-launch`, and when the build
 succeeds it stops the running app (`SIGTERM`, so it flushes its checkpoint) and starts it
 again on the new binary. The resources are in its local store; the scroll, selection and
 open item come back from the checkpoint.
@@ -222,8 +223,8 @@ tilolang dev apps/tl/notes --search apps/tl --session /tmp/s.json --build-runtim
 
 `tilolang dev` then:
 
-1. builds `tilolang-app` thin with `dist/dev/tilolang-runtime-build.sh` (cargo). It builds again on every
-   change of `apps/tilolang`, `tilolang-tilo`, `tilolang-runtime` or `tilolang`;
+1. builds `tilolang-process` thin with `dist/dev/tilolang-runtime-build.sh` (cargo). It builds again on every
+   change of `tilolang-process`, `tilolang-tilo`, `tilolang-runtime` or `tilolang`;
    a failed build leaves the apps on the last good runtime;
 2. bakes the binary into a runtime bundle signed by a key the launcher trusts;
 3. packs it as a runtime package (`so.tilo.runtime.tilolang.dev`, providing

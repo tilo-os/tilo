@@ -19,7 +19,8 @@ for target in aarch64-linux-android x86_64-linux-android; do
   # thread-locals that already use `const { … }`, a false positive.
   bash tools/ci/measure.sh "clippy $target" -- \
     bash scripts/ci-run.sh "Clippy (Android apps, $target)" -- \
-    "$cargo" clippy --locked -p calculator -p tilolang-app --lib --target "$target" \
+    "$cargo" clippy --locked -p calculator -p tilolang-process --features tilolang-process/app-launch \
+    --lib --target "$target" \
     -- -D warnings -A clippy::missing_const_for_thread_local
   bash tools/ci/measure.sh "check tilo-runtime $target" -- \
     bash scripts/ci-run.sh "Check (device daemon, $target)" -- \

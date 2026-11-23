@@ -1809,7 +1809,7 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             let work = tempfile::tempdir().unwrap();
-            let binary = work.path().join("tilolang-app");
+            let binary = work.path().join("tilolang-process");
             fs::write(&binary, b"runtime binary linking the app runtime").unwrap();
             fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
             let identity = Identity::generate();
@@ -1827,7 +1827,7 @@ mod tests {
             )
             .unwrap();
             let paths: Vec<&str> = manifest.files.iter().map(|f| f.path.as_str()).collect();
-            assert_eq!(paths, ["bin/tilolang-app"]);
+            assert_eq!(paths, ["bin/tilolang-process"]);
             assert!(!bundle.join("lib").exists());
             assert!(!bundle.join("etc").exists());
             let options = VerifyOptions {
@@ -1839,7 +1839,7 @@ mod tests {
                 verify_bundle_with(&bundle, &options).unwrap().root_hash,
                 manifest.root_hash
             );
-            fs::write(bundle.join("bin/tilolang-app"), b"another binary").unwrap();
+            fs::write(bundle.join("bin/tilolang-process"), b"another binary").unwrap();
             assert!(verify_bundle_with(&bundle, &options).is_err());
 
             assert!(matches!(

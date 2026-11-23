@@ -34,7 +34,7 @@ Today. The session installs them (`--install-tapp`) beside native Notes
 - **launch**: each opens from the applications provider, and the compositor
   admits its window under its own app id, which a sandboxed client gets only
   through verified launch ownership. Each window presents a frame.
-- **processes**: each app is its own `tilolang-app` process from the tilolang
+- **processes**: each app is its own `tilolang-process` window process from the tilolang
   runtime bundle, in its own user, mount and pid namespaces. No process loads
   a Vulkan driver except lavapipe.
 - **hosts**: each app's window is its window alone (`TILO_TILOLANG_HOSTED`): its

@@ -5,7 +5,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "The tilolang app process: one process per workspace and author, without the toolkit, running each of that author's tilolang apps in that workspace as an instance on its own broker connection."
+description = "The tilolang app process, the one sandbox for app code: the binary of the tilolang runtime bundle. It runs a workspace's instances of a tilolang app on their broker connections, a task's programs, an app's windows and its origin connectors."
 
 [lib]
 name = "tilolang_process"
@@ -16,6 +16,22 @@ name = "tilolang-process"
 path = "src/main.rs"
 
 [features]
+# What the launcher runs for an app's launch (the entrypoint of every tilolang package): the app's
+# windows, drawn by the toolkit, and its origin connectors. A build without it (a task's programs
+# beside `tilo`, a server) runs instances and programs alone and links no toolkit.
+app-launch = [
+    "dep:ui",
+    "dep:tilo-app-window",
+    "dep:tilo-failure",
+    "dep:tilo-files",
+    "dep:tilo-app-module",
+    "dep:tilolang-youtube",
+    "tilolang-mail/engine",
+]
+# The toolkit and `libstd` linked from the Tilo runtime's one shared library, as every thin app
+# links them: the runtime bundle's build, and `tilolang dev`'s, whose window maps a rebuild of this
+# crate's code in place.
+thin = ["app-launch", "dep:runtime-dylib"]
 # The fake broker a test or example runs an instance against, in place of the
 # session's: the tests of this crate and of the apps it hosts, and its examples.
 test-support = []
@@ -29,12 +45,12 @@ tilo-resource-store = { version = "0.1.0", path = "../../collab/resource-store" 
 # The API the session hands instances over.
 runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal" }
 # The patch connection to each instance's window, and the sealed memfd its module comes in.
-tilo-render-protocol = { version = "0.1.0", path = "../../ui/tilo-render-protocol" }
+tilo-render-protocol = { version = "0.1.0", path = "../../platform/tilo-render-protocol" }
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
 # Dates and clocks as the person set them, which the session hands over the API: the toolkit
 # writes them the same way, so a sentence here and a view there read alike.
-tilo-formats = { version = "0.1.0", path = "../../ui/tilo-formats" }
+tilo-formats = { version = "0.1.0", path = "../../sdk/tilo-formats" }
 tilo-wake.workspace = true
 # The platform's phrases the standard library's frames say, without the toolkit.
 tilo-history = { version = "0.1.0", path = "../../sdk/tilo-history" }
@@ -47,7 +63,6 @@ tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # One rule for which language a locale names, shared with the packs.
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
-serde.workspace = true
 serde_json.workspace = true
 # What the person may do in an app, as the session hands it with each instance.
 tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
@@ -72,18 +87,25 @@ tilo-dialogs = { version = "0.1.0", path = "../../platform/tilo-dialogs" }
 # The person's clipboard, over the connection the session opens for each instance: what an app
 # copies and pastes, since its process holds no display of its own.
 tilo-clipboard = { version = "0.1.0", path = "../../platform/tilo-clipboard" }
-# The device's preview cache: what `File.thumbnail` answers.
-tilo-thumbnail = { version = "0.1.0", path = "../../engines/thumbnail" }
-# A PDF as a reader works with it: the pages, text, links, forms, markup and pictures an app
-# reads through `pdf.*`, over the one PDF engine.
-tilo-pdf-reader = { path = "../../engines/pdf" }
 # Presence as every window decodes it: who is where in a document, and who is writing there.
-ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
+ui-core = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
+# An app's windows (`app-launch`): the toolkit's framework, the app window's half of each window,
+# what a window keeps of the person's own data, and later builds `tilolang dev` publishes.
+ui = { package = "tilo-app", path = "../../sdk/tilo-app", optional = true }
+tilo-app-window = { path = "../../platform/tilo-app-window", optional = true }
+tilo-failure = { path = "../../platform/tilo-failure", optional = true }
+tilo-files = { path = "../../platform/tilo-files", features = ["watch"], optional = true }
+tilo-app-module = { version = "0.1.0", path = "../tilo-app-module", optional = true }
+# YouTube as an outside origin: its connector, and a window without a session keeping a video
+# site's resources in step with it, in native code with the network.
+tilolang-youtube = { path = "../../integrations/tilolang-youtube", optional = true }
+runtime-dylib = { path = "../../runtime/runtime-dylib", optional = true }
 
 [dev-dependencies]
 # The fake broker these tests and examples run instances against, as the apps'
 # tests do (`src/testing.rs`).
-tilolang-process = { path = ".", features = ["test-support"] }
+# Keyed apart from the package's own name: a thin build's `tilolang-process/thin` names the package.
+tilolang-process-tests = { package = "tilolang-process", path = ".", features = ["test-support", "app-launch"] }
 tilolang-tilo = { path = "../tilolang-tilo", features = ["test-support"] }
 # The person's clock held at a moment, and the zone the test's process reads: a day is only
 # today's or tomorrow's against a clock and a zone a test says.
@@ -101,11 +123,23 @@ tilo-desktop-search = { path = "../../session/desktop-search", features = ["inde
 tempfile.workspace = true
 # The replies the test's broker awaits from the instance's action directory.
 tokio = { workspace = true, features = ["sync"] }
+# An app's windows as the framework runs them, in the headless frame harness.
+ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
+# Mail's engine, and the stand-in IMAP and SMTP servers Mail's windows run against.
+mail-engine = { path = "../../integrations/mail-engine", features = ["test-support"] }
+tilo-account-probe = { path = "../../integrations/account-probe", features = ["test-support"] }
+# The pictures a page is sent are PNGs as `data:` addresses (`tests/window/gallery_html.rs`).
+base64.workspace = true
 
-# One test binary: every file under tests/ is a module of it.
+# One test binary for the host, every file under tests/ a module of it, and one for an app's
+# windows (`tests/window`).
 [[test]]
 name = "it"
 path = "tests/it.rs"
+
+[[test]]
+name = "window"
+path = "tests/window/it.rs"
 
 [lints]
 workspace = true

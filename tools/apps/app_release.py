@@ -136,7 +136,7 @@ def tilolang_runtime(root: Path = ROOT) -> str | None:
     `None` for a tree that has no tilolang runtime (a fixture root, a collection that only
     reads a few apps).
     """
-    manifest = root / "apps/tilolang/tilo-runtime.toml"
+    manifest = root / "crates/lang/tilolang-process/tilo-runtime.toml"
     if not manifest.is_file():
         return None
     provides = tomllib.loads(manifest.read_text())["package"]["provides"]
@@ -356,7 +356,7 @@ def apps_from_changes(
         name for name, app in catalog.items() if kind_of(app) == "tilolang"
     }
     shared = any(
-        path.startswith(("apps/tilolang/", "crates/lang/tilolang", "crates/platform/tilolang"))
+        path.startswith(("crates/lang/tilolang", "crates/platform/tilolang"))
         for path in paths
     )
     if any(
@@ -393,8 +393,6 @@ def apps_from_changes(
                 selected.add(name)
             else:
                 selected.update(tilolang)
-        elif path.startswith("apps/tilolang/"):
-            selected.update(tilolang)
     if shared:
         selected.update(tilolang)
     if metadata is not None:

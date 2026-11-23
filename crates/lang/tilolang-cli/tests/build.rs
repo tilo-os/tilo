@@ -247,7 +247,7 @@ fn the_platforms_a_package_names_are_the_runtimes() {
     // One runtime bundle runs every tilolang app, so where it runs is where they run: the
     // manifest each package gets names the bundle's platforms, never the default.
     let text = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tilolang/tilo-runtime.toml"),
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../tilolang-process/tilo-runtime.toml"),
     )
     .unwrap();
     let runtime = Manifest::from_toml_str(&text).unwrap();
@@ -332,7 +332,7 @@ fn the_launcher_runs_a_built_app_on_the_runtime_binary_over_its_payload() {
     );
     assert_eq!(
         argv.last().map(String::as_str),
-        Some("/run/tilo-runtime/0.1.0+tilolang/bin/tilolang-app"),
+        Some("/run/tilo-runtime/0.1.0+tilolang/bin/tilolang-process"),
         "the runtime bundle's binary runs"
     );
     let payload = launcher::sandbox::payload_mount_for("so.tilo.lang.counter");

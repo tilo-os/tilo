@@ -1,8 +1,13 @@
-//! The tilolang app process: one process per workspace and author, without the toolkit, that runs
-//! each of that author's tilolang apps in that workspace as an instance of its own
-//! (`docs/designs/app-language/app-window.md`, step 2b).
+//! The tilolang app process, the one sandbox for app code. Its binary is the tilolang runtime
+//! bundle's only one, started in one of these roles:
 //!
-//! It has no app identity. The session starts it as the launch kind "tilolang process", keyed by
+//! - **the host** of a workspace's instances of an app (this module), started by the device as
+//!   the launch kind "tilolang process";
+//! - **an app's windows** and **its origin connectors** ([`window`], with `app-launch`), started
+//!   by the launcher for an app's launch, as every tilolang package's entrypoint;
+//! - **a task's programs** ([`task`]), started beside `tilo` for one task.
+//!
+//! The host has no app identity. The session starts it as the launch kind "tilolang process", keyed by
 //! the workspace and the author as the launcher attributes it, in a sandbox narrower than any
 //! app's: it holds only its api and its storage. Everything an instance is arrives over the API
 //! from the session (`runtime_portal::process_link`): its broker connection and its
@@ -36,6 +41,61 @@ pub mod task;
 pub mod testing;
 pub mod wait;
 pub mod web;
+#[cfg(feature = "app-launch")]
+pub mod window;
+
+/// The shared toolkit and `libstd`: a thin build links both dynamically so the window's process
+/// can map a new build of this crate.
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
+/// The symbols `tilolang dev` reloads the window's code through. The process that owns the
+/// window keeps it and maps a new build of this library, which builds the app's root again over
+/// the state the running code wrote.
+#[cfg(feature = "thin")]
+mod reload_in_place {
+    /// Hand one window's state back to the process that owns it.
+    ///
+    /// # Safety
+    /// `state` points at `state_len` readable bytes, `out` at `out_cap` writable ones, both
+    /// live for this call.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn tilo_dev_apply(
+        id: *const u8,
+        id_len: usize,
+        state: *const u8,
+        state_len: usize,
+        out: *mut u8,
+        out_cap: usize,
+    ) -> isize {
+        let _ = (id, id_len);
+        unsafe { ui::framework::dev_reload::copy_window_state(state, state_len, out, out_cap) }
+    }
+
+    /// The address of the toolkit this library linked, which the process must share.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn tilo_dev_linked_ui() -> *const () {
+        ui::framework::dev_reload::linked_ui()
+    }
+
+    /// Build the app's root again, for the process's window to take.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn tilo_dev_publish_root() -> i32 {
+        // This library holds its own copy of everything static in this crate: the package the
+        // process runs, and the build it shows. Take both before the window asks for them.
+        if let Err(error) = crate::window::install_from_env() {
+            eprintln!("tilolang: the new runtime cannot run the package it was built for: {error}");
+            return 0;
+        }
+        if let Some(bundle) = crate::window::installed_bundle() {
+            // The window showed the latest of the package's builds: the new root shows that
+            // one, and follows the ones after it.
+            crate::window::updates::catch_up(&bundle.meta.app);
+            crate::window::updates::start(&bundle.meta.app);
+        }
+        ui::framework::dev_reload::publish_root::<crate::window::app::TlApp>()
+    }
+}
 
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::PathBuf;

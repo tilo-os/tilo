@@ -10,9 +10,9 @@ cd "$(dirname "$0")/.."
 export VK_ICD_FILENAMES=${VK_ICD_FILENAMES:-/usr/share/vulkan/icd.d/lvp_icd.aarch64.json}
 apps=("$@")
 [ ${#apps[@]} -gt 0 ] || apps=(counter todo board notes notes-detail letters letters-detail chat chat-detail)
-tdev cargo build -p tilolang-app
+tdev cargo build -p tilolang-process --features app-launch
 for app in "${apps[@]}"; do
   for size in 420x860 1280x800 2560x1200; do
-    tdev cargo run -q -p tilolang-app -- --shots "shots/${app}-${size}.png" --viewport "$size" --scenario "$app"
+    tdev cargo run -q -p tilolang-process --features app-launch -- --shots "shots/${app}-${size}.png" --viewport "$size" --scenario "$app"
   done
 done

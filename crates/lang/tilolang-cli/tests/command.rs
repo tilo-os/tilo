@@ -37,7 +37,7 @@ tilo_test_env::scenario! {
                 "--runtime-identity signs a session's runtime bundle: give --session too",
             ),
             (
-                &["dev", "--runtime", "tilolang-app", "--build-runtime"],
+                &["dev", "--runtime", "tilolang-process", "--build-runtime"],
                 "--runtime names a binary built by hand, --build-runtime builds one: give one",
             ),
             (&["repl", "--no-such-flag"], "unknown option --no-such-flag"),

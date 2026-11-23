@@ -103,7 +103,7 @@ impl Loop {
         copy_package(&packages().join("counter"), &package);
         let bin = scratch.path().join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        let runtime = bin.join("tilolang-app");
+        let runtime = bin.join("tilolang-process");
         let starts = scratch.path().join("starts.log");
         std::fs::write(&starts, "").unwrap();
         write_program(&runtime, "the window's program", &starts);
@@ -176,7 +176,7 @@ impl Loop {
     /// Replace the runtime with a new build, as a build does: a new file, renamed over the old one,
     /// which leaves a new inode where the old file was.
     fn replace_runtime(&self, note: &str) {
-        let staged = self.scratch.path().join("bin/.tilolang-app.new");
+        let staged = self.scratch.path().join("bin/.tilolang-process.new");
         write_program(&staged, note, &self.starts);
         std::fs::rename(&staged, &self.runtime).unwrap();
     }

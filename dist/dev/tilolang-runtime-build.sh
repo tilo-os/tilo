@@ -27,14 +27,14 @@ export TILO_TEST_ASSET_CACHE=${TILO_TEST_ASSET_CACHE:-$target/test-assets}
 # beside the library it already runs.
 runtime_plan=$(python3 tools/apps/app_release.py --collection default)
 INCLUDE_PACKAGES=$(jq -r '.packages | join(" ")' <<<"$runtime_plan") \
-    BUILD_PACKAGES=tilolang-app \
+    BUILD_PACKAGES=tilolang-process \
     APP_FEATURES=$(jq -r '.features | join(",")' <<<"$runtime_plan") \
     TARGET_DIR=$target PROFILE=thin-dev \
     os/scripts/build-thin-apps.sh
 
 rm -rf "$out"
 mkdir -p "$out"
-cp -p "$target/thin-dev/tilolang-app" "$target/thin-dev/libruntime_dylib.so" "$out/"
+cp -p "$target/thin-dev/tilolang-process" "$target/thin-dev/libruntime_dylib.so" "$out/"
 # Which tree made these: the runtime a session swaps in (`tilolang dev --build-runtime`) and
 # the `thin-dev` build beside it must be this tree's, and a run that reuses either checks the
 # record before it starts (dist/dev/build-provenance.sh).

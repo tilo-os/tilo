@@ -488,7 +488,7 @@ fn a_task_typed_into_todays_entry_is_due_the_persons_today() {
                 "a task typed in their evening is due on their today, not UTC's tomorrow"
             );
             // The day a row is grouped under is the day the window heads by its own clock
-            // (`ui::clock::today()`): the day it is due. They are one day, so the row heads
+            // (`ui_core::clock::today()`): the day it is due. They are one day, so the row heads
             // Today and stands in Today's list.
             // The zone the platform names, resolved against the database built into Tilo: the
             // window reads its day by it, not by whatever zoneinfo the machine installed.

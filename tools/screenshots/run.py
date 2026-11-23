@@ -116,7 +116,7 @@ class Plan:
     repositories: list = field(default_factory=list)
     # Sizes beyond `VIEWPORTS` its pictures are taken at (`EXTRA_VIEWPORTS`).
     sizes: list = field(default_factory=list)
-    # A tilolang package runs on `<bin-dir>/tilolang-app`, its payload under
+    # A tilolang package runs on `<bin-dir>/tilolang-process`, its payload under
     # `<bin-dir>/modules/<app>`; a native app has its own binary instead.
     tilolang: bool = False
 
@@ -302,7 +302,7 @@ def run_situation(plan: Plan, situation: Situation, index: int, args) -> dict:
             # the package it runs by its signed id and its payload.
             env["TILO_APP_MODULE"] = str(args.bin_dir / "modules" / plan.app)
             env["TILO_PACKAGE_ID"] = plan.app_id
-            executable = args.bin_dir / "tilolang-app"
+            executable = args.bin_dir / "tilolang-process"
         else:
             executable = args.bin_dir / plan.binary
         command = [str(executable), "--headless-drive", json.dumps(spec)]

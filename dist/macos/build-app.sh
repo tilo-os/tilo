@@ -1,11 +1,7 @@
 #!/usr/bin/env bash
 # Build the distributed Tilo.app for macOS: a universal (arm64 + x86_64)
 # bundle whose visible app is the Store and whose sibling executable is the
-# per-user runtime, then its zip, DMG and Homebrew cask. It carries the
-# tilolang runtime as the signed runtime package the daemon installs on first
-# start: universal binaries, the arm64 one decoding video with the reviewed
-# GStreamer closure from this Mac's Homebrew (collection_local_runtime.py
-# `tilolang`), and the list of runtime publishers the Mac trusts. Signs ad hoc unless
+# per-user runtime, then its zip, DMG and Homebrew cask. Signs ad hoc unless
 # TILO_MAC_SIGNING_IDENTITY names a Developer ID; notarizes and staples when
 # notary credentials are also present. See dist/macos/README.md.
 set -euo pipefail
@@ -73,18 +69,13 @@ for target in "${targets[@]}"; do
   grep -qx "$target" <<<"$installed_targets" \
     || { printf 'missing Rust target %s; run: rustup target add %s\n' "$target" "$target" >&2; exit 1; }
 done
-# tilolang-app runs every installed tilolang app, which the runtime launches from its runtime
-# package over the app's own payload; tilolang-process is the host that runs a workspace author's
-# tilolang apps, which the daemon starts from beside itself and the runtime package carries too.
+# tilolang-process runs every installed tilolang app, which the runtime launches from it over the
+# app's own payload, and hosts a workspace's instances of each.
 cargo build --locked --release \
   -p tilo-runtime --bin tilo-runtime -p store --bin store \
   -p runtime-update --bin tilo-runtime-update \
-  -p tilolang-app --bin tilolang-app -p tilolang-process --bin tilolang-process \
+  -p tilolang-process --bin tilolang-process --features tilolang-process/app-launch \
   "${targets[@]/#/--target=}"
-# The tools that seal and pack the runtime package, for this Mac.
-cargo build --locked --release -p runtime-bundle --bin tilo-runtime-bundle \
-  -p tilo-app-package-cli --bin tilo-app-package
-tools="$cargo_target/release"
 
 app="$out/Tilo.app"
 contents="$app/Contents"
@@ -99,7 +90,8 @@ for binary in tilo-runtime tilo-runtime-update tilolang-process; do
     "$cargo_target/x86_64-apple-darwin/release/$binary"
 done
 for binary in "$contents/MacOS/Tilo" "$contents/MacOS/tilo-runtime" \
-              "$contents/MacOS/tilo-runtime-update" "$contents/MacOS/tilolang-process"; do
+              "$contents/MacOS/tilo-runtime-update" \
+              "$contents/MacOS/tilolang-process"; do
   [ "$(lipo -archs "$binary" | tr ' ' '\n' | sort | xargs)" = "arm64 x86_64" ] \
     || { printf '%s is not universal\n' "$binary" >&2; exit 1; }
 done
@@ -129,45 +121,10 @@ fi
   "$contents/MacOS/tilo-runtime"
 "${sign[@]}" --entitlements "$here/Tilo.entitlements" --identifier so.tilo.runtime.update \
   "$contents/MacOS/tilo-runtime-update"
-"${sign[@]}" --entitlements "$here/Tilo.entitlements" --identifier so.tilo.runtime.tilolang-process \
-  "$contents/MacOS/tilolang-process"
-
-# The tilolang runtime package. The arm64 tilolang-app and the closure it loads are relocated
-# side by side, refused if the closure is not the reviewed one; the x86_64 slice plays no video.
-runtime_work="$(mktemp -d "${TMPDIR:-/tmp}/tilo-runtime.XXXXXX")"
-trap 'rm -rf -- "$runtime_work"' EXIT
-staged="$runtime_work/staged"
-python3 "$here/collection_local_runtime.py" tilolang \
-  --binary "$cargo_target/aarch64-apple-darwin/release/tilolang-app" --out "$staged" >/dev/null
-lipo -create -output "$runtime_work/tilolang-app" "$staged/bin/tilolang-app" \
-  "$cargo_target/x86_64-apple-darwin/release/tilolang-app"
-cp "$contents/MacOS/tilolang-process" "$runtime_work/tilolang-process"
-while IFS= read -r -d '' library; do
-  "${sign[@]}" "$library"
-done < <(find "$staged/lib/gstreamer/Frameworks" "$staged/lib/gstreamer/PlugIns" \
-           "$staged/lib/gstreamer/Helpers" -type f -print0)
-"${sign[@]}" --entitlements "$here/Tilo.entitlements" --identifier so.tilo.runtime.tilolang-app \
-  "$runtime_work/tilolang-app"
-# The key that signs the runtime package and its bundle; the Mac trusts exactly it. A release
-# names its own, kept outside the build.
-runtime_identity="${TILO_RUNTIME_PACKAGE_IDENTITY:-$runtime_work/runtime-identity.json}"
-[ -f "$runtime_identity" ] || "$tools/tilo-runtime-bundle" key generate --out "$runtime_identity"
-# shellcheck source=/dev/null
-. tools/apps/tilolang_packages.sh
-tilolang_version="$(tilolang_runtime_version "$repo")"
-tilolang_bake_runtime "$tools/tilo-runtime-bundle" "$runtime_work/tilolang-app" \
-  "$runtime_work/tilolang-process" "$runtime_identity" "$runtime_work/bundle" \
-  "$tilolang_version" aarch64+x86_64 "$staged/lib/gstreamer"
-tools/apps/pack-runtime-package.sh "$runtime_work/bundle" so.tilo.runtime.tilolang \
-  "tilolang runtime" "$version" "$runtime_identity" "$tools" "$runtime_work/package" macos >/dev/null
-whole=("$runtime_work"/package/whole-*.tapp)
-[ "${#whole[@]}" = 1 ] && [ -f "${whole[0]}" ] || { printf 'no runtime package was packed\n' >&2; exit 1; }
-root="$("$tools/tilo-app-package" inspect "${whole[0]}" | sed -n 's/^package-id: //p')"
-[[ "$root" =~ ^[0-9a-f]{64}$ ]] || { printf 'unexpected runtime package id %s\n' "$root" >&2; exit 1; }
-mkdir -p "$contents/Resources/runtimes"
-cp "${whole[0]}" "$contents/Resources/runtimes/$root.tapp"
-"$tools/tilo-runtime-bundle" key pubkey --identity "$runtime_identity" \
-  >"$contents/Resources/runtime-bundle-trusted-publishers.txt"
+for binary in tilolang-process; do
+  "${sign[@]}" --entitlements "$here/Tilo.entitlements" --identifier "so.tilo.runtime.$binary" \
+    "$contents/MacOS/$binary"
+done
 "${sign[@]}" --entitlements "$here/Tilo.entitlements" "$app"
 codesign --verify --deep --strict --verbose=2 "$app"
 
@@ -233,7 +190,7 @@ if [ -n "$update_key_file" ]; then
 fi
 
 dmg_root="$(mktemp -d "${TMPDIR:-/tmp}/tilo-dmg.XXXXXX")"
-trap 'rm -rf -- "$dmg_root" "$runtime_work"' EXIT
+trap 'rm -rf -- "$dmg_root"' EXIT
 ditto "$app" "$dmg_root/Tilo.app"
 ln -s /Applications "$dmg_root/Applications"
 hdiutil create -quiet -volname Tilo -srcfolder "$dmg_root" \

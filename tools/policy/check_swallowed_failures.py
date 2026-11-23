@@ -76,7 +76,6 @@ DECODE_ONLY = (
     Path("crates/sdk/tilo-app-window"),
     Path("crates/server/tilo-workspace-service"),
     Path("crates/runtime/runtime-portal"),
-    Path("apps/tilolang"),
 )
 # The call a dropped failure names its reason in (`crates/platform/tilo-failure`),
 # from its name to the bracket that closes it.

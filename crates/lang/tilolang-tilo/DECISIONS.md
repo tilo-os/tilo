@@ -112,9 +112,9 @@ Each entry is the closest working design to `docs/designs/app-language`.
   runtime's authority narrows it per invocation. `read-values`, `read-for-program` and
   `catalogue` are Read, and `resolve` is destructive.
 
-## The host app and the layout primitives (`apps/tilolang`, `ui-core`'s `widget::arrange`)
+## The host app and the layout primitives (`tilolang-process`'s windows, `ui-core`'s `widget::arrange`)
 
-- **Package name.** The app crate is `tilolang-app` (binary `tilolang`, app id `so.tilo.lang`): the
+- **Package name.** The windows are `tilolang-process`'s (`window`, app id `so.tilo.lang` unbundled): the
   compiler crate owns the name `tilolang`.
 - **No UI graph.** The view tree is rendered straight onto the shared layout primitives and the
   toolkit's controls by a keyed reconciler (`tilo_app_window::reconcile`); the UI graph's `Column`/`Row`/gap
@@ -156,7 +156,7 @@ Each entry is the closest working design to `docs/designs/app-language`.
 - **Unmeasured:** the release size of the host (`tools/binary-budget.toml`, the tapp budget) and
   the first-frame time of compiling the built-in packages.
 
-## `tilolang run` (`apps/tilolang/src/dev.rs`)
+## `tilolang run` (`crates/lang/tilolang-cli/src/dev.rs`)
 
 - **Packages from disk.** A page made with `TilolangPage::developing` loads the packages under
   development instead of the embedded ones, through `Host::load_compiled`, which replaces a

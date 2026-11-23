@@ -361,9 +361,9 @@ def source_membership(destination, digest, apps):
 def bake_tilolang_runtime(repo, target, profile, identity, runtime_root):
     """Bake the tilolang runtime bundle beside the Tilo runtime, as the image bakes it.
 
-    The bundle is the two binaries alone (`--binaries-only` in
+    The bundle is its one binary alone (`--binaries-only` in
     tools/apps/tilolang_packages.sh, the release's and the image's own packing): the
-    launcher runs them on the Tilo runtime their libraries come from. It is signed
+    launcher runs it on the Tilo runtime its libraries come from. It is signed
     by the identity that signed the Tilo runtime, so one publisher pin trusts both,
     and it lands at `/<version>`, where the launcher resolves the
     `tilolang/<version>` every package names. Returns the version baked."""
@@ -374,8 +374,7 @@ def bake_tilolang_runtime(repo, target, profile, identity, runtime_root):
         f'version="$(tilolang_runtime_version {shlex.quote(str(repo))})"',
         'tilolang_bake_runtime '
         f'{shlex.quote(str(target / "release/tilo-runtime-bundle"))} '
-        f'{shlex.quote(str(target / profile_directory(profile) / "tilolang-app"))} '
-        f'{shlex.quote(str(target / "release/tilolang-process"))} '
+        f'{shlex.quote(str(target / profile_directory(profile) / "tilolang-process"))} '
         f'{shlex.quote(str(identity))} "$1/$version" "$version"',
         'printf "%s\\n" "$version"',
         '',
@@ -389,7 +388,7 @@ def assemble_inside(args):
     entries = named_applications(repo, args.cohort, args.app)
     tilolang = tilolang_apps(args.plan) if args.plan is not None else []
     binaries = [target / profile_directory(args.profile) / entry['binary'] for entry in entries]
-    binaries += [target / 'release/tilolang-process'] if tilolang else []  # runs on it as well
+    binaries += [target / profile_directory(args.profile) / 'tilolang-process'] if tilolang else []
     if any(not binary.is_file() for binary in binaries):
         raise ValueError('a required cohort binary is absent; refusing a partial store')
     toolkit = target / profile_directory(args.profile) / 'libruntime_dylib.so'
@@ -628,13 +627,9 @@ def prepare_tools(args, tilolang=False):
              # `app runtime install`: the registry fallback for a pinned engine.
              '-p', 'app-cli']
     if tilolang:
-        # `tilolang build`, and the host the tilolang runtime bundle ships: the
-        # image builds both when its app set names a tilolang package. The
-        # bundle takes executables up to 64 MiB, and a release link without LTO
-        # keeps every symbol: the host ships stripped, as the thin apps do.
-        tools += ['-p', 'tilolang-cli', '-p', 'tilolang-process',
-                  '--config',
-                  'profile.release.package."tilolang-process".strip="symbols"']
+        # `tilolang build`, which the image builds when its app set names a
+        # tilolang package.
+        tools += ['-p', 'tilolang-cli']
     if args.compiler_interface_out is not None:
         tools += ['-p', 'tilo-app-cli']
     run(tools, env=tools_env)
@@ -672,19 +667,19 @@ def prepare_applications(args, entries):
 
 
 def prepare_tilolang_applications(args, entries):
-    """Build the tilolang runtime's app binary beside the cohort's apps.
+    """Build the tilolang runtime's binary beside the cohort's apps.
 
     It is the binary every tilolang package's entrypoint executes
-    (`bin/tilolang-app`, a thin app). build-thin-apps.sh selects a
+    (`bin/tilolang-process`, a thin app), and the host of their instances. build-thin-apps.sh selects a
     `tilo-runtime.toml` binary only when BUILD_PACKAGES names it, so this is a
     build of its own, as the image makes it, and the cohort's own build keeps
     selecting every app."""
     repo, target = args.repo.resolve(), args.target_dir.resolve()
-    env = dict(application_build_env(args, entries), BUILD_PACKAGES='tilolang-app')
+    env = dict(application_build_env(args, entries), BUILD_PACKAGES='tilolang-process')
     # The developer SDK's unit inventory is the cohort's apps, already captured.
     env.pop('SDK_COMPILER_UNITS', None)
     run(['bash', str(repo / 'os/scripts/build-thin-apps.sh')], env=env)
-    binary = target / profile_directory(args.profile) / 'tilolang-app'
+    binary = target / profile_directory(args.profile) / 'tilolang-process'
     if not binary.is_file():
         raise ValueError('the cohort build did not produce the tilolang runtime binary')
 

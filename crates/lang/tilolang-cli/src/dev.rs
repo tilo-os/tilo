@@ -9,13 +9,14 @@
 //!
 //! Without `--session` the package runs as an ordinary window on this desktop, started here: the
 //! tool publishes each build into a directory of numbered generations
-//! (`tilo_app_module`, `TILO_APP_MODULE_UPDATES`) and runs `tilolang-app` on this generation, as
-//! a person's own app, with no session. The app's record is its local store, kept across saves,
+//! (`tilo_app_module`, `TILO_APP_MODULE_UPDATES`) and runs `tilolang-process` on this generation,
+//! as a person's own app, with no session. The app's record is its local store, kept across saves,
 //! process restarts and later runs. The running app takes a new generation on the same store and
 //! windows; when it cannot read the state the old one wrote ([`tilolang_tilo::upgrade`]), the
 //! tool says why in one line and the app starts over on the new build with its data, as its next
-//! start would. The runtime binary is `--runtime BIN`, or a build of `apps/tilolang` the tool
-//! makes with cargo and remakes on every change of its sources, restarting the window on it. A
+//! start would. The runtime binary is `--runtime BIN`, or a build of
+//! `crates/lang/tilolang-process` the tool makes with cargo and remakes on every change of its
+//! sources, restarting the window on it. A
 //! binary built by hand is taken when the file it was written to is whole again, by whichever
 //! of the events a build makes: the tool watches the binary's directory, and the one above it,
 //! and starts the window again on the new program once it has stopped growing.
@@ -51,17 +52,17 @@ use crate::session::{self, Peer};
 
 /// The sources of the tilolang runtime binary: what a rebuild of it is watched on.
 const RUNTIME_SOURCES: [&str; 4] = [
-    "apps/tilolang",
+    "crates/lang/tilolang-process",
     "crates/lang/tilolang-tilo",
     "crates/lang/tilolang-runtime",
     "crates/lang/tilolang",
 ];
 
 /// The crate and binary of the tilolang runtime a local run builds and runs.
-const RUNTIME_PACKAGE: &str = "tilolang-app";
+const RUNTIME_PACKAGE: &str = "tilolang-process";
 
 /// The lib target of the runtime package: what a rebuild of the runtime's sources is linked into.
-const RUNTIME_LIBRARY_TARGET: &str = "tilolang_app";
+const RUNTIME_LIBRARY_TARGET: &str = "tilolang_process";
 
 const RUNTIME_DYLIB: &str = "runtime_dylib";
 
@@ -73,13 +74,22 @@ const RUNTIME_SCRIPT: &str = "dist/dev/tilolang-runtime-build.sh";
 
 /// What a change of the runtime's sources cannot swap into a running window: the startup code the
 /// process ran once, and the manifest of what the binary links.
-const RUNTIME_STARTUP: [&str; 2] = ["apps/tilolang/src/main.rs", "apps/tilolang/Cargo.toml"];
+const RUNTIME_STARTUP: [&str; 3] = [
+    "crates/lang/tilolang-process/src/main.rs",
+    "crates/lang/tilolang-process/src/host.rs",
+    "crates/lang/tilolang-process/Cargo.toml",
+];
 
 /// The features a locally built runtime is built with: `thin` links the toolkit and `libstd` from
 /// one shared library, which the process that owns the window maps and keeps while the app's own
 /// code is linked again beside it.
 #[cfg(unix)]
 const RUNTIME_FEATURES: &str = "thin";
+
+/// The features a locally built runtime is built with where a window cannot take a rebuild in
+/// place: its windows, as an ordinary program.
+#[cfg(not(unix))]
+const RUNTIME_FEATURES: &str = "app-launch";
 
 /// The profile of a locally built runtime: the desktop's, without LTO and with incremental builds,
 /// and `panic = "unwind"` as a shared library needs.
@@ -96,7 +106,7 @@ const RELOAD_TIMINGS_SUFFIX: &str = ".timings.json";
 /// Where the thin build lands in the checkout's target
 /// directory: the binary and the runtime library it
 /// links.
-const RUNTIME_BINARY: &str = "target/tilolang-runtime/tilolang-app";
+const RUNTIME_BINARY: &str = "target/tilolang-runtime/tilolang-process";
 const RUNTIME_LIBRARY: &str = "target/tilolang-runtime/libruntime_dylib.so";
 
 /// How long the app gets to flush its checkpoint when the tool restarts or stops it.
@@ -126,7 +136,7 @@ const TOOL_SOURCES: [&str; 4] = [
     "crates/lang/tilolang/src",
     "crates/lang/tilolang-runtime/src",
     "crates/lang/tilolang-tilo/src",
-    "apps/tilolang/src",
+    "crates/lang/tilolang-process/src",
 ];
 
 const PACKAGE_ID_ENV: &str = "TILO_PACKAGE_ID";
@@ -190,7 +200,7 @@ pub struct DevOptions {
     pub search: Vec<PathBuf>,
     /// A running nested session to develop in: its ready file, runtime directory or control socket.
     pub session: Option<PathBuf>,
-    /// A tilolang runtime binary (a build of `apps/tilolang`) to run the apps on.
+    /// A tilolang runtime binary (a build of `crates/lang/tilolang-process`) to run the apps on.
     pub runtime: Option<PathBuf>,
     /// Build the runtime from the checkout and rebuild it on every change of its sources.
     pub build_runtime: bool,
@@ -769,13 +779,6 @@ impl Dev {
                 .arg(&bundle)
                 .arg("--include-bin")
                 .arg(binary)
-                .args(
-                    Some(bin.join("tilolang-process"))
-                        .filter(|host| host.is_file())
-                        .map(|host| [std::ffi::OsString::from("--include-bin"), host.into()])
-                        .into_iter()
-                        .flatten(),
-                )
                 .arg("--identity")
                 .arg(identity_file)
                 .stdout(std::process::Stdio::null()),
@@ -1693,6 +1696,8 @@ fn build_local_runtime_binary(repo: &Path) -> Result<PathBuf, String> {
             RUNTIME_PACKAGE,
             "--bin",
             RUNTIME_PACKAGE,
+            "--features",
+            RUNTIME_FEATURES,
             "--message-format=json-render-diagnostics",
         ])
         .stdin(Stdio::null())
@@ -1718,7 +1723,7 @@ fn build_local_runtime_binary(repo: &Path) -> Result<PathBuf, String> {
                 .map(PathBuf::from)
         })
         .next_back();
-    binary.ok_or_else(|| "the runtime build made no tilolang-app binary".to_owned())
+    binary.ok_or_else(|| "the runtime build made no tilolang-process binary".to_owned())
 }
 
 /// Develop the package in the running session
@@ -1921,7 +1926,7 @@ mod tests {
                 183
             };
             other[18..20].copy_from_slice(&foreign.to_le_bytes());
-            let path = dir.path().join("tilolang-app");
+            let path = dir.path().join("tilolang-process");
             std::fs::write(&path, &other).unwrap();
             let error = check_architecture(&path).unwrap_err();
             assert!(error.contains("is not built for"), "{error}");
@@ -1949,7 +1954,7 @@ mod tests {
                 kind: ChangeKind::Removed,
             };
             let inside = WatchEvent {
-                path: dir.join("tilolang-app"),
+                path: dir.join("tilolang-process"),
                 kind: ChangeKind::Removed,
             };
             let created = WatchEvent {
@@ -1982,7 +1987,7 @@ mod tests {
         // written yet answers that there is none.
         {
             let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("tilolang-app");
+            let path = dir.path().join("tilolang-process");
             assert_eq!(
                 whole_program(&path, Duration::from_millis(50), PATIENCE),
                 Ok(false)
@@ -2007,7 +2012,7 @@ mod tests {
         // program, even when it is as long and was written at the same moment.
         {
             let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("tilolang-app");
+            let path = dir.path().join("tilolang-process");
             write_program(&path, "one");
             let first = program(&path).unwrap();
             let staged = dir.path().join(".staged");

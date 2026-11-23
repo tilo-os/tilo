@@ -1445,7 +1445,7 @@ impl Hosted {
         };
         let max = u64::try_from(tilolang_tilo::runtime::blob::MAX_CHOSEN).unwrap_or(u64::MAX);
         let bytes = content.read(&file.hash).and_then(|read| {
-            ui::content::manifest::whole(read, max, |chunk| {
+            ui_core::content::manifest::whole(read, max, |chunk| {
                 let mut address = String::with_capacity(64);
                 for byte in chunk {
                     let _ = write!(address, "{byte:02x}");

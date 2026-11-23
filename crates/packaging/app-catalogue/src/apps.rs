@@ -426,7 +426,7 @@ mod tests {
             &manifest(
                 "id = \"so.tilo.notes\"\nversion = \"0.1.0\"\nkind = \"app\"\n\
                  icon = \"icon.svg\"",
-                "[entrypoint]\nbin = \"bin/tilolang-app\"\ntype = \"gui\"\n",
+                "[entrypoint]\nbin = \"bin/tilolang-process\"\ntype = \"gui\"\n",
             ),
         );
         let plain = install(

@@ -361,12 +361,12 @@ fi
 runtime_id=tilo-runtime/$runtime_version
 
 # The tilolang runtime bundle: the binary every tilolang app's entrypoint
-# executes (apps/tilolang/tilo-runtime.toml), built against the runtime above
+# executes (crates/lang/tilolang-process/tilo-runtime.toml), built against the runtime above
 # and signed with the same key. Its version is the one the bundle provides,
 # and `tilolang run` reads it from .tilolang-version. It holds the binaries
 # alone (--binaries-only): the launcher runs it on the app's runtime, whose
 # loader and libraries it links, so a loader set of its own is never read.
-tilolang_bin=$thin/tilolang-app
+tilolang_bin=$thin/tilolang-process
 # Beside it, the tilolang host (crates/lang/tilolang-process), which runs a workspace's tilolang
 # apps by one author as instances: built without the toolkit, it runs on the app runtime's
 # loader and libraries alone.

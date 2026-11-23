@@ -144,9 +144,9 @@ thin=$repo_root/target/thin-dev
     || die "no thin-app build in $thin: run dist/dev/nested-session-build.sh"
 # The tilolang binary a runtime bundle is baked of: the one `dist/dev/tilolang-runtime-build.sh`
 # built last, which is newer than the thin-app one when a source changed since.
-tilolang_bin=$thin/tilolang-app
-if [[ -x $repo_root/target/tilolang-runtime/tilolang-app ]]; then
-    tilolang_bin=$repo_root/target/tilolang-runtime/tilolang-app
+tilolang_bin=$thin/tilolang-process
+if [[ -x $repo_root/target/tilolang-runtime/tilolang-process ]]; then
+    tilolang_bin=$repo_root/target/tilolang-runtime/tilolang-process
 fi
 [[ -x $tilolang_bin ]] || die "no tilolang binary: run dist/dev/tilolang-runtime-build.sh"
 # The runtime bundle carries the exact libstd the runtime links, so the session needs no local

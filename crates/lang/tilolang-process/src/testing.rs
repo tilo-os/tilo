@@ -259,7 +259,7 @@ impl Bus {
         route: &RouteSpec,
         from: &Inbox,
         person: &str,
-        key: &ui::presence::PresenceKey,
+        key: &ui_core::presence::PresenceKey,
         payload: &collaboration::PresencePayload,
     ) {
         for (joined, _, inbox) in self.joined.borrow().iter() {
@@ -267,7 +267,7 @@ impl Bus {
                 inbox
                     .borrow_mut()
                     .push_back(CollabEvent::RemotePresenceUpdate {
-                        member: ui::permissions::MemberId::person(person),
+                        member: ui_core::permissions::MemberId::person(person),
                         key: key.clone(),
                         payload: payload.clone(),
                     });

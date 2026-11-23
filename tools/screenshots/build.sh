@@ -29,7 +29,7 @@ samples=$(
     done
 )
 INCLUDE_PACKAGES=$(jq -r '.packages | join(" ")' <<<"$plan") \
-    BUILD_PACKAGES="$(jq -r '.packages | join(" ")' <<<"$plan") tilolang-app" \
+    BUILD_PACKAGES="$(jq -r '.packages | join(" ")' <<<"$plan") tilolang-process" \
     APP_FEATURES="$(jq -r '.features | join(",")' <<<"$plan")${samples:+,$samples}" \
     TARGET_DIR=$target \
     os/scripts/build-thin-apps.sh
@@ -39,7 +39,7 @@ mkdir -p "$out/bin" "$out/lib"
 while IFS= read -r binary; do
     cp -p "$target/thin-app/$binary" "$out/bin/"
 done < <(jq -r '.catalog[].binary | select(length > 0)' <<<"$plan")
-cp -p "$target/thin-app/tilolang-app" "$out/bin/"
+cp -p "$target/thin-app/tilolang-process" "$out/bin/"
 cp -p "$target/thin-app/libruntime_dylib.so" "$out/lib/"
 while IFS= read -r engine; do
     cp -p "$target/thin-app/$engine" "$out/lib/"

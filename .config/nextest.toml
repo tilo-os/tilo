@@ -342,7 +342,7 @@ test-group = "gpu-golden"
 # profiles: a profile that names no overrides of its own inherits these, so the
 # run the CI makes prints the table too.
 [[profile.default.overrides]]
-filter = 'package(tilolang-app) and binary(it) and test(=hosted::cost::what_the_interactions_a_person_feels_cost)'
+filter = 'package(tilolang-process) and binary(window) and test(=hosted::cost::what_the_interactions_a_person_feels_cost)'
 success-output = "final"
 
 # A company's workspace at real size: a thousand notes and five hundred issues

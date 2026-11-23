@@ -13,7 +13,7 @@
 # `kind = "runtime"`; its payload is the bundle directory (bundle.toml and the
 # files it signs) and `package.provides` names the runtime the bundle is,
 # `tilo-runtime/<bundle version>` (`tilolang/<bundle version>` for the
-# tilolang runtime, apps/tilolang/tilo-runtime.toml). A runtime's libraries are hundreds of
+# tilolang runtime, crates/lang/tilolang-process/tilo-runtime.toml). A runtime's libraries are hundreds of
 # megabytes, so <out-dir> receives the package's thin form together with its
 # content-addressed payload objects (`<hex>.blob`, and a `<hex>.chunks` list
 # for each blob larger than one chunk), to be uploaded side by side; the
@@ -94,12 +94,12 @@ TOML
 fi
 if [[ $package_id == so.tilo.runtime.tilolang ]]; then
     # The binary every tilolang app's entrypoint executes.
-    test -x "$bundle/bin/tilolang-app"
+    test -x "$bundle/bin/tilolang-process"
     cat >> "$work/manifest.toml" <<'TOML'
 
 [entrypoint]
 type = "cli"
-bin = "bin/tilolang-app"
+bin = "bin/tilolang-process"
 TOML
 fi
 if [[ $package_id == so.tilo.runtime.signal ]]; then

@@ -161,7 +161,7 @@ fn engine(layer: &Path, work: &Path, case: &str) {
 }
 
 /// The tilolang runtime a package executes, beside the toolkit at the version
-/// its packages name: `bin/tilolang-app`, signed by the publisher that signed
+/// its packages name: `bin/tilolang-process`, signed by the publisher that signed
 /// the toolkit (unless the case says otherwise).
 fn tilolang_runtime(layer: &Path, work: &Path, case: &str) -> String {
     let identity = if case == "tilolang_publisher" {
@@ -175,7 +175,7 @@ fn tilolang_runtime(layer: &Path, work: &Path, case: &str) -> String {
     } else {
         work.join("identity.json")
     };
-    let binary = work.join("tilolang-app");
+    let binary = work.join("tilolang-process");
     fs::write(&binary, elf(&["libruntime_dylib.so"], false)).unwrap();
     fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
     let version = "0.1.0+tilolang";
@@ -235,7 +235,7 @@ mode = "off"
 
 [entrypoint]
 runtime = "tilolang/{runtime}"
-bin  = "bin/tilolang-app"
+bin  = "bin/tilolang-process"
 type = "gui"
 "#,
         "00".repeat(32)

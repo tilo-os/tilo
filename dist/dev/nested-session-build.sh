@@ -4,7 +4,7 @@
 # model gateway, the ush supervisor, tilo-control
 # fixture, and the stand-in mail server a user story starts beside its
 # shells), the `tilolang` CLI (`tilolang dev --session` installs into the
-# session), the thin apps, the tilolang runtime binary (apps/tilolang,
+# session), the thin apps, the tilolang runtime binary (crates/lang/tilolang-process,
 # which nested-session.sh bakes into the tilolang runtime bundle), the shared
 # runtime library they link and
 # its engines, the Rust standard library that runtime was linked against, the
@@ -217,7 +217,7 @@ build_tilolang_cli() {
 thin_profile=thin-dev
 selected=()
 for app in $apps; do selected+=("$app"); done
-packages=tilolang-app
+packages=tilolang-process
 if ((${#selected[@]})); then
     packages="$packages $(python3 tools/apps/app_release.py --apps "${selected[*]}" | jq -r '.packages | join(" ")')"
 fi
@@ -315,7 +315,7 @@ cp -p "$target/$thin_profile/libruntime_dylib.so" "$target/$thin_profile/runtime
 while IFS= read -r file; do
     cp -p "$target/$thin_profile/$file" "$out/thin-app/"
 done < <(cat "$target/$thin_profile/runtime-engines"
-         echo tilolang-app
+         echo tilolang-process
          ((${#selected[@]})) && python3 tools/apps/app_release.py --apps "${selected[*]}" | jq -r '.catalog[].binary')
 [[ ! -d $env_runtime ]] || cp -rp "$env_runtime" "$out/env-runtime"
 [[ ! -d $chromium_engine/runtime/chromium ]] || cp -rp "$chromium_engine/runtime/chromium" "$out/chromium-engine"

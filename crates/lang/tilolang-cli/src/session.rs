@@ -15,7 +15,7 @@ pub(crate) const BUILD_DIR: &str = "target/nested-session";
 /// The variable naming a nested-session build elsewhere than the checkout's [`BUILD_DIR`]: a build
 /// shared read-only between sessions, as `nested-session.sh` honours it.
 pub(crate) const BUILD_ENV: &str = "TILO_NESTED_SESSION_BUILD";
-pub(crate) const RUNTIME_BINARY: &str = "thin-app/tilolang-app";
+pub(crate) const RUNTIME_BINARY: &str = "thin-app/tilolang-process";
 /// The file nested-session.sh writes into a running session's runtime directory: its control
 /// socket, runtime directory and state directory, as JSON.
 pub(crate) const SESSION_FILE: &str = "session.json";

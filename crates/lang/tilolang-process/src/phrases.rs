@@ -16,7 +16,7 @@ const TRANSLATIONS: &[(&str, &str)] = &[(
     include_str!("../../../sdk/tilo-app-window/locales/de-DE.ftl"),
 )];
 
-/// The words the toolkit writes dates, clocks and numbers with (`ui::format`), which a host
+/// The words the toolkit writes dates, clocks and numbers with (`ui_core::format`), which a host
 /// without the toolkit says too: the same catalogues the toolkit reads, so a date reads the same
 /// in a window and in what its host wrote beside it.
 const TOOLKIT: (&str, &str) = (

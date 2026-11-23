@@ -44,7 +44,8 @@ app="$mountpoint/Tilo.app"
 contents="$app/Contents"
 agent="$contents/Library/LaunchAgents/so.tilo.runtime.plist"
 for path in "$contents/MacOS/Tilo" "$contents/MacOS/tilo-runtime" \
-            "$contents/MacOS/tilo-runtime-update" "$contents/MacOS/tilolang-process"; do
+            "$contents/MacOS/tilo-runtime-update" \
+            "$contents/MacOS/tilolang-process"; do
   [ -f "$path" ] && [ -x "$path" ] || fail "missing executable ${path#"$mountpoint"/}"
   [ "$(lipo -archs "$path" | tr ' ' '\n' | sort | xargs)" = "arm64 x86_64" ] \
     || fail "${path#"$mountpoint"/} is not universal"
@@ -52,13 +53,6 @@ for path in "$contents/MacOS/Tilo" "$contents/MacOS/tilo-runtime" \
   grep -Eq '^CodeDirectory .*flags=.*runtime' <<<"$signature" \
     || fail "${path#"$mountpoint"/} is not signed with the hardened runtime"
 done
-# The tilolang runtime package the daemon installs, named by its package root, and the runtime
-# publishers this Mac trusts: exactly one key.
-runtimes=("$contents"/Resources/runtimes/*.tapp)
-[ "${#runtimes[@]}" = 1 ] && [[ "$(basename "${runtimes[0]}")" =~ ^[0-9a-f]{64}\.tapp$ ]] \
-  || fail 'Tilo.app does not carry exactly one runtime package named by its root'
-[[ "$(cat "$contents/Resources/runtime-bundle-trusted-publishers.txt")" =~ ^[0-9a-f]{64}$ ]] \
-  || fail 'Tilo.app does not list exactly one trusted runtime publisher'
 update_agent="$contents/Library/LaunchAgents/so.tilo.runtime.update.plist"
 plutil -lint -s "$contents/Info.plist" "$agent" "$update_agent"
 plist() { /usr/libexec/PlistBuddy -c "Print :$2" "$1"; }

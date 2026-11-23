@@ -4,7 +4,7 @@
 //! compiles and loads packages, keeps their record schemas registered, opens a package's root
 //! resource (`root T`, one per workspace) through the default view of its type, and plans api
 //! invocations into [`DynAction`]s. The
-//! window widget in `apps/tilolang` drives it; so do the collaboration tests, with no window.
+//! window widget in `tilolang-process` drives it; so do the collaboration tests, with no window.
 //!
 //! The runtime is single-threaded. The closures the action api calls are `Send + Sync`, so they
 //! hold a [`HostHandle`]: an id that finds its host in a thread-local registry, on the thread

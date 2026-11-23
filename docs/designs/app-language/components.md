@@ -484,7 +484,7 @@ reduced motion and accessibility through its role; a native widget is a componen
 other. The ladder is about how much a view says, never about a faster but poorer path.
 
 Motion costs no frame. A mark, a row's arrival and a reveal are drawn as part of the frame that
-shows them, so a frame while something moves costs what a still frame costs; `apps/tilolang`'s
+shows them, so a frame while something moves costs what a still frame costs; `tilolang-process`'s
 motion suite measures it, and the same suite pins the behaviour of every rung above (a row's
 mark filling over frames, a row arriving, rows leaving, a still theme and reduced motion landing
 at once).

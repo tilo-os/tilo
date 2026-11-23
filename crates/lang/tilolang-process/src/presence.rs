@@ -10,7 +10,7 @@
 //! detail view shows, so a conversation says "… is typing" without reading a draft. What the
 //! instance says of its own person is where they are (the resource the detail view shows) and
 //! whether they hold a draft there: where, once each time it changes; a draft, again while they
-//! type in it ([`ui::presence::DraftSaid`]).
+//! type in it ([`ui_core::presence::DraftSaid`]).
 
 use std::collections::HashMap;
 
@@ -18,9 +18,9 @@ use collaboration::{CollabEvent, CollabRequest, PresencePayload};
 use tilo_render_protocol::patch::ToUi;
 use tilolang_tilo::instance::Instance;
 use tilolang_tilo::runtime::value::ResourceRef;
-use ui::component_lifecycle::Heard;
-use ui::permissions::MemberId;
-use ui::presence::{DraftSaid, PresenceCtx, PresenceKey};
+use ui_core::component_lifecycle::Heard;
+use ui_core::permissions::MemberId;
+use ui_core::presence::{DraftSaid, PresenceCtx, PresenceKey};
 
 /// What an instance heard of the document's members, and what it last said of its own.
 pub struct Presence {
@@ -107,7 +107,7 @@ impl Presence {
     #[must_use]
     pub fn wakes_in(&self) -> Option<std::time::Duration> {
         let ends = self.heard.composing_ends()?;
-        Some(ends.saturating_duration_since(ui::time::now()))
+        Some(ends.saturating_duration_since(ui_core::time::now()))
     }
 
     /// Tell `instance` what people are called, who else is at each resource of the app, and who
@@ -135,7 +135,7 @@ impl Presence {
                 .collect();
             instance.name_people(me, others, hues);
         }
-        let now = ui::time::now();
+        let now = ui_core::time::now();
         self.heard.prune_composing(now);
         let composing: Vec<MemberId> = instance.detail_target().map_or_else(Vec::new, |target| {
             self.heard
@@ -174,7 +174,7 @@ impl Presence {
         let draft = instance
             .composing_in()
             .map(|(target, revision)| (self.key(target), revision));
-        self.say_at(at, draft, ui::time::now(), send);
+        self.say_at(at, draft, ui_core::time::now(), send);
     }
 
     /// [`Self::say`] with the person at `at`, writing `draft`, at `now`.
@@ -182,7 +182,7 @@ impl Presence {
         &mut self,
         at: Option<PresenceKey>,
         draft: Option<(PresenceKey, u64)>,
-        now: ui::time::Instant,
+        now: ui_core::time::Instant,
         mut send: impl FnMut(CollabRequest),
     ) {
         if at != self.said_at {
@@ -350,7 +350,7 @@ mod tests {
     /// key each step until `typed` ms, then sending her draft or leaving it; Bo's instance hears
     /// it. Whether Bo reads her typing in the channel at each step, by its ms.
     fn read_by_bo(typed: u64, sent: bool) -> Vec<(u64, bool)> {
-        let start = ui::time::now();
+        let start = ui_core::time::now();
         let mut ada = Presence::new(APP, "ada");
         let mut bo = Presence::new(APP, "bo");
         let mut read = Vec::new();
@@ -383,7 +383,8 @@ mod tests {
             kept.iter().all(|(at, typing)| *at >= typed || *typing),
             "typing for 20 s reads as typing throughout"
         );
-        let linger = u64::try_from(ui::presence::COMPOSING_LINGER.as_millis()).expect("seconds");
+        let linger =
+            u64::try_from(ui_core::presence::COMPOSING_LINGER.as_millis()).expect("seconds");
         assert!(
             kept.iter()
                 .all(|(at, typing)| !*typing || at.saturating_sub(typed) < linger),

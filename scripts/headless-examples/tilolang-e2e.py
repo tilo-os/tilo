@@ -293,8 +293,10 @@ def switches(pid: int) -> dict[str, int]:
 
 
 def host_pids(session_pid: int) -> list[int]:
-    """The tilolang hosts of the session."""
-    return [p for p in descendants(session_pid) if exe(p).endswith("/bin/tilolang-process")]
+    """The tilolang hosts of the session: the runtime's binary started with a process link,
+    where a window of it is started with its package."""
+    return [p for p in descendants(session_pid) if exe(p).endswith("/bin/tilolang-process")
+            and "TILO_SVC_PROCESS_FD" in environ(p)]
 
 
 # --- checks ---------------------------------------------------------------------
@@ -340,7 +342,7 @@ def check_processes(session: Session, session_pid: int) -> dict:
     out["render_service"] = [{"pid": p, "vulkan": vulkan_drivers(p)} for p in render]
     for name in APPS:
         procs = [p for p in tree if environ(p).get("TILO_PACKAGE_ID") == app_id(name)
-                 and exe(p).endswith("/bin/tilolang-app")]
+                 and exe(p).endswith("/bin/tilolang-process")]
         if len(procs) != 1:
             raise Failed(f"{app_id(name)} runs in {len(procs)} tilolang runtime processes")
         pid = procs[0]
@@ -479,7 +481,7 @@ def check_windows(session: Session, processes: dict, session_pid: int, out: Path
                     else None)([w for w in session.windows() if w.get("app_id") == tasks]), 30)
     until("the second window's instance handed to the host", lambda: handed() > before_handed, 30)
     procs = [p for p in descendants(session_pid) if environ(p).get("TILO_PACKAGE_ID") == tasks
-             and exe(p).endswith("/bin/tilolang-app")]
+             and exe(p).endswith("/bin/tilolang-process")]
     if procs != [processes["apps"][tasks]["pid"]]:
         raise Failed(f"{tasks}'s second window started another process: {procs}")
     if host_pids(session_pid) != hosts:

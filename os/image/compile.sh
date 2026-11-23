@@ -175,9 +175,10 @@ if [[ ${1:-} == --apps ]]; then
   [[ ! -f $from/runtime-engines ]] || mapfile -t -O "${#files[@]}" files < "$from/runtime-engines"
   files+=(apps language-packs)
   # The tilolang packages the app plan names are built with `tilolang` and run by the
-  # `tilolang-process` host the packing bakes into their runtime bundle.
+  # thin `tilolang-process` the packing bakes into their runtime bundle, whose manifest
+  # (`crates/lang/tilolang-process/tilo-runtime.toml`) names its version.
   for f in "${files[@]}" runtime-bundle-publisher.hex thin-apps app-models prebuilt-apps prebuilt-runtime fonts app-plan.json \
-      tilolang tilolang-process; do
+      tilolang crates; do
     [[ -e $from/$f ]] || continue
     cp -a "$from/$f" "$out/"
   done
@@ -189,10 +190,12 @@ if [[ ${1:-} == --apps ]]; then
   if [[ -f $out/app-plan.json ]] \
       && python3 -I -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("tilolang") else 1)' \
            "$out/app-plan.json"; then
-    for f in tilolang tilolang-process; do
+    for f in tilolang crates/lang/tilolang-process/tilo-runtime.toml; do
       [[ -e $out/$f ]] \
         || { echo "compile.sh --apps: $from has no $f, which the app plan's tilolang packages are built and run with" >&2; exit 1; }
     done
+    [[ -e $out/thin-apps/tilolang-process || -d $out/prebuilt-runtime/tilolang ]] \
+      || { echo "compile.sh --apps: $from has no thin-apps/tilolang-process, which the app plan's tilolang packages run on" >&2; exit 1; }
   fi
   exit 0
 fi
@@ -376,7 +379,7 @@ case "$TILO_RUST_LTO" in \
          *) printf '%s\n' 'TILO_CARGO_FRESHNESS must be cargo, clean or content' >&2; exit 1 ;; \
        esac \
     && if [ "${TILO_WITH_BROWSER}" = "0" ]; then THIN_EXCLUDES="browser"; else THIN_EXCLUDES=""; fi \
-    && APP_FEATURES="music/audio,music/live,music/runtime-engine,video-player/decode,camera/live-capture,disks/live,video-editor/decode,video-editor/gst,typst-editor/runtime-engine,canvas/runtime-engine,settings/runtime-engine,model-providers/runtime-engine,calendar/runtime-engine,clocks/runtime-engine,messages/runtime-engine,pdf-viewer/runtime-engine,file-explorer/runtime-engine,print-centre/runtime-engine,sheets/runtime-engine,browser/runtime-engine,store/runtime-engine,chat/runtime-engine,osk/runtime-engine" \
+    && APP_FEATURES="music/audio,music/live,music/runtime-engine,video-player/decode,camera/live-capture,disks/live,video-editor/decode,video-editor/gst,typst-editor/runtime-engine,canvas/runtime-engine,settings/runtime-engine,model-providers/runtime-engine,calendar/runtime-engine,clocks/runtime-engine,contacts/runtime-engine,messages/runtime-engine,pdf-viewer/runtime-engine,file-explorer/runtime-engine,print-centre/runtime-engine,sheets/runtime-engine,browser/runtime-engine,store/runtime-engine,chat/runtime-engine,osk/runtime-engine" \
     && if [ "${TILO_PREBUILT_DESKTOP}" = 1 ]; then \
          DESKTOP_RELEASE_ARGS=""; \
        else \
@@ -390,8 +393,8 @@ case "$TILO_RUST_LTO" in \
          TILOLANG_RELEASE_BINS=""; \
        fi \
     && RELEASE_ARGS="${DESKTOP_RELEASE_ARGS} -p tilo-fs -p tilo-device-steps -p greeter -p imager -p runtime-bundle -p tilo-rollback -p tilo-auth -p tilo-boot-signin -p tilo-esp-write -p tilo-extension -p tilo-staging-reclaim -p tilo-install-helpers -p tilo-boot-order -p tilo-image-policy-check -p tilo-board-successor -p tilo-firstboot-files -p tilo-crypto -p tilo-user-identity -p tilo-device-identity -p tilo-cli -p app-cli -p ush -p tilo-projector -p tilo-flight-log -p tilo-pdf -p tilo-app-package-cli -p tilo-control -p install -p cli-shim -p package-service -p local-model-service -p tilo-model-gateway -p tilo-secret-service -p compat-service -p account-credentials -p linux-vm -p tilo-ntfs-mount -p tilo-device-vpn -p tilo-net-answers -p tilo-app-keeper -p tilo-audio-service -p tilo-messaging-service -p tilo-window-menu -p tilo-lock-screen -p tilo-quick-settings -p osk -p tilolang-process ${TILOLANG_RELEASE_ARGS}" \
-    && RELEASE_BINS="--bin fs --bin tilo-device-step --bin tilo-model-manager --bin tilo-speech-worker --bin tilo-model-gateway --bin tilo-secret-service --bin tilo-greeter --bin tilo-installer --bin tilo-firstboot-home-seeds --bin tilo-installer-prepared-setup-extract --bin tilo-prepared-setup --bin tilo-runtime-bundle --bin tilo-package-service --bin tilo-rollback --bin tilo-authd --bin tilo-auth --bin tilo-boot-signin --bin tilo-esp-write --bin tilo-extension --bin tilo-staging-reclaim --bin tilo-install-handoff-copy --bin tilo-install-dev-ssh --bin tilo-installer-offline-target --bin tilo-staging-handoff --bin tilo-vm-install-proof --bin tilo-boot-order --bin tilo-default-start --bin tilo-image-policy-check --bin tilo-board-successor --bin tilo-firstboot-files --bin tilo-crypto --bin tilo-image-trust --bin tilo-device-key-init --bin tilo --bin app --bin tilo-app-package --bin tilo-control --bin tilo-install --bin tilo-cli-shim --bin tilo-ush --bin tilo-projector --bin tilo-flight-recorder --bin tilo-session-report --bin tilo-pdf-helper --bin tilo-system-extension-manager --bin tilo-windows-runtime --bin tilo-server --bin tilo-linux-vm --bin tilo-account-credential --bin tilo-ntfs-mount --bin tilo-device-vpn --bin tilo-net-answers --bin tilo-app-keeper --bin tilo-audio --bin tilo-messaging --bin tilo-window-menu --bin tilo-lock-screen --bin tilo-quick-settings --bin osk --bin tilolang-process ${TILOLANG_RELEASE_BINS}" \
-    && if [ "$tilolang_apps" != 0 ]; then THIN_RUNTIMES=tilolang-app; else THIN_RUNTIMES=""; fi \
+    && RELEASE_BINS="--bin fs --bin tilo-device-step --bin tilo-model-manager --bin tilo-speech-worker --bin tilo-model-gateway --bin tilo-model-http --bin tilo-secret-service --bin tilo-greeter --bin tilo-installer --bin tilo-firstboot-home-seeds --bin tilo-installer-prepared-setup-extract --bin tilo-prepared-setup --bin tilo-runtime-bundle --bin tilo-package-service --bin tilo-rollback --bin tilo-authd --bin tilo-auth --bin tilo-boot-signin --bin tilo-esp-write --bin tilo-extension --bin tilo-staging-reclaim --bin tilo-install-handoff-copy --bin tilo-install-dev-ssh --bin tilo-installer-offline-target --bin tilo-staging-handoff --bin tilo-vm-install-proof --bin tilo-boot-order --bin tilo-default-start --bin tilo-image-policy-check --bin tilo-board-successor --bin tilo-firstboot-files --bin tilo-crypto --bin tilo-image-trust --bin tilo-device-key-init --bin tilo --bin app --bin tilo-app-package --bin tilo-control --bin tilo-install --bin tilo-cli-shim --bin tilo-ush --bin tilo-projector --bin tilo-flight-recorder --bin tilo-session-report --bin tilo-pdf-helper --bin tilo-system-extension-manager --bin tilo-windows-runtime --bin tilo-server --bin tilo-server-admin --bin tilo-home-peer-control --bin tilo-linux-vm --bin tilo-account-credential --bin tilo-ntfs-mount --bin tilo-device-vpn --bin tilo-net-answers --bin tilo-app-keeper --bin tilo-audio --bin tilo-messaging --bin tilo-window-menu --bin tilo-lock-screen --bin tilo-quick-settings --bin osk --bin tilolang-process ${TILOLANG_RELEASE_BINS}" \
+    && if [ "$tilolang_apps" != 0 ]; then THIN_RUNTIMES=tilolang-process; else THIN_RUNTIMES=""; fi \
     && build_thin_apps() { \
          EXCLUDE_PACKAGES="${THIN_EXCLUDES}" \
          WITH_RUNTIMES="${THIN_RUNTIMES}" \
@@ -431,7 +434,7 @@ case "$TILO_RUST_LTO" in \
        cargo build --release -p pam-tilo --lib \
     && build_phase rust-output-validation \
     && missing=0 \
-    && for b in tilo-session tilo-runtime tilo-device-step tilo-projector tilo-flight-recorder tilo-session-report tilo-pdf-helper fs tilo-server tilo-linux-vm tilo-model-manager tilo-speech-worker tilo-model-gateway tilo-secret-service tilo-greeter tilo-installer tilo-firstboot-home-seeds tilo-installer-prepared-setup-extract tilo-prepared-setup tilo-runtime-bundle tilo-launcher tilo-package-service tilo-unlock-helper tilo-rollback tilo-authd tilo-auth tilo-boot-signin tilo-esp-write tilo-extension tilo-staging-reclaim tilo-install-handoff-copy tilo-install-dev-ssh tilo-installer-offline-target tilo-staging-handoff tilo-vm-install-proof tilo-boot-order tilo-default-start tilo-image-policy-check tilo-board-successor tilo-firstboot-files tilo-crypto tilo-image-trust tilo-device-key-init tilo app tilo-app-package tilo-control tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager tilo-windows-vm-control tilo-windows-rail tilo-windows-runtime tilo-account-credential tilo-ntfs-mount tilo-device-vpn tilo-net-answers tilo-app-keeper tilo-audio tilo-messaging tilo-window-menu tilo-lock-screen tilo-quick-settings osk tilolang-process; do \
+    && for b in tilo-session tilo-runtime tilo-device-step tilo-projector tilo-flight-recorder tilo-session-report tilo-pdf-helper fs tilo-server tilo-server-admin tilo-home-peer-control tilo-linux-vm tilo-model-manager tilo-speech-worker tilo-model-gateway tilo-model-http tilo-secret-service tilo-greeter tilo-installer tilo-firstboot-home-seeds tilo-installer-prepared-setup-extract tilo-prepared-setup tilo-runtime-bundle tilo-launcher tilo-package-service tilo-unlock-helper tilo-rollback tilo-authd tilo-auth tilo-boot-signin tilo-esp-write tilo-extension tilo-staging-reclaim tilo-install-handoff-copy tilo-install-dev-ssh tilo-installer-offline-target tilo-staging-handoff tilo-vm-install-proof tilo-boot-order tilo-default-start tilo-image-policy-check tilo-board-successor tilo-firstboot-files tilo-crypto tilo-image-trust tilo-device-key-init tilo app tilo-app-package tilo-control tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager tilo-windows-vm-control tilo-windows-rail tilo-windows-runtime tilo-account-credential tilo-ntfs-mount tilo-device-vpn tilo-net-answers tilo-app-keeper tilo-audio tilo-messaging tilo-window-menu tilo-lock-screen tilo-quick-settings osk tilolang-process; do \
          case "${TILO_PREBUILT_DESKTOP}:$b" in 1:tilo-session|1:tilo-launcher|1:tilo-unlock-helper|1:tilo-runtime) continue ;; esac; \
          if [ ! -x "$target/release/$b" ]; then \
            printf 'Required build output is missing: %s\n' "$b" >&2; missing=1; \
@@ -466,10 +469,13 @@ case "$TILO_RUST_LTO" in \
           $target/release/fs \
           $target/release/tilo-device-step \
           $target/release/tilo-server \
+          $target/release/tilo-server-admin \
+          $target/release/tilo-home-peer-control \
           $target/release/tilo-linux-vm \
           $target/release/tilo-model-manager \
           $target/release/tilo-speech-worker \
           $target/release/tilo-model-gateway \
+          $target/release/tilo-model-http \
           $target/release/tilo-secret-service \
           $target/release/tilo-system-extension-manager \
           $target/release/tilo-greeter \
@@ -567,7 +573,7 @@ case "$TILO_RUST_LTO" in \
          && cp $target/thin-app/tilo-runtime-account-capability "$out"/ \
          && cp $target/thin-app/runtime-engines "$out"/runtime-engines \
          && while IFS= read -r engine; do cp "$target/thin-app/$engine" "$out"/; done < "$out"/runtime-engines \
-         && if [ -n "$THIN_RUNTIMES" ]; then cp "$target/thin-app/tilolang-app" "$out"/thin-apps/; fi \
+         && if [ -n "$THIN_RUNTIMES" ]; then cp "$target/thin-app/tilolang-process" "$out"/thin-apps/; fi \
          && LIBSTD="$(find "$(rustc --print target-libdir)" -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
          && [ -n "${LIBSTD}" ] \
          && cp "${LIBSTD}" "$out"/ \
@@ -623,10 +629,10 @@ done
 if [[ -d apps/tl ]]; then
   cp -a apps/tl "$out/apps/"
 fi
-install -D -m 0644 apps/tilolang/tilo-runtime.toml "$out/apps/tilolang/tilo-runtime.toml"
+install -D -m 0644 crates/lang/tilolang-process/tilo-runtime.toml "$out/crates/lang/tilolang-process/tilo-runtime.toml"
 python3 -I tools/apps/language_packs.py build . "$out/language-packs"
 if [[ $TILO_PREBUILT_APPS != 1 ]]; then
-  python3 -I tools/font-catalog.py prepare crates/ui/ui-core/assets/fonts "$out/fonts" --scope product
+  python3 -I tools/font-catalog.py prepare crates/sdk/ui-core/assets/fonts "$out/fonts" --scope product
 fi
 
 build_phase elf-hardening

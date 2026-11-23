@@ -196,7 +196,6 @@ members = [
     "apps/terminal",
     "apps/themes",
     "apps/thumbnails",
-    "apps/tilolang",
     "apps/tasks",
     "apps/tasks-model",
     "apps/tasks-model-wasm",

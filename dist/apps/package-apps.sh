@@ -133,7 +133,7 @@ mapfile -t packages < <(jq -r '.packages[]' "$plan")
 # the same graph the selection builds: naming it here builds it with the runtime's libraries.
 tilolang_apps=$(jq -r '.tilolang | length' "$plan")
 if (( tilolang_apps > 0 )); then
-    packages+=(tilolang-app)
+    packages+=(tilolang-process)
 fi
 runtime_plan="$out/runtime-plan.json"
 python3 "$repo_root/tools/apps/app_release.py" --collection default > "$runtime_plan"
@@ -145,10 +145,9 @@ if [[ -z $prebuilt ]]; then
 if [[ ${TILO_APP_SKIP_TOOLS:-} != 1 && $tools_built != 1 ]]; then
     (cd "$repo_root" && cargo build --profile "$tools_profile" --locked -p tilo-app-package-cli -p runtime-bundle)
     if (( tilolang_apps > 0 )); then
-        # `tilolang build` stages, packs and signs each package's tapp; the host runs a
-        # workspace's instances, without the toolkit, on the app runtime's own libraries.
+        # `tilolang build` stages, packs and signs each package's tapp.
         (cd "$repo_root" && cargo build --profile "$tools_profile" --locked \
-            -p tilolang-cli --bin tilolang -p tilolang-process --bin tilolang-process)
+            -p tilolang-cli --bin tilolang)
     fi
 fi
 # The Rust dylib ABI includes dependency crate hashes and Cargo unifies
@@ -336,19 +335,17 @@ done < <(jq -r '.catalog[] | select(.kind == "native") | [.name,.package,.binary
 
 # --- tilolang packages --------------------------------------------------------
 # A package's payload is its compiled module, and it runs on the tilolang runtime bundle: the
-# bundle's binary (apps/tilolang) and its host are built by the same thin graph, and the bundle
+# bundle's one binary (crates/lang/tilolang-process) is built by the same thin graph, and the bundle
 # is the `tilolang/<version>` each package names as its entrypoint runtime and lists under
 # `optional-runtimes`, so a device installs the bundle along with the apps that need it.
 if (( tilolang_apps > 0 )); then
     # shellcheck source=/dev/null
     . "$repo_root/tools/apps/tilolang_packages.sh"
     tilolang_version=$(tilolang_runtime_version "$repo_root")
-    tilolang_bin="$thin_app_dir/tilolang-app"
-    tilolang_host="$release_dir/tilolang-process"
+    tilolang_bin="$thin_app_dir/tilolang-process"
     [[ -f $tilolang_bin ]] || { printf 'missing tilolang runtime binary: %s\n' "$tilolang_bin" >&2; exit 1; }
-    [[ -f $tilolang_host ]] || { printf 'missing tilolang host: %s\n' "$tilolang_host" >&2; exit 1; }
     tilolang_bundle="$out/runtime/tilolang/$tilolang_version"
-    tilolang_bake_runtime "$release_dir/tilo-runtime-bundle" "$tilolang_bin" "$tilolang_host" \
+    tilolang_bake_runtime "$release_dir/tilo-runtime-bundle" "$tilolang_bin" \
         "$runtime_identity" "$tilolang_bundle" "$tilolang_version" \
         || { printf 'baking the tilolang runtime bundle failed\n' >&2; exit 1; }
     # `tilolang build` keeps each tapp's own name (`<last id segment>.tapp`); the collection
