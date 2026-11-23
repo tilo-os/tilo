@@ -486,7 +486,10 @@ There are seven ways to add a device:
   the spent invitation and the member's record together, or nothing.
 - **One way to create a person**: one action on the device's daemon makes
   the root and founds the person's own workspace. First-run onboarding and
-  the CLI both call it.
+  the CLI both call it, and it needs a running daemon. The daemon works out
+  the device's class: native on Tilo OS, foreign elsewhere. It keeps the root
+  and the device key in its own store, and an OS account it serves is
+  admitted as its person.
 - **One way to add a device**: a ticket. `tilo device add` issues one and
   `tilo login <ticket>` uses it; the root certifies the new device. There are
   no tokens, codes or a join to wait on.
