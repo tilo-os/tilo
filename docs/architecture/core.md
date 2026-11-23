@@ -132,7 +132,10 @@ pinning and removing an app are actions on its resource there, admitted by
 the ordinary grants. A device keeps the packages its workspaces name in one
 content-addressed cache its daemon owns, never a store per person, and the
 daemon fetches what the tree names and starts its sandboxes; nothing else
-writes that cache while the daemon runs.
+writes that cache while the daemon runs. A new workspace is created with the default apps
+installed like any other; an OS image only fills the cache, so signing in on
+a device never adds apps to a workspace. A flatpak app is an app like any
+other whose package is a flatpak ref.
 
 An app is never "running". Any device that holds the workspace's keys and
 takes the work runs an action's code, sandboxed, when it is called; an agent
