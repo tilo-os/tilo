@@ -875,55 +875,75 @@ impl crate::Shared {
     /// session holds it: the store the app's windows open, so the service, the windows, an agent's
     /// programs and the person's other devices read and change one copy.
     pub(crate) fn keep_app_stores(&self, runtime: &tokio::runtime::Handle) {
+        if *self.app_stores.borrow() == AppStores::Kept {
+            return;
+        }
+        let waits = |on: &'static str| *self.app_stores.borrow_mut() = AppStores::Waiting(on);
         let Some(workspace) = self.handle.read(|tree| {
             tree.active_workspace()
                 .map(tilo_desktop_model::Workspace::id)
         }) else {
-            return;
+            return waits("the session shows no workspace");
         };
         let Some(engine) = &self.engine else {
-            return;
+            return waits("the session runs no engine");
         };
         // Who holds the workspace's keys is read from the enrollment this device committed: one
         // still enrolling, as in a workspace its own service has just founded, names nobody yet,
         // and the workspace would refuse every record moved there.
         if !engine.workspaces().contains(&workspace) {
-            return;
+            return waits("this device is not yet enrolled in the workspace the session shows");
         }
         // A move the workspace refused waits for this device's keys or its record of the
         // workspace to move on, rather than being asked again on every pass.
         let standing = (engine.keys().generation(), engine.owner().revision());
-        if self.app_stores.get() == AppStores::Refused(standing) {
+        if matches!(&*self.app_stores.borrow(), AppStores::Refused(held, _) if *held == standing) {
             return;
         }
         let workspace = workspace.to_string();
         if !self.records.holds(&workspace) {
-            return;
+            return waits("the session's records do not hold the workspace yet");
         }
         let Some(store) = (self.held_stores)(workspace, runtime) else {
-            return;
+            return waits("this device's workspace service holds no store of the workspace");
         };
-        match self.services.borrow_mut().keep_in_workspace(&store) {
-            Ok(_) => self.app_stores.set(AppStores::Kept),
+        let kept = match self.services.borrow_mut().keep_in_workspace(&store) {
+            Ok(_) => AppStores::Kept,
             Err(error) => {
-                self.app_stores.set(AppStores::Refused(standing));
                 tracing::warn!(%error, "the apps' resources are not kept in the workspace");
+                AppStores::Refused(standing, error)
             }
-        }
+        };
+        *self.app_stores.borrow_mut() = kept;
     }
 }
 
 /// Where moving the apps' resources into the workspace the person is in stands.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum AppStores {
-    /// Not moved yet: the session is in no workspace this device is enrolled in.
-    #[default]
-    Unmoved,
-    /// The workspace refused them while this device's keys and its record of its workspaces stood
-    /// here.
-    Refused((u64, u64)),
+    /// Not moved yet, and what the move waits on.
+    Waiting(&'static str),
+    /// The workspace refused them, saying why, while this device's keys and its record of its
+    /// workspaces stood here.
+    Refused((u64, u64), String),
     /// Every app's resources are kept there.
     Kept,
+}
+
+impl Default for AppStores {
+    fn default() -> Self {
+        Self::Waiting("the session has not yet offered them")
+    }
+}
+
+impl std::fmt::Display for AppStores {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Waiting(on) => write!(f, "waiting: {on}"),
+            Self::Refused(_, why) => write!(f, "refused: {why}"),
+            Self::Kept => f.write_str("kept"),
+        }
+    }
 }
 
 /// The store of a workspace this device's own service holds, none while the service is not open.
