@@ -52,7 +52,7 @@ use super::{
 };
 use crate::workspaces::Workspaces;
 use crate::workspaces::person_asking::Allowing;
-use crate::workspaces::person_asking::kept_asks::{KeptAsk, NewAsk};
+use crate::workspaces::person_asking::kept_asks::{KeptAsk, KeptAskKind, NewAsk};
 
 /// The carrier of an invocation the workspace's policy left to the person.
 const ACTION: &str = "action";
@@ -138,14 +138,30 @@ pub struct ServerAsk {
 /// Where a turn's question was put, and for which turn: kept with the ask,
 /// so the server finds its way back after a restart.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-struct AskedIn {
+pub(super) struct AskedIn {
     /// The conversation the turn is in, by its address in the workspace;
     /// empty when no turn asked.
-    conversation: String,
+    pub(super) conversation: String,
     /// The ask that caused the turn.
-    cause: String,
+    pub(super) cause: String,
     /// The agent session the turn's changes are grouped by.
-    session: String,
+    pub(super) session: String,
+}
+
+/// Where and for which turn `caller` asks, as a kept ask records it.
+pub(super) fn asked_in(caller: &Caller) -> Value {
+    let turn = caller.turn();
+    let kept = AskedIn {
+        conversation: turn
+            .map(|turn| turn.conversation.clone())
+            .unwrap_or_default(),
+        cause: turn.map(|turn| turn.message.clone()).unwrap_or_default(),
+        session: caller
+            .agent_session()
+            .map(|session| session.id)
+            .unwrap_or_default(),
+    };
+    serde_json::to_value(kept).unwrap_or(Value::Null)
 }
 
 /// The invocation an [`ACTION`] ask keeps.
@@ -373,31 +389,33 @@ async fn put(
     posted
 }
 
-/// The question this server put about an ask, where the workspace's chat
+/// The question this server put about a kept ask, where the workspace's chat
 /// holds it.
-struct Found {
-    ask: KeptAsk,
+pub(super) struct FoundQuestion {
     /// The part of the chat's messages that holds the question.
-    document: String,
-    message: String,
+    pub(super) document: String,
+    pub(super) message: String,
     /// The conversation it stands in.
-    conversation_id: String,
+    pub(super) conversation_id: String,
     /// The words it says now.
-    says: String,
+    pub(super) says: String,
     /// Whether it was ever edited. An agent may edit a message it wrote, and
     /// an edited question is not the one its person was asked.
-    edited: bool,
+    pub(super) edited: bool,
     /// Whether it is the only question that carries its ask. An agent may ask
     /// questions of its own, and one put beside the server's is not it.
-    alone: bool,
+    pub(super) alone: bool,
+    /// The question's detail as the workspace's document holds it: what its
+    /// person was shown when they answered.
+    pub(super) shown: Value,
 }
 
 /// How many questions in `parts` carry one ask: those `agent` wrote for
-/// `person` that show `shown`, what this server kept for it.
+/// `person` that show `expected`, what this server kept for it.
 fn carrying(
     parts: &[(String, chat::parts::ChatMessages)],
     (agent, person): (&MemberId, &MemberId),
-    shown: &Value,
+    expected: &Value,
 ) -> usize {
     parts
         .iter()
@@ -407,47 +425,152 @@ fn carrying(
                 && message.question.as_ref().is_some_and(|question| {
                     question.kind.0 == chat::question::ACTION
                         && question.person == *person
-                        && question.kept().as_ref() == Some(shown)
+                        && question.kept().as_ref() == Some(expected)
                 })
         })
         .count()
 }
 
-/// The question this server put about `ask`, in `parts`: the one its agent
-/// wrote for that person that shows exactly what this server kept.
-fn question_of<'a>(
+/// The question this server put for `agent` and `person` showing `expected`,
+/// in `parts`: the one its agent wrote for that person that shows exactly what
+/// this server kept.
+fn find_question<'a>(
     parts: &'a [(String, chat::parts::ChatMessages)],
-    ask: &KeptAsk,
-) -> Option<(Found, &'a chat::question::Question)> {
+    agent: &str,
+    person: &str,
+    expected: &Value,
+) -> Option<(FoundQuestion, &'a chat::question::Question)> {
     let (agent, person) = (
-        MemberId::agent(ask.agent.clone()),
-        MemberId::person(ask.person.clone()),
+        MemberId::agent(agent.to_owned()),
+        MemberId::person(person.to_owned()),
     );
-    let shown = detail_of(ask);
-    let alone = carrying(parts, (&agent, &person), &shown) == 1;
+    let alone = carrying(parts, (&agent, &person), expected) == 1;
     parts.iter().find_map(|(document, part)| {
         part.messages.iter().find_map(|(id, message)| {
             let question = message.question.as_ref()?;
             (question.kind.0 == chat::question::ACTION
                 && message.author == agent
                 && question.person == person
-                && question.kept().as_ref() == Some(&shown))
+                && question.kept().as_ref() == Some(expected))
             .then(|| {
                 (
-                    Found {
-                        ask: ask.clone(),
+                    FoundQuestion {
                         document: document.clone(),
                         message: id.to_string(),
                         conversation_id: message.channel.to_string(),
                         says: message.text.clone(),
                         edited: message.edited || !message.history.is_empty(),
                         alone,
+                        shown: question.kept().unwrap_or(Value::Null),
                     },
                     question,
                 )
             })
         })
     })
+}
+
+/// One shared settle loop over any kept-ask kind:
+/// - skips asks currently being carried out (`started && !interrupted`);
+/// - hands asks interrupted by a server restart (`interrupted`) to `on_interrupted`;
+/// - hands waiting asks (`!started`) to `on_waiting`.
+pub(super) async fn settle_kept<K, I, IFut, W, WFut>(
+    open: Vec<K>,
+    mut on_interrupted: I,
+    mut on_waiting: W,
+) where
+    K: KeptAskKind,
+    I: FnMut(K) -> IFut,
+    IFut: Future<Output = ()>,
+    W: FnMut(K) -> WFut,
+    WFut: Future<Output = ()>,
+{
+    for ask in open {
+        if ask.started() && !ask.interrupted() {
+            // Its answer is being carried out now.
+            continue;
+        }
+        if ask.interrupted() {
+            on_interrupted(ask).await;
+        } else {
+            on_waiting(ask).await;
+        }
+    }
+}
+
+/// Workspace context shared across chat-question kinds during one settle pass.
+struct ChatSettle<'a> {
+    workspace: &'a str,
+    workspace_id: WorkspaceId,
+    parts: &'a [(String, chat::parts::ChatMessages)],
+    agents: &'a BTreeMap<String, Agent>,
+}
+
+/// What a kept-ask kind answered through a Chat question supplies to the shared
+/// chat settle loop.
+pub(super) trait ChatAskKind: KeptAskKind + Send + 'static {
+    fn agent(&self) -> &str;
+    fn asked_in(&self) -> &Value;
+    fn asked_at_ms(&self) -> u64;
+    fn expected_detail(&self) -> Value;
+    fn takes_always(&self) -> bool;
+    fn ready(&self, _agents: &Agents) -> bool {
+        true
+    }
+    fn forget(&self, workspaces: &Workspaces);
+    fn carry_out(
+        self,
+        agents: Agents,
+        at: (String, WorkspaceId),
+        agent: Agent,
+        found: FoundQuestion,
+        answer: Answered,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send>>;
+}
+
+impl ChatAskKind for KeptAsk {
+    fn agent(&self) -> &str {
+        &self.agent
+    }
+
+    fn asked_in(&self) -> &Value {
+        &self.asked_in
+    }
+
+    fn asked_at_ms(&self) -> u64 {
+        self.asked_at_ms
+    }
+
+    fn expected_detail(&self) -> Value {
+        detail_of(self)
+    }
+
+    fn takes_always(&self) -> bool {
+        self.always.is_some()
+    }
+
+    fn ready(&self, agents: &Agents) -> bool {
+        self.carrier == ACTION || agents.carriers.lock_recover().contains_key(&self.carrier)
+    }
+
+    fn forget(&self, workspaces: &Workspaces) {
+        workspaces.forget_ask(self);
+    }
+
+    fn carry_out(
+        self,
+        agents: Agents,
+        (workspace, workspace_id): (String, WorkspaceId),
+        agent: Agent,
+        found: FoundQuestion,
+        answer: Answered,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        Box::pin(async move {
+            agents
+                .carry_out((&workspace, workspace_id), &agent, &self, &found, answer)
+                .await;
+        })
+    }
 }
 
 /// The questions in `part`, the part `document` of `workspace`'s chat, that
@@ -700,74 +823,174 @@ impl Agents {
     }
 
     /// Carry out what the people of `workspace` answered about what its
-    /// agents asked them: each answer once, started before it is done. Costs one
-    /// look at what this server keeps when nothing waits.
+    /// agents asked them across all four kept-ask kinds (calendar password,
+    /// mail password, general asks and vault uses): each answer once, started
+    /// before it is done. Costs one look at what this server keeps when nothing
+    /// waits.
     pub(super) async fn settle_asks(&self, workspace: &str) {
         // Where a person's password for a calendar or a mail account is wanted and this process
         // does not ask them for it, as after a restart, they are asked again.
-        self.settle_connects(workspace);
-        self.settle_mail_connects(workspace);
-        let open = self.workspaces.open_asks(workspace);
-        if open.is_empty() {
+        self.settle_connects(workspace).await;
+        self.settle_mail_connects(workspace).await;
+
+        let open_asks = self.workspaces.open_asks(workspace);
+        let open_uses = self.workspaces.open_use_asks(workspace);
+        if open_asks.is_empty() && open_uses.is_empty() {
             return;
         }
         let Some(workspace_id) = WorkspaceId::parse(workspace) else {
             return;
         };
-        let parts = self.question_parts(workspace).await;
+        let parts = self.chat_parts(workspace).await;
         let agents = self.agents(workspace).await.unwrap_or_default();
-        for ask in open {
-            if ask.started && !ask.interrupted {
-                // Its answer is being carried out now.
-                continue;
-            }
-            let Some((found, question)) = question_of(&parts, &ask) else {
-                // Its question is not in the document: one this server stopped
-                // on, or one that was never asked, does nothing any more.
-                let old = Duration::from_millis(
-                    tilo_clock::unix_now_ms().saturating_sub(ask.asked_at_ms),
-                ) > UNASKED_FOR;
-                if ask.interrupted || old {
-                    self.workspaces.forget_ask(&ask);
+        let settle = ChatSettle {
+            workspace,
+            workspace_id,
+            parts: &parts,
+            agents: &agents,
+        };
+        self.settle_chat_asks(&settle, open_asks).await;
+        self.settle_chat_asks(&settle, open_uses).await;
+    }
+
+    /// Settle every open device-password ask of kind `K` through [`settle_kept`]:
+    /// interrupted asks are forgotten and reported to their agent; waiting asks
+    /// are asked again (as after a restart).
+    pub(super) async fn settle_password_asks<K, Fut>(
+        &self,
+        open: Vec<K>,
+        interrupted_words: &'static str,
+        forget: impl Fn(&Workspaces, &K) + Send + Sync,
+        named: impl Fn(&K) -> String + Send + Sync,
+        ask_and_carry: impl Fn(Self, K) -> Fut + Send + Sync,
+    ) where
+        K: KeptAskKind + super::calendar_connect::PutAsk + Send + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        settle_kept(
+            open,
+            |ask| {
+                forget(&self.workspaces, &ask);
+                let this = self.clone();
+                let title = named(&ask);
+                async move {
+                    tokio::spawn(async move {
+                        this.tell_of_password(
+                            &ask,
+                            &title,
+                            (super::calendar_connect::TYPED, interrupted_words),
+                        )
+                        .await;
+                    });
                 }
-                continue;
-            };
-            let answer = match question.state() {
-                // This server stopped while it carried the answer out: it is
-                // not carried out a second time, and its person is told.
-                _ if ask.interrupted => {
-                    self.interrupted(workspace_id, &agents, &found).await;
-                    continue;
+            },
+            |ask| {
+                let this = self.clone();
+                let fut = ask_and_carry(this, ask);
+                async move {
+                    tokio::spawn(fut);
                 }
-                chat::question::QuestionState::Waiting => continue,
-                chat::question::QuestionState::Answered(given) => match given.answer.0.as_str() {
-                    chat::question::ALLOW => Answered::Once,
-                    chat::question::ALWAYS if ask.always.is_some() => Answered::Always,
-                    _ => Answered::No,
-                },
-                // Taken back, or said to have ended by somebody else: it
-                // does nothing any more.
-                chat::question::QuestionState::Withdrawn(_)
-                | chat::question::QuestionState::Settled(..) => {
-                    self.workspaces.forget_ask(&ask);
-                    continue;
+            },
+        )
+        .await;
+    }
+
+    /// Settle every open chat-question ask of kind `K` through [`settle_kept`].
+    async fn settle_chat_asks<K: ChatAskKind>(&self, settle: &ChatSettle<'_>, open: Vec<K>) {
+        settle_kept(
+            open,
+            |ask| async move {
+                let found = find_question(
+                    settle.parts,
+                    ask.agent(),
+                    ask.person(),
+                    &ask.expected_detail(),
+                );
+                ask.forget(&self.workspaces);
+                let Some((found, _)) = found else {
+                    return;
+                };
+                let Some(agent) = settle.agents.get(ask.agent()) else {
+                    return;
+                };
+                let Some((_, _, outside)) = self
+                    .asker_of(settle.workspace_id, ask.person(), ask.asked_in(), agent)
+                    .await
+                else {
+                    return;
+                };
+                let told = (chat::question::FAILED, Some(INTERRUPTED.to_owned()));
+                if let Err(error) = self
+                    .settle_ask(
+                        (settle.workspace, settle.workspace_id),
+                        &outside,
+                        &found,
+                        told,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        workspace = settle.workspace,
+                        %error,
+                        "an interrupted question did not take how it ended"
+                    );
                 }
-            };
-            let Some(agent) = agents.get(&ask.agent) else {
-                // The agent no longer works here: nobody acts on the answer.
-                self.workspaces.forget_ask(&ask);
-                continue;
-            };
-            if ask.carrier != ACTION && !self.carriers.lock_recover().contains_key(&ask.carrier) {
-                // Whoever carries it out is not here yet: the answer waits.
-                continue;
-            }
-            let (this, agent, workspace) = (self.clone(), agent.clone(), workspace.to_owned());
-            tokio::spawn(async move {
-                this.carry_out((&workspace, workspace_id), &agent, &found, answer)
-                    .await;
-            });
-        }
+            },
+            |ask| async move {
+                let Some((found, question)) = find_question(
+                    settle.parts,
+                    ask.agent(),
+                    ask.person(),
+                    &ask.expected_detail(),
+                ) else {
+                    // Its question is not in the document: one that was never asked
+                    // does nothing any more once UNASKED_FOR has passed.
+                    let old = Duration::from_millis(
+                        tilo_clock::unix_now_ms().saturating_sub(ask.asked_at_ms()),
+                    ) > UNASKED_FOR;
+                    if old {
+                        ask.forget(&self.workspaces);
+                    }
+                    return;
+                };
+                let answer = match question.state() {
+                    chat::question::QuestionState::Waiting => return,
+                    chat::question::QuestionState::Answered(given) => {
+                        match given.answer.0.as_str() {
+                            chat::question::ALLOW => Answered::Once,
+                            chat::question::ALWAYS if ask.takes_always() => Answered::Always,
+                            _ => Answered::No,
+                        }
+                    }
+                    // Taken back, or said to have ended by somebody else: it
+                    // does nothing any more.
+                    chat::question::QuestionState::Withdrawn(_)
+                    | chat::question::QuestionState::Settled(..) => {
+                        ask.forget(&self.workspaces);
+                        return;
+                    }
+                };
+                let Some(agent) = settle.agents.get(ask.agent()) else {
+                    // The agent no longer works here: nobody acts on the answer.
+                    ask.forget(&self.workspaces);
+                    return;
+                };
+                if !ask.ready(self) {
+                    // Whoever carries it out is not here yet: the answer waits.
+                    return;
+                }
+                let (this, agent, workspace) =
+                    (self.clone(), agent.clone(), settle.workspace.to_owned());
+                tokio::spawn(ask.carry_out(
+                    this,
+                    (workspace, settle.workspace_id),
+                    agent,
+                    found,
+                    answer,
+                ));
+            },
+        )
+        .await;
     }
 
     /// Take back what the turn of `turn`'s agent that began on `began` asked its person and
@@ -805,7 +1028,7 @@ impl Agents {
         let author = MemberId::agent(&turn.agent.id.0);
         let theirs = MemberId::person(&turn.person);
         let holder = WorkspaceActionProvider::new(self.actions.clone(), workspace_id);
-        for (document, part) in self.question_parts(workspace).await {
+        for (document, part) in self.chat_parts(workspace).await {
             for (id, put) in part.messages.iter() {
                 let waits = put
                     .question
@@ -843,46 +1066,22 @@ impl Agents {
         }
     }
 
-    /// Every part of the chat's messages `workspace` holds, by its document.
-    async fn question_parts(&self, workspace: &str) -> Vec<(String, chat::parts::ChatMessages)> {
-        let routes = self
-            .workspaces
-            .document_routes(workspace)
-            .await
-            .unwrap_or_default();
-        let mut parts = Vec::new();
-        for (app, document) in routes {
-            if app != CHAT
-                || collab_types::document::DocumentId::parse(&document)
-                    .is_none_or(|part| chat::parts::part_index(&part).is_none())
-            {
-                continue;
-            }
-            if let Ok(Some(part)) = self
-                .read::<chat::parts::ChatMessages>(workspace, CHAT, &document)
-                .await
-            {
-                parts.push((document, part));
-            }
-        }
-        parts
-    }
-
-    /// The agent that asked `ask`, working for its person now: as the turn
+    /// The agent that asked a kept ask, working for its person now: as the turn
     /// that asked, which is what its invocation goes as, and outside any
     /// turn, which is how it says what came of the answer once that turn
     /// has ended. `None` when the workspace admits the person on no device,
     /// or the agent has no approved key here any more.
-    async fn asker_of(
+    pub(super) async fn asker_of(
         &self,
         workspace_id: WorkspaceId,
-        ask: &KeptAsk,
+        person_hex: &str,
+        asked_in: &Value,
         agent: &Agent,
     ) -> Option<([u8; 32], Caller, Caller)> {
         let mut person = [0; 32];
-        hex::decode_to_slice(&ask.person, &mut person).ok()?;
+        hex::decode_to_slice(person_hex, &mut person).ok()?;
         self.workspaces.person_device(workspace_id, person).await?;
-        let asked_in: AskedIn = serde_json::from_value(ask.asked_in.clone()).ok()?;
+        let asked_in: AskedIn = serde_json::from_value(asked_in.clone()).ok()?;
         let outside = self
             .agent_caller(workspace_id, agent, person)
             .await
@@ -902,7 +1101,7 @@ impl Agents {
         &self,
         (workspace, workspace_id): (&str, WorkspaceId),
         asker: &Caller,
-        found: &Found,
+        found: &FoundQuestion,
         (outcome, told): (&str, Option<String>),
     ) -> Result<(), String> {
         let holder = WorkspaceActionProvider::new(self.actions.clone(), workspace_id);
@@ -923,20 +1122,23 @@ impl Agents {
         &self,
         (workspace, workspace_id): (&str, WorkspaceId),
         agent: &Agent,
-        found: &Found,
+        ask: &KeptAsk,
+        found: &FoundQuestion,
         answer: Answered,
     ) {
-        let Some((person, turn, outside)) = self.asker_of(workspace_id, &found.ask, agent).await
+        let Some((person, turn, outside)) = self
+            .asker_of(workspace_id, &ask.person, &ask.asked_in, agent)
+            .await
         else {
             // Its person is admitted here on no device any more.
-            self.workspaces.forget_ask(&found.ask);
+            self.workspaces.forget_ask(ask);
             return;
         };
         let at = (workspace, workspace_id);
         // Claimed before anything is said or done: saying that it started
         // wakes the next look, which finds the ask taken and leaves it to
         // this one. Claimed by another look already, it is that one's.
-        let Ok(claimed) = self.workspaces.claim_ask(&found.ask.ask) else {
+        let Ok(claimed) = self.workspaces.claim_ask(&ask.ask) else {
             return;
         };
         // A question that was edited, or that stands beside another carrying the
@@ -1063,31 +1265,5 @@ impl Agents {
                     .cloned()
                     .filter(|value| !value.is_null())
             })
-    }
-
-    /// This server stopped while it carried out the answer to the question
-    /// `found` names: say that it could not be done, and keep it from
-    /// running again.
-    async fn interrupted(
-        &self,
-        workspace_id: WorkspaceId,
-        agents: &BTreeMap<String, Agent>,
-        found: &Found,
-    ) {
-        self.workspaces.forget_ask(&found.ask);
-        let Some(agent) = agents.get(&found.ask.agent) else {
-            return;
-        };
-        let workspace = found.ask.workspace.clone();
-        let Some((_, _, outside)) = self.asker_of(workspace_id, &found.ask, agent).await else {
-            return;
-        };
-        let told = (chat::question::FAILED, Some(INTERRUPTED.to_owned()));
-        if let Err(error) = self
-            .settle_ask((&workspace, workspace_id), &outside, found, told)
-            .await
-        {
-            tracing::warn!(%workspace, %error, "an interrupted question did not take how it ended");
-        }
     }
 }

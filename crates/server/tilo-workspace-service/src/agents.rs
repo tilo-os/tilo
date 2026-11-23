@@ -1069,9 +1069,6 @@ impl ServerAgents {
     /// # Errors
     /// The workspace's records could not be read.
     pub async fn look(&self, workspace: &str) -> Result<(), String> {
-        // What a person answered about a use of their vault is carried out
-        // whether or not anything asks an agent now.
-        Box::pin(self.settle_uses(workspace)).await;
         // Boxed, here and in `turns` and `answer`: whoever awaits a round or a turn holds a
         // pointer to it and carries none of it in a future of its own.
         Box::pin(self.look_past(workspace, None)).await
@@ -1112,8 +1109,9 @@ impl ServerAgents {
     /// # Errors
     /// What the workspace owes could not be read.
     pub async fn read_look(&self, workspace: &str) -> Result<LookRead, String> {
-        // What its people answered about what its agents asked them first.
-        self.settle_asks(workspace).await;
+        // What its people answered about what its agents asked them first
+        // (general asks, vault uses, calendar passwords and mail passwords).
+        Box::pin(self.settle_asks(workspace)).await;
         // Taken before anything is read: a turn that begins or goes on from here may answer
         // something newer than what this look reads.
         let reading = self.going.reading();
