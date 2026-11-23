@@ -81,4 +81,5 @@ serial_test.workspace = true
 workspace = true
 
 [target.'cfg(unix)'.dependencies]
+host-fs = { path = "../../system/host-fs" }
 rustix = { workspace = true, features = ["process"] }
