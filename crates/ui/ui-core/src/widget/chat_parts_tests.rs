@@ -22,6 +22,7 @@ fn a_described_strip_reports_the_emoji_its_pill_toggles() {
                 vec![person("u_mia", "Mia"), person("u_leo", "Leo")],
                 vec![person("u_leo", "Leo")],
             ],
+            relayed: Vec::new(),
             can_react: None,
             toggle: Event::View(Intent::new(&toggles, "reactions", "toggle")),
         },
@@ -37,6 +38,26 @@ fn a_described_strip_reports_the_emoji_its_pill_toggles() {
     let fired = toggles.take();
     assert_eq!(fired.len(), 1, "the first pill toggled");
     assert_eq!(fired[0].value, Some(Value::Text("👍".into())));
+}
+
+#[test]
+fn reactions_given_elsewhere_read_by_their_emoji_and_the_name_they_were_given_under() {
+    let props = ReactionsProps {
+        relayed: vec![
+            "👍\tBo".to_owned(),
+            "👍\tCy".to_owned(),
+            ":party:\tDee".to_owned(),
+        ],
+        ..ReactionsProps::default()
+    };
+    let (_, _, relayed, ..) = said(props);
+    assert_eq!(
+        relayed,
+        [
+            ("👍".to_owned(), vec!["Bo".to_owned(), "Cy".to_owned()]),
+            (":party:".to_owned(), vec!["Dee".to_owned()]),
+        ]
+    );
 }
 
 #[test]

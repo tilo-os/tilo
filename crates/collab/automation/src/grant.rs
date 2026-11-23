@@ -12,7 +12,8 @@ use tilo_action_policy::{
     TreePath, decide,
 };
 use tilo_actions::ActionKey;
-use tilo_actions::api::ActionAddress;
+use tilo_actions::api::{ActionAddress, ActionDescriptor};
+use tilo_actions::params::ActionParam;
 
 use crate::{
     AGENT_TRANSFORM_KIND, ActionCatalog, Binding, ResourceTarget, Selector, Step, StepKind,
@@ -437,50 +438,104 @@ fn add(
     let (app_id, action) = (key.app.as_str(), key.action.as_str());
     let row = catalog.find(key, target);
     let descriptor = row.and_then(|row| row.action.as_ref());
-    let reach = match target {
-        ResourceTarget::Id(id) => Reach::Resource(id.to_owned()),
-        // The kind of the resource the step finds, which may be a sub-kind
-        // of the one it names: a grant covers exactly that kind.
-        ResourceTarget::Kind(kind) => Reach::Kind(descriptor.map_or_else(
-            || kind.to_owned(),
-            |descriptor| descriptor.resource_kind.clone(),
-        )),
-        // A bound resource is only known when the shortcut runs; the kind
-        // of the resource the catalogue offers the action on is what it
+    let reaches: Vec<Reach> = match target {
+        ResourceTarget::Id(id) => vec![Reach::Resource(id.to_owned())],
+        // The kinds of resource the step reaches, which may be the kinds the
+        // action's own record is chosen from when the shortcut runs: a grant
+        // covers each exactly.
+        ResourceTarget::Kind(kind) => descriptor.map_or_else(
+            || vec![Reach::Kind(kind.to_owned())],
+            |descriptor| {
+                decision_kinds(descriptor)
+                    .into_iter()
+                    .map(|kind| Reach::Kind(kind.to_owned()))
+                    .collect()
+            },
+        ),
+        // A bound resource is only known when the shortcut runs; the kinds
+        // of the resource the catalogue offers the action on are what it
         // may reach. Without one there is nothing to grant.
         ResourceTarget::Any => match descriptor {
-            Some(descriptor) => Reach::Kind(descriptor.resource_kind.clone()),
+            Some(descriptor) => decision_kinds(descriptor)
+                .into_iter()
+                .map(|kind| Reach::Kind(kind.to_owned()))
+                .collect(),
             None => return,
         },
     };
     let kind = descriptor.map_or(ActionKind::Undoable, |descriptor| {
         descriptor.contract.need().kind
     });
-    let label = match (&reach, descriptor) {
-        (Reach::Resource(_), Some(descriptor)) => format!(
-            "{} in {}",
-            descriptor.action_label, descriptor.resource_label
-        ),
-        (Reach::Kind(kind), Some(descriptor)) => {
-            format!("{} in {kind}", descriptor.action_label)
+    for reach in reaches {
+        let label = match (&reach, descriptor) {
+            (Reach::Resource(_), Some(descriptor)) => format!(
+                "{} in {}",
+                descriptor.action_label, descriptor.resource_label
+            ),
+            (Reach::Kind(kind), Some(descriptor)) => {
+                format!("{} in {kind}", descriptor.action_label)
+            }
+            (Reach::Resource(resource) | Reach::Kind(resource), None) => {
+                format!("{action} in {resource}")
+            }
+        };
+        if let Some(existing) = out.iter_mut().find(|existing| {
+            existing.app_id == app_id && existing.reach == reach && existing.action == action
+        }) {
+            existing.kind = existing.kind.max(kind);
+            continue;
         }
-        (Reach::Resource(resource) | Reach::Kind(resource), None) => {
-            format!("{action} in {resource}")
-        }
-    };
-    if let Some(existing) = out.iter_mut().find(|existing| {
-        existing.app_id == app_id && existing.reach == reach && existing.action == action
-    }) {
-        existing.kind = existing.kind.max(kind);
-        return;
+        out.push(Permission {
+            app_id: app_id.to_owned(),
+            reach,
+            action: action.to_owned(),
+            kind,
+            label,
+        });
     }
-    out.push(Permission {
-        app_id: app_id.to_owned(),
-        reach,
-        action: action.to_owned(),
-        kind,
-        label,
-    });
+}
+
+/// The kinds of resource a step's action is decided at: the kinds its record is chosen from
+/// when the step runs (`send` to a channel, a thread or a direct conversation), else the kind
+/// the row the step found is published under. The step is decided at each of them, since which
+/// one it reaches is known only when it runs.
+#[must_use]
+pub(crate) fn decision_kinds<'d>(descriptor: &'d ActionDescriptor) -> Vec<&'d str> {
+    decision_kinds_of(descriptor).unwrap_or_else(|| vec![descriptor.resource_kind.as_str()])
+}
+
+/// What the grant answers for a step decided at `nodes`: the strictest answer any of them
+/// gives, and an advance consent only when every one of them names the action.
+#[must_use]
+pub(crate) fn nodes_answer(grant: &[Rule], nodes: &[TreePath], kind: ActionKind) -> StepGrant {
+    let mut answer = Answer::Allow;
+    let mut names_action = true;
+    for node in nodes {
+        let one = grant_answer(grant, node, kind);
+        names_action &= one.names_action;
+        answer = match (answer, one.answer) {
+            (Answer::Deny, _) | (_, Answer::Deny) => Answer::Deny,
+            (Answer::Ask, _) | (_, Answer::Ask) => Answer::Ask,
+            _ => Answer::Allow,
+        };
+    }
+    StepGrant {
+        answer,
+        names_action,
+    }
+}
+
+/// The kinds of resource a step's action is decided at, when its record is chosen from several
+/// kinds at run time (`send` to a channel, a thread or a direct conversation): the kinds the
+/// action's first argument takes. `None` for an action acting on one kind, or on a resource the
+/// row names itself.
+fn decision_kinds_of(descriptor: &ActionDescriptor) -> Option<Vec<&str>> {
+    let kinds = descriptor
+        .params
+        .first()
+        .map(ActionParam::resource_kinds)
+        .unwrap_or_default();
+    (!kinds.is_empty()).then_some(kinds)
 }
 
 /// Read rules the triggers of a program need: a record trigger reads the

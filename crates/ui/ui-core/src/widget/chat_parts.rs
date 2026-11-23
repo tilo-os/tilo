@@ -34,6 +34,10 @@ pub struct ReactionsProps {
     pub emoji: Vec<String>,
     /// Who reacted with each of `emoji`, in the same order.
     pub by: Vec<Vec<Person>>,
+    /// Who reacted with it somewhere else, under a name of their own (a bridged account), each
+    /// entry its emoji and that name, a tab between them. They stand on the pill of their emoji,
+    /// counted with the members' reactions, and read as one more name in its tooltip.
+    pub relayed: Vec<String>,
     /// Whether the person may react; they may unless it says not.
     pub can_react: Option<bool>,
     /// An emoji was pressed or picked: carries it.
@@ -67,7 +71,7 @@ impl Described for ReactionStripWidget {
     type Props = ReactionsProps;
 
     fn from_props(key: &str, props: ReactionsProps) -> Self {
-        let (groups, names, can_react, toggle) = said(props);
+        let (groups, names, relayed, can_react, toggle) = said(props);
         Self::new(groups, None)
             .with_names(move |reactor: &Reactor| {
                 names
@@ -75,14 +79,16 @@ impl Described for ReactionStripWidget {
                     .cloned()
                     .unwrap_or_else(|| reactor.by.id().to_owned())
             })
+            .with_relayed(relayed)
             .can_react(can_react)
             .on_toggle(move |picked| toggle.fire(Some(Value::Text(picked.emoji))))
             .with_id(key)
     }
 
     fn set_props(&mut self, props: ReactionsProps) -> bool {
-        let (groups, names, can_react, toggle) = said(props);
+        let (groups, names, relayed, can_react, toggle) = said(props);
         self.set_groups(groups);
+        self.set_relayed(relayed);
         self.set_can_react(can_react);
         self.set_names(move |reactor: &Reactor| {
             names
@@ -104,6 +110,7 @@ fn said(
 ) -> (
     Vec<ReactionGroup>,
     std::collections::HashMap<tilo_resource::MemberId, String>,
+    Vec<(String, Vec<String>)>,
     bool,
     Event,
 ) {
@@ -111,6 +118,7 @@ fn said(
         reactions,
         emoji,
         by,
+        relayed,
         can_react,
         toggle,
     } = props;
@@ -135,7 +143,22 @@ fn said(
             first_at: i64::try_from(at).unwrap_or(i64::MAX),
         })
         .collect();
-    (groups, names, can_react.unwrap_or(true), toggle)
+    // Each given elsewhere under a name of its own, by the emoji it was given with.
+    let mut elsewhere: Vec<(String, Vec<String>)> = Vec::new();
+    for entry in relayed {
+        let Some((emoji, name)) = entry.split_once('\t') else {
+            continue;
+        };
+        let name = name.trim();
+        if emoji.is_empty() || name.is_empty() {
+            continue;
+        }
+        match elsewhere.iter_mut().find(|(with, _)| with == emoji) {
+            Some((_, names)) => names.push(name.to_owned()),
+            None => elsewhere.push((emoji.to_owned(), vec![name.to_owned()])),
+        }
+    }
+    (groups, names, elsewhere, can_react.unwrap_or(true), toggle)
 }
 
 /// A button that opens the emoji picker beside it; the emoji picked is reported (`on pick(e)`).

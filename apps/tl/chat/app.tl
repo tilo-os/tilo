@@ -631,41 +631,6 @@ fn said_from(emoji: List<Text>, at: Int, told: List<Text>) -> Text {
     } else { "" }
 }
 
-/// The reactions a message was given where it was written (`reactions`), as words: each emoji
-/// with who gave it there, in the order they first gave it.
-fn relayed_said(reactions: List<RelayedReaction>) -> Text {
-    relayed_from(reactions, 0, [])
-}
-
-/// [`relayed_said`] of `all` from the `at`th, past the emoji already `told`.
-fn relayed_from(all: List<RelayedReaction>, at: Int, told: List<Text>) -> Text {
-    if let r = all.at(at) {
-        if told.contains(r.emoji) {
-            relayed_from(all, at + 1, told)
-        } else {
-            let here = "{r.emoji} {relayed_names(all, r.emoji)}"
-            let rest = relayed_from(all, at + 1, [told, [r.emoji]].flat_map(x -> x))
-            if rest == "" { here } else { "{here}  {rest}" }
-        }
-    } else { "" }
-}
-
-/// Who `all` says gave `emoji`, by the names they go by there, the first three and how many
-/// others when there are more.
-fn relayed_names(all: List<RelayedReaction>, emoji: Text) -> Text {
-    let names = all.filter(r -> r.emoji == emoji).map(r -> r.by)
-    if names.len() <= 3 {
-        names.join(", ")
-    } else {
-        let others = names.len() - 3
-        if others == 1 {
-            "{names.take(3).join(", ")} and one other"
-        } else {
-            "{names.take(3).join(", ")} and {others} others"
-        }
-    }
-}
-
 /// The emoji a native reaction's key names: what stands before its first separator. The key
 /// ends in who reacted, written in hex, after the last one.
 fn emoji_of(key: Text) -> Text {
@@ -817,13 +782,7 @@ action relay(
 /// makes these, so a reaction made there shows under the person's name rather than the bridge's;
 /// `given` false takes it back. The reaction's history names the bridge, and the message says
 /// whom it relays.
-action relay_reaction(
-    m: Message,
-    emoji: Text,
-    persona: Text,
-    by: Text,
-    given: Bool = true,
-) (
+action relay_reaction(m: Message, emoji: Text, persona: Text, by: Text, given: Bool = true) (
     icon: .smile_plus,
     label: "Relay a reaction",
     did: "relayed a reaction",
@@ -854,7 +813,7 @@ action relay_reaction(
 }
 
 /// Deletes a channel and what was said in it, from the sidebar or the category it is in.
-destructive action delete_channel(from: Conversations | Category, ch: TextChannel) (
+destructive action delete_channel(from: Conversations | Category, ch: TextChannel | VoiceChannel) (
     icon: .trash,
     label: "Delete channel",
     moderates: true,
@@ -1588,13 +1547,13 @@ view message(
     if m.reacted != "" {
         ui.Text(m.reacted, role: .caption, secondary: true)
     }
-    if not m.reactions.keys().is_empty() {
-        ui.Reactions(reactions: m.reactions) {
+    if not m.reactions.keys().is_empty() or not m.relayed_reactions.is_empty() {
+        ui.Reactions(
+            reactions: m.reactions,
+            relayed: m.relayed_reactions.map(r -> "{r.emoji}\t{r.by}"),
+        ) {
             on toggle(e): react(m, e)
         }
-    }
-    if not m.relayed_reactions.is_empty() {
-        ui.Text(relayed_said(m.relayed_reactions.map(r -> r)), role: .caption, secondary: true)
     }
     if let t = m.thread {
         std.thread_chip(t, count: t.messages.len())

@@ -170,6 +170,7 @@ impl ToolbarRow {
                 let laid = crate::text_render::with_layout_renderer(theme, |text| {
                     reaction_strip::layout(
                         &groups,
+                        &[],
                         Some(&shower()),
                         reactions.can_react,
                         (Point::ZERO, f64::MAX / 4.0),
@@ -355,6 +356,7 @@ impl ToolbarRow {
         };
         self.reactions.strip.layout(
             &groups,
+            &[],
             Some(&shower()),
             can_react,
             (origin.origin(), end - origin.x0 + 1.0),

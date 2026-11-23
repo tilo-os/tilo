@@ -1098,6 +1098,13 @@
           }
         },
         {
+          "name": "relayed",
+          "doc": "Who reacted with it somewhere else, under a name of their own (a bridged account), each entry its emoji and that name, a tab between them. They stand on the pill of their emoji, counted with the members' reactions, and read as one more name in its tooltip.",
+          "type": {
+            "list": "text"
+          }
+        },
+        {
           "name": "can_react",
           "doc": "Whether the person may react; they may unless it says not.",
           "type": {

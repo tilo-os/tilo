@@ -106,7 +106,8 @@ fn guild(id: &str, action: &str, args: &[(&str, Binding)]) -> Step {
 }
 
 /// A record named by a reference, as a parameter that picks one takes it
-/// ([`resource_reference_schema`]): its app, its kind, its id, and the label, which nothing reads.
+/// ([`tilo_actions::params::resource_reference_schema`]): its app, its kind, its id, and the
+/// label, which nothing reads.
 fn reference(kind: Binding, id: Binding) -> Binding {
     Binding::Object(BTreeMap::from([
         ("app".to_owned(), Binding::Literal(json!(CHAT_APP))),
@@ -790,7 +791,7 @@ fn dropped_channel() -> Vec<Step> {
         "delete_channel",
         &[
             ("from", union(item("from_kind"), item("from"))),
-            ("ch", reference(item("kind"), item("channel"))),
+            ("ch", union(item("kind"), item("channel"))),
         ],
     )]
 }

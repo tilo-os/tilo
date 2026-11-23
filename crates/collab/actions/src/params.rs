@@ -142,6 +142,12 @@ impl ParamType {
 /// not an assertion: binding does not check it.
 pub const RESOURCE_KIND_ANNOTATION: &str = "resource_kind";
 
+/// Schema annotation naming the kinds of resource a [`ParamType::Resource`]
+/// parameter takes when it takes one of several (a message, a thread or a direct
+/// conversation); see [`ActionParam::taking_resource_kinds`]. An annotation, not an
+/// assertion: binding does not check it.
+pub const RESOURCE_KINDS_ANNOTATION: &str = "resource_kinds";
+
 /// Schema annotation saying how each of a parameter's choices reads to a
 /// person: an object from choice to label; see
 /// [`ActionParam::with_labelled_choices`]. An identity is chosen by its name,
@@ -473,6 +479,35 @@ impl ActionParam {
     pub fn with_shared_schema(mut self, schema: std::sync::Arc<serde_json::Value>) -> Self {
         self.schema = Some(schema);
         self
+    }
+
+    /// Name the kinds of resource this [`ParamType::Resource`] parameter
+    /// takes, any one of them (a channel, a thread or a direct conversation), as the
+    /// [`RESOURCE_KINDS_ANNOTATION`] of its schema: what tells a grant that the step may reach
+    /// every one of them.
+    #[must_use]
+    pub fn taking_resource_kinds<I, S>(self, kinds: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let kinds = kinds
+            .into_iter()
+            .map(|kind| serde_json::Value::String(kind.into()))
+            .collect();
+        self.annotate(RESOURCE_KINDS_ANNOTATION, serde_json::Value::Array(kinds))
+    }
+
+    /// The kinds of resource this parameter takes, when it names several
+    /// ([`Self::taking_resource_kinds`]).
+    #[must_use]
+    pub fn resource_kinds(&self) -> Vec<&str> {
+        self.schema
+            .as_deref()
+            .and_then(|schema| schema.get(RESOURCE_KINDS_ANNOTATION))
+            .and_then(serde_json::Value::as_array)
+            .map(|kinds| kinds.iter().filter_map(serde_json::Value::as_str).collect())
+            .unwrap_or_default()
     }
 
     /// Name the kind of resource this [`ParamType::Resource`] parameter
@@ -2057,6 +2092,7 @@ const SCHEMA_ANNOTATIONS: &[&str] = &[
     "readOnly",
     "writeOnly",
     RESOURCE_KIND_ANNOTATION,
+    RESOURCE_KINDS_ANNOTATION,
     PLACE_ANNOTATION,
     CONTENT_ANNOTATION,
     CHOICE_LABELS_ANNOTATION,
@@ -2873,6 +2909,7 @@ deprecated
 readOnly
 writeOnly
 resource_kind
+resource_kinds
 place
 content
 choice_labels

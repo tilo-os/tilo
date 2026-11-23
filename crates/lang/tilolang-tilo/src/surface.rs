@@ -267,6 +267,11 @@ pub fn published_param(meta: &Meta, param: &ParamMeta) -> ActionParam {
             {"type": "string"},
             {"type": "object", "required": ["rich"]},
         ]})),
+        // One of several records, chosen when it is invoked (`to: TextChannel | Thread | Direct`):
+        // the kinds name what the step reaches, so a grant covers each.
+        Some(Ty::Union(keys)) => built
+            .with_schema(json!({"type": "object"}))
+            .taking_resource_kinds(keys.iter().map(resource_type)),
         Some(present) => built.with_schema(schema_of(meta, present)),
         None => built.with_schema(json!({})),
     }

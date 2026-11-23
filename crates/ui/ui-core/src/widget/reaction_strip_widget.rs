@@ -33,6 +33,9 @@ pub struct ReactionToggle {
 /// button that asks for another emoji.
 pub struct ReactionStripWidget {
     groups: Vec<ReactionGroup>,
+    /// Who reacted with each emoji somewhere else, under a name of their own: a bridged
+    /// account's reaction, shown on the member's pill of the same emoji or a pill of its own.
+    relayed: Vec<(String, Vec<String>)>,
     me: Option<MemberId>,
     can_react: bool,
     names: Rc<dyn Fn(&Reactor) -> String>,
@@ -63,6 +66,7 @@ impl ReactionStripWidget {
     pub fn new(groups: Vec<ReactionGroup>, me: Option<MemberId>) -> Self {
         Self {
             groups,
+            relayed: Vec::new(),
             me,
             can_react: true,
             names: Rc::new(|reactor: &Reactor| reactor.by.id().to_owned()),
@@ -108,6 +112,23 @@ impl ReactionStripWidget {
         self.metrics = None;
         self.dirty = true;
         self.layout_dirty = true;
+    }
+
+    /// The reactions given elsewhere, each emoji with who gave it there under a name of their
+    /// own.
+    #[must_use]
+    pub fn with_relayed(mut self, relayed: Vec<(String, Vec<String>)>) -> Self {
+        self.relayed = relayed;
+        self
+    }
+
+    pub(crate) fn set_relayed(&mut self, relayed: Vec<(String, Vec<String>)>) {
+        if self.relayed != relayed {
+            self.relayed = relayed;
+            self.metrics = None;
+            self.dirty = true;
+            self.layout_dirty = true;
+        }
     }
 
     #[must_use]
@@ -209,6 +230,7 @@ impl ReactionStripWidget {
         let metrics = StripMetrics::of(theme);
         let laid = layout(
             &self.groups,
+            &self.relayed,
             self.me.as_ref(),
             self.can_react,
             (self.rect.origin(), self.rect.width()),
@@ -266,6 +288,7 @@ impl Widget for ReactionStripWidget {
         );
         let laid = layout(
             &self.groups,
+            &self.relayed,
             self.me.as_ref(),
             self.can_react,
             (Point::ZERO, width),

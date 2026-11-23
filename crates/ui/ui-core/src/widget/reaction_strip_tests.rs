@@ -83,6 +83,7 @@ tilo_test_env::scenario! {
             .collect();
         let wide = layout(
             &groups,
+            &[],
             Some(&tilo_actions::MemberId::person("me")),
             true,
             (Point::new(10.0, 20.0), 2000.0),
@@ -101,6 +102,7 @@ tilo_test_env::scenario! {
         let narrow_width = wide.pills()[2].rect.x1 - 10.0;
         let narrow = layout(
             &groups,
+            &[],
             Some(&tilo_actions::MemberId::person("me")),
             true,
             (Point::new(10.0, 20.0), narrow_width),
@@ -118,10 +120,10 @@ tilo_test_env::scenario! {
             "a new row starts at the edge"
         );
         assert_eq!(
-            measure_height(&groups, true, narrow_width, &mut text, &theme),
+            measure_height(&groups, &[], true, narrow_width, &mut text, &theme),
             narrow.height()
         );
-        assert_eq!(measure_height(&[], false, 300.0, &mut text, &theme), 0.0);
+        assert_eq!(measure_height(&[], &[], false, 300.0, &mut text, &theme), 0.0);
     }
 
     phase a_pill_toggles_its_emoji_and_the_add_button_anchors_the_picker;
@@ -131,6 +133,7 @@ tilo_test_env::scenario! {
         let groups = vec![group("👍", &["ada", "me"]), group(":tilo:", &["bo"])];
         let laid = layout(
             &groups,
+            &[],
             Some(&tilo_actions::MemberId::person("me")),
             true,
             (Point::ZERO, 400.0),
@@ -157,6 +160,19 @@ tilo_test_env::scenario! {
             tilo.rect.width() > thumbs.rect.width(),
             "a workspace emoji without a picture shows its :name:"
         );
+
+        let read_only = layout(
+            &groups,
+            &[],
+            Some(&tilo_actions::MemberId::person("me")),
+            false,
+            (Point::ZERO, 400.0),
+            &mut text,
+            &StripMetrics::of(&theme),
+        );
+        assert!(read_only.add_rect().is_none());
+        assert!(read_only.hit(read_only.pills()[0].rect.center()).is_none());
+        assert!(read_only.targets().is_empty());
     }
 
     phase the_tooltip_names_who_reacted_you_first;
@@ -171,6 +187,7 @@ tilo_test_env::scenario! {
         let groups = vec![group("🎉", &["ada", "bo"]), bridged, group("🔥", &["me"])];
         let laid = layout(
             &groups,
+            &[],
             Some(&tilo_actions::MemberId::person("me")),
             true,
             (Point::ZERO, 600.0),
@@ -198,6 +215,7 @@ tilo_test_env::scenario! {
         let groups = vec![group("👍", &["ada", "me"]), group("🎉", &["bo"])];
         let laid = layout(
             &groups,
+            &[],
             Some(&tilo_actions::MemberId::person("me")),
             true,
             (Point::ZERO, 600.0),
@@ -238,6 +256,7 @@ tilo_test_env::scenario! {
         let mut strip = ReactionStrip::new();
         strip.layout(
             &[group("👍", &["ada"])],
+            &[],
             Some(&tilo_actions::MemberId::person("me")),
             true,
             (Point::ZERO, 400.0),
@@ -247,6 +266,7 @@ tilo_test_env::scenario! {
         assert!(!strip.is_moving(), "what is there at first rests");
         strip.layout(
             &[group("👍", &["ada", "bo"]), group("🎉", &["bo"])],
+            &[],
             Some(&tilo_actions::MemberId::person("me")),
             true,
             (Point::ZERO, 400.0),
@@ -265,9 +285,18 @@ tilo_test_env::scenario! {
         );
         let reduced = theme.clone().with_reduce_motion(true);
         let mut calm = ReactionStrip::new();
-        calm.layout(&[], Some(&tilo_actions::MemberId::person("me")), true, (Point::ZERO, 400.0), &mut text, &reduced);
+        calm.layout(
+            &[],
+            &[],
+            Some(&tilo_actions::MemberId::person("me")),
+            true,
+            (Point::ZERO, 400.0),
+            &mut text,
+            &reduced,
+        );
         calm.layout(
             &[group("🎉", &["bo"])],
+            &[],
             Some(&tilo_actions::MemberId::person("me")),
             true,
             (Point::ZERO, 400.0),
@@ -425,4 +454,36 @@ fn on_touch_a_pill_is_pressed_within_its_grown_target_and_its_face_stays_compact
     let toggles = widget.take_toggles();
     assert_eq!(toggles.len(), 1, "a press within the target toggles");
     assert_eq!(toggles[0].emoji, "👍");
+}
+
+#[test]
+fn a_pill_counts_what_was_given_elsewhere_and_names_those_who_gave_it() {
+    let theme = Theme::light();
+    let mut text = TextRenderer::new();
+    let groups = vec![group("👍", &["ada"])];
+    let relayed = vec![
+        ("👍".to_owned(), vec!["Bo".to_owned(), "Cy".to_owned()]),
+        (":party:".to_owned(), vec!["Dee".to_owned()]),
+    ];
+    let laid = layout(
+        &groups,
+        &relayed,
+        None,
+        false,
+        (Point::ZERO, 400.0),
+        &mut text,
+        &StripMetrics::of(&theme),
+    );
+    let [thumbs, party] = laid.pills() else {
+        panic!("a pill for each emoji, the one given only elsewhere included");
+    };
+    assert_eq!(thumbs.count, 3, "Ada's and the two given on Discord");
+    assert_eq!(party.count, 1);
+    let (_, said) = laid
+        .tooltip_at(thumbs.rect.center(), &names)
+        .expect("a tooltip names who reacted");
+    assert!(
+        said.contains("Ada") && said.contains("Bo") && said.contains("Cy"),
+        "{said}"
+    );
 }

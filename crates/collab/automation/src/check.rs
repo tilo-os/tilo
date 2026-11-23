@@ -20,14 +20,15 @@ use tilo_actions::params::{ActionParam, ParamType};
 
 use crate::catalog::{ActionCatalog, ResourceTarget};
 use crate::grant::{
-    EDIT_PARAM, FIELD_EDIT, READ_STEP, edit_reach, grant_answer, step_node, step_node_at,
+    EDIT_PARAM, FIELD_EDIT, READ_STEP, decision_kinds, edit_reach, grant_answer, nodes_answer,
+    step_node, step_node_at,
 };
 use crate::path::StepPath;
 use crate::shortcut::{AiTransform, Binding, Condition, Selector, Shortcut, Step, StepKind};
 use crate::template::{self, Piece, is_identifier};
 use crate::types::{Ty, assignable, literal_fits, pointer_tokens, schema_at};
 use crate::{AGENT_TRANSFORM_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, shortcut_id_of};
-use tilo_action_policy::{ActionKind, Answer, Rule};
+use tilo_action_policy::{ActionKind, Answer, Rule, TreePath};
 
 /// One reason a shortcut cannot be saved as written.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -582,17 +583,19 @@ impl Checker<'_> {
         let at = (action == FIELD_EDIT)
             .then(|| args.get(EDIT_PARAM).and_then(edit_reach))
             .flatten();
-        let node = match &at {
-            Some(at) => step_node_at(
-                None,
-                app_id,
-                &descriptor.resource_kind,
-                &descriptor.address,
-                at,
-            ),
-            None => step_node(None, app_id, &descriptor.resource_kind, &descriptor.address),
-        };
-        if grant_answer(&self.shortcut.grant, &node, descriptor.contract.need().kind).answer
+        let nodes: Vec<TreePath> = decision_kinds(descriptor)
+            .into_iter()
+            .map(|kind| match &at {
+                Some(at) => step_node_at(None, app_id, kind, &descriptor.address, at),
+                None => step_node(None, app_id, kind, &descriptor.address),
+            })
+            .collect();
+        if nodes_answer(
+            &self.shortcut.grant,
+            &nodes,
+            descriptor.contract.need().kind,
+        )
+        .answer
             == Answer::Deny
         {
             self.fail(

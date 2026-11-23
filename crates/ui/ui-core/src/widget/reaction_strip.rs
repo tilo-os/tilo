@@ -73,6 +73,9 @@ pub struct StripPill {
     pub mine: bool,
     pub rect: Rect,
     pub reactors: Vec<Reactor>,
+    /// Who reacted with it somewhere else, under a name of their own (a bridged account), as
+    /// that place shows them.
+    pub relayed: Vec<String>,
     glyph: Rect,
 }
 
@@ -117,6 +120,7 @@ fn count_label(count: usize) -> String {
 #[must_use]
 pub fn layout(
     groups: &[ReactionGroup],
+    relayed: &[(String, Vec<String>)],
     me: Option<&MemberId>,
     can_react: bool,
     (origin, max_width): (Point, f64),
@@ -137,10 +141,28 @@ pub fn layout(
         x_max = x_max.max(rect.x1);
         rect
     };
-    let mut pills = Vec::with_capacity(groups.len());
+    // A pill per emoji, its count and who reacted with it from both sides: the workspace's
+    // members, and wherever the reaction was given under a name of its own.
+    let others = |emoji: &str| -> Vec<String> {
+        relayed
+            .iter()
+            .find(|(with, _)| with == emoji)
+            .map(|(_, names)| names.clone())
+            .unwrap_or_default()
+    };
+    let alone: Vec<(String, Vec<String>)> = relayed
+        .iter()
+        .filter(|(emoji, names)| {
+            !names.is_empty() && !groups.iter().any(|group| &group.emoji == emoji)
+        })
+        .cloned()
+        .collect();
+    let pills_count = groups.len() + alone.len();
+    let mut pills = Vec::with_capacity(pills_count);
     for group in groups {
         let glyph_w = emoji_width(&group.emoji, metrics, text);
-        let count = group.count();
+        let elsewhere = others(&group.emoji);
+        let count = group.count() + elsewhere.len();
         let count_w = f64::from(
             text.measure_style(&count_label(count), None, &metrics.count)
                 .0,
@@ -158,6 +180,31 @@ pub fn layout(
             mine: me.is_some_and(|me| group.includes(me)),
             rect,
             reactors: group.reactors.clone(),
+            relayed: elsewhere,
+            glyph,
+        });
+    }
+    for (emoji, names) in alone {
+        let glyph_w = emoji_width(&emoji, metrics, text);
+        let count = names.len();
+        let count_w = f64::from(
+            text.measure_style(&count_label(count), None, &metrics.count)
+                .0,
+        )
+        .ceil();
+        let width = metrics.pad_x * 2.0 + glyph_w + metrics.inner_gap + count_w;
+        let rect = place(width.max(metrics.height));
+        let glyph = Rect::from_center_size(
+            Point::new(rect.x0 + metrics.pad_x + glyph_w / 2.0, rect.center().y),
+            (glyph_w, metrics.emoji),
+        );
+        pills.push(StripPill {
+            emoji,
+            count,
+            mine: false,
+            rect,
+            reactors: Vec::new(),
+            relayed: names,
             glyph,
         });
     }
@@ -182,16 +229,18 @@ pub fn layout(
 #[must_use]
 pub fn measure_height(
     groups: &[ReactionGroup],
+    relayed: &[(String, Vec<String>)],
     can_react: bool,
     max_width: f64,
     text: &mut TextRenderer,
     theme: &Theme,
 ) -> f64 {
-    if groups.is_empty() && !can_react {
+    if groups.is_empty() && relayed.is_empty() && !can_react {
         return 0.0;
     }
     layout(
         groups,
+        relayed,
         None,
         can_react,
         (Point::ZERO, max_width),
@@ -378,6 +427,13 @@ fn who_reacted(
     if own {
         names.insert(0, crate::i18n::widget_format("reaction-strip-you", &[]));
     }
+    // Who reacted elsewhere, under a name of their own: they read as any other reactor.
+    names.extend(
+        pill.relayed
+            .iter()
+            .filter(|shown| !shown.trim().is_empty())
+            .cloned(),
+    );
     let emoji = crate::emoji_catalogue::emoji_name(&pill.emoji);
     let arg = |names: &[String], at: usize| names.get(at).cloned().unwrap_or_default();
     match names.len() {
@@ -448,6 +504,7 @@ impl ReactionStrip {
     pub fn layout(
         &mut self,
         groups: &[ReactionGroup],
+        relayed: &[(String, Vec<String>)],
         me: Option<&MemberId>,
         can_react: bool,
         (origin, max_width): (Point, f64),
@@ -456,6 +513,7 @@ impl ReactionStrip {
     ) -> &StripLayout {
         self.layout = layout(
             groups,
+            relayed,
             me,
             can_react,
             (origin, max_width),

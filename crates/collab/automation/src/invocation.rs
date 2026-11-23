@@ -42,8 +42,8 @@ use uuid::Uuid;
 use crate::StepPolicy;
 use crate::catalog::{ResourceTarget, find_row};
 use crate::grant::{
-    EDIT_PARAM, FIELD_EDIT, READ_STEP, StepGrant, edit_reach, grant_answer, read_nodes, step_node,
-    step_node_at,
+    EDIT_PARAM, FIELD_EDIT, READ_STEP, StepGrant, decision_kinds, edit_reach, grant_answer,
+    nodes_answer, read_nodes, step_node, step_node_at,
 };
 use crate::path::StepPath;
 use crate::shortcut::{AiTransform, Binding, Condition, Selector, Shortcut, Step, StepKind};
@@ -51,7 +51,7 @@ use crate::template::{self, Piece, render_value};
 use crate::{
     AGENT_TRANSFORM_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, TriggerSpec, shortcut_id_of,
 };
-use tilo_action_policy::{ActionKind, Answer};
+use tilo_action_policy::{ActionKind, Answer, TreePath};
 
 /// How many catalogue pages the interpreter reads looking for one action.
 const MAX_CATALOGUE_PAGES: usize = 32;
@@ -1949,22 +1949,24 @@ impl<'a, H: ActionProvider + Sync, K: InvocationHooks> Runner<'a, H, K> {
                     .and_then(|edit| edit_reach(&Binding::Literal(edit.clone())))
             })
             .flatten();
-        let node = match &at {
-            Some(at) => step_node_at(
-                self.caller.workspace(),
-                app_id,
-                &descriptor.resource_kind,
-                &descriptor.address,
-                at,
-            ),
-            None => step_node(
-                self.caller.workspace(),
-                app_id,
-                &descriptor.resource_kind,
-                &descriptor.address,
-            ),
-        };
-        let granted = grant_answer(&self.shortcut.grant, &node, descriptor.contract.need().kind);
+        let nodes: Vec<TreePath> = decision_kinds(descriptor)
+            .into_iter()
+            .map(|kind| match &at {
+                Some(at) => step_node_at(
+                    self.caller.workspace(),
+                    app_id,
+                    kind,
+                    &descriptor.address,
+                    at,
+                ),
+                None => step_node(self.caller.workspace(), app_id, kind, &descriptor.address),
+            })
+            .collect();
+        let granted = nodes_answer(
+            &self.shortcut.grant,
+            &nodes,
+            descriptor.contract.need().kind,
+        );
         let (app_id, action) = (app_id.to_string(), action.to_string());
         match (granted.answer, self.mode) {
             (Answer::Deny, _) => Err(StepFailure::OutsideGrant { app_id, action }),
