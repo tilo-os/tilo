@@ -2135,47 +2135,30 @@ fn holds_any(nb: Notebook, n: Note) -> Bool {
 /// A notebook a week into a project: two branches of notes, one of them three deep, a few of
 /// them pinned.
 scenario "a week of notes" {
-    let plan = notebook.notes.insert(
-        Note(
-            title: "Q3 plan",
-            body: RichText("Ship the offline editor, then sharing."),
-            pinned: true,
-        ),
-    )
+    let plan = invoke(new_note(notebook, "Q3 plan", "Ship the offline editor, then sharing."))
+    invoke(pin(plan, true))
     invoke(tag(plan, "planning"))
-    plan.reactions.add("🎉", person("Ada"))
-    plan.reactions.add("🎉", person("Leo"))
-    plan.reactions.add("🚀", person("Leo"))
-    let standups = notebook.notes.insert(
-        Note(title: "Standups", body: RichText("Ten minutes, every morning."), parent: plan),
+    let standups = invoke(
+        new_note(notebook, "Standups", "Ten minutes, every morning.", parent: .some(plan)),
     )
-    notebook.notes.insert(
-        Note(title: "Monday", body: RichText("Ada is on the sync bug."), parent: standups),
+    invoke(new_note(notebook, "Monday", "Ada is on the sync bug.", parent: .some(standups)))
+    invoke(
+        new_note(notebook, "Tuesday", "The importer handles tables now.", parent: .some(standups)),
     )
-    notebook.notes.insert(
-        Note(
-            title: "Tuesday",
-            body: RichText("The importer handles tables now."),
-            parent: standups,
+    invoke(new_note(notebook, "Interviews", "Two rounds, a pairing each.", parent: .some(plan)))
+    let home = invoke(
+        new_note(notebook, "Home", "What the flat needs, and what we cook in it."),
+    )
+    invoke(new_note(notebook, "Groceries", "Oat milk, eggs, two lemons.", parent: .some(home)))
+    let soup = invoke(
+        new_note(
+            notebook,
+            "Lentil soup",
+            "Onion, carrot, red lentils, cumin, lemon at the end.",
+            parent: .some(home),
         ),
     )
-    notebook.notes.insert(
-        Note(title: "Interviews", body: RichText("Two rounds, a pairing each."), parent: plan),
-    )
-    let home = notebook.notes.insert(
-        Note(title: "Home", body: RichText("What the flat needs, and what we cook in it.")),
-    )
-    notebook.notes.insert(
-        Note(title: "Groceries", body: RichText("Oat milk, eggs, two lemons."), parent: home),
-    )
-    notebook.notes.insert(
-        Note(
-            title: "Lentil soup",
-            body: RichText("Onion, carrot, red lentils, cumin, lemon at the end."),
-            parent: home,
-            pinned: true,
-        ),
-    )
+    invoke(pin(soup, true))
 }
 
 /// A page brought over from another service, open: the line under its title says where it came
