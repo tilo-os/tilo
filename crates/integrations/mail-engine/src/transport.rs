@@ -33,34 +33,6 @@ pub fn parse_addr_list(s: &str) -> Vec<Addr> {
 /// Returns `Err` if serialisation fails or any portable attachment cannot be
 /// materialized and re-verified. In particular, it never silently omits a
 /// missing attachment and then reports a successful send.
-/// Whether this build can send `draft`: a device writes the message and
-/// checks it, while a page hands the host that keeps the account the files'
-/// bytes, which the host writes the message from.
-///
-/// # Errors
-/// What stopped the message being prepared here.
-pub fn check_sendable(
-    content: &tilo_content::ContentStore,
-    from: &Addr,
-    draft: &Draft,
-) -> Result<(), String> {
-    #[cfg(feature = "live")]
-    {
-        build_mime(content, from, draft)?;
-    }
-    #[cfg(not(feature = "live"))]
-    {
-        // A page builds no MIME — the host it sends through does, with a
-        // clock this page has not — but what it would carry is read here
-        // first, so a file that is not here stops the send before it starts.
-        let _ = from;
-        for attachment in &draft.attachments {
-            crate::attachment_store::materialize(content, attachment)?;
-        }
-    }
-    Ok(())
-}
-
 pub fn build_mime(
     content: &tilo_content::ContentStore,
     from: &Addr,

@@ -28,8 +28,6 @@ mod audio_output;
 mod bytes;
 #[path = "refused_answer.rs"]
 mod refused_answer;
-#[path = "task_agent_route.rs"]
-mod task_agent_route;
 use bytes::{command_bytes, event_diagnostics, remote_action_round_trip};
 #[cfg(all(unix, any(test, feature = "test-support")))]
 #[path = "broker_fixtures.rs"]
@@ -58,7 +56,7 @@ mod key_schedule;
 #[path = "broker_route_join.rs"]
 mod route_join;
 use key_fetch::{
-    FetchedKeys, KeyFetch, KeyQuery, answered_keys, certified_channel_keys, endpoint_channel_keys,
+    FetchedKeys, KeyFetch, KeyQuery, certified_channel_keys, endpoint_channel_keys,
     update_route_keys,
 };
 use key_schedule::{KeyRound, KeySchedule, KeySignal};
@@ -86,12 +84,10 @@ use inbound_document::{
 use crate::time::Duration;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use runtime_portal::RawFd;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::thread;
 use tilo_lock::MutexRecover as _;
-use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::task::LocalSet;
 
@@ -117,10 +113,6 @@ fn signing_refused(error: &runtime_portal::NotAvailable) -> bool {
             if error.kind() == std::io::ErrorKind::PermissionDenied
     )
 }
-
-/// One deadline per host identity exchange; the client drops a failed stream,
-/// so this also bounds shutdown without blocking the shovel's `LocalSet`.
-const HOST_IDENTITY_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Commands waiting behind a slow broker. Capped by count, not bytes: the
 /// protocol already bounds every payload.
@@ -1882,155 +1874,12 @@ impl DocumentReassembly {
     }
 }
 
-/// A one-shot host handoff factory, evaluated on the SDK worker's `LocalSet`.
-///
-/// The platform host supplies this to shared toolkit bootstrap. It must verify
-/// host/app/workspace handoff authority before returning its two connections.
-/// This type neither authenticates a transport nor certifies a supplied grant.
-/// The actual brokers still enforce certified joins and live signing policy.
-/// No inherited service or app-local identity is used if the factory fails.
-///
-/// Consumed on both success and failure. There is no automatic reconnect. A
-/// host retry must create a fresh connector and repeat admission for the same
-/// durable identity and requested route; an old handoff must not be replayed.
-pub struct HostSessionConnector {
-    connect: Box<dyn FnOnce(RouteSpec) -> HostSessionFuture + Send>,
-    /// What the connect waits for first: the host's word that the services
-    /// it reaches are up, or will not come ([`Self::once_ready`]).
-    ready: Option<Box<dyn FnOnce() -> HostReadyFuture + Send>>,
-    identity_exchange_timeout: Duration,
-    /// The worker's clock starts paused, so it runs ahead whenever the
-    /// worker waits: a test of what no clock may decide.
-    #[cfg(test)]
-    paused_clock: bool,
-}
-
-type HostReadyFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>;
-
-trait HostAsyncIo: AsyncRead + AsyncWrite {}
-impl<T: AsyncRead + AsyncWrite> HostAsyncIo for T {}
-type HostAsyncStream = Pin<Box<dyn HostAsyncIo>>;
-
-/// The descriptor stream of a host session's collaboration stream, when it
-/// has one: what the app hands the broker (Files' selected objects) rides
-/// that stream as SCM_RIGHTS ([`runtime_portal::DescriptorStreamSource`]).
-type HostDescriptors = runtime_portal::Descriptors;
-
-type HostSessionFuture = std::pin::Pin<
-    Box<
-        dyn std::future::Future<
-                Output = Result<
-                    (HostAsyncStream, HostAsyncStream, HostDescriptors),
-                    runtime_portal::NotAvailable,
-                >,
-            >,
-    >,
->;
-
-impl HostSessionConnector {
-    /// Supply a factory for an owned collaboration stream and broker signer.
-    ///
-    /// The factory runs only inside the SDK worker's Tokio runtime/LocalSet and
-    /// returns separate owned collaboration and identity transports. Only the
-    /// factory and its captures cross threads; its future and streams may be
-    /// !Send. It must authenticate both endpoints and enforce the requested
-    /// route. Shared code frames and bounds every identity exchange async.
-    /// The manager waits for the factory's own outcome: a factory that
-    /// cannot connect returns why.
-    ///
-    /// Merely returning metadata does not establish authentication. Do not use
-    /// this constructor as a replacement for host transport/grant validation.
-    pub fn new<F, Fut, C, I>(connect: F) -> Self
-    where
-        F: FnOnce(RouteSpec) -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = Result<(C, I), runtime_portal::NotAvailable>> + 'static,
-        C: AsyncRead + AsyncWrite + 'static,
-        I: AsyncRead + AsyncWrite + 'static,
-    {
-        Self {
-            connect: Box::new(move |route| {
-                Box::pin(async move {
-                    let (collaboration, identity) = connect(route).await?;
-                    Ok((
-                        Box::pin(collaboration) as HostAsyncStream,
-                        Box::pin(identity) as HostAsyncStream,
-                        None,
-                    ))
-                })
-            }),
-            ready: None,
-            identity_exchange_timeout: HOST_IDENTITY_EXCHANGE_TIMEOUT,
-            #[cfg(test)]
-            paused_clock: false,
-        }
-    }
-
-    /// [`Self::new`] for a collaboration stream that is a local socket: its
-    /// writes also carry the descriptors the app hands the broker, as the
-    /// launcher's inherited service connection does, so an in-process app
-    /// can hand Files' selected objects over exactly as a launched one. A
-    /// host whose streams carry no descriptors gives an empty queue.
-    pub fn with_descriptors<F, Fut, C, I>(connect: F) -> Self
-    where
-        F: FnOnce(RouteSpec) -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = Result<(C, I), runtime_portal::NotAvailable>> + 'static,
-        C: runtime_portal::DescriptorStreamSource + 'static,
-        I: AsyncRead + AsyncWrite + 'static,
-    {
-        Self {
-            connect: Box::new(move |route| {
-                Box::pin(async move {
-                    let (collaboration, identity) = connect(route).await?;
-                    let (collaboration, descriptors) = collaboration.with_descriptors();
-                    Ok((
-                        Box::pin(collaboration) as HostAsyncStream,
-                        Box::pin(identity) as HostAsyncStream,
-                        descriptors,
-                    ))
-                })
-            }),
-            ready: None,
-            identity_exchange_timeout: HOST_IDENTITY_EXCHANGE_TIMEOUT,
-            #[cfg(test)]
-            paused_clock: false,
-        }
-    }
-}
-
-impl HostSessionConnector {
-    /// Connect only once `ready` resolves: when the host says the services
-    /// this connection reaches are listening, or that their start is over.
-    /// A host showing an app while it is still starting those services
-    /// (a session restoring its tabs before it binds its broker) waits for
-    /// them; connecting before then finds no socket and leaves the app
-    /// offline.
-    /// `ready` must resolve once the host's start is over, whatever its
-    /// outcome.
-    #[must_use]
-    pub fn once_ready<F, Fut>(mut self, ready: F) -> Self
-    where
-        F: FnOnce() -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = ()> + 'static,
-    {
-        self.ready = Some(Box::new(move || Box::pin(ready()) as HostReadyFuture));
-        self
-    }
-
-    /// Run the worker on a paused clock (see `paused_clock`).
-    #[cfg(test)]
-    fn on_paused_clock(mut self) -> Self {
-        self.paused_clock = true;
-        self
-    }
-}
-
 /// How the shovel thread reaches the broker. `Env` is production: the
 /// launcher passed `TILO_SVC_COLLAB_FD`. `Fd` is an already-connected typed
 /// endpoint, used by tests and headless diagnostics without environment races.
 enum SdkConnectSource {
     Env,
     Fd(RawFd),
-    Host(HostSessionConnector, RouteSpec),
 }
 
 impl SdkConnectSource {
@@ -2041,9 +1890,6 @@ impl SdkConnectSource {
         runtime_portal::NotAvailable,
     > {
         match self {
-            SdkConnectSource::Host(_, _) => Err(runtime_portal::NotAvailable::ConnectionFailed(
-                std::io::Error::other("host session requires worker-side identity admission"),
-            )),
             SdkConnectSource::Env => runtime_collab::try_connect_until_closed(),
             SdkConnectSource::Fd(fd) => {
                 #[cfg(unix)]
@@ -2271,7 +2117,6 @@ struct LocalSdkJoinIdentity {
 
 enum LocalSdkDocumentSigner {
     Inherited(SdkDocumentSigner),
-    Host(tilo_identity_client::AsyncBrokerSigningIdentity),
 }
 
 impl From<SdkJoinIdentity> for LocalSdkJoinIdentity {
@@ -2360,29 +2205,6 @@ fn sdk_join_identity_from<I: SdkCertifiedIdentity + 'static>(
         presentation,
         member_kind: "person",
         signer: SdkDocumentSigner::Certified(std::sync::Arc::new(identity)),
-    })
-}
-
-#[allow(
-    clippy::future_not_send,
-    reason = "the host identity transport is constructed and retained only on the shovel LocalSet"
-)]
-async fn sdk_join_identity_from_host(
-    mut identity: tilo_identity_client::AsyncBrokerSigningIdentity,
-    cluster_id: Uuid,
-) -> Result<LocalSdkJoinIdentity, runtime_portal::NotAvailable> {
-    let device_certificate = identity
-        .metadata()
-        .device_certificate()
-        .map(<[u8]>::to_vec)
-        .ok_or_else(uncertified_device)?;
-    let workspace_id = cluster_id.to_string();
-    let proof = identity.sign_collaboration_join(&workspace_id).await?;
-    let presentation = certified_presentation(workspace_id, device_certificate, &proof)?;
-    Ok(LocalSdkJoinIdentity {
-        presentation,
-        member_kind: "person",
-        signer: LocalSdkDocumentSigner::Host(identity),
     })
 }
 
@@ -2601,36 +2423,6 @@ impl CollaborationManager {
             }),
             "person",
         )
-    }
-
-    /// Synchronous form for deterministic unit harnesses. Production callers
-    /// only receive the async entry point above, so identity and
-    /// primary-route deadlines do not stall the application's owner/frame
-    /// thread.
-    #[cfg(test)]
-    fn for_route_host_blocking(
-        connector: HostSessionConnector,
-        app_id: impl Into<String>,
-        cluster_id: Uuid,
-        record: Option<String>,
-        handle: Option<String>,
-    ) -> Result<Self, runtime_portal::NotAvailable> {
-        let app_id = app_id.into();
-        let route = RouteSpec {
-            app_id: app_id.clone(),
-            cluster_id,
-            document: record.clone(),
-        };
-        Self::connect_route_from(
-            SdkConnectSource::Host(connector, route),
-            app_id,
-            cluster_id,
-            record,
-            handle,
-            None,
-            "person",
-        )
-        .map(Self::from_connected)
     }
 
     pub fn switch_native_resource(
@@ -2906,7 +2698,6 @@ impl CollaborationManager {
         tilo_startup_metrics::startup_mark("collab-connect");
         let mut identity = match endpoint_identity {
             Some(identity) => Some(identity),
-            None if matches!(&source, SdkConnectSource::Host(_, _)) => None,
             None if matches!(&source, SdkConnectSource::Env) => {
                 Some(sdk_join_identity(cluster_id)?)
             }
@@ -2980,62 +2771,6 @@ impl CollaborationManager {
         )
     }
 
-    /// Explicit-socket counterpart to [`Self::for_agent_route`]. Production
-    /// still requires a certified endpoint identity; this method merely
-    /// preserves the agent actor kind for diagnostic transports.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`runtime_portal::NotAvailable`] when the socket cannot be
-    /// joined or the route identity cannot be established.
-    pub fn for_agent_route_fd(
-        fd: RawFd,
-        app_id: impl Into<String>,
-        cluster_id: Uuid,
-        record: Option<String>,
-        agent_id: impl Into<String>,
-    ) -> Result<Self, runtime_portal::NotAvailable> {
-        Self::for_route_from(
-            SdkConnectSource::Fd(fd),
-            app_id.into(),
-            cluster_id,
-            record,
-            Some(agent_id.into()),
-            None,
-            "agent",
-        )
-    }
-
-    /// Certified explicit-socket agent connection used by out-of-process
-    /// runtimes that do not inherit the launcher's service descriptor.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`runtime_portal::NotAvailable`] when the socket or certified
-    /// route join fails.
-    pub fn for_agent_route_fd_with_identity(
-        fd: RawFd,
-        app_id: impl Into<String>,
-        cluster_id: Uuid,
-        record: Option<String>,
-        agent_id: impl Into<String>,
-        identity: CertifiedEndpointIdentity,
-    ) -> Result<Self, runtime_portal::NotAvailable> {
-        Self::for_route_from(
-            SdkConnectSource::Fd(fd),
-            app_id.into(),
-            cluster_id,
-            record,
-            Some(agent_id.into()),
-            Some(SdkJoinIdentity {
-                presentation: identity.presentation.clone(),
-                member_kind: "agent",
-                signer: identity.document_signer(),
-            }),
-            "agent",
-        )
-    }
-
     pub(super) fn new_scoped(record: Option<String>, resource_type: Option<String>) -> Self {
         // Without an inherited service there is nothing to reach; say so
         // without starting a worker.
@@ -3054,25 +2789,6 @@ impl CollaborationManager {
             },
             resource_type,
             crate::local_identity::own_name(),
-        )
-    }
-
-    /// A manager on `route`, reached through the host's `connector` as an
-    /// app it launched, connecting in the background: the manager reports
-    /// [`super::CollaborationState::Connecting`] until the broker
-    /// acknowledges the route. For a host showing an app inside its own
-    /// process.
-    pub fn for_route_host_in_background(
-        connector: HostSessionConnector,
-        route: RouteSpec,
-        resource_type: Option<String>,
-    ) -> Self {
-        Self::connect_in_background(
-            SdkConnectSource::Host(connector, route.clone()),
-            SdkIdentitySource::Ready(None),
-            route,
-            resource_type,
-            None,
         )
     }
 
@@ -3455,8 +3171,7 @@ impl SessionServices {
 
 /// Where the shovel gets the identity it joins with.
 enum SdkIdentitySource {
-    /// Supplied by the caller; `None` for host sessions, which obtain it
-    /// from the host during setup.
+    /// Supplied by the caller; `None` when none is.
     Ready(Option<SdkJoinIdentity>),
     /// The launcher-inherited workspace identity for this cluster. Loading
     /// it and signing the join are IPC round trips, so the shovel does it,
@@ -3576,10 +3291,6 @@ fn run_shovel(
     // Disabled — no service means the app runs local-only.
     let mut runtime = tokio::runtime::Builder::new_current_thread();
     runtime.enable_all();
-    #[cfg(test)]
-    if matches!(&source, SdkConnectSource::Host(connector, _) if connector.paused_clock) {
-        runtime.start_paused(true);
-    }
     let rt = match runtime.build() {
         Ok(rt) => rt,
         Err(e) => {
@@ -3598,55 +3309,16 @@ fn run_shovel(
     local.spawn_local(async move { replies.forward_replies().await });
     local.block_on(&rt, async move {
         let state = init_state;
-        let session = match source {
-            SdkConnectSource::Host(connector, route) => {
-                let cluster_id = route.cluster_id;
-                let identity_timeout = connector.identity_exchange_timeout;
-                if let Some(ready) = connector.ready {
-                    ready().await;
-                }
-                // The host's handoff ends when the host has connected the
-                // session or says why it could not; no clock here guesses
-                // that it never will.
-                match (connector.connect)(route).await {
-                    Ok((collaboration_stream, identity_stream, descriptors)) => {
-                        let identity =
-                            tilo_identity_client::AsyncBrokerSigningIdentity::from_connected_io(
-                                identity_stream,
-                                identity_timeout,
-                            )
-                            .await;
-                        match identity {
-                            Ok(identity) => {
-                                match sdk_join_identity_from_host(identity, cluster_id).await {
-                                    Ok(identity) => {
-                                        let (client, end) =
-                                            runtime_collab::CollabClient::connected_local(
-                                                collaboration_stream,
-                                            );
-                                        let client = client.with_optional_descriptors(descriptors);
-                                        Ok(((client, end), identity))
-                                    }
-                                    Err(error) => Err(error),
-                                }
-                            }
-                            Err(error) => Err(error),
-                        }
-                    }
-                    Err(error) => Err(error),
-                }
-            }
-            source => source.build_client().and_then(|connection| {
-                identity
-                    .map(|identity| (connection, identity.into()))
-                    .ok_or_else(|| {
-                        runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
-                            std::io::ErrorKind::PermissionDenied,
-                            "missing collaboration signing identity",
-                        ))
-                    })
-            }),
-        };
+        let session = source.build_client().and_then(|connection| {
+            identity
+                .map(|identity| (connection, identity.into()))
+                .ok_or_else(|| {
+                    runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "missing collaboration signing identity",
+                    ))
+                })
+        });
         let ((client, connection_end), identity) = match session {
             Ok(session) => session,
             Err(e) => {
@@ -4465,7 +4137,7 @@ struct PersonWorkspace {
 
 #[allow(
     clippy::future_not_send,
-    reason = "the host identity transport is constructed and retained only on the shovel LocalSet"
+    reason = "the cluster's signer is constructed and retained only on the shovel LocalSet"
 )]
 impl PersonWorkspace {
     /// The person's own workspace as `presentation`'s certified identity
@@ -4512,10 +4184,6 @@ impl PersonWorkspace {
 
     async fn sign(&self) -> Option<Vec<u8>> {
         let signed = match &mut *self.signer.lock().await {
-            LocalSdkDocumentSigner::Host(identity) => identity
-                .sign_collaboration_join(&self.workspace)
-                .await
-                .map_err(|error| error.to_string()),
             LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
                 let (identity, asked) = (std::sync::Arc::clone(identity), self.workspace.clone());
                 tokio::task::spawn_blocking(move || identity.sign_collaboration_join(&asked))
@@ -6229,7 +5897,6 @@ fn signer_device(signer: &LocalSdkDocumentSigner) -> [u8; 32] {
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(key, _)) => {
             key.verifying_key().to_bytes()
         }
-        LocalSdkDocumentSigner::Host(identity) => identity.metadata().signing_public_key(),
     }
 }
 
@@ -6321,23 +5988,6 @@ async fn try_send_frame(
                     "document signing or encoding",
                     error,
                     true,
-                ));
-            }
-        },
-        LocalSdkDocumentSigner::Host(identity) => match identity
-            .sign_collaboration_op(&workspace_id, &route.spec.app_id, document_id, &unsigned_op)
-            .await
-        {
-            Ok(signature) => signature,
-            Err(error) => {
-                tracing::warn!(
-                    ?error,
-                    "collab: host identity service denied document operation; dropping"
-                );
-                return FrameSend::Failed(state.publication_failed(
-                    "host identity signing",
-                    error,
-                    !identity.is_usable(),
                 ));
             }
         },
@@ -6455,7 +6105,7 @@ impl std::fmt::Display for FrameRefusal {
 /// the route's state or keys changed.
 #[allow(
     clippy::future_not_send,
-    reason = "the host identity transport is retained only on the shovel LocalSet"
+    reason = "the route's key exchange runs only on the shovel LocalSet"
 )]
 async fn refresh_route_keys(route: &DocumentRoute, signer: &mut LocalSdkDocumentSigner) -> bool {
     let Ok(known) = route
@@ -6468,35 +6118,27 @@ async fn refresh_route_keys(route: &DocumentRoute, signer: &mut LocalSdkDocument
     let Some(generation) = known else {
         return false;
     };
-    let workspace_id = route.spec.cluster_id.to_string();
-    let document_id = route.spec.document.as_deref().unwrap_or("");
-    let reply = match signer {
+    match signer {
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
             let query = KeyQuery::of(route, generation);
             let mut fetched = certified_channel_keys(std::sync::Arc::clone(identity), vec![query])
                 .await
                 .into_iter();
-            return fetched
+            fetched
                 .next()
-                .is_some_and(|(_, _, reply)| update_route_keys(route, reply, generation));
-        }
-        LocalSdkDocumentSigner::Host(identity) => {
-            identity
-                .group_keys(&workspace_id, &route.spec.app_id, document_id, generation)
-                .await
+                .is_some_and(|(_, _, reply)| update_route_keys(route, reply, generation))
         }
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(_, Some(keys))) => {
             let query = KeyQuery::of(route, generation);
             let mut fetched = endpoint_channel_keys(std::sync::Arc::clone(keys), vec![query])
                 .await
                 .into_iter();
-            return fetched
+            fetched
                 .next()
-                .is_some_and(|(_, _, reply)| update_route_keys(route, reply, generation));
+                .is_some_and(|(_, _, reply)| update_route_keys(route, reply, generation))
         }
-        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(_, None)) => return false,
-    };
-    update_route_keys(route, answered_keys(reply, generation), generation)
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(_, None)) => false,
+    }
 }
 
 /// The log target of every round of key questions an endpoint starts: what
@@ -6505,8 +6147,7 @@ const KEY_ROUNDS: &str = "tilo::collab::key_rounds";
 
 /// Start a round of key questions for the routes `round` names. A certified
 /// service is asked off this thread and the round is
-/// returned to be awaited alongside the loop; a host's asynchronous service
-/// is asked here, and its answers are taken at once.
+/// returned to be awaited alongside the loop.
 #[allow(
     clippy::future_not_send,
     reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"

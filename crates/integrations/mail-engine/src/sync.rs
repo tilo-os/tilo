@@ -45,42 +45,6 @@ impl Window {
         }
         window
     }
-
-    #[must_use]
-    pub fn with(self, other: Option<Self>) -> Self {
-        match other {
-            Some(other) if other.uid_validity == self.uid_validity => Self {
-                uid_validity: self.uid_validity,
-                newest: self.newest.max(other.newest),
-                oldest: self.oldest.min(other.oldest),
-            },
-            _ => self,
-        }
-    }
-
-    #[must_use]
-    pub fn of_messages<'a>(
-        messages: impl IntoIterator<Item = &'a Message>,
-        folder: Folder,
-    ) -> Option<Self> {
-        let mut window: Option<Self> = None;
-        for at in messages
-            .into_iter()
-            .filter_map(|message| message.server.filter(|at| at.folder == folder))
-        {
-            let seen = Self {
-                uid_validity: at.uid_validity,
-                newest: at.uid,
-                oldest: at.uid,
-            };
-            window = Some(match window {
-                None => seen,
-                Some(window) if window.uid_validity != at.uid_validity => return None,
-                Some(window) => window.with(Some(seen)),
-            });
-        }
-        window
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

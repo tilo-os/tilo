@@ -162,64 +162,6 @@ impl Drop for CaptureClaim {
         }
     }
 }
-/// Actual native replacement observation and protected victim pin. Holding it
-/// prevents public restore while the canonical daemon commits signed ownership.
-/// Inode identity proves namespace ownership, never immutable historical bytes.
-pub struct NativeReplacementPin {
-    claim: Arc<CaptureClaim>,
-    operation: OperationId,
-    source_owner: [u8; 32],
-    source: [u64; 2],
-    victim: [u64; 2],
-    destination: [u64; 2],
-}
-impl NativeReplacementPin {
-    pub fn operation_id(&self) -> &OperationId {
-        &self.operation
-    }
-    pub fn source_owner(&self) -> [u8; 32] {
-        self.source_owner
-    }
-    pub fn source_identity(&self) -> [u64; 2] {
-        self.source
-    }
-    pub fn victim_identity(&self) -> [u64; 2] {
-        self.victim
-    }
-    pub fn destination_identity(&self) -> [u64; 2] {
-        self.destination
-    }
-    pub fn capture_id(&self) -> RecoveryId {
-        RecoveryId(self.claim.recovery)
-    }
-    /// Called by the enrolled host only after its canonical signed transaction
-    /// and archive map durably own this exact capture. Does not delete bytes.
-    pub fn check(&self, current: &FsSession, parent: &DirectoryGrant) -> Result<(), FsError> {
-        let owner = current.operation_store()?;
-        if !Arc::ptr_eq(&owner, &self.claim.owner)
-            || current.retained_source_owner_key()? != self.source_owner
-        {
-            return Err(FsError::Denied);
-        }
-        let (_, step) = owner.find_recovery(&self.capture_id())?;
-        if !matches!(
-            step.phase.as_str(),
-            "ReplaceVictimCaptured" | "ReplaceHistoryOwned"
-        ) || step
-            .recovery
-            .as_ref()
-            .is_none_or(|record| record.acknowledged)
-        {
-            return Err(FsError::Conflict);
-        }
-        let observed = current.observe_replacement(parent, &step)?;
-        if observed != (self.source, self.victim, self.destination) {
-            return Err(FsError::StaleEntry);
-        }
-        Ok(())
-    }
-}
-
 impl RecoveryId {
     /// A record identifier only. Resolution requires a genuine current native owner.
     pub fn from_bytes(bytes: [u8; 16]) -> Self {
@@ -258,73 +200,6 @@ impl OperationOwner {
         });
         drop(state);
         Ok(claim)
-    }
-    /// Obtain a success observation only from the genuine completed native job,
-    /// independently root-sealed source owner and held current parent/capture.
-    pub fn pin_replacement(
-        self: &Arc<Self>,
-        current: &FsSession,
-        operation: &OperationId,
-        parent: &DirectoryGrant,
-    ) -> Result<NativeReplacementPin, FsError> {
-        let attached = current.operation_store()?;
-        if !Arc::ptr_eq(self, &attached) || current.owner() != self.owner() {
-            return Err(FsError::Denied);
-        }
-        let (step, recovery) = {
-            let state = lock(&self.state)?;
-            let receipt = state.receipts.get(&operation.0).ok_or(FsError::NotFound)?;
-            if receipt.item_count != 1
-                || receipt.items.len() != 1
-                || receipt
-                    .items
-                    .first()
-                    .is_none_or(|item| item.state != ItemState::Completed)
-            {
-                return Err(FsError::Conflict);
-            }
-            let step = receipt.steps.first().ok_or(FsError::StoreUnavailable)?;
-            if !matches!(
-                step.phase.as_str(),
-                "ReplaceVictimCaptured" | "ReplaceHistoryOwned"
-            ) {
-                return Err(FsError::Conflict);
-            }
-            let recovery = step
-                .recovery
-                .as_ref()
-                .filter(|record| !record.acknowledged)
-                .ok_or(FsError::Conflict)?;
-            let captured = (step.clone(), RecoveryId(recovery.id));
-            drop(state);
-            captured
-        };
-        let claim = self.claim_capture(&recovery)?;
-        // Recheck durable state after claiming so a concurrent restore cannot
-        // finish between the initial observation and exclusion acquisition.
-        let (_, latest) = self.find_recovery(&recovery)?;
-        if latest.phase != step.phase
-            || latest.stage != step.stage
-            || latest
-                .recovery
-                .as_ref()
-                .is_none_or(|record| record.acknowledged)
-        {
-            return Err(FsError::Conflict);
-        }
-        let observed = current.observe_replacement(parent, &step)?;
-        let pin = NativeReplacementPin {
-            claim,
-            operation: operation.clone(),
-            source_owner: current.retained_source_owner_key()?,
-            source: observed.0,
-            victim: observed.1,
-            destination: observed.2,
-        };
-        if step.phase == "ReplaceHistoryOwned" {
-            pin.check(current, parent)?;
-        }
-        Ok(pin)
     }
     /// # Errors
     /// Returns `Busy` for a second writer, and `StoreUnavailable` for invalid

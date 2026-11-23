@@ -5,10 +5,7 @@ use super::{
 };
 #[cfg(target_os = "linux")]
 use std::os::fd::{AsFd, AsRawFd};
-use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::MetadataExt as StdMetadataExt;
-
-type ReplacementIdentities = ([u64; 2], [u64; 2], [u64; 2]);
 
 pub(crate) struct RemovalOwnership {
     pub directory: Arc<Dir>,
@@ -178,61 +175,6 @@ impl FsSession {
             .copied()
             .ok_or(FsError::Denied)?;
         Ok(key)
-    }
-    pub(crate) fn observe_replacement(
-        &self,
-        parent: &DirectoryGrant,
-        step: &crate::recovery::Step,
-    ) -> Result<ReplacementIdentities, FsError> {
-        self.with_replacement_observation(parent, step, None, Ok)
-    }
-    pub(crate) fn with_replacement_observation<T>(
-        &self,
-        parent: &DirectoryGrant,
-        step: &crate::recovery::Step,
-        owner_key: Option<[u8; 32]>,
-        effect: impl FnOnce(ReplacementIdentities) -> Result<T, FsError>,
-    ) -> Result<T, FsError> {
-        let source = step
-            .source
-            .as_ref()
-            .and_then(|value| value.identity)
-            .ok_or(FsError::Denied)?;
-        let stage = step.stage.as_ref().ok_or(FsError::Denied)?;
-        let destination = step.destination.as_ref().ok_or(FsError::Denied)?;
-        let name = EntryName::new(std::ffi::OsString::from_vec(destination.name.clone()))?;
-        let staged_name = EntryName::new(std::ffi::OsString::from_vec(stage.name.clone()))?;
-        let ownership = self.recovery_ownership(parent, stage)?;
-        let actual_destination = self.mutation_locator(parent, &name, Some(source))?;
-        if actual_destination != *destination {
-            return Err(FsError::Denied);
-        }
-        self.captured_restore_effect(&ownership, parent, || {
-            if let Some(expected) = owner_key
-                && *lock(&ownership.owner_key)? != Some(expected)
-            {
-                return Err(FsError::Denied);
-            }
-            let victim = NativeIdentity::of(
-                &ownership
-                    .directory
-                    .symlink_metadata(staged_name.as_os_str())
-                    .map_err(io_error)?,
-            );
-            let published = NativeIdentity::of(
-                &Self::directory(&parent.lease)?
-                    .symlink_metadata(name.as_os_str())
-                    .map_err(io_error)?,
-            );
-            if Some(victim) != stage.identity || published != source {
-                return Err(FsError::StaleEntry);
-            }
-            effect((
-                [source.device, source.inode],
-                [victim.device, victim.inode],
-                [published.device, published.inode],
-            ))
-        })
     }
     pub(crate) fn retained_journal_roots(
         &self,

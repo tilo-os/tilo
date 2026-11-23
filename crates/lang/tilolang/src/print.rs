@@ -100,10 +100,6 @@ pub fn print_file(header: Option<&AppHeader>, items: &[Item], comments: &[Commen
     p.out
 }
 
-pub fn print_expr(e: &Expr) -> String {
-    expr_text(e, 0, 0)
-}
-
 fn indent(level: usize) -> String {
     "    ".repeat(level)
 }

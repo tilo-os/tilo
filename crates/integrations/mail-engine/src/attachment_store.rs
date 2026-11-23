@@ -167,24 +167,6 @@ pub fn kept_as(
     })
 }
 
-/// The attachments with the bytes each carries, read when the message is
-/// sent: what a page hands the host that sends for it, and a device writes
-/// into the message its server is handed.
-pub fn materialize_files(
-    content: &ContentStore,
-    attachments: &[DraftAttachment],
-) -> Result<Vec<crate::model::SendFile>, String> {
-    attachments
-        .iter()
-        .map(|attachment| {
-            Ok(crate::model::SendFile {
-                attachment: attachment.clone(),
-                bytes: materialize(content, attachment)?,
-            })
-        })
-        .collect()
-}
-
 pub fn materialize(
     content: &ContentStore,
     attachment: &DraftAttachment,

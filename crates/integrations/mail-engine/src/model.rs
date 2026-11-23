@@ -256,10 +256,6 @@ impl Message {
         cleaned
     }
 
-    pub fn has_attachments(&self) -> bool {
-        self.shown_attachments().next().is_some()
-    }
-
     pub fn shown_attachments(&self) -> impl Iterator<Item = (usize, &Attachment)> {
         self.attachments
             .iter()

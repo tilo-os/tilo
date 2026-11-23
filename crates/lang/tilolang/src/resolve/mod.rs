@@ -245,10 +245,6 @@ impl Env {
             .or_else(|| self.types.iter().find(|t| matches_name(t, false)))
     }
 
-    pub fn imported_types(&self) -> impl Iterator<Item = &TypeInfo> {
-        self.types.iter().filter(|t| t.key.app != self.app)
-    }
-
     pub fn add_toolkit(&mut self) {
         self.imports.push(Import {
             alias: crate::toolkit::UI_ALIAS.to_string(),

@@ -139,28 +139,6 @@ impl NativeSurface {
     }
 }
 
-/// The package of the native app `app` named `title` that publishes the surface file `text`, for
-/// a runtime that shows the app's document without running the app and without holding the document: a
-/// view a person or an agent wrote, drawn where an app places it. Its types are read from readings
-/// ([`package_of`]), the document the app keeps for the workspace is a root a view names
-/// (`tasks.tracker`), published under the kind it is of, and its actions are named by its app
-/// ([`action_id`]), so several apps that publish a shared kind (the accounts every mail and
-/// calendar app keeps) load side by side.
-///
-/// # Errors
-/// The surface file does not read.
-pub fn published_document(app: &str, title: &str, text: &str) -> Result<PackageMeta, String> {
-    let surfaces = parse_surfaces(text)?;
-    let mut meta = package_with(app, title, &surfaces, &[], Ids::Readings);
-    for action in &mut meta.actions {
-        action.id = action_id(&meta.app, &action.id);
-    }
-    if let Some(root) = document_root(app, &surfaces, &kind_names(&surfaces, &[]), Ids::Readings) {
-        meta.named_roots.push(root);
-    }
-    Ok(meta)
-}
-
 /// The id a catalogue gives the action `verb` of the app `app`: `so.tilo.chat#share-window`.
 /// A surface's verb ids are the app's own (`open`, `share-window`), so several apps in one
 /// catalogue would otherwise be one action; its types are named by their app the same way. The

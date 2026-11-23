@@ -810,16 +810,6 @@ impl WorkspaceAgents {
             .unwrap_or_else(|| format!("{stem}-{}", most.saturating_add(2)))
     }
 
-    /// What each agent working here is called, by its bare id (its actor is
-    /// `agent:<id>`).
-    #[must_use]
-    pub fn active_names(&self) -> std::collections::HashMap<String, String> {
-        self.active()
-            .filter(|agent| !agent.name.trim().is_empty())
-            .map(|agent| (agent.id.0.clone(), agent.name.trim().to_owned()))
-            .collect()
-    }
-
     #[must_use]
     pub fn names(&self) -> Vec<&str> {
         self.agents
