@@ -146,7 +146,10 @@ async fn a_device_alone_takes_every_change_to_one_sealed_record_past_its_bound()
     let (owner, workspace, now) = (&joined.owner, joined.workspace, joined.now);
     let (_, keys) = rotated_channel();
     owner.keep_sealed_histories(Arc::new(Held(keys.clone())));
-    let mut typist = Typist::over(&base(owner, workspace), 1, owner.owner());
+    let person = owner
+        .with_current(workspace, |view| Ok(view.owner()))
+        .unwrap();
+    let mut typist = Typist::over(&base(owner, workspace), 1, person);
     for key in keys_typed('k', ALONE) {
         let changes = typist.change(&key);
         write(owner, workspace, &keys, changes, now)
@@ -201,7 +204,10 @@ async fn without_compaction_keys_a_full_sealed_history_waits() {
     let joined = enrolled();
     let (owner, workspace, now) = (&joined.owner, joined.workspace, joined.now);
     let (_, keys) = rotated_channel();
-    let mut typist = Typist::over(&base(owner, workspace), 1, owner.owner());
+    let person = owner
+        .with_current(workspace, |view| Ok(view.owner()))
+        .unwrap();
+    let mut typist = Typist::over(&base(owner, workspace), 1, person);
     let mut refused = None;
     for key in keys_typed('k', 300) {
         match write(owner, workspace, &keys, typist.change(&key), now).await {
@@ -226,7 +232,10 @@ async fn a_write_is_kept_as_the_frame_a_link_carries() {
     let (owner, workspace, now) = (&joined.owner, joined.workspace, joined.now);
     let (_, keys) = rotated_channel();
     owner.keep_sealed_histories(Arc::new(Held(keys.clone())));
-    let mut typist = Typist::over(&base(owner, workspace), 1, owner.owner());
+    let person = owner
+        .with_current(workspace, |view| Ok(view.owner()))
+        .unwrap();
+    let mut typist = Typist::over(&base(owner, workspace), 1, person);
     let changes = typist.change("k0");
     write(owner, workspace, &keys, changes.clone(), now)
         .await
