@@ -81,7 +81,8 @@ accounts = { path = "../../system/accounts" }
 # code from the command line.
 account-credentials = { path = "../../system/account-credentials", default-features = false, features = ["hugging-face"] }
 tilo-oauth = { path = "../../system/tilo-oauth" }
-system-extension = { path = "../../system/system-extension" }
+# The signed desired-state half of the extension helper.
+tilo-extension = { path = "../../system/extension-helper" }
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 bounded-command = { path = "../../system/bounded-command" }

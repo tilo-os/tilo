@@ -3,11 +3,12 @@
 //! A manifest is signed by a trusted release key, pins the artifact and the base
 //! image by digest, and targets one image digest (optionally an architecture and
 //! kernel ABI), so an extension cannot survive an incompatible base update. State
-//! changes are one durable transaction, and this crate never downloads, mounts,
+//! changes are one durable transaction, and this module never downloads, mounts,
 //! loads a module, invokes a package manager or changes a boot deployment: a
 //! builder consumes a committed [`AcceptedExtension`] set and verifies the
-//! artifact itself. A crash with a pending transaction is inert: the accepted set
-//! stays active until the transaction is completed or aborted.
+//! artifact itself. It shares no state with the download half of the helper: a
+//! crash with a pending transaction is inert, and the accepted set stays active
+//! until the transaction is completed or aborted.
 
 #![allow(
     clippy::missing_errors_doc,

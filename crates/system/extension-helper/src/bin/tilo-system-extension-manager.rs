@@ -14,7 +14,9 @@ use std::time::Duration;
 
 use ed25519_dalek::Verifier as _;
 use serde::{Deserialize, Serialize};
-use system_extension::{ExtensionKind, HostImage, SignedExtensionManifest, TrustedKeyring};
+use tilo_extension::system_extension::{
+    ExtensionKind, HostImage, SignedExtensionManifest, TrustedKeyring,
+};
 
 const CATALOG_DIR: &str = "/usr/share/tilo/system-extensions/catalog.d";
 const TRUST_DIR: &str = "/usr/share/tilo/system-extensions/trust.d";

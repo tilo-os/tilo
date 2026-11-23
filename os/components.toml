@@ -661,7 +661,7 @@ files = [
 name = "system-extension"
 kind = "userspace"
 scope = "vm"
-packages = ["system-extension"]
+packages = ["tilo-extension"]
 bins = ["tilo-system-extension-manager"]
 units = [
   "tilo-system-extension-boot-pack-status.service",

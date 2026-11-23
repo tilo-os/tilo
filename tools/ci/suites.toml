@@ -417,7 +417,7 @@ suites = ["os/tests/app_store.sh"]
 
 [[group]]
 name = "system-extension"
-inputs = ["os/", "crates/system/system-extension/"]
+inputs = ["os/", "crates/system/extension-helper/"]
 suites = ["os/tests/boot_pack_invariants.sh"]
 
 [[group]]
@@ -984,6 +984,9 @@ package = "tilo-extension"
 # keys and image wiring that start it or that it trusts.
 inputs = [
   "os/usr/share/tilo/system-extensions/sysext.d/*.json",
+  # The BootPack manager resolves and stages what these signed catalogues pin.
+  "os/usr/share/tilo/system-extensions/hardware-catalog.d/pci-recommendations.json",
+  "os/usr/share/tilo/system-extensions/hardware-trust.d/pci-recommendations.json",
   "os/etc/polkit-1/rules.d/49-tilo-extension.rules",
   "os/usr/lib/systemd/system/tilo-extension@.service",
   "os/usr/lib/systemd/system/tilo-extension-activate.service",
@@ -1003,7 +1006,10 @@ inputs = [
   "os/Containerfile",
   "os/components.toml",
 ]
-readers = ["crates/system/extension-helper/tests/support/mod.rs"]
+readers = [
+  "crates/system/extension-helper/tests/support/mod.rs",
+  "crates/system/extension-helper/src/bin/tilo-system-extension-manager.rs",
+]
 
 [[cargo]]
 package = "tilo-crypto"
@@ -1308,14 +1314,6 @@ readers = [
   "crates/system/fs/src/main.rs",
   "crates/system/fs/tests/cloud_mount.rs",
 ]
-
-[[cargo]]
-package = "system-extension"
-inputs = [
-  "os/usr/share/tilo/system-extensions/hardware-catalog.d/pci-recommendations.json",
-  "os/usr/share/tilo/system-extensions/hardware-trust.d/pci-recommendations.json",
-]
-readers = ["crates/system/system-extension/src/bin/tilo-system-extension-manager.rs"]
 
 [[cargo]]
 package = "compat-service"

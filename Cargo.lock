@@ -9685,12 +9685,12 @@ dependencies = [
  "settings-store",
  "sha1 0.11.0",
  "sha2 0.11.0",
- "system-extension",
  "tar",
  "tempfile",
  "thiserror 2.0.21",
  "tilo-advisory-lock",
  "tilo-clock",
+ "tilo-extension",
  "tilo-files",
  "tilo-net",
  "tilo-oauth",
@@ -16844,24 +16844,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "system-extension"
-version = "0.1.0"
-dependencies = [
- "bounded-command",
- "ed25519-dalek 3.0.0",
- "hex",
- "postcard",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tempfile",
- "thiserror 2.0.21",
- "tilo-files",
- "tilo-test-env",
- "workspace-hack",
-]
-
-[[package]]
 name = "taffy"
 version = "0.10.1"
 dependencies = [
@@ -19364,14 +19346,19 @@ dependencies = [
 name = "tilo-extension"
 version = "0.1.0"
 dependencies = [
+ "bounded-command",
+ "ed25519-dalek 3.0.0",
  "hex",
  "libc",
+ "postcard",
  "reqwest",
  "rustix 1.1.6",
+ "serde",
  "serde_json",
  "sha2 0.11.0",
  "tar",
  "tempfile",
+ "thiserror 2.0.21",
  "tilo-advisory-lock",
  "tilo-files",
  "tilo-net",
@@ -29056,7 +29043,6 @@ dependencies = [
  "sys-locale",
  "sysinfo",
  "system-deps",
- "system-extension",
  "taffy",
  "tagptr",
  "tantivy",

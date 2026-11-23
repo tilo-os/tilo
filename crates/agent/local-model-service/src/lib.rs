@@ -32,8 +32,8 @@ use agent_provider_config::local::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use system_extension::{AcceptedExtension, ExtensionKind};
 use thiserror::Error;
+use tilo_extension::system_extension::{AcceptedExtension, ExtensionKind};
 
 pub mod catalog;
 pub mod developer;
@@ -138,7 +138,7 @@ pub struct VllmCommand {
     pub runtime_extension_id: String,
 }
 
-/// A desired runtime must have passed `system-extension`'s signed desired-state
+/// A desired runtime must have passed the extension helper's signed desired-state
 /// transaction. The content-addressed runtime artifact itself is the program;
 /// a production OCI supervisor may interpret that verified object as an image
 /// instead, but callers cannot supply an entrypoint or mutable image tag.
@@ -2209,24 +2209,24 @@ mod tests {
 
     pub(crate) fn signed_fixture_runtime(bytes: &[u8]) -> SignedRuntime {
         let item = artifact(bytes);
-        let manifest = system_extension::ExtensionManifest {
-            schema_version: system_extension::SCHEMA_VERSION,
+        let manifest = tilo_extension::system_extension::ExtensionManifest {
+            schema_version: tilo_extension::system_extension::SCHEMA_VERSION,
             id: "test-llama-runtime".into(),
             kind: ExtensionKind::LocalModelRuntime,
             version: "test".into(),
-            artifact: system_extension::PinnedArtifact {
+            artifact: tilo_extension::system_extension::PinnedArtifact {
                 source: item.url.clone(),
                 sha256: item.sha256.clone(),
                 size_bytes: item.size_bytes,
             },
-            target: system_extension::ImageConstraint {
+            target: tilo_extension::system_extension::ImageConstraint {
                 base_image_digest: format!("sha256:{}", "a".repeat(64)),
                 architecture: None,
                 kernel_abi: None,
             },
             requires_reboot: false,
         };
-        let signed = system_extension::SignedExtensionManifest::sign(
+        let signed = tilo_extension::system_extension::SignedExtensionManifest::sign(
             manifest,
             "unit-test-key",
             &ed25519_dalek::SigningKey::from_bytes(&[5; 32]),
@@ -2235,7 +2235,7 @@ mod tests {
         SignedRuntime {
             accepted: AcceptedExtension {
                 signed,
-                artifact: system_extension::ArtifactReceipt {
+                artifact: tilo_extension::system_extension::ArtifactReceipt {
                     sha256: item.sha256.clone(),
                     size_bytes: item.size_bytes,
                 },

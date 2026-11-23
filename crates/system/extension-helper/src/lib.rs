@@ -21,6 +21,7 @@ pub mod live;
 mod machine;
 mod model;
 pub mod py;
+pub mod system_extension;
 
 pub use host::{Header, Host, HttpError, Response, System};
 pub use machine::{Layout, activate, main};
