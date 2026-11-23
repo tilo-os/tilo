@@ -125,6 +125,8 @@ settings-store = { path = "../../system/settings-store" }
 tilo-workspace-keys = { path = "../workspace-keys" }
 # This computer's login, the daemon's place, and Tilo's API the daemon serves as the device.
 tilo-api = { path = "../tilo-api" }
+# The one migration engine, served as this device's actions.
+tilo-migrate = { path = "../../import/migrate" }
 rand.workspace = true
 # The content store app surfaces are read from.
 # The apps' store: the device content store when the launcher handed one over.

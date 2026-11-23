@@ -20619,6 +20619,7 @@ dependencies = [
  "tilo-identity-client",
  "tilo-lock",
  "tilo-mcp",
+ "tilo-migrate",
  "tilo-os-search",
  "tilo-paths",
  "tilo-peer-state",

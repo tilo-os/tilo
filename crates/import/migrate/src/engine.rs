@@ -36,6 +36,7 @@ pub mod browsers;
 pub mod clouds;
 pub mod files;
 pub mod flatpaks;
+pub mod mcp;
 pub mod registry;
 pub mod services;
 pub mod settings;
@@ -466,20 +467,31 @@ pub fn start(
     Ok(status_of(source, &review, &journal, landed))
 }
 
-/// The invocation `title` names, starting now: the journal says it is going and brings nothing yet.
+/// The invocation `title` names, starting now: the journal says it is going. A run that was
+/// stopped, or ended without saying how, goes on as the same run, so what it brought before the
+/// stop and after it is one History entry, and undoing it takes all of it back. Any other starts
+/// afresh and brings nothing yet.
 fn begin(place: &Place, source: &str, journal: &mut Journal, title: String) -> Result<Invocation> {
+    let resumed = journal
+        .run_id
+        .clone()
+        .filter(|_| matches!(journal.state, RunState::Stopped | RunState::Running));
     let invocation = Invocation {
-        id: format!(
-            "migrate-{source}-{}",
-            hex::encode(rand::random::<[u8; 6]>())
-        ),
+        id: resumed.clone().unwrap_or_else(|| {
+            format!(
+                "migrate-{source}-{}",
+                hex::encode(rand::random::<[u8; 6]>())
+            )
+        }),
         title,
     };
     journal.state = RunState::Running;
     journal.run = Some(invocation.title.clone());
     journal.run_id = Some(invocation.id.clone());
-    journal.brought.clear();
-    journal.already_there = 0;
+    if resumed.is_none() {
+        journal.brought.clear();
+        journal.already_there = 0;
+    }
     journal.failure = None;
     journal.failed.clear();
     journal.left_out.clear();
@@ -807,14 +819,17 @@ impl Lander<'_> {
         land: impl FnOnce(&mut dyn Workspace, &Invocation) -> Result<Landed>,
     ) -> Result<()> {
         if self.has(key) {
-            self.journal.already_there = self.journal.already_there.saturating_add(1);
+            self.journal.already_there = self.journal.already_there.saturating_add(count);
             return Ok(());
         }
         self.stop_asked()?;
         self.started()?;
         match land(&mut *self.workspace, self.invocation)? {
             Landed::One => self.landed([key.to_owned()], kind, count),
-            already @ Landed::Already => self.noted(key, kind, &already),
+            Landed::Already => {
+                self.journal.already_there = self.journal.already_there.saturating_add(count);
+                self.landed([key.to_owned()], kind, 0)
+            }
         }
     }
 

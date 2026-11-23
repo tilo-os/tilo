@@ -137,6 +137,74 @@ fn the_native_endpoints_frames_carry_a_commands_calls_as_its_account() {
     );
 }
 
+const MIGRATE_TEST: &str =
+    "device::local::tests::a_commands_migration_steps_reach_the_devices_own_migrations";
+
+/// `tilo migrate` invokes the device's migrations as any caller does: a step it sends on the
+/// daemon's native endpoint, as the person whose account connects, reaches the provider the daemon
+/// registered on `devices/<this device>/migrate`, and its answer comes back on that invocation.
+#[test]
+fn a_commands_migration_steps_reach_the_devices_own_migrations() {
+    let Some(root) = isolated_root(MIGRATE_TEST) else {
+        return;
+    };
+    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    crate::device::migrate::serve(&daemon);
+    let socket = native_endpoint(&daemon, &root);
+    let person = line_client(&socket, OWN);
+    // Whom a client names does not count: the daemon decides by the account connecting.
+    let anyone = Caller::local_system();
+
+    let request = tilo_actions::remote::InvokeRequest::plain(
+        tilo_actions::remote::RemoteActionTarget {
+            provider: tilo_migrate::provider::PROVIDER.into(),
+            address: tilo_actions::ActionAddress::new(
+                tilo_migrate::provider::resource(&daemon.device_key()),
+                "sources",
+            ),
+        },
+        serde_json::Map::new(),
+    );
+    let id = request.invocation;
+    let receipt = person
+        .invoke(&anyone, request)
+        .wait_timeout(tilo_test_env::hang_bound())
+        .ok()
+        .flatten()
+        .expect("the daemon answered")
+        .expect("the person's step is admitted");
+    let mut status = receipt.status;
+    let until = std::time::Instant::now() + tilo_test_env::hang_bound();
+    let answer = loop {
+        match status {
+            tilo_actions::remote::ReceiptStatus::Accepted => {}
+            tilo_actions::remote::ReceiptStatus::Completed { output } => {
+                break output.value.expect("sources answers a value");
+            }
+            other => panic!("sources did not answer: {other:?}"),
+        }
+        assert!(std::time::Instant::now() < until, "sources never ended");
+        if let Some(change) = person.next_change(&anyone, &id) {
+            let _ = change.wait_timeout(tilo_test_env::hang_bound());
+        }
+        status = person
+            .observe(&anyone, &id)
+            .expect("the person follows their own step")
+            .receipt()
+            .status;
+    };
+    let sources: Vec<&str> = answer["sources"]
+        .as_array()
+        .expect("every source")
+        .iter()
+        .filter_map(|source| source["source"].as_str())
+        .collect();
+    assert!(
+        sources.contains(&"thunderbird") && sources.contains(&"linear"),
+        "{answer:#}"
+    );
+}
+
 const FILES_TEST: &str =
     "device::local::tests::a_file_put_over_the_native_endpoint_reads_back_by_its_hash";
 

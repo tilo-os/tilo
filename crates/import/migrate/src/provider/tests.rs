@@ -1,8 +1,10 @@
 //! A device's migrations through its actions, as any caller invokes them: a Thunderbird profile
 //! reviewed, chosen and brought over by `start`, a second run adding nothing, and a cancelled run
-//! stopping before anything lands, which `start` resumes.
+//! stopping before anything lands, which `start` resumes. The person and their agent drive one
+//! migration together: what one chooses the other reads, a run one stops the other resumes as the
+//! same run, and taking that run back takes all of it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -10,8 +12,8 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use serde_json::{Value, json};
 use tilo_actions::remote::{
-    ActionProvider as _, Caller, InvocationState, InvokeArgument, InvokeRequest, Pending,
-    RemoteActionTarget,
+    ActionCallError, ActionProvider as _, Caller, InvocationState, InvokeArgument, InvokeRequest,
+    Pending, RemoteActionTarget,
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
 
@@ -22,13 +24,44 @@ use crate::engine::writer::{Answer, Invocation, Workspace};
 
 const DEVICE: [u8; 32] = [7; 32];
 
+/// Where a run is held: once the workspace has been asked `at` actions, the next waits while it
+/// is `held`.
+#[derive(Default)]
+struct Pause {
+    at: Option<usize>,
+    held: bool,
+}
+
+/// What the workspace keeps across every time the migration reaches it: what it was asked,
+/// the runs History took back, and where a run is held.
+#[derive(Default)]
+struct Kept {
+    recorded: Mutex<Recorded>,
+    undone: Mutex<BTreeSet<String>>,
+    pause: (Mutex<Pause>, Condvar),
+}
+
 /// A device whose home holds a Thunderbird profile, and a workspace that records what it is
 /// asked, across every time the migration reaches it.
 struct Device {
     dir: tempfile::TempDir,
-    recorded: Arc<Mutex<Recorded>>,
+    kept: Arc<Kept>,
     /// Closed, reaching the workspace waits until it opens.
     gate: (Mutex<bool>, Condvar),
+}
+
+impl Device {
+    /// Every action the workspace was asked, as the run it was a step of and the action.
+    fn actions(&self) -> Vec<(String, String)> {
+        self.kept
+            .recorded
+            .lock()
+            .expect("recorded")
+            .actions
+            .iter()
+            .map(|(run, action, _)| (run.clone(), action.clone()))
+            .collect()
+    }
 }
 
 impl Host for Device {
@@ -59,36 +92,82 @@ impl Host for Device {
                 .wait_while(closed.lock().expect("gate"), |closed| *closed)
                 .expect("gate"),
         );
-        Ok(Box::new(Shared(Arc::clone(&self.recorded))))
+        Ok(Box::new(Shared(Arc::clone(&self.kept))))
     }
 }
 
-/// The one recorded workspace, reached again.
-struct Shared(Arc<Mutex<Recorded>>);
+/// The one recorded workspace, reached again. History answers as each record keeps it: every
+/// step names the run it was a step of, and `undo` takes a run's steps back.
+struct Shared(Arc<Kept>);
 
 impl Workspace for Shared {
     fn act(&mut self, run: &Invocation, action: &str, args: Value) -> Result<Answer> {
-        self.0.lock().expect("recorded").act(run, action, args)
+        let answer = self
+            .0
+            .recorded
+            .lock()
+            .expect("recorded")
+            .act(run, action, args);
+        let asked = self.0.recorded.lock().expect("recorded").actions.len();
+        let (pause, moved) = &self.0.pause;
+        let mut pause = pause.lock().expect("pause");
+        if pause.at == Some(asked) {
+            pause.held = true;
+            moved.notify_all();
+            drop(moved.wait_while(pause, |pause| pause.held).expect("pause"));
+        }
+        answer
     }
 
     fn ask(&mut self, action: &str, args: Value) -> Result<Answer> {
-        self.0.lock().expect("recorded").ask(action, args)
+        if action.ends_with("#history") {
+            let undone = self.0.undone.lock().expect("undone");
+            let versions: Vec<Value> = self
+                .0
+                .recorded
+                .lock()
+                .expect("recorded")
+                .actions
+                .iter()
+                .enumerate()
+                .filter(|(_, (run, _, _))| !run.is_empty())
+                .map(|(n, (run, _, _))| {
+                    json!({
+                        "change": format!("{run}/{n}"),
+                        "actor": {"declared": run},
+                        "undone": undone.contains(run),
+                    })
+                })
+                .collect();
+            return Ok(Answer::of(Some(json!({ "versions": versions }))));
+        }
+        if action.ends_with("#undo") {
+            let step = args["step"].as_str().expect("a step");
+            let run = step.rsplit_once('/').expect("run/step").0.to_owned();
+            self.0.undone.lock().expect("undone").insert(run);
+            return Ok(Answer::of(None));
+        }
+        self.0.recorded.lock().expect("recorded").ask(action, args)
     }
 
     fn read(&mut self, path: &str) -> Result<Value> {
-        self.0.lock().expect("recorded").read(path)
+        self.0.recorded.lock().expect("recorded").read(path)
     }
 
     fn person(&mut self, path: &str, action: &str, args: Value) -> Result<Value> {
-        self.0.lock().expect("recorded").person(path, action, args)
+        self.0
+            .recorded
+            .lock()
+            .expect("recorded")
+            .person(path, action, args)
     }
 
     fn put(&mut self, bytes: &[u8]) -> Result<String> {
-        self.0.lock().expect("recorded").put(bytes)
+        self.0.recorded.lock().expect("recorded").put(bytes)
     }
 
     fn put_files(&mut self, files: &[(PathBuf, String)]) -> Result<Vec<String>> {
-        self.0.lock().expect("recorded").put_files(files)
+        self.0.recorded.lock().expect("recorded").put_files(files)
     }
 }
 
@@ -97,7 +176,7 @@ fn device() -> (Arc<Device>, Migrations) {
     crate::thunderbird::fixture::write_sample_profile(&dir.path().join("home"));
     let device = Arc::new(Device {
         dir,
-        recorded: Arc::default(),
+        kept: Arc::default(),
         gate: (Mutex::new(false), Condvar::new()),
     });
     let migrations = Migrations::new(super::resource(&DEVICE), Arc::clone(&device) as _);
@@ -140,17 +219,27 @@ fn answered<T>(pending: Pending<T>) -> T {
 
 /// Invoke `action` and follow it to its end.
 fn run(migrations: &Migrations, action: &str, args: Value) -> InvocationUpdate {
+    run_as(migrations, &caller(), action, args)
+}
+
+/// Invoke `action` as `caller` and follow it to its end.
+fn run_as(migrations: &Migrations, caller: &Caller, action: &str, args: Value) -> InvocationUpdate {
     let request = request(action, args);
     let id = request.invocation;
-    answered(migrations.invoke(&caller(), request)).expect("admitted");
-    follow(migrations, id)
+    answered(migrations.invoke(caller, request)).expect("admitted");
+    follow_as(migrations, caller, id)
 }
 
 /// How the invocation `id` ended.
 fn follow(migrations: &Migrations, id: InvocationId) -> InvocationUpdate {
+    follow_as(migrations, &caller(), id)
+}
+
+/// How the invocation `id` of `caller`'s ended.
+fn follow_as(migrations: &Migrations, caller: &Caller, id: InvocationId) -> InvocationUpdate {
     let until = Instant::now() + Duration::from_secs(30);
     loop {
-        let state: InvocationState = migrations.observe(&caller(), &id).expect("known");
+        let state: InvocationState = migrations.observe(caller, &id).expect("known");
         if state.is_terminal() {
             return state.update;
         }
@@ -193,7 +282,7 @@ fn a_profile_comes_over_through_the_devices_actions() {
     let started = run(&migrations, "start", json!({"source": "thunderbird"}));
     assert_eq!(value(&started)["state"], "complete", "{started:?}");
     assert_eq!(value(&started)["brought"]["contacts"], 2, "{started:?}");
-    let landed = device.recorded.lock().expect("recorded").actions.len();
+    let landed = device.actions().len();
     assert!(
         landed > 0,
         "the contacts landed through the workspace's actions"
@@ -202,10 +291,7 @@ fn a_profile_comes_over_through_the_devices_actions() {
     // A second run finds everything there and adds nothing.
     let again = run(&migrations, "start", json!({"source": "thunderbird"}));
     assert_eq!(value(&again)["already_there"], 2, "{again:?}");
-    assert_eq!(
-        device.recorded.lock().expect("recorded").actions.len(),
-        landed
-    );
+    assert_eq!(device.actions().len(), landed);
 
     let status = run(&migrations, "status", json!({"source": "thunderbird"}));
     assert_eq!(value(&status)["state"], "complete");
@@ -236,7 +322,7 @@ fn cancelling_a_run_stops_it_and_start_resumes() {
         matches!(stopped, InvocationUpdate::Cancelled { .. }),
         "{stopped:?}"
     );
-    assert!(device.recorded.lock().expect("recorded").actions.is_empty());
+    assert!(device.actions().is_empty());
 
     let resumed = run(&migrations, "start", json!({"source": "thunderbird"}));
     assert_eq!(value(&resumed)["brought"]["contacts"], 2, "{resumed:?}");
@@ -430,4 +516,232 @@ fn the_committed_package_is_what_the_engine_registers() {
         })
         .collect();
     assert_eq!(committed, published);
+}
+
+/// The key of the item of `kind` a review lists.
+fn item_of(review: &Value, kind: &str) -> String {
+    review["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|item| item["kind"] == kind)
+        .and_then(|item| item["key"].as_str())
+        .unwrap_or_else(|| panic!("no {kind} in {review:#}"))
+        .to_owned()
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one migration's flow, each step reading what the one before it left"
+)]
+fn the_person_and_their_agent_drive_one_migration_and_a_stopped_run_resumes_as_itself() {
+    let (device, migrations) = device();
+    let person = Caller::local_person("ada");
+    let agent = Caller::local_agent("agent:ada-helper").acting_for("ada");
+
+    // The agent reviews Thunderbird and chooses its address book only.
+    let reviewed = run_as(
+        &migrations,
+        &agent,
+        "review",
+        json!({"source": "thunderbird"}),
+    );
+    let book = item_of(value(&reviewed), "contacts");
+    let calendar = item_of(value(&reviewed), "calendar");
+    run_as(
+        &migrations,
+        &agent,
+        "choose",
+        json!({"source": "thunderbird", "items": [book], "only": true}),
+    );
+
+    // The person reads the agent's choice and adds the calendar; the agent reads both chosen.
+    let seen = run_as(
+        &migrations,
+        &person,
+        "status",
+        json!({"source": "thunderbird"}),
+    );
+    assert_eq!(value(&seen)["chosen"], json!([book]), "{seen:?}");
+    run_as(
+        &migrations,
+        &person,
+        "choose",
+        json!({"source": "thunderbird", "items": [calendar]}),
+    );
+    let both = run_as(
+        &migrations,
+        &agent,
+        "status",
+        json!({"source": "thunderbird"}),
+    );
+    assert_eq!(value(&both)["chosen"], json!([book, calendar]), "{both:?}");
+
+    // The person starts the run, and it is held once the address book is in.
+    let (pause, moved) = &device.kept.pause;
+    pause.lock().expect("pause").at = Some(2);
+    let start = request("start", json!({"source": "thunderbird"}));
+    let started = start.invocation;
+    answered(migrations.invoke(&person, start)).expect("admitted");
+    let (held, _) = moved
+        .wait_timeout_while(
+            pause.lock().expect("pause"),
+            Duration::from_secs(30),
+            |pause| !pause.held,
+        )
+        .expect("pause");
+    assert!(held.held, "the run reached the workspace");
+    drop(held);
+
+    let going = run_as(
+        &migrations,
+        &agent,
+        "status",
+        json!({"source": "thunderbird"}),
+    );
+    assert_eq!(value(&going)["state"], "running", "{going:?}");
+
+    // The agent cannot stop the person's run: their invocation is not its own.
+    let refused = answered(migrations.cancel(&agent, &started));
+    assert!(
+        matches!(refused, Err(ActionCallError::UnknownInvocation)),
+        "{refused:?}"
+    );
+
+    // The person stops it: it stops after the item it is on, keeping the address book.
+    answered(migrations.cancel(&person, &started)).expect("cancelled");
+    {
+        let mut held = pause.lock().expect("pause");
+        held.held = false;
+        held.at = None;
+    }
+    moved.notify_all();
+    let stopped = follow_as(&migrations, &person, started);
+    assert!(
+        matches!(stopped, InvocationUpdate::Cancelled { .. }),
+        "{stopped:?}"
+    );
+    let after = run_as(
+        &migrations,
+        &agent,
+        "status",
+        json!({"source": "thunderbird"}),
+    );
+    let after = value(&after).clone();
+    assert_eq!(after["state"], "stopped", "{after:#}");
+    let run_id = after["run_id"].as_str().expect("a run").to_owned();
+    assert!(
+        device.actions().iter().all(|(run, _)| *run == run_id),
+        "{:?}",
+        device.actions()
+    );
+    assert!(
+        !device
+            .actions()
+            .iter()
+            .any(|(_, action)| action.starts_with("calendar")),
+        "nothing of the calendar came before the stop: {:?}",
+        device.actions()
+    );
+
+    // The agent starts it again: it is the same run, and it brings the rest.
+    let resumed = run_as(
+        &migrations,
+        &agent,
+        "start",
+        json!({"source": "thunderbird"}),
+    );
+    let resumed = value(&resumed);
+    assert_eq!(resumed["state"], "complete", "{resumed:#}");
+    assert_eq!(
+        resumed["run_id"],
+        json!(run_id),
+        "a resumed run is the run that stopped, so its undo takes all of it back"
+    );
+    assert!(
+        resumed["brought"]["contacts"].as_u64() > Some(0),
+        "{resumed:#}"
+    );
+    assert!(
+        resumed["brought"]["events"].as_u64() > Some(0),
+        "{resumed:#}"
+    );
+    assert!(
+        device
+            .actions()
+            .iter()
+            .any(|(run, action)| *run == run_id && action.starts_with("calendar")),
+        "{:?}",
+        device.actions()
+    );
+
+    // The person takes the run back: History undoes all of it, and the review stands again.
+    let undone = run_as(&migrations, &person, "undo", json!({"run": run_id}));
+    assert_eq!(value(&undone)["run_id"], json!(run_id), "{undone:?}");
+    assert!(device.kept.undone.lock().expect("undone").contains(&run_id));
+    let back = run_as(
+        &migrations,
+        &agent,
+        "status",
+        json!({"source": "thunderbird"}),
+    );
+    assert_eq!(value(&back)["state"], "reviewed", "{back:?}");
+}
+
+#[test]
+fn a_profile_handed_over_by_its_path_is_reviewed_and_brought_from_there() {
+    let (device, migrations) = device();
+    let elsewhere = device.dir.path().join("backup");
+    crate::thunderbird::fixture::write_sample_profile(&elsewhere);
+    let profile = std::fs::read_dir(elsewhere.join(".thunderbird"))
+        .expect("the profiles")
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| path.join("prefs.js").is_file())
+        .expect("a profile folder");
+    // The home's own profile goes, so only the handed-over one can come over.
+    std::fs::remove_dir_all(device.home().join(".thunderbird")).expect("the home's profile goes");
+
+    let handed = profile.join("prefs.js");
+    let reviewed = run(
+        &migrations,
+        "review",
+        json!({"source": "thunderbird", "profile": handed.display().to_string()}),
+    );
+    let book = address_book(value(&reviewed));
+    run(
+        &migrations,
+        "choose",
+        json!({"source": "thunderbird", "items": [book], "only": true}),
+    );
+    let started = run(&migrations, "start", json!({"source": "thunderbird"}));
+    assert_eq!(value(&started)["state"], "complete", "{started:?}");
+    assert!(
+        device
+            .actions()
+            .iter()
+            .any(|(_, action)| action.starts_with("contacts")),
+        "{:?}",
+        device.actions()
+    );
+}
+
+/// A key is never typed into the device: a `connect` not given one fails saying what it asks
+/// for, so its caller asks the person and invokes it again with the key as its `secret`.
+#[test]
+fn a_connect_without_its_key_says_what_it_asks_for() {
+    let (_, migrations) = device();
+    let asked = run(&migrations, "connect", json!({"source": "linear"}));
+    let InvocationUpdate::Failed { error, .. } = &asked else {
+        panic!("a connect with no key does not connect: {asked:?}")
+    };
+    assert_eq!(error.code, super::SECRET_NEEDED, "{error:?}");
+    let asks = error
+        .details
+        .as_ref()
+        .and_then(|details| details["asks"].as_str())
+        .unwrap_or_default();
+    assert!(asks.starts_with("Linear API key"), "{error:?}");
+    assert!(error.message.contains("Linear API key"), "{error:?}");
 }

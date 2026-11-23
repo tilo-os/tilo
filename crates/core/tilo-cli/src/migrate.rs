@@ -1,11 +1,12 @@
 //! `tilo migrate`: bring the person's things from this computer and the services they use into
-//! their workspace, driven by their agent, with no window: the terminal's view of the one
-//! migration engine ([`tilo_migrate::engine`]).
+//! their workspace, with no window: the terminal's view of this device's migrations, the actions
+//! of provider `so.tilo.migrate` on `devices/<this device>/migrate`
+//! ([`tilo_migrate::provider`]), which the device's daemon runs.
 //!
-//! The sources are listed in one table ([`engine::registry::SOURCES`]): folders on this computer, its browsers and Thunderbird, a mail account,
-//! Google Drive, `OneDrive`, Dropbox, iCloud Drive, Nextcloud and `WebDAV`, and Outline, Linear and
-//! Forgejo. Each step is a command of its own, so an agent can show the person what a source
-//! holds before anything moves:
+//! The sources are listed in one table ([`tilo_migrate::engine::registry::SOURCES`]): folders on
+//! this computer, its browsers and Thunderbird, a mail account, Google Drive, `OneDrive`, Dropbox,
+//! iCloud Drive, Nextcloud and `WebDAV`, and Outline, Linear and Forgejo. Each step is a command
+//! of its own, so an agent can show the person what a source holds before anything moves:
 //!
 //! ```text
 //! tilo migrate sources                         every source, and how to connect each
@@ -17,30 +18,31 @@
 //! tilo migrate undo <run>                      take a run back
 //! ```
 //!
-//! Files (folders here, cloud drives) are copied into the workspace's folder on this computer
-//! when it has one, as fast as the disk or network goes ([`files`]).
-//!
-//! A run lands in the workspace this computer's device is in, or, with `-w <workspace>`, in a
-//! hosted workspace through Tilo's API with the key this computer holds: what comes over is the
-//! agent's run in the workspace (see [`workspace`]), one History entry per run, each record
-//! arriving live in the person's tab, the run undone as one step. A run keeps a journal here,
-//! item by item, so it resumes after a stop and a second run adds nothing. Keys and passwords
-//! never pass through the agent: a service's key is typed by the person at a hidden prompt or
-//! read from a file they name, and kept in this computer's vault.
+//! Each command is one invocation of the step's action, as the person whose account runs it,
+//! through the daemon's native endpoint; the Migrations window and the person's agents invoke the
+//! same actions, so what one chooses or starts the others see. A run is the invocation of
+//! `start`: this command follows it and prints what it brings as it goes. Keys and passwords
+//! never pass through the agent: a step that asks for one fails saying so, and the person types it
+//! here at a hidden prompt (or names a file holding it), after which the step runs again with it.
 
-mod runs;
-mod workspace;
-
-use std::collections::BTreeMap;
 use std::io::IsTerminal as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Duration;
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result, anyhow, bail};
 use clap::Subcommand;
-use serde_json::Value;
+use serde_json::{Map, Value, json};
+use tilo_actions::remote::{
+    ActionProvider as _, Caller, InvokeRequest, LineClient, MAX_REMOTE_WAIT, ReceiptStatus,
+    RemoteActionTarget, UpdateMark,
+};
+use tilo_actions::{ActionAddress, ActionFailure, InvocationId, InvocationUpdate};
+use tilo_migrate::engine;
+use tilo_migrate::provider::{PROVIDER, SECRET_NEEDED, resource};
 
-use tilo_migrate::engine::{self, state::Place, writer::Workspace};
+/// How long a command waits for this computer's daemon to answer, its service started.
+const REACHING: Duration = Duration::from_secs(30);
 
 #[derive(Subcommand)]
 pub enum MigrateCmd {
@@ -69,7 +71,8 @@ pub enum MigrateCmd {
     Review {
         /// A source, as `tilo migrate sources` names it (home, gdrive, thunderbird, …).
         source: String,
-        /// The Thunderbird profile, when this computer has several.
+        /// The Thunderbird profile: one of this computer's by its name, when it has several, or
+        /// any profile by the path of its folder or its prefs.js.
         #[arg(long)]
         profile: Option<String>,
     },
@@ -93,8 +96,8 @@ pub enum MigrateCmd {
     Start {
         /// A source, as `tilo migrate sources` names it (home, gdrive, thunderbird, …).
         source: String,
-        /// Connect the chosen mail accounts without asking first. Without it, each account is
-        /// shown here and connected once you say yes.
+        /// Connect the chosen mail accounts: you say yes to that beforehand. Without it, a chosen
+        /// account is not connected, and the run says so.
         #[arg(long)]
         yes: bool,
     },
@@ -116,140 +119,80 @@ pub enum MigrateCmd {
     },
 }
 
-/// Where a run lands.
-pub enum Target {
-    /// The workspace this computer's device is in, through its daemon's session.
-    Device,
-    /// A hosted workspace, through Tilo's actions as the key this computer keeps calls them.
-    Hosted {
-        /// A key file the person named, as `--key-file` does.
-        key_file: Option<PathBuf>,
-        /// The workspace, by name or id.
-        workspace: String,
-    },
-}
-
-impl Target {
-    /// The API `reach` this target's key is opened with.
-    fn reach(&self) -> crate::api::Reach<'_> {
-        match self {
-            Self::Device => crate::api::Reach::default(),
-            Self::Hosted { key_file, .. } => crate::api::Reach {
-                key_file: key_file.as_deref(),
-                json: false,
-            },
-        }
-    }
-
-    /// Where the migrations into the workspace a run lands in are kept on this computer.
-    fn root(&self) -> Result<PathBuf> {
-        runs::root(&self.workspace_id()?)
-    }
-
-    /// The id of the workspace a run lands in.
-    fn workspace_id(&self) -> Result<String> {
-        match self {
-            Self::Hosted { workspace, .. } => {
-                workspace::Hosted::workspace_id(self.reach(), workspace)
-            }
-            Self::Device => Ok(crate::api::entered_workspace(crate::api::Reach::default())?
-                .map_or_else(|| "this-computer".to_owned(), |(workspace, _)| workspace)),
-        }
-    }
-
-    /// Whether a run lands through Tilo's API rather than this computer's session.
-    const fn is_hosted(&self) -> bool {
-        matches!(self, Self::Hosted { .. })
-    }
-
-    /// The workspace a run lands in.
-    fn connect(&self) -> Result<Box<dyn Workspace>> {
-        Ok(match self {
-            Self::Device => Box::new(workspace::Held::connect()?),
-            Self::Hosted { workspace, .. } => {
-                Box::new(workspace::Hosted::connect(self.reach(), workspace)?)
-            }
-        })
-    }
-}
-
-/// Run `cmd` into this computer's workspace; `json` answers as JSON.
+/// Run `cmd` on this computer's device; `json` answers as JSON.
 pub fn run(cmd: MigrateCmd, json: bool) -> Result<ExitCode> {
-    run_into(cmd, json, &Target::Device)
-}
-
-/// Run `cmd` into `target`'s workspace; `json` answers as JSON.
-pub fn run_into(cmd: MigrateCmd, json: bool, target: &Target) -> Result<ExitCode> {
-    let root = target.root()?;
-    let place = Place::at(&root);
-    let home = home()?;
-    let folders = folders();
-    let open = || -> Result<Box<dyn Workspace>> { Ok(Box::new(workspace::Held::connect()?)) };
-    let running = |source: &str| runs::running(&root, source);
-    let cx = engine::Cx {
-        place: &place,
-        running: &running,
-        scratch: &root,
-        home: &home,
-        folders: &folders,
-        open: &open,
-        secret: &secret,
-    };
+    let device = Device::reach()?;
     let answer = match cmd {
-        MigrateCmd::Sources => engine::sources(&cx),
+        MigrateCmd::Sources => device.call("sources", Map::new(), json)?,
         MigrateCmd::Connect {
             service,
             url,
             login,
             secret_file,
-        } => engine::connect(
-            &cx,
-            &service,
-            engine::Connecting {
-                url: url.as_deref(),
-                login: login.as_deref(),
-                secret_file: secret_file.as_deref(),
-            },
-        )?,
-        MigrateCmd::Review { source, profile } => engine::review(&cx, &source, profile.as_deref())?,
+        } => {
+            let mut args = Map::new();
+            args.insert("source".into(), json!(service));
+            if let Some(url) = url {
+                args.insert("url".into(), json!(url));
+            }
+            if let Some(login) = login {
+                args.insert("login".into(), json!(login));
+            }
+            if let Some(file) = &secret_file {
+                args.insert("secret".into(), json!(*secret("", Some(file))?));
+            }
+            match device.step("connect", args.clone(), json)? {
+                Ok(answer) => answer,
+                Err(failure) => match asked_secret(&failure) {
+                    // The person types what it asks for, and it runs again with it.
+                    Some(asks) if secret_file.is_none() => {
+                        args.insert("secret".into(), json!(*secret(&asks, None)?));
+                        device.call("connect", args, json)?
+                    }
+                    _ => return Err(failed(failure)),
+                },
+            }
+        }
+        MigrateCmd::Review { source, profile } => {
+            let mut args = sourced(&source);
+            if let Some(profile) = profile {
+                args.insert("profile".into(), json!(handed_profile(&profile)?));
+            }
+            device.call("review", args, json)?
+        }
         MigrateCmd::Choose {
             source,
             items,
             leave_out,
             only,
-        } => engine::choose(&cx, &source, &items, leave_out, only)?,
+        } => {
+            let mut args = sourced(&source);
+            args.insert("items".into(), json!(items));
+            args.insert("leave_out".into(), json!(leave_out));
+            args.insert("only".into(), json!(only));
+            device.call("choose", args, json)?
+        }
         MigrateCmd::Start { source, yes } => {
-            let mut progress = |line: &str| {
-                if !json {
-                    eprintln!("{line}");
-                }
-            };
-            let mut confirm = |question: &str| confirmed(question, json, yes);
-            let workspace = target.workspace_id()?;
-            let key = engine::registry::named(&source)?.key;
-            if runs::running(&root, key) {
-                bail!(
-                    "{key} is already being brought over; `tilo migrate status {key}` says how far"
+            let mut args = sourced(&source);
+            args.insert("yes".into(), json!(yes));
+            if !json {
+                eprintln!(
+                    "Bringing {source} over; `tilo migrate stop {source}` stops it after the item \
+                     it is on."
                 );
             }
-            let going = runs::begin(&root, key)?;
-            let stopping = || going.stopping();
-            engine::start(
-                &cx,
-                &source,
-                engine::Asking {
-                    progress: &mut progress,
-                    stopping: &stopping,
-                    confirm: &mut confirm,
-                    workspace: &workspace,
-                    hosted: target.is_hosted(),
-                },
-                &|| target.connect(),
-            )?
+            device.call("start", args, json)?
         }
-        MigrateCmd::Status { source } => engine::status(&cx, source.as_deref())?,
-        MigrateCmd::Undo { run } => engine::undo(&cx, &run, &mut *target.connect()?)?,
-        MigrateCmd::Stop { source } => runs::stop(&root, engine::registry::named(&source)?.key)?,
+        MigrateCmd::Status { source } => {
+            let args = source.as_deref().map(sourced).unwrap_or_default();
+            device.call("status", args, json)?
+        }
+        MigrateCmd::Stop { source } => device.call("stop", sourced(&source), json)?,
+        MigrateCmd::Undo { run } => {
+            let mut args = Map::new();
+            args.insert("run".into(), json!(run));
+            device.call("undo", args, json)?
+        }
     };
     if json {
         println!("{}", serde_json::to_string_pretty(&answer)?);
@@ -264,59 +207,157 @@ pub fn run_into(cmd: MigrateCmd, json: bool, target: &Target) -> Result<ExitCode
     })
 }
 
-/// The home whose folders, browsers and Thunderbird are read: this account's.
-fn home() -> Result<PathBuf> {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .context("this account has no home directory")
+/// The arguments naming `source`.
+fn sourced(source: &str) -> Map<String, Value> {
+    let mut args = Map::new();
+    args.insert("source".into(), json!(source));
+    args
 }
 
-/// The workspace folders this computer keeps, by workspace id.
-fn folders() -> BTreeMap<String, PathBuf> {
-    crate::login::Place::here(crate::identity::paths())
-        .ok()
-        .and_then(|login| tilo_api::daemon::folders::Folders::load(login.dir()).ok())
-        .map(|folders| {
-            folders
-                .workspaces
-                .into_iter()
-                .filter(|(_, folder)| !folder.removed)
-                .map(|(id, folder)| (id, folder.path))
-                .collect()
+/// The Thunderbird profile `profile` as the device reads it: one of its own by name, or a
+/// profile folder or prefs.js the person names by a path here, which the device reads from
+/// where it is.
+fn handed_profile(profile: &str) -> Result<String> {
+    let path = Path::new(profile);
+    if !path.exists() {
+        return Ok(profile.to_owned());
+    }
+    let path =
+        std::fs::canonicalize(path).with_context(|| format!("{} is unreadable", path.display()))?;
+    Ok(path.display().to_string())
+}
+
+/// What a step that failed `failure` asks the person to type, when it failed for a key or
+/// password it was not given.
+fn asked_secret(failure: &ActionFailure) -> Option<String> {
+    (failure.code == SECRET_NEEDED)
+        .then(|| {
+            failure
+                .details
+                .as_ref()?
+                .get("asks")?
+                .as_str()
+                .map(str::to_owned)
         })
-        .unwrap_or_default()
+        .flatten()
 }
 
-/// Whether the person says yes to `question`, asked at this terminal: yes when they said so
-/// beforehand (`--yes`). Nobody at a terminal to ask is no answer, and the step is skipped.
-///
-/// # Errors
-/// Nobody can be asked here and nobody said yes beforehand.
-fn confirmed(question: &str, json: bool, yes: bool) -> Result<bool> {
-    use std::io::{BufRead as _, Write as _};
-    if yes {
-        return Ok(true);
+/// A step's failure, as the person reads it.
+fn failed(failure: ActionFailure) -> anyhow::Error {
+    anyhow!("{}", failure.message)
+}
+
+/// This computer's device, whose migrations each command invokes.
+struct Device {
+    client: LineClient,
+    /// The resource the device's migrations are.
+    migrations: String,
+}
+
+impl Device {
+    /// This computer's device, through its daemon's native endpoint, the service started when
+    /// none runs.
+    ///
+    /// # Errors
+    /// This computer is not logged in, or its daemon could not be reached.
+    fn reach() -> Result<Self> {
+        let login = crate::login::Place::here(crate::identity::paths())?;
+        let device = crate::login::served_device_key(login.keys())
+            .ok_or_else(|| anyhow!(crate::login::NOT_LOGGED_IN))?;
+        // A daemon that is there is waited for, not replaced: it may be busy with a change.
+        let stream = tilo_api::daemon::this_computer()
+            .and_then(|place| place.reach_native(REACHING))
+            .map_err(anyhow::Error::msg)?;
+        Ok(Self {
+            client: LineClient::of_stream(stream)?,
+            migrations: resource(&device),
+        })
     }
-    let Ok(tty) = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open("/dev/tty")
-    else {
-        bail!(
-            "{question}\nNobody can be asked at a terminal here: start it in yours, or pass --yes \
-             to `tilo migrate start` to say yes beforehand"
+
+    /// Invoke `action` with `args` and follow it to its end: its answer, or why it failed.
+    fn call(&self, action: &str, args: Map<String, Value>, json: bool) -> Result<Value> {
+        self.step(action, args, json)?.map_err(failed)
+    }
+
+    /// Invoke `action` with `args` and follow it to its end, saying its progress on stderr
+    /// unless `json`: its answer, or the failure it ran into.
+    ///
+    /// # Errors
+    /// The daemon did not answer, or refused the step before it ran.
+    fn step(
+        &self,
+        action: &str,
+        args: Map<String, Value>,
+        json: bool,
+    ) -> Result<std::result::Result<Value, ActionFailure>> {
+        let request = InvokeRequest::plain(
+            RemoteActionTarget {
+                provider: PROVIDER.into(),
+                address: ActionAddress::new(self.migrations.clone(), action),
+            },
+            args,
         );
-    };
-    if json && !std::io::stdin().is_terminal() {
-        bail!("{question}\nPass --yes to `tilo migrate start` to say yes beforehand");
+        let id = request.invocation;
+        // The daemon decides the step as whoever connects; the caller here names nobody.
+        let caller = Caller::local_person("");
+        let receipt = answered(self.client.invoke(&caller, request))?
+            .map_err(|error| anyhow!("{action} was refused: {}", error.said()))?;
+        self.follow(&caller, id, receipt.status, json)
     }
-    let mut writer = tty.try_clone()?;
-    write!(writer, "{question} [Y/n] ")?;
-    writer.flush()?;
-    let mut said = String::new();
-    std::io::BufReader::new(tty).read_line(&mut said)?;
-    let said = said.trim().to_ascii_lowercase();
-    Ok(said.is_empty() || said == "y" || said == "yes")
+
+    /// Follow the invocation `id`, whose receipt said `status`, to its end.
+    fn follow(
+        &self,
+        caller: &Caller,
+        id: InvocationId,
+        mut status: ReceiptStatus,
+        json: bool,
+    ) -> Result<std::result::Result<Value, ActionFailure>> {
+        let stopped = || anyhow!("this computer's daemon stopped answering");
+        let mut seen = UpdateMark::Accepted;
+        loop {
+            match status {
+                ReceiptStatus::Accepted => {}
+                ReceiptStatus::Completed { output } => {
+                    return Ok(Ok(output.value.unwrap_or_default()));
+                }
+                ReceiptStatus::Failed { error } => return Ok(Err(error)),
+                ReceiptStatus::Rejected { error } => bail!("{}", error.said()),
+                ReceiptStatus::Cancelled { message } => {
+                    return Ok(Ok(json!({
+                        "said": message.unwrap_or_else(|| "it was stopped".into()),
+                    })));
+                }
+            }
+            // Asked for before looking, so a change between the two is never missed.
+            let change = self.client.next_change(caller, &id).ok_or_else(stopped)?;
+            let state = self.client.observe(caller, &id).ok_or_else(stopped)?;
+            if UpdateMark::of(&state.update) == seen {
+                // A wait the daemon let pass unanswered is looked at again.
+                let _ = change.wait_timeout(MAX_REMOTE_WAIT.saturating_add(REACHING));
+                continue;
+            }
+            seen = UpdateMark::of(&state.update);
+            if let InvocationUpdate::Progress {
+                message: Some(line),
+                ..
+            } = &state.update
+                && !json
+            {
+                eprintln!("{line}");
+            }
+            status = state.receipt().status;
+        }
+    }
+}
+
+/// What the daemon answers to `pending`.
+fn answered<T: Send + 'static>(pending: tilo_actions::remote::Pending<T>) -> Result<T> {
+    pending
+        .wait_timeout(MAX_REMOTE_WAIT.saturating_add(REACHING))
+        .ok()
+        .flatten()
+        .ok_or_else(|| anyhow!("this computer's daemon did not answer"))
 }
 
 /// A secret the person types, unseen, or reads from a file they name; never an argument.

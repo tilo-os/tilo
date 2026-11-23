@@ -385,15 +385,14 @@ enum Cmd {
     #[command(
         after_help = "Examples:\n  tilo migrate sources\n  tilo migrate review thunderbird\n  \
                             tilo migrate choose thunderbird ada@example.com --only\n  \
-                            tilo migrate start thunderbird\n  tilo migrate start thunderbird -w \"Jane Doe\"\n  \
-                            tilo migrate status\n\n\
+                            tilo migrate start thunderbird\n  tilo migrate status\n\n\
                       Each step is its own command, so an agent can show the person what a source holds \
                       before anything moves. What comes over appears in the workspace as one entry in \
                       History, which undoes it. Running it again brings only what is not there yet. \
                       Keys and passwords are never arguments: `connect` asks the person for a key.\n\n\
-                      Without -w a run lands in this computer's own workspace. With it, the run lands in \
-                      that hosted workspace (a name or an id), as the key this computer keeps: the \
-                      file --key-file names, or the key `tilo login` kept."
+                      This computer's device runs the migration and lands it in the workspace it is in, \
+                      as the Migrations window and your agents do: each sees what the others chose \
+                      and started."
     )]
     Migrate {
         /// The answer as JSON.
@@ -1165,22 +1164,19 @@ fn run_hosted(
             .ok_or_else(needs_workspace)
             .map(|workspace| hosted::invocations(reach, &workspace, limit, cursor.as_deref())),
         Cmd::Sdk { cmd } => Ok(sdk::generate(reach, workspace.as_deref(), cmd)),
-        // Only an explicit `-w` lands a migration in a hosted workspace: without one it comes
-        // over this computer's own, through the session `tilo login` holds.
-        Cmd::Migrate { json, cmd } if workspace.is_some() => {
-            let target = migrate::Target::Hosted {
-                key_file: key_file.map(std::path::Path::to_path_buf),
-                workspace: workspace.unwrap_or_default(),
-            };
-            migrate::run_into(cmd, json, &target)
-        }
+        // A migration runs on the device that holds the data and lands in the workspace that
+        // device is in.
+        Cmd::Migrate { .. } if workspace.is_some() => Err(anyhow::anyhow!(
+            "a migration lands in the workspace this computer's device is in, which -w does not \
+             change: leave -w out"
+        )),
         other => return Err(other),
     })
 }
 
 /// Whether `cmd` calls Tilo's API, which without a key is as this computer's login: a `do`
-/// in a named workspace or on the account (else it acts on this desktop), an `sdk` or `migrate`
-/// naming one, and every other workspace command.
+/// in a named workspace or on the account (else it acts on this desktop), an `sdk` naming one,
+/// and every other workspace command.
 fn acts_as_the_login(cmd: &Cmd, named: bool) -> bool {
     match cmd {
         Cmd::Do { action, args, .. } => {
@@ -1190,7 +1186,7 @@ fn acts_as_the_login(cmd: &Cmd, named: bool) -> bool {
         }
         // A new key is asked of the API server, never of this computer's session: the session
         // only names the workspace a key is to reach, when `-w` names it by its name.
-        Cmd::Sdk { .. } | Cmd::Migrate { .. } => named,
+        Cmd::Sdk { .. } => named,
         Cmd::View { .. } => true,
         other => acts_in_a_workspace(other),
     }

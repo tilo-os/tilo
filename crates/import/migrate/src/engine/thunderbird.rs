@@ -89,12 +89,20 @@ impl super::Source for Thunderbird {
 }
 
 /// The review of the Thunderbird profile at `home`: `profile` names one when there are
-/// several; the default profile otherwise. Nothing is chosen until the person says.
+/// several; the default profile otherwise. Nothing is chosen until the person says. A `profile`
+/// that is a path is a profile's folder or its `prefs.js`, wherever it is (one the person handed
+/// over from another disk or an old computer's backup): it is read there, and the run reads it
+/// there too.
 ///
 /// # Errors
 /// No Thunderbird profile is here, or none that is here could be read; the
 /// message names what could not be read and why.
 pub fn review(home: &Path, profile: Option<&str>) -> Result<Review> {
+    if let Some(handed) = profile.map(Path::new).filter(|path| path.is_absolute()) {
+        let mut review = review(handed, None)?;
+        review.handle = handed.display().to_string();
+        return Ok(review);
+    }
     let scan = crate::thunderbird::scan(home);
     let reviewed = readable_profile(&scan, profile)?;
     let found = reviewed.profile();
@@ -264,10 +272,17 @@ pub fn summary(review: &Review) -> String {
 /// The profile could not be read, the person said no to connecting an account, or the server or
 /// the workspace refused; what landed before stays landed.
 pub fn land(home: &Path, review: &Review, lander: &mut Lander<'_>) -> Result<()> {
+    // A profile handed over by its path is read there; any other is one of the home's.
+    let handed = Path::new(&review.handle);
+    let (home, wanted) = if handed.is_absolute() {
+        (handed, None)
+    } else {
+        (home, Some(review.handle.as_str()))
+    };
     let profiles = crate::thunderbird::discover(home).map_err(|why| anyhow!(why))?;
     let profile = profiles
         .iter()
-        .find(|profile| profile.source_id == review.handle)
+        .find(|profile| wanted.is_none_or(|wanted| profile.source_id == wanted))
         .ok_or_else(|| anyhow!("the reviewed Thunderbird profile is no longer here"))?;
     let chosen: std::collections::BTreeSet<&str> = review
         .chosen()

@@ -121,6 +121,7 @@ core = [
     "tilo-runtime -> tilo-control",
     "tilo-runtime -> tilo-desktop-model",
     "tilo-runtime -> tilo-host-search",
+    "tilo-runtime -> tilo-migrate",
     "tilo-runtime -> tilo-os-search",
     "tilo-runtime -> tilo-render-protocol",
     "tilo-runtime -> tilo-ui",

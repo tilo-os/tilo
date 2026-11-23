@@ -43,6 +43,27 @@ pub const PROVIDER: &str = "so.tilo.migrate";
 /// engine writes and whose view calls these actions.
 pub const PACKAGE: &str = "so.tilo.migrate.engine";
 
+/// What a step fails with when it asks for a key or password its caller did not give: its
+/// failure's details say what it asks for (`{"asks": "Linear API key (it is not shown): "}`), so
+/// the caller can ask its person and invoke the step again with the `secret`.
+pub const SECRET_NEEDED: &str = "secret_needed";
+
+/// A key or password a step asks for and was not given, by the words it asks with.
+#[derive(Debug)]
+struct SecretNeeded(String);
+
+impl std::fmt::Display for SecretNeeded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "connecting asks for {}: give it as the step's `secret`",
+            self.0.trim().trim_end_matches(':')
+        )
+    }
+}
+
+impl std::error::Error for SecretNeeded {}
+
 /// The longest a follower of a step waits before looking at it again, when nothing it can be
 /// told of moved.
 const LOOK_AGAIN: Duration = Duration::from_secs(1);
@@ -201,7 +222,9 @@ fn declared() -> Vec<Declared> {
                 ActionParam::optional(
                     "profile",
                     ParamType::Text,
-                    "The Thunderbird profile, when this device has several.",
+                    "The Thunderbird profile: one of this device's by its name, when it has \
+                     several, or any profile by the path of its folder or its prefs.js, as the \
+                     person handed it over.",
                 ),
                 ActionParam::optional(
                     "account",
@@ -520,15 +543,26 @@ impl Running {
                 invocation: self.id,
                 message: Some("stopped after the item it was on; start resumes it".into()),
             },
-            Err(error) => InvocationUpdate::Failed {
-                invocation: self.id,
-                error: ActionFailure {
-                    code: "migration_failed".into(),
-                    message: format!("{error:#}"),
-                    details: None,
-                    retryable: false,
-                },
-            },
+            Err(error) => {
+                let asks = error
+                    .chain()
+                    .find_map(|cause| cause.downcast_ref::<SecretNeeded>())
+                    .map(|needed| needed.0.clone());
+                InvocationUpdate::Failed {
+                    invocation: self.id,
+                    error: ActionFailure {
+                        code: if asks.is_some() {
+                            SECRET_NEEDED
+                        } else {
+                            "migration_failed"
+                        }
+                        .into(),
+                        message: format!("{error:#}"),
+                        details: asks.map(|asks| serde_json::json!({ "asks": asks })),
+                        retryable: false,
+                    },
+                }
+            }
         };
         self.step.set(InvocationState::new(self.id, update));
     }
@@ -542,9 +576,9 @@ impl Running {
         let open = || self.host.open(&self.caller);
         let given = text("secret").map(|secret| Zeroizing::new(secret.to_owned()));
         let secret = |prompt: &str, _: Option<&std::path::Path>| {
-            given.clone().ok_or_else(|| {
-                anyhow!("connecting asks for {prompt}: give it as the step's `secret`")
-            })
+            given
+                .clone()
+                .ok_or_else(|| anyhow::Error::new(SecretNeeded(prompt.to_owned())))
         };
         // A run going for a source is another invocation's: this one's own is not in its way.
         let (going, own) = (Arc::clone(&self.going), self.id);

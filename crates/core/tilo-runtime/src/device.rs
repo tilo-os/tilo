@@ -43,6 +43,7 @@ mod hosts;
 mod keep;
 mod layout;
 pub(crate) mod local;
+pub(crate) mod migrate;
 #[cfg(target_os = "linux")]
 pub mod package_runs;
 #[cfg(unix)]

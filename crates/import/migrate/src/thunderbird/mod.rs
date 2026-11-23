@@ -376,7 +376,9 @@ impl Scan {
 }
 
 /// Every Thunderbird profile in `home`, with the pinned profile root kept for
-/// an importer that reads mail, address books and calendars from it.
+/// an importer that reads mail, address books and calendars from it. A `home`
+/// that is itself a profile, by its folder or its `prefs.js` (one a person
+/// handed over from wherever Thunderbird kept it), is that one profile.
 #[must_use]
 pub fn scan(home: &Path) -> Scan {
     let mut scan = Scan {
@@ -387,6 +389,14 @@ pub fn scan(home: &Path) -> Scan {
     // on Fedora Atomic `/home` is a link to `/var/home`. Its own path is resolved once; inside
     // it, a profile is read without following any link.
     let home = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
+    if let Some((root, name)) = handed_profile(&home) {
+        match handed(&root, &name) {
+            Ok(Some(profile)) => scan.reviewed.push(profile),
+            Ok(None) => {}
+            Err(error) => scan.problems.push(Unreadable::of(Some(name), None, &error)),
+        }
+        return scan;
+    }
     for (label, path) in roots(&home) {
         // The root's own last name is never followed. Its parent may be a link,
         // as Flatpak's application directory is, and is resolved to where it
@@ -424,6 +434,39 @@ pub fn scan(home: &Path) -> Scan {
         }
     }
     scan
+}
+
+/// The folder a handed-over profile sits in and the profile's own name, when `path` is a
+/// profile's folder or its `prefs.js`.
+fn handed_profile(path: &Path) -> Option<(PathBuf, String)> {
+    let folder = if path.file_name() == Some("prefs.js".as_ref()) {
+        path.parent()?
+    } else {
+        path
+    };
+    let prefs = std::fs::symlink_metadata(folder.join("prefs.js")).ok()?;
+    if !prefs.is_file() {
+        return None;
+    }
+    Some((
+        folder.parent()?.to_path_buf(),
+        folder.file_name()?.to_str()?.to_owned(),
+    ))
+}
+
+/// The profile `name` in the folder `root`, read as a root holding that one profile.
+fn handed(root: &Path, name: &str) -> std::io::Result<Option<ReviewedThunderbird>> {
+    let pinned = PinnedDirectory::open_absolute(root)?;
+    pinned.validate()?;
+    let found = discover_profile(
+        &pinned,
+        &root.join(name),
+        &[name.to_owned()],
+        "Thunderbird",
+        name,
+    )?;
+    pinned.validate()?;
+    Ok(found)
 }
 
 /// Where a root really is. Its own last name is left as it is, so a linked

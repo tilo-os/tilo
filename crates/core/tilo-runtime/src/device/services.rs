@@ -137,6 +137,8 @@ pub struct Daemon {
     /// What hands agents' connections on the native endpoint to the device's session.
     agents: super::serve::Agents,
     place: DaemonPlace,
+    /// The device's directory: its login, its synced folders' settings and its migrations.
+    dir: PathBuf,
     /// The device's lock, when this daemon took it itself: one started under the lock the
     /// daemon's device part keeps ([`Self::start_locked`]) holds none of its own.
     _lock: Option<advisory_lock::FileLock>,
@@ -462,6 +464,21 @@ impl Daemon {
                 .with_agent_session(run)
                 .with_task_hosts(tasks))
         })
+    }
+
+    /// The workspace this daemon serves its device in.
+    pub(crate) fn workspace_id(&self) -> &str {
+        &self.workspace
+    }
+
+    /// The device's directory.
+    pub(crate) fn dir(&self) -> PathBuf {
+        self.dir.clone()
+    }
+
+    /// The key of the device this daemon is.
+    pub(crate) const fn device_key(&self) -> [u8; 32] {
+        self.cert.device_public_key
     }
 
     /// Where this daemon's connections reach it.
@@ -901,6 +918,7 @@ impl Daemon {
             api: std::sync::OnceLock::new(),
             agents: super::serve::Agents::default(),
             place,
+            dir: identity.place.dir().to_path_buf(),
             _lock: lock,
         };
         // The person's shell reaches the one dispatch their own runs do, as them.
