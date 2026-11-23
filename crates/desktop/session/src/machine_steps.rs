@@ -16,14 +16,13 @@
 use std::sync::Arc;
 
 use serde_json::{Map, Value};
-use tilo_actions::remote::admitted::{offered, settled, top_level};
+use tilo_actions::remote::admitted::top_level;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Admitted, Caller, CataloguePage, CatalogueQuery,
-    InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Outcome, Pending, machines,
+    Admitted, Caller, InvokeArgument, InvokeRequest, Outcome, Pending, machines,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionFailure, ActionOutput, ActionState,
-    ExecutionLocus, InputSpec, InvocationId, OperationKind,
+    ExecutionLocus, InputSpec, OperationKind,
 };
 use tilo_broker_core::BrokerActor;
 use tilo_workspace_service::workspaces::providers::{Providers, Reach};
@@ -137,7 +136,14 @@ fn outcome(asked: Result<Value, String>) -> Outcome {
         })
 }
 
-impl MachineSteps {
+impl tilo_actions::remote::Admits for MachineSteps {
+    const PROVIDER: &'static str = machines::PROVIDER;
+    const APP: &'static str = APP_ID;
+
+    fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
+        top_level(machines::STEPS.into_iter().map(descriptor).collect())
+    }
+
     /// Carry out an invocation the device's dispatch admitted for `caller`.
     fn start(
         &self,
@@ -161,52 +167,5 @@ impl MachineSteps {
         }
         let arguments = Self::arguments(&request.argument)?;
         Ok(self.ask(step, arguments)?.map(outcome))
-    }
-}
-
-impl ActionProvider for MachineSteps {
-    fn query(
-        &self,
-        _caller: &Caller,
-        query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        offered(
-            machines::PROVIDER,
-            APP_ID,
-            top_level(machines::STEPS.into_iter().map(descriptor).collect()),
-            &query,
-        )
-    }
-
-    fn invoke(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        self.run(caller, request, Admitted::default())
-    }
-
-    fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
-        None
-    }
-
-    fn cancel(
-        &self,
-        _caller: &Caller,
-        _id: &InvocationId,
-    ) -> Pending<Result<(), ActionCallError>> {
-        Pending::ready(Err(ActionCallError::UnknownInvocation))
-    }
-
-    fn run(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-        admitted: Admitted,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        settled(
-            request.invocation,
-            self.start(caller, &request, &admitted),
-        )
     }
 }

@@ -17,11 +17,10 @@
 
 use std::sync::Arc;
 
-use tilo_actions::remote::admitted::{offered, settled, top_level};
+use tilo_actions::remote::admitted::top_level;
 use tilo_actions::remote::workspace_activity as wire;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Admitted, Caller, InvocationReceipt, InvokeRequest, LiveRead,
-    LiveView, Outcome, Pending,
+    ActionProvider, Admitted, Caller, InvokeRequest, LiveRead, LiveView, Outcome, Pending,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionFailure, ActionKind, ExecutionLocus,
@@ -160,50 +159,37 @@ fn descriptor(action: &str, label: &str, kind: OperationKind) -> ActionDescripto
     }
 }
 
-impl ActionProvider for ActivityWire {
-    fn query(
-        &self,
-        _caller: &Caller,
-        query: tilo_actions::remote::CatalogueQuery,
-    ) -> Pending<Result<tilo_actions::remote::CataloguePage, ActionCallError>> {
-        offered(
-            wire::PROVIDER,
-            wire::APP_ID,
-            top_level(self.descriptors()),
-            &query,
-        )
+impl tilo_actions::remote::Admits for ActivityWire {
+    const PROVIDER: &'static str = wire::PROVIDER;
+    const APP: &'static str = wire::APP_ID;
+
+    fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
+        top_level(self.descriptors())
     }
 
-    fn invoke(
+    /// Carry out an invocation the device's dispatch admitted for `caller`.
+    fn start(
         &self,
         caller: &Caller,
-        request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        self.run(caller, request, Admitted::default())
+        request: &InvokeRequest,
+        _admitted: &Admitted,
+    ) -> Result<Pending<Outcome>, String> {
+        let action = request.target.address.action.clone();
+        let slot = request.argument.to_slot();
+        let arguments = arguments_of(slot.as_deref())?;
+        if BrokerActor::for_caller(caller).is_agent()
+            && let Some(refusal) = refused_to_agent(&action, &arguments)
+        {
+            return Err(refusal);
+        }
+        let ran = self.requests.act(&action, arguments);
+        Ok(ran.map(|ran| {
+            ran.map(|()| tilo_actions::ActionOutput::default())
+                .map_err(|message| failure("activity_refused", message))
+        }))
     }
 
-    fn observe(
-        &self,
-        _caller: &Caller,
-        _id: &InvocationId,
-    ) -> Option<tilo_actions::remote::InvocationState> {
-        None
-    }
-
-    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
-        Pending::ready(Err(ActionCallError::UnknownInvocation))
-    }
-
-    fn run(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-        admitted: Admitted,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        settled(request.invocation, self.start(caller, &request, &admitted))
-    }
-
-    fn watch(&self, caller: &Caller, request: &InvokeRequest) -> Result<LiveView, String> {
+    fn live(&self, caller: &Caller, request: &InvokeRequest) -> Result<LiveView, String> {
         let action = request.target.address.action.clone();
         if !is_read(&action) {
             return Err("this step has no live result".into());
@@ -287,28 +273,6 @@ impl ActivityWire {
         .into_iter()
         .map(|(action, label, kind)| descriptor(action, label, kind))
         .collect()
-    }
-
-    /// Carry out an invocation the device's dispatch admitted for `caller`.
-    fn start(
-        &self,
-        caller: &Caller,
-        request: &InvokeRequest,
-        _admitted: &Admitted,
-    ) -> Result<Pending<Outcome>, String> {
-        let action = request.target.address.action.clone();
-        let slot = request.argument.to_slot();
-        let arguments = arguments_of(slot.as_deref())?;
-        if BrokerActor::for_caller(caller).is_agent()
-            && let Some(refusal) = refused_to_agent(&action, &arguments)
-        {
-            return Err(refusal);
-        }
-        let ran = self.requests.act(&action, arguments);
-        Ok(ran.map(|ran| {
-            ran.map(|()| tilo_actions::ActionOutput::default())
-                .map_err(|message| failure("activity_refused", message))
-        }))
     }
 }
 

@@ -8,11 +8,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tilo_actions::InvocationId;
 use tilo_actions::InvocationUpdate;
-use tilo_actions::remote::admitted::{offered, settled, top_level};
+use tilo_actions::remote::admitted::top_level;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Admitted, Caller, CataloguePage, CatalogueQuery,
-    InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, LiveRead, LiveView, Outcome,
-    Pending, RemoteActionTarget,
+    ActionCallError, ActionProvider, Admitted, Caller, InvocationReceipt, InvokeArgument,
+    InvokeRequest, LiveRead, LiveView, Outcome, Pending, RemoteActionTarget,
 };
 
 const PROVIDER: &str = "test.live";
@@ -47,41 +46,24 @@ impl Counter {
     }
 }
 
-impl ActionProvider for Counter {
-    fn query(
+impl tilo_actions::remote::Admits for Counter {
+    const PROVIDER: &'static str = PROVIDER;
+    const APP: &'static str = APP;
+
+    fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
+        top_level(self.descriptors())
+    }
+
+    fn start(
         &self,
         _caller: &Caller,
-        query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        offered(PROVIDER, APP, top_level(self.descriptors()), &query)
+        _request: &InvokeRequest,
+        _admitted: &Admitted,
+    ) -> Result<Pending<Outcome>, String> {
+        Err("a live view is followed, not started".into())
     }
 
-    fn invoke(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        self.run(caller, request, Admitted::default())
-    }
-
-    fn run(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-        admitted: Admitted,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        settled(request.invocation, self.start(caller, &request, &admitted))
-    }
-
-    fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
-        None
-    }
-
-    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
-        Pending::ready(Err(ActionCallError::UnknownInvocation))
-    }
-
-    fn watch(&self, _caller: &Caller, _request: &InvokeRequest) -> Result<LiveView, String> {
+    fn live(&self, _caller: &Caller, _request: &InvokeRequest) -> Result<LiveView, String> {
         let value = Arc::clone(&self.value);
         let reads = Arc::clone(&self.reads);
         let receiver = self.changes.subscribe();
@@ -129,15 +111,6 @@ impl Counter {
             params: Vec::new(),
             view: None,
         }]
-    }
-
-    fn start(
-        &self,
-        _caller: &Caller,
-        _request: &InvokeRequest,
-        _admitted: &Admitted,
-    ) -> Result<Pending<Outcome>, String> {
-        Err("a live view is followed, not started".into())
     }
 }
 

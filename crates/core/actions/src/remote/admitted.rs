@@ -12,10 +12,11 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use super::{
-    ActionCallError, ActionProvider, CataloguePage, CatalogueQuery, CatalogueRow,
-    InvocationReceipt, Pending, ReceiptStatus,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, CatalogueRow,
+    InvocationReceipt, InvocationState, InvokeRequest, Pending, ReceiptStatus,
 };
-use crate::{ActionFailure, ActionOutput, InvocationId};
+use crate::api::{ActionDescriptor, PlacedAction};
+use crate::{ActionAddress, ActionFailure, ActionOutput, InvocationId};
 
 /// How a call a registered provider carried out ended: its output, or why it failed.
 pub type Outcome = Result<ActionOutput, Box<ActionFailure>>;
@@ -37,6 +38,99 @@ impl Default for Admitted {
             through: None,
             stop: Arc::new(AtomicBool::new(false)),
         }
+    }
+}
+
+/// A provider that only the device's dispatch calls, once it admitted the call: what it offers,
+/// and how it carries a call out. The rest of [`ActionProvider`] follows from these: a call ends in
+/// its receipt, so there is no invocation left to observe or cancel once it answers.
+pub trait Admits {
+    /// The provider id its rows name.
+    const PROVIDER: &'static str;
+    /// The application its rows are offered for, whose grants decide them.
+    const APP: &'static str;
+
+    /// The actions it offers.
+    fn rows(&self) -> Vec<PlacedAction>;
+
+    /// Start `request`, which the dispatch admitted for `caller`.
+    ///
+    /// # Errors
+    ///
+    /// Why the call is refused before it starts.
+    fn start(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+        admitted: &Admitted,
+    ) -> Result<Pending<Outcome>, String>;
+
+    /// The action `address` is with `argument`, where it differs from its row
+    /// ([`ActionProvider::invocation`]).
+    fn described(
+        &self,
+        address: &ActionAddress,
+        argument: Option<&str>,
+    ) -> Option<ActionDescriptor> {
+        let _ = (address, argument);
+        None
+    }
+
+    /// Follow an admitted call of a live action ([`ActionProvider::watch`]).
+    ///
+    /// # Errors
+    ///
+    /// The action has no live result here, or `caller` may not follow it.
+    fn live(&self, caller: &Caller, request: &InvokeRequest) -> Result<LiveView, String> {
+        let _ = (caller, request);
+        Err("this action has no live result".into())
+    }
+}
+
+impl<T: Admits> ActionProvider for T {
+    fn query(
+        &self,
+        _caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        offered(T::PROVIDER, T::APP, self.rows(), &query)
+    }
+
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        self.run(caller, request, Admitted::default())
+    }
+
+    fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
+        None
+    }
+
+    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownInvocation))
+    }
+
+    fn invocation(
+        &self,
+        address: &ActionAddress,
+        argument: Option<&str>,
+    ) -> Option<ActionDescriptor> {
+        self.described(address, argument)
+    }
+
+    fn run(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        admitted: Admitted,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        settled(request.invocation, self.start(caller, &request, &admitted))
+    }
+
+    fn watch(&self, caller: &Caller, request: &InvokeRequest) -> Result<LiveView, String> {
+        self.live(caller, request)
     }
 }
 
@@ -79,7 +173,7 @@ pub fn settled(
 pub fn offered(
     provider: &str,
     app_id: &str,
-    rows: Vec<crate::api::PlacedAction>,
+    rows: Vec<PlacedAction>,
     query: &CatalogueQuery,
 ) -> Pending<Result<CataloguePage, ActionCallError>> {
     let rows: Vec<CatalogueRow> = rows
@@ -92,10 +186,10 @@ pub fn offered(
 
 /// Every action of `actions` as a top-level row.
 #[must_use]
-pub fn top_level(actions: Vec<crate::api::ActionDescriptor>) -> Vec<crate::api::PlacedAction> {
+pub fn top_level(actions: Vec<ActionDescriptor>) -> Vec<PlacedAction> {
     actions
         .into_iter()
-        .map(|action| crate::api::PlacedAction {
+        .map(|action| PlacedAction {
             parent: String::new(),
             has_children: false,
             action,

@@ -12,12 +12,11 @@ use crate::workspaces::providers::{Providers, Reach};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tilo_actions::InvocationId;
-use tilo_actions::remote::admitted::{offered, settled, top_level};
+use tilo_actions::remote::admitted::top_level;
 use tilo_actions::remote::identity_admin;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Admitted, Caller, CataloguePage, CatalogueQuery, Completer,
-    Confirmation, ConfirmationQuestion, InvocationReceipt, InvocationState, InvokeArgument,
-    InvokeRequest, Outcome, Pending, pending,
+    ActionCallError, ActionProvider, Admitted, Caller, Completer, Confirmation,
+    ConfirmationQuestion, InvokeArgument, InvokeRequest, Outcome, Pending, pending,
 };
 
 /// The host's network, in its place: it records who was asked what, and
@@ -96,43 +95,21 @@ impl OwnDeviceActions for OwnDevices {
 #[derive(Default)]
 struct Steps;
 
-impl ActionProvider for Steps {
-    fn query(
+impl tilo_actions::remote::Admits for Steps {
+    const PROVIDER: &'static str = identity_admin::PROVIDER;
+    const APP: &'static str = "so.tilo.settings";
+
+    fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
+        top_level(self.descriptors())
+    }
+
+    fn start(
         &self,
         _caller: &Caller,
-        query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        offered(
-            identity_admin::PROVIDER,
-            "so.tilo.settings",
-            top_level(self.descriptors()),
-            &query,
-        )
-    }
-
-    fn invoke(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        self.run(caller, request, Admitted::default())
-    }
-
-    fn run(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-        admitted: Admitted,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        settled(request.invocation, self.start(caller, &request, &admitted))
-    }
-
-    fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
-        None
-    }
-
-    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
-        Pending::ready(Err(ActionCallError::UnknownInvocation))
+        _request: &InvokeRequest,
+        _admitted: &Admitted,
+    ) -> Result<Pending<Outcome>, String> {
+        Ok(Pending::ready(Ok(tilo_actions::ActionOutput::default())))
     }
 }
 
@@ -164,15 +141,6 @@ impl Steps {
             params: Vec::new(),
             view: None,
         }]
-    }
-
-    fn start(
-        &self,
-        _caller: &Caller,
-        _request: &InvokeRequest,
-        _admitted: &Admitted,
-    ) -> Result<Pending<Outcome>, String> {
-        Ok(Pending::ready(Ok(tilo_actions::ActionOutput::default())))
     }
 }
 

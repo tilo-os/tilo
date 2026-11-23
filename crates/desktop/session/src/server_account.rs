@@ -14,15 +14,13 @@
 use std::sync::{Arc, Mutex};
 
 use tilo_actions::remote::Pending;
-use tilo_actions::remote::admitted::{offered, settled, top_level};
+use tilo_actions::remote::admitted::top_level;
 use tilo_actions::remote::server_account::{self as wire, ServerAccount, ServerKind};
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Admitted, Caller, InvocationReceipt, InvokeRequest, LiveRead,
-    LiveView, Outcome,
+    ActionProvider, Admitted, Caller, InvokeRequest, LiveRead, LiveView, Outcome,
 };
 use tilo_actions::{
-    ActionAddress, ActionContract, ActionDescriptor, ExecutionLocus, InputSpec, InvocationId,
-    OperationKind,
+    ActionAddress, ActionContract, ActionDescriptor, ExecutionLocus, InputSpec, OperationKind,
 };
 use tilo_broker_core::BrokerActor;
 use tilo_lock::MutexRecover as _;
@@ -92,23 +90,6 @@ impl ServerAccountApi {
             self,
         );
     }
-
-    /// Carry out an invocation the device's dispatch admitted for `caller`.
-    fn start(
-        &self,
-        caller: &Caller,
-        request: &InvokeRequest,
-        _admitted: &Admitted,
-    ) -> Result<Pending<Outcome>, String> {
-        person_only(caller)?;
-        if request.target.address.action != wire::ACCOUNT {
-            return Err("unknown hosting step".into());
-        }
-        Ok(Pending::ready(Ok(tilo_actions::ActionOutput {
-            value: Some(answer(&self.read())),
-            resources: Vec::new(),
-        })))
-    }
 }
 
 /// This device's name, as its host name gives it, said plainly without one.
@@ -148,50 +129,32 @@ fn answer(account: &ServerAccount) -> serde_json::Value {
     serde_json::to_value(account).unwrap_or_default()
 }
 
-impl ActionProvider for ServerAccountApi {
-    fn query(
-        &self,
-        _caller: &Caller,
-        query: tilo_actions::remote::CatalogueQuery,
-    ) -> Pending<Result<tilo_actions::remote::CataloguePage, ActionCallError>> {
-        offered(
-            wire::PROVIDER,
-            settings_sections::APP_ID,
-            top_level(vec![descriptor()]),
-            &query,
-        )
+impl tilo_actions::remote::Admits for ServerAccountApi {
+    const PROVIDER: &'static str = wire::PROVIDER;
+    const APP: &'static str = settings_sections::APP_ID;
+
+    fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
+        top_level(vec![descriptor()])
     }
 
-    fn invoke(
+    /// Carry out an invocation the device's dispatch admitted for `caller`.
+    fn start(
         &self,
         caller: &Caller,
-        request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        self.run(caller, request, Admitted::default())
+        request: &InvokeRequest,
+        _admitted: &Admitted,
+    ) -> Result<Pending<Outcome>, String> {
+        person_only(caller)?;
+        if request.target.address.action != wire::ACCOUNT {
+            return Err("unknown hosting step".into());
+        }
+        Ok(Pending::ready(Ok(tilo_actions::ActionOutput {
+            value: Some(answer(&self.read())),
+            resources: Vec::new(),
+        })))
     }
 
-    fn observe(
-        &self,
-        _caller: &Caller,
-        _id: &InvocationId,
-    ) -> Option<tilo_actions::remote::InvocationState> {
-        None
-    }
-
-    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
-        Pending::ready(Err(ActionCallError::UnknownInvocation))
-    }
-
-    fn run(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-        admitted: Admitted,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        settled(request.invocation, self.start(caller, &request, &admitted))
-    }
-
-    fn watch(&self, caller: &Caller, request: &InvokeRequest) -> Result<LiveView, String> {
+    fn live(&self, caller: &Caller, request: &InvokeRequest) -> Result<LiveView, String> {
         person_only(caller)?;
         if request.target.address.action != wire::ACCOUNT {
             return Err("this step has no live result".into());

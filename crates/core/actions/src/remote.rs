@@ -37,7 +37,7 @@ pub use window_actions::{
 };
 
 pub mod admitted;
-pub use admitted::{Admitted, LiveRead, LiveView, Outcome};
+pub use admitted::{Admits, Admitted, LiveRead, LiveView, Outcome};
 pub mod agent_tools;
 mod application;
 pub mod asked;

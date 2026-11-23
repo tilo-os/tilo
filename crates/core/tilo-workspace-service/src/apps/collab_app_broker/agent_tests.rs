@@ -722,51 +722,24 @@ struct TurnSteps {
     on_turns: Mutex<Vec<Option<tilo_action_policy::turn::Turn>>>,
 }
 
-impl tilo_actions::remote::ActionProvider for TurnSteps {
-    fn query(
-        &self,
-        _caller: &Caller,
-        query: tilo_actions::remote::CatalogueQuery,
-    ) -> tilo_actions::remote::Pending<Result<tilo_actions::remote::CataloguePage, ActionCallError>>
-    {
-        tilo_actions::remote::admitted::offered(
-            tilo_actions::remote::session_actions::PROVIDER,
-            tilo_actions::remote::session_actions::PROVIDER,
-            tilo_actions::remote::admitted::top_level(self.descriptors()),
-            &query,
-        )
+impl tilo_actions::remote::Admits for TurnSteps {
+    const PROVIDER: &'static str = tilo_actions::remote::session_actions::PROVIDER;
+    const APP: &'static str = tilo_actions::remote::session_actions::PROVIDER;
+
+    fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
+        tilo_actions::remote::admitted::top_level(self.descriptors())
     }
-    fn invoke(
+
+    fn start(
         &self,
         caller: &Caller,
-        request: InvokeRequest,
-    ) -> tilo_actions::remote::Pending<Result<InvocationReceipt, ActionCallError>> {
-        self.run(caller, request, tilo_actions::remote::Admitted::default())
-    }
-    fn run(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-        admitted: tilo_actions::remote::Admitted,
-    ) -> tilo_actions::remote::Pending<Result<InvocationReceipt, ActionCallError>> {
-        tilo_actions::remote::admitted::settled(
-            request.invocation,
-            self.start(caller, &request, &admitted),
-        )
-    }
-    fn observe(
-        &self,
-        _caller: &Caller,
-        _id: &tilo_actions::InvocationId,
-    ) -> Option<tilo_actions::InvocationState> {
-        None
-    }
-    fn cancel(
-        &self,
-        _caller: &Caller,
-        _id: &tilo_actions::InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
-        Pending::ready(Err(ActionCallError::UnknownInvocation))
+        _request: &InvokeRequest,
+        _admitted: &tilo_actions::remote::Admitted,
+    ) -> Result<tilo_actions::remote::Pending<tilo_actions::remote::Outcome>, String> {
+        let actor = tilo_broker_core::BrokerActor::for_caller(caller);
+        self.taken.lock().unwrap().push(actor.member().clone());
+        self.on_turns.lock().unwrap().push(actor.turn().cloned());
+        Ok(Pending::ready(Ok(tilo_actions::ActionOutput::default())))
     }
 }
 
@@ -793,18 +766,6 @@ impl TurnSteps {
             params: Vec::new(),
             view: None,
         }]
-    }
-
-    fn start(
-        &self,
-        caller: &Caller,
-        _request: &InvokeRequest,
-        _admitted: &tilo_actions::remote::Admitted,
-    ) -> Result<tilo_actions::remote::Pending<tilo_actions::remote::Outcome>, String> {
-        let actor = tilo_broker_core::BrokerActor::for_caller(caller);
-        self.taken.lock().unwrap().push(actor.member().clone());
-        self.on_turns.lock().unwrap().push(actor.turn().cloned());
-        Ok(Pending::ready(Ok(tilo_actions::ActionOutput::default())))
     }
 
     /// `steps`, this device's turn steps provider.

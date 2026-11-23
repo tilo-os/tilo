@@ -174,59 +174,46 @@ mod invitation_request_tests {
     use crate::workspaces::providers::{Providers, Reach};
     use std::sync::{Arc, Mutex};
     use tilo_actions::InvocationId;
-    use tilo_actions::remote::admitted::{offered, settled, top_level};
+    use tilo_actions::remote::admitted::{offered, top_level};
     use tilo_actions::remote::session_actions;
     use tilo_actions::remote::{
-        ActionCallError, ActionProvider, Admitted, Caller, CataloguePage, CatalogueQuery,
-        InvocationReceipt, InvocationState, InvokeRequest, Outcome, Pending, RemoteActionMessage,
-        pending,
+        ActionCallError, ActionProvider, Admitted, Caller, CatalogueQuery, InvokeRequest, Outcome,
+        Pending, RemoteActionMessage, pending,
     };
 
     struct Shell {
         started: Mutex<Vec<String>>,
     }
 
-    impl ActionProvider for Shell {
-        fn query(
+    impl tilo_actions::remote::Admits for Shell {
+        const PROVIDER: &'static str = session_actions::PROVIDER;
+        const APP: &'static str = session_actions::PROVIDER;
+
+        fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
+            top_level(self.descriptors())
+        }
+
+        fn start(
             &self,
             _caller: &Caller,
-            query: CatalogueQuery,
-        ) -> Pending<Result<CataloguePage, ActionCallError>> {
-            offered(
-                session_actions::PROVIDER,
-                session_actions::PROVIDER,
-                top_level(self.descriptors()),
-                &query,
-            )
-        }
-
-        fn invoke(
-            &self,
-            caller: &Caller,
-            request: InvokeRequest,
-        ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-            self.run(caller, request, Admitted::default())
-        }
-
-        fn run(
-            &self,
-            caller: &Caller,
-            request: InvokeRequest,
-            admitted: Admitted,
-        ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-            settled(request.invocation, self.start(caller, &request, &admitted))
-        }
-
-        fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
-            None
-        }
-
-        fn cancel(
-            &self,
-            _caller: &Caller,
-            _id: &InvocationId,
-        ) -> Pending<Result<(), ActionCallError>> {
-            Pending::ready(Err(ActionCallError::UnknownInvocation))
+            request: &InvokeRequest,
+            _admitted: &Admitted,
+        ) -> Result<Pending<Outcome>, String> {
+            self.started
+                .lock()
+                .unwrap()
+                .push(request.target.address.action.clone());
+            let (answer, pending) = pending();
+            answer.complete(Ok(tilo_actions::ActionOutput {
+                value: Some(serde_json::json!({
+                    "invite": "ab".repeat(32),
+                    "link": "tilo://join/ab",
+                    "role": "editor",
+                    "expires_at_ns": 0,
+                })),
+                resources: Vec::new(),
+            }));
+            Ok(pending)
         }
     }
 
@@ -253,29 +240,6 @@ mod invitation_request_tests {
                 params: Vec::new(),
                 view: None,
             }]
-        }
-
-        fn start(
-            &self,
-            _caller: &Caller,
-            request: &InvokeRequest,
-            _admitted: &Admitted,
-        ) -> Result<Pending<Outcome>, String> {
-            self.started
-                .lock()
-                .unwrap()
-                .push(request.target.address.action.clone());
-            let (answer, pending) = pending();
-            answer.complete(Ok(tilo_actions::ActionOutput {
-                value: Some(serde_json::json!({
-                    "invite": "ab".repeat(32),
-                    "link": "tilo://join/ab",
-                    "role": "editor",
-                    "expires_at_ns": 0,
-                })),
-                resources: Vec::new(),
-            }));
-            Ok(pending)
         }
     }
 

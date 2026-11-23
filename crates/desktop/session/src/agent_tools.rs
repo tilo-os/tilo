@@ -10,12 +10,11 @@
 
 use std::sync::Arc;
 
+use tilo_actions::remote::Admits;
 use tilo_actions::remote::Pending;
-use tilo_actions::remote::admitted::{offered, settled, top_level};
+use tilo_actions::remote::admitted::top_level;
 use tilo_actions::remote::agent_tools as wire;
-use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Admitted, Caller, InvocationReceipt, InvokeRequest, Outcome,
-};
+use tilo_actions::remote::{Admitted, Caller, InvokeRequest, Outcome};
 use tilo_broker_core::BrokerActor;
 use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 
@@ -41,6 +40,45 @@ impl AgentToolSteps {
             descriptor(wire::LIST, "agent-tools-list", "agent-tools-list-detail"),
             descriptor(wire::CALL, "agent-tools-call", "agent-tools-call-detail"),
         ]
+    }
+}
+
+/// Step `action`, described for the broker's catalogue.
+fn descriptor(action: &str, label: &str, detail: &str) -> tilo_actions::ActionDescriptor {
+    use tilo_session_core::desktop::i18n::t;
+    tilo_actions::ActionDescriptor {
+        did: None,
+        state: tilo_actions::ActionState::default(),
+        semantic_identity: None,
+        address: tilo_actions::ActionAddress::new(wire::RESOURCE, action),
+        resource_kind: wire::RESOURCE.into(),
+        resource_label: t("agent-tools-resource"),
+        action_label: t(label),
+        keywords: Vec::new(),
+        icon: None,
+        description: Some(t(detail)),
+        locus: tilo_actions::ExecutionLocus::default(),
+        // The step itself only reads: every change a call makes is its own invocation, decided
+        // where it lands.
+        kind: tilo_actions::OperationKind::View,
+        contract: tilo_actions::ActionContract {
+            result: tilo_actions::ResultSpec::Json {
+                schema: serde_json::json!({ "type": "object" }),
+            },
+            ..tilo_actions::ActionContract::view()
+        },
+        input: tilo_actions::InputSpec::None,
+        params: Vec::new(),
+        view: None,
+    }
+}
+
+impl Admits for AgentToolSteps {
+    const PROVIDER: &'static str = wire::PROVIDER;
+    const APP: &'static str = wire::APP;
+
+    fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
+        top_level(Self::descriptors())
     }
 
     /// Carry out an invocation the device's dispatch admitted for `caller`.
@@ -81,83 +119,5 @@ impl AgentToolSteps {
             action: &address.action,
             argument: argument.as_deref(),
         })
-    }
-}
-
-/// Step `action`, described for the broker's catalogue.
-fn descriptor(action: &str, label: &str, detail: &str) -> tilo_actions::ActionDescriptor {
-    use tilo_session_core::desktop::i18n::t;
-    tilo_actions::ActionDescriptor {
-        did: None,
-        state: tilo_actions::ActionState::default(),
-        semantic_identity: None,
-        address: tilo_actions::ActionAddress::new(wire::RESOURCE, action),
-        resource_kind: wire::RESOURCE.into(),
-        resource_label: t("agent-tools-resource"),
-        action_label: t(label),
-        keywords: Vec::new(),
-        icon: None,
-        description: Some(t(detail)),
-        locus: tilo_actions::ExecutionLocus::default(),
-        // The step itself only reads: every change a call makes is its own invocation, decided
-        // where it lands.
-        kind: tilo_actions::OperationKind::View,
-        contract: tilo_actions::ActionContract {
-            result: tilo_actions::ResultSpec::Json {
-                schema: serde_json::json!({ "type": "object" }),
-            },
-            ..tilo_actions::ActionContract::view()
-        },
-        input: tilo_actions::InputSpec::None,
-        params: Vec::new(),
-        view: None,
-    }
-}
-
-impl ActionProvider for AgentToolSteps {
-    fn query(
-        &self,
-        _caller: &Caller,
-        query: tilo_actions::remote::CatalogueQuery,
-    ) -> Pending<Result<tilo_actions::remote::CataloguePage, ActionCallError>> {
-        offered(
-            wire::PROVIDER,
-            wire::APP,
-            top_level(Self::descriptors()),
-            &query,
-        )
-    }
-
-    fn invoke(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        self.run(caller, request, Admitted::default())
-    }
-
-    fn observe(
-        &self,
-        _caller: &Caller,
-        _id: &tilo_actions::InvocationId,
-    ) -> Option<tilo_actions::remote::InvocationState> {
-        None
-    }
-
-    fn cancel(
-        &self,
-        _caller: &Caller,
-        _id: &tilo_actions::InvocationId,
-    ) -> Pending<Result<(), ActionCallError>> {
-        Pending::ready(Err(ActionCallError::UnknownInvocation))
-    }
-
-    fn run(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-        admitted: Admitted,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        settled(request.invocation, self.start(caller, &request, &admitted))
     }
 }

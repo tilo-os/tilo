@@ -42,8 +42,7 @@ use tilo_actions::remote::workspace_initiative::{
     State, TurnOn,
 };
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Admitted, Caller, CataloguePage, CatalogueQuery, InvocationId,
-    InvocationReceipt, InvocationState, InvokeRequest, Outcome, Pending, pending,
+    ActionCallError, ActionProvider, Admitted, Caller, InvokeRequest, Outcome, Pending, pending,
 };
 use tilo_actions::{ActionFailure, ActionOutput, ExecutionLocus, OperationKind};
 use tilo_automation::{Schedule, TriggerSpec};
@@ -1226,59 +1225,12 @@ fn descriptor(offered: Offered) -> ActionDescriptor {
     }
 }
 
-impl ActionProvider for Initiative {
-    fn query(
-        &self,
-        _caller: &Caller,
-        query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        tilo_actions::remote::admitted::offered(
-            workspace_initiative::PROVIDER,
-            workspace_initiative::PROVIDER,
-            tilo_actions::remote::admitted::top_level(descriptors()),
-            &query,
-        )
-    }
+impl tilo_actions::remote::Admits for Initiative {
+    const PROVIDER: &'static str = workspace_initiative::PROVIDER;
+    const APP: &'static str = workspace_initiative::PROVIDER;
 
-    fn invoke(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        self.run(caller, request, Admitted::default())
-    }
-
-    fn run(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-        admitted: Admitted,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        tilo_actions::remote::admitted::settled(
-            request.invocation,
-            self.start(caller, &request, &admitted),
-        )
-    }
-
-    fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
-        None
-    }
-
-    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
-        Pending::ready(Err(ActionCallError::UnknownInvocation))
-    }
-}
-
-impl Initiative {
-    /// Register the look-round and what it proposes on this device, under the application their
-    /// calls are decided by.
-    pub fn register(self: Arc<Self>, providers: &Providers) {
-        providers.provide(
-            workspace_initiative::PROVIDER,
-            workspace_initiative::PROVIDER,
-            Reach::ThisDevice,
-            self,
-        );
+    fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
+        tilo_actions::remote::admitted::top_level(descriptors())
     }
 
     /// Start `action` `request` calls, in `caller`'s workspace, once admitted.
@@ -1328,6 +1280,19 @@ impl Initiative {
             done.complete(answered);
         });
         Ok(answer)
+    }
+}
+
+impl Initiative {
+    /// Register the look-round and what it proposes on this device, under the application their
+    /// calls are decided by.
+    pub fn register(self: Arc<Self>, providers: &Providers) {
+        providers.provide(
+            workspace_initiative::PROVIDER,
+            workspace_initiative::PROVIDER,
+            Reach::ThisDevice,
+            self,
+        );
     }
 }
 

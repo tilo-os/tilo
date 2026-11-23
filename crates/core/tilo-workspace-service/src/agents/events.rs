@@ -36,8 +36,7 @@ use tilo_actions::params::{ActionParam, ParamType};
 use tilo_actions::remote::person_telling::Kind;
 use tilo_actions::remote::workspace_events::{self, Change, EventView, Events, Named, SetUp, Sort};
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Admitted, Caller, CataloguePage, CatalogueQuery, InvocationId,
-    InvocationReceipt, InvocationState, InvokeRequest, Outcome, Pending, pending,
+    Admitted, Caller, InvocationId, InvokeRequest, Outcome, Pending, pending,
 };
 use tilo_actions::{
     ActionFailure, ActionKey, ActionOutput, ExecutionLocus, MemberId, OperationKind,
@@ -1067,6 +1066,15 @@ impl WorkspaceEvents {
     fn rows(&self) -> Vec<ActionDescriptor> {
         offered().into_iter().map(descriptor).collect()
     }
+}
+
+impl tilo_actions::remote::Admits for WorkspaceEvents {
+    const PROVIDER: &'static str = workspace_events::PROVIDER;
+    const APP: &'static str = workspace_events::PROVIDER;
+
+    fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
+        tilo_actions::remote::admitted::top_level(self.rows())
+    }
 
     /// Start `action` `request` calls, in `caller`'s workspace, once admitted.
     fn start(
@@ -1103,49 +1111,6 @@ impl WorkspaceEvents {
             done.complete(answered);
         });
         Ok(answer)
-    }
-}
-
-impl ActionProvider for WorkspaceEvents {
-    fn query(
-        &self,
-        _caller: &Caller,
-        query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        tilo_actions::remote::admitted::offered(
-            workspace_events::PROVIDER,
-            workspace_events::PROVIDER,
-            tilo_actions::remote::admitted::top_level(self.rows()),
-            &query,
-        )
-    }
-
-    fn invoke(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        self.run(caller, request, Admitted::default())
-    }
-
-    fn run(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-        admitted: Admitted,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        tilo_actions::remote::admitted::settled(
-            request.invocation,
-            self.start(caller, &request, &admitted),
-        )
-    }
-
-    fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
-        None
-    }
-
-    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
-        Pending::ready(Err(ActionCallError::UnknownInvocation))
     }
 }
 

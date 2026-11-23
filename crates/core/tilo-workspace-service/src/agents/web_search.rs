@@ -896,6 +896,16 @@ impl WebSearch {
             self,
         );
     }
+}
+
+#[cfg(feature = "apps")]
+impl tilo_actions::remote::Admits for WebSearch {
+    const PROVIDER: &'static str = PROVIDER;
+    const APP: &'static str = APP_ID;
+
+    fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
+        tilo_actions::remote::admitted::top_level(descriptors())
+    }
 
     /// Start the action `request` calls for `caller`, once admitted: the search or the read runs
     /// on this device's runtime and its answer comes back when the web gave one.
@@ -931,66 +941,6 @@ impl WebSearch {
             done.complete(outcome);
         });
         Ok(answer)
-    }
-}
-
-#[cfg(feature = "apps")]
-impl tilo_actions::remote::ActionProvider for WebSearch {
-    fn query(
-        &self,
-        _caller: &tilo_actions::remote::Caller,
-        query: tilo_actions::remote::CatalogueQuery,
-    ) -> tilo_actions::remote::Pending<
-        Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionCallError>,
-    > {
-        tilo_actions::remote::admitted::offered(
-            PROVIDER,
-            APP_ID,
-            tilo_actions::remote::admitted::top_level(descriptors()),
-            &query,
-        )
-    }
-
-    fn invoke(
-        &self,
-        caller: &tilo_actions::remote::Caller,
-        request: tilo_actions::remote::InvokeRequest,
-    ) -> tilo_actions::remote::Pending<
-        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
-    > {
-        self.run(caller, request, tilo_actions::remote::Admitted::default())
-    }
-
-    fn run(
-        &self,
-        caller: &tilo_actions::remote::Caller,
-        request: tilo_actions::remote::InvokeRequest,
-        admitted: tilo_actions::remote::Admitted,
-    ) -> tilo_actions::remote::Pending<
-        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
-    > {
-        tilo_actions::remote::admitted::settled(
-            request.invocation,
-            self.start(caller, &request, &admitted),
-        )
-    }
-
-    fn observe(
-        &self,
-        _caller: &tilo_actions::remote::Caller,
-        _id: &tilo_actions::InvocationId,
-    ) -> Option<tilo_actions::remote::InvocationState> {
-        None
-    }
-
-    fn cancel(
-        &self,
-        _caller: &tilo_actions::remote::Caller,
-        _id: &tilo_actions::InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionCallError>> {
-        tilo_actions::remote::Pending::ready(Err(
-            tilo_actions::remote::ActionCallError::UnknownInvocation,
-        ))
     }
 }
 

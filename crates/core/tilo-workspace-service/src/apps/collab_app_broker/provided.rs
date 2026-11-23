@@ -918,11 +918,11 @@ mod identity_admin_tests {
     use crate::workspaces::providers::{Providers, Reach};
     use std::sync::{Arc, Mutex};
     use tilo_actions::InvocationId;
-    use tilo_actions::remote::admitted::{offered, settled, top_level};
+    use tilo_actions::remote::admitted::{offered, top_level};
     use tilo_actions::remote::{
         ActionCallError, ActionProvider, Admitted, Caller, CataloguePage, CatalogueQuery,
-        Completer, Confirmation, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest,
-        Outcome, Pending, RemoteActionMessage, identity_admin, pending,
+        Completer, Confirmation, InvocationReceipt, InvokeArgument, InvokeRequest, Outcome,
+        Pending, RemoteActionMessage, identity_admin, pending,
     };
 
     /// The host's identity store, in its place: it records each step it was
@@ -958,47 +958,36 @@ mod identity_admin_tests {
         }
     }
 
-    impl ActionProvider for Host {
-        fn query(
-            &self,
-            _caller: &Caller,
-            query: CatalogueQuery,
-        ) -> Pending<Result<CataloguePage, ActionCallError>> {
-            offered(
-                identity_admin::PROVIDER,
-                "so.tilo.settings",
-                top_level(self.descriptors()),
-                &query,
-            )
+    impl tilo_actions::remote::Admits for Host {
+        const PROVIDER: &'static str = identity_admin::PROVIDER;
+        const APP: &'static str = "so.tilo.settings";
+
+        fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
+            top_level(self.descriptors())
         }
 
-        fn invoke(
+        fn start(
             &self,
             caller: &Caller,
-            request: InvokeRequest,
-        ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-            self.run(caller, request, Admitted::default())
-        }
-
-        fn run(
-            &self,
-            caller: &Caller,
-            request: InvokeRequest,
-            admitted: Admitted,
-        ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-            settled(request.invocation, self.start(caller, &request, &admitted))
-        }
-
-        fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
-            None
-        }
-
-        fn cancel(
-            &self,
-            _caller: &Caller,
-            _id: &InvocationId,
-        ) -> Pending<Result<(), ActionCallError>> {
-            Pending::ready(Err(ActionCallError::UnknownInvocation))
+            request: &InvokeRequest,
+            _admitted: &Admitted,
+        ) -> Result<Pending<Outcome>, String> {
+            if let Some(check) = self.admission_check.lock().unwrap().as_ref() {
+                check();
+            }
+            let workspace = caller
+                .workspace()
+                .ok_or("the step was asked in no workspace")?;
+            self.started.lock().unwrap().push((
+                workspace.to_owned(),
+                tilo_broker_core::BrokerActor::for_caller(caller)
+                    .member()
+                    .clone(),
+                request.target.address.action.clone(),
+            ));
+            let (answer, pending) = pending();
+            self.answers.lock().unwrap().push(answer);
+            Ok(pending)
         }
     }
 
@@ -1025,30 +1014,6 @@ mod identity_admin_tests {
                     view: None,
                 })
                 .collect()
-        }
-
-        fn start(
-            &self,
-            caller: &Caller,
-            request: &InvokeRequest,
-            _admitted: &Admitted,
-        ) -> Result<Pending<Outcome>, String> {
-            if let Some(check) = self.admission_check.lock().unwrap().as_ref() {
-                check();
-            }
-            let workspace = caller
-                .workspace()
-                .ok_or("the step was asked in no workspace")?;
-            self.started.lock().unwrap().push((
-                workspace.to_owned(),
-                tilo_broker_core::BrokerActor::for_caller(caller)
-                    .member()
-                    .clone(),
-                request.target.address.action.clone(),
-            ));
-            let (answer, pending) = pending();
-            self.answers.lock().unwrap().push(answer);
-            Ok(pending)
         }
     }
 
@@ -1649,11 +1614,11 @@ mod settings_documents_tests {
     use std::sync::{Arc, Mutex};
     use tilo_action_policy::edits::{FIELD_EDIT_TAG, Weaker, weakening_tag};
     use tilo_actions::InvocationId;
-    use tilo_actions::remote::admitted::{offered, settled, top_level};
+    use tilo_actions::remote::admitted::{offered, top_level};
     use tilo_actions::remote::{
         ActionCallError, ActionProvider, Admitted, Caller, CataloguePage, CatalogueQuery,
-        Confirmation, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Outcome,
-        Pending, RemoteActionTarget, settings_resources,
+        Confirmation, InvocationReceipt, InvokeArgument, InvokeRequest, Outcome, Pending,
+        RemoteActionTarget, settings_resources,
     };
 
     const APP: &str = tilo_app_id::apps::SETTINGS;
@@ -1706,66 +1671,12 @@ mod settings_documents_tests {
         }
     }
 
-    impl ActionProvider for Host {
-        fn query(
-            &self,
-            _caller: &Caller,
-            query: CatalogueQuery,
-        ) -> Pending<Result<CataloguePage, ActionCallError>> {
-            offered(
-                settings_resources::PROVIDER,
-                APP,
-                top_level(self.descriptors()),
-                &query,
-            )
-        }
+    impl tilo_actions::remote::Admits for Host {
+        const PROVIDER: &'static str = settings_resources::PROVIDER;
+        const APP: &'static str = APP;
 
-        fn invoke(
-            &self,
-            caller: &Caller,
-            request: InvokeRequest,
-        ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-            self.run(caller, request, Admitted::default())
-        }
-
-        fn run(
-            &self,
-            caller: &Caller,
-            request: InvokeRequest,
-            admitted: Admitted,
-        ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-            settled(request.invocation, self.start(caller, &request, &admitted))
-        }
-
-        fn invocation(
-            &self,
-            address: &tilo_actions::ActionAddress,
-            argument: Option<&str>,
-        ) -> Option<tilo_actions::ActionDescriptor> {
-            let weakens = self
-                .descriptor(false)
-                .contract
-                .confirmation_for_argument(argument)
-                != tilo_actions::ConfirmationPolicy::None;
-            Some(self.descriptor(weakens)).filter(|descriptor| &descriptor.address == address)
-        }
-
-        fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
-            None
-        }
-
-        fn cancel(
-            &self,
-            _caller: &Caller,
-            _id: &InvocationId,
-        ) -> Pending<Result<(), ActionCallError>> {
-            Pending::ready(Err(ActionCallError::UnknownInvocation))
-        }
-    }
-
-    impl Host {
-        fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
-            vec![self.descriptor(false)]
+        fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
+            top_level(self.descriptors())
         }
 
         fn start(
@@ -1784,6 +1695,25 @@ mod settings_documents_tests {
             let minutes = arguments["edit"]["value"].as_u64().ok_or("no value")?;
             *self.minutes.lock().unwrap() = u32::try_from(minutes).map_err(|e| e.to_string())?;
             Ok(Pending::ready(Ok(tilo_actions::ActionOutput::default())))
+        }
+
+        fn described(
+            &self,
+            address: &tilo_actions::ActionAddress,
+            argument: Option<&str>,
+        ) -> Option<tilo_actions::ActionDescriptor> {
+            let weakens = self
+                .descriptor(false)
+                .contract
+                .confirmation_for_argument(argument)
+                != tilo_actions::ConfirmationPolicy::None;
+            Some(self.descriptor(weakens)).filter(|descriptor| &descriptor.address == address)
+        }
+    }
+
+    impl Host {
+        fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
+            vec![self.descriptor(false)]
         }
     }
 

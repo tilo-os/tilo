@@ -17,13 +17,12 @@
 
 use std::sync::Arc;
 
-use tilo_actions::remote::admitted::{offered, settled};
+use tilo_actions::remote::admitted::offered;
 use tilo_actions::remote::settings_resources as wire;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Admitted, Caller, InvocationReceipt, InvokeRequest, Outcome,
-    Pending, pending,
+    ActionCallError, Admitted, Caller, InvokeRequest, Outcome, Pending, pending,
 };
-use tilo_actions::{ActionDescriptor, ActionFailure, ActionSpec, InvocationId, ResourceSpec};
+use tilo_actions::{ActionDescriptor, ActionFailure, ActionSpec, ResourceSpec};
 use tilo_broker_core::BrokerActor;
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tilo_workspace_service::workspaces::providers::{Providers, Reach};
@@ -100,6 +99,39 @@ impl SettingsSteps {
         );
     }
 
+    /// The published action at `address`, as one invocation with `argument` (its slot form) is:
+    /// the kind and the risk the value it carries make it, so a change that weakens the person's
+    /// security is admitted as that, and asks them first.
+    fn invocation_as(
+        &self,
+        address: &tilo_actions::ActionAddress,
+        argument: Option<&str>,
+    ) -> Option<ActionDescriptor> {
+        let resources = self.resources.read_recover();
+        let spec: &ActionSpec = tilo_actions::api::resolve(&resources, address)?;
+        let need = spec.need_for(None, argument);
+        let mut descriptor = tilo_actions::api::survey_placed(&resources)
+            .into_iter()
+            .map(|placed| placed.action)
+            .find(|descriptor| &descriptor.address == address)?;
+        drop(resources);
+        descriptor.contract.kind = need.kind;
+        descriptor.contract.field = need.field;
+        if need.privileged {
+            descriptor.contract.risk = tilo_actions::RiskLevel::Privileged;
+        }
+        Some(descriptor)
+    }
+}
+
+impl tilo_actions::remote::Admits for SettingsSteps {
+    const PROVIDER: &'static str = wire::PROVIDER;
+    const APP: &'static str = settings_sections::APP_ID;
+
+    fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
+        self.offered()
+    }
+
     /// Carry out an invocation the device's dispatch admitted for `caller`.
     fn start(
         &self,
@@ -137,80 +169,12 @@ impl SettingsSteps {
         }))
     }
 
-    /// The published action at `address`, as one invocation with `argument` (its slot form) is:
-    /// the kind and the risk the value it carries make it, so a change that weakens the person's
-    /// security is admitted as that, and asks them first.
-    fn invocation_as(
-        &self,
-        address: &tilo_actions::ActionAddress,
-        argument: Option<&str>,
-    ) -> Option<ActionDescriptor> {
-        let resources = self.resources.read_recover();
-        let spec: &ActionSpec = tilo_actions::api::resolve(&resources, address)?;
-        let need = spec.need_for(None, argument);
-        let mut descriptor = tilo_actions::api::survey_placed(&resources)
-            .into_iter()
-            .map(|placed| placed.action)
-            .find(|descriptor| &descriptor.address == address)?;
-        drop(resources);
-        descriptor.contract.kind = need.kind;
-        descriptor.contract.field = need.field;
-        if need.privileged {
-            descriptor.contract.risk = tilo_actions::RiskLevel::Privileged;
-        }
-        Some(descriptor)
-    }
-}
-
-impl ActionProvider for SettingsSteps {
-    fn query(
-        &self,
-        _caller: &Caller,
-        query: tilo_actions::remote::CatalogueQuery,
-    ) -> Pending<Result<tilo_actions::remote::CataloguePage, ActionCallError>> {
-        offered(
-            wire::PROVIDER,
-            settings_sections::APP_ID,
-            self.offered(),
-            &query,
-        )
-    }
-
-    fn invocation(
+    fn described(
         &self,
         address: &tilo_actions::ActionAddress,
         argument: Option<&str>,
     ) -> Option<ActionDescriptor> {
         self.invocation_as(address, argument)
-    }
-
-    fn invoke(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        self.run(caller, request, Admitted::default())
-    }
-
-    fn observe(
-        &self,
-        _caller: &Caller,
-        _id: &InvocationId,
-    ) -> Option<tilo_actions::remote::InvocationState> {
-        None
-    }
-
-    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
-        Pending::ready(Err(ActionCallError::UnknownInvocation))
-    }
-
-    fn run(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-        admitted: Admitted,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        settled(request.invocation, self.start(caller, &request, &admitted))
     }
 }
 

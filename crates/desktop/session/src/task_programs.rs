@@ -23,12 +23,11 @@
 
 use std::sync::Arc;
 
+use tilo_actions::remote::Admits;
 use tilo_actions::remote::Pending;
-use tilo_actions::remote::admitted::{offered, settled, top_level};
+use tilo_actions::remote::admitted::{offered, top_level};
 use tilo_actions::remote::task_programs as task_wire;
-use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Admitted, Caller, InvocationReceipt, InvokeRequest, Outcome,
-};
+use tilo_actions::remote::{ActionProvider, Admitted, Caller, InvokeRequest, Outcome};
 use tilo_actions::{ActionArgs, ActionParam, ParamType};
 use tilo_broker_core::BrokerActor;
 use tilo_workspace_service::workspaces::providers::{Providers, Reach};
@@ -55,67 +54,6 @@ impl TaskPrograms {
             Reach::AgentSessions { listed: true },
             self,
         );
-    }
-
-    /// Carry out an invocation the device's dispatch admitted for `caller`.
-    fn start(
-        &self,
-        caller: &Caller,
-        request: &InvokeRequest,
-        admitted: &Admitted,
-    ) -> Result<Pending<Outcome>, String> {
-        let address = &request.target.address;
-        if address.resource != task_wire::RESOURCE || address.action != task_wire::RUN {
-            return Err("unknown step of a session's programs".into());
-        }
-        let actor = BrokerActor::for_caller(caller);
-        if !actor.is_agent() {
-            return Err("a session's programs are its agent's".into());
-        }
-        let session = actor
-            .session()
-            .ok_or("an agent runs programs as a step of its session")?;
-        let provider = admitted
-            .through
-            .clone()
-            .ok_or("an agent runs programs only through its session's API")?;
-        let workspace = caller
-            .workspace()
-            .ok_or("a session's programs run in its workspace")?;
-        let argument = request.argument.to_slot();
-        let args = bind(PARAMS, argument.as_deref())?;
-        let program = args.text("program").unwrap_or_default().to_owned();
-        let confirm = args.boolean("confirm").unwrap_or(false);
-        let this = args
-            .text("this")
-            .filter(|this| !this.trim().is_empty())
-            .map(str::to_owned);
-        let agent = actor.member().id();
-        let group = request
-            .context
-            .as_ref()
-            .and_then(|context| context.group.clone())
-            .unwrap_or_else(|| tilo_actions::WorkGroup {
-                id: session.to_owned(),
-                label: None,
-                kind: tilo_actions::context::AGENT_SESSION_GROUP.to_owned(),
-                declared_id: None,
-                session: None,
-            });
-        self.programs.run(ProgramRequest {
-            workspace,
-            provider: Some(provider),
-            caller: ProgramCaller::Agent {
-                agent,
-                person: actor.acting_for(),
-                session,
-            },
-            group,
-            program,
-            confirm,
-            this,
-            stop: Some(Arc::clone(&admitted.stop)),
-        })
     }
 }
 
@@ -180,51 +118,73 @@ fn bind(params: &'static [ActionParam], argument: Option<&str>) -> Result<Action
     ActionArgs::bind_json(params, &supplied).map_err(|error| error.to_string())
 }
 
-impl ActionProvider for TaskPrograms {
-    fn query(
-        &self,
-        _caller: &Caller,
-        query: tilo_actions::remote::CatalogueQuery,
-    ) -> Pending<Result<tilo_actions::remote::CataloguePage, ActionCallError>> {
-        offered(
-            task_wire::PROVIDER,
-            task_wire::APP,
-            top_level(vec![descriptor()]),
-            &query,
-        )
+impl Admits for TaskPrograms {
+    const PROVIDER: &'static str = task_wire::PROVIDER;
+    const APP: &'static str = task_wire::APP;
+
+    fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
+        top_level(vec![descriptor()])
     }
 
-    fn invoke(
+    /// Carry out an invocation the device's dispatch admitted for `caller`.
+    fn start(
         &self,
         caller: &Caller,
-        request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        self.run(caller, request, Admitted::default())
-    }
-
-    fn observe(
-        &self,
-        _caller: &Caller,
-        _id: &tilo_actions::InvocationId,
-    ) -> Option<tilo_actions::remote::InvocationState> {
-        None
-    }
-
-    fn cancel(
-        &self,
-        _caller: &Caller,
-        _id: &tilo_actions::InvocationId,
-    ) -> Pending<Result<(), ActionCallError>> {
-        Pending::ready(Err(ActionCallError::UnknownInvocation))
-    }
-
-    fn run(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-        admitted: Admitted,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        settled(request.invocation, self.start(caller, &request, &admitted))
+        request: &InvokeRequest,
+        admitted: &Admitted,
+    ) -> Result<Pending<Outcome>, String> {
+        let address = &request.target.address;
+        if address.resource != task_wire::RESOURCE || address.action != task_wire::RUN {
+            return Err("unknown step of a session's programs".into());
+        }
+        let actor = BrokerActor::for_caller(caller);
+        if !actor.is_agent() {
+            return Err("a session's programs are its agent's".into());
+        }
+        let session = actor
+            .session()
+            .ok_or("an agent runs programs as a step of its session")?;
+        let provider = admitted
+            .through
+            .clone()
+            .ok_or("an agent runs programs only through its session's API")?;
+        let workspace = caller
+            .workspace()
+            .ok_or("a session's programs run in its workspace")?;
+        let argument = request.argument.to_slot();
+        let args = bind(PARAMS, argument.as_deref())?;
+        let program = args.text("program").unwrap_or_default().to_owned();
+        let confirm = args.boolean("confirm").unwrap_or(false);
+        let this = args
+            .text("this")
+            .filter(|this| !this.trim().is_empty())
+            .map(str::to_owned);
+        let agent = actor.member().id();
+        let group = request
+            .context
+            .as_ref()
+            .and_then(|context| context.group.clone())
+            .unwrap_or_else(|| tilo_actions::WorkGroup {
+                id: session.to_owned(),
+                label: None,
+                kind: tilo_actions::context::AGENT_SESSION_GROUP.to_owned(),
+                declared_id: None,
+                session: None,
+            });
+        self.programs.run(ProgramRequest {
+            workspace,
+            provider: Some(provider),
+            caller: ProgramCaller::Agent {
+                agent,
+                person: actor.acting_for(),
+                session,
+            },
+            group,
+            program,
+            confirm,
+            this,
+            stop: Some(Arc::clone(&admitted.stop)),
+        })
     }
 }
 

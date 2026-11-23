@@ -32,8 +32,8 @@ use std::sync::Arc;
 use tilo_actions::remote::admitted::{offered, settled};
 use tilo_actions::remote::session_actions as wire;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Admitted, Caller, CataloguePage, CatalogueQuery,
-    InvocationReceipt, InvocationState, InvokeRequest, Outcome, Pending, pending,
+    ActionCallError, ActionProvider, Admitted, Caller, CatalogueQuery, InvocationReceipt,
+    InvokeRequest, Outcome, Pending, pending,
 };
 use tilo_actions::{ActionDescriptor, ActionFailure, InvocationId};
 use tilo_broker_core::BrokerActor;
@@ -172,6 +172,15 @@ impl SessionActions {
         });
         rows
     }
+}
+
+impl tilo_actions::remote::Admits for SessionActions {
+    const PROVIDER: &'static str = wire::PROVIDER;
+    const APP: &'static str = wire::PROVIDER;
+
+    fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
+        self.rows()
+    }
 
     /// Carry out an invocation the device's dispatch admitted for `caller`: a turn's step,
     /// decided by the turn that asked for it, exactly as an app's action the same agent takes in
@@ -221,41 +230,6 @@ impl SessionActions {
             })
             .map(Option::unwrap_or_default)
         }))
-    }
-}
-
-impl ActionProvider for SessionActions {
-    fn query(
-        &self,
-        _caller: &Caller,
-        query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        offered(wire::PROVIDER, wire::PROVIDER, self.rows(), &query)
-    }
-
-    fn invoke(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        self.run(caller, request, Admitted::default())
-    }
-
-    fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
-        None
-    }
-
-    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
-        Pending::ready(Err(ActionCallError::UnknownInvocation))
-    }
-
-    fn run(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-        admitted: Admitted,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        settled(request.invocation, self.start(caller, &request, &admitted))
     }
 }
 

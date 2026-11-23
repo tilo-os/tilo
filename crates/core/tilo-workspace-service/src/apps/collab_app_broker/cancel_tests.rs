@@ -9,11 +9,10 @@ use crate::workspaces::providers::{Providers, Reach};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use tilo_actions::InvocationId;
-use tilo_actions::remote::admitted::{offered, settled, top_level};
+use tilo_actions::remote::admitted::top_level;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Admitted, Caller, CataloguePage, CatalogueQuery,
-    InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Outcome, Pending,
-    RemoteActionTarget,
+    ActionCallError, ActionProvider, Admitted, Caller, InvokeArgument, InvokeRequest, Outcome,
+    Pending, RemoteActionTarget,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionFailure, ActionKind, ConfirmationPolicy,
@@ -29,38 +28,34 @@ const ACTION: &str = "summarise";
 /// A step that works until its caller cancels it, as a transform's model call does.
 struct Slow;
 
-impl ActionProvider for Slow {
-    fn query(
+impl tilo_actions::remote::Admits for Slow {
+    const PROVIDER: &'static str = PROVIDER;
+    const APP: &'static str = APP;
+
+    fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
+        top_level(self.descriptors())
+    }
+
+    fn start(
         &self,
         _caller: &Caller,
-        query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        offered(PROVIDER, APP, top_level(self.descriptors()), &query)
-    }
-
-    fn invoke(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        self.run(caller, request, Admitted::default())
-    }
-
-    fn run(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-        admitted: Admitted,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        settled(request.invocation, self.start(caller, &request, &admitted))
-    }
-
-    fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
-        None
-    }
-
-    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
-        Pending::ready(Err(ActionCallError::UnknownInvocation))
+        _request: &InvokeRequest,
+        admitted: &Admitted,
+    ) -> Result<Pending<Outcome>, String> {
+        let stop = Arc::clone(&admitted.stop);
+        let (done, answer) = tilo_actions::remote::pending();
+        drop(std::thread::spawn(move || {
+            while !stop.load(Ordering::Acquire) {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            done.complete(Err(Box::new(ActionFailure {
+                code: "model_unavailable".into(),
+                message: "the transform was cancelled".into(),
+                details: None,
+                retryable: false,
+            })));
+        }));
+        Ok(answer)
     }
 }
 
@@ -94,28 +89,6 @@ impl Slow {
             params: Vec::new(),
             view: None,
         }]
-    }
-
-    fn start(
-        &self,
-        _caller: &Caller,
-        _request: &InvokeRequest,
-        admitted: &Admitted,
-    ) -> Result<Pending<Outcome>, String> {
-        let stop = Arc::clone(&admitted.stop);
-        let (done, answer) = tilo_actions::remote::pending();
-        drop(std::thread::spawn(move || {
-            while !stop.load(Ordering::Acquire) {
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
-            done.complete(Err(Box::new(ActionFailure {
-                code: "model_unavailable".into(),
-                message: "the transform was cancelled".into(),
-                details: None,
-                retryable: false,
-            })));
-        }));
-        Ok(answer)
     }
 }
 
