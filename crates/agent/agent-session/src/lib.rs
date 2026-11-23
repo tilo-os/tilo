@@ -54,7 +54,7 @@ pub use grants::{
 };
 pub use record_actions::{RESOURCE_PROVIDER, resource_provider};
 pub use service::{AgentService, CatalogueFactory, ServerEndpoint};
-pub use worker::{ConfinedReplica, PageAction};
+pub use worker::ConfinedReplica;
 
 // Unit tests admit peer bytes through the Automerge isolate, whose workers
 // are this test binary started again.

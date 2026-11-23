@@ -28,6 +28,7 @@ use std::{
     process::{Child, Command},
     sync::{Arc, Mutex},
 };
+use tilo_actions::remote::invocation_record::Invocations;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeRequest, Pending,
@@ -101,6 +102,8 @@ pub struct Daemon {
     login: Option<(SigningKey, Device)>,
     /// The device actions this daemon answers: a ticket for a new computer, and a login with one.
     tickets: Arc<Tickets>,
+    /// Every invocation this device was asked for, however it was asked.
+    invocations: Arc<Invocations>,
     /// The device this daemon is, as the API it serves locally acts.
     key: SigningKey,
     cert: DeviceCert,
@@ -494,10 +497,11 @@ impl Daemon {
         // Elsewhere nobody here answers, and such an action is refused.
         #[cfg(target_os = "macos")]
         super::confirm::ask_the_person(&broker, &actor, &apps);
+        let invocations: Arc<Invocations> = Arc::default();
         if let Some(key_sessions) = &key_sessions {
             serve_key_sessions(
                 key_sessions,
-                &broker,
+                (&broker, &invocations),
                 &workspaces,
                 (&workspace_id, &actor),
                 &policy_origin,
@@ -550,6 +554,7 @@ impl Daemon {
             _kept: kept,
             login: identity.login,
             tickets,
+            invocations,
             key: identity.key.clone(),
             cert: identity.cert,
             account: std::sync::Mutex::new(None),
@@ -964,6 +969,7 @@ impl Daemon {
                 projection: Some(Caller::local_person(&self.actor).in_workspace(workspace)),
             })),
             tickets: Some(Arc::clone(&self.tickets)),
+            invocations: Arc::clone(&self.invocations),
         })
     }
 }
@@ -997,6 +1003,10 @@ impl tilo_api::session::Here for Daemon {
         })
     }
 
+    fn invocations(&self) -> Option<Arc<Invocations>> {
+        Some(Arc::clone(&self.invocations))
+    }
+
     fn connection(&self) -> Option<Arc<tilo_api::server::Connection>> {
         self.account
             .lock()
@@ -1022,6 +1032,9 @@ pub struct RuntimeActionProvider {
     /// The daemon's device actions, for the person's own session: serving a ticket for a new
     /// computer, and a login with one. `None` for an agent's run, which cannot add a device.
     tickets: Option<Arc<Tickets>>,
+    /// The device's record of every invocation it was asked for: what following, waiting on and
+    /// stopping one asks, wherever the call came in.
+    invocations: Arc<Invocations>,
 }
 
 struct AdmittedRuntimeSession {
@@ -1199,6 +1212,7 @@ impl RuntimeActionProvider {
                 projection: None,
             })),
             tickets: None,
+            invocations: Arc::clone(&self.invocations),
         };
         Ok((run, caller, agent))
     }
@@ -1314,16 +1328,29 @@ impl ActionProvider for RuntimeActionProvider {
         {
             return tickets.invoke(&request);
         }
+        if let Some(answered) = self.invocations.answer(caller, &request) {
+            return answered;
+        }
         if let Some(session) = &self.session {
             if let Err(refusal) = session.check(caller, &self.workspaces) {
                 return Pending::ready(Err(refusal.into()));
             }
-            return session.provider.invoke(session.admission.caller(), request);
+            let runs_as = session.admission.caller().clone();
+            self.invocations.record(
+                caller,
+                &request,
+                Some(&self.workspace),
+                (Arc::clone(&session.provider), runs_as.clone()),
+            );
+            return session.provider.invoke(&runs_as, request);
         }
         Pending::ready(Err(ActionCallError::NotPermitted))
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
+        if let Some(state) = self.invocations.observe(caller, id) {
+            return Some(state);
+        }
         if let Some(tickets) = &self.tickets
             && self.is_the_person(caller)
             && let Some(state) = tickets.observe(id)
@@ -1395,6 +1422,9 @@ impl ActionProvider for RuntimeActionProvider {
     /// Routed and authorized exactly as [`Self::observe`]: a caller that may
     /// not observe an invocation may not wait on it either.
     fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
+        if self.invocations.get(caller, id).is_some() {
+            return self.invocations.next_change(caller, id);
+        }
         if let Some(session) = &self.session {
             session.check(caller, &self.workspaces).ok()?;
             return session.provider.next_change(session.admission.caller(), id);
@@ -1442,6 +1472,9 @@ impl ActionProvider for RuntimeActionProvider {
             return Pending::ready(Err(ActionCallError::NotCancellable {
                 reason: "a device action ends by itself".into(),
             }));
+        }
+        if let Some(stopping) = self.invocations.cancel(caller, id) {
+            return stopping;
         }
         if let Some(session) = &self.session {
             if let Err(refusal) = session.check(caller, &self.workspaces) {
@@ -1772,7 +1805,7 @@ fn start_triggers(broker: &BrokerHandle, workspaces: &ServiceWorkspaces) {
 /// before the broker and refused them as not running yet until now.
 fn serve_key_sessions(
     key_sessions: &crate::key_sessions::KeySessions,
-    broker: &BrokerHandle,
+    (broker, invocations): (&BrokerHandle, &Arc<Invocations>),
     workspaces: &Arc<ServiceWorkspaces>,
     (workspace, actor): (&str, &str),
     policy_origin: &tilo_workspace_service::apps::policy_clock::PolicyOrigin,
@@ -1793,6 +1826,7 @@ fn serve_key_sessions(
                 apps: None,
                 session: None,
                 tickets: None,
+                invocations: Arc::clone(invocations),
             },
             workspace: workspace.to_owned(),
             actor: actor.to_owned(),

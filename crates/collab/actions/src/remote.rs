@@ -41,6 +41,7 @@ mod application;
 pub mod browser;
 mod caller;
 pub mod environment_device;
+pub mod invocation_record;
 pub mod linux_apps;
 pub mod mcp_server;
 pub use caller::{Caller, device_agent_id};

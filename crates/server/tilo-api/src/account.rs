@@ -43,6 +43,7 @@ use serde_json::{Map, Value, json};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, Weak};
 use tilo_actions::policy::{Answer, Asker, Invoked};
+use tilo_actions::remote::invocation_record::Invocations;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueResource, CatalogueRow, ConfirmedInvocation, InvocationReceipt, InvocationState,
@@ -466,8 +467,6 @@ struct Running {
 enum Run {
     /// The person is asked for a key: its poll secret.
     Key(String),
-    /// A workspace's host runs it, and answers how it goes.
-    Asked(SessionActions),
     /// It ended so.
     Ended(InvocationState),
 }
@@ -651,16 +650,36 @@ impl Account {
         drop(running);
     }
 
-    /// Whether the account answers the invocation `id`.
-    fn knows(&self, id: &InvocationId) -> bool {
+    /// Whether the account answers the invocation `id` for `caller`: one of its own, or one it
+    /// handed on to a workspace's host for them.
+    fn knows(&self, caller: &Caller, id: &InvocationId) -> bool {
         crate::lock(&self.0.running).by_id.contains_key(id)
+            || self
+                .handed_on(|invocations| invocations.get(caller, id))
+                .is_some()
     }
 
-    /// Run `request`: its receipt.
-    async fn run(&self, request: InvokeRequest) -> InvocationReceipt {
+    /// What the device's record of the invocations handed on answers, while the server runs.
+    fn handed_on<T>(&self, read: impl FnOnce(&Invocations) -> Option<T>) -> Option<T> {
+        read(&self.0.server.upgrade()?.invocations)
+    }
+
+    /// Run `request` for `caller`: its receipt.
+    async fn run(&self, caller: Caller, request: InvokeRequest) -> InvocationReceipt {
         let id = request.invocation;
-        let args = match request.argument {
-            InvokeArgument::Json(arguments) => Value::Object(arguments),
+        // A call handed on to a workspace's host is followed there, through the device's record.
+        let hand_on = |actions: SessionActions| {
+            if let Some(server) = self.0.server.upgrade() {
+                server.invocations.record(
+                    &caller,
+                    &request,
+                    None,
+                    (Arc::new(actions), self.0.caller.clone()),
+                );
+            }
+        };
+        let args = match &request.argument {
+            InvokeArgument::Json(arguments) => Value::Object(arguments.clone()),
             _ => json!({}),
         };
         let address = &request.target.address;
@@ -690,11 +709,11 @@ impl Account {
                 ReceiptStatus::Accepted
             }
             Outcome::Asked(actions) => {
-                self.keep(id, Run::Asked(actions));
+                hand_on(actions);
                 ReceiptStatus::Accepted
             }
             Outcome::Held(actions) => {
-                self.keep(id, Run::Asked(actions));
+                hand_on(actions);
                 ReceiptStatus::Rejected {
                     error: ActionCallError::ConfirmationRequired {
                         departure: Vec::new(),
@@ -1010,27 +1029,26 @@ impl ActionProvider for Account {
 
     fn invoke(
         &self,
-        _caller: &Caller,
+        caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let (done, answer) = pending();
         let account = self.clone();
+        let caller = caller.clone();
         tokio::spawn(async move {
-            let receipt = account.run(request).await;
+            let receipt = account.run(caller, request).await;
             done.complete(Ok(receipt));
         });
         answer
     }
 
-    fn observe(&self, _caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+    fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+        if let Some(state) = self.handed_on(|invocations| invocations.observe(caller, id)) {
+            return Some(state);
+        }
         let running = crate::lock(&self.0.running);
         match running.by_id.get(id)? {
             Run::Ended(state) => Some(state.clone()),
-            Run::Asked(actions) => {
-                let actions = actions.clone();
-                drop(running);
-                actions.observe(&self.0.caller, id)
-            }
             Run::Key(poll) => {
                 let poll = poll.clone();
                 drop(running);
@@ -1044,25 +1062,20 @@ impl ActionProvider for Account {
         }
     }
 
-    fn next_change(&self, _caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
-        let actions = match crate::lock(&self.0.running).by_id.get(id)? {
-            Run::Asked(actions) => actions.clone(),
-            Run::Key(_) | Run::Ended(_) => return None,
-        };
-        actions.next_change(&self.0.caller, id)
+    fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
+        self.handed_on(|invocations| invocations.next_change(caller, id))
     }
 
-    fn cancel(&self, _caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
-        let actions = match crate::lock(&self.0.running).by_id.get(id) {
-            Some(Run::Asked(actions)) => actions.clone(),
-            Some(_) => {
-                return Pending::ready(Err(ActionCallError::NotCancellable {
-                    reason: "it is not running".into(),
-                }));
-            }
-            None => return Pending::ready(Err(ActionCallError::UnknownInvocation)),
-        };
-        actions.cancel(&self.0.caller, id)
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        if let Some(stopping) = self.handed_on(|invocations| invocations.cancel(caller, id)) {
+            return stopping;
+        }
+        if crate::lock(&self.0.running).by_id.contains_key(id) {
+            return Pending::ready(Err(ActionCallError::NotCancellable {
+                reason: "it is not running".into(),
+            }));
+        }
+        Pending::ready(Err(ActionCallError::UnknownInvocation))
     }
 }
 
@@ -1139,7 +1152,7 @@ impl ActionProvider for Joined {
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        if self.account.knows(id) {
+        if self.account.knows(caller, id) {
             return self.account.observe(caller, id);
         }
         self.actions.as_ref()?.observe(caller, id)
@@ -1152,7 +1165,7 @@ impl ActionProvider for Joined {
     }
 
     fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
-        if self.account.knows(id) {
+        if self.account.knows(caller, id) {
             return self.account.next_change(caller, id);
         }
         self.actions.as_ref()?.next_change(caller, id)
@@ -1176,7 +1189,7 @@ impl ActionProvider for Joined {
 
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
         match &self.actions {
-            Some(actions) if !self.account.knows(id) => actions.cancel(caller, id),
+            Some(actions) if !self.account.knows(caller, id) => actions.cancel(caller, id),
             _ => self.account.cancel(caller, id),
         }
     }

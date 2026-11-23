@@ -66,7 +66,7 @@ mod replica;
 mod serve;
 
 pub use process::{affinity, pool_size, running, set_affinity};
-pub use proto::{PageAction, ProbeReport};
+pub use proto::ProbeReport;
 pub use read::ViewReadPolicy;
 pub use replica::ConfinedReplica;
 

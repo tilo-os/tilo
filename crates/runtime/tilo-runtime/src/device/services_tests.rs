@@ -160,6 +160,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
             projection: Some(owner.clone()),
         })),
         tickets: None,
+        invocations: Arc::default(),
     };
     let other = owner.clone().in_new_execution();
     let id = tilo_actions::InvocationId::new();

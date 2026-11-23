@@ -13,7 +13,7 @@ use tilo_server_protocol::live::LiveAnchor;
 use ui::resource::DocumentId;
 
 use super::process::{Lease, Stopped};
-use super::proto::{MAX_CONTENT_ITEM_BYTES, Mode, PageAction, Reply, Request};
+use super::proto::{MAX_CONTENT_ITEM_BYTES, Mode, Reply, Request};
 use crate::apps::{AppCatalogue, AppError, ReplicaActor, Seed};
 use tilo_lock::MutexRecover as _;
 
@@ -212,25 +212,6 @@ impl ConfinedReplica {
             member,
             actor,
             (seed, asks_workspace),
-        )
-    }
-
-    /// [`Self::open`], held where its worker also shows the document's view as a web
-    /// page its member acts on ([`Self::page_show`]).
-    pub fn open_page(
-        catalogue: &AppCatalogue,
-        (app_id, workspace): (&str, &str),
-        member: &tilo_actions::MemberId,
-        actor: &ReplicaActor,
-        seed: Seed,
-    ) -> Result<Self, AppError> {
-        Self::open_in(
-            Mode::Page,
-            catalogue,
-            (app_id, workspace),
-            member,
-            actor,
-            (seed, true),
         )
     }
 
@@ -613,66 +594,6 @@ impl ConfinedReplica {
         }
     }
 
-    /// The document's view as a whole page, after activating `show` (what the
-    /// page's address names): its title, the theme's stylesheet and its body.
-    /// Only a document opened with [`Self::open_page`] shows one.
-    ///
-    /// # Errors
-    /// The worker could not show it.
-    pub fn page_show(&self, show: Option<&str>) -> Result<(String, String, String), AppError> {
-        let mut inner = self.lock();
-        self.supply_before_rendering(&mut inner);
-        let reply = self.call(
-            &mut inner,
-            &Request::PageShow {
-                show: show.map(str::to_owned),
-            },
-        );
-        if reply.is_ok() {
-            // Showing it may have written (a note opened keeps where its
-            // person is): taken with the next take.
-            inner.dirty = true;
-            inner.beside_dirty = true;
-        }
-        drop(inner);
-        match reply? {
-            Reply::Shown { title, css, body } => Ok((title, css, body)),
-            Reply::Failed(reason) => Err(worker_error(reason)),
-            _ => Err(worker_error("the worker answered out of turn")),
-        }
-    }
-
-    /// What its member did on the page ([`super::proto::PageAction`] on the
-    /// element numbered `id`, at `target`), and the page's elements that
-    /// changed, each by its number and new HTML. With no `act`, only what
-    /// changed since the page last answered: after the document took others'
-    /// changes.
-    ///
-    /// # Errors
-    /// The worker could not act or answer.
-    pub fn page_act(
-        &self,
-        act: Option<(u32, Option<String>, PageAction)>,
-    ) -> Result<Vec<(u32, String)>, AppError> {
-        let request = match act {
-            Some((id, target, action)) => Request::PageAct { id, target, action },
-            None => Request::PagePatch,
-        };
-        let mut inner = self.lock();
-        self.supply_before_rendering(&mut inner);
-        let reply = self.call(&mut inner, &request);
-        if reply.is_ok() {
-            inner.dirty = true;
-            inner.beside_dirty = true;
-        }
-        drop(inner);
-        match reply? {
-            Reply::Patches(patches) => Ok(patches),
-            Reply::Failed(reason) => Err(worker_error(reason)),
-            _ => Err(worker_error("the worker answered out of turn")),
-        }
-    }
-
     /// Take the record's store to come from its workspace's hosts:
     /// [`crate::Replica::ask_workspace_for_missing`].
     ///
@@ -879,58 +800,6 @@ impl ConfinedReplica {
             .into_iter()
             .next(),
             _ => None,
-        }
-    }
-
-    /// [`crate::Replica::renew`]: kept for a worker that replaces this one.
-    ///
-    /// # Errors
-    /// Why the worker could not renew it.
-    pub fn renew(&self, actor: &ReplicaActor) -> Result<(), AppError> {
-        let actor =
-            serde_json::to_string(actor).map_err(|error| worker_error(error.to_string()))?;
-        let answered = self.call(
-            &mut self.lock(),
-            &Request::Renew {
-                actor: actor.clone(),
-            },
-        )?;
-        match answered {
-            Reply::Done => {
-                *self.actor.lock_recover() = actor;
-                Ok(())
-            }
-            Reply::Failed(reason) => Err(worker_error(reason)),
-            _ => Err(worker_error("the worker answered out of turn")),
-        }
-    }
-
-    /// The views the resource `wanted` offers under `policy`, read from the
-    /// record as the worker holds it now: [`crate::Replica::resource_views`].
-    ///
-    /// # Errors
-    /// Why the worker could not answer.
-    pub fn resource_views(
-        &self,
-        wanted: &tilo_actions::remote::ViewResourceQuery,
-        policy: &super::ViewReadPolicy,
-    ) -> Result<Vec<ActionDescriptor>, AppError> {
-        let request = Request::Views {
-            wanted: serde_json::to_string(wanted)
-                .map_err(|error| worker_error(error.to_string()))?,
-            policy: serde_json::to_string(policy)
-                .map_err(|error| worker_error(error.to_string()))?,
-        };
-        let mut inner = self.lock();
-        self.supply_before_rendering(&mut inner);
-        let answered = self.call(&mut inner, &request)?;
-        drop(inner);
-        match answered {
-            Reply::Descriptors(text) => {
-                serde_json::from_str(&text).map_err(|error| worker_error(error.to_string()))
-            }
-            Reply::Failed(reason) => Err(worker_error(reason)),
-            _ => Err(worker_error("the worker answered out of turn")),
         }
     }
 

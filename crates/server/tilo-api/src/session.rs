@@ -117,6 +117,11 @@ pub trait Here: Send + Sync {
     fn connection(&self) -> Option<Arc<crate::server::Connection>> {
         None
     }
+    /// The device's record of every invocation it was asked for, shared with the account: `None`
+    /// for a host that keeps none, whose account keeps its own.
+    fn invocations(&self) -> Option<Arc<tilo_actions::remote::invocation_record::Invocations>> {
+        None
+    }
 }
 
 /// A workspace a desktop holds, as the account lists it: the person's own.

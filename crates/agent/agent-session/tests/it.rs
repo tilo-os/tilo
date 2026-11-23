@@ -56,8 +56,6 @@ mod issue_listing;
 mod issue_reads;
 #[path = "messages_for_agents.rs"]
 mod messages_for_agents;
-#[path = "page_view.rs"]
-mod page_view;
 #[path = "part_handover.rs"]
 mod part_handover;
 #[path = "render_video.rs"]
