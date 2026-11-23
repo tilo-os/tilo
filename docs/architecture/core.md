@@ -245,6 +245,11 @@ that view to its answer. A view publishes each action's description once per
 resource type; a row publishes only its resource and what differs for it
 (whether the action's require passes, and why not), so a list of 10k rows
 stays cheap and every row is still reachable by its address.
+A row in a reading carries its resource's address as a typed handle, so a
+view calls the row's own actions (`network.join()` on a Wi-Fi row) the same
+way in Rust and tilolang. An action's name belongs to its resource type, so
+`join` on two types never collides, and no root action takes a row's name to
+find it.
 
 Our own code calls only over the device link (`tilo-actions/1` on iroh).
 That includes signing in: `tilo login <ticket>` connects straight to the
