@@ -13,7 +13,7 @@ CI = Path(__file__).resolve().parents[1]
 OWNER = "ab" * 32
 
 
-def run_job(root, fail="", owner=OWNER, lint_status=0):
+def run_job(root, fail="", owner=OWNER, lint_status=0, selected=()):
     """Run the real job in `root` with stub jobs; `fail` is shell run first in each job."""
     ci = root / "dist/ci"
     ci.mkdir(parents=True)
@@ -36,8 +36,8 @@ def run_job(root, fail="", owner=OWNER, lint_status=0):
     env.pop("TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY", None)
     if owner is not None:
         env["TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY"] = owner
-    return subprocess.run(["bash", str(ci / "package-job.sh"), "amd64"], cwd=root, env=env,
-                          stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    return subprocess.run(["bash", str(ci / "package-job.sh"), "amd64", *selected], cwd=root,
+                          env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
 
 
 def built(root):
@@ -65,6 +65,14 @@ class PackageJobTests(unittest.TestCase):
             self.assertIn("failed userspaces: nix", result.stderr)
             self.assertIn("fedora-44", built(root))
             self.assertNotIn("nix", built(root))
+
+    def test_naming_distributions_builds_only_them_and_needs_no_app_store_key(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            result = run_job(root, owner=None, selected=("arch",))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(built(root), ["arch"])
+            self.assertFalse((root / "fetched").exists())
 
     def test_a_missing_trust_root_or_stale_lint_exception_fails_before_fetching(self):
         for owner, lint_status in ((None, 0), ("0" * 64, 0), (OWNER, 1)):
