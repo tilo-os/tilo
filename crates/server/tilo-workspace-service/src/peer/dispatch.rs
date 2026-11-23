@@ -117,9 +117,9 @@ async fn handle_session_write(
     // is never answered as committed, and one that waits for history the
     // workspace lacks is not answered as kept either.
     match link.admit_one(author, message).await {
-        (_, Some(tilo_peer_state::direct::Kept::Refused)) => Ok(refused(Refusal::NotAllowed(
-            "the workspace refused the write".into(),
-        ))),
+        (_, Some(tilo_peer_state::direct::Kept::Refused { reason })) => {
+            Ok(refused(Refusal::NotAllowed(reason)))
+        }
         (true, None) => Ok(refused(Refusal::NotReady)),
         _ => Ok(op.map(|op| Envelope::Committed {
             workspace_id,

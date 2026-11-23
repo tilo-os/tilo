@@ -1,6 +1,6 @@
 [package]
 name = "tilo-network-actor"
-description = "The desktop's peer-to-peer transport: the iroh actor that keeps workspace host sessions, sessions with the person's own devices, direct links and a person's private device connection."
+description = "The desktop's peer-to-peer transport: the iroh actor that keeps workspace links, sessions with the person's own devices, direct links and a person's private device connection."
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
@@ -42,7 +42,6 @@ tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-nearby-service = { path = "../nearby-service" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
-tilo-server-session = { path = "../../server/tilo-server-session" }
 tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["apps"] }
 tilo-rt.workspace = true
 tilo-seal = { path = "../../system/tilo-seal" }

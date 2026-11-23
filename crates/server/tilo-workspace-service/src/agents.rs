@@ -2701,47 +2701,67 @@ pub async fn workspace_agent(
 }
 
 /// Add the computer's agent `agent` named `name` to `workspace`'s list of its agents, kept by
-/// `person`: the list starts with it where the workspace has none yet. Nothing when another
-/// arrival added it first.
+/// `person`: the list starts with it where the workspace has none yet. The write is Assistant's
+/// own action, asked of the host and admitted as every write is, so what follows the record sees
+/// it land and every later read of the list names it. Nothing when another arrival added it
+/// first.
 async fn list_agent(
     workspaces: &Workspaces,
     workspace: &str,
     (agent, name): (&str, &str),
     person: &str,
 ) -> Result<(), String> {
+    let workspace_id = WorkspaceId::parse(workspace)
+        .ok_or_else(|| format!("{workspace} is not a workspace id"))?;
     let name = tilo_resource::NonBlank::parse(name.trim()).ok_or("the agent has no name")?;
-    let (agent, person) = (agent.to_owned(), person.to_owned());
-    // A workspace whose people made no agent yet has no list of them: it starts here, named as
-    // the list every reader opens.
-    workspaces
-        .author_agents(workspace, |doc| {
-            let agents = tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc));
-            // Named as Assistant's change: every receiver decides it against Assistant's surface.
-            let mut listing = agents.as_author(&person).in_app(AGENTS_OWNER, "Assistant");
-            let listed = listing.state().map_err(|error| error.to_string())?;
-            let applied = if listed
-                .agents
-                .find(&tilo_resource::Id::from_raw(agent.clone()))
-                .is_some()
-            {
-                Ok(())
-            } else {
-                listing
-                    .apply(WorkspaceAgents::CREATE_AGENT.with(
-                        tilo_workspace_agent::workspace_agents::CreateAgent {
-                            mcp_client: Some(name.as_str().to_owned()),
-                            name,
-                            id: Some(agent),
-                            model: None,
-                        },
-                    ))
-                    .map(drop)
-                    .map_err(|error| error.to_string())
-            };
-            std::mem::swap(doc, listing.doc_mut());
-            applied
-        })
+    // A workspace whose people made no agent yet has no list of them: it starts with the genesis
+    // every device makes of it, as the roster copy does, and the agent joins it there.
+    workspaces.author_agents(workspace, |_| Ok(())).await?;
+    let route = DocumentRoute {
+        app_id: AGENTS_OWNER.to_owned(),
+        cluster_id: workspace.to_owned(),
+        document: collab_types::workspace_document_id(tilo_workspace_agent::KIND),
+    };
+    let caller =
+        tilo_actions::remote::Caller::local_person(person).in_workspace(workspace.to_owned());
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("name".into(), serde_json::json!(name.as_str()));
+    arguments.insert("id".into(), serde_json::json!(agent));
+    arguments.insert("mcp_client".into(), serde_json::json!(name.as_str()));
+    let request = invocation_of(
+        target_named(&route, tilo_workspace_agent::KIND, "create-agent"),
+        tilo_actions::remote::InvokeArgument::Json(arguments),
+    );
+    let requested = request.invocation;
+    let reply = workspaces
+        .serve_app(
+            workspace_id,
+            &caller,
+            tilo_actions::remote::RemoteActionMessage::Invoke(request),
+        )
         .await
+        .ok_or("this host serves no apps")?;
+    let answer = |status| match status {
+        tilo_actions::remote::ReceiptStatus::Completed { .. }
+        | tilo_actions::remote::ReceiptStatus::Accepted => Ok(()),
+        tilo_actions::remote::ReceiptStatus::Rejected { error } => Err(error.to_string()),
+        tilo_actions::remote::ReceiptStatus::Failed { error } => Err(error.message),
+        tilo_actions::remote::ReceiptStatus::Cancelled { message } => Err(message
+            .unwrap_or_else(|| "the action was cancelled before it was taken".to_owned())),
+    };
+    match reply {
+        tilo_actions::remote::RemoteActionMessage::Receipt(receipt)
+            if receipt.invocation == requested =>
+        {
+            // Another arrival listed it first: the workspace refused the second write, and the
+            // list names the agent already, which is all this was for.
+            match answer(receipt.status) {
+                Err(_) if workspaces.kept_bound(workspace, agent).await.is_some() => Ok(()),
+                other => other,
+            }
+        }
+        _ => Err("the host answered no receipt".to_owned()),
+    }
 }
 
 /// Invoke `action` on `resource` of the record at `route` as `caller`, and wait for it to end.

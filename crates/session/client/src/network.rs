@@ -479,8 +479,6 @@ pub enum Cmd {
     KeptOf(Vec<Topic>, Answer<Vec<Kept>>),
     /// Say these frames on the presence track of the workspace on the topic.
     Presence(Topic, Vec<collab_types::presence::Presence>),
-    /// The host's word for a run it executes, on the workspace on the topic.
-    SayForSession(Topic, tilo_server_protocol::host_voice::HostWords),
     /// Microphone frames, said on the peer network of the workspace on the topic as this device's voice.
     CallAudio(Topic, Vec<CallFrame>),
     /// Pictures this device's camera and screen encoded, for the peer network of the workspace on the
@@ -497,9 +495,9 @@ pub enum Cmd {
         tilo_server_protocol::workspaces::WorkspacesRequest,
         Answer<Result<tilo_server_protocol::workspaces::WorkspacesReply, String>>,
     ),
-    /// Say this session is one run of the agent the label names: every request it makes from then
-    /// on is the agent's, for this device's person, and the person's MCP server lists the run while
-    /// the session lasts. The answer is the host's.
+    /// Say this session is one run of the agent the label names: the run is the link the session
+    /// holds to its host, which mints one execution for it, and the run ends when the link does.
+    /// The label is kept for whoever asks the session what run it is.
     AgentSession(String, Answer<Result<(), String>>),
     /// Enter another workspace through its entry, on a stream of its own on this session's
     /// connection: a device in a session with its host redeems an invitation this way. The answer

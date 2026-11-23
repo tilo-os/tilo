@@ -80,7 +80,7 @@ pub use tilo_server_protocol::transport::DIRECT_ALPN;
 
 /// What the dialled device made of one of the dialling device's own writes,
 /// named by the hash of the write's frame as the writer keeps it held.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Answered {
     /// The hash of the write's frame.
     pub write: [u8; 32],
@@ -91,13 +91,15 @@ pub struct Answered {
 }
 
 /// Whether the workspace keeps a write ([`Answered`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Kept {
     /// The dialled device took it in.
     Durable,
     /// The dialled device refused it for good: no later attempt of it is
-    /// admitted. Its verdict reaches the writer in the workspace as before.
-    Refused,
+    /// admitted. Its verdict reaches the writer in the workspace as before,
+    /// and `reason` is why, in the refusing workspace's own words: what the
+    /// writer answers a wait for that write with.
+    Refused { reason: String },
 }
 
 /// One frame of a direct link's control stream.
@@ -3080,7 +3082,9 @@ impl DirectSync {
             // A frame this device could not decide is no verdict on it: it is
             // not kept as refused, and the writer's next frame proceeds.
             Err(error) if error.is_device_failure() || arrived_late(error) => None,
-            Err(error) => error.reason().permanent().then_some(Kept::Refused),
+            Err(error) => error.reason().permanent().then(|| Kept::Refused {
+                reason: error.to_string(),
+            }),
         };
         if let Err(error) = &heard.report
             && error.is_device_failure()

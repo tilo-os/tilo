@@ -43,19 +43,27 @@ impl EngineActions {
     /// person's own call is left as it is.
     ///
     /// # Errors
-    /// `caller` is an agent whose key is not held here.
+    /// `caller` is an agent that names no key, or that the workspace's list of its agents does
+    /// not name, or whose key is not held here: a call made in an agent's name is never sent
+    /// without that agent's signature.
     pub(super) fn sign_for(
         &self,
         workspace: WorkspaceId,
         caller: &Caller,
         request: &mut tilo_actions::remote::InvokeRequest,
     ) -> Result<(), String> {
-        if caller.roster_created_at().is_none() {
+        // A person's own call is the device's, and so is a session the device hands to
+        // software: only an agent acting with its own key is signed by that key or not sent
+        // at all.
+        if !caller.acting().is_agent() || caller.is_session_delegated() {
             return Ok(());
         }
         let key = caller
             .device_public_key()
             .ok_or("the agent names no key it signs with")?;
+        if caller.roster_created_at().is_none() {
+            return Err("this agent isn't in the workspace's roster".into());
+        }
         self.keys.sign(workspace, key, request)
     }
 

@@ -435,7 +435,7 @@ impl ActorState {
         answers: &[tilo_peer_state::direct::Answered],
     ) {
         for answered in answers {
-            if matches!(answered.kept, tilo_peer_state::direct::Kept::Refused) {
+            if matches!(answered.kept, tilo_peer_state::direct::Kept::Refused { .. }) {
                 tracing::warn!(ws = %ws, write = ?answered.write, "a peer refused this device's write");
             }
         }
@@ -635,22 +635,14 @@ impl ActorState {
         let link = Arc::new(linked.link.clone());
         let pump =
             super::spawn_direct_pump(ws, linked, Arc::clone(&link), self.internal_tx.clone());
-        // What this device said while the link was down: its channel
-        // governance (its writer publishes it again), and the held state of
-        // its workspace.
+        // What this device said while the link was down: its channel governance, which its writer
+        // publishes again on the link.
         let backlog: Vec<(u8, Vec<u8>)> = self
             .governance
             .get(&ws)
             .into_iter()
             .flatten()
             .map(|(_, bytes)| (0, bytes.clone()))
-            .chain(
-                self.host_backlog
-                    .remove(&ws)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|(_, _, bytes)| (1, bytes)),
-            )
             .collect();
         for (_, bytes) in backlog {
             if let Ok(msg) = NeighbourMsg::decode(&bytes)

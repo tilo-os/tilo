@@ -1,10 +1,9 @@
 //! What the actor asks of the session that runs it.
 //!
-//! The actor is the transport: it keeps the endpoint, the topics, the host
-//! sessions and the person's private connection. Some of what arrives on them is
-//! the session's business, not the transport's: a host's questions for an
-//! approver, an early-boot device asking for its unlock half, a host at
-//! another peer protocol version. The session installs those once when it
+//! The actor is the transport: it keeps the endpoint, the workspace links, the
+//! sessions with the person's devices and the person's private connection. Some of what arrives
+//! on them is the session's business, not the transport's: an early-boot device asking for its
+//! unlock half, a host at another peer protocol version. The session installs those once when it
 //! starts ([`install`]); every actor started afterwards uses them. An actor
 //! started without them (this crate's tests) refuses that work: a question
 //! goes unanswered, and the connections are closed.

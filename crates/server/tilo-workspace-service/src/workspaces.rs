@@ -1815,6 +1815,21 @@ impl Workspaces {
         self.inner.action_service.clone()
     }
 
+    /// Answer one request for `workspace_id`'s records through the app action server this host
+    /// serves, as `caller`: the same admission every request takes, so what the host writes for
+    /// a person is kept, published and announced to whoever follows the record as any write is.
+    /// `None` when this host serves no apps.
+    pub(crate) async fn serve_app(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &tilo_actions::remote::Caller,
+        message: tilo_actions::remote::RemoteActionMessage,
+    ) -> Option<tilo_actions::remote::RemoteActionMessage> {
+        let applications = self.inner.applications.as_ref()?;
+        let answer = applications.serve(workspace_id, caller, message)?;
+        answer.await
+    }
+
     /// Where this host hands a request to a device of its workspaces, over the
     /// link that device holds to it ([`crate::app_serving::Hand`]).
     #[must_use]

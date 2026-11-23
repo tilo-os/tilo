@@ -197,7 +197,7 @@ impl Members {
         let Some(answered_write) = writes.waiting.remove(&answered.write) else {
             return;
         };
-        if answered.kept == Kept::Refused {
+        if matches!(answered.kept, Kept::Refused { .. }) {
             // A write the workspace refused for good is no write here either: the next `served`
             // over its document says so, once, and the caller decides what to do about it.
             writes.refused.insert(

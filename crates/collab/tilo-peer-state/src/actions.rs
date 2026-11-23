@@ -82,8 +82,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tilo_action_policy::{Actor, MemberId};
 use tilo_actions::remote::{
-    ActionProvider, Caller, InvocationReceipt, InvocationState, ReceiptStatus, RemoteActionFrame,
-    RemoteActionMessage, UpdateMark,
+    ActionProvider, Caller, ExecutionLease, InvocationReceipt, InvocationState, ReceiptStatus,
+    RemoteActionFrame, RemoteActionMessage, UpdateMark,
 };
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::invocation::InvocationReplay;
@@ -776,12 +776,13 @@ impl ActionService {
     async fn answer(
         &self,
         remote: Option<[u8; 32]>,
+        execution: &ExecutionLease,
         client: Option<std::net::IpAddr>,
         signed: SignedDeviceAction,
     ) -> Option<RemoteActionMessage> {
         let action = signed.action();
         let request = &action.message;
-        match self.decide(remote, &signed).await {
+        match self.decide(remote, execution, &signed).await {
             Ok(Decided::Serve(admitted)) => {
                 self.dispatch(&admitted.dispatcher, &admitted.caller, client, request)
                     .await
@@ -799,11 +800,15 @@ impl ActionService {
     async fn decide(
         &self,
         remote: Option<[u8; 32]>,
+        execution: &ExecutionLease,
         signed: &SignedDeviceAction,
     ) -> Result<Decided, tilo_actions::remote::ActionCallError> {
         use tilo_actions::remote::ActionCallError;
         let action = signed.action();
         let source = action.source;
+        // Every request one link carries is one run: an agent's or a key's requests on it share
+        // the execution the link minted, and the run ends when the link does.
+        let carrying = |caller: Caller| caller.in_execution(execution.clone());
         // A computer with no certificate yet is admitted to the one scope the device that
         // certifies it serves, and holds no workspace to be read. Its endpoint is a key the
         // device delegated, which the host cannot know before it admits the device, so its
@@ -831,7 +836,7 @@ impl ActionService {
         if let Some(provider) = uncertified {
             self.admit_replay(signed)?;
             return Ok(Decided::Serve(Box::new(Admitted {
-                caller: Caller::visitor(source),
+                caller: carrying(Caller::visitor(source)),
                 dispatcher: provider,
             })));
         }
@@ -855,7 +860,7 @@ impl ActionService {
                 self.admit_invocation(&action.workspace, request)?;
             }
             return Ok(Decided::Serve(Box::new(Admitted {
-                caller: Caller::visitor(source),
+                caller: carrying(Caller::visitor(source)),
                 dispatcher: provider,
             })));
         }
@@ -941,7 +946,7 @@ impl ActionService {
                 ));
             }
             return Ok(Decided::Serve(Box::new(Admitted {
-                caller: Caller::visitor(acting).in_workspace(action.workspace.clone()),
+                caller: carrying(Caller::visitor(acting).in_workspace(action.workspace.clone())),
                 dispatcher: Arc::clone(&self.0.dispatcher),
             })));
         };
@@ -966,7 +971,7 @@ impl ActionService {
             _ => Caller::authenticated(certificate.user_public_key, acting),
         };
         Ok(Decided::Serve(Box::new(Admitted {
-            caller: caller
+            caller: carrying(caller)
                 .in_workspace(action.workspace.clone())
                 .from_foreign_device(authority.acting.foreign_device),
             dispatcher: Arc::clone(&self.0.dispatcher),
@@ -1271,28 +1276,35 @@ impl ActionService {
     /// request's own signature says ([`Self::decide`]). `client` is the
     /// address a visitor's calls are counted by, where the transport reaches
     /// the caller at one directly.
+    ///
+    /// `execution` is the run every request this link carries is: the caller that starts it
+    /// mints one and closes it when the link ends, so an agent's requests on the link are one
+    /// run, followed and stopped where they started, and the run ends with the link.
     pub async fn serve_transport(
         &self,
         transport: &dyn Transport,
         client: Option<std::net::IpAddr>,
+        execution: &ExecutionLease,
     ) -> Result<(), String> {
         let named = transport.remote();
         let remote = (named != [0; 32]).then(|| self.device_of(named));
         loop {
             // The link ended, from either end.
             let Ok((send, recv)) = transport.accept_bi().await else {
-                return Ok(());
+                break;
             };
             let action_service = self.clone();
+            let run = execution.clone();
             self.0.runtime.spawn(async move {
                 if let Err(error) = action_service
-                    .answer_stream(remote, client, send, recv)
+                    .answer_stream(remote, &run, client, send, recv)
                     .await
                 {
                     tracing::warn!(%error, "a remote action stream ended in error");
                 }
             });
         }
+        Ok(())
     }
 
     /// Serve one connection of the action service's own ALPN until it ends,
@@ -1313,7 +1325,11 @@ impl ActionService {
         let transport: Arc<dyn Transport> = Arc::new(connection.clone());
         let device = self.device_of(*connection.remote_id().as_bytes());
         self.reach_device_at(device, Arc::clone(&transport));
-        let served = self.serve_transport(&connection, client).await;
+        // One connection is one run: its requests share an execution, which ends with the
+        // connection.
+        let execution = ExecutionLease::mint();
+        let served = self.serve_transport(&connection, client, &execution).await;
+        execution.close();
         self.forget_device(device, &transport);
         served
     }
@@ -1334,14 +1350,19 @@ impl ActionService {
         if let Some(device) = device {
             self.reach_device_at(device, Arc::clone(&transport));
         }
+        // One link is one run: every request it carries shares this execution, which ends when
+        // the link does, so a run's invocations are followed and stopped on the link that
+        // started them and the run leaves with it.
+        let execution = ExecutionLease::mint();
         let action_service = self.clone();
         self.0.runtime.spawn(async move {
             if let Err(error) = action_service
-                .serve_transport(transport.as_ref(), None)
+                .serve_transport(transport.as_ref(), None, &execution)
                 .await
             {
                 tracing::warn!(%error, "a link's action service ended in error");
             }
+            execution.close();
             if let Some(device) = device {
                 action_service.forget_device(device, &transport);
             }
@@ -1352,6 +1373,7 @@ impl ActionService {
     async fn answer_stream(
         &self,
         remote: Option<[u8; 32]>,
+        execution: &ExecutionLease,
         client: Option<std::net::IpAddr>,
         mut send: StreamSend,
         mut recv: StreamRecv,
@@ -1364,7 +1386,7 @@ impl ActionService {
         let frame: ActionServiceFrame =
             postcard::from_bytes(&bytes).map_err(|error| error.to_string())?;
         let ActionServiceFrame::Action(signed) = frame;
-        if let Some(reply) = self.answer(remote, client, *signed).await {
+        if let Some(reply) = self.answer(remote, execution, client, *signed).await {
             let bytes = RemoteActionFrame::new(reply)
                 .encode()
                 .map_err(|error| error.to_string())?;

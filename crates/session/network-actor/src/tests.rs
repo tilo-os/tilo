@@ -49,61 +49,6 @@ fn upkeep_is_armed_only_while_something_needs_it() {
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
 
-#[test]
-fn a_repeated_click_is_new_but_its_copy_over_another_route_is_not() {
-    let mut recent = HashMap::new();
-    let host = iroh::SecretKey::from_bytes(&[0xA1; 32]).public();
-    let other = iroh::SecretKey::from_bytes(&[0xA2; 32]).public();
-    let start = Instant::now();
-    assert!(mark_new_input(
-        WorkspaceId::from_u128(1),
-        host,
-        [7; 32],
-        start,
-        &mut recent
-    ));
-    assert!(
-        !mark_new_input(
-            WorkspaceId::from_u128(1),
-            other,
-            [7; 32],
-            start + Duration::from_millis(1),
-            &mut recent
-        ),
-        "the same event arriving over a second server session"
-    );
-    assert!(
-        mark_new_input(
-            WorkspaceId::from_u128(1),
-            host,
-            [7; 32],
-            start + Duration::from_millis(200),
-            &mut recent
-        ),
-        "a second, byte-identical click"
-    );
-    assert!(mark_new_input(
-        WorkspaceId::from_u128(2),
-        host,
-        [7; 32],
-        start + Duration::from_millis(200),
-        &mut recent
-    ));
-    // "ll" typed in one batch: both strokes come over one session at once.
-    for _ in 0..2 {
-        assert!(
-            mark_new_input(
-                WorkspaceId::from_u128(1),
-                host,
-                [9; 32],
-                start + Duration::from_millis(300),
-                &mut recent
-            ),
-            "a repeated key over the same session"
-        );
-    }
-}
-
 fn active_personal_transfer(generation: u64) -> ActivePersonalTransfer {
     let (cancel, _receiver) = tokio::sync::watch::channel(false);
     ActivePersonalTransfer {
@@ -1227,56 +1172,4 @@ async fn personal_fabric_reaches_members_and_streams_verified_media() {
             }
         }
     }
-}
-
-/// A window's control message from a viewer with no direct route to this device arrives through
-/// the workspace's host as a message for this device alone: it is taken as the viewer's, under
-/// the sender the host stamped, and never mistaken for a copy of an earlier one, since the same
-/// key pressed twice says the same bytes twice. What else the host could carry that way is not.
-#[test]
-fn a_viewers_input_through_the_host_reaches_this_device_as_its_own() {
-    let viewer = iroh::SecretKey::from_bytes(&[0x37; 32]).public();
-    let input = NeighbourMsg::RemoteInput {
-        peer: crate::behaviour::peer_liveness_handle(&viewer),
-        surface: 7,
-        event: vec![1, 2, 3],
-    };
-    let frame = postcard::to_allocvec(&input).expect("an input frame");
-    for _ in 0..2 {
-        match record_content_event(viewer.as_bytes(), &frame) {
-            Some(HostEvent::Message {
-                author,
-                fingerprint,
-                replayed: false,
-                msg: NeighbourMsg::RemoteInput { surface: 7, .. },
-            }) => {
-                assert_eq!(author, viewer, "the sender the host stamped");
-                assert_eq!(fingerprint, [0; 32], "input is never deduplicated");
-            }
-            _ => panic!("a viewer's input arrives through the host"),
-        }
-    }
-    let ask = NeighbourMsg::SurfaceViewRequest {
-        peer: 1,
-        workspace: "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c".into(),
-        views: Vec::new(),
-        decode: Vec::new(),
-    };
-    assert!(
-        record_content_event(
-            viewer.as_bytes(),
-            &postcard::to_allocvec(&ask).expect("an ask")
-        )
-        .is_some(),
-        "a viewer's ask to view arrives the same way"
-    );
-    let heartbeat = NeighbourMsg::Heartbeat { peer: 1, ts: 0 };
-    assert!(
-        record_content_event(
-            viewer.as_bytes(),
-            &postcard::to_allocvec(&heartbeat).expect("a heartbeat")
-        )
-        .is_none(),
-        "nothing but content and a window's control rides the device route"
-    );
 }

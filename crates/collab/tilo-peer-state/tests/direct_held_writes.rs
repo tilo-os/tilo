@@ -337,10 +337,9 @@ async fn a_frame_not_signed_by_its_author_is_refused_at_admission() {
     let (_, kept) = host
         .admit_one(b_key.verifying_key().to_bytes(), forged)
         .await;
-    assert_eq!(
-        kept,
-        Some(Kept::Refused),
-        "an unsigned frame is refused for good"
+    assert!(
+        matches!(&kept, Some(Kept::Refused { reason }) if !reason.is_empty()),
+        "an unsigned frame is refused for good, saying why: {kept:?}"
     );
     assert_eq!(
         value(&host.read(Clone::clone), "forged"),

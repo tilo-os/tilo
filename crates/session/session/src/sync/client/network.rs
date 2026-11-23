@@ -40,27 +40,6 @@ pub(super) fn event_of(event: NetEvent) -> Option<Result<Event, DesktopEvent>> {
             peer,
             documents_when_opened,
         },
-        NetEvent::HostRecordOpened {
-            ws,
-            channel,
-            answer,
-        } => Event::DocumentOpened {
-            ws,
-            channel,
-            route: None,
-            answer,
-        },
-        NetEvent::HostMember {
-            ws,
-            host,
-            device,
-            active,
-        } => Event::HostMember {
-            ws,
-            host,
-            device,
-            active,
-        },
         // A device that proved itself and what it sends travel the one queue, so the session hears
         // of the device before anything it said: a frame is bound to the certificate it proved
         // there, never to what the frame claims.

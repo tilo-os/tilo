@@ -1518,8 +1518,6 @@ impl Task {
                 self.publish_presence(workspace_id, frames);
                 true
             }
-            // A run's word is the host's own record write now; this session carries none.
-            Command::Client(Cmd::SayForSession(..)) => true,
             Command::Client(Cmd::CallAudio(workspace_id, frames)) => {
                 self.publish_call_audio(workspace_id, frames);
                 true
@@ -1881,9 +1879,11 @@ impl Task {
         };
         let outcome = match answered.kept {
             Answer::Durable => Ok(answered.seq),
-            Answer::Refused => Err(tilo_server_protocol::refusal::Refusal::Other(
-                "the workspace refused the write".into(),
-            )),
+            // The workspace's own words for a write it refuses: what its author
+            // waits with, so a refused write is never answered saved.
+            Answer::Refused { reason } => {
+                Err(tilo_server_protocol::refusal::Refusal::Other(reason))
+            }
         };
         if outcome.is_ok()
             && self

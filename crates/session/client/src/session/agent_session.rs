@@ -1,11 +1,13 @@
 //! A session declaring itself one run of an agent: the person's MCP server
 //! lists the run while the session lasts.
 //!
-//! A run is the host's own action now: a session that is one declares it to the
-//! host's `tilo.host` actions, and this session carries no word of its own.
+//! The run is the link the session holds to its host: the host mints one
+//! execution for each link it answers, so every request the session makes is
+//! that one run, and the run ends when the link does. The name the session
+//! declares is kept here, for whatever asks the session what run it is; the
+//! host needs no word of its own for it, and there is none to send.
 
 use super::Task;
-use tilo_session_actions::NOT_CONNECTED;
 
 /// Where whether the session is now the agent's run goes ([`crate::Cmd::AgentSession`]).
 pub(super) type AgentSessionCompletion = crate::Answer<Result<(), String>>;
@@ -15,9 +17,9 @@ impl Task {
     pub(super) fn session_as_agent(&mut self, label: String, done: AgentSessionCompletion) -> bool {
         // A session is one agent's run: the first is the one kept.
         self.agent_session.get_or_insert(label);
-        // Declaring the run is the host's action, which this session does not carry: the run is
-        // recorded here for whoever asks the host on its behalf.
-        let _ = done.send(Err(NOT_CONNECTED.into()));
+        // The run is the link this session holds, and the host mints its execution there: no
+        // other session can be the same run, so the host has nothing to refuse.
+        let _ = done.send(Ok(()));
         true
     }
 }
