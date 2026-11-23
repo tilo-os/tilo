@@ -17570,8 +17570,10 @@ dependencies = [
  "serde",
  "serde_json",
  "tilo-actions",
+ "tilo-content-device",
  "tilo-failure",
  "tilo-formats",
+ "tilo-media",
  "tilo-render-protocol",
  "tilo-resource",
  "tilo-rich-edit",
@@ -19749,12 +19751,25 @@ dependencies = [
  "tilo-lock",
  "tilo-paths",
  "tilo-platform-caps",
+ "tilo-projector",
  "tilo-test-env",
  "tracing",
  "url",
  "wasm-bindgen",
  "workspace-hack",
  "zeroize",
+]
+
+[[package]]
+name = "tilo-media-controls"
+version = "0.1.0"
+dependencies = [
+ "tilo-media",
+ "tilo-test-env",
+ "tokio",
+ "tracing",
+ "workspace-hack",
+ "zbus",
 ]
 
 [[package]]
@@ -28952,6 +28967,7 @@ dependencies = [
  "tilo-mail-session",
  "tilo-mcp",
  "tilo-media",
+ "tilo-media-controls",
  "tilo-messaging",
  "tilo-messaging-protocol",
  "tilo-messaging-service",

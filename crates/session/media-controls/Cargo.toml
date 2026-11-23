@@ -1,0 +1,43 @@
+[package]
+name = "tilo-media-controls"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The system's media controls: every active Playback published as a player the desktop's own media keys and now-playing widgets drive, its controls mapped onto the Playback's own actions."
+
+[lib]
+name = "tilo_media_controls"
+path = "src/lib.rs"
+
+[features]
+# The serving side: MPRIS on the session bus, and the platform's own now-playing
+# controls where it has them. Without it the crate is the board alone: what plays, in
+# what order, and which action a key reaches.
+default = ["service"]
+service = ["dep:zbus", "dep:tilo-media"]
+
+[dependencies]
+tracing = { workspace = true }
+# The platform's own now-playing controls (macOS) reuse the one surface tilo-media
+# already holds.
+tilo-media = { path = "../../platform/tilo-media", optional = true }
+# The server runs on the host's runtime, whose handle the public API takes.
+tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[target.'cfg(all(unix, not(target_os = "android")))'.dependencies]
+# MPRIS needs a Unix session bus; p2p lets a test serve it on its own.
+zbus = { workspace = true, optional = true, features = ["p2p", "tokio"] }
+
+[dev-dependencies]
+# A private session bus, so a test never touches the machine's own.
+tilo-test-env = { path = "../../../tools/test-env" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+zbus = { workspace = true, features = ["p2p", "tokio"] }
+
+[lints]
+workspace = true

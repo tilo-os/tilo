@@ -505,6 +505,7 @@ members = [
     "crates/os/install-profile-model",
     "crates/session/prepared-setup-model",
     "crates/session/liveness",
+    "crates/session/media-controls",
     "crates/session/native-media",
     "crates/session/network-actor",
     "crates/session/network-secret-agent",

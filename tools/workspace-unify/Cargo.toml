@@ -1256,6 +1256,7 @@ doc = false
 "tilo-mail-session" = { path = "../../crates/integrations/mail-session", default-features = false, features = [] }
 "tilo-mcp" = { path = "../../crates/runtime/tilo-mcp", default-features = false, features = ["test-support"] }
 "tilo-media" = { path = "../../crates/engines/tilo-media", default-features = false, features = ["decode", "default", "encode", "pipewire", "realtime", "test-support", "voice"] }
+"tilo-media-controls" = { path = "../../crates/session/media-controls", default-features = false, features = ["default", "service"] }
 "tilo-messaging" = { path = "../../crates/integrations/tilo-messaging", default-features = false, features = ["service-client", "wire"] }
 "tilo-messaging-protocol" = { path = "../../crates/integrations/messaging-protocol", default-features = false, features = ["default", "signal-broker", "sms-dbus", "whatsapp-sdk"] }
 "tilo-messaging-service" = { path = "../../crates/integrations/messaging-service", default-features = false, features = ["default", "service"] }
@@ -3901,6 +3902,7 @@ doc = false
 "tilo-mail-session" = { path = "../../crates/integrations/mail-session", default-features = false, features = [] }
 "tilo-mcp" = { path = "../../crates/runtime/tilo-mcp", default-features = false, features = ["test-support"] }
 "tilo-media" = { path = "../../crates/engines/tilo-media", default-features = false, features = ["decode", "default", "encode", "pipewire", "realtime", "test-support", "voice"] }
+"tilo-media-controls" = { path = "../../crates/session/media-controls", default-features = false, features = ["default", "service"] }
 "tilo-messaging" = { path = "../../crates/integrations/tilo-messaging", default-features = false, features = ["service-client", "wire"] }
 "tilo-messaging-protocol" = { path = "../../crates/integrations/messaging-protocol", default-features = false, features = ["default", "signal-broker", "sms-dbus", "whatsapp-sdk"] }
 "tilo-messaging-service" = { path = "../../crates/integrations/messaging-service", default-features = false, features = ["default", "service"] }
