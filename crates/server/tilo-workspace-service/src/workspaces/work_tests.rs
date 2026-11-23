@@ -15,7 +15,9 @@ use super::fixtures::entry_join_as;
 use super::servers::{self, Servers};
 use super::tests::{governor, guest_device, test_host};
 use super::*;
-use crate::work::{HostJobs, HostLinux, Ineligible, Job, NotTaken, Turn, keep_done, takes_turn};
+use crate::work::{
+    Actor, HostJobs, HostLinux, Ineligible, Job, NotTaken, Turn, keep_done, takes_turn,
+};
 
 /// The jobs a device runs, as a test sets them: whether it runs the transform,
 /// keeps the inputs and has room, and what each run was given.
@@ -402,12 +404,15 @@ async fn a_member_device_asks_and_the_host_runs_its_turn() {
 
 /// A firing of the host's person's automation, started on `starter` `ago_ms` ago.
 fn firing(cert: &DeviceCert, starter: [u8; 32], ago_ms: i64) -> Turn {
-    Turn::Firing {
-        firing: format!("tidy/{}", uuid::Uuid::new_v4()),
-        saver: hex::encode(cert.user_public_key),
+    Turn::once(
+        "shortcuts.shortcut:tidy#run",
+        serde_json::json!({ "invocation": uuid::Uuid::new_v4().to_string() }),
+    )
+    .acting_as(Actor::Person(hex::encode(cert.user_public_key)))
+    .started(
         starter,
-        came_up_ms: tilo_clock::unix_now_ms_i64().saturating_sub(ago_ms),
-    }
+        tilo_clock::unix_now_ms_i64().saturating_sub(ago_ms),
+    )
 }
 
 /// `device`'s claim on `lease` of `workspace`, written as that device would, now.
@@ -505,15 +510,15 @@ async fn a_firing_goes_to_its_starter_then_a_server_then_any_device() {
     );
 
     let (_, stranger) = guest_device();
-    let theirs = Turn::Firing {
-        firing: "theirs/1".into(),
-        saver: hex::encode(stranger.user_public_key),
-        starter: cert.device_public_key,
-        came_up_ms: tilo_clock::unix_now_ms_i64(),
-    };
+    let theirs = Turn::once(
+        "shortcuts.shortcut:theirs#run",
+        serde_json::json!({ "invocation": "1" }),
+    )
+    .acting_as(Actor::Person(hex::encode(stranger.user_public_key)))
+    .started(cert.device_public_key, tilo_clock::unix_now_ms_i64());
     assert_eq!(
         takes_turn(workspaces, &workspace, &theirs).await.err(),
-        Some(NotTaken::Ineligible(Ineligible::NotTheSaver)),
+        Some(NotTaken::Ineligible(Ineligible::CannotActAs)),
         "a device runs only its own person's automations"
     );
     host.shutdown().await;
@@ -641,13 +646,7 @@ async fn a_migration_runs_once_across_devices_and_once_more_after_a_takeover() {
             answer
         }
     };
-    let lease = |address: &str| {
-        Turn::Once {
-            address: address.to_owned(),
-            inputs: serde_json::Value::Null,
-        }
-        .lease()
-    };
+    let lease = |address: &str| Turn::once(address, serde_json::Value::Null).lease();
 
     // The editor's device opened the app first and took the migration of the first notebook.
     let first = format!("{app}/notebook-1#migrate");
@@ -714,10 +713,10 @@ async fn a_migration_runs_once_across_devices_and_once_more_after_a_takeover() {
 #[test]
 fn the_same_inputs_written_differently_lease_one_turn() {
     let once = |inputs: &str| {
-        Turn::Once {
-            address: "so.tilo.notes/notebook-1#migrate".to_owned(),
-            inputs: serde_json::from_str(inputs).unwrap(),
-        }
+        Turn::once(
+            "so.tilo.notes/notebook-1#migrate",
+            serde_json::from_str(inputs).unwrap(),
+        )
         .lease()
     };
     assert_eq!(

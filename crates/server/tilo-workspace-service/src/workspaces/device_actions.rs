@@ -490,10 +490,9 @@ impl DeviceWork {
                     work.run_linux(claim, &caller, *run, completer).await;
                     return;
                 }
-                // The take action asks for no agent's turn, no automation's firing
-                // and no action that runs once: the agent engine, the trigger
-                // runner and the app's own process take those.
-                Turn::Agent { .. } | Turn::Firing { .. } | Turn::Once { .. } => {
+                // The take action asks for no action that runs once: the agent
+                // engine, the trigger runner and the app's own process take those.
+                Turn::Once { .. } => {
                     work.log.lock_recover().abandon(&invocation);
                     completer.complete(Err(ActionCallError::UnknownAction));
                     return;
@@ -991,7 +990,7 @@ impl super::Workspaces {
     }
 
     /// The agent engine this device runs, which takes the turns of agents'
-    /// turns ([`crate::work::Turn::Agent`]); `None` where it runs none.
+    /// turns (a [`crate::work::Turn::Once`] acting as an agent); `None` where it runs none.
     pub(crate) fn agent_keys(&self) -> Option<Arc<dyn crate::work::AgentEngine>> {
         self.inner.jobs.agents.read_recover().clone()
     }

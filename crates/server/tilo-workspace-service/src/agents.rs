@@ -1340,13 +1340,15 @@ impl ServerAgents {
             Ask::Issue { record, .. } => (TASKS, record),
         };
         let (_, agent, place) = going::place(workspace, turn);
-        let ask = crate::work::Turn::Agent {
+        let ask = crate::work::Turn::once(
+            format!("agents.agent:{agent}#answer"),
+            json!({ "place": place }),
+        )
+        .acting_as(crate::work::Actor::Agent {
             agent: agent.clone(),
-            place,
             acts_for: keeper,
-            app: app.to_owned(),
-            record: record.clone(),
-        };
+        })
+        .about(app, record.clone());
         match crate::work::takes_turn(&self.workspaces, workspace, &ask).await {
             Ok(claim) => Some(Arc::new(claim)),
             Err(not_taken) => {

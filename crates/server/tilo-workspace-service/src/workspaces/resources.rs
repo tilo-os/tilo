@@ -1086,7 +1086,7 @@ impl Workspaces {
                 "{app} runs only its own actions once, not {address}"
             ));
         }
-        let turn = Turn::Once { address, inputs };
+        let turn = Turn::once(address, inputs);
         if let Some(answer) = answer {
             crate::work::keep_done(self, workspace, &turn, answer).await?;
             self.write_lease(workspace, &turn.lease(), 0).await?;
