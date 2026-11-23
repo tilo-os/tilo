@@ -173,6 +173,45 @@ impl Capabilities {
             || !downloads.prompts.is_empty()
             || !downloads.terminal_notice.is_empty()
     }
+
+    /// The downloads a capture of the library shows: one finished and one that
+    /// failed. A live window's pane is the engine's once the runtime is known, so
+    /// the samples enter that store, where the picture reads them.
+    pub fn show_download_history(&self) {
+        let mut downloads = self.downloads.borrow_mut();
+        downloads.prompts.clear();
+        downloads.records.clear();
+        downloads.runtime_known = true;
+        downloads.accepting = false;
+        downloads.terminal_notice.clear();
+        downloads.records.insert(
+            1,
+            Download {
+                name: "Design-guide.pdf".into(),
+                url: "https://example.org/guide.pdf".into(),
+                retryable: false,
+                state: "complete".into(),
+                path: "/home/lena/Downloads/Design-guide.pdf".into(),
+                received: 2_411_724,
+                total: 2_411_724,
+                error: String::new(),
+            },
+        );
+        downloads.records.insert(
+            2,
+            Download {
+                name: "project-assets.zip".into(),
+                url: "https://example.org/archive.zip".into(),
+                retryable: true,
+                state: "failed".into(),
+                path: String::new(),
+                received: 0,
+                total: 0,
+                error: "The connection was interrupted. Your partial file was removed.".into(),
+            },
+        );
+        downloads.version = downloads.version.wrapping_add(1);
+    }
     pub fn toolbar_status(&self) -> Option<String> {
         let downloads = self.downloads.borrow();
         let active: Vec<_> = downloads
@@ -364,13 +403,21 @@ impl Capabilities {
         downloads.runtime_known = true;
         if !error.is_empty() {
             downloads.prompts.clear();
+            // A runtime that ends while a transfer was running failed that
+            // transfer. With none running, nothing failed: the engine closing is
+            // not a download, and a lone notice beside "No downloads yet" would
+            // say it was.
+            let mut failed = false;
             for record in downloads.records.values_mut() {
                 if record.state == "progress" {
                     record.state = "failed".into();
                     error.clone_into(&mut record.error);
+                    failed = true;
                 }
             }
-            downloads.terminal_notice = crate::CATALOG.t("browser-download-failed-notice");
+            if failed {
+                downloads.terminal_notice = crate::CATALOG.t("browser-download-failed-notice");
+            }
         }
     }
     pub fn prompt(&self, engine: &SharedEngine) -> Option<Box<dyn Widget>> {

@@ -26,7 +26,5 @@ invoke = { resource = "browser.library", action = "show-history" }
 
 [[situation]]
 name = "downloads"
-title = "Downloads"
-
-[[situation.steps]]
-invoke = { resource = "browser.library", action = "show-downloads" }
+title = "A finished download and one that failed"
+scenario = "downloads-history"

@@ -334,6 +334,10 @@ pub struct TerminalWidget {
     cursor_y: usize,
     width: usize,
     height: usize,
+    /// A capture staged a full-screen program, whose frame is drawn again
+    /// whenever the grid changes so its bars follow the window (`tui` scenario).
+    #[cfg(feature = "samples")]
+    tui_frame: bool,
 
     char_w: f64,
     char_h: f64,
@@ -549,6 +553,8 @@ impl TerminalWidget {
             cursor_y: 0,
             width,
             height,
+            #[cfg(feature = "samples")]
+            tui_frame: false,
             char_w: 9.0,
             char_h: 18.0,
             forced_cell: false,
@@ -1781,6 +1787,13 @@ impl TerminalWidget {
                     pixel_height: grid_rect.height() as u16,
                 });
             }
+            // A staged full-screen program redraws at the grid's new size, as a
+            // real one would on resize, so its bars span the window.
+            #[cfg(feature = "samples")]
+            if self.tui_frame {
+                let frame = crate::scenarios::tui(self.width, self.height);
+                self.feed(&frame);
+            }
         }
     }
 }
@@ -2526,6 +2539,13 @@ impl TerminalWidget {
             let key = crate::commands::new_key();
             self.commands.marks = Some(crate::commands::Marks::new(key.clone()));
             self.feed(&crate::scenarios::held(&key));
+        } else if name == "tui" {
+            // A full-screen frame is laid out for the grid's own size, and drawn
+            // again when that size changes: the sample is the program's redraw
+            // for this window, not a fixed 80-column one.
+            self.tui_frame = true;
+            let frame = crate::scenarios::tui(self.width, self.height);
+            self.feed(&frame);
         } else {
             self.feed(&crate::scenarios::output(name));
         }

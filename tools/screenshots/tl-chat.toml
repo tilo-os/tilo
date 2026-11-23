@@ -1,0 +1,23 @@
+# Chat (tilolang): the port's own scenarios, the states its shots show
+# (tools/screenshots/run.py). The app stages them from fixtures, so no capture
+# needs another person or a live workspace.
+
+[[situation]]
+name = "channels-and-categories"
+title = "Channels sorted into categories"
+scenario = "a team's channels"
+
+[[situation]]
+name = "team-conversation"
+title = "A team channel with a conversation"
+scenario = "a thread"
+
+[[situation]]
+name = "a-message-made-from-another"
+title = "A message made from another service's view"
+scenario = "a message made from another"
+
+[[situation]]
+name = "first-start"
+title = "A workspace with no channels yet"
+scenario = "no channels yet"

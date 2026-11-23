@@ -61,7 +61,6 @@ pub(crate) fn output(name: &str) -> Vec<u8> {
     match name {
         "shell" | "shell-select" => shell(),
         "colors" => colors(),
-        "tui" => tui(),
         "scrollback" => numbered_log(|i| {
             format!(
                 "\x1b[38;5;250m{i:>4}\x1b[0m  log entry {i:03}: the quick brown fox jumps over the lazy dog"
@@ -124,10 +123,19 @@ fn colors() -> Vec<u8> {
     s.into_bytes()
 }
 
-fn tui() -> Vec<u8> {
+/// A full-screen program's frame, laid out for the terminal's own grid: a
+/// program redraws on resize, so its bars span the window and its status bars
+/// sit on the last two rows, wherever those are.
+pub(crate) fn tui(cols: usize, rows: usize) -> Vec<u8> {
+    let cols = cols.max(40);
+    let rows = rows.max(8);
     let mut s = String::new();
     s.push_str("\x1b[?1049h\x1b[2J\x1b[H");
-    s.push_str("\x1b[1;1H\x1b[7m Tilo EDIT  main.rs  [+]                                      unix  utf-8 \x1b[0m");
+    let _ = write!(
+        s,
+        "\x1b[1;1H\x1b[7m{}\x1b[0m",
+        spread(" Tilo EDIT  main.rs  [+]", "unix  utf-8 ", cols)
+    );
     #[allow(
         clippy::literal_string_with_formatting_args,
         reason = "demo source text shown verbatim in the tui shot; the braces are \
@@ -151,9 +159,20 @@ fn tui() -> Vec<u8> {
             line
         );
     }
-    s.push_str("\x1b[23;1H\x1b[7m NORMAL                                              3,17          Top \x1b[0m");
-    s.push_str("\x1b[24;1H:wq");
+    let _ = write!(
+        s,
+        "\x1b[{};1H\x1b[7m{}\x1b[0m",
+        rows - 1,
+        spread(" NORMAL", "3,17          Top ", cols)
+    );
+    let _ = write!(s, "\x1b[{rows};1H:wq");
     s.into_bytes()
+}
+
+/// `left` at the start and `right` at the end of a line exactly `cols` wide.
+fn spread(left: &str, right: &str, cols: usize) -> String {
+    let used = left.chars().count() + right.chars().count();
+    format!("{left}{}{right}", " ".repeat(cols.saturating_sub(used)))
 }
 
 fn numbered_log(line: impl Fn(usize) -> String) -> Vec<u8> {

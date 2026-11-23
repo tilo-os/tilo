@@ -29,6 +29,12 @@ impl BrowserWidget {
                 self.debug_show_library("history");
                 self.debug_set_library_filter("rust");
             }
+            Some("downloads-history") => {
+                self.capabilities.show_download_history();
+                self.library_section = LibrarySection::Downloads;
+                self.show_library = true;
+                self.show_settings = false;
+            }
             Some(downloads) if downloads.starts_with("downloads-") => {
                 self.debug_show_downloads(downloads.trim_start_matches("downloads-"));
             }

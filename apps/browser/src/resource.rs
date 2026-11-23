@@ -43,6 +43,7 @@ const SCENARIOS: &[&str] = &[
     "downloads-completed",
     "downloads-error",
     "downloads-empty",
+    "downloads-history",
 ];
 
 /// The page a launch names: one absolute http(s) URL, the only schemes the browser
