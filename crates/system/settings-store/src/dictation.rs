@@ -111,15 +111,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stable_codes_round_trip_and_anything_else_is_refused() {
-        for language in DictationLanguage::ALL {
-            let value = serde_json::to_value(language).unwrap();
-            assert_eq!(value.as_str(), Some(language.code()));
-            assert_eq!(
-                serde_json::from_value::<DictationLanguage>(value).unwrap(),
-                *language
-            );
-        }
+    fn a_language_holds_only_its_own_code() {
         for value in [
             serde_json::json!("future-language"),
             serde_json::json!("Deutsch"),

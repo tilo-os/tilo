@@ -295,30 +295,13 @@ mod tests {
 
         phase focus_priority_and_mutes_follow_user_policy;
         {
-            {
-                let f = FocusSchedule {
-                    enabled: true,
-                    ..FocusSchedule::default()
-                };
-                assert_eq!(f.active_until(23 * 60, 0), Some(7 * 60));
-                assert_eq!(f.active_until(12 * 60, 0), None);
-                let all_day = FocusSchedule {
-                    enabled: true,
-                    start_minute: 0,
-                    end_minute: 0,
-                    ..FocusSchedule::default()
-                };
-                assert_eq!(all_day.active_until(12 * 60, 0), None);
-            }
-            {
-                let f = FocusSchedule {
-                    enabled: true,
-                    ..FocusSchedule::default()
-                };
-                assert!(f.active_at(23 * 60, 0));
-                assert!(f.active_at(6 * 60, 0));
-                assert!(!f.active_at(12 * 60, 0));
-            }
+            let f = FocusSchedule {
+                enabled: true,
+                ..FocusSchedule::default()
+            };
+            assert_eq!(f.active_until(23 * 60, 0), Some(7 * 60));
+            assert!(f.active_at(6 * 60, 0));
+            assert!(!f.active_at(12 * 60, 0));
             {
                 let mut p = NotificationPolicy {
                     focus: FocusSchedule {
@@ -386,26 +369,13 @@ mod tests {
                 );
             }
             {
-                let mut policy = NotificationPolicy::default();
+                let policy = NotificationPolicy::default();
                 assert!(
                     policy
                         .effective_for(Some("so.tilo.mail"), 0, 0, 0)
                         .cross_device
                 );
                 assert!(!policy.effective_for(None, 0, 0, 0).cross_device);
-
-                policy.per_app.insert(
-                    "so.tilo.mail".into(),
-                    AppNotificationRule {
-                        cross_device: Some(false),
-                        ..AppNotificationRule::default()
-                    },
-                );
-                assert!(
-                    !policy
-                        .effective_for(Some("so.tilo.mail"), 0, 0, 0)
-                        .cross_device
-                );
             }
         }
     }

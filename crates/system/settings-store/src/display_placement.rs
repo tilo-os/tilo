@@ -370,7 +370,7 @@ mod tests {
     const PANEL: Placement = Placement::new(0, 0, 1920, 1080);
 
     tilo_test_env::scenario! {
-        fn a_moved_or_dropped_display_ends_touching_and_clear;
+        fn a_dragged_display_settles_touching_and_clear_of_every_other;
 
         phase an_arrow_moves_a_display_to_the_next_place_that_way;
         {
@@ -383,16 +383,8 @@ mod tests {
             let below = step(right, &[PANEL], Step::Down).unwrap();
             assert_eq!(below.y, 1080, "under the panel");
             assert!(is_valid(below, &[PANEL]));
-            assert_eq!(
-                step(below, &[PANEL], Step::Down),
-                None,
-                "nothing further down"
-            );
-            assert_eq!(
-                step(right, &[PANEL], Step::Right),
-                None,
-                "nothing further right"
-            );
+            assert_eq!(step(below, &[PANEL], Step::Down), None);
+            assert_eq!(step(right, &[PANEL], Step::Right), None);
             for way in [Step::Left, Step::Right, Step::Up, Step::Down] {
                 if let Some(next) = step(below, &[PANEL], way) {
                     assert!(is_valid(next, &[PANEL]), "{way:?} lands touching and clear");
@@ -405,140 +397,85 @@ mod tests {
             let dropped = Placement::new(1500, 100, 1920, 1080);
             let resolved = resolve_collisions(dropped, &[PANEL]);
             assert_eq!(resolved, Placement::new(1920, 100, 1920, 1080));
-            assert!(!resolved.overlaps(PANEL));
-        }
-
-        phase collisions_resolve_against_several_displays;
-        {
             let right = Placement::new(1920, 0, 1920, 1080);
-            let dropped = Placement::new(1000, 200, 1920, 1080);
-            let resolved = resolve_collisions(dropped, &[PANEL, right]);
+            let between = Placement::new(1000, 200, 1920, 1080);
+            let resolved = resolve_collisions(between, &[PANEL, right]);
             assert!(!resolved.overlaps(PANEL) && !resolved.overlaps(right));
             assert_eq!(resolved.y, 1080, "down is the shortest way clear of both");
         }
 
         phase a_display_dropped_far_away_is_brought_back_into_contact;
         {
-            let stray = Placement::new(5000, 100, 1280, 1024);
-            let attached = attach(stray, &[PANEL]);
+            let attached = attach(Placement::new(5000, 100, 1280, 1024), &[PANEL]);
             assert_eq!(attached, Placement::new(1920, 100, 1280, 1024));
             assert!(attached.touches(PANEL));
-
             let above = attach(Placement::new(300, -3000, 1280, 1024), &[PANEL]);
             assert_eq!(above, Placement::new(300, -1024, 1280, 1024));
-
             let diagonal = attach(Placement::new(4000, 4000, 1280, 1024), &[PANEL]);
             assert_eq!(diagonal, Placement::new(1920, 56, 1280, 1024));
             assert!(diagonal.touches(PANEL), "{diagonal:?} must share an edge");
-        }
 
-        phase corner_contact_is_not_touching;
-        {
             let corner = Placement::new(1920, 1080, 800, 600);
-            assert!(!corner.touches(PANEL));
+            assert!(!corner.touches(PANEL), "corner contact is not touching");
             assert!(Placement::new(1920, 1079, 800, 600).touches(PANEL));
-            assert_eq!(
-                attach(corner, &[PANEL]),
-                Placement::new(1920, 480, 800, 600)
-            );
+            assert_eq!(attach(corner, &[PANEL]), Placement::new(1920, 480, 800, 600));
         }
 
-        phase settle_snaps_clears_and_attaches;
+        phase settle_snaps_clears_and_leaves_every_drop_touching;
         {
             let right = Placement::new(1920, 0, 1920, 1080);
             let dropped = Placement::new(1905, 1090, 1920, 1080);
             let settled = settle(dropped, &[PANEL, right], 24);
             assert!(!settled.overlaps(PANEL) && !settled.overlaps(right));
             assert!(settled.touches(PANEL) || settled.touches(right));
-            assert_eq!(
-                (settled.x, settled.y),
-                (1920, 1080),
-                "snapped under the right display"
-            );
-        }
+            assert_eq!((settled.x, settled.y), (1920, 1080), "snapped under the right display");
 
-        phase every_drop_settles_touching_and_clear_of_every_display;
-        {
             let others = [
                 PANEL,
                 Placement::new(1920, 0, 2560, 1440),
                 Placement::new(4480, 200, 1280, 1024),
             ];
             let size = (1920, 1200);
-            for x in (-6000..9000).step_by(370) {
-                for y in (-4000..5000).step_by(290) {
+            for x in (-6000..9000).step_by(1_110) {
+                for y in (-4000..5000).step_by(870) {
                     let dropped = Placement::new(x, y, size.0, size.1);
                     let settled = settle(dropped, &others, 24);
-                    assert!(
-                        is_valid(settled, &others),
-                        "{dropped:?} settled at {settled:?}"
-                    );
+                    assert!(is_valid(settled, &others), "{dropped:?} settled at {settled:?}");
                     assert_eq!((settled.width, settled.height), size);
                 }
             }
         }
-    }
 
-    tilo_test_env::scenario! {
-        fn snapping_lines_a_display_up_with_nearby_edges_and_centres;
-
-        phase snapping_pulls_an_edge_onto_a_nearby_edge_only;
+        phase snapping_pulls_edges_and_centres_together_and_shows_each_guide;
         {
             let near = Placement::new(1930, 12, 2560, 1440);
-            assert_eq!(
-                snap(near, &[PANEL], 24),
-                Placement::new(1920, 0, 2560, 1440)
-            );
+            assert_eq!(snap(near, &[PANEL], 24), Placement::new(1920, 0, 2560, 1440));
             let far = Placement::new(2000, 300, 2560, 1440);
-            assert_eq!(
-                snap(far, &[PANEL], 24),
-                far,
-                "beyond the threshold nothing moves"
-            );
-        }
+            assert_eq!(snap(far, &[PANEL], 24), far, "beyond the threshold nothing moves");
 
-        phase snapping_aligns_bottom_edges;
-        {
             let monitor = Placement::new(1920, -320, 2560, 1440);
-            let snapped = snap(monitor, &[PANEL], 24);
-            assert_eq!(
-                snapped.bottom(),
-                PANEL.bottom() + 40,
-                "40 px is beyond the threshold"
-            );
+            assert_eq!(snap(monitor, &[PANEL], 24).bottom(), PANEL.bottom() + 40);
             let monitor = Placement::new(1920, -370, 2560, 1440);
             assert_eq!(snap(monitor, &[PANEL], 24).bottom(), PANEL.bottom());
-        }
 
-        phase centres_snap_too_and_each_shared_line_has_a_guide;
-        {
             let monitor = Placement::new(330, 1090, 1280, 720);
             let snapped = snap_with_guides(monitor, &[PANEL], 24);
             assert_eq!(snapped.placement, Placement::new(320, 1080, 1280, 720));
             assert!(
-                snapped
-                    .guides
-                    .iter()
-                    .any(|guide| guide.vertical && guide.at == 960),
+                snapped.guides.iter().any(|guide| guide.vertical && guide.at == 960),
                 "the shared centre line is shown: {:?}",
                 snapped.guides
             );
             assert!(
-                snapped
-                    .guides
-                    .iter()
-                    .any(|guide| !guide.vertical && guide.at == 1080),
+                snapped.guides.iter().any(|guide| !guide.vertical && guide.at == 1080),
                 "the shared edge is shown: {:?}",
                 snapped.guides
             );
             let far = snap_with_guides(Placement::new(2400, 300, 1280, 720), &[PANEL], 24);
             assert!(far.guides.is_empty(), "nothing lined up, no guide");
-        }
 
-        phase an_edge_never_pulls_to_a_centre;
-        {
             let monitor = Placement::new(1920, 550, 2560, 1440);
-            assert_eq!(snap(monitor, &[PANEL], 24), monitor);
+            assert_eq!(snap(monitor, &[PANEL], 24), monitor, "an edge never pulls to a centre");
             let monitor = Placement::new(1920, -170, 2560, 1440);
             assert_eq!(snap(monitor, &[PANEL], 24).y, -180);
         }

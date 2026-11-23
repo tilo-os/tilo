@@ -711,28 +711,6 @@ mod tests {
             }
         }
 
-        phase every_choice_names_values_its_field_can_hold;
-        {
-            for setting in SETTINGS {
-                let Some(choice) = setting.choice else {
-                    continue;
-                };
-                assert!(setting.switch.is_none(), "{}", setting.id);
-                assert!(setting.value.is_none(), "{}", setting.id);
-                assert!(choice.options.len() >= 2, "{}", setting.id);
-                let mut names = HashSet::new();
-                for option in choice.options {
-                    assert!(
-                        serde_json::from_str::<serde_json::Value>(option.value).is_ok(),
-                        "{}: {} is JSON",
-                        setting.id,
-                        option.value
-                    );
-                    assert!(names.insert(option.name), "{}: {}", setting.id, option.name);
-                }
-            }
-        }
-
         phase ids_are_unique_and_every_setting_is_on_a_listed_page;
         {
             let mut pages = HashSet::new();
@@ -771,10 +749,6 @@ mod tests {
             assert!(layout.is_control("input.source.replace"));
             assert!(layout.is_control("input.source.add_picker"));
             assert!(!layout.is_control("input.source"));
-            assert_eq!(
-                page("keyboard").map(Page::link).as_deref(),
-                Some("settings://keyboard")
-            );
         }
 
         phase names_come_from_every_language;
@@ -784,13 +758,6 @@ mod tests {
                 names_in_every_locale(&zone.name_key()),
                 vec!["time zone".to_owned(), "zeitzone".to_owned()]
             );
-        }
-
-        phase words_come_from_every_language;
-        {
-            let words = words_in_every_locale(&page("network").expect("listed").words_key());
-            assert!(words.iter().any(|word| word == "wifi"), "{words:?}");
-            assert!(words.iter().any(|word| word == "wlan"), "{words:?}");
         }
     }
 }

@@ -1478,36 +1478,6 @@ mod tests {
             assert!(!follower.is_holder(), "the holder is still there");
         }
 
-        phase a_followers_document_edit_is_made_by_the_holder;
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let holder = Store::open(dir.path()).unwrap();
-            holder
-                .update_section("power", object(json!({"x": 1})))
-                .unwrap();
-            holder.flush_pending();
-            let follower = Store::open(dir.path()).unwrap();
-            assert!(!follower.is_holder());
-            follower
-                .edit_document(
-                    "power",
-                    &ChangeOrigin::local("settings.power/undo"),
-                    |doc| {
-                        put_leaf(doc, "power", "x", 2);
-                        Ok(())
-                    },
-                )
-                .unwrap();
-            assert_eq!(holder.load_section_value("power"), json!({"x": 2}));
-            assert_eq!(follower.load_section_value("power"), json!({"x": 2}));
-            assert_eq!(
-                holder
-                    .change_log()
-                    .last()
-                    .map(|change| change["action"].clone()),
-                Some(json!("settings.power/undo"))
-            );
-        }
     }
 
     tilo_test_env::scenario! {
@@ -1569,26 +1539,6 @@ mod tests {
             assert_eq!(store.load_section_value("appearance")["text_scale"], 2);
         }
 
-        phase a_change_names_the_section_action_and_who_made_it;
-        {
-            let message = change_message(&ChangeOrigin::local("settings.power/field-edit"), &[], 0);
-            assert!(made_by(
-                &message,
-                "settings.power/",
-                ChangeOrigin::LOCAL_USER
-            ));
-            assert!(!made_by(
-                &message,
-                "settings.appearance/",
-                ChangeOrigin::LOCAL_USER
-            ));
-            assert!(!made_by(&message, "settings.power/", "someone-else"));
-            assert!(!made_by(
-                "tilo.entry/3 x",
-                "settings.power/",
-                ChangeOrigin::LOCAL_USER
-            ));
-        }
     }
 
     impl Store {

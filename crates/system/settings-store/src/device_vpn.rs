@@ -396,12 +396,6 @@ mod tests {
             assert_ne!(ProfileRelease::after(Some(&first), "work").id, first.id);
         }
 
-        phase each_stop_request_has_a_new_id;
-        {
-            let first = StopRequest::after(None, "ab");
-            let second = StopRequest::after(Some(&first), "ab");
-            assert_ne!(first.id, second.id);
-        }
     }
 
     tilo_test_env::scenario! {

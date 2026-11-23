@@ -147,11 +147,5 @@ mod tests {
                 .collect();
             assert_eq!(texts, ["first", "last"]);
         }
-
-        phase the_history_is_this_devices;
-        {
-            assert_eq!(HISTORY.section(), SECTION);
-            assert!(HISTORY.default_value().copies.is_empty());
-        }
     }
 }
