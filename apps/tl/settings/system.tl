@@ -225,7 +225,7 @@ view continuity_pane() {
             for entry in c.audit {
                 if let capability = entry.capability {
                     ui.ListRow(
-                        "{capability}",
+                        capability_words(capability),
                         secondary: if entry.enabled { "Allowed" } else { "Stopped" },
                         icon: .clock,
                     )
@@ -275,5 +275,30 @@ view about_pane() {
         ui.PropertyList {
             ui.Property("Apps", "{app_count}")
         }
+    }
+}
+
+/// What a capability passing between devices is called, in words.
+fn capability_words(capability: settings.ContinuityCapability) -> Text {
+    if capability == .clipboard {
+        "The clipboard"
+    } else if capability == .notifications {
+        "What you were told"
+    } else if capability == .wifi_settings {
+        "Wi-Fi settings"
+    } else if capability == .media {
+        "What plays"
+    } else if capability == .display_input {
+        "The screen and input"
+    } else if capability == .file_transfer {
+        "Files"
+    } else if capability == .realtime_sessions {
+        "Live sessions"
+    } else if capability == .typed_gamepad {
+        "Gamepads"
+    } else if capability == .app_continuations {
+        "Windows that go on"
+    } else {
+        "A capability"
     }
 }

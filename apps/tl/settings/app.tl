@@ -557,7 +557,7 @@ view power_pane() {
                 secondary: if let left = battery.minutes_left {
                     "{left} minutes left"
                 } else {
-                    battery.state
+                    battery_words(battery.state)
                 },
                 icon: .battery,
             )
@@ -661,6 +661,25 @@ view power_pane() {
                 step: 1.0,
             ),
         )
+    }
+}
+
+/// How the battery stands, in a word.
+fn battery_words(state: device.BatteryState) -> Text {
+    if state == .charging {
+        "Charging"
+    } else if state == .discharging {
+        "On the battery"
+    } else if state == .empty {
+        "Empty"
+    } else if state == .full {
+        "Full"
+    } else if state == .pending_charge {
+        "About to charge"
+    } else if state == .pending_discharge {
+        "About to drain"
+    } else {
+        "Plugged in"
     }
 }
 
