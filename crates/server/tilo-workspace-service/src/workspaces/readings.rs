@@ -58,6 +58,28 @@ impl Reading {
 /// What a workspace's join log and entry say of the invitations it issued,
 /// kept beside the workspace: a page reading an invitation reads a card here,
 /// at once, however long the workspace's lock stays taken.
+/// A workspace this service holds, as [`Workspaces::copy_now`] reads it.
+#[derive(Clone)]
+pub struct HeldCopy {
+    /// Held as a member copy, not governed here.
+    pub member: bool,
+    /// The name its governance gives it.
+    pub name: String,
+    /// Its replica.
+    pub peer: StatePeer,
+}
+
+impl HeldCopy {
+    fn of(reading: &Reading) -> Self {
+        let peer = reading.replica.read(StatePeer::clone);
+        Self {
+            member: reading.member,
+            name: peer.governance().workspace_name().unwrap_or_default(),
+            peer,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub(super) struct Invitations(Arc<std::sync::Mutex<Arc<Issued>>>);
 
@@ -168,6 +190,16 @@ impl Readings {
     }
 
     /// The workspaces held here, by their ids.
+    /// Every workspace held now, with what it is read through.
+    fn all(&self) -> Vec<(WorkspaceId, Reading)> {
+        self.0
+            .lock_recover()
+            .iter()
+            .filter(|(_, (of, _))| of.strong_count() > 0)
+            .map(|(workspace, (_, reading))| (*workspace, reading.clone()))
+            .collect()
+    }
+
     pub(super) fn workspaces(&self) -> Vec<String> {
         self.0
             .lock_recover()
@@ -197,6 +229,29 @@ impl Workspaces {
     /// What the workspace `workspace` governed here is read through without
     /// its lock; `None` for a workspace not governed here. Only the first read
     /// of a workspace opened here waits for its lock.
+    /// `workspace` as this service holds it now, read without waiting on it: a caller on the
+    /// runtime that serves the workspaces waits on nothing that runtime has to run. A wait on the
+    /// workspace's lock from there waits on itself when a task of that runtime holds the lock.
+    /// `None` for a workspace not held here.
+    #[must_use]
+    pub fn copy_now(&self, workspace: WorkspaceId) -> Option<HeldCopy> {
+        self.inner
+            .readings
+            .held(&workspace.to_string())
+            .map(|reading| HeldCopy::of(&reading))
+    }
+
+    /// Every workspace this service holds now, read as [`Self::copy_now`] reads one.
+    #[must_use]
+    pub fn copies_now(&self) -> Vec<(WorkspaceId, HeldCopy)> {
+        self.inner
+            .readings
+            .all()
+            .into_iter()
+            .map(|(workspace, reading)| (workspace, HeldCopy::of(&reading)))
+            .collect()
+    }
+
     pub(super) async fn reading(&self, workspace: WorkspaceId) -> Option<Reading> {
         let governed = self.held(workspace).await?;
         if let Some(reading) = self.inner.readings.of(workspace, &governed) {

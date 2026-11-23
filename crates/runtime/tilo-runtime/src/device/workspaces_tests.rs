@@ -178,6 +178,13 @@ async fn a_logged_in_devices_service_holds_its_workspace_and_opens_what_the_serv
         copy.is_member(&laptop_cert.user_public_key),
         "the copy names the person a member"
     );
+    assert!(own.holds(id), "held as a member copy");
+    assert!(
+        own.workspaces()
+            .iter()
+            .any(|held| held.id().to_string() == workspace),
+        "the workspaces this device holds name it"
+    );
     tilo_test_env::within("the member copy opens the server's sealed layout", async {
         loop {
             let (copies, named) = (own.copies().clone(), workspace.clone());

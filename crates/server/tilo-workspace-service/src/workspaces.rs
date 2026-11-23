@@ -174,6 +174,8 @@ mod desktop_document;
 #[cfg(test)]
 mod governed_grants_tests;
 #[cfg(test)]
+mod copy_now_tests;
+#[cfg(test)]
 mod naming_tests;
 pub mod person_workspace;
 // The person's region and formats and their zone: what a view rendered here for them shows
@@ -188,6 +190,7 @@ mod unattended;
 mod unbuildable_windows;
 pub use unattended::{Answer as PersonAnswer, AsksPeople};
 mod readings;
+pub use readings::HeldCopy;
 #[cfg(feature = "agents")]
 mod views;
 mod voice;
