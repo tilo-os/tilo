@@ -76,28 +76,28 @@ impl Core {
     }
 
     fn engine_ask(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
-        match self.engine.borrow().as_ref() {
+        match self.engine_work.borrow().as_ref() {
             Some(host) => host.call(app, op, input),
             None => Err(no_engine()),
         }
     }
 
     fn engine_begin(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
-        match self.engine.borrow().as_ref() {
+        match self.engine_work.borrow().as_ref() {
             Some(host) => host.start(app, op, input),
             None => Err(no_engine()),
         }
     }
 
     fn engine_status(&self, job: &str) -> Result<String, String> {
-        match self.engine.borrow().as_ref() {
+        match self.engine_work.borrow().as_ref() {
             Some(host) => host.status(job),
             None => Err(no_engine()),
         }
     }
 
     fn engine_stop(&self, job: &str) -> bool {
-        self.engine
+        self.engine_work
             .borrow()
             .as_ref()
             .is_some_and(|host| host.cancel(job))

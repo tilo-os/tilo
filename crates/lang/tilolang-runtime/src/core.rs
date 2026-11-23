@@ -27,7 +27,7 @@ use Imp::{
     CollInsert, CollInsertAs, CollInsertKeyed, CollMove, CollMoveAmong, CollMoveTo, CollOrdered,
     CollPlace, CollRelatives, CollRemove, CollWhere, CollWhereWith, CountBy, DateShow, DayParse,
     DayPart, DayShift, DayStartOfWeek, DayWeekday, Describe, DescribeRef, DurationText, Earlier,
-    EditField, EntryParts, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH,
+    EditField, EntryParts, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EngineCall, EngineStart, EngineStatus, EngineCancel,
     EnumSetI, EventPart, EventValue, FieldChanged, FileAt, FileBook, FileBookCover, FileBookInfo,
     FileCopy, FileCrop, FileEncode, FileFiles, FileImageInfo, FileList, FileMarkdown, FileMkdir,
     FileMove, FileOfBytes, FileOfDocument, FileOfText, FileOpen, FileOpenPath, FilePart,
@@ -178,7 +178,7 @@ pub struct Core {
     pub clipboard: RefCell<Option<Box<dyn crate::clipboard::ClipboardHost>>>,
     /// The device's own work (`Runtime::set_engine`): what it answers an app that asks for a
     /// decode, a render or a raster it cannot do itself.
-    pub engine: RefCell<Option<Box<dyn crate::host_work::EngineHost>>>,
+    pub engine_work: RefCell<Option<Box<dyn crate::host_work::EngineHost>>>,
     /// What names actors; the id itself until the host says.
     pub names: RefCell<Option<Box<dyn NameHost>>>,
     /// How a day or a time of day reads in a sentence; its stored text until the host says
@@ -382,7 +382,7 @@ impl Core {
             fonts: RefCell::new(None),
             files: RefCell::new(None),
             clipboard: RefCell::new(None),
-            engine: RefCell::new(None),
+            engine_work: RefCell::new(None),
             names: RefCell::new(None),
             shown: RefCell::new(None),
             shown_by: RefCell::new(None),
