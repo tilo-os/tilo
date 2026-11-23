@@ -581,7 +581,7 @@ impl ResourceService {
         // brought it stands for it alone, never for the next invocation the service answers.
         let beside = std::mem::take(&mut self.beside);
         let by = &invoker.acting.by;
-        let mut made = Vec::new();
+        let mut returned: Option<tilo_actions::ActionOutput> = None;
         // What the action writes is told apart from what was written before it.
         let _ = self.host.store().take_wrote("");
         if action == EDIT_TEXT_ACTION || action == EDIT_FLAG_ACTION {
@@ -625,11 +625,15 @@ impl ResourceService {
             }
             let planned: DynAction = serde_json::from_slice(&encoded.payload)
                 .map_err(|error| ApiError::InvalidArguments(error.to_string()))?;
-            made.extend(
-                self.host
-                    .take_returned(&planned.action_id)
-                    .map(|made| resource_id(&planned.app, &made.id_string())),
-            );
+            returned = self
+                .host
+                .take_returned(&planned.action_id)
+                .map(|value| {
+                    self.host
+                        .action_output(&planned.app, &planned.action_id, &value)
+                })
+                .transpose()
+                .map_err(ApiError::Failed)?;
         }
         if let Some(refused) = self.host.store().take_refusal() {
             return Err(ApiError::Failed(refused));
@@ -642,10 +646,9 @@ impl ResourceService {
             crate::publish::app_of(resource).and_then(|app| self.host.store().take_wrote(app));
         self.publications.update(&self.host, &self.planner);
         self.told();
-        Ok(Started::Done(ActionOutput {
-            value: wrote.and_then(|wrote| ActionOutput::noting_wrote(None, &wrote)),
-            resources: made,
-        }))
+        let mut output = returned.unwrap_or_default();
+        output.value = wrote.and_then(|wrote| ActionOutput::noting_wrote(output.value, &wrote));
+        Ok(Started::Done(output))
     }
 
     /// A change to, or a view of, `resource`'s history, when that is what was asked (`type_id`

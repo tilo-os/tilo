@@ -20,7 +20,7 @@ use tilo_actions::{
 use crate::action::{DIRECT_EDITS, DirectEdit, DynAction};
 use crate::resources::{ResourceStore, Watch};
 use tilolang_runtime::ids::Actor;
-use tilolang_runtime::meta::{ActionMeta, FieldKind, Meta, TypeMeta};
+use tilolang_runtime::meta::{ActionMeta, FieldKind, Meta, Ty, TypeMeta};
 use tilolang_runtime::store::{ANY_FIELD, ChangeNote, FieldSpec, Mutation, Scalar, Store as _};
 use tilolang_runtime::value::ResourceRef;
 use tilolang_runtime::words::Words;
@@ -215,7 +215,60 @@ pub fn action_type(
     let build = build_of(meta, kind, action, planner);
     let (label, placeholder) = naming_of(action, params.len(), words);
     let spec = spec_of(meta, action, label, placeholder, params, build);
-    Arc::clone(described(spec, action, words).action_type())
+    Arc::clone(described(meta, spec, action, words).action_type())
+}
+
+/// The schema of the value the action `action` of `meta` returns, in the API's JSON: what an
+/// invocation of it is held to, so a caller reads the value as the data it declared. `None` for
+/// an action declared to return nothing, and for one whose value the API carries no data for (a
+/// file, the bytes of a response): that app shows it rather than yielding it.
+///
+/// A value may always be absent: an invocation that stopped for a person to decide first has not
+/// run, and returns nothing until they do.
+#[must_use]
+pub fn result_schema(meta: &Meta, action: &ActionMeta) -> Option<Json> {
+    let ty = result_ty(meta, action)?;
+    let inner = match &ty {
+        Ty::Option(inner) => inner.as_ref(),
+        other => other,
+    };
+    let schema = crate::surface::schema_of(meta, inner);
+    Some(serde_json::json!({"oneOf": [schema, {"type": "null"}]}))
+}
+
+/// The type the action `action` of `meta` returns, when the API carries its value as data
+/// ([`carries_data`]).
+pub(crate) fn result_ty(meta: &Meta, action: &ActionMeta) -> Option<Ty> {
+    let ty = tilolang_runtime::meta::parse_ty(action.result.as_deref()?, &meta.app).ok()?;
+    carries_data(&ty).then_some(ty)
+}
+
+/// Whether a value of `ty` is one the API carries as data: a text, a number, a flag, a person,
+/// rich text, a resource by the reference to it, a list of them, an option of one. A file, the
+/// bytes of a response, an action and a view are the app's own: no caller reads one.
+fn carries_data(ty: &Ty) -> bool {
+    match ty {
+        Ty::Text
+        | Ty::Int
+        | Ty::Float
+        | Ty::Bool
+        | Ty::RichText
+        | Ty::Date
+        | Ty::Time
+        | Ty::Identifier
+        | Ty::Actor
+        | Ty::Json
+        | Ty::Record(_)
+        | Ty::Union(_)
+        | Ty::Enum(_) => true,
+        Ty::Option(inner)
+        | Ty::List(inner)
+        | Ty::Set(inner)
+        | Ty::Collection(inner)
+        | Ty::Map(inner) => carries_data(inner),
+        Ty::Tuple(items) => items.iter().all(carries_data),
+        _ => false,
+    }
 }
 
 /// The action's parameters, each with what it is called where a person gives it (a form, a
@@ -359,7 +412,7 @@ fn spec_of(
 
 /// `spec` made into its type in the order a native verb's declaration is made into it: its kind,
 /// description, icon, then whether it is destructive, which settles its confirmation.
-fn described(spec: ActionSpec, action: &ActionMeta, words: &dyn Words) -> ActionSpec {
+fn described(meta: &Meta, spec: ActionSpec, action: &ActionMeta, words: &dyn Words) -> ActionSpec {
     let mut spec = spec.of_kind(action_kind(action.class));
     if !action.doc.is_empty() {
         spec = spec.with_description(said_of(words, &action.id, "doc", None, &action.doc));
@@ -395,6 +448,11 @@ fn described(spec: ActionSpec, action: &ActionMeta, words: &dyn Words) -> Action
                 contract.tags.push(tag);
             }
         }
+    }
+    // What it returns: the shape an invocation of it is held to, so a caller reads the value as
+    // the data the declaration says it returns (`-> Note` as the resource it made).
+    if let Some(schema) = result_schema(meta, action) {
+        spec.type_mut().contract.result = tilo_actions::ResultSpec::Json { schema };
     }
     spec.type_mut().contract.settle_confirmation();
     spec

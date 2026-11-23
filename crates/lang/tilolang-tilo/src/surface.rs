@@ -142,7 +142,7 @@ fn field_type_of(meta: &Meta, ty: &Ty, types: &mut TypeSet) -> FieldType {
     }
 }
 
-fn schema_of(meta: &Meta, ty: &Ty) -> Json {
+pub(crate) fn schema_of(meta: &Meta, ty: &Ty) -> Json {
     match ty {
         Ty::Int => json!({"type": "integer"}),
         Ty::Duration => json!({"type": "integer", "description": "Duration in whole seconds"}),

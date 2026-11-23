@@ -2388,7 +2388,7 @@ impl Hosted {
             }
             // The answer names the characters it wrote: the window draws them in the writer's
             // colour, ending at the writer's caret.
-            let mut output = returned(&host, &action);
+            let mut output = returned(&host, &action)?;
             if let Some(wrote) = self.store.take_wrote(&action.app) {
                 output.value = tilo_actions::ActionOutput::noting_wrote(output.value, &wrote);
             }
@@ -2943,16 +2943,17 @@ impl Drop for InRun {
     }
 }
 
-/// What the action `action` answers: the resource it returned, by its published id, which a
-/// task's program goes on with.
-fn returned(host: &tilolang_tilo::host::Host, action: &DynAction) -> tilo_actions::ActionOutput {
-    let returned = host
-        .take_returned(&action.action_id)
-        .map(|made| tilolang_tilo::publish::resource_id(&action.app, &made.id_string()));
-    tilo_actions::ActionOutput {
-        value: None,
-        resources: returned.into_iter().collect(),
-    }
+/// What the action `action` returned: the value its declaration carries as data, and the
+/// resource it made, by its published id, which a task's program goes on with.
+fn returned(
+    host: &tilolang_tilo::host::Host,
+    action: &DynAction,
+) -> Result<tilo_actions::ActionOutput, Refused> {
+    let Some(value) = host.take_returned(&action.action_id) else {
+        return Ok(tilo_actions::ActionOutput::default());
+    };
+    host.action_output(&action.app, &action.action_id, &value)
+        .map_err(|error| Refused::new("action_failed", error))
 }
 
 /// Tell the window of `instance` the change `delta` of the surface the instance publishes, as

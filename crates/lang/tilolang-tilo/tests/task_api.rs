@@ -217,10 +217,18 @@ impl TaskApi for Apps {
                 let returned = replica
                     .host
                     .take_returned(action)
-                    .map(|made| resource_id(app, &made.id_string()));
-                Answered::Done(
-                    json!({"value": null, "resources": returned.into_iter().collect::<Vec<_>>()}),
-                )
+                    .map(|value| replica.host.action_output(app, action, &value))
+                    .transpose();
+                match returned {
+                    Ok(returned) => {
+                        let output = returned.unwrap_or_default();
+                        Answered::Done(json!({
+                            "value": output.value,
+                            "resources": output.resources,
+                        }))
+                    }
+                    Err(why) => Answered::Failed(why),
+                }
             }
             Err(why) => Answered::Failed(why),
         }

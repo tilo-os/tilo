@@ -29,6 +29,9 @@ use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::resources::ResourceStore;
 use tilolang_tilo::runtime::Value;
 
+/// What an action returns reaches its invoker over its connection.
+#[path = "process/results.rs"]
+mod results;
 /// The native Notes app's notebook, carried over once by the tilolang Notes a session starts.
 #[path = "process/chat.rs"]
 mod chat;

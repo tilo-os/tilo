@@ -175,11 +175,11 @@ pub(crate) struct HostInner {
     /// What the run of the action being planned stopped at, for its person's window to ask them
     /// once the plan is the change the document commits ([`Self::plan`]).
     stopped: RefCell<Option<Waiting>>,
-    /// The resource each action returned when its plan last happened, by the action: what its
-    /// invocation answers. Publishing a surface plans every action, so one place for the last
-    /// would answer one action with another's resource; each is kept by its action and taken
-    /// when that action's answer is asked for ([`Host::take_returned`]).
-    returned: RefCell<HashMap<String, ResourceRef>>,
+    /// What each action's plan last returned, by the action: the value its invocation returns,
+    /// a resource as the reference it made. Publishing what an app offers plans every action, so
+    /// one place for the last would give one action another's value; each is kept by its action
+    /// and taken when that action's value is asked for ([`Host::take_returned`]).
+    returned: RefCell<HashMap<String, Value>>,
     /// When the packages' triggers next have something to run.
     triggers: crate::triggers::Schedule,
     /// Whether a migration waits for its turn: another device runs it, or none may yet
@@ -460,6 +460,21 @@ fn published_roots(meta: &Meta) -> Meta {
     meta
 }
 
+/// The published id of every resource `value` names, in the order it names them: what an
+/// invocation's output lists as the resources it made or revealed.
+fn resources_named(app: &str, value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::Ref(made) => out.push(crate::publish::resource_id(app, &made.target.id_string())),
+        Value::List(items) | Value::Tuple(items) => {
+            for item in items {
+                resources_named(app, item, out);
+            }
+        }
+        Value::Opt(Some(inner)) => resources_named(app, inner, out),
+        _ => {}
+    }
+}
+
 /// The argument `value` of the type `ty`, as the API takes it: in the shape the action's
 /// published parameter declares ([`crate::surface::published_param`]), which the broker binds
 /// before it delivers, and which [`value_of`] reads back as the same value. A document by the
@@ -618,7 +633,7 @@ impl HostInner {
         )
     }
 
-    /// What `action` returned, for its invocation's answer.
+    /// What `action` returned, for its invocation's value.
     ///
     /// The answer is the action's own: a plan the API made of some other action (publishing a
     /// surface plans each action) writes that action's answer, never this one's, and an
@@ -627,13 +642,15 @@ impl HostInner {
     fn returned_by(&self, action: &str, outcome: &InvokeOutcome) {
         let mut returned = self.returned.borrow_mut();
         match outcome {
-            InvokeOutcome::Done(Value::Ref(made)) => {
-                returned.insert(action.to_owned(), ResourceRef::clone(&made.target));
+            // `Unit` is an action that returned nothing, which is no value to give.
+            InvokeOutcome::Done(value) if !matches!(value, Value::Unit) => {
+                returned.insert(action.to_owned(), value.clone());
             }
-            InvokeOutcome::Done(_) | InvokeOutcome::Denied => {
+            // A refusal, and a step waiting for a person, leave nothing: what the plan made
+            // before the step, if anything, is written after this ([`Self::plan_in_mirror`]).
+            InvokeOutcome::Done(_) | InvokeOutcome::Suggested(_) | InvokeOutcome::Denied => {
                 returned.remove(action);
             }
-            InvokeOutcome::Suggested(_) => {}
         }
     }
 
@@ -818,7 +835,7 @@ impl HostInner {
                 {
                     self.returned
                         .borrow_mut()
-                        .insert(request.action_id.to_owned(), made);
+                        .insert(request.action_id.to_owned(), Value::resource(&made));
                 }
                 match outcome {
                     InvokeOutcome::Done(_) => {}
@@ -1163,11 +1180,43 @@ impl Host {
         out
     }
 
-    /// The resource `action` returned when it was last planned here, for whoever invoked it,
-    /// once: what its invocation answers.
+    /// What `action` returned when it was last planned here, for whoever invoked it, once: the
+    /// value its invocation carries, a resource as the reference it made.
     #[must_use]
-    pub fn take_returned(&self, action: &str) -> Option<ResourceRef> {
+    pub fn take_returned(&self, action: &str) -> Option<Value> {
         self.inner.returned.borrow_mut().remove(action)
+    }
+
+    /// What `action` of `app` returned as `value`, as the output of its invocation: the value
+    /// its declared result carries as data ([`crate::publish::result_ty`]), and the resource it
+    /// made, by its published id.
+    ///
+    /// A value of a type the API carries no data for (a file, the bytes of a response) names
+    /// the resource it made alone: the app shows it rather than reading it out.
+    ///
+    /// # Errors
+    /// The value is not of the action's declared result type, or a type it names is in a package
+    /// this host does not hold: it cannot be read as what the action declared.
+    pub fn action_output(
+        &self,
+        app: &str,
+        action: &str,
+        value: &Value,
+    ) -> Result<tilo_actions::ActionOutput, String> {
+        let package = self.inner.package_of(app)?;
+        let declared = package
+            .meta
+            .actions
+            .iter()
+            .find(|declared| declared.id == action)
+            .ok_or_else(|| format!("no action {action} in {app}"))?;
+        let mut output = tilo_actions::ActionOutput::default();
+        resources_named(app, value, &mut output.resources);
+        if let Some(ty) = crate::publish::result_ty(&package.meta, declared) {
+            let owner = |app: &str| self.inner.package_of(app).map(|package| package.meta.clone());
+            output.value = Some(argument_json(&owner, &package.meta, value, &ty)?);
+        }
+        Ok(output)
     }
 
     #[must_use]
