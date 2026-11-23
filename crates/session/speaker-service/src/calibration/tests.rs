@@ -238,6 +238,15 @@ tilo_test_env::scenario! {
             1_000,
             "before keeps current trims"
         );
+
+        // Nothing is applied until asked, and revert restores the old trims.
+        assert!(run.previous_trims().is_none(), "nothing applied yet");
+        assert_eq!(run.proposed_trims().unwrap()[0].2.delay_ns, 23_000_000);
+        run.mark_applied();
+        assert!(run.proposed_trims().is_none());
+        let previous = run.previous_trims().unwrap();
+        assert_eq!(previous[0].2.delay_ns, 1_000);
+        assert_eq!(previous[1].0, id("shelf"));
     }
 
     phase a_listening_reading_the_other_microphones_contradict_is_set_aside;
@@ -295,23 +304,6 @@ tilo_test_env::scenario! {
             panic!("{:?}", harness.run.progress()[1]);
         };
         assert_eq!(shelf.arrival_ns, 91_000_000);
-    }
-
-    phase nothing_is_applied_until_asked_and_revert_restores_the_old_trims;
-    {
-        let now = Instant::now();
-        let mut harness = start(living_room(), ALL_GIVEN, now);
-        let run = &mut harness.run;
-        run.tick();
-        run.tick();
-        assert!(run.previous_trims().is_none(), "nothing applied yet");
-        let proposed = run.proposed_trims().unwrap();
-        assert_eq!(proposed[0].2.delay_ns, 23_000_000);
-        run.mark_applied();
-        assert!(run.proposed_trims().is_none());
-        let previous = run.previous_trims().unwrap();
-        assert_eq!(previous[0].2.delay_ns, 1_000);
-        assert_eq!(previous[1].0, id("shelf"));
     }
 
     phase a_member_no_microphone_heard_fails_the_run_with_its_name;
