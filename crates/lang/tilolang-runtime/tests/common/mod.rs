@@ -394,7 +394,9 @@ impl Dispatch {
             Invocation::Action { action, args, .. } => {
                 (action, args.into_iter().map(|(_, value)| value).collect())
             }
-            other => panic!("the run waits on no action: {other:?}"),
+            other @ Invocation::Edit { .. } => {
+                panic!("the run waits on no action: {other:?}")
+            }
         }
     }
 
@@ -409,13 +411,13 @@ impl Dispatch {
         };
         rt.answer_call(run, answer).expect("the run goes on")
     }
+}
 
-    /// Refuse the call the run waits on, as the dispatch does when the person declines: the run
-    /// ends and what it wrote is taken back.
-    pub fn decline(&self, rt: &Runtime, run: &RunId) -> tilolang_runtime::RuntimeError {
-        rt.answer_call(run, Invoked::Refused("declined by me".to_owned()))
-            .expect_err("a declined call ends the run")
-    }
+/// Refuse the call the run waits on, as the dispatch does when the person declines: the run ends
+/// and what it wrote is taken back.
+pub fn decline(rt: &Runtime, run: &RunId) -> tilolang_runtime::RuntimeError {
+    rt.answer_call(run, Invoked::Refused("declined by me".to_owned()))
+        .expect_err("a declined call ends the run")
 }
 
 impl Invoker for Dispatch {

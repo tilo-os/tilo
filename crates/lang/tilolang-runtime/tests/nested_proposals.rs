@@ -167,7 +167,7 @@ default view letters for Box
             else {
                 panic!("the send inside the reply asks");
             };
-            let error = p.dispatch.decline(&p.rt, &run);
+            let error = decline(&p.rt, &run);
             assert!(
                 matches!(error, tilolang_runtime::RuntimeError::Denied(_)),
                 "{error}"

@@ -163,7 +163,7 @@ mod cases {
                 "{error}"
             );
             assert_eq!(incs(&w, &c), 0, "nothing of the declined run stands");
-            let mut store = w.store.clone();
+            let mut store = w.store;
             assert!(
                 store.load_journal(&run).unwrap().unwrap().finished,
                 "the run ended"

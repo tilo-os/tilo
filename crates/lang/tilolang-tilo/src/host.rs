@@ -815,14 +815,13 @@ impl HostInner {
             Some((args, recorded)) => {
                 self.store.take_made();
                 let outcome = match request.from {
-                    Some(from) => self.runtime.invoke_action_from(
-                        &invoker,
-                        (request.action_id, args.clone()),
-                        from,
-                    ),
+                    Some(from) => {
+                        self.runtime
+                            .invoke_action_from(&invoker, (request.action_id, args), from)
+                    }
                     None => self
                         .runtime
-                        .invoke_action(&invoker, (request.action_id, args.clone())),
+                        .invoke_action(&invoker, (request.action_id, args)),
                 }
                 .map_err(|error| error.to_string())?;
                 self.returned_by(request.action_id, &outcome);

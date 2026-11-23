@@ -51,7 +51,7 @@ mod cases {
             assert!(asks, "the dispatch is told a person must be asked");
             assert_eq!(
                 author,
-                Some(stranger.clone()),
+                Some(stranger),
                 "the dispatch names the code that asked"
             );
             assert_eq!(
