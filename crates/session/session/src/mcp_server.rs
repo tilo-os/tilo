@@ -1935,7 +1935,7 @@ fn connect(
         return Ok(None);
     }
     let (device, certificate) =
-        match tilo_identity::broker::trusted_current_device(admitted.workspace) {
+        match tilo_identity::trusted_device::current(admitted.workspace) {
             Ok(device) => device,
             Err(error) => {
                 tracing::warn!(
