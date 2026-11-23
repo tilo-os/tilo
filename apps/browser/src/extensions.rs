@@ -229,20 +229,20 @@ fn list_in(root: &Path) -> Vec<ExtensionInfo> {
 }
 
 fn read_manifest(path: &Path) -> Result<String, ExtensionError> {
-    let length = std::fs::metadata(path)?.len();
-    if length > MAX_MANIFEST_BYTES {
-        return Err(ExtensionError::Manifest(
-            "manifest.json is too large".into(),
-        ));
-    }
-    std::fs::read_to_string(path).map_err(ExtensionError::Io)
+    let bytes = tilo_files::native::bounded::read(path, MAX_MANIFEST_BYTES).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::FileTooLarge {
+            ExtensionError::Manifest("manifest.json is too large".into())
+        } else {
+            ExtensionError::Io(error)
+        }
+    })?;
+    String::from_utf8(bytes).map_err(|error| {
+        ExtensionError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+    })
 }
 
 pub(crate) fn read_bounded(path: &Path) -> Option<String> {
-    let length = std::fs::metadata(path).ok()?.len();
-    (length <= MAX_MESSAGES_BYTES)
-        .then(|| std::fs::read_to_string(path).ok())
-        .flatten()
+    String::from_utf8(tilo_files::native::bounded::read(path, MAX_MESSAGES_BYTES).ok()?).ok()
 }
 
 /// An extension's messages in its default locale, keyed in lower case: Chromium
