@@ -7,6 +7,7 @@ import {
   type ApiInfo,
   apiInfoOf,
   type Key,
+  keyGranted,
   keyOf,
   type MintedKey,
   mintedKeyOf,
@@ -17,7 +18,7 @@ import {
   WorkspaceList,
   workspaceOf,
 } from "./models.ts";
-import { routes, splitAction } from "./routes.ts";
+import { query as queryOf, routes, splitAction } from "./routes.ts";
 import {
   type FetchLike,
   type HostOptions,
@@ -27,8 +28,11 @@ import {
 } from "./transport.ts";
 import { Workspace } from "./workspace.ts";
 
-/** The account's keys, as a record: read through the record API, never listed by an action. */
-const KEYS_RECORD = "record:tilo.account:keys";
+/**
+ * The keys a workspace admitted, each a record of its own: listing it names the grants this key
+ * may read, and each is read as every record is. No action lists them.
+ */
+const KEYS_RECORD = "record:tilo.grants";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** How a client is made: where it calls, with which key, and how long it retries. */
@@ -476,20 +480,38 @@ export class Tilo {
     return this.accountAction("account/workspaces#delete", { workspace: id });
   }
 
-  /** @internal The keys, read from the account's keys record as every record is read. */
+  /**
+   * @internal The keys each workspace admitted: its listing names the ones this key may read,
+   * each followed to its grant. A key reaching every workspace is in each of them.
+   */
   async keysList(): Promise<Key[]> {
-    const read = await this.account().answer("GET", routes.accountResource(KEYS_RECORD), {
-      idempotent: false,
-    });
-    const listed =
-      read.fields !== null && typeof read.fields === "object"
-        ? (read.fields as Record<string, unknown>)
-        : {};
-    return Array.isArray(listed.keys)
-      ? listed.keys
-          .filter((key): key is Record<string, unknown> => key !== null && typeof key === "object")
-          .map(keyOf)
-      : [];
+    const keys = new Map<string, Key>();
+    const seen = new Set<string>();
+    for (const workspace of (await this.workspaceList(true)).workspaces) {
+      const endpoint = this.at(workspace.id);
+      const listed = await endpoint.answer(
+        "GET",
+        `${routes.resources(workspace.id)}${queryOf({ path: KEYS_RECORD })}`,
+        { idempotent: false },
+      );
+      for (const row of Array.isArray(listed.rows) ? listed.rows : []) {
+        const path = row !== null && typeof row === "object" ? (row as Record<string, unknown>).path : null;
+        // A record is named by its grant: one read in another workspace is read already.
+        if (typeof path !== "string" || seen.has(path)) {
+          continue;
+        }
+        seen.add(path);
+        const read = await endpoint.answer("GET", routes.resource(workspace.id, path), {
+          idempotent: false,
+        });
+        const grant = read.fields;
+        if (grant !== null && typeof grant === "object" && (grant as Record<string, unknown>).revoked_ms == null) {
+          const key = keyGranted(grant as Record<string, unknown>);
+          keys.set(key.grant, key);
+        }
+      }
+    }
+    return [...keys.values()];
   }
 
   /** @internal */

@@ -16,8 +16,9 @@ from ._models import Key, MintedKey, Usage, WorkspaceInfo, WorkspaceList
 from ._sync import LoopThread
 from ._transport import HttpTransport, Transport, native_transport
 
-#: The account's keys, as a record: read through the record API, never listed by an action.
-KEYS_RECORD = "record:tilo.account:keys"
+#: The keys a workspace admitted, each a record of its own: listing it names the grants this
+#: key may read, and each is read as every record is. No action lists them.
+KEYS_RECORD = "record:tilo.grants"
 
 
 class Workspaces:
@@ -420,12 +421,27 @@ class AsyncTilo:
     # -- keys ------------------------------------------------------------
 
     async def _keys_list(self) -> list[Key]:
-        # The keys are a record of the account, read as every record is read.
-        endpoint = self._endpoint()
-        read = await endpoint.json("GET", endpoint.path("resources", KEYS_RECORD))
-        fields = read.get("fields") if isinstance(read, Mapping) else None
-        keys = fields.get("keys") if isinstance(fields, Mapping) else None
-        return [Key.of(key) for key in keys or [] if isinstance(key, Mapping)]
+        # Each workspace keeps the keys it admitted: its listing names the ones this key may
+        # read, each followed to its grant. A key reaching every workspace is in each of them.
+        keys: dict[str, Key] = {}
+        seen: set[str] = set()
+        for workspace in (await self._workspace_list()).workspaces:
+            endpoint = Endpoint(self, workspace.id)
+            listed = await endpoint.json(
+                "GET", endpoint.path("resources"), query={"path": KEYS_RECORD}
+            )
+            for row in listed.get("rows") or []:
+                path = row.get("path") if isinstance(row, Mapping) else None
+                # A record is named by its grant: one read in another workspace is read already.
+                if not isinstance(path, str) or path in seen:
+                    continue
+                seen.add(path)
+                read = await endpoint.json("GET", endpoint.path("resources", path))
+                grant = read.get("fields")
+                if isinstance(grant, Mapping) and grant.get("revoked_ms") is None:
+                    key = Key.granted(grant)
+                    keys[key.grant] = key
+        return list(keys.values())
 
     async def _mint(
         self, workspace: Any, name: str | None, expires_in: int | None

@@ -185,15 +185,13 @@ impl Presence {
     }
 }
 
-/// Whether `request` is a tool call on the person's account (`account/…`), or a read of its
-/// keys' record ([`tilo_api::account::KEYS_RECORD`]).
+/// Whether `request` is a tool call on the person's account (`account/…`).
 fn account_call(request: &Value) -> bool {
     let tool = request.pointer("/params/name").and_then(Value::as_str);
     let path = request
         .pointer("/params/arguments/path")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    (matches!(tool, Some("tilo_ls" | "tilo_read" | "tilo_do"))
-        && path.split(['/', '#']).next() == Some("account"))
-        || (tool == Some("tilo_read") && path == tilo_api::account::KEYS_RECORD)
+    matches!(tool, Some("tilo_ls" | "tilo_read" | "tilo_do"))
+        && path.split(['/', '#']).next() == Some("account")
 }

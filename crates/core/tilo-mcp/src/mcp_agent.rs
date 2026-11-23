@@ -703,6 +703,12 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         if path.is_empty() {
             return self.list_apps(offset, limit, structured).await;
         }
+        if let Some(app) = path
+            .strip_prefix("record:")
+            .filter(|app| !app.contains(':'))
+        {
+            return Box::pin(self.agent_records(app, structured)).await;
+        }
         let parsed = Address::parse(path)?;
         // How a program writes what this lists: the listing is the one a program reads, and a
         // path names what it lists the same way, so the path is resolved by it too.

@@ -107,15 +107,14 @@ class FakeApi:
         self.surfaces = {"pdf-viewer": SURFACE, "tasks": Tracker.__surface__}
         # The bulk calls the SDK made: each resource, and the members it sent.
         self.groups: list[dict[str, Any]] = []
+        # The keys each workspace admitted, as its governance keeps their grants.
         self.keys: list[dict[str, Any]] = [
             {
-                "grant": "g-root",
+                "id": "g-root",
+                "person": "ab" * 32,
+                "device": "cd" * 32,
                 "name": "visa-backend",
-                "scope": "account",
-                "kind": "key",
-                "created_at_ms": 1,
-                "expires_at_ms": None,
-                "browser_pages": True,
+                "created_ms": 1,
             }
         ]
         # Keys this API turns away, with its typed refusal of each.
@@ -248,10 +247,6 @@ class FakeApi:
         path = call["path"]
         if path == "/v1":
             return self.answer(200, {"api_version": "1", "server": "fake-api"})
-        if path == "/v1/resources/record:tilo.account:keys" and request.method == "GET":
-            return self.answer(
-                200, {"path": "record:tilo.account:keys", "fields": {"keys": self.keys}}
-            )
         if path == "/v1/resources/account/usage":
             return self.answer(
                 200,
@@ -465,12 +460,18 @@ class FakeApi:
         )
 
     def revoke_key(self, call: dict[str, Any], grant: str) -> httpx.Response:
-        self.keys = [key for key in self.keys if key["grant"] != grant]
+        self.keys = [key for key in self.keys if key["id"] != grant]
         return self.ok(call, {"revoked": grant})
 
     def listing(self, call: dict[str, Any]) -> httpx.Response:
         query = call["query"]
         path = query.get("path")
+        if path == "record:tilo.grants":
+            rows = [
+                {"path": f"record:tilo.grants:{key['id']}", "name": key["id"], "label": key["id"], "kind": "tilo.grants", "actions": []}
+                for key in self.keys
+            ]
+            return self.answer(200, {"path": path, "rows": rows, "actions": []})
         if path is None:
             return self.answer(
                 200,
@@ -553,6 +554,9 @@ class FakeApi:
     def resource_route(self, request: httpx.Request, call: dict[str, Any], rest: str) -> httpx.Response:
         if request.method == "GET":
             path = "/".join(unquote(part) for part in rest.split("/"))
+            granted = [key for key in self.keys if path == f"record:tilo.grants:{key['id']}"]
+            if granted:
+                return self.answer(200, {"path": path, "fields": granted[0]})
             if path == "record:tilo.invocations:":
                 return self.answer(
                     200,

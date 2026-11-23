@@ -394,16 +394,11 @@ impl<'a> Caller<'a> {
         ) && !Some(self.params.get("path"))
             .filter(|path| !path.is_empty())
             .or_else(|| self.query("path"))
-            .is_none_or(|path| {
-                path == "account"
-                    || path.starts_with("account/")
-                    || (operation.id == "readAccountResource"
-                        && path == crate::account::KEYS_RECORD)
-            })
+            .is_none_or(|path| path == "account" || path.starts_with("account/"))
         {
             return Err(ApiError::new(
                 "not_found",
-                "the account holds only what is under `account/`, and its keys' record",
+                "the account holds only what is under `account/`",
             )
             .next("a workspace's resources are under /v1/workspaces/{workspace}/resources"));
         }

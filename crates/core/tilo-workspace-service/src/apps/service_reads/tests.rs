@@ -334,7 +334,7 @@ async fn a_device_reads_what_changed_since_its_heads() {
     ));
     let workspaces = server.workspaces();
     assert_eq!(
-        workspaces.own_listing(&workspace).unwrap(),
+        workspaces.own_documents(&workspace).unwrap(),
         vec![(APP.to_owned(), RESOURCE.to_owned())]
     );
     assert!(workspaces.held_workspaces().contains(&workspace));

@@ -138,6 +138,19 @@ class Key:
             token=str(raw.get("token") or raw.get("key") or ""),
         )
 
+    @classmethod
+    def granted(cls, grant: Mapping[str, Any]) -> Key:
+        """A key as the workspace that admitted it keeps its grant: `scope` the
+        workspace it reaches alone, `account` for every one of the person's."""
+        return cls(
+            grant=str(grant.get("id") or ""),
+            name=str(grant.get("name") or ""),
+            scope=str(grant.get("scope") or "account"),
+            kind="minted" if grant.get("parent") else "key",
+            created_at_ms=_int(grant.get("created_ms")),
+            expires_at_ms=_int(grant.get("expires_ms")),
+        )
+
 
 @dataclass(frozen=True)
 class WorkspaceUsage:

@@ -121,12 +121,41 @@ impl Workspaces {
             .map(|permissions| (*permissions.policy).clone())
     }
 
-    /// Every document `workspace` holds here, by its app and route.
+    /// Every resource `workspace` publishes here, by its app and record: each document it holds,
+    /// and the resources read from what it is rather than stored, who is in it
+    /// ([`tilo_actions::remote::PRESENCE`]) and each key it admitted
+    /// ([`tilo_actions::remote::KEY_GRANTS`]).
     ///
     /// # Errors
     ///
     /// This service holds no such workspace.
     pub(crate) fn own_listing(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
+        use tilo_actions::remote::{KEY_GRANTS, PRESENCE};
+        let held = self
+            .inner
+            .readings
+            .held(workspace)
+            .ok_or("this service does not hold the workspace")?;
+        Ok(held.replica.read(|peer| {
+            let mut listed = crate::documents::listing(peer);
+            listed.push((PRESENCE.to_owned(), String::new()));
+            listed.extend(
+                peer.governance()
+                    .workspace_grants()
+                    .into_iter()
+                    .map(|grant| (KEY_GRANTS.to_owned(), grant.id)),
+            );
+            listed
+        }))
+    }
+
+    /// Every document `workspace` holds here, by its app and route: what is stored of it, which
+    /// a copy of the workspace takes.
+    ///
+    /// # Errors
+    ///
+    /// This service holds no such workspace.
+    pub(crate) fn own_documents(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
         let held = self
             .inner
             .readings

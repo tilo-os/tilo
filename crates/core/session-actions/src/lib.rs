@@ -29,6 +29,8 @@ use tilo_lock::MutexRecover as _;
 mod gets;
 #[cfg(not(target_arch = "wasm32"))]
 mod puts;
+#[cfg(not(target_arch = "wasm32"))]
+mod reads;
 pub mod replaced;
 pub mod upload;
 mod workspace;
@@ -1149,6 +1151,13 @@ impl ActionProvider for SessionActions {
     /// The device's feed of its workspace's changes, asked over the session.
     fn change_feed(&self) -> Option<Arc<dyn tilo_actions::remote::ChangeFeed>> {
         Some(Arc::new(workspace::SessionChanges(self.clone())))
+    }
+
+    /// The device's record API, asked over the session: a read, a listing and a held wait each
+    /// go to the device whole. A read waits for its answer, which a page's one thread cannot.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
+        Some(Arc::new(reads::SessionReads(self.clone())))
     }
 
     /// The surface the workspace's package `app` publishes, asked of the

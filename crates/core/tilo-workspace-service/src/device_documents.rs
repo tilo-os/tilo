@@ -126,7 +126,7 @@ impl DeviceDocuments for ServiceDocuments {
             .0
             .copies()
             .ok_or("this device's workspace service holds no workspaces")?;
-        workspaces.own_listing(workspace)
+        workspaces.own_documents(workspace)
     }
 
     fn holds(&self, workspace: &str, app: &str, resource: &str) -> bool {

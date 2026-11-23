@@ -1,6 +1,7 @@
 //! `tilo_read` of `record:<app>:<record>`: a record of the workspace as any reader reads it, through the one record API
 //! ([`tilo_actions::remote::ResourceReads`]): its content as a structured value whatever app keeps
-//! it, decided as the agent may read it now, and woken by the next write to it.
+//! it, decided as the agent may read it now, and woken by the next write to it. `tilo_ls` of
+//! `record:<app>` lists the records of the app the agent may read, each by that path.
 
 use super::{ActionProvider, Failure, McpServer, Reply};
 use tilo_actions::remote::{ResourceAddress, ResourceAsk, read_resources};
@@ -11,6 +12,52 @@ const RECORD_WAIT_MS: u64 = 25_000;
 const RECORD_CHARS: usize = 200_000;
 
 impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
+    /// `tilo_ls` of `record:<app>` (`record:` for every app's): the records of the workspace the
+    /// record API lists for the agent, as a read with `listing` answers them, each by the path
+    /// `tilo_read` reads it at.
+    pub(super) async fn agent_records(
+        &self,
+        app: &str,
+        structured: bool,
+    ) -> Result<Reply, Failure> {
+        let reads = self
+            .host()
+            .resource_reads()
+            .ok_or_else(|| tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.to_owned())?;
+        let caller = self.execution_caller();
+        let workspace = caller.workspace().unwrap_or_default().to_owned();
+        let asked = app.to_owned();
+        let listed = tokio::task::spawn_blocking(move || {
+            tilo_actions::remote::ResourceReads::list(reads.as_ref(), &caller, &workspace, &asked)
+        })
+        .await
+        .map_err(|error| format!("the listing ended: {error}"))?
+        .map_err(|error| error.to_string())?;
+        let path = |address: &ResourceAddress| format!("record:{}:{}", address.app, address.record);
+        let text = listed.iter().map(path).collect::<Vec<_>>().join("\n");
+        let mut reply = Reply::ok(text);
+        if structured {
+            let rows: Vec<serde_json::Value> = listed
+                .iter()
+                .map(|address| {
+                    serde_json::json!({
+                        "path": path(address),
+                        "name": address.record,
+                        "id": address.record,
+                        "label": address.record,
+                        "kind": address.app,
+                        "has_children": false,
+                        "reads": true,
+                        "actions": [],
+                    })
+                })
+                .collect();
+            reply.structured =
+                Some(serde_json::json!({"path": format!("record:{app}"), "rows": rows}));
+        }
+        Ok(reply)
+    }
+
     /// `tilo_read` of `record:<app>:<record>`: the record (its chain of parts, when `parts`), once
     /// it differs from the revision `after` or the wait passed.
     pub(super) async fn agent_record(

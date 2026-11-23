@@ -28,8 +28,13 @@ async def test_the_account_lists_this_key_and_the_keys_it_minted(tilo, api):
 
     assert [key.grant for key in keys] == ["g-root"]
     assert keys[0].scope == "account"
-    assert keys[0].browser_pages is True
-    assert api.asked("GET", "/v1/resources/record:tilo.account:keys")
+    assert keys[0].kind == "key"
+    assert [
+        call
+        for call in api.asked("GET", f"/v1/workspaces/{WORKSPACE_ID}/resources")
+        if call["query"].get("path") == "record:tilo.grants"
+    ]
+    assert api.asked("GET", f"/v1/workspaces/{WORKSPACE_ID}/resources/record:tilo.grants:g-root")
 
 
 async def test_a_key_is_minted_for_one_workspace(tilo, api):

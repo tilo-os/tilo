@@ -125,7 +125,7 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
             "readAccountResource",
             Method::GET,
             "/v1/resources/{path}",
-            "One resource of the key's account: `account/workspaces`, `account/usage`, or its keys' record, `record:tilo.account:keys`",
+            "One resource of the key's account: `account/workspaces` or `account/usage`",
         )
         .query(&[("cursor", "Where the previous page ended")])
         .json(200, "Resource"),

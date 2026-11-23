@@ -117,6 +117,21 @@ export function keyOf(raw: Record<string, unknown>): Key {
   };
 }
 
+/**
+ * A key as the workspace that admitted it keeps its grant: `scope` the workspace it reaches
+ * alone, `account` for every one of the person's.
+ */
+export function keyGranted(grant: Record<string, unknown>): Key {
+  return keyOf({
+    grant: grant.id,
+    name: grant.name,
+    scope: grant.scope ?? "account",
+    kind: grant.parent == null ? "key" : "minted",
+    created_at_ms: grant.created_ms,
+    expires_at_ms: grant.expires_ms,
+  });
+}
+
 export function intOf(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }

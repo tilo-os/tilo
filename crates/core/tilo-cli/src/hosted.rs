@@ -113,10 +113,10 @@ async fn workspace_of(client: &Calls, named: Option<&str>) -> Result<Option<Stri
     })
 }
 
-/// Whether `path` is one of the account's (`account/keys#create`, or its keys' record): acted on
-/// or read with no workspace.
+/// Whether `path` is one of the account's (`account/keys#create`): acted on or read with no
+/// workspace.
 pub fn on_account(path: &str) -> bool {
-    path.split(['/', '#']).next() == Some("account") || path == tilo_api::account::KEYS_RECORD
+    path.split(['/', '#']).next() == Some("account")
 }
 
 /// `tilo do <path> name=value… [-w <workspace>] [--out FILE]`: one action of a hosted

@@ -733,6 +733,23 @@ impl StatePeer {
             .resource(resource);
         Ok(member.allows(&node, ActionKind::Read, now))
     }
+
+    /// Whether the device `source` reads every key the workspace admitted: its policy lets it
+    /// revoke the workspace's grants, which it does not do blind.
+    ///
+    /// # Errors
+    ///
+    /// Why the device is no member of this workspace at all, as [`Self::permissions`].
+    pub fn reads_every_key(
+        &self,
+        source: [u8; 32],
+        now: SystemTime,
+    ) -> Result<bool, MembershipError> {
+        use tilo_action_policy::roles::{GOVERNANCE_KIND, governance, governance_action};
+        let member = self.permissions(source, now)?;
+        let node = governance_action(&member.policy.workspace, governance::REVOKE);
+        Ok(member.allows(&node, GOVERNANCE_KIND, now))
+    }
     /// The app surface this peer names in the changes it signs for `app`'s
     /// records, if it names one.
     #[must_use]

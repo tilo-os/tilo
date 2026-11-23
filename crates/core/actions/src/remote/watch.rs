@@ -32,6 +32,12 @@ pub struct Here {
 /// workspace's own): `{"here": [Here]}`, read once or followed, and never stored.
 pub const PRESENCE: &str = "tilo.presence";
 
+/// The keys a workspace admitted, each read as a resource of its own (its record the grant's id,
+/// `grant-<hex>`): the grant as the workspace's governance keeps it, published and never stored.
+/// A listing of the app names the grants the caller may read: a key its own and the ones it
+/// minted, a person's device its person's, and whoever may revoke the workspace's grants every one.
+pub const KEY_GRANTS: &str = "tilo.grants";
+
 /// The window a member works in, as their presence names it to everyone in the workspace.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HereWindow {

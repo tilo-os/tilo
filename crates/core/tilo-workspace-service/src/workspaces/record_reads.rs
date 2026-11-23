@@ -14,13 +14,20 @@
 //! workspace's roster names, with the devices each is present on as presence on this device hears
 //! them. It is never stored: a held read of it wakes when presence moves
 //! ([`super::presence_changed`]) or the roster does.
+//!
+//! Each key a workspace admitted ([`KEY_GRANTS`]) is read here as well, a resource per grant: the
+//! grant as the workspace's governance keeps it, woken when the governance moves. A key reads its
+//! own grant and the grants it minted, a device of a person every grant of theirs, and whoever the
+//! workspace lets revoke its grants every one.
 
 use std::sync::Arc;
 
+use collab_types::workspace_grant::WorkspaceGrant;
 use tilo_actions::remote::{
-    ActionCallError, Caller, PRESENCE, RESOURCE_READ_REFUSED, ResourceAddress, ResourceCopy,
-    ResourceReadRequest, ResourceReads, ResourceWake,
+    ActionCallError, Caller, KEY_GRANTS, PRESENCE, RESOURCE_READ_REFUSED, ResourceAddress,
+    ResourceCopy, ResourceReadRequest, ResourceReads, ResourceWake,
 };
+use tilo_peer_state::StatePeer;
 
 use super::{WeakWorkspaces, Workspaces};
 
@@ -106,6 +113,8 @@ impl RecordReads {
 
     /// Whether the device `certificate` names may read `address` now: an agent's in a workspace
     /// its scope reaches, and every device's as the workspace's governance grants it the record.
+    /// Every member's device sees who else is there, and a key is read as [`Self::reads_key`]
+    /// decides.
     fn may_read(
         workspaces: &Workspaces,
         certificate: &tilo_user_identity::DeviceCert,
@@ -119,21 +128,60 @@ impl RecordReads {
         {
             return Err(refused());
         }
+        if address.app == PRESENCE {
+            return Ok(());
+        }
         let workspaces = workspaces.clone();
-        let device = certificate.device_public_key;
+        let certificate = certificate.clone();
         let (workspace, app, record) = (
             address.workspace.clone(),
             address.app.clone(),
             address.record.clone(),
         );
         crate::device_documents::on_its_own(async move {
-            workspaces
+            let state = workspaces
                 .state(&workspace)
                 .await
-                .ok_or("this device does not hold the workspace".to_owned())?
-                .check_document_read(device, &app, &record, tilo_clock::wall())
+                .ok_or("this device does not hold the workspace".to_owned())?;
+            let now = tilo_clock::wall();
+            if app == KEY_GRANTS {
+                return Self::reads_key(&state, &certificate, &record, now);
+            }
+            state.check_document_read(certificate.device_public_key, &app, &record, now)
         })
         .map_err(|_| refused())
+    }
+
+    /// Whether the device `certificate` names reads the key `grant` of `state`'s workspace now: a
+    /// key its own grant and the grants it minted, a device of a person every grant of theirs,
+    /// and whoever the workspace lets revoke its grants every one.
+    fn reads_key(
+        state: &StatePeer,
+        certificate: &tilo_user_identity::DeviceCert,
+        grant: &str,
+        now: web_time::SystemTime,
+    ) -> Result<(), String> {
+        let own = WorkspaceGrant::id_of(&certificate.device_public_key);
+        let person = hex::encode(certificate.user_public_key);
+        let theirs = state
+            .governance()
+            .workspace_grants()
+            .into_iter()
+            .find(|held| held.id == grant)
+            .is_some_and(|held| {
+                held.id == own
+                    || held.parent.as_deref() == Some(own.as_str())
+                    || (certificate.capabilities.agent.is_none() && held.person == person)
+            });
+        if theirs
+            || state
+                .reads_every_key(certificate.device_public_key, now)
+                .map_err(|error| error.to_string())?
+        {
+            Ok(())
+        } else {
+            Err(format!("the key {grant} is not this device's to read"))
+        }
     }
 
     /// Who reads `address` for `caller`, decided already for another device.
@@ -141,17 +189,7 @@ impl RecordReads {
         if let Some(workspaces) = self.workspaces.as_ref().and_then(WeakWorkspaces::upgrade)
             && let Some(certificate) = Self::certificate(&workspaces, caller, &address.workspace)
         {
-            // A member's device sees who else is there; an agent only where its scope reaches.
-            if address.app != PRESENCE {
-                Self::may_read(&workspaces, &certificate, address)?;
-            } else if certificate
-                .capabilities
-                .agent
-                .as_ref()
-                .is_some_and(|scope| !scope.reaches(&address.workspace))
-            {
-                return Err(refused());
-            }
+            Self::may_read(&workspaces, &certificate, address)?;
             return Ok(Route::Certified(workspaces));
         }
         #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
@@ -183,6 +221,60 @@ impl RecordReads {
             None,
         ))
     }
+
+    /// The key `address` names, as `route` reads it for `caller`: its grant as the workspace's
+    /// governance keeps it ([`WorkspaceGrant`]), absent where the workspace admitted no such key.
+    fn key(
+        route: Route,
+        caller: &Caller,
+        address: &ResourceAddress,
+    ) -> Result<ResourceCopy, ActionCallError> {
+        let workspaces = match route {
+            Route::Certified(workspaces) => workspaces,
+            #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+            Route::Inside(broker) => return broker.read_record(caller, address),
+            Route::Served(served) => return served.read(caller, address),
+        };
+        let (workspace, record) = (address.workspace.clone(), address.record.clone());
+        let grant = crate::device_documents::on_its_own(async move {
+            let state = workspaces.state(&workspace).await?;
+            state
+                .governance()
+                .workspace_grants()
+                .into_iter()
+                .find(|grant| grant.id == record)
+        });
+        Ok(grant.map_or(ResourceCopy::Absent, |grant| {
+            ResourceCopy::reading(serde_json::json!(grant), None)
+        }))
+    }
+}
+
+/// Wake `wake` at the first of `heard` that `matches`, or once some went by unheard: one of them
+/// may have matched.
+fn wake_at<T: Clone + Send + 'static>(
+    runtime: &tokio::runtime::Handle,
+    mut heard: tokio::sync::broadcast::Receiver<T>,
+    matches: impl Fn(&T) -> bool + Send + 'static,
+    wake: &ResourceWake,
+) {
+    let wake = wake.clone();
+    runtime.spawn(async move {
+        loop {
+            match heard.recv().await {
+                Ok(one) if matches(&one) => {
+                    wake.wake();
+                    return;
+                }
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    wake.wake();
+                    return;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            }
+        }
+    });
 }
 
 impl Workspaces {
@@ -206,6 +298,9 @@ impl ResourceReads for RecordReads {
         let route = self.route(caller, address)?;
         if address.app == PRESENCE {
             return Self::presence(route, caller, address);
+        }
+        if address.app == KEY_GRANTS {
+            return Self::key(route, caller, address);
         }
         let workspaces = match route {
             Route::Certified(workspaces) => workspaces,
@@ -325,34 +420,29 @@ impl ResourceReads for RecordReads {
             tokio::runtime::Handle::try_current().map_err(|_| ActionCallError::Unavailable {
                 reason: "this device is not running".into(),
             })?;
-        let mut writes = workspaces.document_writes();
         let (workspace, app, record) = (
             address.workspace.clone(),
             address.app.clone(),
             address.record.clone(),
         );
-        let wake = wake.clone();
-        runtime.spawn(async move {
-            loop {
-                match writes.recv().await {
-                    Ok(write)
-                        if write.workspace == workspace
-                            && write.app == app
-                            && write.record == record =>
-                    {
-                        wake.wake();
-                        return;
-                    }
-                    Ok(_) => {}
-                    // Writes went by unheard: one of them may be this record's.
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        wake.wake();
-                        return;
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-                }
-            }
-        });
+        // A grant is no document: it moves with the workspace's governance.
+        if app == KEY_GRANTS {
+            let changes = workspaces.governance_changes();
+            wake_at(
+                &runtime,
+                changes,
+                move |changed| *changed == workspace,
+                wake,
+            );
+            return Ok(());
+        }
+        let writes = workspaces.document_writes();
+        wake_at(
+            &runtime,
+            writes,
+            move |write| write.workspace == workspace && write.app == app && write.record == record,
+            wake,
+        );
         Ok(())
     }
 }

@@ -119,6 +119,10 @@ export class FakeApi {
       browser_pages: true,
     },
   ];
+  /** The keys each workspace admitted, as its governance keeps their grants. */
+  grants: Answer[] = [
+    { id: "g-root", person: "ab".repeat(32), device: "cd".repeat(32), name: "visa-backend", created_ms: 1 },
+  ];
   members: Answer[] = [
     { person: "cd".repeat(32), name: "Rosa Ortiz", role: "editor", administrator: false },
   ];
@@ -264,9 +268,6 @@ export class FakeApi {
     if (v1 !== "v1") {
       return this.json({ error: { code: "not_found", message: "the API has no such route" } }, 404);
     }
-    if (rest[0] === "resources" && rest[1] === "record:tilo.account:keys" && method === "GET") {
-      return this.json({ path: "record:tilo.account:keys", fields: { keys: this.keys } });
-    }
     if (rest[0] === "resources" && rest[1] === "account") {
       if (rest[2] === "usage" && method === "GET") {
         return this.json({
@@ -387,6 +388,16 @@ export class FakeApi {
 
   private listing(call: Recorded): Response {
     const path = call.query.path ?? null;
+    if (path === "record:tilo.grants") {
+      const rows = this.grants.map((held) => ({
+        path: `record:tilo.grants:${String(held.id)}`,
+        name: held.id,
+        label: held.id,
+        kind: "tilo.grants",
+        actions: [],
+      }));
+      return this.json({ path, rows, actions: [] });
+    }
     if (path === null) {
       return this.json({
         path: "apps",
@@ -422,6 +433,10 @@ export class FakeApi {
   }
 
   private read(path: string): Response {
+    const grant = this.grants.find((held) => path === `record:tilo.grants:${String(held.id)}`);
+    if (grant !== undefined) {
+      return this.json({ path, fields: grant });
+    }
     if (path === "record:tilo.invocations:") {
       return this.json({ path, fields: this.recordOfInvocations() });
     }

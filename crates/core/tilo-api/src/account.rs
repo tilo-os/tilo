@@ -10,9 +10,9 @@
 //!   `#import {sealed_with?, groups?, workspaces?}`, which takes in once what its desktop kept;
 //! - `account/keys#create {name, workspace?, expires_in?}`,
 //!   `#mint {workspace, name?, expires_in?}`, and one resource per key,
-//!   `account/keys/<grant>#revoke`. The keys are a record, read through the record API
-//!   ([`KEYS_RECORD`], [`tilo_actions::remote::ResourceReads`]) and followed to their next change;
-//!   no action lists them;
+//!   `account/keys/<grant>#revoke`. The keys are each workspace's own grants, each a record
+//!   of [`tilo_actions::remote::KEY_GRANTS`] a listing of the workspace names; no action lists
+//!   them;
 //! - `account/usage#read`;
 //! - `account/models#ask {workspace, request}`;
 //! - `account/webhooks#list {workspace?}`, `#create {workspace, url, events?, path?}`,
@@ -51,9 +51,8 @@ use tilo_actions::policy::{Answer, Asker, Invoked};
 use tilo_actions::remote::invocation_record::Invocations;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
-    CatalogueResource, CatalogueRow, InvocationReceipt, InvocationState,
-    InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionTarget, WatchScope, pending,
-    person_models,
+    CatalogueResource, CatalogueRow, InvocationReceipt, InvocationState, InvokeArgument,
+    InvokeRequest, Pending, ReceiptStatus, RemoteActionTarget, pending, person_models,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionFailure, ActionKind, ActionOutput,
@@ -74,11 +73,6 @@ pub const PROVIDER: &str = "tilo.account";
 pub const WORKSPACES: &str = "account/workspaces";
 /// The keys to them.
 pub const KEYS: &str = "account/keys";
-/// The record the keys are read as: `{"keys": [...]}`, this key and the keys it minted (all the
-/// person's keys, for a key of their own reaching all their workspaces), as `tilo_read` takes it.
-pub const KEYS_RECORD: &str = "record:tilo.account:keys";
-/// The keys' id in [`PROVIDER`]'s records.
-const KEYS_RECORD_ID: &str = "keys";
 /// One of the keys, as a resource of its own: the key's name, revoked where it is listed.
 const KEY_KIND: &str = "account.keys.key";
 /// What the workspaces keep and ran.
@@ -108,7 +102,6 @@ enum Op {
     JoinWorkspace,
     Unattended,
     ImportWorkspaces,
-    ListKeys,
     CreateKey,
     MintKey,
     RevokeKey,
@@ -547,15 +540,9 @@ impl Verb {
     }
 }
 
-/// One key as a resource under `account/keys`: named by the key's own name, and revoked
-/// where it is listed.
-fn key_row(key: &Value) -> CatalogueRow {
-    let grant = key["grant"].as_str().unwrap_or_default();
-    let name = key["name"]
-        .as_str()
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .unwrap_or(grant);
+/// One key as a resource under `account/keys`, by its grant: what its revocation is asked on.
+fn key_row(grant: &str) -> CatalogueRow {
+    let name = grant;
     let id = format!("{KEYS}/{grant}");
     CatalogueRow {
         offered: None,
@@ -617,8 +604,6 @@ struct Inner {
     /// Who the account's calls on a workspace's host are by: the key's person at the key.
     caller: Caller,
     running: Mutex<Running>,
-    /// Where a read of the keys, on a thread of its own, asks for them.
-    runtime: Option<tokio::runtime::Handle>,
 }
 
 /// The invocations the account answers after it admitted them.
@@ -773,7 +758,6 @@ impl Account {
             reach,
             caller,
             running: Mutex::default(),
-            runtime: tokio::runtime::Handle::try_current().ok(),
         }))
     }
 
@@ -798,109 +782,28 @@ impl Account {
         page
     }
 
-    /// The page `query` asks of the account, in the tree of `workspace`: the keys as they
-    /// are now when it asks for them, the verbs otherwise.
-    fn ask(
-        &self,
-        query: CatalogueQuery,
-        workspace: &str,
-    ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        if !Self::asks_keys(&query) {
-            return Pending::ready(Ok(Self::page(&query, workspace)));
-        }
-        let account = self.clone();
-        let workspace = workspace.to_owned();
-        let (done, answer) = pending();
-        tokio::spawn(async move {
-            done.complete(Ok(account.keys_page(query, &workspace).await));
-        });
-        answer
-    }
-
-    /// Whether `query` asks for the keys as they are now: what is under `account/keys`, or
-    /// the exact action on one of them.
-    fn asks_keys(query: &CatalogueQuery) -> bool {
-        (query.parent_resource.as_deref() == Some(KEYS)
-            || query
-                .target
-                .as_ref()
-                .is_some_and(|target| key_of(&target.resource).is_some()))
-            && query
-                .provider
-                .as_deref()
-                .is_none_or(|provider| provider == PROVIDER)
-    }
-
-    /// The page `query` asks of the keys the account lists under `account/keys`.
-    async fn keys_page(&self, query: CatalogueQuery, workspace: &str) -> CataloguePage {
-        let rows = match self.keys_rows().await {
-            Ok(rows) => rows,
-            Err(reason) => return CataloguePage::unavailable(REVISION.into(), reason),
+    /// The page `query` asks of the account, in the tree of `workspace`: the key it names when
+    /// it asks for the exact action on one, the verbs otherwise. No page lists the keys: each
+    /// workspace's listing names its own ([`tilo_actions::remote::KEY_GRANTS`]).
+    fn ask(query: &CatalogueQuery, workspace: &str) -> CataloguePage {
+        let Some(grant) = query
+            .target
+            .as_ref()
+            .and_then(|target| key_of(&target.resource))
+            .filter(|_| {
+                query
+                    .provider
+                    .as_deref()
+                    .is_none_or(|provider| provider == PROVIDER)
+            })
+        else {
+            return Self::page(query, workspace);
         };
-        let mut page = CataloguePage::from_rows(REVISION.into(), rows, &query);
+        let mut page = CataloguePage::from_rows(REVISION.into(), vec![key_row(grant)], query);
         if query.provider.is_none() && query.cursor.is_empty() {
             page.providers.push(publisher(workspace));
         }
         page
-    }
-
-    /// Each key the keys' record reads, as a resource under `account/keys`.
-    async fn keys_rows(&self) -> Result<Vec<CatalogueRow>, String> {
-        match self
-            .answer(Op::ListKeys, InvocationId::new(), &json!({}))
-            .await
-        {
-            Outcome::Ok(value) => Ok(value
-                .get("keys")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .map(key_row)
-                .collect()),
-            Outcome::Failed { message, .. } => Err(message),
-            _ => Err("the keys were not listed".into()),
-        }
-    }
-
-    /// What wakes when a record changes in a workspace the keys are read from: each workspace's
-    /// own wait for a change of its records ([`ActionProvider::changed`]), the one its watches
-    /// already follow, so a key revoked or recorded on another device, arriving by sync, is
-    /// seen as it lands.
-    async fn records_changed(&self) -> Vec<Pending<Result<(), ActionCallError>>> {
-        match &self.0.reach {
-            Reach::Forwarded(connection) => {
-                let Ok(workspaces) = connection
-                    .server()
-                    .labelled(connection, &WorkspaceLabels::new())
-                    .await
-                else {
-                    return Vec::new();
-                };
-                let caller = Caller::local_person("tilo api");
-                let mut changes = Vec::new();
-                for workspace in workspaces {
-                    if let Ok(id) = connection.server().enter(connection, &workspace.id).await
-                        && let Some(changed) = connection
-                            .device
-                            .actions(id)
-                            .changed(&caller, WatchScope::Records)
-                    {
-                        changes.push(changed);
-                    }
-                }
-                changes
-            }
-            Reach::Here(here, key) => here
-                .workspaces(key.cert())
-                .iter()
-                .filter_map(|workspace| here.enter(&workspace.id, key).ok())
-                .filter_map(|reached| {
-                    reached
-                        .provider
-                        .changed(&self.0.caller, WatchScope::Records)
-                })
-                .collect(),
-        }
     }
 
     fn keep(&self, id: InvocationId, run: Run) {
@@ -1112,7 +1015,6 @@ impl Account {
             Op::RenameWorkspace => rename_workspace(&key, args).await,
             Op::DeleteWorkspace => server.delete_workspace(&grant, &key, args).await,
             Op::Unattended => self.unattended(&key, id, args).await,
-            Op::ListKeys => server.account_keys(&grant, &key).await,
             Op::CreateKey => server.create_key(args),
             Op::MintKey => server.mint(&grant, &key, args).await,
             Op::RevokeKey => server.revoke_key(&grant, &key, args).await,
@@ -1266,7 +1168,6 @@ impl Account {
                     Err(error) => refused(&error),
                 }
             }
-            Op::ListKeys => self.here_keys(host, &key, grant, &server).await,
             Op::CreateKey => failed(
                 "unavailable",
                 "a key is asked for from the device that answers for the account",
@@ -1311,59 +1212,6 @@ impl Account {
             workspaces.retain(|workspace| &workspace.id == own);
         }
         Outcome::Ok(json!({"workspaces": workspaces, "hosts": []}))
-    }
-
-    /// The keys this key made and the keys it minted, as the device keeps them.
-    async fn here_keys(
-        &self,
-        host: &dyn crate::session::AccountHere,
-        key: &GrantKey,
-        grant: &Grant,
-        server: &Server,
-    ) -> Outcome {
-        let recorded = match host.keys(key.clone()).await {
-            Ok(recorded) => recorded,
-            Err(error) => return refused(&error),
-        };
-        let mut seen = std::collections::HashSet::from([grant.id.clone()]);
-        let mut keys = vec![grant_row(grant)];
-        let mine = grant.id.as_str();
-        match &grant.scope {
-            Scope::Workspace(_) => {
-                for held in &recorded {
-                    if fresh(&mut seen, held)
-                        && (held.id == mine || held.parent.as_deref() == Some(mine))
-                    {
-                        keys.push(workspace_grant_row(held));
-                    }
-                }
-            }
-            Scope::Account if persons_own(grant) => {
-                for held in server.store.grants_of(&grant.person) {
-                    if held.live() && seen.insert(held.id.clone()) {
-                        keys.push(grant_row(&held));
-                    }
-                }
-                for held in &recorded {
-                    if fresh(&mut seen, held) {
-                        keys.push(workspace_grant_row(held));
-                    }
-                }
-            }
-            Scope::Account => {
-                for minted in server.store.minted_by(&grant.id) {
-                    if minted.live() && seen.insert(minted.id.clone()) {
-                        keys.push(grant_row(&minted));
-                    }
-                }
-                for held in &recorded {
-                    if fresh(&mut seen, held) && held.parent.as_deref() == Some(mine) {
-                        keys.push(workspace_grant_row(held));
-                    }
-                }
-            }
-        }
-        Outcome::Ok(json!({"keys": keys}))
     }
 
     /// Mint a key reaching one workspace, for an agent to act there, from the key that asks.
@@ -1454,7 +1302,7 @@ impl Account {
             return failed(
                 "invalid_arguments",
                 "`grant` is required",
-                "tilo_read record:tilo.account:keys names them",
+                "tilo_ls record:tilo.grants lists them in each workspace",
             );
         };
         let held_here = server
@@ -1478,7 +1326,7 @@ impl Account {
                 return failed(
                     "not_found",
                     "no such key of yours",
-                    "tilo_read record:tilo.account:keys names them",
+                    "tilo_ls record:tilo.grants lists them in each workspace",
                 );
             }
             if held_here.is_some()
@@ -1506,7 +1354,7 @@ impl Account {
             return failed(
                 "not_found",
                 "no such key of this key",
-                "tilo_read record:tilo.account:keys names them",
+                "tilo_ls record:tilo.grants lists them in each workspace",
             );
         }
         let workspace = match server
@@ -1712,11 +1560,9 @@ fn answer_for(grant: &Grant, op: Op, args: &Value) -> Answer {
         Scope::Account => Answer::Allow,
         Scope::Workspace(own) => match op {
             // Its list is the one workspace it reaches, as the server lists it for the key.
-            Op::ListWorkspaces
-            | Op::ListKeys
-            | Op::RevokeKey
-            | Op::ListWebhooks
-            | Op::DeleteWebhook => Answer::Allow,
+            Op::ListWorkspaces | Op::RevokeKey | Op::ListWebhooks | Op::DeleteWebhook => {
+                Answer::Allow
+            }
             Op::Unattended | Op::AskModel | Op::CreateWebhook
                 if field(args, "workspace") == Some(own.as_str()) =>
             {
@@ -1733,7 +1579,7 @@ impl ActionProvider for Account {
         _caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        self.ask(query, ROOT_TREE)
+        Pending::ready(Ok(Self::ask(&query, ROOT_TREE)))
     }
 
     fn invoke(
@@ -1823,118 +1669,6 @@ impl Joined {
     }
 }
 
-/// The record API of a tree the account is joined to: the keys' record
-/// ([`KEYS_RECORD`]) read and followed here, every other record where the tree reads it.
-struct AccountReads {
-    account: Account,
-    others: Option<Arc<dyn tilo_actions::remote::ResourceReads>>,
-}
-
-impl AccountReads {
-    fn keys(address: &tilo_actions::remote::ResourceAddress) -> bool {
-        address.app == PROVIDER && address.record == KEYS_RECORD_ID
-    }
-
-    fn others(&self) -> Result<&dyn tilo_actions::remote::ResourceReads, ActionCallError> {
-        self.others
-            .as_deref()
-            .ok_or_else(|| ActionCallError::Unavailable {
-                reason: tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.into(),
-            })
-    }
-}
-
-impl tilo_actions::remote::ResourceReads for AccountReads {
-    fn read(
-        &self,
-        caller: &Caller,
-        address: &tilo_actions::remote::ResourceAddress,
-    ) -> Result<tilo_actions::remote::ResourceCopy, ActionCallError> {
-        if !Self::keys(address) {
-            return self.others()?.read(caller, address);
-        }
-        let unavailable = |reason: String| ActionCallError::Unavailable { reason };
-        let runtime = self
-            .account
-            .0
-            .runtime
-            .as_ref()
-            .ok_or_else(|| unavailable("the keys are read where the server runs".into()))?;
-        // A read runs on a thread of its own, which waits for the keys here.
-        let listed = runtime.block_on(self.account.answer(
-            Op::ListKeys,
-            InvocationId::new(),
-            &json!({}),
-        ));
-        match listed {
-            Outcome::Ok(keys) => Ok(tilo_actions::remote::ResourceCopy::reading(keys, None)),
-            Outcome::Failed { message, .. } => Err(ActionCallError::Refused { reason: message }),
-            _ => Err(unavailable("the keys were not read".into())),
-        }
-    }
-
-    fn answer_read(
-        self: Arc<Self>,
-        caller: &Caller,
-        correlation: u64,
-        read: tilo_actions::remote::ResourceReadRequest,
-    ) -> Pending<tilo_actions::remote::RemoteActionMessage> {
-        tilo_actions::remote::answer_read(self, caller, correlation, read)
-    }
-
-    /// The keys change with the server's grants: a key made, minted, revoked or used.
-    fn watch(
-        &self,
-        caller: &Caller,
-        address: &tilo_actions::remote::ResourceAddress,
-        wake: &tilo_actions::remote::ResourceWake,
-    ) -> Result<(), ActionCallError> {
-        if !Self::keys(address) {
-            return self.others()?.watch(caller, address, wake);
-        }
-        let server =
-            self.account
-                .0
-                .server
-                .upgrade()
-                .ok_or_else(|| ActionCallError::Unavailable {
-                    reason: "the server is stopping".into(),
-                })?;
-        server.store.watch(wake);
-        // And whenever a record changes in a workspace the keys are read from, until the reader
-        // stops waiting.
-        if let Some(runtime) = &self.account.0.runtime {
-            let (account, wake) = (self.account.clone(), wake.clone());
-            runtime.spawn(async move {
-                let changes = account.records_changed().await;
-                if changes.is_empty() {
-                    return;
-                }
-                let changed = futures_util::future::select_all(changes);
-                let abandoned = async {
-                    while wake.waiting() {
-                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                    }
-                };
-                tokio::select! {
-                    _ = changed => wake.wake(),
-                    () = abandoned => {}
-                }
-            });
-        }
-        Ok(())
-    }
-
-    fn store_read(
-        &self,
-        caller: &Caller,
-        address: &tilo_actions::remote::ResourceAddress,
-        read: Value,
-    ) -> Result<Value, ActionCallError> {
-        self.others()?.store_read(caller, address, read)
-    }
-}
-
 impl ActionProvider for Joined {
     fn retire_execution(&self, caller: &Caller) {
         match &self.actions {
@@ -1953,7 +1687,7 @@ impl ActionProvider for Joined {
             .as_ref()
             .filter(|_| query.provider.as_deref() != Some(PROVIDER))
         else {
-            return self.account.ask(query, &self.workspace);
+            return Pending::ready(Ok(Account::ask(&query, &self.workspace)));
         };
         if query.provider.is_some() || !query.cursor.is_empty() {
             return actions.query(caller, query);
@@ -2028,7 +1762,6 @@ impl ActionProvider for Joined {
         }
     }
 
-
     fn content_puts(&self) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
         self.actions.as_ref()?.content_puts()
     }
@@ -2042,13 +1775,7 @@ impl ActionProvider for Joined {
     }
 
     fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
-        Some(Arc::new(AccountReads {
-            account: self.account.clone(),
-            others: self
-                .actions
-                .as_ref()
-                .and_then(|actions| actions.resource_reads()),
-        }))
+        self.actions.as_ref()?.resource_reads()
     }
 
     fn resource_changes(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceChanges>> {
@@ -2122,7 +1849,7 @@ impl Server {
             return failed(
                 "invalid_arguments",
                 "`grant` is required",
-                "tilo_read record:tilo.account:keys names them",
+                "tilo_ls record:tilo.grants lists them in each workspace",
             );
         };
         let held_here = self
@@ -2149,7 +1876,7 @@ impl Server {
                 return failed(
                     "not_found",
                     "no such key of yours",
-                    "tilo_read record:tilo.account:keys names them",
+                    "tilo_ls record:tilo.grants lists them in each workspace",
                 );
             }
             if held_here.is_some()
@@ -2179,7 +1906,7 @@ impl Server {
             return failed(
                 "not_found",
                 "no such key of this key",
-                "tilo_read record:tilo.account:keys names them",
+                "tilo_ls record:tilo.grants lists them in each workspace",
             );
         }
         // Where the key is recorded: the workspace it reaches, or the
@@ -2233,59 +1960,6 @@ impl Server {
             }
         }
         revoked
-    }
-
-    /// The keys this one holds and the keys it minted. One reaching a
-    /// workspace reads them from the workspace's own record, which every
-    /// holder keeps and every API server reads. A key of the person's own
-    /// reaching all of them lists every key the person has: the ones this API
-    /// server keeps, and the ones each of their workspaces keeps, whichever
-    /// API server made them. Any other key reaching all of them (an agent's)
-    /// reads the keys it minted.
-    async fn account_keys(&self, grant: &Grant, key: &Connection) -> Outcome {
-        let mine = grant.id.clone();
-        let Scope::Workspace(workspace) = grant.scope.clone() else {
-            if !persons_own(grant) {
-                let mut keys = vec![grant_row(grant)];
-                keys.extend(self.store.minted_by(&grant.id).iter().map(grant_row));
-                return Outcome::Ok(json!({"keys": keys}));
-            }
-            let mut seen = std::collections::HashSet::from([grant.id.clone()]);
-            let mut keys = vec![grant_row(grant)];
-            for held in self.store.grants_of(&grant.person) {
-                if held.live() && seen.insert(held.id.clone()) {
-                    keys.push(grant_row(&held));
-                }
-            }
-            let recorded = match self.recorded_keys(key).await {
-                Ok(recorded) => recorded,
-                Err(outcome) => return outcome,
-            };
-            for (_, recorded) in recorded {
-                if recorded.revoked_ms.is_none() && seen.insert(recorded.id.clone()) {
-                    keys.push(workspace_grant_row(&recorded));
-                }
-            }
-            return Outcome::Ok(json!({"keys": keys}));
-        };
-        let grants = match grants_in(key, &workspace).await {
-            Ok(grants) => grants,
-            Err(outcome) => return outcome,
-        };
-        let mut keys: Vec<Value> = grants
-            .iter()
-            .filter(|held| {
-                held.revoked_ms.is_none()
-                    && (held.id == mine || held.parent.as_deref() == Some(mine.as_str()))
-            })
-            .map(workspace_grant_row)
-            .collect();
-        // A workspace that has yet to record the key that asks still lists it,
-        // from the grant its token carries.
-        if !keys.iter().any(|row| row["grant"] == json!(mine)) {
-            keys.insert(0, grant_row(grant));
-        }
-        Outcome::Ok(json!({"keys": keys}))
     }
 
     /// Mint a key reaching one workspace, for an agent to act there.
@@ -2389,11 +2063,6 @@ impl Server {
     }
 }
 
-/// Whether `held` is live and not listed yet, recording it as listed when it is.
-fn fresh(seen: &mut std::collections::HashSet<String>, held: &WorkspaceGrant) -> bool {
-    held.revoked_ms.is_none() && seen.insert(held.id.clone())
-}
-
 /// Whether `outcome` refuses the key as revoked.
 fn is_revoked(outcome: &Outcome) -> bool {
     matches!(outcome, Outcome::Failed { code, .. } if *code == "key_revoked")
@@ -2404,20 +2073,6 @@ fn is_revoked(outcome: &Outcome) -> bool {
 /// person's other keys.
 fn persons_own(grant: &Grant) -> bool {
     matches!(grant.kind, GrantKind::Key)
-}
-
-/// A key as the workspace's own governance records it, in the shape every other is listed in.
-fn workspace_grant_row(grant: &WorkspaceGrant) -> Value {
-    json!({
-        "grant": grant.id,
-        "name": grant.name,
-        "scope": grant.scope.clone().unwrap_or_else(|| "all".to_owned()),
-        "kind": if grant.parent.is_some() { "minted" } else { "key" },
-        "created_at_ms": grant.created_ms,
-        "created_by": Value::Null,
-        "browser_pages": false,
-        "expires_at_ms": grant.expires_ms,
-    })
 }
 
 /// The grants `workspace` records of the calling person's, as its host answers them.
@@ -2515,7 +2170,7 @@ fn refused_key(error: &ActionCallError) -> Outcome {
         ActionCallError::UnknownAction => failed(
             "not_found",
             "the workspace holds no such key, or it is not this key's to revoke",
-            "tilo_read record:tilo.account:keys names the keys this one holds and the keys it minted",
+            "tilo_ls record:tilo.grants lists the keys this one holds and the keys it minted",
         ),
         ActionCallError::NotPermitted => failed(
             "not_permitted",

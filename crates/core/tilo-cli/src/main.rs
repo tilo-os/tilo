@@ -207,7 +207,7 @@ enum Cmd {
     },
     /// List what a hosted workspace (-w) holds: its apps, or what a path holds.
     #[command(
-        after_help = "Examples:\n  tilo ls -w jane-doe\n  tilo ls notes -w jane-doe\n  tilo ls account/keys\n  \
+        after_help = "Examples:\n  tilo ls -w jane-doe\n  tilo ls notes -w jane-doe\n  tilo ls record:tilo.grants -w jane-doe\n  \
                       tilo ls notes/Notebook -w jane-doe\n\n\
                       Each line is a path the other hosted commands take: `tilo read`, `tilo do`,\n\
                       and `tilo ls` again."

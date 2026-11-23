@@ -175,9 +175,16 @@ describe("keys", () => {
     const keys = await open(api).keys.list();
 
     expect(keys.map((key) => key.grant)).toEqual(["g-root"]);
-    expect(keys[0]?.scope).toBe("all");
-    expect(keys[0]?.browserPages).toBe(true);
-    expect(api.last()?.path).toBe("/v1/resources/record:tilo.account:keys");
+    expect(keys[0]?.scope).toBe("account");
+    expect(keys[0]?.kind).toBe("key");
+    expect(
+      api.calls.some(
+        (call) => call.path === `/v1/workspaces/${WORKSPACE_ID}/resources` && call.query.path === "record:tilo.grants",
+      ),
+    ).toBe(true);
+    expect(
+      api.calls.filter((call) => call.path.endsWith("/resources/record:tilo.grants:g-root")).map((call) => call.path),
+    ).toEqual([`/v1/workspaces/${WORKSPACE_ID}/resources/record:tilo.grants:g-root`]);
   });
 
   it("mints a key for one workspace", async () => {
