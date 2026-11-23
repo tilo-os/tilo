@@ -473,19 +473,6 @@ fn the_staged_plan_is_accepted_or_refused() {
         }
     }
 
-    for invalid in [
-        "",
-        &"h".repeat(64),
-        "-studio",
-        "studio-",
-        "bad host",
-        "studio\n",
-    ] {
-        let mut doc = handoff_document();
-        doc["profile"]["hostname"] = json!(invalid);
-        fixture.set_handoff(&doc, false);
-        assert_refused(&fixture.check("guided", &[]), "hostname is malformed");
-    }
     let mut max_host = handoff_document();
     max_host["profile"]["hostname"] = json!("h".repeat(63));
     fixture.set_handoff(&max_host, false);
@@ -644,6 +631,105 @@ fn detect_publishes_only_the_booted_handoff() {
             .stderr
             .starts_with("tilo-staging-handoff: the staging handoff names a different ESP")
     );
+}
+
+// A staged handoff whose hostname fails the strict DNS-label rule still loads,
+// drops the bad hostname so the installer asks again, and never forwards it into
+// anything the helper writes or runs.
+#[test]
+fn loose_hostname_is_dropped_and_never_reaches_helper_outputs() {
+    let fixture = Fixture::new();
+    let mut doc = handoff_document();
+    doc["profile"]["hostname"] = json!("bad host");
+    fixture.set_handoff(&doc, false);
+
+    let (out, error, detected) = detect(&fixture);
+    assert!(!error.exists());
+    assert!(!detected.stdout.contains("bad host") && !detected.stderr.contains("bad host"));
+    let published_text = fs::read_to_string(&out).unwrap();
+    assert!(!published_text.contains("bad host"));
+    let published: Value = serde_json::from_str(&published_text).unwrap();
+    assert!(published["profile"].get("hostname").is_none());
+
+    // The published copy (without hostname) matches the ESP original (whose bad hostname
+    // is stripped identically) across check-install, check-mounts, write-reclaim-record,
+    // and firmware-finalize, and the bad hostname never reaches any written file or command.
+    fs::write(&fixture.copy, &published_text).unwrap();
+    let checked = fixture.check("guided", &[]);
+    assert_eq!(checked.code, 0, "{checked:?}");
+    assert!(!checked.stdout.contains("bad host") && !checked.stderr.contains("bad host"));
+
+    let copy = fixture.copy.to_string_lossy().into_owned();
+    let mounts = fixture.run(&["check-mounts", "--handoff", &copy, "--disk", DISK]);
+    assert_eq!(mounts.code, 0, "{mounts:?}");
+    assert!(!mounts.stdout.contains("bad host"));
+
+    let target_var = fixture.root.join("target-var");
+    fs::create_dir(&target_var).unwrap();
+    let (root_start, root_size) = (
+        (TARGET.0 * 512).to_string(),
+        ((TARGET.1 - TARGET.0 + 1) * 512).to_string(),
+    );
+    let target_var_text = target_var.to_string_lossy().into_owned();
+    let reclaim = fixture.run(&[
+        "write-reclaim-record",
+        "--handoff",
+        &copy,
+        "--target-var",
+        &target_var_text,
+        "--target-root-partuuid",
+        "dddddddd-0000-4000-8000-000000000004",
+        "--target-esp-partuuid",
+        TARGET_ESP_UUID,
+        "--target-root-start-bytes",
+        &root_start,
+        "--target-root-size-bytes",
+        &root_size,
+        "--sector-size",
+        "512",
+    ]);
+    assert_eq!(reclaim.code, 0, "{reclaim:?}");
+    let reclaim_text =
+        fs::read_to_string(target_var.join("lib/tilo/staging-reclaim.json")).unwrap();
+    assert!(!reclaim_text.contains("bad host"));
+
+    add_target_entry(&fixture, "0006");
+    let finalized = finalize(&fixture, &[]);
+    assert_eq!(finalized.code, 0, "{finalized:?}");
+    assert!(!finalized.stdout.contains("bad host") && !finalized.stderr.contains("bad host"));
+    assert!(
+        fixture
+            .log
+            .borrow()
+            .iter()
+            .all(|line| !line.contains("bad host"))
+    );
+
+    // Other invalid hostnames up to 256 characters are likewise dropped, while a valid
+    // 63-character DNS label is preserved intact.
+    for invalid in ["", &"h".repeat(64), "-studio", "studio-", "studio\n"] {
+        let fixture = Fixture::new();
+        let mut doc = handoff_document();
+        doc["profile"]["hostname"] = json!(invalid);
+        fixture.set_handoff(&doc, false);
+        let (out, error, _) = detect(&fixture);
+        assert!(!error.exists(), "{invalid:?}");
+        let published: Value = serde_json::from_str(&fs::read_to_string(&out).unwrap()).unwrap();
+        assert!(
+            published["profile"].get("hostname").is_none(),
+            "{invalid:?}"
+        );
+    }
+
+    let fixture = Fixture::new();
+    let max_host = "h".repeat(63);
+    let mut doc = handoff_document();
+    doc["profile"]["hostname"] = json!(max_host);
+    fixture.set_handoff(&doc, false);
+    let (out, error, _) = detect(&fixture);
+    assert!(!error.exists());
+    let published: Value = serde_json::from_str(&fs::read_to_string(&out).unwrap()).unwrap();
+    assert_eq!(published["profile"]["hostname"], json!(max_host));
 }
 
 fn finalize(fixture: &Fixture, extra: &[&str]) -> Outcome {
