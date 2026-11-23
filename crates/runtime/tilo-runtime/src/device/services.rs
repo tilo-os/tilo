@@ -1863,7 +1863,7 @@ pub(crate) mod tests;
 fn other_devices(
     workspaces: &Arc<ServiceWorkspaces>,
 ) -> Option<crate::other_devices::OtherDevices> {
-    let (actions, endpoint, runtime) = workspaces.turn_action_service()?;
+    let (_actions, endpoint, runtime) = workspaces.turn_action_service()?;
     let cert = workspaces.device_cert().clone();
     let signer = workspaces.signer();
     let revocations = {
@@ -1877,7 +1877,6 @@ fn other_devices(
     };
     let keys = tilo_workspace_service::agents::agent_keys::this_device().ok()?;
     Some(crate::other_devices::OtherDevices::new(
-        actions,
         endpoint,
         runtime,
         (cert.user_public_key, cert.device_public_key),
@@ -1893,6 +1892,17 @@ fn other_devices(
 struct Known(std::sync::Weak<ServiceWorkspaces>);
 
 impl crate::other_devices::Whereabouts for Known {
+    fn devices(&self, workspace: &str) -> Vec<tilo_user_identity::DeviceCert> {
+        self.0
+            .upgrade()
+            .and_then(|workspaces| {
+                workspaces
+                    .peer(tilo_desktop_model::WorkspaceId::parse(workspace)?)
+                    .map(|peer| peer.certificates())
+            })
+            .unwrap_or_default()
+    }
+
     fn workspaces(&self) -> Vec<String> {
         self.0.upgrade().map_or_else(Vec::new, |workspaces| {
             workspaces
