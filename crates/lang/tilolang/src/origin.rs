@@ -507,14 +507,14 @@ pub const KINDS: &[OriginKind] = &[
         doc: "Somebody an entry names: who organises it, or who it invites.",
         derived: false,
         fields: &[
-            field("name", "Text", "Their name, as the entry says it."),
-            field("email", "Text", "Their address."),
-            field(
+            people("name", "Text", "Their name, as the entry says it."),
+            people("email", "Text", "Their address."),
+            people(
                 "status",
                 "Text",
                 "Whether they come: `needs-action`, `accepted`, `declined` or `tentative`.",
             ),
-            field(
+            people(
                 "role",
                 "Text",
                 "What they are to the entry: `required`, `optional` or `chair`.",
@@ -538,14 +538,34 @@ pub const KINDS: &[OriginKind] = &[
                 "Where its server keeps it; empty for an entry no server holds.",
             ),
             people("title", "Text", "What it is called."),
-            people("start", "Time", "When it starts."),
-            people("end", "Time", "When it ends."),
-            people("all_day", "Bool", "Whether it lasts whole days."),
+            people(
+                "start",
+                "Text",
+                "When it starts, as iCalendar writes the wall time: `2026-11-24T09:00:00`.",
+            ),
+            people(
+                "end",
+                "Text",
+                "When it ends, as iCalendar writes the wall time.",
+            ),
+            field("all_day", "Bool", "Whether it lasts whole days."),
             people(
                 "timezone",
                 "Text",
-                "The time zone its wall time is read in: an IANA name, or `floating` for wall \
-                 time nowhere in particular.",
+                "The zone its wall time is read in: an IANA name, `UTC` for a time written in \
+                 it, or `floating` for a time written nowhere in particular.",
+            ),
+            field(
+                "day",
+                "Date",
+                "The day it starts on, its wall time's own: what a calendar sorts and counts it \
+                 by.",
+            ),
+            field(
+                "end_day",
+                "Date",
+                "The day it ends on, its wall time's own; the last day it is on, where it lasts \
+                 whole days.",
             ),
             people("location", "Text", "Where it is."),
             people("notes", "Text", "What it says: its `DESCRIPTION`, as text."),
@@ -560,26 +580,50 @@ pub const KINDS: &[OriginKind] = &[
                 "What it is filed under, as its server's `CATEGORIES`.",
             ),
             people(
-                "color",
-                "Text",
-                "The colour it is shown in, as its `COLOR`; empty for none.",
-            ),
-            people(
                 "recurrence",
                 "Text",
-                "How it repeats, as its `RRULE` (`FREQ=WEEKLY;INTERVAL=2`); empty for one \
-                 occurrence.",
+                "How it repeats, as its `RRULE`'s frequency and days \
+                 (`FREQ=WEEKLY;BYDAY=MO,TU`); empty for one occurrence.",
+            ),
+            field(
+                "recurrence_every",
+                "Int",
+                "One for a repeat every time it comes, two for every other, and so on.",
+            ),
+            field(
+                "recurrence_until",
+                "Option<Date>",
+                "The last day it repeats on; none for no end.",
+            ),
+            field(
+                "recurrence_count",
+                "Option<Int>",
+                "How many times it repeats; none for no count.",
             ),
             people(
                 "exdates",
                 "Set<Text>",
                 "The days it is left out on, `YYYY-MM-DD` each.",
             ),
+            people(
+                "color",
+                "Text",
+                "The colour it is shown in, as its `COLOR`; empty for none.",
+            ),
+            people(
+                "organizer",
+                "Text",
+                "The address of whoever organises it; empty for nobody.",
+            ),
             field(
-                "day",
-                "Date",
-                "The day it starts on, read in its time zone: what a calendar sorts and counts \
-                 it by.",
+                "project",
+                "Text",
+                "What the app files it under; the server holds nothing of it.",
+            ),
+            field(
+                "cancelled",
+                "Bool",
+                "Whether this occurrence of a repeat is called off.",
             ),
             people(
                 "calendar",
@@ -595,8 +639,9 @@ pub const KINDS: &[OriginKind] = &[
             ),
             field(
                 "original_start",
-                "Time",
-                "The moment this occurrence would have started, where it is one of a repeat's.",
+                "Text",
+                "The wall time this occurrence would have started at, where it is one of a \
+                 repeat's.",
             ),
         ],
     },

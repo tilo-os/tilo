@@ -2,19 +2,19 @@
 //! repeating entry in a window. It reads no clock and no store: the rule, the entry's start, its
 //! time zone and the days it is left out on say all of it.
 
-use jiff::Timestamp;
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
 use tilo_recurrence::Rule;
 
 /// The moments the series of `rule` starts at, from the day `from` to the day `to` inclusive,
-/// each an instant: the entry starts at `start`, its wall time read in `timezone` (an IANA name,
-/// or empty for wall time nowhere in particular, read as UTC), and the days in `exdates` are
-/// left out. A rule this expander cannot read exactly yields nothing rather than wrong days.
+/// each an instant: the entry starts at the wall time `start` (`2026-11-24T09:00:00`), read in
+/// `timezone` (an IANA name, `UTC`, or `floating`/empty for a time written nowhere in
+/// particular, read as UTC), and the days in `exdates` are left out. A rule this expander
+/// cannot read exactly yields nothing rather than wrong days.
 #[must_use]
 pub fn occurrences(
     rule: &str,
-    start: i64,
+    start: &str,
     timezone: &str,
     exdates: &[i64],
     from: i64,
@@ -61,13 +61,12 @@ fn day(days: i64) -> Result<Date, jiff::Error> {
     Date::new(year, month, day)
 }
 
-/// The wall time the instant `secs` is at in `timezone`.
-fn wall(timezone: &str, secs: i64) -> Option<jiff::civil::DateTime> {
-    let timestamp = Timestamp::from_second(secs).ok()?;
-    Some(match zone(timezone) {
-        Some(zone) => zone.to_datetime(timestamp),
-        None => TimeZone::UTC.to_datetime(timestamp),
-    })
+/// The wall time `start` names, `YYYY-MM-DDTHH:MM:SS` (`T` may be a space).
+fn wall(_timezone: &str, start: &str) -> Option<jiff::civil::DateTime> {
+    let (date, time) = start.trim().split_once(['T', ' '])?;
+    let date = Date::strptime("%Y-%m-%d", date).ok()?;
+    let time = jiff::civil::Time::strptime("%H:%M:%S", time).ok()?;
+    Some(date.to_datetime(time))
 }
 
 /// The instant the wall time `at` is, in `timezone`.
@@ -80,30 +79,19 @@ fn instant(timezone: &str, at: jiff::civil::DateTime) -> Option<i64> {
     }
 }
 
-/// The time zone `timezone` names, where it names one this device knows.
-fn zone(timezone: &str) -> Option<TimeZone> {
-    match timezone.trim() {
-        "" | "floating" => Some(TimeZone::UTC),
-        name => TimeZone::get(name).ok(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilolang::calendar::instant;
 
-    /// 2026-11-16, 09:00, the Monday a weekly series starts on there.
-    fn monday() -> i64 {
-        instant("2026-11-16T09:00:00Z").unwrap()
-    }
+    /// 2026-11-16, 09:00 as iCalendar writes a wall time: the Monday a weekly series starts on.
+    const MONDAY: &str = "2026-11-16T09:00:00";
 
     fn day_of(text: &str) -> i64 {
         tilolang::calendar::instant(&format!("{text}T00:00:00Z")).unwrap() / 86_400
     }
 
     fn times(rule: &str, from: &str, to: &str) -> Vec<String> {
-        occurrences(rule, monday(), "UTC", &[], day_of(from), day_of(to))
+        occurrences(rule, MONDAY, "UTC", &[], day_of(from), day_of(to))
             .into_iter()
             .map(tilolang::calendar::time_text)
             .collect()
@@ -132,7 +120,7 @@ mod tests {
 
     #[test]
     fn the_days_left_out_are_left_out() {
-        let start = monday();
+        let start = MONDAY;
         assert_eq!(
             occurrences(
                 "FREQ=DAILY",
@@ -161,7 +149,7 @@ mod tests {
     #[test]
     fn a_zone_keeps_the_wall_time_across_a_daylight_saving_change() {
         // Europe/Berlin leaves summer time on 2026-10-25.
-        let start = instant("2026-10-18T07:00:00Z").unwrap();
+        let start = "2026-10-18T09:00:00";
         let found = occurrences(
             "FREQ=WEEKLY",
             start,

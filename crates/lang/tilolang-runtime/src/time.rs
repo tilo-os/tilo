@@ -209,12 +209,9 @@ impl Core {
         let exdates = self.day_texts(a.h(3)?)?;
         let from = self.day(a.h(4)?)?;
         let to = self.day(a.h(5)?)?;
-        let Ok(start) = Self::instant_arg_text(&start) else {
-            return trap(format!("`{start}` is not a moment"));
-        };
         let times = crate::recurrence::occurrences(
             &rule,
-            start,
+            &start,
             &zone,
             &exdates,
             days_of(from),

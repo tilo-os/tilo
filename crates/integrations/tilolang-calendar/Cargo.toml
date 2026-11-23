@@ -44,8 +44,10 @@ engine = [
 ]
 
 [dev-dependencies]
+tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-test-env = { path = "../../dev/test-env" }
 test-http = { path = "../../dev/test-http" }
+tilolang-runtime = { path = "../../lang/tilolang-runtime" }
 tempfile.workspace = true
 
 [lints]

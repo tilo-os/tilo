@@ -147,6 +147,22 @@ impl CalDavConnector for RemoteConnector {
         })
     }
 
+    fn set_calendar(
+        &mut self,
+        account: &str,
+        calendar: &str,
+        name: &str,
+        color: &str,
+    ) -> Result<Request, Unmade> {
+        self.write(account, |request| ToConnector::Calendar {
+            request,
+            account: account.to_owned(),
+            calendar: calendar.to_owned(),
+            name: name.to_owned(),
+            color: color.to_owned(),
+        })
+    }
+
     fn answer(
         &mut self,
         account: &str,

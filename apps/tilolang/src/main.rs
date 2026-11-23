@@ -65,6 +65,7 @@ fn main() -> std::process::ExitCode {
 fn run_connector(origin: &str) -> Result<(), String> {
     match origin {
         "imap" => tilolang_mail::run_connector(origin),
+        "caldav" => tilolang_calendar::run_connector(origin),
         "youtube" => {
             let service: std::sync::Arc<dyn tilolang_youtube::Service> =
                 std::sync::Arc::new(tilolang_youtube::Live::new());

@@ -94,6 +94,13 @@ tilolang-mail = { path = "../../crates/platform/tilolang-mail" }
 # YouTube as an outside origin: a live window of an app whose types hold YouTube's resources
 # keeps them in step with it, in native code with the network.
 tilolang-youtube = { path = "../../crates/platform/tilolang-youtube" }
+# The calendar origin: the connector process the system runs for a hosted Calendar.
+tilolang-calendar = { path = "../../crates/integrations/tilolang-calendar" }
+
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+# A video plays in the app's window on an Apple silicon Mac, decoded by the GStreamer Tilo.app
+# carries beside this binary (dist/macos/build-app.sh).
+tilo-media = { path = "../../crates/platform/tilo-media", features = ["decode"] }
 
 [target.'cfg(windows)'.dependencies]
 # An origin reaches its connector over a socket the session handed both; a Windows host has

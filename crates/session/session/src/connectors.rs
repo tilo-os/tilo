@@ -242,6 +242,7 @@ pub(crate) fn reconcile(session: &crate::Session) {
     // one without naming the crate that keeps the service.
     tilolang_mail::register();
     tilolang_youtube::register();
+    tilolang_calendar::register();
     let connectors = session.shared.services.borrow().connectors();
     if connectors.is_empty() {
         return;

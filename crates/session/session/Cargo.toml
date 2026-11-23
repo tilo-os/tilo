@@ -309,6 +309,7 @@ tilolang-tilo = { path = "../../lang/tilolang-tilo" }
 # (`tilolang_tilo::origin::remote`).
 tilolang-mail = { path = "../../integrations/tilolang-mail", default-features = false }
 tilolang-youtube = { path = "../../integrations/tilolang-youtube" }
+tilolang-calendar = { path = "../../integrations/tilolang-calendar", default-features = false }
 # The toolkit's words, which what a package the session runs publishes reads through.
 tilo-app-window = { path = "../../sdk/tilo-app-window" }
 # `tilolang check` and build as the session's own commands over a package in the person's

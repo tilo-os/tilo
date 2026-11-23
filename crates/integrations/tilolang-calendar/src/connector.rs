@@ -41,6 +41,8 @@ pub struct Guest {
     pub email: String,
     /// `accepted`, `declined`, `tentative` or `needs-action`.
     pub status: String,
+    /// `required`, `optional` or `chair`.
+    pub role: String,
 }
 
 /// One occurrence of a repeat that stands apart: cancelled, moved or renamed.
@@ -81,21 +83,18 @@ pub struct Entry {
     /// particular (the reader's own).
     pub timezone: String,
     pub location: String,
-    /// `none`, `daily`, `weekdays`, `weekly`, `monthly` or `yearly`.
-    pub repeats: String,
-    /// One for a repeat every time it comes, two for every other, and so on.
-    pub repeat_every: u32,
-    /// The last date it repeats on, `YYYY-MM-DD`, empty for no end.
-    pub repeat_until: String,
-    /// How many times it repeats, 0 for no count.
-    pub repeat_count: u32,
+    /// How it repeats, as its `RRULE` (`FREQ=WEEKLY;INTERVAL=2`); empty for one occurrence.
+    pub recurrence: String,
     /// Dates it is left out on, `YYYY-MM-DD` each.
-    pub repeat_exdates: Vec<String>,
+    pub exdates: Vec<String>,
+    /// The occurrences that stand apart: moved, renamed or cancelled.
     pub overrides: Vec<Occurrence>,
     /// The mail address of whoever organises it, empty for nobody.
     pub organizer: String,
     pub attendees: Vec<Guest>,
     pub categories: Vec<String>,
+    /// The colour it is shown in, as its `COLOR`; empty for none.
+    pub color: String,
     /// What it says: its `DESCRIPTION`.
     pub notes: String,
 }
@@ -175,6 +174,14 @@ pub trait CalDavConnector {
     ) -> Result<Request, Unmade>;
     /// Take the entry at `href` out of `calendar`.
     fn remove(&mut self, account: &str, calendar: &str, href: &str) -> Result<Request, Unmade>;
+    /// Write a calendar's own properties: its `name` and its `color`, as its server keeps them.
+    fn set_calendar(
+        &mut self,
+        account: &str,
+        calendar: &str,
+        name: &str,
+        color: &str,
+    ) -> Result<Request, Unmade>;
     /// Answer an invitation as `attendee`, in the entry at `href`: `accepted`, `declined` or
     /// `tentative`.
     fn answer(
