@@ -10,6 +10,7 @@ use tilo_system_resources::printers::{
     DiscoveredPrinter, JobState, PrintJob, PrinterQueue, Printers, QueueState,
 };
 use tilo_system_resources::disk_unlock::{DiskUnlock, Sealing, UnlockVolume};
+use tilo_system_resources::host_info::HostInfo;
 use tilo_system_resources::drives::{
     Drive, DriveMode, Drives, Placement, RememberOffer, RememberedDrive,
 };
@@ -24,7 +25,7 @@ use crate::device::{
 use crate::model::{KeyboardLight, Power, PowerMode, Time};
 use crate::update::Update;
 use crate::{
-    DISK_UNLOCK, DRIVES, KEYBOARD_BACKLIGHT, POWER, PRINTERS, STORAGE, SYSTEM_UPDATE,
+    DISK_UNLOCK, DRIVES, HOST_INFO, KEYBOARD_BACKLIGHT, POWER, PRINTERS, STORAGE, SYSTEM_UPDATE,
     SystemService, TIME_ZONE, USERS,
 };
 
@@ -56,6 +57,7 @@ struct Fake {
     disk_unlock: Mutex<DiskUnlock>,
     disk_unlock_changes: Mutex<Vec<DiskUnlockChange>>,
     disk_unlock_refusal: Mutex<Option<String>>,
+    host_info: Mutex<HostInfo>,
 }
 
 impl Fake {
@@ -135,6 +137,7 @@ impl Fake {
             disk_unlock: Mutex::new(DiskUnlock::default()),
             disk_unlock_changes: Mutex::new(Vec::new()),
             disk_unlock_refusal: Mutex::new(None),
+            host_info: Mutex::new(HostInfo::default()),
         })
     }
 
@@ -396,6 +399,10 @@ impl System for Fake {
             StorageChange::ClearCache => self.storage.lock().unwrap().cache_bytes = 0,
         }
         Ok(())
+    }
+
+    fn host_info(&self) -> HostInfo {
+        self.host_info.lock().unwrap().clone()
     }
 
     fn disk_unlock(&self) -> DiskUnlock {
@@ -1825,4 +1832,66 @@ fn changing_the_unlocking_without_the_grant_is_refused() {
         "a person the grant does not cover is told why nothing changed"
     );
     assert_eq!(disk["pending"], json!([]));
+}
+
+#[test]
+fn the_host_resource_reads_the_devices_facts_and_refreshes_them() {
+    let fake = Fake::new();
+    *fake.host_info.lock().unwrap() = HostInfo {
+        pretty_name: "Tilo Linux 44".into(),
+        kernel: "6.18.58".into(),
+        uptime: "3d 4h 12m".into(),
+        hostname: "ada-laptop".into(),
+        arch: "x86_64".into(),
+        cpu: "AMD Ryzen 7".into(),
+        memory: "32 GB".into(),
+        unknown: false,
+    };
+    let mut service = service(&fake);
+    let host = service.read(HOST_INFO).unwrap();
+    assert_eq!(host["hostname"], json!("ada-laptop"));
+    assert_eq!(host["pretty_name"], json!("Tilo Linux 44"));
+    assert_eq!(host["kernel"], json!("6.18.58"));
+    assert_eq!(host["memory"], json!("32 GB"));
+
+    let published = service
+        .resources()
+        .into_iter()
+        .find(|resource| resource.id.as_str() == HOST_INFO)
+        .expect("the host-info resource is published");
+    let actions: Vec<&str> = published
+        .actions
+        .iter()
+        .map(|action| action.id.as_str())
+        .collect();
+    assert!(actions.contains(&"refresh"), "{actions:?}");
+
+    fake.host_info.lock().unwrap().uptime = "3d 4h 13m".into();
+    assert_eq!(
+        service.invoke(HOST_INFO, "refresh", &Map::new()),
+        Ok(Started::Accepted)
+    );
+    assert_eq!(service.read(HOST_INFO).unwrap()["pending"], json!(["refresh"]));
+    service.settle();
+    let host = service.read(HOST_INFO).unwrap();
+    assert_eq!(host["uptime"], json!("3d 4h 13m"));
+    assert_eq!(host["pending"], json!([]));
+}
+
+#[test]
+fn a_fact_this_machine_cannot_read_is_unknown_and_said_so() {
+    let missing = std::path::Path::new("/nonexistent/tilo-host-info");
+    let facts = crate::host_info::facts_from(
+        missing,
+        missing,
+        missing,
+        missing,
+        &[missing, missing],
+        missing,
+    );
+    assert_eq!(facts.kernel, "unknown");
+    assert_eq!(facts.memory, "unknown");
+    assert_eq!(facts.cpu, "unknown");
+    assert_eq!(facts.hostname, "this-device");
+    assert!(facts.unknown, "the reading says a fact is missing");
 }

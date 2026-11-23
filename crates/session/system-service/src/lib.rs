@@ -27,6 +27,7 @@
 pub mod device;
 pub mod disk_unlock;
 pub mod drives;
+pub mod host_info;
 pub mod storage;
 pub use tilo_system_resources::effects;
 tilo_resource::declared_names!();
@@ -56,8 +57,8 @@ use update::Update;
 
 /// The resources' ids.
 pub use tilo_system_resources::{
-    DISK_UNLOCK, DRIVES, KEYBOARD_BACKLIGHT, POWER, PRINTERS, STORAGE, SYSTEM_UPDATE, TIME_ZONE,
-    USERS,
+    DISK_UNLOCK, DRIVES, HOST_INFO, KEYBOARD_BACKLIGHT, POWER, PRINTERS, STORAGE, SYSTEM_UPDATE,
+    TIME_ZONE, USERS,
 };
 
 /// How often a device whose zone follows it looks where it is again: often
@@ -76,6 +77,7 @@ enum Part {
     Drives,
     Storage,
     DiskUnlock,
+    HostInfo,
 }
 
 /// What the machine reads now.
@@ -90,6 +92,7 @@ pub struct Readings {
     pub drives: tilo_system_resources::drives::Drives,
     pub storage: tilo_system_resources::storage::Storage,
     pub disk_unlock: tilo_system_resources::disk_unlock::DiskUnlock,
+    pub host_info: tilo_system_resources::host_info::HostInfo,
 }
 
 fn read(system: &dyn System, live_profiles: bool) -> Readings {
@@ -111,6 +114,7 @@ fn read(system: &dyn System, live_profiles: bool) -> Readings {
         drives: system.drives(),
         storage: system.storage(),
         disk_unlock: system.disk_unlock(),
+        host_info: system.host_info(),
     }
 }
 
@@ -360,6 +364,7 @@ impl SystemService {
                 &mut readings.disk_unlock.pending,
                 &mut readings.disk_unlock.problem,
             ),
+            Part::HostInfo => (&mut readings.host_info.pending, &mut readings.host_info.problem),
         }
     }
 
@@ -395,6 +400,8 @@ impl SystemService {
             readings.storage.read_error = old.storage.read_error.take();
             readings.storage.scanned = old.storage.scanned;
         }
+        readings.host_info.pending = std::mem::take(&mut old.host_info.pending);
+        readings.host_info.problem = old.host_info.problem.take();
         readings.disk_unlock.pending = std::mem::take(&mut old.disk_unlock.pending);
         readings.disk_unlock.problem = old.disk_unlock.problem.take();
         if !readings.disk_unlock.scanned {
@@ -788,6 +795,15 @@ pub fn printers_surface() -> tilo_resource::surface::Surface {
     >(PRINTERS, "Printers")
 }
 
+/// The `host-info` resource's surface, as a shell reads it over `so.tilo.device`.
+#[must_use]
+pub fn host_info_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<
+        tilo_system_resources::host_info::HostInfo,
+        tilo_system_resources::host_info::HostInfoAction,
+    >(HOST_INFO, "About this device")
+}
+
 /// The `disk-unlock` resource's surface, as a shell reads it over `so.tilo.device`.
 #[must_use]
 pub fn disk_unlock_surface() -> tilo_resource::surface::Surface {
@@ -981,6 +997,7 @@ impl Service for SystemService {
             drives::resource(&self.readings.drives),
             storage::resource(&self.readings.storage),
             disk_unlock::resource(&self.readings.disk_unlock),
+            host_info::resource(&self.readings.host_info),
         ]
     }
 
@@ -995,6 +1012,7 @@ impl Service for SystemService {
             DRIVES => Some(reading(&self.readings.drives)),
             STORAGE => Some(reading(&self.readings.storage)),
             DISK_UNLOCK => Some(reading(&self.readings.disk_unlock)),
+            HOST_INFO => Some(reading(&self.readings.host_info)),
             _ => None,
         }
     }
@@ -1231,6 +1249,17 @@ impl Service for SystemService {
                         id,
                         Some(DiskUnlockChange::SetNetworks { volume, networks }),
                     )),
+                }
+            }
+            HOST_INFO => {
+                let action = decode::<tilo_system_resources::host_info::HostInfoAction>(
+                    &published, resource, action, arguments,
+                )?;
+                let id = action.id();
+                match action {
+                    tilo_system_resources::host_info::HostInfoAction::Refresh => {
+                        Ok(self.start_reread(Part::HostInfo, id))
+                    }
                 }
             }
             _ => Err(ApiError::Unknown(tilo_actions::ActionAddress::new(

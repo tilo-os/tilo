@@ -245,6 +245,7 @@ view continuity_pane() {
 view about_pane() {
     let u = device.update
     let apps = device.apps
+    let host = device.host_info
     ui.Section("Tilo") {
         ui.Text(
             "Tilo is your workspace: one set of things, shared by the people and agents you work with, on the devices you signed in on.",
@@ -280,6 +281,37 @@ view about_pane() {
         let app_count = apps.installed.len()
         ui.PropertyList {
             ui.Property("Apps", "{app_count}")
+        }
+    }
+    ui.Section("This device") {
+        ui.Property("Name", host.hostname)
+        if host.pretty_name != "unknown" {
+            ui.Property("System", host.pretty_name)
+        }
+        if host.kernel != "unknown" {
+            ui.Property("Kernel", host.kernel)
+        }
+        ui.Property("Architecture", host.arch)
+        if host.uptime != "unknown" {
+            ui.Property("Up for", host.uptime)
+        }
+        ui.Button("Read these facts again", icon: .rotate_cw, size: .small) {
+            on press: device.refresh(device.host_info)
+        }
+    }
+    ui.Section("Hardware") {
+        if host.cpu != "unknown" {
+            ui.Property("Processor", host.cpu)
+        }
+        if host.memory != "unknown" {
+            ui.Property("Memory", host.memory)
+        }
+        if host.unknown {
+            ui.Text(
+                "Some of this device's facts could not be read.",
+                role: .caption,
+                secondary: true,
+            )
         }
     }
 }

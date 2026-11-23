@@ -5,6 +5,7 @@
 use settings_store::day_schedule::Location;
 use tilo_system_resources::disk_unlock::DiskUnlock;
 use tilo_system_resources::drives::Drives;
+use tilo_system_resources::host_info::HostInfo;
 use tilo_system_resources::storage::Storage;
 use tilo_system_resources::printers::{
     DiscoveredPrinter, JobState as PrintJobState, PrintJob as PrintJobReading, PrinterQueue,
@@ -232,6 +233,11 @@ pub trait System: Send + Sync {
     /// Why it did not happen.
     fn change_storage(&self, _change: &StorageChange) -> Result<(), String> {
         Err("this machine cannot scan its storage".to_owned())
+    }
+
+    /// What this device is: its system image, kernel, hardware and uptime.
+    fn host_info(&self) -> HostInfo {
+        HostInfo::default()
     }
 
     /// The encrypted volumes enrolled for sibling unlock, as the last read found them.
@@ -485,6 +491,10 @@ impl System for OsSystem {
         match change {
             StorageChange::ClearCache => crate::storage::clear_cache(),
         }
+    }
+
+    fn host_info(&self) -> HostInfo {
+        crate::host_info::facts()
     }
 
     fn scan_disk_unlock(&self) -> DiskUnlock {
