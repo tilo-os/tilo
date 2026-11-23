@@ -1164,9 +1164,11 @@ Each piece's "What goes" table is the work. This table says where it
 stands; the architecture owner keeps it current. A session works down its
 rows without being told; nobody waits for a nudge.
 
-When to land. Land whenever a coherent chunk is finished, compiles and
-passes its focused tests: typically a whole removal of a few tens of
-thousands of lines in one session. Don't let a branch drift far from main
+When to land. main is an unstable integration branch, not a release. Land
+a change as soon as it compiles and its lint passes. Never hold it for queued
+test runs, a comparison against its parent, or another lane's push: the later
+push rebases, and a red on main is fixed by the next commit. A walk proves a
+port afterwards, on main. Don't let a branch drift far from main
 or sit finished. Don't split a removal into a move now and a delete later,
 and don't hold a finished removal back to batch it with unrelated work. No
 landing dates: report what is done, what is on a branch, and what a push
@@ -1187,6 +1189,12 @@ session whose push comes out net positive stops and asks before pushing.
 | Workspace | `device_sessions.rs` (presence, screens, speaker groups, disk unlock, nearby and Nearby Send between a person's own devices), governor role, `Membership`/`WorkspaceRuntime` | what `device_sessions.rs` carries onto the person's own workspace, with it deleted. The own-document path, the wire `own` field, the settings-store person document, the home-peer registry and per-device accounts are gone since 65a7b8b31c3 (−5.7k); the per-person store, the per-device account store with its `store.json` and fake-oauth are gone, the account list is the workspace's one record, and an agent names the person it acts for | one workspace |
 | Hosting | `tilo-server` as a second host wrapping the workspace service (it becomes the one daemon keeping more; stack.sh still runs it), `tilo-api`'s grant file, the separate binaries, a member device's second `tilo-actions/1` handler for shell work, and the server's `carries_migrations` flag (a migration is an action and runs where `takes_turn` puts it) | `tilo-server` onto the one daemon, taking the second handler and `ServerLauncher` (which refuses every windowless tilolang call) with it, so a server runs tilolang actions with the device's own launcher and takes agent turns started by triggers; a server joins with a `tilo device add` ticket like any device. One worker and one `work::takes_turn` since 9e73c6e787f (−2.7k) | hosting |
 | Actions | three ways in: the frame, MCP over the one walk (`tilo_actions::tree`), and the rest of `tilo-api`'s own routes (tilo-runtime's `account_call` into `api.mcp`, `/v1` model asks calling the session directly, the per-route `/v1` handlers for uploads, programs, invocations, webhooks, export, search, links and views); our own REST client (`tilo do -w`, `tilo-api` `client.rs`, the Python SDK's HTTP runtime); the device-signed agent path (`Caller::delegated_to`, `Acting::handed`), which goes once MCP clients hold keys of their own; the hand-typed vocabularies | the rest of `tilo-api`'s routes become actions on providers, so `/v1` keeps only its generic resource and action routes; the daemon serves frames on its local socket and the CLI, the REPL and the SDKs move onto them with `client.rs` deleted (the Python SDK's HTTP runtime goes once its native addon is published); then the device-signed agent path; then the device's own admission with the grant move. `tilo-api`'s own operations are the ordinary `tilo.account` provider and its intercepts are gone since 199631cb48f; members.rs is gone; the session's, greeter's and installer's actions are frames; tilo-vmd and `tilo-device-admin` are gone: device control is the `so.tilo.devices` provider on the device's daemon at `devices/<id>/vm`, admitted by the ordinary grants in the person's own workspace, each root step a oneshot unit running `tilo-device-step` (crates/os, never linked by the daemon, which publishes the steps that program declares) under a polkit rule naming only those units, layers and worktrees content blobs, and the certificate's administer bit dropped; console-control's row format and `tilo-control`'s actions subcommands are gone (59612ef86c3) | actions everywhere |
+
+Tests prove seams between systems at the depth of an end-to-end test and the
+speed of a unit test, through production interfaces. A test that restates
+its implementation, tests a deleted copy, or checks what another test already
+covers is deleted, not kept or ported. Tests go from about 1.97M lines to
+about 0.7M.
 
 Progress is measured as net lines removed on `origin/main` in each piece's
 crates since `d81cc1750ff`, and as copies of each concept left.
