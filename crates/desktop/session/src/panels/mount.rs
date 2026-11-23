@@ -45,7 +45,7 @@ pub(crate) struct KeyContext {
     /// What stands over the shell, which Escape closes from the top.
     pub(crate) overlays: Overlays,
     /// The desktop's handle where the shell draws its own launcher, whose rows the keys walk here.
-    pub(crate) launcher: Option<tilo_desktop_surface::DesktopHandle>,
+    pub(crate) launcher: Option<tilo_session_core::desktop::state::DesktopHandle>,
     /// Whether the shell that draws the screen shows its strips list, which Escape puts away: the
     /// chrome keeps the list, so no surface of the stack hears that key.
     pub(crate) strips: Option<Rc<Cell<bool>>>,

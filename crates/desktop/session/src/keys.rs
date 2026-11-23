@@ -384,7 +384,7 @@ pub(crate) struct SessionKeys {
     /// The desktop handle of a shell that draws its own launcher, whose rows the keys walk here:
     /// nothing draws the desktop's palette under such a shell, so its own view lists the rows and
     /// the session answers Enter and the arrows over them.
-    launcher: Option<tilo_desktop_surface::DesktopHandle>,
+    launcher: Option<tilo_session_core::desktop::state::DesktopHandle>,
     /// The row the launcher's keys reached, and the query it was reached in: a new search starts
     /// again from its first row.
     launcher_at: RefCell<(String, Option<usize>)>,
@@ -407,7 +407,7 @@ impl SessionKeys {
     #[must_use]
     pub(crate) fn with_launcher(
         mut self,
-        launcher: Option<tilo_desktop_surface::DesktopHandle>,
+        launcher: Option<tilo_session_core::desktop::state::DesktopHandle>,
     ) -> Self {
         self.launcher = launcher;
         self
@@ -692,7 +692,7 @@ impl SessionKeys {
                         handle.choose_search_row(at.min(rows.len().saturating_sub(1)), None);
                         // The shell's launcher is its own surface over the shell: choosing a row
                         // leaves it, as the palette leaves search.
-                        self.overlays.show(tilo_desktop::overlays::Overlay::Rest);
+                        self.overlays.show(tilo_session_core::desktop::overlays::Overlay::Rest);
                     }
                     reached.1 = None;
                     return KeyClaim::Take;
