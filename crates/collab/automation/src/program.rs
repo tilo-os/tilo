@@ -38,27 +38,7 @@ pub fn canonical_bytes(shortcut: &Shortcut) -> Result<Vec<u8>, ProgramError> {
 
 /// `value` with every object's keys sorted, written without whitespace.
 pub(crate) fn canonical_json(value: &Value) -> Vec<u8> {
-    fn sorted(value: &Value) -> Value {
-        match value {
-            Value::Object(map) => {
-                let mut entries: Vec<(&String, &Value)> = map.iter().collect();
-                entries.sort_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
-                // With serde_json's preserve_order a map keeps insertion
-                // order, so inserting in sorted order is what makes the
-                // output sorted whichever map the build links.
-                Value::Object(
-                    entries
-                        .into_iter()
-                        .map(|(key, value)| (key.clone(), sorted(value)))
-                        .collect(),
-                )
-            }
-            Value::Array(items) => Value::Array(items.iter().map(sorted).collect()),
-            other => other.clone(),
-        }
-    }
-    // Writing a Value to a Vec cannot fail.
-    serde_json::to_vec(&sorted(value)).unwrap_or_default()
+    tilo_canonical_json::to_vec(value)
 }
 
 /// Parse a program file, accepting only its canonical spelling.

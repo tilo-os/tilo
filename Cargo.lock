@@ -18044,6 +18044,7 @@ dependencies = [
  "tilo-action-policy",
  "tilo-actions",
  "tilo-app-id",
+ "tilo-canonical-json",
  "tilo-clock",
  "tilo-resource",
  "tilo-test-env",
