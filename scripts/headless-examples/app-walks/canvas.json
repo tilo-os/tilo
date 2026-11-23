@@ -1,0 +1,52 @@
+{
+  "app": "canvas",
+  "said": "Canvas",
+  "family": "apps",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.canvas",
+    "package": "canvas"
+  },
+  "steps": [
+    {
+      "id": "new",
+      "said": "Start a blank artwork",
+      "ops": [
+        { "theme": false },
+        { "launch": true },
+        { "wait_for": "actions" },
+        { "targets": true }
+      ]
+    },
+    {
+      "id": "paint",
+      "said": "Paint a stroke across the artwork",
+      "ops": {
+        "tl": [
+          { "press_any": ["Paint", "Add layer"] },
+          { "drag": [[200, 200], [320, 260], [440, 240]] },
+          { "wait_for": { "prefix": "Layers" } }
+        ]
+      }
+    },
+    {
+      "id": "layers",
+      "said": "Add a layer and paint on it",
+      "ops": {
+        "tl": [
+          { "press_any": ["Add layer"] },
+          { "drag": [[240, 300], [360, 340]] }
+        ]
+      }
+    },
+    {
+      "id": "export",
+      "said": "Export the artwork as a picture",
+      "ops": {
+        "tl": [
+          { "press_any": ["Export"] }
+        ]
+      }
+    }
+  ]
+}
