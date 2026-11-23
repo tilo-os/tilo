@@ -272,10 +272,10 @@ Alongside installs on a Windows disk have two ESPs. Stock bootc can choose the
 first ESP instead of the one mounted under the new Tilo root. The live installer
 therefore builds a pinned, installer-only bootc helper that verifies and uses
 the mounted ESP; `tilo-install` checks for it before guided partition creation.
-The helper is absent from the installed OS image. `release-imager.yml` may layer
-newer main installer code onto an earlier CI-signed OS only when that OS source
-is an ancestor of the dispatched main commit and the signed target's SLSA
-source still matches the explicit OS pin.
+The helper is absent from the installed OS image. t's `medium/imager-{arch}` check
+builds the medium from this tree's release image, so the installer code and the
+OS it installs are one source; an offline medium's preloaded target is checked
+against the same pinned OS release.
 
 A CI install medium can instead carry a separately signed generic or Lenovo
 ARM64 target in

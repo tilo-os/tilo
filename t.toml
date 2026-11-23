@@ -5263,7 +5263,8 @@ arch = ["x86_64", "aarch64"]
 # preloaded, then the guided-alongside install-only cycle that proves the installer wrote exactly
 # that target, and the qcow2 compressed once for the Windows on ARM host to write
 # (tools/ci/publish/installer-whpx-medium.sh, tools/ci/installer-whpx-cycle.sh). It reads
-# published, signed inputs; it builds, signs and publishes nothing. Dispatch it with
+# published, signed inputs and signs the medium's source description with the release key in KMS;
+# it publishes nothing. Dispatch it with
 # `--input target_image=...,live_base_image=...,source_revision=...`; a run without them fails
 # here, never falls back to an unsigned target.
 [[check]]
@@ -5292,8 +5293,8 @@ name = "medium/whpx-aarch64"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-aarch64.txt tools/ci/packages/installer-cycle.txt\n[[ -n $T_INPUT_LIVE_BASE_IMAGE ]] || { echo 'medium/whpx-aarch64 needs --input live_base_image=... from a published, signed release' >&2; exit 2; }\nTILO_INSTALLER_CYCLE_STORAGE=/var/tmp/tilo-installer-whpx bash tools/ci/installer-whpx-cycle.sh /target/imager-whpx-medium \"$T_INPUT_LIVE_BASE_IMAGE\" /target/imager-whpx\n"
-needs = ["medium/whpx-medium-aarch64", "tilo-vm-binary-aarch64"]
-env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
+needs = ["medium/whpx-medium-aarch64", "tilo-vm-binary-aarch64", "signing-tools"]
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm", COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner" }
 requires = ["arch=aarch64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/imager-whpx/**"]
@@ -5304,6 +5305,7 @@ timeout_secs = 14400
 heavy = true
 default = false
 on = ["dispatch"]
+id_token = ["sts.amazonaws.com"]
 dispatch_inputs = { live_base_image = "" }
 
 # The USB-free installation round trip on the x86-64 release medium: a retained Fedora stages the

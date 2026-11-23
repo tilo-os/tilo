@@ -289,9 +289,9 @@ def signed_medium_identity(identity_path, ci_guest_proof_path, key,
             and type(identity["build_revision"]) is str
             and re.fullmatch(r"[0-9a-f]{40}", identity["build_revision"])
             and type(identity["run_id"]) is str
-            and re.fullmatch(r"[0-9]+", identity["run_id"])
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]*", identity["run_id"])
             and type(identity["run_attempt"]) is str
-            and re.fullmatch(r"[0-9]+", identity["run_attempt"])
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]*", identity["run_attempt"])
             and all(type(identity[key]) is str and HEX.fullmatch(identity[key])
                     for key in ("qcow2_sha256", "archive_sha256", "guest_proof_sha256"))
             and hashlib.sha256(ci_proof_raw).hexdigest() == identity["guest_proof_sha256"],

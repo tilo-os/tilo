@@ -1771,7 +1771,6 @@ check = "os-acceptance-{arch}"
 [[unrequired]]
 suite = "os/dev/test-installer-cycle.sh"
 reason = "boots VMs (KVM) from a built installer image"
-workflow = "release-imager.yml"
 check = "installer-cycle-x86_64"
 
 [[unrequired]]

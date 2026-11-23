@@ -16,8 +16,8 @@
 #   tilo-installer-PROFILE-aarch64.whpx-source.json        schema v2 source description
 #   artifacts.sha256                                       every file above
 #
-# The source description is what the release signs (a step of its own); nothing here signs or
-# publishes. Windows has no qcow2 tooling, so the host downloads this one file and writes it
+# With COSIGN_KEY_REF naming the release key in KMS, the source description is signed here and
+# the signature verified offline against the public key; nothing here publishes. Windows has no qcow2 tooling, so the host downloads this one file and writes it
 # unchanged: the archive expands to exactly the disk the cycle proved, and both digests are
 # written down so that is checkable without the qcow2 tooling that made it.
 set -euo pipefail
@@ -74,6 +74,25 @@ jq -n \
     run_id:$run_id,run_attempt:$run_attempt,
     qcow2_sha256:$qcow2_sha256,archive_sha256:$archive_sha256,
     guest_proof_sha256:$guest_proof_sha256}' > "$out/$stem.whpx-source.json"
+
+# The identity the Windows host verifies is signed by the release key in KMS, which never leaves
+# it: the host checks this signature offline against the public key before it writes a disk.
+if [ -n "${COSIGN_KEY_REF:-}" ]; then
+  tool_dir="$(mktemp -d "${TMPDIR:-/var/tmp}/tilo-whpx-sign.XXXXXX")"
+  trap 'rm -rf "$tool_dir"' EXIT
+  RUNNER_TEMP=$tool_dir GITHUB_PATH=$tool_dir/github-path \
+    TILO_GITHUB_ASSET_CACHE=/target/signing-tools TILO_ASSET_OFFLINE=1 \
+    bash os/dev/install-cached-cosign.sh >/dev/null
+  export PATH="$(cat "$tool_dir/github-path"):$PATH"
+  . os/dev/configure-cosign-kms.sh
+  identity="$out/$stem.whpx-source.json"
+  cosign sign-blob --yes --key "$COSIGN_KEY_REF" \
+    --bundle "$identity.bundle" --output-signature "$identity.sig" "$identity"
+  cosign verify-blob --offline --key "$repo_root/keys/cosign.pub" \
+    --bundle "$identity.bundle" --signature "$identity.sig" "$identity"
+  rm -rf "$tool_dir"
+  trap - EXIT
+fi
 
 (cd "$out" && find . -type f ! -name artifacts.sha256 -printf '%P\n' | LC_ALL=C sort \
   | while IFS= read -r file; do sha256sum "$file"; done) > "$out/artifacts.sha256"
