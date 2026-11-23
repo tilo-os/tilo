@@ -199,7 +199,6 @@ fn invitation_in(link: &str) -> Result<Vec<u8>> {
         .map_err(|_| anyhow!("This link's invitation is damaged: ask for it again."))
 }
 
-}
 
 /// `tilo login <invitation link>`: this computer joins the workspace a member invited the person
 /// into, as the person kept here (made now, named `name`, when there is none). The link carries
