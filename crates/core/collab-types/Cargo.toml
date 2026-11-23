@@ -1,0 +1,82 @@
+[package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
+name = "collab-types"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license = "MIT"
+repository.workspace = true
+homepage.workspace = true
+description = "The cryptographic identifiers and wire types of workspaces and documents."
+
+[package.metadata.cargo-machete]
+# Used only as `#[serde(with = "serde_bytes")]`, a string machete does not read.
+ignored = ["serde_bytes"]
+
+[lib]
+name = "collab_types"
+path = "src/lib.rs"
+
+# Cryptographic foundation of workspaces and documents: identity,
+# attestation, role presets, the SignedOp envelope, deterministic
+# canonical-bytes serialisation, Ed25519 signing primitives, and the
+# inbound-op validator. Pure types + pure functions — no I/O, no async,
+# no compositor dependency. See `src/lib.rs` for the wire contract.
+
+[dependencies]
+# A file's record id, kept in the extended attribute the filesystem serves.
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
+fnv.workspace = true
+tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
+# The kinds each fleet app's manifest declares its members' own (`[resources] own`).
+app-fleet = { version = "0.1.0", path = "../../packaging/app-fleet" }
+# A capability names the app whose sandbox it is.
+tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
+tilo-canonical-json = { version = "0.1.0", path = "../../platform/tilo-canonical-json" }
+# The hue someone wears until they choose one, as every surface derives it.
+tilo-face = { version = "0.1.0", path = "../../platform/tilo-face" }
+getrandom.workspace = true
+web-time = { version = "1", features = ["serde"] }
+ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
+serde.workspace = true
+serde_bytes.workspace = true
+postcard = { workspace = true, features = ["alloc"] }
+# Compaction-checkpoint prefix hashing uses SHA-256
+# (already pulled in transitively by some Iroh features but kept
+# direct here so the dep is explicit) so the digest is 32 bytes
+# without needing a separate blake3 dep.
+sha2.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+# `caps::net::EgressPolicy::from_grants` names the grants it ignores.
+tracing.workspace = true
+uuid.workspace = true
+# The action a change claims, named as the executor names it.
+tilo-actions = { version = "0.1.0", path = "../actions" }
+# A capability is a stored value of the records that keep grants.
+tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
+# A name shown in a reader's language: the one rule for which language a tag is.
+tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
+automerge.workspace = true
+tilo-automerge.workspace = true
+# Untrusted change bytes are read where every untrusted Automerge input is.
+tilo-automerge-isolate.workspace = true
+# The app surface a receiver decides claims against, read from surface.toml.
+toml.workspace = true
+blake3.workspace = true
+# A continuation's claim is read from its action's JSON payload.
+serde_json.workspace = true
+
+[dev-dependencies]
+# `scenario!`: one test function holds the cases of one subject.
+tilo-test-env = { path = "../../../tools/test-env" }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true

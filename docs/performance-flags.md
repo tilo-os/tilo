@@ -141,7 +141,7 @@ selection. Keep their values identical across steady-state comparisons.
 
 Sources: [ui-core startup](../crates/ui/ui-core/src),
 [session startup](../crates/session/session/src/main.rs),
-[startup metrics](../crates/system/tilo-startup-metrics/src/lib.rs).
+[startup metrics](../crates/core/tilo-startup-metrics/src/lib.rs).
 
 ## UI dashboard benchmark
 
@@ -318,7 +318,7 @@ number is only comparable at one of them. `wasm-release` is the shipping
 build; `wasm-assert` is the same optimisation (`opt-level=3`, fat LTO) with
 `debug-assertions` and `overflow-checks` on, and `wasm-dev` is the quick
 loop. Build a measured or
-qualified bundle with `crates/browser/tilo-browser-runtime/scripts/build.sh
+qualified bundle with `crates/core/tilo-browser-runtime/scripts/build.sh
 --profile assert`, and record the profile `build.json` names. A plain `release` bundle has the
 qualification surface compiled out; it is not a faster build of the same
 workload, and comparing it to a `dev` sample does not show what optimisation

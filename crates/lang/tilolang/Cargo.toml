@@ -24,13 +24,13 @@ unicode-segmentation = "1.12"
 tilo-ui-graph = { version = "0.1.0", path = "../../ui/ui-graph" }
 wasm-encoder = "0.252"
 # Who an actor value names: the identity type every crate shares.
-tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
+tilo-action-policy = { version = "0.1.0", path = "../../core/action-policy" }
 # The clock that also reads in a browser page, where std has none.
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # One rule for which language a locale names, shared with the packs.
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 # What a declared name is called in a sentence, which a package's catalogue is written from.
-tilo-words = { version = "0.1.0", path = "../../text/tilo-words" }
+tilo-words = { version = "0.1.0", path = "../../core/tilo-words" }
 
 # The toolkit's code editor brings the compiler into the browser bundle, and
 # the workspace-hack's native feature set does not build for wasm32.

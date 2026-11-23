@@ -116,16 +116,16 @@ names are stable even when directories move.
 | Part | Where |
 | --- | --- |
 | App SDK: the public facade apps depend on (as `ui`) | `crates/sdk/tilo-app` |
-| Resources, actions and their macros | `crates/sdk/tilo-resource`, `crates/sdk/tilo-resource-macros` |
+| Resources, actions and their macros | `crates/core/tilo-resource`, `crates/core/tilo-resource-macros` |
 | UI toolkit: widgets, layout, text, rendering, headless testing | `crates/ui/ui-core` |
 | History, search | `crates/sdk/tilo-history`, `crates/engines/search` |
 | Example apps, one idea each | `examples/apps` |
 | First-party apps | `apps/` ([list](../../apps/README.md)) |
-| Identity, MLS groups, action policy, collaboration state | `crates/collab/` (`tilo-user-identity`, `tilo-device-identity`, `key-group`, `action-policy`, `tilo-peer-state`) |
-| Automerge (vendored fork) | `vendor/automerge`, used through `crates/doc/tilo-automerge` |
-| Files and storage | `crates/system/fs`, `crates/system/fs-native` |
+| Identity, MLS groups, action policy, collaboration state | `crates/core/` (`tilo-user-identity`, `tilo-device-identity`, `key-group`, `action-policy`, `tilo-peer-state`) |
+| Automerge (vendored fork) | `vendor/automerge`, used through `crates/core/tilo-automerge` |
+| Files and storage | `crates/core/fs`, `crates/core/fs-native` |
 | Compositor and shell | `crates/session/session` |
-| Web runtime (the page a browser enters a workspace with) | `crates/browser/tilo-browser-runtime` |
+| Web runtime (the page a browser enters a workspace with) | `crates/core/tilo-browser-runtime` |
 | Platform services with one API on Linux, macOS and the web | `crates/platform/` |
 | Packages, sandboxed launch, the registry | `crates/packaging/` |
 | The `tilo-app` command | `tools/tilo-app-cli` |

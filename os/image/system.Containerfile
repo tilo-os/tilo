@@ -303,7 +303,7 @@ COPY os/usr/lib/systemd/system/systemd-tpm2-setup-early.service.d/10-tilo-live-i
 # component (os/components.toml), which judges apps against them: an app from
 # the registry updates past its preinstalled copy only to a build this OS can
 # run, and that copy is the fallback for one it cannot
-# (crates/packaging/package-store/src/interfaces.rs).
+# (crates/core/package-store/src/interfaces.rs).
 COPY os/usr/share/tilo/fs-capabilities.json /usr/share/tilo/fs-capabilities.json
 # The community workspace a computer is in by default: the vendor's site,
 # which /etc/tilo/community.toml overrides (crates/session/session/src/directory.rs).

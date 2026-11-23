@@ -134,11 +134,11 @@ because it boots the staged deployment that holds them.
 | Interface | Version | Schema | Checked |
 |---|---|---|---|
 | App ↔ shell (shell-ui) | `ui::floating_surface::FLOATING_SURFACE_PROTOCOL_VERSION` | `crates/ui/ui-core/interface.toml` | the app's first frame on the shell-ui connection the launcher gives every window |
-| App ↔ runtime (the session services the launcher connects) | `runtime_portal::RUNTIME_INTERFACE_VERSION` | `crates/runtime/runtime-portal/interface.toml` | the launcher, before it connects any service |
-| Device ↔ device (handshake, relay frames, peer-sync messages) | `neighbour_wire::PEER_PROTOCOL_VERSION`, working with the versions `neighbour_wire::works_with_peer_version` names (below) | `crates/collab/neighbour-wire/interface.toml` | the first field of the certified handshake's `Hello` and `HelloAck` (server sessions, compute, environments, the HTTPS carrier), and of the `IdentityHello` a device announces on a workspace, whose index never moves |
+| App ↔ runtime (the session services the launcher connects) | `runtime_portal::RUNTIME_INTERFACE_VERSION` | `crates/core/runtime-portal/interface.toml` | the launcher, before it connects any service |
+| Device ↔ device (handshake, relay frames, peer-sync messages) | `neighbour_wire::PEER_PROTOCOL_VERSION`, working with the versions `neighbour_wire::works_with_peer_version` names (below) | `crates/core/neighbour-wire/interface.toml` | the first field of the certified handshake's `Hello` and `HelloAck` (server sessions, compute, environments, the HTTPS carrier), and of the `IdentityHello` a device announces on a workspace, whose index never moves |
 | Session ↔ app keeper (the control socket of a kept app) | `tilo_app_keeper::wire::INTERFACE_VERSION` | `crates/session/app-keeper/interface.toml` | the session's `Hello`, the first message on every connection: a keeper at another version (one started by an older session build, still running its app) answers `VersionMismatch`, then `"holding"`, keeps displaying, and holds its app while that connection stays open (the unversioned part, never changed) |
-| Session ↔ a tilolang process (the process link) | `runtime_portal::packet::VERSION` | the framing itself (`crates/runtime/runtime-portal/src/packet.rs`): there is no schema file, because the packet is the message | every packet, in its first bytes: a side built before the link carried a version, or at another one, refuses the packet naming both versions, so a message that changed is a build mismatch a person is told, never bytes read as another message |
-| Store package format (`.tapp`, its manifest, and the registry's snapshots, version indexes and channel authorizations) | `registry_types::PACKAGE_FORMAT_VERSION` (`tilo_app_package::TAPP_FORMAT_VERSION` is it) | `crates/packaging/tilo-app-package/interface.toml` | the archive header, when a package is read; a snapshot's `protocol`, when the catalogue is verified |
+| Session ↔ a tilolang process (the process link) | `runtime_portal::packet::VERSION` | the framing itself (`crates/core/runtime-portal/src/packet.rs`): there is no schema file, because the packet is the message | every packet, in its first bytes: a side built before the link carried a version, or at another one, refuses the packet naming both versions, so a message that changed is a build mismatch a person is told, never bytes read as another message |
+| Store package format (`.tapp`, its manifest, and the registry's snapshots, version indexes and channel authorizations) | `registry_types::PACKAGE_FORMAT_VERSION` (`tilo_app_package::TAPP_FORMAT_VERSION` is it) | `crates/core/tilo-app-package/interface.toml` | the archive header, when a package is read; a snapshot's `protocol`, when the catalogue is verified |
 
 - A reader keeps every format it understands: `tilo_app_package::tapp::READABLE_FORMATS`
   for the archive and `registry_types::READABLE_CATALOGUE_FORMATS` for the
@@ -245,7 +245,7 @@ the window is exactly one peer version wide:
   ask and answer), a governance change committed to a server, a lease claim,
   the identity announcement, and the connection protocols a server is dialled
   on. Their frames are kept in
-  `crates/collab/neighbour-wire/previous-peer-frames.txt`;
+  `crates/core/neighbour-wire/previous-peer-frames.txt`;
   `tilo-server-protocol`'s `tests/previous_peer_version.rs` and
   tilo-peer-state's lease tests read each with today's types, write it back,
   and fail on any byte that differs, so each side reads what the other sends.

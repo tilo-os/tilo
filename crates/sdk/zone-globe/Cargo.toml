@@ -12,7 +12,7 @@ path = "src/lib.rs"
 
 [dependencies]
 ui = { package = "tilo-app", path = "../tilo-app" }
-tilo-actions = { path = "../../collab/actions" }
+tilo-actions = { path = "../../core/actions" }
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true

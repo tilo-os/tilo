@@ -13,9 +13,9 @@ name = "tilo-test-registry"
 path = "src/main.rs"
 
 [dependencies]
-package-store = { path = "../../crates/packaging/package-store" }
-registry-types = { path = "../../crates/packaging/registry-types" }
-tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
+package-store = { path = "../../crates/core/package-store" }
+registry-types = { path = "../../crates/core/registry-types" }
+tilo-app-package = { path = "../../crates/core/tilo-app-package" }
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 blake3.workspace = true
 ed25519-dalek.workspace = true

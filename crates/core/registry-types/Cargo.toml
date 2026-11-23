@@ -1,0 +1,52 @@
+[package]
+name = "registry-types"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license = "MIT"
+description = "Wire types for the Tilo app registry: signed package metadata, versions and content roots."
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+name = "registry_types"
+path = "src/lib.rs"
+
+# Wire types for the Tilo app registry — the semi-federated
+# marketplace that advertises `.tapp` bundles. This crate defines
+# the JSON shapes (`RegistryHandshake`, `RegistryEntry`,
+# `EntryChangeRequest`) plus the canonical byte encoding the
+# publisher signs over. Zero I/O and zero HTTP so both the
+# self-hostable server and the on-device registry client can
+# share the same types without pulling in a runtime.
+#
+# The canonical form for a publisher signature is
+# `blake3("tilo-registry-entry-v1\0" || postcard(entry-without-sig))`,
+# mirroring the domain-separation pattern used by
+# `crates/core/tilo-app-package::trust`.
+
+[dependencies]
+# The block list's files in the person's data directory.
+tilo-paths.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+postcard = { workspace = true, features = ["use-std"] }
+blake3.workspace = true
+ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
+hex.workspace = true
+semver.workspace = true
+thiserror.workspace = true
+tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
+# The person's block list is replaced whole, never half-written.
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+getrandom.workspace = true
+
+[lints]
+workspace = true

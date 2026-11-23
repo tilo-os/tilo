@@ -18,8 +18,8 @@ import textwrap
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-CONTAINER = ROOT / 'crates/browser/tilo-browser-runtime/container'
-WEB = ROOT / 'crates/browser/tilo-browser-runtime/web'
+CONTAINER = ROOT / 'crates/core/tilo-browser-runtime/container'
+WEB = ROOT / 'crates/core/tilo-browser-runtime/web'
 LAYOUT = CONTAINER / 'layout.py'
 
 # The parts of layout.py a test reads the module graph with, as it runs them there: the

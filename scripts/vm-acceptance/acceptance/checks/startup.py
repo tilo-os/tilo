@@ -188,7 +188,7 @@ def parse_startup_marks(text: str, since_ms: int) -> dict | None:
     return best
 
 
-# The compositor's per-launch timing fields (crates/system/tilo-startup-metrics), each
+# The compositor's per-launch timing fields (crates/core/tilo-startup-metrics), each
 # on one of its three `tilo::launch_latency` lines.
 LATENCY_FIELDS = ("request_to_spawn", "spawn_to_map", "map_to_first_present", "request_to_first_present")
 

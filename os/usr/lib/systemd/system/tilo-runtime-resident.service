@@ -4,7 +4,7 @@ Description=Keep the shared app runtime's libraries in memory
 # libstd and the C library of its bundle). Cold, paging it in was most of a
 # cold app start. This maps those libraries of every runtime the system
 # registry names, read-only, and locks them, so the page cache holds them
-# once for every app of every person (crates/packaging/launcher/src/
+# once for every app of every person (crates/core/launcher/src/
 # runtime_resident.rs). It runs no app code and starts no app.
 # After an extension merge replaces /usr, tilo-extension-activate.service
 # restarts it so it holds the new files.

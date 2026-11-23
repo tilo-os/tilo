@@ -31,7 +31,7 @@ The OS image's app store holds each app to the same budgets when it packs it:
 `os/scripts/pack-apps.sh` reads `budget.toml` and the raise files and refuses
 a package over its budget for the build's architecture, naming the app, its
 size and its budget, before it applies the format's 8 MB ceiling
-(`crates/packaging/tilo-app-package/max-app-bytes`). Both build the app the same way. The
+(`crates/core/tilo-app-package/max-app-bytes`). Both build the app the same way. The
 release package the size checks measure also carries the app's search entries and its
 instruction-set note, which makes it the larger by about 1 KB (at e82aadce5c on aarch64: Code
 Editor 2625536 bytes against 2625024, Messages 1332224 against 1331712, Store 2721792 against

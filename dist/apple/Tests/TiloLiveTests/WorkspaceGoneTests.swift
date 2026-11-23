@@ -504,7 +504,7 @@ final class WorkspaceGoneTests: XCTestCase {
     func testWhatTheEngineKnowsAWorkspaceThatIsGoneByIsWhatTilosPageSays() throws {
         var repository = URL(fileURLWithPath: #filePath)
         for _ in 0..<5 { repository.deleteLastPathComponent() }
-        let web = repository.appendingPathComponent("crates/browser/tilo-browser-runtime/web")
+        let web = repository.appendingPathComponent("crates/core/tilo-browser-runtime/web")
         let peer = try String(contentsOf: web.appendingPathComponent("peer.mjs"), encoding: .utf8)
         XCTAssertTrue(peer.contains("'\(TiloEngine.resetSaid) Reload the page to join it again.'"),
                       "web/peer.mjs says a server that was set up again in other words than the engine knows")

@@ -1,0 +1,54 @@
+[package]
+name = "tilo-mcp"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The MCP projection of an action host, and the APIs an MCP client reaches a desktop or another device through."
+
+[features]
+# Hosts whose answers a test checks: the runtime's daemon tests serve them too.
+test-support = ["dep:tilo-test-env", "dep:tilo-resource"]
+
+[dependencies]
+# The turn every agent works through: what a turn asks of these tools, and how the model reads
+# their answers.
+tilo-agent-turn = { path = "../../integrations/agent-turn" }
+agent-provider-config = { path = "../../integrations/provider-config" }
+# What every Tilo app publishes (its surface), for the apps a hosted workspace's programs compile
+# against: data only, no app links the server that serves them.
+app-fleet = { path = "../../packaging/app-fleet", features = ["surfaces"] }
+base64.workspace = true
+blake3.workspace = true
+collab-types = { path = "../collab-types" }
+fs-protocol = { path = "../fs-protocol" }
+hex.workspace = true
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tilo-action-policy = { path = "../action-policy" }
+tilo-actions = { path = "../actions", features = ["off-worker"] }
+tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-content = { path = "../content" }
+tilo-files = { path = "../../platform/tilo-files" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+tilo-paths.workspace = true
+tilo-resource = { path = "../tilo-resource", optional = true }
+tilo-rt.workspace = true
+tilo-test-env = { path = "../../../tools/test-env", optional = true }
+tilo-user-identity = { path = "../tilo-user-identity" }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tilo-actions = { path = "../actions", features = ["test-support"] }
+tilo-resource = { path = "../tilo-resource" }
+tilo-test-env = { path = "../../../tools/test-env" }
+tokio = { workspace = true, features = ["test-util"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

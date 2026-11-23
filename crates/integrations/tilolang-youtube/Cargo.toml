@@ -12,7 +12,7 @@ wire-frame = { path = "../../platform/wire-frame" }
 tilolang-runtime = { path = "../../lang/tilolang-runtime" }
 # The action API an instance attaches to the connector over, and the descriptors the session hands
 # both (`runtime_portal::origin_connector`).
-runtime-portal = { path = "../../runtime/runtime-portal", optional = true }
+runtime-portal = { path = "../../core/runtime-portal", optional = true }
 # YouTube's own client, as Tube and Music reach it: each query compiled once beside rustypipe.
 tilo-innertube = { path = "../tilo-innertube", optional = true }
 rustypipe = { workspace = true, features = ["rustls-no-provider"], optional = true }

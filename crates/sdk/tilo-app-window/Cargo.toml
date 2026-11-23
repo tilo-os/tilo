@@ -17,10 +17,10 @@ tilo-rich-edit = { version = "0.1.0", path = "../../ui/tilo-rich-edit" }
 tilo-formats = { version = "0.1.0", path = "../../ui/tilo-formats" }
 tilo-render-protocol = { version = "0.1.0", path = "../../ui/tilo-render-protocol" }
 # The actions the window's app publishes for its command palette.
-tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+tilo-actions = { version = "0.1.0", path = "../../core/actions" }
 # The named scopes a frame's work is counted in (`ui.bind`): what a test reads to see that a
 # still frame binds no control again.
-tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
+tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }
 jiff.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -39,7 +39,7 @@ workspace-hack = { version = "0.1" }
 # A view's song or video is a Tilo content address (`tilo-blob://…`): the window reads its bytes
 # from the device's content store and stages a file the toolkit plays. A page's media element
 # plays the address itself, so this is native only.
-tilo-content-device = { version = "0.1.0", path = "../../system/content-device" }
+tilo-content-device = { version = "0.1.0", path = "../../core/content-device" }
 media = { package = "tilo-media", path = "../../engines/tilo-media" }
 
 [[example]]

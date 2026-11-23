@@ -10,7 +10,7 @@ description = "The calendar origin of tilolang packages: the iCalendar format a 
 # The workspace's accounts and their sign-ins, as the session tells the connector them.
 accounts = { path = "../accounts", optional = true }
 # The descriptors the session hands the connector: one per instance that attaches.
-runtime-portal = { path = "../../runtime/runtime-portal", optional = true }
+runtime-portal = { path = "../../core/runtime-portal", optional = true }
 tilo-dav = { path = "../tilo-dav", default-features = false, features = ["client"], optional = true }
 # The rich text an entry's notes are kept as.
 tilo-document = { path = "../../sdk/tilo-document" }
@@ -23,7 +23,7 @@ tilo-formats = { path = "../../ui/tilo-formats" }
 # iCalendar consumer.
 tilo-recurrence = { path = "../../engines/tilo-recurrence" }
 # The resource layer the moved event, task and calendar shapes are declared in.
-tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-resource = { path = "../../core/tilo-resource" }
 # Whether the device is online: an unreachable calendar server is tried again when the network
 # comes back, followed on a thread of its own.
 tilo-net = { path = "../../platform/tilo-net", optional = true }
@@ -49,8 +49,8 @@ engine = [
 ]
 
 [dev-dependencies]
-tilo-action-policy = { path = "../../collab/action-policy" }
-tilo-resource = { path = "../../sdk/tilo-resource", features = ["test-support"] }
+tilo-action-policy = { path = "../../core/action-policy" }
+tilo-resource = { path = "../../core/tilo-resource", features = ["test-support"] }
 tilo-test-env = { path = "../../../tools/test-env" }
 test-http = { path = "../../../tools/test-http" }
 tilolang-runtime = { path = "../../lang/tilolang-runtime" }

@@ -391,7 +391,7 @@ inputs = [
   "bin/",
   "sdk/python/native", "sdk/typescript/native",
   "docs/developers/tasks/", "tools/perf/tapp-size-budget/",
-  "crates/packaging/tilo-app-package/max-app-bytes",
+  "crates/core/tilo-app-package/max-app-bytes",
   "crates/os/tilo-device-steps/data/72-vkms-seat.rules", "crates/os/tilo-device-steps/data/73-uinput-seat.rules",
   "crates/os/tilo-device-steps/data/tilo-vm-reconcile-image.service",
   "crates/os/tilo-device-steps/data/tilo-vm-incoming.service",
@@ -423,7 +423,7 @@ suites = ["os/tests/native_release_bin_selection.py"]
 name = "app-store"
 inputs = [
   "os/", "apps/", "Cargo.toml", "*Cargo.toml",
-  "crates/packaging/install/", "crates/packaging/launcher/", "crates/packaging/runtime-bundle/",
+  "crates/core/install/", "crates/core/launcher/", "crates/core/runtime-bundle/",
   "crates/session/session/",
 ]
 suites = ["os/tests/app_store.sh"]
@@ -455,7 +455,7 @@ suites = [
 [[group]]
 name = "printing"
 inputs = [
-  "os/", "docs/printing-threat-model.md", "crates/packaging/launcher/",
+  "os/", "docs/printing-threat-model.md", "crates/core/launcher/",
   "crates/system/os-actions/", "crates/platform/sandbox-core/",
   "crates/engines/tilo-capture/src/scanner.rs",
 ]
@@ -476,7 +476,7 @@ suites = ["os/tests/test_image_size_budget.py"]
 [[group]]
 name = "windows"
 inputs = [
-  "os/", "docs/windows-compatibility.md", "crates/packaging/launcher/", "crates/compat/",
+  "os/", "docs/windows-compatibility.md", "crates/core/launcher/", "crates/compat/",
   # test_windows_compat_sysext.py: the helper that installs the image, and the checks that
   # publish it.
   "crates/os/extension-helper/src/",
@@ -488,7 +488,7 @@ suites = [
 [[group]]
 name = "kernel-signer"
 # Projects tilo-crypto's manifest and lock against the workspace for the kernel build.
-inputs = ["os/", "Cargo.toml", "Cargo.lock", "crates/system/tilo-crypto/"]
+inputs = ["os/", "Cargo.toml", "Cargo.lock", "crates/core/tilo-crypto/"]
 suites = ["os/tests/test_project_kernel_crate.py"]
 
 [[group]]
@@ -562,7 +562,7 @@ inputs = [
   # tools/perf/test_budgets.py holds every budget to a ceiling or a
   # baseline_only choice, so kpi-budgets.toml loads.
   # The adapters parse these benchmarks' output, so their format is the suite's.
-  "crates/system/fs/tests/performance_timing.rs",
+  "crates/core/fs/tests/performance_timing.rs",
   # scripts/perf/render_bench.py reads the dashboard benchmark's output.
   "tools/ui-examples/examples/dashboard_perf_bench.rs",
   # tools/perf/test_tapp_size_ratchet.py holds the budgeted apps equal to the
@@ -619,7 +619,7 @@ suites = [
 ]
 
 [[covered]]
-suite = "crates/browser/tilo-browser-runtime/web/pairing.test.mjs"
+suite = "crates/core/tilo-browser-runtime/web/pairing.test.mjs"
 check = "web-node-tests"
 
 [[covered]]
@@ -632,44 +632,44 @@ name = "browser-runtime-web"
 # and the scripts that assemble the web core. app-installer reads the Rust
 # app catalogue. bundle-update runs the split modules' loader that wasm-split's
 # main.rs writes.
-inputs = ["crates/browser/tilo-browser-runtime/", "tools/web/wasm-split/src/main.rs", "crates/runtime/tilo-identity/tests/fixtures/identity-record.json", "crates/collab/reference/tests/links.json"]
+inputs = ["crates/core/tilo-browser-runtime/", "tools/web/wasm-split/src/main.rs", "crates/core/tilo-identity/tests/fixtures/identity-record.json", "crates/core/reference/tests/links.json"]
 suites = [
-  "crates/browser/tilo-browser-runtime/web/person.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/first-screen.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/startup-order.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/workspaces.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/session-refusal.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/changes.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/device-key.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/durable-host.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/json-text.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/identity-actions.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/profile-photos.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/peer.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/site-host.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/scrub.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/reconnect.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/recovery-words.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/failure-screen.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/admission.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/entry.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/entry-page.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/wait-list.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/arrival.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/browser-accounts.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/hex.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/identity.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/sign-in.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/asset-recovery.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/bundle-update.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/storage-revision.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/video-profile.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/voice-audio-codecs.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/voice-audio.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/voice-controls.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/voice-video.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/voice.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/runtime-surface.test.mjs",
+  "crates/core/tilo-browser-runtime/web/person.test.mjs",
+  "crates/core/tilo-browser-runtime/web/first-screen.test.mjs",
+  "crates/core/tilo-browser-runtime/web/startup-order.test.mjs",
+  "crates/core/tilo-browser-runtime/web/workspaces.test.mjs",
+  "crates/core/tilo-browser-runtime/web/session-refusal.test.mjs",
+  "crates/core/tilo-browser-runtime/web/changes.test.mjs",
+  "crates/core/tilo-browser-runtime/web/device-key.test.mjs",
+  "crates/core/tilo-browser-runtime/web/durable-host.test.mjs",
+  "crates/core/tilo-browser-runtime/web/json-text.test.mjs",
+  "crates/core/tilo-browser-runtime/web/identity-actions.test.mjs",
+  "crates/core/tilo-browser-runtime/web/profile-photos.test.mjs",
+  "crates/core/tilo-browser-runtime/web/peer.test.mjs",
+  "crates/core/tilo-browser-runtime/web/site-host.test.mjs",
+  "crates/core/tilo-browser-runtime/web/scrub.test.mjs",
+  "crates/core/tilo-browser-runtime/web/reconnect.test.mjs",
+  "crates/core/tilo-browser-runtime/web/recovery-words.test.mjs",
+  "crates/core/tilo-browser-runtime/web/failure-screen.test.mjs",
+  "crates/core/tilo-browser-runtime/web/admission.test.mjs",
+  "crates/core/tilo-browser-runtime/web/entry.test.mjs",
+  "crates/core/tilo-browser-runtime/web/entry-page.test.mjs",
+  "crates/core/tilo-browser-runtime/web/wait-list.test.mjs",
+  "crates/core/tilo-browser-runtime/web/arrival.test.mjs",
+  "crates/core/tilo-browser-runtime/web/browser-accounts.test.mjs",
+  "crates/core/tilo-browser-runtime/web/hex.test.mjs",
+  "crates/core/tilo-browser-runtime/web/identity.test.mjs",
+  "crates/core/tilo-browser-runtime/web/sign-in.test.mjs",
+  "crates/core/tilo-browser-runtime/web/asset-recovery.test.mjs",
+  "crates/core/tilo-browser-runtime/web/bundle-update.test.mjs",
+  "crates/core/tilo-browser-runtime/web/storage-revision.test.mjs",
+  "crates/core/tilo-browser-runtime/web/video-profile.test.mjs",
+  "crates/core/tilo-browser-runtime/web/voice-audio-codecs.test.mjs",
+  "crates/core/tilo-browser-runtime/web/voice-audio.test.mjs",
+  "crates/core/tilo-browser-runtime/web/voice-controls.test.mjs",
+  "crates/core/tilo-browser-runtime/web/voice-video.test.mjs",
+  "crates/core/tilo-browser-runtime/web/voice.test.mjs",
+  "crates/core/tilo-browser-runtime/web/runtime-surface.test.mjs",
 ]
 
 [[group]]
@@ -719,9 +719,9 @@ package = "tilo-app-package"
 # Every app's search taglines are checked in each shipped language.
 inputs = ["apps/*/Cargo.toml", "apps/*/tilo-app.toml", "crates/lang/*/tilo-runtime.toml", "apps/*/search/*.ftl"]
 readers = [
-  "crates/packaging/tilo-app-package/tests/app_manifests.rs",
-  "crates/packaging/tilo-app-package/src/validate.rs",
-  "crates/packaging/tilo-app-package/src/view.rs",
+  "crates/core/tilo-app-package/tests/app_manifests.rs",
+  "crates/core/tilo-app-package/src/validate.rs",
+  "crates/core/tilo-app-package/src/view.rs",
 ]
 
 [[cargo]]
@@ -729,7 +729,7 @@ package = "tilo-api"
 # The sign-in tests build a host's answers from the fixture file the API's image ships, so a
 # change to either checks and tests the other.
 inputs = ["os/containers/tilo-api/host-info.json"]
-readers = ["crates/server/tilo-api/src/tests.rs"]
+readers = ["crates/core/tilo-api/src/tests.rs"]
 
 [[cargo]]
 package = "tilolang"
@@ -915,14 +915,14 @@ readers = [
 package = "tilo-local"
 # The launcher runs the development session's scripts, the web bundle's build and the local
 # hosting stack from the checkout it is built in.
-inputs = ["dist/dev/nested-session.sh", "dist/dev/nested-session-build.sh", "os/containers/tilo-sh/", "crates/browser/tilo-browser-runtime/scripts/build.sh"]
+inputs = ["dist/dev/nested-session.sh", "dist/dev/nested-session-build.sh", "os/containers/tilo-sh/", "crates/core/tilo-browser-runtime/scripts/build.sh"]
 readers = ["tools/tilo-local/src/main.rs"]
 
 [[cargo]]
 package = "tilo-peer-state"
 # A lease claim is read as the previous peer version wrote it, frozen beside neighbour-wire.
-inputs = ["crates/collab/neighbour-wire/previous-peer-frames.txt"]
-readers = ["crates/collab/tilo-peer-state/src/state/leases.rs"]
+inputs = ["crates/core/neighbour-wire/previous-peer-frames.txt"]
+readers = ["crates/core/tilo-peer-state/src/state/leases.rs"]
 
 [[cargo]]
 package = "onboarding-walk"
@@ -1003,7 +1003,7 @@ readers = [
 package = "tilo-crypto"
 # The release-bundle tests parse the shipped release trust.
 inputs = ["keys/release/trust.env"]
-readers = ["crates/system/tilo-crypto/src/release_bundle.rs"]
+readers = ["crates/core/tilo-crypto/src/release_bundle.rs"]
 
 [[cargo]]
 package = "tilo-firstboot-files"
@@ -1129,7 +1129,7 @@ inputs = [
   # timeline asks for where its sockets go.
   "dist/dev/nested-session.sh",
   # The NetHost grant vectors apps must answer like environments do.
-  "crates/collab/collab-types/tests/net_host_vectors.txt",
+  "crates/core/collab-types/tests/net_host_vectors.txt",
   # The session script that starts the compositor without huge pages.
   "os/usr/libexec/tilo-session",
   # The units that rebuild the sandbox system view when what it reads changes.
@@ -1137,22 +1137,22 @@ inputs = [
   "os/usr/lib/systemd/system/tilo-extension-activate.service",
 ]
 readers = [
-  "crates/packaging/launcher/src/hardening.rs",
-  "crates/packaging/launcher/src/manifest.rs",
-  "crates/packaging/launcher/src/egress_proxy.rs",
-  "crates/packaging/launcher/src/sandbox_view.rs",
-  "crates/packaging/launcher/src/seccomp.rs",
-  "crates/packaging/launcher/src/services.rs",
-  "crates/packaging/launcher/examples/startup_frame_timeline.rs",
-  "crates/packaging/launcher/examples/web_engine_sandbox.rs",
-  "crates/packaging/launcher/tests/capture_service/openpgp_native.rs",
+  "crates/core/launcher/src/hardening.rs",
+  "crates/core/launcher/src/manifest.rs",
+  "crates/core/launcher/src/egress_proxy.rs",
+  "crates/core/launcher/src/sandbox_view.rs",
+  "crates/core/launcher/src/seccomp.rs",
+  "crates/core/launcher/src/services.rs",
+  "crates/core/launcher/examples/startup_frame_timeline.rs",
+  "crates/core/launcher/examples/web_engine_sandbox.rs",
+  "crates/core/launcher/tests/capture_service/openpgp_native.rs",
 ]
 
 [[cargo]]
 package = "tilo-egress"
 # The NetHost grant vectors environments must answer like apps do.
-inputs = ["crates/collab/collab-types/tests/net_host_vectors.txt"]
-readers = ["crates/runtime/egress/src/policy.rs"]
+inputs = ["crates/core/collab-types/tests/net_host_vectors.txt"]
+readers = ["crates/core/egress/src/policy.rs"]
 
 [[cargo]]
 package = "tilo-vm"
@@ -1193,7 +1193,7 @@ readers = [
 [[cargo]]
 package = "app-cli"
 # The canonical downloader proves its staging path against the installed host unit.
-inputs = ["crates/packaging/package-service/systemd/tilo-package-service.service"]
+inputs = ["crates/core/package-service/systemd/tilo-package-service.service"]
 readers = ["crates/os/app-cli/src/install.rs"]
 
 [[cargo]]
@@ -1215,6 +1215,10 @@ inputs = [
   "os/dev/assemble-app-runtime.py", "tools/ci/rustc-thin-app-wrapper.sh",
   # The outside-repository test builds a generated app against the checkout.
   "Cargo.toml", "crates/sdk/", "crates/platform/", "vendor/",
+  "crates/core/tilo-resource/",
+  "crates/core/tilo-resource-macros/",
+  "crates/core/tilo-app-id/",
+  "crates/core/tilo-selector/",
   "crates/ui/font-catalog/",
   "crates/ui/theme-painter-wasm/",
   "crates/ui/theme-sdk/",
@@ -1309,7 +1313,7 @@ inputs = [
   "os/usr/lib/systemd/system/tilo-device-key-init.service",
   "os/usr/lib/systemd/system/tilo-device-branch.service",
 ]
-readers = ["crates/collab/tilo-device-identity/src/bin/tilo-device-key-init.rs"]
+readers = ["crates/core/tilo-device-identity/src/bin/tilo-device-key-init.rs"]
 
 [[cargo]]
 package = "settings"
@@ -1335,13 +1339,13 @@ inputs = [
   "crates/integrations/cloud-source-gdrive/tests/fixtures/pptx.rs",
   "os/Containerfile", "os/usr/lib/systemd/system/fs.service", "dist/session/tilo-files-workspace.service",
   "os/usr/lib/tmpfiles.d/tilo.conf",
-  "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json",
+  "os/usr/share/tilo/fs-capabilities.json", "crates/engines/doc-fixtures/artifacts.json",
   "os/tests/seeded-state/var/lib/tilo/fs-capabilities.json/*",
   "tools/test-assets.py", "tools/test-assets-build.rs",
 ]
 readers = [
-  "crates/system/fs/src/main.rs",
-  "crates/system/fs/tests/cloud_mount.rs",
+  "crates/core/fs/src/main.rs",
+  "crates/core/fs/tests/cloud_mount.rs",
 ]
 
 [[cargo]]
@@ -1423,7 +1427,7 @@ readers = ["apps/disks/src/probe.rs"]
 
 [[cargo]]
 package = "tilo-doc-codecs"
-inputs = ["crates/doc/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
+inputs = ["crates/engines/doc-fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
 readers = ["crates/engines/tilo-doc-codecs/build.rs"]
 
 [[cargo]]
@@ -1456,7 +1460,7 @@ package = "tilo-agent-session"
 # the calendar server the holder's own tests start, from its source.
 inputs = [
   "apps/feeds/surface.toml",
-  "crates/server/tilo-workspace-service/src/workspaces/person_settings/calendars/fake_caldav.rs",
+  "crates/core/tilo-workspace-service/src/workspaces/person_settings/calendars/fake_caldav.rs",
   "crates/ui/ui-core/assets/fonts/",
   "crates/integrations/tilo-web-search/tests/fixtures/brave.html",
   "crates/integrations/tilo-web-search/tests/fixtures/bing.html",
@@ -1468,15 +1472,15 @@ inputs = [
 # reuse the workspace-actions one, and the surface tests read the app's. The
 # update test carries the Notes and Tasks surfaces an earlier build wrote.
 readers = [
-  "crates/agent/agent-session/src/workspace_actions/tests.rs",
-  "crates/agent/agent-session/tests/it.rs",
-  "crates/agent/agent-session/tests/workspace_actions/api.rs",
-  "crates/agent/agent-session/tests/workspace_actions/flow_customer_workspaces.rs",
-  "crates/agent/agent-session/tests/workspace_actions/hosted_agent_turns.rs",
-  "crates/agent/agent-session/tests/workspace_actions/meeting_rundown.rs",
-  "crates/agent/agent-session/tests/workspace_actions/packaged_model.rs",
-  "crates/agent/agent-session/tests/workspace_actions/update_reads_older_writes.rs",
-  "crates/agent/agent-session/examples/api-on-server.rs",
+  "crates/core/agent-session/src/workspace_actions/tests.rs",
+  "crates/core/agent-session/tests/it.rs",
+  "crates/core/agent-session/tests/workspace_actions/api.rs",
+  "crates/core/agent-session/tests/workspace_actions/flow_customer_workspaces.rs",
+  "crates/core/agent-session/tests/workspace_actions/hosted_agent_turns.rs",
+  "crates/core/agent-session/tests/workspace_actions/meeting_rundown.rs",
+  "crates/core/agent-session/tests/workspace_actions/packaged_model.rs",
+  "crates/core/agent-session/tests/workspace_actions/update_reads_older_writes.rs",
+  "crates/core/agent-session/examples/api-on-server.rs",
 ]
 
 [[cargo]]
@@ -1497,8 +1501,8 @@ inputs = [
   "crates/integrations/tilo-web-search/tests/fixtures/bing.html",
 ]
 readers = [
-  "crates/server/tilo-workspace-service/src/apps/collab_app_broker/web_search_tests.rs",
-  "crates/server/tilo-workspace-service/src/workspaces/packaged_model_tests.rs",
+  "crates/core/tilo-workspace-service/src/apps/collab_app_broker/web_search_tests.rs",
+  "crates/core/tilo-workspace-service/src/workspaces/packaged_model_tests.rs",
 ]
 
 [[cargo]]
@@ -1515,7 +1519,7 @@ readers = [
 package = "collab-types"
 # Every app's committed surface must parse as a receiver reads it.
 inputs = ["apps/*/surface.toml"]
-readers = ["crates/collab/collab-types/src/surface.rs"]
+readers = ["crates/core/collab-types/src/surface.rs"]
 
 [[cargo]]
 package = "tilo-projector"
@@ -1551,9 +1555,9 @@ inputs = [
   # The mount's service tests hold the session's table to the launcher's service
   # routing and to the protocol crates that name a service, and read every
   # app's declared services.
-  "crates/packaging/launcher/src/services.rs",
-  "crates/packaging/launcher/src/main.rs",
-  "crates/packaging/launcher/src/system_stats.rs",
+  "crates/core/launcher/src/services.rs",
+  "crates/core/launcher/src/main.rs",
+  "crates/core/launcher/src/system_stats.rs",
   "crates/system/system-stats/src/protocol.rs",
   "crates/ui/tilo-render-protocol/src/broker.rs",
   "apps/*/tilo-app.toml",
@@ -1596,9 +1600,9 @@ package = "tilo-session-client"
 # script the CI setup uses, so that script and the build it runs are read too.
 # The store's test reads an app's committed surface to check the types and verbs
 # it declares.
-inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/web/page-bundle.mjs", "tools/with-headless-audio.sh", "apps/feeds/surface.toml", "crates/collab/actions/tests/provider_refusals.json", "tools/build-page-bundle.sh", "crates/browser/tilo-browser-runtime/scripts/build.sh"]
+inputs = ["crates/core/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/web/page-bundle.mjs", "tools/with-headless-audio.sh", "apps/feeds/surface.toml", "crates/core/actions/tests/provider_refusals.json", "tools/build-page-bundle.sh", "crates/core/tilo-browser-runtime/scripts/build.sh"]
 readers = ["crates/session/client/tests/voice_browsers.rs", "crates/session/client/tests/headless_audio_lifetime.rs", "crates/session/client/tests/surface_by_hash.rs", "crates/session/client/src/device.rs", "crates/session/client/tests/support/mod.rs"]
-scope = { inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs"], test = "it", filter = "test(voice_browsers::)" }
+scope = { inputs = ["crates/core/tilo-browser-runtime/web/", "tools/web/chrome.mjs"], test = "it", filter = "test(voice_browsers::)" }
 
 [[cargo]]
 package = "tilo-desktop-surface"
@@ -1676,7 +1680,7 @@ by = "os/tests/test_tls_registry_fixture.py"
 # or deleted, never listed here.
 
 [[unrequired]]
-suite = "crates/browser/tilo-browser-runtime/container/test-image.sh"
+suite = "crates/core/tilo-browser-runtime/container/test-image.sh"
 reason = "needs the built web entry image"
 check = "image-web-entry"
 
@@ -1726,7 +1730,7 @@ reason = "needs the built Lounge image"
 check = "image-lounge"
 
 [[unrequired]]
-suite = "crates/packaging/registry-server/container/test-image.sh"
+suite = "crates/core/registry-server/container/test-image.sh"
 reason = "needs the built registry-server image"
 check = "test-image-registry-server"
 
@@ -2102,11 +2106,11 @@ suite = "os/tests/windows_vm_schema.sh"
 check = "windows-vm-schema"
 
 [[covered]]
-suite = "crates/browser/tilo-browser-runtime/web/storage.test.mjs"
+suite = "crates/core/tilo-browser-runtime/web/storage.test.mjs"
 check = "web-node-tests"
 
 [[covered]]
-suite = "crates/browser/tilo-browser-runtime/web/transfer-staging.test.mjs"
+suite = "crates/core/tilo-browser-runtime/web/transfer-staging.test.mjs"
 check = "web-node-tests"
 
 [[cargo]]
@@ -2135,9 +2139,9 @@ inputs = [
   "os/Containerfile",
 ]
 readers = [
-  "crates/packaging/runtime-bundle/src/lib.rs",
-  "crates/packaging/runtime-bundle/examples/browser_runtime_release.rs",
-  "crates/packaging/runtime-bundle/examples/signal_runtime_fixture.rs",
+  "crates/core/runtime-bundle/src/lib.rs",
+  "crates/core/runtime-bundle/examples/browser_runtime_release.rs",
+  "crates/core/runtime-bundle/examples/signal_runtime_fixture.rs",
 ]
 
 [[covered]]
@@ -2171,8 +2175,8 @@ by = "tools/tests/test_android_fixture_resources.py"
 [[cargo]]
 package = "install"
 # Real signed runtime installation is checked against its broker service grants.
-inputs = ["crates/packaging/package-service/systemd/tilo-package-service.service", "os/usr/lib/systemd/user/tilo-package-service.service"]
-readers = ["crates/packaging/install/tests/runtime_package.rs"]
+inputs = ["crates/core/package-service/systemd/tilo-package-service.service", "os/usr/lib/systemd/user/tilo-package-service.service"]
+readers = ["crates/core/install/tests/runtime_package.rs"]
 
 [[unrequired]]
 suite = "tools/ci/windows/wine-test.sh"
@@ -2195,7 +2199,7 @@ package = "tilo-cli"
 # old command name linked to tilo; the alias table is checked against the
 # image's component manifest.
 inputs = ["os/components.toml"]
-readers = ["crates/system/tilo-cli/src/aliases.rs"]
+readers = ["crates/core/tilo-cli/src/aliases.rs"]
 
 # The Python SDK's suite runs as `uv run --frozen --offline pytest` in the ci-sdk image by the
 # sdk-python check, which carries uv and the SDK's locked dependencies. test_openapi.py checks the
@@ -2239,7 +2243,7 @@ suite = "sdk/python/tests/test_many.py"
 check = "sdk-python"
 
 [[covered]]
-suite = "crates/server/tilo-server/src/web/page/page.test.mjs"
+suite = "crates/core/tilo-server/src/web/page/page.test.mjs"
 check = "web-node-tests"
 
 [[unrequired]]

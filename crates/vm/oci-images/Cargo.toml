@@ -8,7 +8,7 @@ description = "Environment images (env-runtime and tool tapps) fetched from the 
 
 [dependencies]
 # The package store's fetcher boundary.
-tilo-app-package = { path = "../../packaging/tilo-app-package" }
+tilo-app-package = { path = "../../core/tilo-app-package" }
 tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
 # Synchronous callers run their fetch on the process's one async runtime.
 tilo-rt = { path = "../../platform/tilo-rt" }

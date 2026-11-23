@@ -63,6 +63,11 @@ ROOT = Path(__file__).resolve().parents[2]
 SCANNED = (Path("crates/sdk"), Path("crates/session"), Path("apps"))
 # Crates of the same kind that live in other groups.
 SCANNED += (
+    Path("crates/core/tilo-resource"),
+    Path("crates/core/tilo-resource-macros"),
+)
+# Crates of the same kind that live in other groups.
+SCANNED += (
     Path("crates/ui/font-catalog"),
     Path("crates/ui/theme-painter-wasm"),
     Path("crates/ui/theme-sdk"),

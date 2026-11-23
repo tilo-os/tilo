@@ -11,7 +11,7 @@ Two apps, each for the Mac and the iPhone, from one Swift package.
 Only Tilo's web runtime draws a live document or a live view inside a conversation, so neither
 app draws anything of Tilo a second time. Tilo Shell shows Tilo's page in the system web view
 ("Links opened full tab" in
-[the web runtime's guide](../../crates/browser/tilo-browser-runtime/WEB_RUNTIME.md) is the
+[the web runtime's guide](../../crates/core/tilo-browser-runtime/WEB_RUNTIME.md) is the
 page that shows one app) and adds what only the system can do. Tilo Assistant draws its own
 frame and leaves a place for each live thing, which Tilo's runtime draws there ("Tilo inside a
 native app" below). An iPhone has no other way to draw Tilo: no native runtime exists for it.
@@ -803,7 +803,7 @@ it shows anything
 - **The site names the app.** `https://<host>/.well-known/apple-app-site-association` lists
   the app's application identifier (`<team>.<identifier>`) under `webcredentials`. Tilo's web
   entry serves it once its deployment names its apps (`TILO_WEB_APPLE_APPS`, in
-  [its start script](../../crates/browser/tilo-browser-runtime/container/entrypoint.sh)).
+  [its start script](../../crates/core/tilo-browser-runtime/container/entrypoint.sh)).
   Apple's servers fetch it over `https`, following no redirect, and a device asks them when
   the app is installed and about weekly after. The address has no place for a port: the file
   is asked for on 443, whatever port the site itself answers on.

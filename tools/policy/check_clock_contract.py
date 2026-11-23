@@ -58,13 +58,13 @@ ROOT = Path(__file__).resolve().parents[2]
 # The crates whose clock reads decide what a peer may do, and the shared types
 # they carry those decisions in.
 SCOPES = (
-    Path("crates/collab/tilo-peer-state"),
-    Path("crates/collab/collab-types"),
-    Path("crates/collab/workspace-join"),
-    Path("crates/server/tilo-workspace-service/src/apps"),
+    Path("crates/core/tilo-peer-state"),
+    Path("crates/core/collab-types"),
+    Path("crates/core/workspace-join"),
+    Path("crates/core/tilo-workspace-service/src/apps"),
     Path("crates/session/client"),
     Path("crates/session/session/src/sync"),
-    Path("crates/server/tilo-workspace-service"),
+    Path("crates/core/tilo-workspace-service"),
 )
 
 # A clock read: `Instant::now()`, `std::time::Instant::now()`,
@@ -87,24 +87,24 @@ TIMER_REASON = (
 # admits, expires or signs anything by that reading.
 TIMERS = {
     Path(
-        "crates/server/tilo-workspace-service/src/apps/collab_app_broker.rs"
+        "crates/core/tilo-workspace-service/src/apps/collab_app_broker.rs"
     ): TIMER_REASON,
     Path(
-        "crates/server/tilo-workspace-service/src/apps/collab_app_broker/socket.rs"
+        "crates/core/tilo-workspace-service/src/apps/collab_app_broker/socket.rs"
     ): TIMER_REASON,
     Path(
-        "crates/server/tilo-workspace-service/src/apps/collab_app_broker/action_provider.rs"
+        "crates/core/tilo-workspace-service/src/apps/collab_app_broker/action_provider.rs"
     ): TIMER_REASON,
     Path(
-        "crates/server/tilo-workspace-service/src/apps/collab_app_broker/committed_document.rs"
+        "crates/core/tilo-workspace-service/src/apps/collab_app_broker/committed_document.rs"
     ): TIMER_REASON,
-    Path("crates/server/tilo-workspace-service/src/peer/arriving.rs"): TIMER_REASON,
-    Path("crates/server/tilo-workspace-service/src/peer/access_audit.rs"): TIMER_REASON,
-    Path("crates/server/tilo-workspace-service/src/peer/delivery.rs"): TIMER_REASON,
-    Path("crates/server/tilo-workspace-service/src/peer/session.rs"): TIMER_REASON,
-    Path("crates/server/tilo-workspace-service/src/presence_mailbox.rs"): TIMER_REASON,
-    Path("crates/server/tilo-workspace-service/src/workspace.rs"): TIMER_REASON,
-    Path("crates/server/tilo-workspace-service/src/agents.rs"): TIMER_REASON,
+    Path("crates/core/tilo-workspace-service/src/peer/arriving.rs"): TIMER_REASON,
+    Path("crates/core/tilo-workspace-service/src/peer/access_audit.rs"): TIMER_REASON,
+    Path("crates/core/tilo-workspace-service/src/peer/delivery.rs"): TIMER_REASON,
+    Path("crates/core/tilo-workspace-service/src/peer/session.rs"): TIMER_REASON,
+    Path("crates/core/tilo-workspace-service/src/presence_mailbox.rs"): TIMER_REASON,
+    Path("crates/core/tilo-workspace-service/src/workspace.rs"): TIMER_REASON,
+    Path("crates/core/tilo-workspace-service/src/agents.rs"): TIMER_REASON,
 }
 
 DIRECT = {

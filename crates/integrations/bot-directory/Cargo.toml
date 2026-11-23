@@ -8,9 +8,9 @@ license.workspace = true
 
 [dependencies]
 app-cli = { path = "../../os/app-cli" }
-registry-types = { path = "../../packaging/registry-types" }
-tilo-automation = { path = "../../collab/automation" }
-tilo-action-policy = { path = "../../collab/action-policy" }
+registry-types = { path = "../../core/registry-types" }
+tilo-automation = { path = "../../core/automation" }
+tilo-action-policy = { path = "../../core/action-policy" }
 serde_json.workspace = true
 thiserror.workspace = true
 

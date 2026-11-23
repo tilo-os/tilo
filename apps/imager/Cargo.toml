@@ -106,13 +106,13 @@ tilo-fuse-engine = { path = "../../crates/engines/loadable/fuse", optional = tru
 # only user-authored config in the shared document) is exported as replayable
 # actions the shell's Ctrl+K palette dispatches — the same actions its on-screen
 # toggles and fields dispatch.
-tilo-actions = { path = "../../crates/collab/actions" }
-tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
-tilo-identity = { path = "../../crates/runtime/tilo-identity" }
-tilo-identity-client = { path = "../../crates/runtime/tilo-identity-client" }
-tilo-server-protocol = { path = "../../crates/server/tilo-server-protocol" }
+tilo-actions = { path = "../../crates/core/actions" }
+tilo-user-identity = { path = "../../crates/core/tilo-user-identity" }
+tilo-identity = { path = "../../crates/core/tilo-identity" }
+tilo-identity-client = { path = "../../crates/core/tilo-identity-client" }
+tilo-server-protocol = { path = "../../crates/core/tilo-server-protocol" }
 # The certificate this machine's person issues an image it writes.
-tilo-server-client = { path = "../../crates/server/tilo-server-client" }
+tilo-server-client = { path = "../../crates/core/tilo-server-client" }
 automerge.workspace = true
 cap-fs-ext = "3.4.6"
 cap-primitives = "3.4.6"
@@ -139,7 +139,7 @@ tilo-process = { version = "0.1.0", path = "../../crates/platform/tilo-process" 
 # The destination side (`destination`): checks a self-hosted account server's
 # address.
 url = { workspace = true, optional = true }
-tilo-device-identity = { version = "0.1.0", path = "../../crates/collab/tilo-device-identity" }
+tilo-device-identity = { version = "0.1.0", path = "../../crates/core/tilo-device-identity" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
@@ -150,10 +150,10 @@ libc.workspace = true
 rustix = { workspace = true, features = ["process"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-host-fs = { path = "../../crates/system/host-fs" }
+host-fs = { path = "../../crates/core/host-fs" }
 # Only the installed setup consumer (tilo-prepared-setup) admits the
 # launcher's consuming bootstrap; the app never runs launcher code.
-launcher = { path = "../../crates/packaging/launcher", optional = true }
+launcher = { path = "../../crates/core/launcher", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
@@ -189,7 +189,7 @@ accounts = { path = "../../crates/integrations/accounts", features = ["sign-ins-
 account-credentials = { path = "../../crates/integrations/account-credentials" }
 url.workspace = true
 crc32fast.workspace = true
-tilo-seal = { path = "../../crates/system/tilo-seal" }
+tilo-seal = { path = "../../crates/core/tilo-seal" }
 imager-backend = { path = "../../crates/os/imager-backend", features = ["test-support"] }
 tilo-desktop-model = { path = "../../crates/session/desktop-model" }
 vello_encoding.workspace = true
@@ -205,13 +205,13 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["te
 # The destination's capacity test asks the same compiled rule that
 # `tilo-guided-partition` delegates to; the destination, like that helper, is Linux only.
 tilo-install-helpers = { path = "../../crates/os/install-helpers" }
-fs-native = { path = "../../crates/system/fs-native" }
+fs-native = { path = "../../crates/core/fs-native" }
 tilo-secrets.workspace = true
 rusqlite = { version = "0.41.1", default-features = false, features = ["bundled"] }
-runtime-fs = { package = "tilo-fs-client", path = "../../crates/runtime/tilo-fs-client" }
+runtime-fs = { package = "tilo-fs-client", path = "../../crates/core/tilo-fs-client" }
 # Installer transport must reach the canonical storage consumer, not only the vault.
 # Its FUSE backend is a Linux service, not part of hosted Windows tests.
-tilo-fs = { path = "../../crates/system/fs" }
+tilo-fs = { path = "../../crates/core/fs" }
 
 [lints]
 workspace = true

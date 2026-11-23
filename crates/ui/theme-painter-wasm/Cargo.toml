@@ -16,7 +16,7 @@ description = "The interpreter (wasmi) a theme's painter set loaded from wasm ru
 # The painter interface the module implements and the bytes it exchanges.
 tilo-theme-sdk = { version = "0.1.0", path = "../theme-sdk" }
 # The interpreter, its limits and its failures: one wasm host layer for every host.
-tilo-wasm-host = { version = "0.1.0", path = "../../runtime/tilo-wasm-host", default-features = false }
+tilo-wasm-host = { version = "0.1.0", path = "../../core/tilo-wasm-host", default-features = false }
 wasmi = { version = "1.1", default-features = false, features = ["std"] }
 # A call's guest state is behind a lock: one call at a time on one module.
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }

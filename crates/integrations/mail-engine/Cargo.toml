@@ -20,7 +20,7 @@ path = "tests/it.rs"
 
 [dependencies]
 # The resource model the mailbox and its rows are declared through.
-tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-resource = { path = "../../core/tilo-resource" }
 # The clock a message's times are read from, and the file a person picked to
 # attach.
 tilo-clock = { path = "../../platform/tilo-clock" }
@@ -33,7 +33,7 @@ accounts = { path = "../accounts", features = ["person"] }
 account-credentials = { path = "../account-credentials", default-features = false }
 # Content store for draft attachments. Drafts carry only a verified content
 # identity; the bytes live in the content store.
-tilo-content = { path = "../../system/content" }
+tilo-content = { path = "../../core/content" }
 # Crash-safe file replacement for the mail this device keeps.
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-sort = { path = "../../platform/tilo-sort" }
@@ -78,7 +78,7 @@ tilo-account-probe = { path = "../account-probe", features = ["test-support"] }
 # A separate config directory keeps tests away from the user's account store.
 tempfile.workspace = true
 # A replica of a resource without a window.
-tilo-resource = { path = "../../sdk/tilo-resource", features = ["test-support"] }
+tilo-resource = { path = "../../core/tilo-resource", features = ["test-support"] }
 # The fake authorization server and browser for the Gmail and Outlook
 # sign-in tests.
 tilo-oauth = { path = "../tilo-oauth", features = ["fake"] }

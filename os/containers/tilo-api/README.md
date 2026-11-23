@@ -1,6 +1,6 @@
 # Tilo API server
 
-The MCP endpoint of hosted Tilo (`crates/server/tilo-api`): the URL an
+The MCP endpoint of hosted Tilo (`crates/core/tilo-api`): the URL an
 agent is told to add, with OAuth 2.1 for agents, sign-in with one of the
 person's devices, and routing of each session to the runtime of the
 workspace's host. It runs in the same namespace as the tilo.sh server, behind

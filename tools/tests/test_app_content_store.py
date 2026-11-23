@@ -36,10 +36,10 @@ class AppContentStoreTests(unittest.TestCase):
                 "apps/paint/src/local.rs": local,
                 "apps/paint/src/state.rs": "fn g() {}\n#[cfg(test)]\nmod tests {\n" + call + "}\n",
                 "apps/paint/tests/app.rs": call,
-                "crates/system/content/src/lib.rs": local,
-                "crates/system/content-device/src/lib.rs": call,
+                "crates/core/content/src/lib.rs": local,
+                "crates/core/content-device/src/lib.rs": call,
                 "crates/sdk/tilo-app/src/framework/app.rs": call,
-                "crates/system/fs/src/main.rs": call,
+                "crates/core/fs/src/main.rs": call,
                 "crates/ui/ui-core/src/lib.rs": "\n" + call,
             }
         )

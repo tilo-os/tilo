@@ -57,17 +57,17 @@ tilo-messaging = { path = "../tilo-messaging", features = ["service-client"] }
 tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
 zeroize.workspace = true
-tilo-user-identity = { path = "../../collab/tilo-user-identity" }
-launcher = { path = "../../packaging/launcher", optional = true }
-package-store = { path = "../../packaging/package-store", features = ["store"], optional = true }
+tilo-user-identity = { path = "../../core/tilo-user-identity" }
+launcher = { path = "../../core/launcher", optional = true }
+package-store = { path = "../../core/package-store", features = ["store"], optional = true }
 tilo-messaging-protocol = { path = "../messaging-protocol", default-features = false, features = ["signal-broker", "whatsapp-sdk", "sms-dbus"], optional = true }
-tilo-identity = { path = "../../runtime/tilo-identity", optional = true }
-collab-types = { path = "../../collab/collab-types", optional = true }
+tilo-identity = { path = "../../core/tilo-identity", optional = true }
+collab-types = { path = "../../core/collab-types", optional = true }
 tilo-files = { path = "../../platform/tilo-files", optional = true }
 tilo-paths = { workspace = true, optional = true }
 tilo-rt = { workspace = true, optional = true }
-tilo-resource = { path = "../../sdk/tilo-resource", optional = true }
-tilo-secret-vault = { path = "../../system/secret-vault", optional = true }
+tilo-resource = { path = "../../core/tilo-resource", optional = true }
+tilo-secret-vault = { path = "../../core/secret-vault", optional = true }
 bounded-command = { path = "../../platform/bounded-command", optional = true }
 hex = { workspace = true, optional = true }
 uuid = { workspace = true, features = ["v4"], optional = true }
@@ -76,7 +76,7 @@ zbus = { workspace = true, features = ["tokio"], optional = true }
 libc = { workspace = true, optional = true }
 rustix = { workspace = true, features = ["net", "process"], optional = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"], optional = true }
-tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
+tilo-device-identity = { version = "0.1.0", path = "../../core/tilo-device-identity" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

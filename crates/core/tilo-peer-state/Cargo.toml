@@ -1,0 +1,131 @@
+[package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
+name = "tilo-peer-state"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish.workspace = true
+description = "A device's workspace engine: its admitted replicas, their durable owner record, enrollment, outgoing ownership and sessions with hosts."
+
+[features]
+# Fixtures and internals the desktop session's own owner tests assert on.
+test-support = ["dep:iroh-base", "tilo-workspace-join/test-support"]
+
+[package.metadata.cargo-machete]
+# Used only as `#[serde(with = "serde_bytes")]`, a string machete does not read.
+ignored = ["serde_bytes"]
+
+[dependencies]
+# Validity, expiry and deadlines read one clock on every target, the page's included.
+tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
+tilo-actions = { path = "../actions" }
+fnv.workspace = true
+automerge.workspace = true
+tilo-automerge.workspace = true
+# Untrusted automerge bytes are decoded in isolated workers first.
+tilo-automerge-isolate.workspace = true
+serde.workspace = true
+serde_bytes.workspace = true
+thiserror.workspace = true
+serde_json.workspace = true
+postcard = { workspace = true, features = ["alloc", "use-std"] }
+uuid.workspace = true
+hex.workspace = true
+blake3.workspace = true
+ed25519-dalek.workspace = true
+base64.workspace = true
+web-time = { version = "1", features = ["serde"] }
+collab-types = { path = "../collab-types" }
+# A record is published under an app id, in the one spelling apps use.
+tilo-app-id = { path = "../tilo-app-id" }
+tilo-desktop-model = { path = "../../session/desktop-model" }
+tilo-action-policy = { path = "../action-policy" }
+# The shared neighbour wire vocabulary (`NeighbourMsg`, colorimetry, HDR metadata).
+neighbour-wire = { path = "../neighbour-wire" }
+tilo-user-identity = { path = "../tilo-user-identity" }
+# The workspace invitation and join contract, re-exported as `join`.
+tilo-workspace-join = { path = "../workspace-join" }
+# A bot's program is parsed and its grant checked against its steps.
+tilo-automation = { path = "../automation" }
+# A bot installed from the directory names the listing it came from.
+registry-types = { path = "../registry-types" }
+# Document frames are sealed and opened with a route's channel content keys.
+key-group = { path = "../key-group" }
+# The server's workspace a peer syncs through, and a frame's retained entry id.
+tilo-server-protocol = { path = "../tilo-server-protocol" }
+# The link a page holds to its host, which a workspace's link runs on as one
+# more transport (`transport::Transport`).
+tilo-server-client = { version = "0.1.0", path = "../tilo-server-client" }
+parking_lot.workspace = true
+tilo-delivery-protocol = { path = "../tilo-delivery-protocol" }
+tokio = { workspace = true, features = ["sync", "time", "macros", "rt", "io-util"] }
+tracing.workspace = true
+iroh-base = { workspace = true, features = ["key"], optional = true }
+# The person's own documents between two of their devices: the link every host
+# dials, a page included.
+# One length-prefixed record per link exchange, the same framing its peers read.
+wire-frame = { version = "0.1.0", path = "../../platform/wire-frame", features = ["postcard", "tokio"] }
+
+# The device's own transports and files: its enrollment and relay sessions,
+# its calls, the owner record on disk and the process's authorization
+# watchers. A page holds its workspaces through the same owner over its own
+# storage and link, so the engine builds for wasm32 without them.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+iroh.workspace = true
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+# Writes the file-backed store: owner-only, crash-safe replacement.
+tilo-files = { path = "../../platform/tilo-files" }
+tilo-content = { path = "../content" }
+# The random id of each enrollment challenge request.
+getrandom.workspace = true
+rand_core.workspace = true
+# The device identity an enrollment presents to the issuing host.
+tilo-identity = { path = "../tilo-identity" }
+# The ticket a computer brings to be added to a person's devices, and the approval it waits for.
+tilo-device-identity = { path = "../tilo-device-identity" }
+
+[dev-dependencies]
+# The closure-built action host a test dispatcher is.
+tilo-actions = { path = "../actions", features = ["test-support"] }
+# The producers of invitation and proof layouts earlier builds wrote: the
+# restore tests replay a record as such a build left it.
+tilo-workspace-join = { path = "../workspace-join", features = ["test-support"] }
+# The sanctioned patch-log-free way to take changes into an AutoCommit (clippy.toml).
+tilo-automerge.workspace = true
+# The record API apps open their own records with: a person's record reaches
+# their other device through the store the same way an app writes it.
+ui = { package = "tilo-ui", path = "../../ui/ui-core" }
+# Where that record API keeps a device's records in the test: in memory.
+durable-store = { path = "../../system/durable-store" }
+tempfile.workspace = true
+# The governed-workspace acceptance test runs against a real server.
+tilo-server = { path = "../tilo-server" }
+tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
+iroh-base = { workspace = true, features = ["key"] }
+tilo-test-env = { path = "../../../tools/test-env" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util"] }
+# A page's way into its workspace is tested over the browser's own transport:
+# a listener with a certificate of its own, which the page pins.
+tilo-net = { path = "../../platform/tilo-net", features = ["webtransport"] }
+rustls.workspace = true
+rcgen.workspace = true
+sha2.workspace = true
+# The surface a received workspace desktop is drawn on: every host
+# shows another device's windows through, reconciled from the tree that
+# arrived, not read as a document.
+tilo-desktop-surface = { path = "../../session/desktop-surface" }
+
+# The workspace engine's integration tests: one binary, its files included as
+# modules by `tests/it.rs` (a file per binary linked the whole crate once
+# each), depending on the fixtures its joins are answered with.
+[[test]]
+name = "it"
+path = "tests/it.rs"
+required-features = ["test-support"]
+
+[lints]
+workspace = true

@@ -6,7 +6,7 @@
 #
 # Static mode reads the tree and runs anywhere. Live mode only reads
 # (`systemctl show`, /sys); run it as the desktop's user on a booted image.
-# Design: crates/packaging/launcher/src/priority.rs.
+# Design: crates/core/launcher/src/priority.rs.
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

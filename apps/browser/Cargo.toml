@@ -47,7 +47,7 @@ tilo-webview = { version = "0.1.0", path = "../../crates/engines/tilo-webview" }
 tilo-browser-sessions = { path = "../../crates/import/tilo-browser-sessions" }
 fnv.workspace = true
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
-host-info = { path = "../../crates/system/host-info" }
+host-info = { path = "../../crates/core/host-info" }
 sha2.workspace = true
 base64.workspace = true
 # CRX3 proofs are RSA PKCS#1 v1.5 or ECDSA P-256 signatures over SHA-256.

@@ -18,8 +18,8 @@ name = "poker_model"
 path = "src/lib.rs"
 
 [dependencies]
-tilo-actions = { path = "../../crates/collab/actions" }
-tilo-resource = { path = "../../crates/sdk/tilo-resource" }
+tilo-actions = { path = "../../crates/core/actions" }
+tilo-resource = { path = "../../crates/core/tilo-resource" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }

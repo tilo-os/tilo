@@ -33,14 +33,14 @@ blake3.workspace = true
 # Icons and other vector images preview through the same Image path.
 resvg = { version = "0.47", default-features = false }
 # The system content store the encoded previews are kept in.
-tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false, features = ["dir"] }
+tilo-content = { version = "0.1.0", path = "../../core/content", default-features = false, features = ["dir"] }
 # The per-user preview cache location.
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 hex.workspace = true
 serde = { workspace = true, features = ["derive"] }
 # The staged compute request a batch job reads.
 serde_json.workspace = true
-tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
+tilo-app-id = { version = "0.1.0", path = "../../core/tilo-app-id" }
 
 [dev-dependencies]
 tempfile.workspace = true

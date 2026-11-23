@@ -14,10 +14,10 @@ automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 # Images are referenced by content address; the bytes live in the caller's content store.
-tilo-content = { path = "../../system/content", default-features = false }
+tilo-content = { path = "../../core/content", default-features = false }
 # Ordering keys, batched writes, deterministic ids and the resource contract rich text implements.
-tilo-resource = { path = "../tilo-resource" }
-tilo-actions = { path = "../../collab/actions" }
+tilo-resource = { path = "../../core/tilo-resource" }
+tilo-actions = { path = "../../core/actions" }
 # Comment and reply dates as ISO-8601 times.
 jiff.workspace = true
 

@@ -23,7 +23,7 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # with XChaCha20-Poly1305 under a 256-bit key held by Secret Service, DPAPI
 # or an owner-only local file; the shared crate owns both the format and
 # the key storage.
-tilo-secret-vault = { version = "0.1.0", path = "../../system/secret-vault" }
+tilo-secret-vault = { version = "0.1.0", path = "../../core/secret-vault" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 serde.workspace = true
 serde_json.workspace = true
@@ -52,10 +52,10 @@ bounded-command = { version = "0.1.0", path = "../../platform/bounded-command" }
 
 # The workspace's accounts as one record (`person`): the resource layer,
 # without any UI.
-tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource", optional = true }
+tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource", optional = true }
 # The document the record migrates: a version that kept a field drops it.
 automerge = { workspace = true, optional = true }
-tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
+tilo-app-id = { version = "0.1.0", path = "../../core/tilo-app-id" }
 
 [features]
 person = ["dep:tilo-resource", "dep:automerge"]
@@ -64,7 +64,7 @@ sign-ins-fixture = []
 
 [dev-dependencies]
 # The record's actions are decided by the workspace's roles and grants.
-tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
+tilo-action-policy = { version = "0.1.0", path = "../../core/action-policy" }
 # `scenario!`: one test function holds the cases of one subject.
 tilo-test-env = { path = "../../../tools/test-env" }
 

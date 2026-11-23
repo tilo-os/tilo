@@ -5,9 +5,9 @@ Each adapter reads what a benchmark already prints and emits records through
 `record.from_samples`. A benchmark that writes records itself needs no adapter.
 
 - `fs-check LOG...`: the tilo-fs latency benchmarks
-  (`crates/system/fs/tests/performance_timing.rs`, `TILO_FS_PERF_CHECK=1`) print
+  (`crates/core/fs/tests/performance_timing.rs`, `TILO_FS_PERF_CHECK=1`) print
   `PERF <name>: <x> ms (SLO <= <y> ms)` per scenario, and its heap footprint
-  test (`crates/system/fs/tests/document_media_footprint.rs`) prints the same
+  test (`crates/core/fs/tests/document_media_footprint.rs`) prints the same
   shape in `MiB`. Each log is one run; repeated runs become the samples of
   `fs.<name>`, in the unit the line names.
 - `tapp-sizes ENTRIES_JSON`: the public app registry's signed `entries`
@@ -60,7 +60,7 @@ Each adapter reads what a benchmark already prints and emits records through
   focus-order recomputation inside it) and `.native_recompute_ms.<size>` (one
   recomputation of the live window's order); every timing is a sample.
 - `server-load REPORT_JSON`: the server load bench's `server-load.json`
-  (`crates/server/tilo-server/examples/server_load`). Each KPI it measured
+  (`crates/core/tilo-server/examples/server_load`). Each KPI it measured
   becomes `<kpi>.n<members>`, one sample per measured minute (fan-out
   latency: one per delivered edit), and each provider in
   `tools/perf/prices.toml` adds `server.cost_usd_per_collab_hour.<provider>`

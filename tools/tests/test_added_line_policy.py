@@ -166,6 +166,16 @@ class StagedScanTests(unittest.TestCase):
         result = self.scan("--staged")
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_a_moved_file_adds_only_the_lines_it_changes(self):
+        (self.root / "crates/core").mkdir(parents=True)
+        run("git", "mv", "src", "crates/core/src", cwd=self.root)
+        self.assertEqual(self.scan("--staged").returncode, 0)
+        self.write("crates/core/src/lib.rs", "fn main() {}\n" + DBG + "\n" + CONFLICT + "\n")
+        result = self.scan("--staged")
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn("merge-conflict marker", result.stderr)
+        self.assertNotIn("lib.rs:2:", result.stderr)
+
     def test_each_rule_fails_the_staged_change(self):
         cases = {
             "keys.env": ("AWS=" + SAMPLES["AWS access key"] + "\n", "possible AWS access key"),

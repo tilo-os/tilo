@@ -196,6 +196,32 @@ class WireEnumTests(unittest.TestCase):
             self.git(root, "add", "-A")
             self.assertEqual(wire.staged(root), [])
 
+    def test_a_moved_crate_keeps_the_waivers_and_skips_its_binary_files(self):
+        def waiver(crate):
+            return (
+                f'[[break]]\nfile = "crates/{crate}/src/lib.rs"\nenum = "Lifetime"\n'
+                'reason = "the layout lists it before its first release"\n'
+            )
+
+        def layout(crate):
+            return (
+                '[[layout]]\nformat = "a journal"\nversion = 1\ndigest = ""\nwhat = ""\n'
+                f'types = ["crates/{crate}/src/lib.rs:Lifetime"]\n'
+            )
+
+        with self.repository(lifetime("Once"), lifetime("Once"), waiver("x")) as root:
+            policy = root / "tools/policy"
+            (policy / "stored_layouts.toml").write_text(layout("x"))
+            (root / "crates/x/icon.png").write_bytes(b"\x89PNG\r\n")
+            self.git(root, "add", "-A")
+            self.git(root, "commit", "-qm", "waived")
+            (root / "crates/core").mkdir()
+            self.git(root, "mv", "crates/x", "crates/core/x")
+            (policy / "wire_enum_breaks.toml").write_text(waiver("core/x"))
+            (policy / "stored_layouts.toml").write_text(layout("core/x"))
+            self.git(root, "add", "-A")
+            self.assertEqual(wire.staged(root), [])
+
 
 if __name__ == "__main__":
     unittest.main()

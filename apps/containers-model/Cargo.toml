@@ -18,7 +18,7 @@ path = "src/lib.rs"
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
-tilo-resource = { path = "../../crates/sdk/tilo-resource" }
+tilo-resource = { path = "../../crates/core/tilo-resource" }
 
 [dev-dependencies]
 tilo-test-env = { version = "0.1.0", path = "../../tools/test-env" }

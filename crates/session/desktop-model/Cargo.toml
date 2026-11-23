@@ -21,21 +21,21 @@ app-fleet = { version = "0.1.0", path = "../../packaging/app-fleet" }
 # Sorts without a copy of std's sort per call site, which kept the web
 # desktop's start module large.
 tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
-tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
+tilo-action-policy = { version = "0.1.0", path = "../../core/action-policy" }
 automerge.workspace = true
 tilo-automerge.workspace = true
 blake3.workspace = true
-collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
+collab-types = { version = "0.1.0", path = "../../core/collab-types" }
 desktop-policy = { version = "0.1.0", path = "../../system/desktop-policy", default-features = false }
 hex.workspace = true
 # A window's own state is sealed to its readers' key group.
-key-group = { version = "0.1.0", path = "../../collab/key-group" }
+key-group = { version = "0.1.0", path = "../../core/key-group" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+tilo-actions = { version = "0.1.0", path = "../../core/actions" }
 tilo-app-id.workspace = true
-tilo-automation = { version = "0.1.0", path = "../../collab/automation" }
+tilo-automation = { version = "0.1.0", path = "../../core/automation" }
 uuid.workspace = true
 
 [dev-dependencies]

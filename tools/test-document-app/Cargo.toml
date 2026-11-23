@@ -14,7 +14,7 @@ path = "src/lib.rs"
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 # The content store a lent document is read from.
-tilo-content = { path = "../../crates/system/content", features = ["dir"] }
+tilo-content = { path = "../../crates/core/content", features = ["dir"] }
 serde.workspace = true
 serde_json.workspace = true
 automerge.workspace = true

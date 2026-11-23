@@ -29,10 +29,10 @@ blake3.workspace = true
 # Boot keys and the person's root sign with Ed25519.
 ed25519-dalek.workspace = true
 # HPKE sealing of the sibling half, through the one reviewed sealing crate.
-tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
+tilo-seal = { version = "0.1.0", path = "../../core/tilo-seal" }
 # The boot key's certificate is an ordinary `DeviceCert` the person's root
 # signed, so every caller reads it the one way.
-tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
+tilo-user-identity = { version = "0.1.0", path = "../../core/tilo-user-identity" }
 # TPM2 quotes are ECDSA P-256 signatures by the device's attestation key.
 p256 = { version = "0.14", features = ["ecdsa"] }
 sha2.workspace = true

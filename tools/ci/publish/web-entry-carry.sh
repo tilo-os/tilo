@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The web entry image a release publishes: the build in BUILD (image-web-entry's, tested there)
 # carrying the version of the image production serves now, so tabs open on that version survive
-# the deploy (crates/browser/tilo-browser-runtime/container/carry.sh). Writes OUT/image.oci.tar
+# the deploy (crates/core/tilo-browser-runtime/container/carry.sh). Writes OUT/image.oci.tar
 # and OUT/digest, which sign-web-entry signs and publish-web-entry publishes from a release tag, and
 # OUT/receipt-extra.json, which adds to the receipt the image this one replaces and the version
 # it carries.
@@ -22,7 +22,7 @@ build=${1:?usage: web-entry-carry.sh BUILD OUT}
 out=${2:?}
 repository=registry.tilo.so/tilo/web-entry
 live=https://tilo.sh/version.json
-container=$repo_root/crates/browser/tilo-browser-runtime/container
+container=$repo_root/crates/core/tilo-browser-runtime/container
 
 revision=$(curl -fsS --retry 3 --max-time 30 -H 'Cache-Control: no-store' "$live" \
   | python3 -c 'import json, sys; print(json.load(sys.stdin).get("revision", ""))') \

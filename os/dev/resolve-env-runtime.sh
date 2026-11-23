@@ -49,7 +49,7 @@ fi
 # format (registry-types' PACKAGE_FORMAT_VERSION; docs/architecture/compatibility.md).
 # The format is part of the fingerprint, so a format change is a new runtime:
 # until one is published, images ship none and environments fetch it on first use.
-format_source="$repo/crates/packaging/registry-types/src/lib.rs"
+format_source="$repo/crates/core/registry-types/src/lib.rs"
 package_format="$(sed -n 's/^pub const PACKAGE_FORMAT_VERSION: u32 = \([0-9][0-9]*\);$/\1/p' "$format_source")"
 [[ "$package_format" =~ ^[0-9]+$ ]] \
   || { printf 'resolve-env-runtime: %s names no PACKAGE_FORMAT_VERSION\n' "$format_source" >&2; exit 1; }

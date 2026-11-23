@@ -34,18 +34,18 @@ winit.workspace = true
 tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-collab-types = { path = "../../collab/collab-types" }
-tilo-actions = { path = "../../collab/actions" }
-tilo-action-policy = { path = "../../collab/action-policy" }
+collab-types = { path = "../../core/collab-types" }
+tilo-actions = { path = "../../core/actions" }
+tilo-action-policy = { path = "../../core/action-policy" }
 tilo-app = { path = "../../sdk/tilo-app", default-features = false }
 tilo-desktop-model = { path = "../desktop-model" }
 tilo-desktop-surface = { path = "../desktop-surface", default-features = false }
 # Where each person here stands, as following reads them.
 tilo-session-core = { path = "../core" }
 tilo-desktop-search = { path = "../desktop-search" }
-tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-resource = { path = "../../core/tilo-resource" }
 desktop-policy = { path = "../../system/desktop-policy", default-features = false }
-tilo-app-id = { path = "../../platform/tilo-app-id" }
+tilo-app-id = { path = "../../core/tilo-app-id" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-failure = { path = "../../platform/tilo-failure" }
 # The models an agent may plan with: the person's own provider settings.

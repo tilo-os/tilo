@@ -18,8 +18,8 @@ path = "src/lib.rs"
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
-tilo-content = { path = "../../crates/system/content", default-features = false }
-tilo-resource = { path = "../../crates/sdk/tilo-resource" }
+tilo-content = { path = "../../crates/core/content", default-features = false }
+tilo-resource = { path = "../../crates/core/tilo-resource" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }

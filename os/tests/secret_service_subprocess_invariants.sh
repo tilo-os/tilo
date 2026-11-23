@@ -14,8 +14,8 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
 readonly store_consumers=(
   crates/platform/tilo-secrets/src/linux.rs
-  crates/system/secret-vault/src/lib.rs
-  crates/runtime/tilo-identity/src/store/secure_store.rs
+  crates/core/secret-vault/src/lib.rs
+  crates/core/tilo-identity/src/store/secure_store.rs
 )
 
 # Every source that starts the `secret-tool` binary. Tests run it as their

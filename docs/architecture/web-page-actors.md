@@ -699,7 +699,7 @@ happens to the one beyond it.
   a live session reads the devices in it one by one: three tracks of each, which
   the reading device and the relay hold open for as long as the device is
   there. Thirty-three devices of one workspace therefore all hear each
-  other (`MAX_HEARD` in `crates/collab/tilo-live/src/live_session.rs`). A device
+  other (`MAX_HEARD` in `crates/core/tilo-live/src/live_session.rs`). A device
   beyond that is in the live session and is heard by whoever has room for it. A
   device that has no room for it does not hear it and says so: its live session's
   row counts the devices it does not hear (`unheard`), says why by a word
@@ -712,7 +712,7 @@ happens to the one beyond it.
   the relay is a member's own device. The carrier allows an admitted
   connection the streams thirty-two devices take, 344 bidirectional and
   640 unidirectional (`MAX_BI_STREAMS`, `MAX_UNI_STREAMS` in
-  `crates/collab/tilo-live/src/native.rs`): twice the tracks read, since a
+  `crates/core/tilo-live/src/native.rs`): twice the tracks read, since a
   track is asked about on a second stream while it is opened, and nothing
   ends an ask that waits for a stream. It allows them on the connection
   itself, once its session is admitted, so a session's endpoint, which is
@@ -723,11 +723,11 @@ happens to the one beyond it.
   relay admits no fixed number of sessions: who is in the live session is the
   workspace's membership, which has no count of its own (one person's
   devices are 256 at most, `MAX_DEVICES` in
-  `crates/collab/tilo-peer-state/src/state/personal.rs`).
+  `crates/core/tilo-peer-state/src/state/personal.rs`).
 - **Sessions a live session's relay is admitting: sixteen at once, four of them at
   most of one endpoint, and four more of strangers** (`MAX_ADMITTING`,
   `MAX_ADMITTING_OF_ONE`, `MAX_ADMITTING_STRANGERS` in
-  `crates/collab/tilo-live/src/relay.rs`). That is what a relay holds for
+  `crates/core/tilo-live/src/relay.rs`). That is what a relay holds for
   devices it has not judged yet, each for no longer than its preface and
   its setup may take. One more is closed at once as busy, with nothing of
   it read and nobody judged: that is no refusal. An endpoint that none of

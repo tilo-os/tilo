@@ -156,6 +156,12 @@ def scan_staged(root: Path, secrets_only: bool) -> list[str]:
     # listing a parent's whole tree is the twenty thousand files around the
     # change, and the hook's cost follows the change.
     changed = [name for index, name in enumerate(raw) if index % 2 == 1]
+    # A moved file's earlier lines are the ones its old path held: a move adds none.
+    renames = git(root, "diff", "--cached", "--name-status", "-z", "-M", "--diff-filter=R",
+                  against).split(b"\0")
+    moved_from = {renames[index + 2]: renames[index + 1]
+                  for index in range(0, len(renames) - 2, 3) if renames[index].startswith(b"R")}
+    changed += list(moved_from.values())
     parent_blobs = []
     for parent in parents:
         blobs = {}
@@ -180,8 +186,9 @@ def scan_staged(root: Path, secrets_only: bool) -> list[str]:
                 raise ValueError("cannot inspect staged blob: " + path)
             olds = []
             for blobs in parent_blobs:
-                if name in blobs:
-                    old = read(blobs[name])
+                earlier = name if name in blobs else moved_from.get(name)
+                if earlier in blobs:
+                    old = read(blobs[earlier])
                     if old is None:
                         raise ValueError("cannot inspect parent blob: " + path)
                     olds.append(old)

@@ -28,21 +28,21 @@ libc.workspace = true
 rustix = { workspace = true, features = ["process"] }
 image = { workspace = true, features = ["png"] }
 tilo-app-id.workspace = true
-tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
+tilo-app-package = { path = "../../crates/core/tilo-app-package" }
 # Inside a Tilo session, `dev` hands the app the shell's file chooser the
 # way the launcher does.
-launcher = { path = "../../crates/packaging/launcher" }
-runtime-bundle = { path = "../../crates/packaging/runtime-bundle" }
+launcher = { path = "../../crates/core/launcher" }
+runtime-bundle = { path = "../../crates/core/runtime-bundle" }
 blake3.workspace = true
 tilo-caps = { path = "../../crates/sdk/tilo-caps" }
 # History's message convention, which `check` lists missing messages by.
 tilo-history = { path = "../../crates/sdk/tilo-history" }
-tilo-actions = { path = "../../crates/collab/actions" }
+tilo-actions = { path = "../../crates/core/actions" }
 # The form a surface is kept by, whose hash `install-app` names.
-collab-types = { path = "../../crates/collab/collab-types" }
+collab-types = { path = "../../crates/core/collab-types" }
 sha2.workspace = true
-registry-types = { path = "../../crates/packaging/registry-types" }
-app-registry = { path = "../../crates/packaging/app-registry" }
+registry-types = { path = "../../crates/core/registry-types" }
+app-registry = { path = "../../crates/core/app-registry" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 tilo-canonical-json = { path = "../../crates/platform/tilo-canonical-json" }
 tilo-files = { path = "../../crates/platform/tilo-files", features = ["watch"] }
@@ -59,7 +59,7 @@ tilo-ui-graph = { path = "../../crates/ui/ui-graph" }
 tilo-headless-schema = { path = "../../crates/ui/headless-schema" }
 # `tilo-app push`: the workspace's governance actions reached through its
 # action API, as a key of the developer's, as `tilo` reaches it.
-tilo-api = { path = "../../crates/server/tilo-api" }
+tilo-api = { path = "../../crates/core/tilo-api" }
 tokio = { workspace = true, features = ["rt"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -73,7 +73,7 @@ tilo-test-env = { path = "../test-env" }
 # The journey's checkout-external directory is held under an advisory lock.
 tilo-advisory-lock = { path = "../../crates/platform/advisory-lock" }
 # The outside-repository journey publishes into a real registry on loopback.
-registry-server = { path = "../../crates/packaging/registry-server" }
+registry-server = { path = "../../crates/core/registry-server" }
 # A framework app's surface, reported in process as its binary's `--surface`.
 messages = { path = "../../apps/messages" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }

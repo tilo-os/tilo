@@ -31,7 +31,7 @@ CLEAN = forest(
     "4serde v1.0.228",
     "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)",
     "0store v0.1.2 (/repo/apps/store)",
-    "1package-service v0.1.0 (/repo/crates/packaging/package-service)",
+    "1package-service v0.1.0 (/repo/crates/core/package-service)",
     "2serde v1.0.228 (*)",
     "1runtime-dylib v0.1.0 (/repo/crates/sdk/runtime-dylib) (*)",
     "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)",
@@ -121,11 +121,11 @@ class RuntimeSurfaceTests(unittest.TestCase):
         # again maps it into every app process.
         tree = CLEAN.replace(
             "4serde v1.0.228\n",
-            "4serde v1.0.228\n2app-catalogue v0.1.0 (/repo/crates/packaging/app-catalogue)\n",
+            "4serde v1.0.228\n2app-catalogue v0.1.0 (/repo/crates/core/app-catalogue)\n",
         ).replace(
             "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n0store",
             "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n"
-            "1app-catalogue v0.1.0 (/repo/crates/packaging/app-catalogue) (*)\n0store",
+            "1app-catalogue v0.1.0 (/repo/crates/core/app-catalogue) (*)\n0store",
         )
         found = checker.violations(tree, ["notes", "store"], TARGET)
         self.assertEqual(len(found), 1, found)

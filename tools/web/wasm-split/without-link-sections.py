@@ -7,7 +7,7 @@ The splitter (split.sh) reads the call graph and the static data's symbols
 from those sections of the linked module itself; the module wasm-bindgen binds
 for it needs none of them, and without them it is about a third smaller, so
 both wasm-bindgen and every parse the splitter makes of the bound module do
-less (crates/browser/tilo-browser-runtime/scripts/build.sh, profile `local`).
+less (crates/core/tilo-browser-runtime/scripts/build.sh, profile `local`).
 """
 
 import sys

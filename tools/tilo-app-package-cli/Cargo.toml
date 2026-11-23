@@ -29,13 +29,13 @@ path = "src/main.rs"
 
 [dependencies]
 tilo-files = { path = "../../crates/platform/tilo-files" }
-tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
+tilo-app-package = { path = "../../crates/core/tilo-app-package" }
 # Signed `/entries` rows for `tilo-app-package entry`, and the publisher key
 # file every `--identity` names.
-registry-types = { path = "../../crates/packaging/registry-types" }
-app-registry = { path = "../../crates/packaging/app-registry" }
+registry-types = { path = "../../crates/core/registry-types" }
+app-registry = { path = "../../crates/core/app-registry" }
 # `bot-entry` reads a Shortcut and encodes it canonically.
-tilo-automation = { path = "../../crates/collab/automation" }
+tilo-automation = { path = "../../crates/core/automation" }
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 
 anyhow.workspace = true

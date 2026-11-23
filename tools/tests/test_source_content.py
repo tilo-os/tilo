@@ -110,6 +110,20 @@ class SourceContentTests(unittest.TestCase):
         self.stage("fixture", b"\x00replacement")
         self.assertEqual(contract.audit(self.root, staged=True)[0], ["fixture: non-text content; new/modified non-text or non-LF blobs are forbidden"])
 
+    def test_a_moved_exception_keeps_its_bytes_and_passes(self):
+        self.stage("fixture", b"\x00original")
+        oid = self.git("rev-parse", ":fixture").decode().strip()
+        self.manifest([{"path": "fixture", "oid": oid, "reason": "Required regression fixture"}])
+        self.git("-c", "user.name=Test", "-c", "user.email=test@example.org", "-c", "core.hooksPath=/dev/null", "commit", "-qm", "test: legacy fixture")
+        self.git("mv", "fixture", "moved")
+        self.manifest([{"path": "moved", "oid": oid, "reason": "Required regression fixture"}])
+        self.assertEqual(contract.audit(self.root, staged=True)[0], [])
+        self.stage("moved", b"\x00replacement")
+        self.manifest([{"path": "moved", "oid": self.git("rev-parse", ":moved").decode().strip(),
+                        "reason": "Required regression fixture"}])
+        self.assertEqual(contract.audit(self.root, staged=True)[0],
+                         ["moved: non-text content; new/modified non-text or non-LF blobs are forbidden"])
+
     def test_merge_preserves_parent_asset_but_rejects_new_binary_bytes(self):
         def commit(message):
             self.git("-c", "user.name=Test", "-c", "user.email=test@example.org",

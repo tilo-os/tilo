@@ -36,7 +36,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 # Crates that own a CRDT engine or the document layer itself.
 ENGINE_OWNERS = (
-    "crates/doc/tilo-automerge/src/lib.rs",
+    "crates/core/tilo-automerge/src/lib.rs",
     "crates/sdk/tilo-doc/",
     "crates/engines/tilo-doc-codecs/",
     # The rich-text resource: tilo-doc's rich text as a tilo-resource resource,
@@ -45,19 +45,19 @@ ENGINE_OWNERS = (
     # The resource layer stores every resource type on the engine; its
     # generic machinery (history, recordings) copies any document's text
     # and marks.
-    "crates/sdk/tilo-resource/",
+    "crates/core/tilo-resource/",
     "crates/ui/ui-core/",
     # Toolkit lab/shots scenarios: lived under ui-core (an owner) until moved
     # into this non-default member; they still exercise the same surfaces.
     "tools/ui-examples/",
-    "crates/collab/actions/",
+    "crates/core/actions/",
     # A document's history, revert and undo log, moved below the toolkit: a
     # revert writes any document's text and marks back as they were.
-    "crates/collab/collaboration/",
+    "crates/core/collaboration/",
     "crates/system/app-state/",
     # The one store for every app's resources: it places resources and their
     # content documents itself, so it writes their text and marks.
-    "crates/collab/resource-store/",
+    "crates/core/resource-store/",
 )
 SCANNED_ROOTS = ("apps", "crates", "tools", "examples")
 

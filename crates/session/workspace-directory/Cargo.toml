@@ -22,15 +22,15 @@ tilo-desktop-model = { version = "0.1.0", path = "../desktop-model" }
 # HTTP on the desktop's connection pool and on a page's `fetch`.
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", features = ["http", "json"] }
 # A pasted workspace link names its site and its workspace.
-tilo-reference = { version = "0.1.0", path = "../../collab/reference" }
-tilo-server-protocol = { version = "0.1.0", path = "../../server/tilo-server-protocol" }
+tilo-reference = { version = "0.1.0", path = "../../core/reference" }
+tilo-server-protocol = { version = "0.1.0", path = "../../core/tilo-server-protocol" }
 # The reads and joins run as one app task.
 tilo-rt = { version = "0.1.0", path = "../../platform/tilo-rt" }
 # What the sheet shows: the list as plain data.
-tilo-startup-metrics = { version = "0.1.0", path = "../../system/tilo-startup-metrics" }
+tilo-startup-metrics = { version = "0.1.0", path = "../../core/tilo-startup-metrics" }
 # Invitations are verified for the person they were granted to.
-tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
-tilo-workspace-join = { version = "0.1.0", path = "../../collab/workspace-join" }
+tilo-user-identity = { version = "0.1.0", path = "../../core/tilo-user-identity" }
+tilo-workspace-join = { version = "0.1.0", path = "../../core/workspace-join" }
 tracing.workspace = true
 url.workspace = true
 

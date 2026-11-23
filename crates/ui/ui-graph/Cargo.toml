@@ -9,7 +9,7 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
+tilo-action-policy = { version = "0.1.0", path = "../../core/action-policy" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

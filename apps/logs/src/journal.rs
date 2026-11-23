@@ -97,7 +97,7 @@ const ROWS_BOOT: &[Row] = &[
         "stdout",
         "Mounting collaborative workspace at /var/workspace (iroh node starting)",
         &[
-            ("CODE_FILE", "crates/system/fs/src/mount.rs"),
+            ("CODE_FILE", "crates/core/fs/src/mount.rs"),
             ("THREAD", "main"),
         ],
     ),
@@ -109,7 +109,7 @@ const ROWS_BOOT: &[Row] = &[
         Some(very(641)),
         "stdout",
         "iroh endpoint bound: relay=eu-central, node_id=k51qzi5… (4 candidate paths)",
-        &[("CODE_FILE", "crates/system/fs/src/p2p.rs")],
+        &[("CODE_FILE", "crates/core/fs/src/p2p.rs")],
     ),
     (
         1180,
@@ -120,7 +120,7 @@ const ROWS_BOOT: &[Row] = &[
         "stdout",
         "metadata gossip slow: 1820ms for 3 peers (TTL 10s) — degraded projection",
         &[
-            ("CODE_FILE", "crates/system/fs/src/gossip.rs"),
+            ("CODE_FILE", "crates/core/fs/src/gossip.rs"),
             ("PEER_COUNT", "3"),
         ],
     ),
@@ -232,7 +232,7 @@ const ROWS_SERVICES: &[Row] = &[
         "stdout",
         "hydrated blob bafyb… (1.4MB) on first read of /var/workspace/notes/spec.md",
         &[
-            ("CODE_FILE", "crates/system/fs/src/hydrate.rs"),
+            ("CODE_FILE", "crates/core/fs/src/hydrate.rs"),
             ("SIZE", "1466368"),
         ],
     ),
@@ -291,7 +291,7 @@ const ROWS_SESSION: &[Row] = &[
         "stdout",
         "conflict copy written: spec.md ⇒ spec.conflict-mara.md (concurrent edit)",
         &[
-            ("CODE_FILE", "crates/system/fs/src/conflict.rs"),
+            ("CODE_FILE", "crates/core/fs/src/conflict.rs"),
             ("PATH", "notes/spec.md"),
         ],
     ),
@@ -366,7 +366,7 @@ const ROWS_SESSION: &[Row] = &[
         Some(very(641)),
         "stdout",
         "anti-entropy sweep complete: 0 divergent objects across 3 peers (820ms)",
-        &[("CODE_FILE", "crates/system/fs/src/anti_entropy.rs")],
+        &[("CODE_FILE", "crates/core/fs/src/anti_entropy.rs")],
     ),
     (
         7900,

@@ -19,8 +19,8 @@ path = "src/lib.rs"
 getrandom = { version = "0.4", features = ["sys_rng"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0"
-tilo-actions = { path = "../../collab/actions" }
-tilo-resource = { path = "../tilo-resource" }
+tilo-actions = { path = "../../core/actions" }
+tilo-resource = { path = "../../core/tilo-resource" }
 
 # A model's actions reach rand_core 0.6, the RustCrypto generation hpke-rs's
 # p256 still takes (tilo-actions keeps an action's large parts as sealed

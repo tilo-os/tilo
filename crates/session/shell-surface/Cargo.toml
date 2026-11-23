@@ -35,11 +35,11 @@ tilo-app-window = { path = "../../sdk/tilo-app-window" }
 tilo-render-protocol = { path = "../../ui/tilo-render-protocol" }
 # Frames drawn on the GPU are delivered in the dma-bufs apps' frames are.
 tilo-render-service = { path = "../render-service" }
-tilo-action-policy = { path = "../../collab/action-policy" }
+tilo-action-policy = { path = "../../core/action-policy" }
 # The shell is an installed package, as every app is: the session reads it from the person's
 # app store, and this build's copy only stands in where the store holds none (shell.md §6).
-app-catalogue = { path = "../../packaging/app-catalogue" }
-package-store = { path = "../../packaging/package-store" }
+app-catalogue = { path = "../../core/app-catalogue" }
+package-store = { path = "../../core/package-store" }
 # Files dropped on an app arrive as `file:` URIs.
 url.workspace = true
 workspace-hack = { version = "0.1" }

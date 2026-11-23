@@ -34,9 +34,9 @@ tokio = { workspace = true, features = ["rt", "time"], optional = true }
 tilo-clock = { path = "../../platform/tilo-clock" }
 bounded-command = { path = "../../platform/bounded-command" }
 sha2.workspace = true
-runtime-portal = { path = "../../runtime/runtime-portal" }
-collab-types = { path = "../../collab/collab-types" }
-tilo-action-policy = { path = "../../collab/action-policy" }
+runtime-portal = { path = "../../core/runtime-portal" }
+collab-types = { path = "../../core/collab-types" }
+tilo-action-policy = { path = "../../core/action-policy" }
 # The shell a session runs: POSIX sh and bash's common features, with
 # Tilo's own commands in-process.
 ush-shell = { path = "../ush-shell" }
@@ -50,23 +50,23 @@ tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 # Builds the tool images `pkg install` adds.
 env-tools = { path = "../env-tools" }
-tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-resource = { path = "../../core/tilo-resource" }
 # What a `write` or `append` names by reference is kept in Tilo's content
 # store, in a directory of the environment's own.
-tilo-content = { path = "../../system/content" }
+tilo-content = { path = "../../core/content" }
 # The record is stored as Terminal stores its own records.
 tilo-app-state = { path = "../../system/app-state" }
 durable-store = { path = "../../system/durable-store" }
 # Images are tapp packages the package store materialises read-only.
-package-store = { path = "../../packaging/package-store", features = ["store"] }
+package-store = { path = "../../core/package-store", features = ["store"] }
 # Images a node did not ship (a server's), from the OCI registry CI
 # publishes them to.
 tilo-oci-images = { path = "../oci-images" }
-tilo-app-package = { path = "../../packaging/tilo-app-package" }
+tilo-app-package = { path = "../../core/tilo-app-package" }
 semver.workspace = true
 # This device's key signs the tool images its builder makes; the user's
 # fleet says which other devices' images are trusted.
-tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+tilo-user-identity = { path = "../../core/tilo-user-identity" }
 hex.workspace = true
 # Holding that key is what the session's MCP server, which cannot look at this
 # non-dumpable process, is shown instead (`mcp_server::holder_proof`).
@@ -76,7 +76,7 @@ tilo-secrets.workspace = true
 tilo-sandbox-core = { path = "../../platform/sandbox-core" }
 # The guest's own network namespace: a DNS stub that answers only the
 # record's NetHost grants, and nftables that admit only what it answered.
-tilo-egress = { path = "../../runtime/egress" }
+tilo-egress = { path = "../../core/egress" }
 # Installed Linux apps become commands in every guest (`LinuxVmLaunch`);
 # a hosted workspace's programs run in its own VM (`hosted_vm`). The keeper
 # that wakes a VM's windows belongs to the VM's own program, so this side
@@ -98,12 +98,12 @@ tracing-subscriber.workspace = true
 uuid.workspace = true
 # A hosted VM's typed refusal, carried in a Terminal mark as base64 JSON.
 base64.workspace = true
-tilo-actions = { path = "../../collab/actions" }
+tilo-actions = { path = "../../core/actions" }
 # A held command follows the host's plans file as its account answer does.
-tilo-server-account = { path = "../../server/tilo-server-account" }
-tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
+tilo-server-account = { path = "../../core/tilo-server-account" }
+tilo-app-id = { version = "0.1.0", path = "../../core/tilo-app-id" }
 wire-frame = { path = "../../platform/wire-frame" }
-tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
+tilo-device-identity = { version = "0.1.0", path = "../../core/tilo-device-identity" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

@@ -1,0 +1,216 @@
+[package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
+name = "tilo-fs"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Portable content-addressed storage and the default Tilo filesystem service."
+
+[package.metadata.cargo-machete]
+# Used only as `#[serde(with = "serde_bytes")]`, a string machete does not read.
+ignored = ["serde_bytes"]
+
+[lib]
+name = "tilo_fs"
+path = "src/lib.rs"
+
+# The content store is portable. Filesystem projection, mounting and service
+# protocols remain enabled by default for the OS; app-only consumers opt out.
+[features]
+default = ["filesystem", "tree-sync"]
+# External licensed simulator; never enabled by ordinary filesystem tests.
+rystic-tests = ["filesystem", "dep:tilo-cloud-files"]
+# The document-media capability over the content store, without the mount.
+document-media = ["dep:runtime-fs", "dep:tilo-net", "dep:serde_json", "dep:fs-protocol", "dep:thiserror"]
+# Keeping a workspace's tree records converged with a peer's, over that peer's own document
+# reads and writes (the CLI's folder, a server's member copy).
+tree-sync = ["filesystem", "dep:tilo-server-protocol"]
+filesystem = [
+    "tilo-files/watch",
+    "dep:clap",
+    "dep:iroh",
+    "dep:automerge",
+    "dep:tilo-automerge",
+    "dep:tilo-automerge-isolate",
+    "dep:tilo-content",
+    "dep:collab-types",
+    "dep:tilo-action-policy",
+    "dep:tilo-actions",
+    "dep:fs-protocol",
+    "dep:ed25519-dalek",
+    "dep:tilo-thumbnail",
+    "dep:tilo-user-identity",
+    "dep:tilo-power-mgmt",
+    "dep:tilo-nm",
+    "document-media",
+    "dep:libc",
+    "dep:rustix",
+    "dep:serde_bytes",
+    "dep:serde_json",
+    "dep:uuid",
+    "dep:thiserror",
+    "dep:getrandom",
+    "dep:fuser",
+    "dep:fs-native",
+    "dep:accounts",
+    "dep:account-credentials",
+    "dep:cloud-source",
+    "dep:cloud-source-dav",
+    "dep:cloud-source-gdrive",
+    "dep:cloud-source-onedrive",
+    "dep:cloud-source-dropbox",
+    "dep:cloud-source-icloud",
+    "dep:zeroize",
+    "dep:wire-frame",
+    "dep:tilo-identity-client",
+    "dep:key-group",
+]
+
+[[bin]]
+name = "fs"
+path = "src/main.rs"
+required-features = ["filesystem", "tree-sync"]
+
+# The content store's integration tests: one binary, its files included as
+# modules by `tests/it.rs` (a file per binary linked the whole crate once
+# each), depending on the filesystem half they all drive.
+[[test]]
+name = "it"
+path = "tests/it.rs"
+required-features = ["filesystem"]
+
+# A binary carries one global allocator, and this test's counts the daemon's
+# peak heap across its threads.
+[[test]]
+name = "document_media_footprint"
+path = "tests/document_media_footprint.rs"
+required-features = ["filesystem"]
+
+[dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+# Where this login's services bind their sockets: the daemon dials the
+# session's collaboration broker, the same path the launcher hands apps.
+tilo-paths.workspace = true
+# The opt-in simulator test exercises the same independent-import engine as Files.
+tilo-cloud-files = { version = "0.1.0", path = "../../integrations/tilo-cloud-files", optional = true }
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
+anyhow.workspace = true
+bytes.workspace = true
+clap = { workspace = true, optional = true }
+iroh = { workspace = true, optional = true }
+iroh-blobs.workspace = true
+# The content format (chunking, manifests) and the pieces of iroh-blobs
+# the content store builds its file-backed provider from.
+fs-content = { version = "0.1.0", path = "../fs-content" }
+bao-tree = { workspace = true }
+irpc = { workspace = true }
+ref-cast = { workspace = true }
+automerge = { workspace = true, optional = true }
+tilo-automerge = { workspace = true, optional = true }
+# Conflict members can come from peers: the tilo-doc merge decodes them only here.
+tilo-automerge-isolate = { version = "0.1.0", path = "../tilo-automerge-isolate", optional = true }
+tilo-content = { version = "0.1.0", path = "../content", optional = true }
+collab-types = { version = "0.1.0", path = "../collab-types", optional = true }
+tilo-action-policy = { version = "0.1.0", path = "../action-policy", optional = true }
+# A capability may name the app whose sandbox it is; the pre-rename list is read into it.
+# A change of the tree names the file action it is and who made it, as every resource's does.
+tilo-actions = { version = "0.1.0", path = "../actions", optional = true }
+fs-protocol = { version = "0.1.0", path = "../fs-protocol", optional = true }
+# What the workspace's host answered about a record it was opened on.
+tilo-server-protocol = { version = "0.1.0", path = "../tilo-server-protocol", optional = true }
+getrandom = { workspace = true, optional = true }
+ed25519-dalek = { workspace = true, optional = true }
+# The shared thumbnail generator + content-addressed cache. Default features
+# only (raster images + EPUB covers — pure Rust, no native deps): the OS
+# filesystem daemon host-generates the light preview types and never pulls
+# pdfium or the gstreamer stack into the image. PDF/video previews are the
+# client's job (the file manager builds this crate with those features on).
+tilo-thumbnail = { version = "0.1.0", path = "../../engines/thumbnail", optional = true }
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+# The machine's one device key. The mount derives its iroh node key from
+# it rather than minting its own, so the node id names the device.
+tilo-user-identity = { version = "0.1.0", path = "../tilo-user-identity", optional = true }
+# Bus-free, production battery/AC sampling for speculative-hydration policy.
+tilo-power-mgmt = { version = "0.1.0", path = "../../os/power", default-features = false, optional = true }
+# NetworkManager's connectivity and primary-connection metering, followed by
+# signal, for the same policy.
+tilo-nm = { version = "0.1.0", path = "../../os/tilo-nm", optional = true }
+runtime-fs = { version = "0.1.0", path = "../runtime-fs", optional = true }
+tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", optional = true }
+libc = { workspace = true, optional = true }
+rustix = { workspace = true, features = ["fs", "mount", "param", "process", "thread"], optional = true }
+moka.workspace = true
+serde.workspace = true
+serde_bytes = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+uuid = { workspace = true, optional = true }
+tempfile.workspace = true
+thiserror = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["full"] }
+tilo-rt.workspace = true
+hex.workspace = true
+blake3.workspace = true
+postcard = { workspace = true, features = ["use-std"] }
+futures-util.workspace = true
+redb.workspace = true
+# Cloud accounts as mounted folders: the account store and credential
+# handoff, the provider interface and the providers.
+accounts = { version = "0.1.0", path = "../../integrations/accounts", optional = true }
+# What a sign-in-by-provider-page account's drive reads with: the grant this device keeps,
+# renewed by the same store `tilo migrate` reads it through.
+account-credentials = { version = "0.1.0", path = "../../integrations/account-credentials", optional = true }
+cloud-source = { version = "0.1.0", path = "../../integrations/cloud-source", optional = true }
+cloud-source-dav = { version = "0.1.0", path = "../../integrations/cloud-source-dav", optional = true }
+cloud-source-gdrive = { version = "0.1.0", path = "../../integrations/cloud-source-gdrive", optional = true }
+cloud-source-onedrive = { version = "0.1.0", path = "../../integrations/cloud-source-onedrive", optional = true }
+cloud-source-dropbox = { version = "0.1.0", path = "../../integrations/cloud-source-dropbox", optional = true }
+cloud-source-icloud = { version = "0.1.0", path = "../../integrations/cloud-source-icloud", optional = true }
+zeroize = { workspace = true, optional = true }
+tracing.workspace = true
+# The daemon's log, on its standard error.
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+wire-frame = { version = "0.1.0", path = "../../platform/wire-frame", optional = true, features = ["tokio", "postcard"] }
+# The daemon's tree writer joins the session's record route as the Files app does.
+# The bytes a device signs to join a workspace, as every app's identity does.
+tilo-identity-client = { version = "0.1.0", path = "../tilo-identity-client", default-features = false, optional = true }
+# The tree's changes seal under the record's content keys, as an app's do.
+key-group = { version = "0.1.0", path = "../key-group", optional = true }
+tilo-device-identity = { version = "0.1.0", path = "../tilo-device-identity" }
+
+[dev-dependencies]
+tilo-content-device = { version = "0.1.0", path = "../content-device" }
+fs-protocol = { version = "0.1.0", path = "../fs-protocol" }
+tilo-automerge = { workspace = true, features = ["heap-probe"] }
+image = { workspace = true, features = ["png"] }
+# The idle endpoint tests' relay is a loopback one no test shares.
+tilo-test-env = { path = "../../../tools/test-env", features = ["iroh-relay"] }
+# Endpoints with no relay or directory at all, for tests whose peers are all this machine's.
+cloud-source-dav = { version = "0.1.0", path = "../../integrations/cloud-source-dav", features = ["fake-server"] }
+cloud-source-gdrive = { version = "0.1.0", path = "../../integrations/cloud-source-gdrive", features = ["fake-server"] }
+cloud-source-dropbox = { version = "0.1.0", path = "../../integrations/cloud-source-dropbox", features = ["fake-server"] }
+accounts = { version = "0.1.0", path = "../../integrations/accounts", features = ["sign-ins-fixture"] }
+
+[lints]
+workspace = true
+
+# The Tier 1 native backend: fanotify journal, Btrfs capture epochs and
+# pre-content placeholders. Linux-only kernel interfaces, which the daemon
+# that mounts the tree reads.
+[target.'cfg(target_os = "linux")'.dependencies]
+fs-native = { version = "0.1.0", path = "../fs-native", optional = true }
+# FUSE is a Unix kernel interface: Linux mounts through it, and macOS through
+# its own build below. A host with neither (Windows) keeps the content store
+# and refuses the mount where that is asked.
+fuser = { workspace = true, optional = true }
+
+# Shared filesystem and relay data remain available; no native mount provider.
+[target.'cfg(target_os = "macos")'.dependencies]
+fuser = { workspace = true, features = ["macos-no-mount"], optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

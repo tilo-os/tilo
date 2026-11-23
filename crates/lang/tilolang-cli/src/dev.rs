@@ -24,7 +24,7 @@
 //! With `--session` the package is developed inside a running nested session: a good build is
 //! signed into a `.tapp` and installed with `tilo-install`, exactly as any install: verified,
 //! recorded, its old version kept while something runs it. The session follows reinstalls of
-//! the apps its tilolang hosts run (`crates/runtime/tilo-runtime/src/device/processes.rs`), verifies
+//! the apps its tilolang hosts run (`crates/core/tilo-runtime/src/device/processes.rs`), verifies
 //! the new installation as a launch would, and hands its module to the host running the app,
 //! whose instances take it over in place or start over, as on the desktop.
 //! With `--runtime BIN` the apps run on a tilolang runtime binary of the developer's own build

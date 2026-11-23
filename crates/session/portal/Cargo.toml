@@ -7,17 +7,17 @@ license.workspace = true
 description = "The session's xdg-desktop-portal backend: file chooser, screenshots, settings, access and inhibit, asking the person through the session's questions"
 
 [dependencies]
-tilo-actions = { path = "../../collab/actions" }
+tilo-actions = { path = "../../core/actions" }
 # How long an answer stands: the lifetime every permission prompt offers.
-tilo-action-policy = { path = "../../collab/action-policy" }
+tilo-action-policy = { path = "../../core/action-policy" }
 # The person's device answers, kept in their own store, and the devices they name.
-tilo-peer-state = { path = "../../collab/tilo-peer-state" }
-collab-types = { path = "../../collab/collab-types" }
+tilo-peer-state = { path = "../../core/tilo-peer-state" }
+collab-types = { path = "../../core/collab-types" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-service = { path = "../service" }
 # Portal notifications are the session's notifications daemon's.
 tilo-notifications-service = { path = "../notifications-service" }
-tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-resource = { path = "../../core/tilo-resource" }
 # Holds taken for an app are the session's own inhibitions.
 tilo-power-mgmt = { path = "../../os/power", default-features = false }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
@@ -29,12 +29,12 @@ tilo-paths.workspace = true
 # Naming an unsandboxed requester by the installed app it runs.
 tilo-desktop-entry = { path = "../../system/desktop-entry" }
 # What a sandboxed app is handed in place of the host file the person chose.
-tilo-documents = { path = "../../system/documents" }
+tilo-documents = { path = "../../core/documents" }
 # The person's default apps, for the links the portal opens.
 desktop-policy = { path = "../../system/desktop-policy", default-features = false }
 percent-encoding.workspace = true
 base64.workspace = true
-tilo-content-types = { path = "../../system/content-types" }
+tilo-content-types = { path = "../../core/content-types" }
 tilo-wallpapers = { path = "../../platform/tilo-wallpapers" }
 # App master secrets: the device proof the Secret Service asks of its
 # managers.
@@ -74,11 +74,11 @@ pipewire = ["dep:pipewire"]
 
 [dev-dependencies]
 # The portal names a manifest can declare, which the backend's table must use.
-tilo-app-package = { path = "../../packaging/tilo-app-package" }
+tilo-app-package = { path = "../../core/tilo-app-package" }
 image = { workspace = true, features = ["png"] }
 tempfile.workspace = true
 # Serving the store as a filesystem, to read back what a chooser handed out.
-tilo-documents = { path = "../../system/documents", features = ["mount"] }
+tilo-documents = { path = "../../core/documents", features = ["mount"] }
 # The bus the tests run on, which starts without the caller's user database.
 tilo-test-env = { path = "../../../tools/test-env" }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }

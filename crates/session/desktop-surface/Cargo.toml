@@ -53,14 +53,14 @@ serde_json.workspace = true
 # toolkit's renderer and input types.
 automerge.workspace = true
 tilo-automerge.workspace = true
-collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
+collab-types = { version = "0.1.0", path = "../../core/collab-types" }
 # The folder's file versions, which the workspace's history lists as the
 # changes they are: the same reader the filesystem serves them through.
-fs-protocol = { version = "0.1.0", path = "../../system/fs-protocol" }
-tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
-tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
-tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
-tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
+fs-protocol = { version = "0.1.0", path = "../../core/fs-protocol" }
+tilo-action-policy = { version = "0.1.0", path = "../../core/action-policy" }
+tilo-app-id = { version = "0.1.0", path = "../../core/tilo-app-id" }
+tilo-actions = { version = "0.1.0", path = "../../core/actions" }
+tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }
 blake3.workspace = true
 uuid.workspace = true
 taffy.workspace = true
@@ -68,17 +68,17 @@ vello.workspace = true
 winit.workspace = true
 # Another device's window: the wire its stream and a viewer's input travel
 # on (`window_input`, `surface::peer_view`), pure data on every target.
-neighbour-wire = { version = "0.1.0", path = "../../collab/neighbour-wire" }
+neighbour-wire = { version = "0.1.0", path = "../../core/neighbour-wire" }
 
 [dev-dependencies]
 # The peer-page test drives a synchronous web engine.
 tilo-webview = { version = "0.1.0", path = "../../engines/tilo-webview" }
 tilo-copy-lint = { path = "../../../tools/copy-lint" }
 # The integration tests count named scopes on the frame path.
-tilo-resource = { path = "../../sdk/tilo-resource", features = ["test-support"] }
+tilo-resource = { path = "../../core/tilo-resource", features = ["test-support"] }
 # Members' pointers are placed through the live session's layout mapping
 # against the windows and strip a desktop shows.
-tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
+tilo-server-protocol = { path = "../../core/tilo-server-protocol" }
 # `scenario!`: the cases of one subject in one test function.
 tilo-test-env = { path = "../../../tools/test-env" }
 

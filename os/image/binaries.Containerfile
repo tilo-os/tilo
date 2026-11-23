@@ -108,7 +108,7 @@ COPY --from=native-builder-payload \
 # ---- Preinstalled application store -----------------------------------------
 # The registry + unpacked payloads the builder produced with `tilo-app-package pack` and
 # `tilo-install install`. The launcher reads this store alongside the per-user
-# one (crates/packaging/launcher/src/registry.rs), so the command palette lists
+# one (crates/core/launcher/src/registry.rs), so the command palette lists
 # these apps on a first boot with nobody having installed anything, and a user
 # installing their own build of the same id shadows the preinstalled row rather
 # than duplicating it.

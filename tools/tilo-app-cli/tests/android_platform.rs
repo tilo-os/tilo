@@ -130,7 +130,7 @@ while read -r name; do echo "entry:$name" >> "$archive"; done
     ),
     ("bundletool.jar", ""),
     (
-        "checkout/crates/runtime/tilo-runtime/Cargo.toml",
+        "checkout/crates/core/tilo-runtime/Cargo.toml",
         "[package]\nname = \"tilo-runtime\"\n",
     ),
     (

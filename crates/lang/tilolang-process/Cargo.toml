@@ -40,15 +40,15 @@ test-support = []
 [dependencies]
 tilolang-tilo = { path = "../tilolang-tilo" }
 # Each instance's connection to its workspace, opened by the session for that app's launch.
-collaboration = { version = "0.1.0", path = "../../collab/collaboration", features = ["native", "broker-transport"] }
+collaboration = { version = "0.1.0", path = "../../core/collaboration", features = ["native", "broker-transport"] }
 # The workspace's store, which every resource of an app is kept in: its commands and answers.
-tilo-resource-store = { version = "0.1.0", path = "../../collab/resource-store" }
+tilo-resource-store = { version = "0.1.0", path = "../../core/resource-store" }
 # The API the session hands instances over.
-runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal" }
+runtime-portal = { version = "0.1.0", path = "../../core/runtime-portal" }
 # The patch connection to each instance's window, and the sealed memfd its module comes in.
 tilo-render-protocol = { version = "0.1.0", path = "../../ui/tilo-render-protocol" }
-tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
-tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
+tilo-actions = { version = "0.1.0", path = "../../core/actions" }
+tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }
 # Dates and clocks as the person set them, which the session hands over the API: the toolkit
 # writes them the same way, so a sentence here and a view there read alike.
 tilo-formats = { version = "0.1.0", path = "../../ui/tilo-formats" }
@@ -66,24 +66,24 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 serde_json.workspace = true
 # What the person may do in an app, as the session hands it with each instance.
-tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
+tilo-action-policy = { version = "0.1.0", path = "../../core/action-policy" }
 # The workspace's document of each person's own state, which every app of the workspace opens: its
 # id, its document, and the changes that arrive for it.
-collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
+collab-types = { version = "0.1.0", path = "../../core/collab-types" }
 automerge.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 libc.workspace = true
-tilo-startup-metrics = { version = "0.1.0", path = "../../system/tilo-startup-metrics" }
+tilo-startup-metrics = { version = "0.1.0", path = "../../core/tilo-startup-metrics" }
 uuid.workspace = true
 # The device's network, which an app's `web.get` and `web.post` reach once per request.
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", default-features = false, features = ["blocking"] }
 # The mail origin, reaching the connector process the system runs for the app.
 tilolang-mail = { path = "../../integrations/tilolang-mail", default-features = false }
 # The device's content store, which an app's files are kept in, and the person's own chooser.
-tilo-content = { version = "0.1.0", path = "../../system/content" }
-tilo-content-device = { version = "0.1.0", path = "../../system/content-device" }
+tilo-content = { version = "0.1.0", path = "../../core/content" }
+tilo-content-device = { version = "0.1.0", path = "../../core/content-device" }
 tilo-dialogs = { version = "0.1.0", path = "../../platform/tilo-dialogs" }
 # The person's clipboard, over the connection the session opens for each instance: what an app
 # copies and pastes, since its process holds no display of its own.
@@ -121,7 +121,7 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", features =
 # A named zone read from the database built into Tilo, as the runtime resolves the host's zone.
 tilo-recurrence = { version = "0.1.0", path = "../../engines/tilo-recurrence" }
 tilo-test-env = { path = "../../../tools/test-env" }
-collaboration = { version = "0.1.0", path = "../../collab/collaboration", features = ["test-support", "broker-transport", "native"] }
+collaboration = { version = "0.1.0", path = "../../core/collaboration", features = ["test-support", "broker-transport", "native"] }
 tilolang = { path = "../tilolang" }
 # The session's persistent search index, and the source a search reads it through: a tilolang
 # app's published entries are found by a word of their text through it.

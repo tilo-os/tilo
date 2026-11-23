@@ -1,6 +1,6 @@
 /**
  * An in-process API server that speaks `/v1`, as `docs/developers/api.md`
- * describes it, with the answers `crates/server/tilo-api/src/v1` gives.
+ * describes it, with the answers `crates/core/tilo-api/src/v1` gives.
  *
  * Hand it to a client as its `fetch`: it records every request, so a test can
  * assert what the SDK sent, and its state says what the host answers.

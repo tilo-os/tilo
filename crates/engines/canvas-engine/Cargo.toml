@@ -18,9 +18,9 @@ tilo-wet-media = { path = "../../engines/wet-media" }
 # The brush presets and stroke geometry, shared with the live paint surface.
 tilo-paint-strokes = { path = "../paint-strokes" }
 # A picture and a look are stored as content and answered by their address.
-tilo-content = { path = "../../system/content" }
+tilo-content = { path = "../../core/content" }
 # The resource model an artwork, a layer and a mark are kept as.
-tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-resource = { path = "../../core/tilo-resource" }
 # The drawing layer under the components: colour, geometry, pictures, text.
 tilo-ui = { path = "../../ui/ui-core" }
 # An SVG is imported by reading its shape tree, and its pictures are embedded base64.

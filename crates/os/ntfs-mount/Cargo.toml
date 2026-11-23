@@ -28,7 +28,7 @@ libc.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
-tilo-peer-facts = { path = "../../system/peer-facts", optional = true }
+tilo-peer-facts = { path = "../../core/peer-facts", optional = true }
 tilo-sandbox-core = { path = "../../platform/sandbox-core", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

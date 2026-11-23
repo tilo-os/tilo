@@ -2,7 +2,7 @@
 
 ## Who may do what
 
-Decisions are made by Tilo's one policy (`crates/collab/action-policy`): grants answer
+Decisions are made by Tilo's one policy (`crates/core/action-policy`): grants answer
 **Allow**, **Ask** or **Deny** on the tree workspace › app › type › resource › item › field ›
 action. A person's own gestures and their agent default to allowing reads and undoable changes,
 and asking before anything that reaches outside.

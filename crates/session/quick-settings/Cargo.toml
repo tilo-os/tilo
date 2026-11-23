@@ -68,7 +68,7 @@ workspace-hack = { version = "0.1" }
 audio = { package = "tilo-audio-service", path = "../audio-service", features = ["service"] }
 image = { workspace = true, features = ["png"] }
 serde_json.workspace = true
-tilo-actions = { path = "../../collab/actions" }
+tilo-actions = { path = "../../core/actions" }
 tilo-color-pipeline = { path = "../color-pipeline" }
 tilo-compositor = { path = "../compositor" }
 tilo-quick-settings = { path = ".", features = ["test-support"] }

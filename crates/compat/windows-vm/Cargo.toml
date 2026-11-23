@@ -16,7 +16,7 @@ base64.workspace = true
 bounded-command = { path = "../../platform/bounded-command" }
 tilo-files = { path = "../../platform/tilo-files" }
 hex.workspace = true
-launcher = { path = "../../packaging/launcher" }
+launcher = { path = "../../core/launcher" }
 libc.workspace = true
 getrandom.workspace = true
 rand.workspace = true

@@ -36,7 +36,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 settings-model = { path = "../../crates/system/settings-model" }
 # The Tilo resource + action model: the serializable, replayable buffer-creation
 # action Code exports, plus the Resource tree it publishes to Ctrl+K.
-tilo-actions = { path = "../../crates/collab/actions" }
+tilo-actions = { path = "../../crates/core/actions" }
 # The IDE's terminal panel embeds the system terminal as a widget.
 terminal = { path = "../terminal" }
 automerge.workspace = true

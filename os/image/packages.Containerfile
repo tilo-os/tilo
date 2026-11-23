@@ -600,7 +600,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     # cannot support it, glibc leaves shadow stacks off rather than failing, and
     # tilo-security-audit reports which processes actually got them. A library
     # dlopened later is different: glibc refuses one without the SHSTK note (see
-    # crates/packaging/launcher/src/hardening.rs for the libzstd/Mesa case).
+    # crates/core/launcher/src/hardening.rs for the libzstd/Mesa case).
     #
     # Only Scudo has to remain for tilo-launcher's scoped hardening. Copy that one
     # DSO to a stable image-owned path, then erase compiler-rt's other sanitizers,

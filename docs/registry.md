@@ -4,7 +4,7 @@ The registry is Tilo's semi-federated marketplace for `.tapp`
 bundles. It advertises signed metadata so users can browse,
 install, and update packages from the shell. Anyone can host
 their own registry. The Tilo deployment is publicly reachable at `apps.tilo.so`
-using the server under `crates/packaging/registry-server`.
+using the server under `crates/core/registry-server`.
 
 Continuous app packaging currently publishes immutable tapps and collection
 bundles to Forgejo's generic package registry. That is the cross-workflow
@@ -27,14 +27,14 @@ workflow, TLS setup, backup/restore, and moderation hooks.
 
 There are three layers:
 
-1. **`registry-types`** (`crates/packaging/registry-types`)
+1. **`registry-types`** (`crates/core/registry-types`)
    defines the wire types — `RegistryHandshake`,
    `RegistryEntry`, `EntryChangeRequest`. Serde JSON on the
    wire, postcard for the canonical signing form. Verification
    helpers live here so both the server and any client (native,
    web, CLI) share the same code.
 
-2. **`registry-server`** (`crates/packaging/registry-server`) is
+2. **`registry-server`** (`crates/core/registry-server`) is
    a self-hostable HTTP binary that stores entries on disk and
    verifies every mutating request against an owner-controlled
    publisher allowlist, stages it for review, and exposes only
@@ -114,7 +114,7 @@ whitespace are not deterministic across encoders — signatures
 generated on one host would refuse to verify after a re-encode
 on the other. Postcard fixes the byte order per struct field
 and the length prefix on collections. See
-`crates/packaging/tilo-app-package::trust` for the same pattern applied to
+`crates/core/tilo-app-package::trust` for the same pattern applied to
 `.tapp` attestation signatures.
 
 ## REST API

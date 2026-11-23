@@ -1,6 +1,6 @@
 //! `tilolang repl` with nothing to reach: a computer nobody signed in to Tilo on, with or without
 //! a nested session open. The REPL against a workspace is proven in process
-//! (`crates/agent/agent-session/tests/workspace_actions/api_programs.rs`), and against a
+//! (`crates/core/agent-session/tests/workspace_actions/api_programs.rs`), and against a
 //! session's own API in the session's own tests.
 
 use std::path::Path;

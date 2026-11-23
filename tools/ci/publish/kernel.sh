@@ -38,8 +38,8 @@ repository=registry.tilo.so/tilo/tilo-kernel
 # buildroot pins and the module signer compiled into it. Cargo.lock is left out, since nearly
 # every commit moves it; the signer's crate is projected from it with its own dependencies.
 inputs_digest() {
-  find os/kernel os/kernel-buildroot-snapshot.env crates/system/tilo-crypto/Cargo.toml \
-    crates/system/tilo-crypto/src/lib.rs crates/system/tilo-crypto/src/main.rs \
+  find os/kernel os/kernel-buildroot-snapshot.env crates/core/tilo-crypto/Cargo.toml \
+    crates/core/tilo-crypto/src/lib.rs crates/core/tilo-crypto/src/main.rs \
     os/tests/secureboot_vm_app.c -type f -print0 \
     | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1
 }

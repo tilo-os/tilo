@@ -1,7 +1,7 @@
 """Exercise the Files staging and packaging without identities, FUSE or a desktop.
 
 The launch logic itself is `fs serve-primary`, tested against the real binary
-in crates/system/fs/tests/workspace_startup.rs.
+in crates/core/fs/tests/workspace_startup.rs.
 """
 import os
 from pathlib import Path

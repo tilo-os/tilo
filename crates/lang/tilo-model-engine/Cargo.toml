@@ -19,10 +19,10 @@ serde_json.workspace = true
 thiserror.workspace = true
 # The action framework executes here, natively: binding, envelopes, history
 # entries, commits and replay.
-tilo-actions = { path = "../../collab/actions" }
+tilo-actions = { path = "../../core/actions" }
 # What the module reads and answers.
 tilo-model-guest = { path = "../../sdk/tilo-model-guest" }
-tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-resource = { path = "../../core/tilo-resource" }
 tilolang-runtime = { path = "../tilolang-runtime", default-features = false }
 uuid.workspace = true
 

@@ -1,0 +1,36 @@
+[package]
+name = "tilo-action-policy"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license = "MIT"
+repository.workspace = true
+homepage.workspace = true
+description = "Who may invoke which action: grants over the published tree and the one function that decides them."
+
+[lib]
+name = "tilo_action_policy"
+path = "src/lib.rs"
+
+# Pure data and pure functions: every action API, every host, the server and the
+# browser decide with this crate; tilo-clock's types accept the browser's
+# wall clock as well as the native one.
+
+[dependencies]
+blake3 = { workspace = true }
+hex = { workspace = true }
+serde = { workspace = true, features = ["rc"] }
+# A direct conversation's id names its members as JSON.
+serde_json.workspace = true
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
+# The record kinds the apps' manifests declare private (`[resources] private`).
+app-fleet = { version = "0.1.0", path = "../../packaging/app-fleet" }
+uuid.workspace = true
+
+[dev-dependencies]
+postcard = { workspace = true, features = ["use-std"] }
+tilo-test-env = { path = "../../../tools/test-env" }
+
+[lints]
+workspace = true

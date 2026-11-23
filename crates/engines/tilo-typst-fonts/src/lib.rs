@@ -10,7 +10,7 @@
 pub const EMBEDDED: bool = !cfg!(target_arch = "wasm32");
 
 /// The host-data names under which the browser bundle serves the fonts.
-/// `crates/browser/tilo-browser-runtime/scripts/build.sh` copies them from
+/// `crates/core/tilo-browser-runtime/scripts/build.sh` copies them from
 /// `typst-assets` and checks them against this list.
 pub const HOST_FONTS: [&str; 17] = [
     "typst/LibertinusSerif-Regular.otf",

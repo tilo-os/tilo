@@ -6,7 +6,7 @@ Description=Keep the libraries of your own app runtimes in memory
 # launch verifies it, and each library only when the kernel measures its
 # signed fs-verity digest on the open file, so what stays in memory is the
 # publisher's bytes, never whatever a path in your home names
-# (crates/packaging/launcher/src/runtime_resident.rs). It runs no app code.
+# (crates/core/launcher/src/runtime_resident.rs). It runs no app code.
 # tilo-runtime-resident.path starts it again when your registry or runtimes
 # change.
 PartOf=tilo-graphical-session.target

@@ -154,7 +154,7 @@ description = "Everything the JavaScript and TypeScript package exports, with si
 
 [[page]]
 slug = "cli"
-source = "crates/system/tilo-cli/src/main.rs"
+source = "crates/core/tilo-cli/src/main.rs"
 generator = "tools/docs/reference/cli.py"
 section = "Reference"
 nav = "Command line"
@@ -162,7 +162,7 @@ description = "Every command of tilo, with its usage, arguments and options, gen
 
 [[page]]
 slug = "mcp-tools"
-source = "crates/runtime/tilo-mcp/src/mcp_agent.rs"
+source = "crates/core/tilo-mcp/src/mcp_agent.rs"
 generator = "tools/docs/reference/mcp_tools.py"
 section = "Reference"
 nav = "MCP tools"

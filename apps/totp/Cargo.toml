@@ -20,7 +20,7 @@ thin = ["dep:runtime-dylib"]
 runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # Tilo resource and action model for replayable account mutations.
-tilo-actions = { path = "../../crates/collab/actions" }
+tilo-actions = { path = "../../crates/core/actions" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true

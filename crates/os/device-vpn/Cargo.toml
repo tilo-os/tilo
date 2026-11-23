@@ -47,7 +47,7 @@ test-support = ["tunnel"]
 libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tilo-peer-facts = { path = "../../system/peer-facts", optional = true }
+tilo-peer-facts = { path = "../../core/peer-facts", optional = true }
 # The client connects to the helper's socket through the safe path, with or without the service.
 tilo-files = { path = "../../platform/tilo-files" }
 iroh = { workspace = true, optional = true }

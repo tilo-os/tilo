@@ -33,21 +33,21 @@ destination = [
 
 [dependencies]
 ed25519-dalek.workspace = true
-tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-resource = { path = "../../core/tilo-resource" }
 tar.workspace = true
 wire-frame = { path = "../../platform/wire-frame" }
 tilo-unlock-protocol = { path = "../tilo-unlock-protocol" }
-tilo-user-identity = { path = "../../collab/tilo-user-identity" }
-tilo-identity = { path = "../../runtime/tilo-identity" }
-tilo-identity-client = { path = "../../runtime/tilo-identity-client" }
-runtime-collab = { path = "../../runtime/runtime-collab" }
+tilo-user-identity = { path = "../../core/tilo-user-identity" }
+tilo-identity = { path = "../../core/tilo-identity" }
+tilo-identity-client = { path = "../../core/tilo-identity-client" }
+runtime-collab = { path = "../../core/runtime-collab" }
 tilo-test-env = { path = "../../../tools/test-env", optional = true }
 reqwest = { workspace = true, features = ["blocking"] }
 tilo-net = { workspace = true, features = ["blocking"] }
-tilo-seal = { path = "../../system/tilo-seal" }
+tilo-seal = { path = "../../core/tilo-seal" }
 tilo-handoff = { path = "../tilo-handoff" }
 tilo-rollback = { path = "../tilo-rollback" }
-tilo-crypto = { path = "../../system/tilo-crypto", default-features = false, features = ["pcr-prediction"] }
+tilo-crypto = { path = "../../core/tilo-crypto", default-features = false, features = ["pcr-prediction"] }
 getrandom.workspace = true
 tilo-ntfs-protocol = { path = "../tilo-ntfs-protocol" }
 tempfile.workspace = true
@@ -89,8 +89,8 @@ tilo-lock = { path = "../../platform/tilo-lock", optional = true }
 # The live installer's account fixtures for the imager's tests (`test-support`).
 tilo-oauth = { path = "../../integrations/tilo-oauth", features = ["fake"], optional = true }
 tilo-paths = { path = "../../platform/tilo-paths" }
-tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
-tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
+tilo-app-id = { version = "0.1.0", path = "../../core/tilo-app-id" }
+tilo-device-identity = { version = "0.1.0", path = "../../core/tilo-device-identity" }
 # One advisory lock guard on every platform: `flock(2)` on Unix and the
 # standard library's file lock elsewhere.
 tilo-advisory-lock = { path = "../../platform/advisory-lock" }
@@ -106,7 +106,7 @@ libc.workspace = true
 rustix = { workspace = true, features = ["process", "fs"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-host-fs = { path = "../../system/host-fs" }
+host-fs = { path = "../../core/host-fs" }
 block-devices = { path = "../block-devices", features = ["udisks"] }
 glib = "=0.21.5"
 rusqlite = { version = "0.41.1", default-features = false, features = ["bundled"] }
@@ -116,14 +116,14 @@ tilo-install-helpers = { path = "../install-helpers", optional = true }
 zbus = { workspace = true, optional = true, features = ["tokio", "blocking-api"] }
 tilo-canonical-json = { path = "../../platform/tilo-canonical-json" }
 tilo-clock = { path = "../../platform/tilo-clock" }
-runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
-fs-native = { path = "../../system/fs-native" }
-launcher = { path = "../../packaging/launcher" }
-runtime-bundle = { path = "../../packaging/runtime-bundle" }
-tilo-app-package = { path = "../../packaging/tilo-app-package" }
-package-store = { path = "../../packaging/package-store" }
+runtime-portal = { path = "../../core/runtime-portal", default-features = false }
+fs-native = { path = "../../core/fs-native" }
+launcher = { path = "../../core/launcher" }
+runtime-bundle = { path = "../../core/runtime-bundle" }
+tilo-app-package = { path = "../../core/tilo-app-package" }
+package-store = { path = "../../core/package-store" }
 tilo-secrets.workspace = true
-runtime-fs = { path = "../../runtime/runtime-fs" }
+runtime-fs = { path = "../../core/runtime-fs" }
 # The FUSE presentation the target projection worker serves.
 runtime-fs-fuse = { path = "../runtime-fs-fuse" }
 fuser.workspace = true

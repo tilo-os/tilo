@@ -522,10 +522,10 @@ if grep -Eq '^[[:space:]]+greetd-tuigreet([[:space:]\\]|$)' "$repo/os/Containerf
 fi
 package_service_socket="$repo/os/usr/lib/systemd/user/tilo-package-service.socket"
 package_service_service="$repo/os/usr/lib/systemd/user/tilo-package-service.service"
-cmp -s "$package_service_service" "$repo/crates/packaging/package-service/systemd/tilo-package-service.service" || {
+cmp -s "$package_service_service" "$repo/crates/core/package-service/systemd/tilo-package-service.service" || {
   fail 'source-packaged and OS package-service service sandboxes have drifted'
 }
-cmp -s "$package_service_socket" "$repo/crates/packaging/package-service/systemd/tilo-package-service.socket" || {
+cmp -s "$package_service_socket" "$repo/crates/core/package-service/systemd/tilo-package-service.socket" || {
   fail 'source-packaged and OS package-service activation sockets have drifted'
 }
 grep -Fqx 'ProtectHome=read-only' "$package_service_service" \
@@ -538,8 +538,8 @@ grep -Fqx 'Environment=TILO_STORE_CACHE_DIR=%S/tilo-package-service/cache' "$pac
   || fail 'package-service verified downloads do not use its private writable state directory'
 grep -Fqx 'StateDirectoryMode=0700' "$package_service_service" \
   || fail 'package-service download state is not private'
-package_service_source="$repo/crates/packaging/package-service/src/main.rs"
-package_service_rpc="$repo/crates/packaging/package-service/src/service.rs"
+package_service_source="$repo/crates/core/package-service/src/main.rs"
+package_service_rpc="$repo/crates/core/package-service/src/service.rs"
 grep -Fqx 'ListenStream=%t/tilo/services/package-service.sock' "$package_service_socket"
 grep -Fqx 'SocketMode=0600' "$package_service_socket"
 grep -Fqx 'Service=tilo-package-service.service' "$package_service_socket"

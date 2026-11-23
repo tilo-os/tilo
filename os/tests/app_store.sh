@@ -139,13 +139,13 @@ else
   bad "thin app packaging can still sign a runtime/app pair with incompatible Rust crate hashes"
 fi
 
-SIZE_POLICY="$REPO/crates/packaging/tilo-app-package/max-app-bytes"
+SIZE_POLICY="$REPO/crates/core/tilo-app-package/max-app-bytes"
 policy_bytes=$(cat "$SIZE_POLICY")
-if grep -q 'crates/packaging/tilo-app-package/max-app-bytes' "$PACK" \
+if grep -q 'crates/core/tilo-app-package/max-app-bytes' "$PACK" \
    && ! grep -Eq 'POLICY_MAX_TAPP_BYTES=[0-9]' "$PACK" \
    && ! grep -q 'RECOVERY_MAX_TAPP_BYTES' "$PACK" \
    && grep -q 'include_str!("../max-app-bytes")' \
-        "$REPO/crates/packaging/tilo-app-package/src/lib.rs"; then
+        "$REPO/crates/core/tilo-app-package/src/lib.rs"; then
   ok "pack-apps enforces the canonical tapp ceiling shared with the Rust checks, without app exceptions"
 else
   bad "pack-apps does not enforce the canonical tapp ceiling from the shared policy file"
@@ -209,7 +209,7 @@ else
 fi
 
 # --- 5. the launcher actually reads that store -------------------------------
-reg="$REPO/crates/packaging/package-store/src/layout.rs"
+reg="$REPO/crates/core/package-store/src/layout.rs"
 if [ ! -r "$reg" ]; then
   bad "missing $reg"
 elif grep -q "SYSTEM_DATA_DIR: &str = \"$store\"" "$reg"; then
@@ -233,8 +233,8 @@ fi
 # itself lives in the package store's installer, which tilo-install runs:
 # satisfy_runtime asks runtime_bundle_present, and that has to look on the
 # system path.
-BUNDLE_LIB="$REPO/crates/packaging/runtime-bundle/src/lib.rs"
-INSTALLER="$REPO/crates/packaging/package-store/src/installer/mod.rs"
+BUNDLE_LIB="$REPO/crates/core/runtime-bundle/src/lib.rs"
+INSTALLER="$REPO/crates/core/package-store/src/installer/mod.rs"
 sysroot="$(sed -n 's|^ *PathBuf::from("\(/usr/lib/tilo-runtime\)").join(version)$|\1|p' \
              "$BUNDLE_LIB" | head -1)"
 if [ ! -r "$BUNDLE_LIB" ] || [ ! -r "$INSTALLER" ]; then
@@ -339,8 +339,8 @@ else
     # image-owned system authority grant, served to the image's control panel
     # when it declares it, at a version the image declares serving.
     if [ "$svc" = "system" ]; then
-      services="$REPO/crates/packaging/launcher/src/services.rs"
-      authority="$REPO/crates/packaging/launcher/src/system_authority.rs"
+      services="$REPO/crates/core/launcher/src/services.rs"
+      authority="$REPO/crates/core/launcher/src/system_authority.rs"
       if grep -Fq 'pub const SYSTEM_SERVICE: &str = "system";' "$services" \
           && grep -Fq 'services.contains_key(crate::services::SYSTEM_SERVICE)' "$authority" \
           && grep -Eq '^system *= *[0-9]+' "$REPO/os/usr/share/tilo/system-interfaces.toml" \

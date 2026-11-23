@@ -3,7 +3,7 @@
 # the app SDK writes, and the model module every app's package carries. One
 # list, so the module a size check measures is the module a device runs.
 #
-# Read by crates/browser/tilo-browser-runtime/scripts/build.sh and
+# Read by crates/core/tilo-browser-runtime/scripts/build.sh and
 # tools/tilo-app-cli (embedded when it compiles, for the app's model
 # module). A comment is a line starting with `#`; every other word is an
 # argument.

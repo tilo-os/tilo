@@ -75,7 +75,7 @@ path = "../firstboot-files/src/main.rs"
 account-credentials = { path = "../../integrations/account-credentials" }
 # The code refresh daemon's hold on the backend's lock.
 tilo-advisory-lock = { path = "../../platform/advisory-lock" }
-tilo-seal = { path = "../../system/tilo-seal" }
+tilo-seal = { path = "../../core/tilo-seal" }
 zeroize.workspace = true
 tilo-firstboot-files = { path = "../firstboot-files" }
 libc.workspace = true

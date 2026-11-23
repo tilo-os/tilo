@@ -47,7 +47,7 @@
 #   REQUIRE_MIN    fail unless at least this many packages install [default: 1]
 #   MAX_TAPP_BYTES refuse a larger archive; defaults to the canonical
 #                  application-format ceiling (the byte count in
-#                  crates/packaging/tilo-app-package/max-app-bytes, which the
+#                  crates/core/tilo-app-package/max-app-bytes, which the
 #                  Rust package checks compile in) and may only be made stricter
 #   BUDGET_DIR     the per-app size budgets: budget.toml plus raises/*.toml
 #                  [default: tools/perf/tapp-size-budget beside this script]
@@ -129,7 +129,7 @@ REQUIRE_MIN="${REQUIRE_MIN:-1}"
 msg() { printf '[pack-apps] %s\n' "$*" >&2; }
 die() { printf '[pack-apps] ERROR: %s\n' "$*" >&2; exit 1; }
 
-SIZE_POLICY="$(dirname "${BASH_SOURCE[0]}")/../../crates/packaging/tilo-app-package/max-app-bytes"
+SIZE_POLICY="$(dirname "${BASH_SOURCE[0]}")/../../crates/core/tilo-app-package/max-app-bytes"
 POLICY_MAX_TAPP_BYTES="$(cat "$SIZE_POLICY" 2>/dev/null)" \
     || die "cannot read the application size policy at $SIZE_POLICY"
 [[ "$POLICY_MAX_TAPP_BYTES" =~ ^[1-9][0-9]*$ ]] \

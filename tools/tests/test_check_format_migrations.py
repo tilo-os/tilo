@@ -237,6 +237,22 @@ class FormatMigrationTests(unittest.TestCase):
             self.assertEqual(formats.check(root), [])
             self.assertIn("version = 3", layouts.read_text())
 
+    def test_a_stored_type_moved_to_another_crate_keeps_its_digest(self):
+        entry = "#[derive(Serialize, Deserialize)]\nstruct Entry {\n    revision: u64,\n}\n"
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            for crate in ("crates/collab/x", "crates/core/x"):
+                (root / crate / "src").mkdir(parents=True)
+                (root / crate / "src/journal.rs").write_text(entry)
+            before, _ = formats.layout_digest(
+                ["crates/collab/x/src/journal.rs:Entry"], formats.definitions_for(root)
+            )
+            after, _ = formats.layout_digest(
+                ["crates/core/x/src/journal.rs:Entry"], formats.definitions_for(root)
+            )
+            self.assertIsNotNone(before)
+            self.assertEqual(before, after)
+
     def test_a_stored_layout_a_version_kept_never_changes(self):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)

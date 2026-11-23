@@ -498,7 +498,7 @@ mod tests {
                 .ok()
         }
 
-        /// `crates/server/tilo-workspace-service/src/workspaces/hosted_use/web_call.rs`
+        /// `crates/core/tilo-workspace-service/src/workspaces/hosted_use/web_call.rs`
         /// (`literal_inside`, returning the parsed address before `!is_public`).
         pub(super) fn web_call_slicing(url: &url::Url) -> Option<IpAddr> {
             if url.domain().is_some() {
@@ -513,7 +513,7 @@ mod tests {
             literal.parse::<IpAddr>().ok()
         }
 
-        /// `crates/server/tilo-workspace-service/src/connections/address.rs`
+        /// `crates/core/tilo-workspace-service/src/connections/address.rs`
         /// (`literal_inside`, returning the parsed address before `!is_public`).
         pub(super) fn connections_address_trim(url: &url::Url) -> Option<IpAddr> {
             url.host_str().and_then(|literal| {
@@ -525,7 +525,7 @@ mod tests {
             })
         }
 
-        /// `crates/server/tilo-workspace-service/src/workspaces/person_settings/calendars/connect.rs`
+        /// `crates/core/tilo-workspace-service/src/workspaces/person_settings/calendars/connect.rs`
         /// (`literal`).
         pub(super) fn calendars_slicing(url: &url::Url) -> Option<IpAddr> {
             if url.domain().is_some() {

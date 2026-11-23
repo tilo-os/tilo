@@ -23,15 +23,15 @@ tilo-automerge.workspace = true
 blake3.workspace = true
 # Binary inputs (images, binary package parts) are referenced by content address; the bytes live
 # in the caller's content store.
-tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
+tilo-content = { version = "0.1.0", path = "../../core/content", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 # Ordering keys, history, batched writes and diffs shared by every resource.
-tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
+tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }
 # The anchor a change's text is named by, which an action's step carries.
-tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+tilo-actions = { version = "0.1.0", path = "../../core/actions" }
 # Line-break opportunities and hyphenation, shared by every setter of text into a measure
 # (the reader's pages and PDF export).
 unicode-linebreak = "0.1.5"

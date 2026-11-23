@@ -16,9 +16,9 @@ crate-type = ["cdylib"]
 pyo3 = { version = "0.30", features = ["abi3-py311", "extension-module"] }
 pyo3-async-runtimes = { version = "0.30", features = ["tokio-runtime"] }
 serde_json.workspace = true
-tilo-api = { path = "../../../crates/server/tilo-api" }
+tilo-api = { path = "../../../crates/core/tilo-api" }
 # Its workers, which start as the `tilo-automerge-worker` program shipped beside this library.
-tilo-automerge-isolate = { path = "../../../crates/doc/tilo-automerge-isolate" }
+tilo-automerge-isolate = { path = "../../../crates/core/tilo-automerge-isolate" }
 workspace-hack = { version = "0.1" }
 
 [lints]

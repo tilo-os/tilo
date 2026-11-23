@@ -57,11 +57,11 @@ exclude = [
 default-members = [
     "crates/sdk/tilo-doc",
     "crates/engines/tilo-doc-codecs",
-    "crates/system/fs",
+    "crates/core/fs",
     "crates/session/session",
     "crates/session/control-cli",
     "crates/ui/ui-core",
-    "crates/packaging/tilo-app-package",
+    "crates/core/tilo-app-package",
 ]
 members = [
     "crates/session/client",
@@ -78,13 +78,13 @@ members = [
     "crates/integrations/tilo-messaging",
     "crates/os/tilo-handoff",
     "apps/canvas",
-    "crates/collab/broker-core",
-    "crates/collab/workspace-keys",
+    "crates/core/broker-core",
+    "crates/core/workspace-keys",
     "crates/session/identity-authority",
     "crates/session/desktop",
     "crates/session/lock-screen",
-    "crates/collab/tilo-peer-state",
-    "crates/browser/tilo-browser-runtime",
+    "crates/core/tilo-peer-state",
+    "crates/core/tilo-browser-runtime",
     "crates/engines/paint-stream",
     "crates/os/tilo-ntfs-helper",
     "crates/os/tilo-ntfs-protocol",
@@ -196,7 +196,7 @@ members = [
     "apps/windows",
 
     # Agent
-    "crates/agent/agent-session",
+    "crates/core/agent-session",
     "crates/integrations/agent-turn",
     "crates/integrations/connector",
     "crates/engines/local-model-service",
@@ -216,10 +216,10 @@ members = [
     "crates/engines/tilo-webview",
     "crates/sdk/tilo-process-services",
     "crates/ui/tilo-formats",
-    "crates/sdk/tilo-resource",
+    "crates/core/tilo-resource",
     "crates/ui/tilo-component-scan",
     "crates/ui/tilo-rich-edit",
-    "crates/sdk/tilo-resource-macros",
+    "crates/core/tilo-resource-macros",
     "crates/sdk/tilo-model-guest",
     "crates/sdk/tilo-models-wasm",
     "crates/engines/tilo-recurrence",
@@ -235,21 +235,21 @@ members = [
     "crates/engines/search",
 
     # Collab
-    "crates/collab/action-policy",
-    "crates/collab/actions",
-    "crates/collab/automation",
-    "crates/collab/key-group",
-    "crates/collab/collab-types",
-    "crates/collab/resource-store",
-    "crates/collab/collaboration",
-    "crates/collab/neighbour-wire",
-    "crates/collab/reference",
+    "crates/core/action-policy",
+    "crates/core/actions",
+    "crates/core/automation",
+    "crates/core/key-group",
+    "crates/core/collab-types",
+    "crates/core/resource-store",
+    "crates/core/collaboration",
+    "crates/core/neighbour-wire",
+    "crates/core/reference",
     "crates/engines/tilo-callstream",
-    "crates/collab/tilo-live",
+    "crates/core/tilo-live",
     "crates/os/tilo-unlock-protocol",
-    "crates/collab/tilo-device-identity",
-    "crates/collab/tilo-user-identity",
-    "crates/collab/workspace-join",
+    "crates/core/tilo-device-identity",
+    "crates/core/tilo-user-identity",
+    "crates/core/workspace-join",
 
     # Dev
     "tools/workspace-unify",
@@ -283,8 +283,8 @@ members = [
     "crates/engines/tilo-sheet",
     "tools/tilo-docs",
     "crates/engines/tilo-doc-pdf",
-    "crates/doc/tilo-automerge",
-    "crates/doc/tilo-automerge-isolate",
+    "crates/core/tilo-automerge",
+    "crates/core/tilo-automerge-isolate",
 
     # Language
     "crates/lang/tilolang-runtime",
@@ -292,16 +292,16 @@ members = [
     "crates/lang/tilo-model-engine",
 
     # Hosting
-    "crates/server/tilo-delivery-protocol",
-    "crates/server/tilo-api",
+    "crates/core/tilo-delivery-protocol",
+    "crates/core/tilo-api",
     # The SDKs' native parts: the API in process, as a key the program holds.
     "sdk/python/native",
     "sdk/typescript/native",
-    "crates/server/tilo-server-account",
-    "crates/server/tilo-server",
-    "crates/server/tilo-server-client",
-    "crates/server/tilo-server-protocol",
-    "crates/server/tilo-workspace-service",
+    "crates/core/tilo-server-account",
+    "crates/core/tilo-server",
+    "crates/core/tilo-server-client",
+    "crates/core/tilo-server-protocol",
+    "crates/core/tilo-workspace-service",
 
     # Device services
     "crates/services/vision",
@@ -317,24 +317,24 @@ members = [
     "crates/engines/wet-media",
 
     # Packaging
-    "crates/packaging/app-catalogue",
+    "crates/core/app-catalogue",
     "crates/packaging/app-fleet",
     "crates/os/app-cli",
-    "crates/packaging/package-service",
-    "crates/packaging/package-service-client",
-    "crates/packaging/app-registry",
+    "crates/core/package-service",
+    "crates/core/package-service-client",
+    "crates/core/app-registry",
     "crates/vm/oci-images",
-    "crates/packaging/cli-shim",
-    "crates/packaging/install",
-    "crates/packaging/launcher",
-    "crates/packaging/launcher-macos",
-    "crates/packaging/package-store",
-    "crates/packaging/tilo-app-package",
+    "crates/core/cli-shim",
+    "crates/core/install",
+    "crates/core/launcher",
+    "crates/core/launcher-macos",
+    "crates/core/package-store",
+    "crates/core/tilo-app-package",
     "tools/tilo-app-package-cli",
     "crates/integrations/bot-directory",
-    "crates/packaging/registry-server",
-    "crates/packaging/registry-types",
-    "crates/packaging/runtime-bundle",
+    "crates/core/registry-server",
+    "crates/core/registry-types",
+    "crates/core/runtime-bundle",
     "crates/os/runtime-update",
 
     # Examples
@@ -357,7 +357,7 @@ members = [
     "crates/integrations/mail-session",
     "crates/import/migrate",
     "crates/platform/pc-keyboard-geometry",
-    "crates/platform/tilo-app-id",
+    "crates/core/tilo-app-id",
     "crates/platform/tilo-appearance",
     "crates/lang/tilo-app-module",
     "crates/engines/tilo-capture",
@@ -376,7 +376,7 @@ members = [
     "crates/platform/tilo-socket",
     "crates/platform/tilo-sort",
     "crates/platform/tilo-canonical-json",
-    "crates/platform/tilo-selector",
+    "crates/core/tilo-selector",
     "crates/platform/tilo-face",
     "crates/platform/tilo-mime",
     "crates/platform/tilo-wake",
@@ -426,11 +426,11 @@ members = [
     "crates/vm/linux-vm-agent",
     "crates/vm/linux-vm-protocol",
     "crates/vm/linux-vm",
-    "crates/runtime/runtime-collab",
+    "crates/core/runtime-collab",
     # Opt-in dynamic SDK; excluded from default-members.
     "crates/sdk/runtime-dylib",
     # Engines a few apps load, shipped beside it in the runtime bundle.
-    "crates/runtime/engine-loader",
+    "crates/core/engine-loader",
     "crates/engines/loadable/accounts",
     "crates/engines/loadable/adblock",
     "crates/engines/loadable/app-process",
@@ -450,21 +450,21 @@ members = [
     "crates/engines/loadable/typst",
     "crates/engines/loadable/wasm",
     "crates/engines/loadable/youtube",
-    "crates/runtime/runtime-fs",
-    "crates/runtime/tilo-fs-client",
+    "crates/core/runtime-fs",
+    "crates/core/tilo-fs-client",
     "crates/os/runtime-fs-fuse",
-    "crates/runtime/tilo-identity-client",
-    "crates/runtime/runtime-portal",
+    "crates/core/tilo-identity-client",
+    "crates/core/runtime-portal",
     "crates/integrations/os-search",
     "crates/os/tilo-file-provider",
-    "crates/runtime/tilo-identity",
-    "crates/runtime/tilo-mcp",
+    "crates/core/tilo-identity",
+    "crates/core/tilo-mcp",
     "crates/os/tilo-device-steps",
-    "crates/runtime/tilo-runtime",
+    "crates/core/tilo-runtime",
     # The wasm host layer every wasm host in the tree runs its guests on.
-    "crates/runtime/tilo-wasm-host",
+    "crates/core/tilo-wasm-host",
     "crates/vm/environment",
-    "crates/runtime/egress",
+    "crates/core/egress",
     "crates/vm/ush",
     "crates/vm/ush-shell",
     "crates/vm/ush-tilo",
@@ -552,21 +552,21 @@ members = [
     "crates/os/deployment-status",
     "crates/system/desktop-entry",
     "crates/system/desktop-policy",
-    "crates/system/documents",
-    "crates/system/content",
-    "crates/system/content-device",
-    "crates/system/content-types",
+    "crates/core/documents",
+    "crates/core/content",
+    "crates/core/content-device",
+    "crates/core/content-types",
     "crates/system/durable-store",
-    "crates/system/endpoint-reachability",
+    "crates/core/endpoint-reachability",
     "crates/os/esp-write",
     "crates/os/extension-helper",
     "crates/os/firstboot-files",
-    "crates/system/fs",
-    "crates/system/fs-content",
-    "crates/system/fs-protocol",
-    "crates/system/fs-native",
-    "crates/system/host-fs",
-    "crates/system/host-info",
+    "crates/core/fs",
+    "crates/core/fs-content",
+    "crates/core/fs-protocol",
+    "crates/core/fs-native",
+    "crates/core/host-fs",
+    "crates/core/host-info",
     "crates/system/system-stats",
     "crates/os/image-policy-check",
     "crates/os/tilo-pycompat",
@@ -582,8 +582,8 @@ members = [
     "crates/system/projector",
     "crates/platform/sandbox-core",
     "crates/system/secret-service",
-    "crates/system/peer-facts",
-    "crates/system/secret-vault",
+    "crates/core/peer-facts",
+    "crates/core/secret-vault",
     "crates/system/settings-model",
     "crates/system/settings-store",
     "crates/system/settings-sections",
@@ -591,16 +591,16 @@ members = [
     "crates/os/staging-reclaim",
     "crates/engines/swipe",
     "crates/os/tilo-bluez",
-    "crates/system/tilo-cli",
-    "crates/system/tilo-crypto",
+    "crates/core/tilo-cli",
+    "crates/core/tilo-crypto",
     "crates/integrations/tilo-dav",
     "crates/integrations/tilo-oauth",
-    "crates/system/tilo-native-certs",
+    "crates/core/tilo-native-certs",
     "crates/os/tilo-nm",
     "crates/os/tilo-auth",
     "crates/os/tilo-rollback",
-    "crates/system/tilo-seal",
-    "crates/system/tilo-startup-metrics",
+    "crates/core/tilo-seal",
+    "crates/core/tilo-startup-metrics",
     "crates/vm/tinker",
     "crates/engines/tts",
     "crates/platform/wire-frame",
@@ -611,7 +611,7 @@ members = [
     "crates/ui/highlight-grammars",
     "crates/engines/pim-lines",
     "crates/ui/spellcheck",
-    "crates/text/tilo-words",
+    "crates/core/tilo-words",
 
     # Windows
     "crates/compat/compat-catalogue",
@@ -716,7 +716,7 @@ must_use_candidate = "allow"
 [workspace.dependencies]
 browser-continuity = { path = "crates/import/browser-continuity", version = "0.1.0" }
 browser-continuity-core = { path = "crates/engines/browser-continuity-core", version = "0.1.0" }
-tilo-app-id = { path = "crates/platform/tilo-app-id", version = "0.1.0" }
+tilo-app-id = { path = "crates/core/tilo-app-id", version = "0.1.0" }
 
 # ---------------------------------------------------------------------------
 # UI toolkit stack
@@ -742,8 +742,8 @@ winit = { package = "tilo-winit", version = "0.30.13", path = "vendor/winit", de
 # published under its own name; the library keeps upstream's.
 automerge = { package = "tilo-automerge-fork", version = "0.12.0", path = "vendor/automerge" }
 # Every AutoCommit that takes in changes goes through its `ApplyIncoming`.
-tilo-automerge = { version = "0.1.0", path = "crates/doc/tilo-automerge" }
-tilo-automerge-isolate = { path = "crates/doc/tilo-automerge-isolate" }
+tilo-automerge = { version = "0.1.0", path = "crates/core/tilo-automerge" }
+tilo-automerge-isolate = { path = "crates/core/tilo-automerge-isolate" }
 pollster = "0.4.0"
 rustc-hash = "2.1"
 # FNV-1a for stable, persisted identifiers: a fixed algorithm, unlike std's hashers.
@@ -759,7 +759,7 @@ tilo-wake = { version = "0.1.0", path = "crates/platform/tilo-wake" }
 tilo-paths = { version = "0.1.0", path = "crates/platform/tilo-paths" }
 tilo-clipboard = { version = "0.1.0", path = "crates/platform/tilo-clipboard" }
 tilo-dialogs = { version = "0.1.0", path = "crates/platform/tilo-dialogs" }
-tilo-documents = { version = "0.1.0", path = "crates/system/documents" }
+tilo-documents = { version = "0.1.0", path = "crates/core/documents" }
 tilo-notify = { version = "0.1.0", path = "crates/platform/tilo-notify" }
 tilo-location = { version = "0.1.0", path = "crates/platform/tilo-location" }
 tilo-secrets = { version = "0.1.0", path = "crates/platform/tilo-secrets" }
@@ -835,7 +835,7 @@ hmac = "0.13"
 # SRP-6a for the iCloud sign-in (tilo-crypto `srp`).
 pbkdf2 = "0.13"
 blake3 = "1.8.5"
-# Raw AEAD and password-KDF crates are for `crates/system/tilo-seal` only;
+# Raw AEAD and password-KDF crates are for `crates/core/tilo-seal` only;
 # deny.toml's `[bans]` rejects any other direct user.
 # `zeroize` keeps the cipher key wiped on drop; 0.11 made it opt-in.
 chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc", "zeroize"] }
@@ -1693,7 +1693,7 @@ wgpu-hal = { path = "vendor/wgpu-hal" }
 # survives a GPU reset. See vendor/wgpu/TILO-PATCH.md.
 wgpu = { path = "vendor/wgpu" }
 genawaiter-proc-macro = { path = "vendor/genawaiter-proc-macro" }
-rustls-native-certs = { path = "crates/system/tilo-native-certs" }
+rustls-native-certs = { path = "crates/core/tilo-native-certs" }
 # The pure-Rust server used by Smithay used to panic if a client disappeared
 # from inside a request callback which had just created a child object. OAuth
 # browser launches make that race easy to hit: a probing helper can connect,

@@ -18,8 +18,8 @@ serde.workspace = true
 serde_json.workspace = true
 settings-store = { path = "../../system/settings-store", features = ["watch"] }
 tilo-accessibility-settings = { path = "../../platform/tilo-accessibility-settings" }
-tilo-actions = { path = "../../collab/actions" }
-tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-actions = { path = "../../core/actions" }
+tilo-resource = { path = "../../core/tilo-resource" }
 tilo-service = { path = "../service" }
 zeroize.workspace = true
 

@@ -15,14 +15,14 @@ sms-dbus = ["dep:zbus", "dep:tokio", "dep:jiff", "dep:futures-util"]
 [dependencies]
 tilo-messaging = { path = "../tilo-messaging", optional = true }
 tilo-contact-directory = { path = "../tilo-contact-directory", optional = true }
-tilo-resource = { path = "../../sdk/tilo-resource", optional = true }
+tilo-resource = { path = "../../core/tilo-resource", optional = true }
 accounts = { path = "../accounts", features = ["person"] }
 serde.workspace = true
 serde_json.workspace = true
 zeroize.workspace = true
 uuid.workspace = true
 tilo-files = { path = "../../platform/tilo-files" }
-tilo-secret-vault = { path = "../../system/secret-vault" }
+tilo-secret-vault = { path = "../../core/secret-vault" }
 tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 tilo-secrets = { path = "../../platform/tilo-secrets" }
 tilo-clock = { path = "../../platform/tilo-clock" }

@@ -46,7 +46,7 @@ settings-model = { path = "../../crates/system/settings-model" }
 # Oil and watercolour layers are painted by the shared media simulation.
 tilo-wet-media = { path = "../../crates/engines/wet-media" }
 # A look or export is stored as content and answered by its address.
-tilo-content = { path = "../../crates/system/content" }
+tilo-content = { path = "../../crates/core/content" }
 serde.workspace = true
 serde_json.workspace = true
 # Ids derived from an action's content, so every replica names marks alike.

@@ -9,7 +9,7 @@ is addressed by a string an app writes by hand, and nothing happens without
 someone being able to see who did it.
 
 This document is the contract for app developers and for the framework
-(`crates/sdk/tilo-resource`, `crates/sdk/tilo-resource-macros`,
+(`crates/core/tilo-resource`, `crates/core/tilo-resource-macros`,
 `crates/sdk/tilo-app`). Who may invoke what is in [permissions.md](permissions.md); what runs where, and what an app process can reach, is in [apps.md](apps.md).
 
 ## 1. The model

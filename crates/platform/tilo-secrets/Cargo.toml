@@ -25,7 +25,7 @@ zeroize.workspace = true
 # Owner-only secret files replaced atomically and durably.
 tilo-files = { version = "0.1.0", path = "../tilo-files" }
 hex.workspace = true
-tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
+tilo-seal = { version = "0.1.0", path = "../../core/tilo-seal" }
 sha2.workspace = true
 libc.workspace = true
 rustix = { workspace = true, features = ["process"] }

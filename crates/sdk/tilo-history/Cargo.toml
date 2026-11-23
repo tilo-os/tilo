@@ -16,7 +16,7 @@ description = "Renders Tilo history entries as sentences in the reader's languag
 [dependencies]
 fluent.workspace = true
 serde_json.workspace = true
-tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+tilo-actions = { version = "0.1.0", path = "../../core/actions" }
 unic-langid.workspace = true
 # One rule for which language a locale names, shared with the packs.
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }

@@ -28,7 +28,7 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 # Packs, signs, reads back and verifies the package as the release pipeline
 # and a worker's install do, and reads its manifest as the worker does.
-tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
+tilo-app-package = { path = "../../crates/core/tilo-app-package" }
 image = { workspace = true, features = ["jpeg", "png"] }
 blake3.workspace = true
 hex.workspace = true
@@ -42,13 +42,13 @@ tilo-test-env = { path = "../../tools/test-env" }
 # the Landlock shim) exist on Linux only.
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # The production worker, catalogue and launcher sandbox the job runs through.
-tilo-runtime = { path = "../../crates/runtime/tilo-runtime" }
+tilo-runtime = { path = "../../crates/core/tilo-runtime" }
 # The in-sandbox shim the test binary serves, and job cancellation.
-launcher = { path = "../../crates/packaging/launcher" }
+launcher = { path = "../../crates/core/launcher" }
 # Installs the packed tapp where the worker's catalogue reads it.
-package-store = { path = "../../crates/packaging/package-store", features = ["store"] }
+package-store = { path = "../../crates/core/package-store", features = ["store"] }
 # Bakes and signs the runtime build the package names.
-runtime-bundle = { path = "../../crates/packaging/runtime-bundle" }
+runtime-bundle = { path = "../../crates/core/runtime-bundle" }
 
 # The packaged entrypoint run by the production compute worker under the
 # real launcher sandbox. Its own `main`, because the launcher re-enters the

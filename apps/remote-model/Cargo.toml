@@ -29,7 +29,7 @@ uuid.workspace = true
 # two decodings are a few lines; data-encoding's general codec would be most of
 # the app's model module.
 ed25519-dalek.workspace = true
-tilo-resource = { path = "../../crates/sdk/tilo-resource" }
+tilo-resource = { path = "../../crates/core/tilo-resource" }
 
 [dev-dependencies]
 # Real endpoint ids for the tests, made as a device makes its own.

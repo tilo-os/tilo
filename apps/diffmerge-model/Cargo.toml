@@ -24,7 +24,7 @@ fnv.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 similar = "2.6"
-tilo-resource = { path = "../../crates/sdk/tilo-resource" }
+tilo-resource = { path = "../../crates/core/tilo-resource" }
 
 [dev-dependencies]
 # The scenarios the model tests are folded into.

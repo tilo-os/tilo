@@ -14,7 +14,7 @@ commands that need one.
 ## The problem it solves
 
 `apps/terminal` cannot `exec` `$SHELL`. Inside a Tilo app sandbox that fails
-with `ENOENT`: [`launcher::profile`](../../crates/packaging/launcher/src/profile.rs)
+with `ENOENT`: [`launcher::profile`](../../crates/core/launcher/src/profile.rs)
 binds the loader, fonts, `/sys` and the CA bundle, and deliberately binds no
 executable directory. Adding `/usr/bin` to the system read profile would hand
 the host's entire command set to every app on the machine.
@@ -93,7 +93,7 @@ and a `resolv.conf` naming the session's DNS stub — over the images' `/etc`.
 
 Every guest has a network namespace of its own. What it can reach is the
 record's `NetHost` grants, enforced in the kernel by
-[`tilo-egress`](../../crates/runtime/egress/src/lib.rs) — not by a proxy,
+[`tilo-egress`](../../crates/core/egress/src/lib.rs) — not by a proxy,
 which command-line tools ignore:
 
 ```text
@@ -322,10 +322,10 @@ tree in that folder, `/var/workspace/.workspaces/W`
 ([`tilo_paths::workspace_tree`](../../crates/platform/tilo-paths/src/lib.rs)).
 That folder is the workspace's one folder: the same tree the Files app shows
 on the workspace's page and `tilo login` mounts at `~/<workspace>` on any
-other computer, served by the same filesystem (`crates/system/fs`, QuickFS)
+other computer, served by the same filesystem (`crates/core/fs`, QuickFS)
 and synced the same way. A write to it from a shell here is named for who
 made it like any other: the person, an agent session whose commands it runs,
-an app ([`tilo_fs::writer`](../../crates/system/fs/src/writer.rs)).
+an app ([`tilo_fs::writer`](../../crates/core/fs/src/writer.rs)).
 The filesystem daemon serves one namespace per device, and its access checks
 (`FsPath` grants, scoped by path prefix) cover each tree as they cover any
 folder. It is not a directory per environment: every environment of the

@@ -37,7 +37,7 @@ runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The resource the app draws: its type, verb and typed action arguments.
 disks-model = { path = "../disks-model" }
-tilo-actions = { path = "../../crates/collab/actions" }
+tilo-actions = { path = "../../crates/core/actions" }
 # The machine's storage, described by the session's system information service.
 tilo-system-info = { path = "../../crates/platform/tilo-system-info" }
 serde.workspace = true

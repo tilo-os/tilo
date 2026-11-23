@@ -1,0 +1,130 @@
+[package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
+name = "tilo-cli"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The `tilo` command: apps, the desktop's actions, and this device."
+
+[[bin]]
+name = "tilo"
+path = "src/main.rs"
+
+[dependencies]
+# Everything here drives tools the image already carries — bootc, bootctl,
+# systemctl, and /usr/libexec/tilo-deployment. Nothing links against a system
+# library, so this builds on a host with no development headers, which is the
+# constraint that shaped tilo-rollback the same way.
+anyhow.workspace = true
+# A hosted workspace's files come down in base64 pieces (`tilo files get`).
+base64.workspace = true
+clap.workspace = true
+clap_complete.workspace = true
+# Reads the session's GPU health record for `tilo system health --gpu`.
+serde_json.workspace = true
+# The cleanup policy (/etc/tilo/cache-gc.toml), its record, the locks tilo-vm and the test
+# fixture generators hold, and free space for the policy's floor.
+serde.workspace = true
+toml.workspace = true
+# The times imported sources write (`createdAt` in Linear's and Forgejo's
+# answers) as milliseconds since the epoch.
+jiff.workspace = true
+# What is booted, staged and rolled back to, asked of the status socket (`tilo status`).
+tilo-deployment-status = { path = "../../os/deployment-status" }
+# `tilo cleanup` takes its record's lock.
+tilo-advisory-lock = { path = "../../platform/advisory-lock" }
+# The cleanup record, replaced atomically and durably.
+tilo-files = { path = "../../platform/tilo-files" }
+tilo-formats = { path = "../../ui/tilo-formats" }
+rustix = { workspace = true, features = ["fs", "net", "std", "process", "termios"] }
+tilo-paths.workspace = true
+# The desktop's apps and actions (`tilo open`, `tilo action`, `tilo do`): the
+# control protocol's one client, shared with tilo-control.
+tilo-control = { path = "../../session/control-cli" }
+# `tilo settings`: the profile's settings, held or followed.
+settings-store = { path = "../../system/settings-store" }
+# `tilo login` and `tilo mcp`: this computer as one of the person's devices,
+# certified by the root their browser tab holds, in their workspace.
+tilo-session-client = { path = "../../session/client" }
+# Documents are applied in a confined worker: this program started again as
+# it, which `main` hands over to first thing.
+tilo-automerge-isolate.workspace = true
+tilo-server-protocol = { path = "../tilo-server-protocol" }
+iroh-base.workspace = true
+# HTTPS to a site and a host, as every client of the server makes its requests.
+tilo-server-client = { path = "../tilo-server-client" }
+tilo-peer-state = { path = "../tilo-peer-state" }
+tilo-user-identity = { path = "../tilo-user-identity" }
+# `tilo login <invitation link>` reads the signed invitation and the server's iroh address in it.
+tilo-workspace-join = { path = "../workspace-join" }
+tilo-delivery-protocol = { path = "../tilo-delivery-protocol" }
+tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
+# Reads the PEM certificates a test names for HTTPS to trust (`tilo login`).
+rustls.workspace = true
+ed25519-dalek.workspace = true
+postcard.workspace = true
+hex.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "io-std", "signal"] }
+# `tilo mcp`: the MCP projection of a workspace, its actions asked of the
+# workspace's host through this device's session, as the person their
+# workspaces name.
+tilo-mcp = { path = "../tilo-mcp" }
+# The API: its description (`tilo sdk gen --lang openapi`), the routes the hosted
+# commands call, and the same routes served in process as this computer's key.
+tilo-api = { path = "../tilo-api" }
+# The apps this build ships, native and tilolang, with the surface each signs into its
+# manifest: what `tilo sdk gen` writes its types from, the same list search and the Store read.
+app-fleet = { path = "../../packaging/app-fleet", features = ["surfaces"] }
+# A resource's path is percent-encoded a segment at a time (`notes/Q3%2F4`).
+percent-encoding.workspace = true
+collab-types = { path = "../collab-types" }
+# `tilo mcp` asks the host to open the record its agent acts in as a window,
+# and narrates what its actions are doing on the live session.
+tilo-actions = { path = "../actions" }
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+# An install plan is the installer's own model: `tilo machine add` writes a
+# plan the live installer and the Imager both read.
+install-profile-model = { path = "../../os/install-profile-model" }
+# The one maker of a machine's plan and its single-use token, shared with the
+# Imager's window so both write the same document.
+install-plan = { path = "../../os/install-plan" }
+# `tilo migrate`'s cloud drives, opened as the filesystem opens them, and the folder marks
+# `tilo folders` sets on a file.
+tilo-fs = { package = "tilo-fs", path = "../fs" }
+fs-protocol = { path = "../fs-protocol" }
+futures-util.workspace = true
+iroh.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["fmt", "registry", "std"] }
+# The person's workspace list, as the peer asks for the folders it keeps.
+
+# `tilo migrate`: the terminal's view of the one migration engine.
+tilo-migrate = { path = "../../import/migrate" }
+url.workspace = true
+blake3.workspace = true
+zeroize.workspace = true
+tilo-device-identity = { version = "0.1.0", path = "../tilo-device-identity" }
+# The person's root, kept in their identity store.
+tilo-identity = { path = "../tilo-identity" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+# The folder states `tilo folders` describes, as the daemon's tree sync reports them.
+tilo-fs = { package = "tilo-fs", path = "../fs", features = ["tree-sync"] }
+tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
+# A scripted `/v1` server: the hosted commands' request mapping, without a host.
+test-http = { path = "../../../tools/test-http" }
+tempfile.workspace = true
+tilo-test-env = { path = "../../../tools/test-env" }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true

@@ -29,7 +29,7 @@ jiff.workspace = true
 ed25519-dalek.workspace = true
 getrandom.workspace = true
 hex.workspace = true
-runtime-portal = { path = "../../runtime/runtime-portal" }
+runtime-portal = { path = "../../core/runtime-portal" }
 bounded-command = { path = "../../platform/bounded-command" }
 rustix = { workspace = true, features = ["event", "process", "termios"] }
 serde.workspace = true
@@ -37,9 +37,9 @@ sha2.workspace = true
 serde_json.workspace = true
 # The publisher key, written whole beside its place before it is linked there.
 tempfile.workspace = true
-tilo-app-package = { path = "../../packaging/tilo-app-package" }
+tilo-app-package = { path = "../../core/tilo-app-package" }
 # The publisher key file.
-registry-types = { path = "../../packaging/registry-types" }
+registry-types = { path = "../../core/registry-types" }
 tilolang = { path = "../tilolang" }
 tilolang-tilo = { path = "../tilolang-tilo" }
 # The sample answers of the outside services a staged scenario stands on, taken in through the
@@ -56,9 +56,9 @@ tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 tilo-app-module = { version = "0.1.0", path = "../tilo-app-module" }
 toml.workspace = true
 # `tilolang repl`: Tilo's API as the person, through the client `tilo` uses.
-tilo-api = { path = "../../server/tilo-api" }
+tilo-api = { path = "../../core/tilo-api" }
 # This computer's login, which the REPL acts as.
-tilo-device-identity = { path = "../../collab/tilo-device-identity" }
+tilo-device-identity = { path = "../../core/tilo-device-identity" }
 tilo-paths.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
@@ -66,15 +66,15 @@ ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false 
 tilo-app-window = { path = "../../sdk/tilo-app-window" }
 tilo-render-protocol = { path = "../../ui/tilo-render-protocol" }
 # `tilolang profile --times`: the named scopes the framework marks, timed per interaction.
-tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
+tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }
 
 [dev-dependencies]
 tilo-rich-edit = { path = "../../ui/tilo-rich-edit" }
 tilo-test-env = { path = "../../../tools/test-env" }
 # What an agent's action is, as the frame draws it on the control that runs it.
-tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
-collab-types = { path = "../../collab/collab-types" }
-launcher = { path = "../../packaging/launcher" }
+tilo-actions = { version = "0.1.0", path = "../../core/actions" }
+collab-types = { path = "../../core/collab-types" }
+launcher = { path = "../../core/launcher" }
 
 [lints]
 workspace = true

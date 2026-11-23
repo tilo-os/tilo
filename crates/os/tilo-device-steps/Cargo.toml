@@ -17,10 +17,10 @@ path = "src/main.rs"
 
 [dependencies]
 os-actions = { path = "../../system/os-actions" }
-launcher = { path = "../../packaging/launcher" }
-package-store = { path = "../../packaging/package-store" }
-runtime-bundle = { path = "../../packaging/runtime-bundle" }
-tilo-app-package = { path = "../../packaging/tilo-app-package" }
+launcher = { path = "../../core/launcher" }
+package-store = { path = "../../core/package-store" }
+runtime-bundle = { path = "../../core/runtime-bundle" }
+tilo-app-package = { path = "../../core/tilo-app-package" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 tilo-files = { path = "../../platform/tilo-files" }
@@ -42,14 +42,14 @@ tar.workspace = true
 thiserror.workspace = true
 # Parses the account user's package registry from a descriptor opened without following links.
 toml.workspace = true
-tilo-actions = { path = "../../collab/actions" }
+tilo-actions = { path = "../../core/actions" }
 tilo-device-protocol = { path = "../tilo-device-protocol" }
 # Onboarding's controls and the walk through them, shared with the legacy stream.
 onboarding-walk = { path = "../../session/onboarding-walk" }
-tilo-identity = { path = "../../runtime/tilo-identity" }
+tilo-identity = { path = "../../core/tilo-identity" }
 uuid.workspace = true
 zeroize.workspace = true
-tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
+tilo-device-identity = { version = "0.1.0", path = "../../core/tilo-device-identity" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

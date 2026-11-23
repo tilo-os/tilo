@@ -1,6 +1,6 @@
 //! A mail account's session with its servers, where the account is kept and
 //! no app runs: the machine that runs a person's workspace when their page
-//! reaches no mail server (crates/server/tilo-workspace-service).
+//! reaches no mail server (crates/core/tilo-workspace-service).
 //!
 //! It reads a folder as a mail program does (the newest page of
 //! messages, what arrived since the newest one the reader holds, or the

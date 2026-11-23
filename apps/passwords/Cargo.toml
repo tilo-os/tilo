@@ -30,7 +30,7 @@ taffy.workspace = true
 vello.workspace = true
 winit.workspace = true
 serde_json.workspace = true
-tilo-seal = { path = "../../crates/system/tilo-seal" }
+tilo-seal = { path = "../../crates/core/tilo-seal" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
 
 [dev-dependencies]

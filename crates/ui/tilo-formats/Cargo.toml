@@ -18,7 +18,7 @@ serde.workspace = true
 serde_json.workspace = true
 jiff.workspace = true
 # The styles are resource fields (`locale` in the settings), so they keep the model derive.
-tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
+tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }
 
 [lints]
 workspace = true

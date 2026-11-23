@@ -3,7 +3,7 @@ set -euo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 app_cli="$root/crates/os/app-cli/src/install.rs"
-package_service="$root/crates/packaging/package-service/src/service.rs"
+package_service="$root/crates/core/package-service/src/service.rs"
 
 for source in "$app_cli" "$package_service"; do
   grep -Eq 'bounded_command::(run_prepared|spawn_prepared)\(' "$source"

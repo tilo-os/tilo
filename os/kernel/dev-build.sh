@@ -80,8 +80,8 @@ key="$(
     printf '%s\n%s\n' "$KERNEL_BUILDROOT_REF" "$arch"
     cd "$repo"
     find os/kernel/Containerfile os/kernel/project-crate.py tools/ci/publish/kernel.sh os/tests/secureboot_vm_app.c \
-         Cargo.toml Cargo.lock crates/system/tilo-crypto/Cargo.toml \
-         crates/system/tilo-crypto/src/lib.rs crates/system/tilo-crypto/src/main.rs \
+         Cargo.toml Cargo.lock crates/core/tilo-crypto/Cargo.toml \
+         crates/core/tilo-crypto/src/lib.rs crates/core/tilo-crypto/src/main.rs \
          os/external-assets/github-assets.tsv -type f -print0 \
       | sort -z | xargs -0 sha256sum
   } | sha256sum | cut -c1-16

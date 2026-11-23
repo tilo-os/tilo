@@ -18,15 +18,15 @@ path = "tests/it.rs"
 serde = { workspace = true }
 serde_json = { workspace = true }
 settings-store = { path = "../../system/settings-store" }
-tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+tilo-actions = { version = "0.1.0", path = "../../core/actions" }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 zeroize = { workspace = true }
 # The directory sheet's store: the sites it reads and the joins it asks for, on one app task.
 tilo-workspace-directory = { path = "../workspace-directory" }
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", features = ["http", "json"] }
-tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
-tilo-workspace-join = { path = "../../collab/workspace-join" }
-tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }
+tilo-server-protocol = { path = "../../core/tilo-server-protocol" }
+tilo-workspace-join = { path = "../../core/workspace-join" }
+tilo-startup-metrics = { path = "../../core/tilo-startup-metrics" }
 tilo-rt = { path = "../../platform/tilo-rt" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tokio = { workspace = true, features = ["sync"] }

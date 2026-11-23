@@ -1182,7 +1182,7 @@ mod tests {
             use std::io::{Read as _, Write as _};
             use std::net::TcpListener;
 
-            let unit = include_str!("../../../packaging/package-service/systemd/tilo-package-service.service");
+            let unit = include_str!("../../../core/package-service/systemd/tilo-package-service.service");
             let setting = unit
                 .lines()
                 .find_map(|line| line.strip_prefix("Environment=TILO_STORE_CACHE_DIR="))

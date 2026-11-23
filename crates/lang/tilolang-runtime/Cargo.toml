@@ -48,11 +48,11 @@ tilo-recurrence = { path = "../../engines/tilo-recurrence" }
 # Days and moments.
 jiff.workspace = true
 # A reference inside rich text is the catalogue's resource reference, in the one form every app writes.
-tilo-reference = { path = "../../collab/reference" }
+tilo-reference = { path = "../../core/reference" }
 # Order keys of placed items (`place`): the fractional keys every collection orders by.
-tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-resource = { path = "../../core/tilo-resource" }
 # Why an app declined an edit: the reason a window tells the person in their own language.
-tilo-actions = { path = "../../collab/actions" }
+tilo-actions = { path = "../../core/actions" }
 serde.workspace = true
 serde_json.workspace = true
 # A draw comes from the system's CSPRNG, on the device the invocation runs on.
@@ -68,7 +68,7 @@ wasmi = { version = "1.1", default-features = false, features = ["std"] }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # Engine construction, the call's limits, the refuel and the one text of a failure: shared with
 # every other wasm host in the tree.
-tilo-wasm-host = { version = "0.1.0", path = "../../runtime/tilo-wasm-host", default-features = false }
+tilo-wasm-host = { version = "0.1.0", path = "../../core/tilo-wasm-host", default-features = false }
 # Why a module stays on wasmi or was not kept on disk.
 tracing.workspace = true
 # Compiled modules are written beside their place in the disk cache, then renamed into it.
@@ -76,7 +76,7 @@ tempfile.workspace = true
 tilo-files = { path = "../../platform/tilo-files" }
 # What a file is called, and the most it may hold: one reading of a file's media type and size,
 # shared with the window that hands a dropped file over.
-tilo-content-types = { version = "0.1.0", path = "../../system/content-types" }
+tilo-content-types = { version = "0.1.0", path = "../../core/content-types" }
 # The one image codec: what a file's pixels are decoded and encoded with, on the device.
 tilo-image-codec = { version = "0.1.0", path = "../../engines/tilo-image-codec" }
 

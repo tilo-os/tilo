@@ -30,13 +30,13 @@ class CaptureBuildEvidenceTests(unittest.TestCase):
     def test_launcher_uses_its_actual_compiler_role_and_installed_binding(self):
         target = PRODUCER.ROOT / 'target/release/tilo-launcher'
         row = {'reason': 'compiler-artifact', 'manifest_path': str(PRODUCER.ROOT /
-            'crates/packaging/launcher/Cargo.toml'),
+            'crates/core/launcher/Cargo.toml'),
             'target': {'name': 'tilo-launcher', 'kind': ['bin']},
             'profile': {'test': False}, 'executable': str(target), 'fresh': True}
         self.assertEqual(PRODUCER.select_artifact([row], 'launcher'), (row, target))
         self.assertEqual(QUALIFIER.BINDINGS['launcher'], '/usr/libexec/tilo/tilo-launcher')
         self.assertEqual(QUALIFIER.TARGETS['launcher'], 'tilo-launcher')
-        self.assertEqual(QUALIFIER.PACKAGES['launcher'], 'crates/packaging/launcher')
+        self.assertEqual(QUALIFIER.PACKAGES['launcher'], 'crates/core/launcher')
         row['manifest_path'] = str(PRODUCER.ROOT / 'unrelated/Cargo.toml')
         self.assertIsNone(PRODUCER.select_artifact([row], 'launcher'))
 

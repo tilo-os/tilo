@@ -246,7 +246,7 @@ def _diff_changes(root: Path, span: list[str]) -> tuple[list[str], dict[str, str
     renamed = {}
     for line in _git(root, "diff", "--name-status", "-M", *span, "--").splitlines():
         parts = line.split("\t")
-        if parts[0].startswith("R") and len(parts) == 3:
+        if parts[0].startswith("R") and len(parts) == 3 and (in_scope(parts[1]) or in_scope(parts[2])):
             renamed[parts[1]] = parts[2]
             changed.append(parts[1])
     return sorted(set(changed)), renamed
@@ -357,7 +357,7 @@ def against(base: str, root: Path = ROOT, head: str | None = None) -> list[str]:
             now[target] = wire_enums(text)
     allowed = breaks(root)
     stored = stored_types(root)
-    return stored_breaks(root, allowed, stored, base) + diff_problems(
+    return stored_breaks(root, allowed, stored, base, renamed) + diff_problems(
         before, now, allowed - stored, renamed
     )
 
@@ -377,13 +377,17 @@ def stored_breaks(
     allowed: set[tuple[str, str]],
     stored: set[tuple[str, str]],
     base: str | None = None,
+    renamed: dict[str, str] | None = None,
 ) -> list[str]:
     """A break waived since `base` for an enum that is stored: its bytes are
     read back by a later build, so its variants move only with a new version of
-    its format. A waiver `base` already held was judged then."""
+    its format. A waiver `base` already held was judged then, under the path its
+    file had there (`renamed` maps that path to the one it became)."""
     if base is not None:
         before = _revision_text(root, f"{base}:{BREAKS.as_posix()}")
-        allowed = allowed - (allowed_breaks(before) if before is not None else set())
+        held = allowed_breaks(before) if before is not None else set()
+        moved = renamed or {}
+        allowed = allowed - {(moved.get(file, file), name) for file, name in held}
     return [
         f"{BREAKS}: waives {name} in {file}, which {LAYOUTS} lists as stored or a listed "
         "definition reaches: bytes an earlier build kept read back by position, so its variants "
@@ -405,7 +409,7 @@ def staged(root: Path = ROOT) -> list[str]:
             now[target] = wire_enums(text)
     allowed = breaks(root)
     stored = stored_types(root)
-    return stored_breaks(root, allowed, stored, "HEAD") + diff_problems(
+    return stored_breaks(root, allowed, stored, "HEAD", renamed) + diff_problems(
         before, now, allowed - stored, renamed
     )
 

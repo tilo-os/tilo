@@ -22,7 +22,7 @@ thiserror.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+tilo-actions = { version = "0.1.0", path = "../../core/actions" }
 tilo-view-macros = { version = "0.1.0", path = "../view-macros" }
 serde = { workspace = true, features = ["derive"] }
 

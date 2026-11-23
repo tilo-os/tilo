@@ -608,7 +608,7 @@ COPY tools/apps/stage_sdk_services.py /build/tools/apps/
 # The tilolang packages' packing steps, which the release's packing shares.
 COPY tools/apps/tilolang_packages.sh /build/tools/apps/
 COPY os/usr/share/tilo/system-interfaces.toml /build/os/usr/share/tilo/system-interfaces.toml
-COPY crates/packaging/tilo-app-package/max-app-bytes /build/crates/packaging/tilo-app-package/max-app-bytes
+COPY crates/core/tilo-app-package/max-app-bytes /build/crates/core/tilo-app-package/max-app-bytes
 ARG TILO_PREBUILT_APPS=0
 ARG TILO_WITH_BROWSER
 # thin or off, as the compile was (os/image/compile.sh): a build without LTO only reports
@@ -1804,7 +1804,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     # cannot support it, glibc leaves shadow stacks off rather than failing, and
     # tilo-security-audit reports which processes actually got them. A library
     # dlopened later is different: glibc refuses one without the SHSTK note (see
-    # crates/packaging/launcher/src/hardening.rs for the libzstd/Mesa case).
+    # crates/core/launcher/src/hardening.rs for the libzstd/Mesa case).
     #
     # Only Scudo has to remain for tilo-launcher's scoped hardening. Copy that one
     # DSO to a stable image-owned path, then erase compiler-rt's other sanitizers,
@@ -2365,7 +2365,7 @@ COPY os/usr/lib/systemd/system/systemd-tpm2-setup-early.service.d/10-tilo-live-i
 # component (os/components.toml), which judges apps against them: an app from
 # the registry updates past its preinstalled copy only to a build this OS can
 # run, and that copy is the fallback for one it cannot
-# (crates/packaging/package-store/src/interfaces.rs).
+# (crates/core/package-store/src/interfaces.rs).
 COPY os/usr/share/tilo/fs-capabilities.json /usr/share/tilo/fs-capabilities.json
 # The community workspace a computer is in by default: the vendor's site,
 # which /etc/tilo/community.toml overrides (crates/session/session/src/directory.rs).
@@ -3173,7 +3173,7 @@ COPY --from=native-builder-payload \
 # ---- Preinstalled application store -----------------------------------------
 # The registry + unpacked payloads the builder produced with `tilo-app-package pack` and
 # `tilo-install install`. The launcher reads this store alongside the per-user
-# one (crates/packaging/launcher/src/registry.rs), so the command palette lists
+# one (crates/core/launcher/src/registry.rs), so the command palette lists
 # these apps on a first boot with nobody having installed anything, and a user
 # installing their own build of the same id shadows the preinstalled row rather
 # than duplicating it.

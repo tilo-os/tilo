@@ -14,7 +14,7 @@
 kind = "chat.agent"
 app = "chat"
 change = "removed"
-conversion = "crates/server/tilo-workspace-service/src/workspaces/agent_roster.rs:copy_agents"
+conversion = "crates/core/tilo-workspace-service/src/workspaces/agent_roster.rs:copy_agents"
 
 [[change]]
 kind = "canvas.recent-artworks"

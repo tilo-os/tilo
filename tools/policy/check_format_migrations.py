@@ -612,9 +612,9 @@ def layout_digest(entries: list[str], definitions: Definitions) -> tuple[str | N
     found, missing = reached_definitions(entries, definitions)
     if missing:
         return None, missing
-    parts = [
-        f"{path}:{name}={definition}" for (path, name), definition in sorted(found.items())
-    ]
+    # The definitions alone, not the files that hold them: moving a type to another file or
+    # crate changes no byte it writes.
+    parts = sorted(f"{name}={definition}" for (_path, name), definition in found.items())
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()[:16], []
 
 

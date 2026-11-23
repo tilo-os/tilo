@@ -224,9 +224,9 @@ CASES = (
     ),
     Case(
         check="check_clock_contract",
-        files={"crates/collab/tilo-peer-state/src/lib.rs": "pub fn run() {}\n"},
+        files={"crates/core/tilo-peer-state/src/lib.rs": "pub fn run() {}\n"},
         violation={
-            "crates/collab/tilo-peer-state/src/wall.rs": (
+            "crates/core/tilo-peer-state/src/wall.rs": (
                 "pub fn at() -> std::time::SystemTime { std::time::SystemTime::now() }\n"
             ),
         },

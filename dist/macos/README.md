@@ -39,7 +39,7 @@ its Tilo.app lists. Later versions arrive from the registry.
 `runtime_plays.py` proves a staged runtime plays a generated clip.
 
 Opening Tilo starts the store, which finds the sibling `tilo-runtime` (the
-lookup in `crates/runtime/runtime-portal/src/native.rs`) and re-executes
+lookup in `crates/core/runtime-portal/src/native.rs`) and re-executes
 itself attached to it; the runtime starts its daemon on demand with the
 profile `~/Library/Application Support/Tilo/runtime`.
 

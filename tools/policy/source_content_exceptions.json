@@ -1,6 +1,6 @@
 [
   {
-    "path": "crates/browser/tilo-browser-runtime/web/apple-touch-icon.png",
+    "path": "crates/core/tilo-browser-runtime/web/apple-touch-icon.png",
     "oid": "b675c1a67561f81cf00e09fe0c3ab056d6dd8afb",
     "reason": "Safari takes a home-screen icon only as a PNG; rendered from the brand's app-icon.svg at 180 px. Re-pin it only when the brand icon changes."
   }

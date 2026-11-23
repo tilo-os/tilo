@@ -54,7 +54,7 @@ kpis = ["render.frame_cpu_ms"]
 [jobs.reference-hardware]
 groups = ["hw"]
 
-# tilo-fs latency benchmarks (crates/system/fs/tests/performance_timing.rs), a
+# tilo-fs latency benchmarks (crates/core/fs/tests/performance_timing.rs), a
 # debug build on the shared `runner` class. The ceilings are the check's own
 # SLO constants: twice the p99
 # of 56 CI runs, derived beside the constants; change both together.
@@ -992,7 +992,7 @@ p99 = 33.4
 min_delta = 2.0
 source = "vm-acceptance R04: compositor CPU (frame trace cpu_us) per painted frame during overview, focus and zoom interactions"
 
-# Server cost: crates/server/tilo-server/examples/server_load,
+# Server cost: crates/core/tilo-server/examples/server_load,
 # 100 members in workspaces of four, ten measured minutes, one sample per
 # minute; tools/perf/adapters.py server-load prices them with
 # tools/perf/prices.toml. The KPI target is at most $0.001 per

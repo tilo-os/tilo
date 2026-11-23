@@ -15,9 +15,9 @@ blake3.workspace = true
 getrandom.workspace = true
 media = { package = "tilo-media", path = "../../engines/tilo-media", features = ["realtime", "voice", "pipewire"] }
 rand_core.workspace = true
-runtime-collab = { path = "../../runtime/runtime-collab" }
-tilo-actions = { path = "../../collab/actions" }
-tilo-resource = { path = "../../sdk/tilo-resource" }
+runtime-collab = { path = "../../core/runtime-collab" }
+tilo-actions = { path = "../../core/actions" }
+tilo-resource = { path = "../../core/tilo-resource" }
 serde_json.workspace = true
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-network-actor = { path = "../network-actor" }

@@ -3,7 +3,7 @@ Description=Build the read-only system view every app sandbox mounts
 # The system read profile (fonts, the C library, GPU loader data, CA
 # certificates, ...) assembled once as a tree of read-only bind mounts under
 # /run/tilo-sandbox-view, so a launch binds four directories instead of each
-# path (crates/packaging/launcher/src/sandbox_view.rs). Rebuilt after an
+# path (crates/core/launcher/src/sandbox_view.rs). Rebuilt after an
 # extension merge replaces /usr (tilo-extension-activate.service) and when a
 # bound path under /etc is replaced (tilo-sandbox-view.path). Until then a
 # launch whose host paths no longer match the view binds per path, so a stale

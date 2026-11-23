@@ -110,14 +110,14 @@ BOUNDARIES = (
     ),
     Boundary(
         package="tilo-cli",
-        manifest="crates/system/tilo-cli/Cargo.toml",
+        manifest="crates/core/tilo-cli/Cargo.toml",
         forbidden=frozenset({"tilo-media", "tilo-native-media", "tilo-ui"}),
         why="it draws nothing and plays nothing: the toolkit and the media stack are the apps'",
         targets=NATIVE,
     ),
     Boundary(
         package="tilo-agent-session",
-        manifest="crates/agent/agent-session/Cargo.toml",
+        manifest="crates/core/agent-session/Cargo.toml",
         forbidden=frozenset(
             {
                 "gbm",

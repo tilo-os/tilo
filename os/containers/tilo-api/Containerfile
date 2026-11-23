@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-# The Tilo API server (crates/server/tilo-api): the MCP
+# The Tilo API server (crates/core/tilo-api): the MCP
 # endpoint an agent adds as https://mcp.tilo.sh. It runs beside the server, behind the server's Caddy,
 # which terminates TLS; the server itself serves plain HTTP.
 #
@@ -30,7 +30,7 @@ FROM registry.fedoraproject.org/fedora-minimal:44@sha256:694cfd38a85e4c48bae777d
 # Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
 ARG RPMS_REF
 # Runtime dependency: CA roots for the hosts the server dials, which Tilo's
-# binaries read from one fixed path (crates/system/tilo-native-certs). The server
+# binaries read from one fixed path (crates/core/tilo-native-certs). The server
 # speaks rustls, not the system OpenSSL ABI. BusyBox is statically linked, so it
 # remains usable after removing the package manager, coreutils, and their
 # otherwise inherited OpenSSL dependency closure.

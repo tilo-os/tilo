@@ -30,17 +30,17 @@ tilo-formats = { path = "../../ui/tilo-formats" }
 # same one answer every surface resolves its language from.
 settings-store = { path = "../../system/settings-store" }
 # The registry wire format + the per-entry publisher signature check.
-registry-types = { path = "../../packaging/registry-types" }
+registry-types = { path = "../../core/registry-types" }
 # Read side of the `tilo-install` registry — the same list the desktop
 # enumerates installed apps from, so "available" is exactly "not in
 # there".
-package-store = { path = "../../packaging/package-store" }
+package-store = { path = "../../core/package-store" }
 # The desktop's applications that Tilo did not package (Flatpaks, the
 # system's, downloaded programs), listed beside the installed packages.
 tilo-desktop-entry = { path = "../../system/desktop-entry" }
 # Canonical application tapp wire-size ceiling; catalogue downloads enforce
 # the same boundary as the installer rather than duplicating a number.
-tilo-app-package = { path = "../../packaging/tilo-app-package" }
+tilo-app-package = { path = "../../core/tilo-app-package" }
 clap.workspace = true
 clap_complete.workspace = true
 tilo-paths.workspace = true
@@ -58,11 +58,11 @@ tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
 # The model runtime an app's model module links against, taken out of the
 # runtime package the registry offers: the bundle's signed manifest vouches
 # for its files, and the registry serves only the payload blobs it needs.
-runtime-bundle = { path = "../../packaging/runtime-bundle" }
-app-registry = { path = "../../packaging/app-registry" }
+runtime-bundle = { path = "../../core/runtime-bundle" }
+app-registry = { path = "../../core/app-registry" }
 # Every change to the package store is the package service's action: `app`
 # calls it, and the service, which runs this library too, makes it in-process.
-package-service-client = { path = "../../packaging/package-service-client" }
+package-service-client = { path = "../../core/package-service-client" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
@@ -78,7 +78,7 @@ tilo-test-env = { path = "../../../tools/test-env" }
 # The tests confine a checkpoint write with the launcher's Landlock plan and
 # resolve an installed app's service binds the way a launch does. The library
 # reads manifests through tilo-app-package and never links the launcher.
-launcher = { path = "../../packaging/launcher" }
+launcher = { path = "../../core/launcher" }
 
 [[test]]
 name = "it"

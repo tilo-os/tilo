@@ -17,7 +17,7 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-host-fs = { path = "../../crates/system/host-fs" }
+host-fs = { path = "../../crates/core/host-fs" }
 runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 settings-model = { path = "../../crates/system/settings-model" }
@@ -26,7 +26,7 @@ backups-model = { path = "../backups-model" }
 # The Tilo action model: every document-mutating operation is a serializable,
 # replayable action dispatched through one executor, so undo, multi-peer replay
 # and the Ctrl+K command palette all work from a single implementation.
-tilo-actions = { path = "../../crates/collab/actions" }
+tilo-actions = { path = "../../crates/core/actions" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true

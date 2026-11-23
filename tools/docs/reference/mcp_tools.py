@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import page  # noqa: E402  (beside this script, not on the isolated path)
 
 
-PACKAGE = "crates/runtime/tilo-runtime"
+PACKAGE = "crates/core/tilo-runtime"
 
 # The order an agent meets the tools in. A tool no group names is an error, and
 # so is a name here that the server no longer serves.

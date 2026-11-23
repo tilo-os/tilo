@@ -6893,10 +6893,7 @@ fn sdk_root_from_metadata(metadata: &serde_json::Value) -> Option<PathBuf> {
         .as_str()?;
     Path::new(manifest)
         .ancestors()
-        .find(|root| {
-            root.join("crates/runtime/tilo-runtime/Cargo.toml")
-                .is_file()
-        })
+        .find(|root| root.join("crates/core/tilo-runtime/Cargo.toml").is_file())
         .map(Path::to_path_buf)
 }
 
@@ -6947,7 +6944,7 @@ fn build_runtime_host(app_dir: &Path) -> Result<PathBuf> {
     let root = sdk_root_from_metadata(&metadata).ok_or_else(|| {
         anyhow::anyhow!("the app's tilo-app dependency is not in a Tilo checkout")
     })?;
-    let manifest = root.join("crates/runtime/tilo-runtime/Cargo.toml");
+    let manifest = root.join("crates/core/tilo-runtime/Cargo.toml");
     eprintln!(
         "[tilo-app] building the runtime host from {}",
         root.display()

@@ -2,7 +2,7 @@
  * Every route of `/v1` the SDK calls, and how a path goes into one.
  *
  * `docs/developers/api.md` is the table these follow, and
- * `crates/server/tilo-api/src/v1/operations.rs` is the one the API server
+ * `crates/core/tilo-api/src/v1/operations.rs` is the one the API server
  * routes by: a route here that names no operation there is a 404.
  */
 

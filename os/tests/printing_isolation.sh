@@ -161,7 +161,7 @@ echo "== apps reach printing through the portal, never the socket =="
 # shared confinement primitives it uses); if a bind for the socket ever
 # appears there, this fails.
 SANDBOX_SRCS=(
-    "$OS_ROOT/../crates/packaging/launcher/src"
+    "$OS_ROOT/../crates/core/launcher/src"
     "$OS_ROOT/../crates/platform/sandbox-core/src"
 )
 if [ -d "${SANDBOX_SRCS[0]}" ] && [ -d "${SANDBOX_SRCS[1]}" ]; then

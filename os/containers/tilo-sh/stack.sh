@@ -410,7 +410,7 @@ else
 fi
 # The server's laid-out context, as lounge-context.sh makes it (below).
 lounge=${TILO_SH_LOUNGE:-}
-# The one trust bundle Tilo's programs read (crates/system/tilo-native-certs).
+# The one trust bundle Tilo's programs read (crates/core/tilo-native-certs).
 ca_path=/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
 
 # Where each service finds its files, as it sees them: the image's paths
@@ -1730,7 +1730,7 @@ build_bundle() {
   fi
   mkdir -p "$out"
   CARGO=$here/cargo.sh TILO_SH_CARGO=$cargo TILO_SOURCE_REVISION=$commit \
-    "$repo/crates/browser/tilo-browser-runtime/scripts/build.sh" "$out" \
+    "$repo/crates/core/tilo-browser-runtime/scripts/build.sh" "$out" \
     --profile quick --update "${from[@]}" >&2 \
     || die 'the web entry bundle did not build (above)'
   [[ -L $native/bundle ]] || rm -rf "${native:?}/bundle"
@@ -1808,7 +1808,7 @@ subprocess.run(["cp", "--reflink=auto", "--parents", "--", *names, dst], cwd=src
 # site/, install.sh), which a check hands the stack: the files the image
 # serves, laid out and precompressed once, not per bring-up.
 lay_out_web() {
-  local container=$repo/crates/browser/tilo-browser-runtime/container
+  local container=$repo/crates/core/tilo-browser-runtime/container
   mkdir -p "$native/web"
   if [[ -n ${TILO_SH_SITE:-} ]]; then
     web_site=$TILO_SH_SITE/site
@@ -1999,7 +1999,7 @@ start_native_api() {
 }
 
 start_native_web() {
-  local workspace=$1 caddy container=$repo/crates/browser/tilo-browser-runtime/container info
+  local workspace=$1 caddy container=$repo/crates/core/tilo-browser-runtime/container info
   caddy=$(find_caddy)
   info=$(host_info)
 

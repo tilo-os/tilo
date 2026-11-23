@@ -4,7 +4,7 @@
 The toolkit (``crates/ui/ui-core``), the editor built on it
 (``crates/ui/tilo-rich-edit``), its host services
 (``crates/sdk/tilo-process-services``) and the collab client under it
-(``crates/collab/collaboration``) name their clock types through
+(``crates/core/collaboration``) name their clock types through
 ``crate::time`` —
 defined once, in ``tilo-host``'s ``src/time.rs``, and re-exported by the
 toolkit — so that a host without a native process clock has one module to
@@ -60,7 +60,7 @@ CRATES = (
     Path("crates/ui/ui-core"),
     Path("crates/ui/tilo-rich-edit"),
     Path("crates/sdk/tilo-process-services"),
-    Path("crates/collab/collaboration"),
+    Path("crates/core/collaboration"),
 )
 CLOCK_MODULE = Path("crates/sdk/tilo-process-services/src/time.rs")
 

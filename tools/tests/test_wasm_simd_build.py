@@ -18,7 +18,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 CARGO_CONFIG = ROOT / ".cargo" / "config.toml"
 WASM_OPT_FLAGS = ROOT / "tools" / "web" / "wasm-opt-flags"
-BUILD_SCRIPT = ROOT / "crates/browser/tilo-browser-runtime/scripts/build.sh"
+BUILD_SCRIPT = ROOT / "crates/core/tilo-browser-runtime/scripts/build.sh"
 
 
 def flags(path: Path) -> list[str]:

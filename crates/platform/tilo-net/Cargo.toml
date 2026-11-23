@@ -34,7 +34,7 @@ tokio = { workspace = true, features = ["macros", "sync"] }
 # system trust bundle and the ring provider.
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 rustls.workspace = true
-# Resolves to `crates/system/tilo-native-certs` through the workspace patch.
+# Resolves to `crates/core/tilo-native-certs` through the workspace patch.
 rustls-native-certs.workspace = true
 # The verifier reqwest uses: the Tilo bundle (through the patched
 # rustls-native-certs) on Linux, the Keychain on macOS.

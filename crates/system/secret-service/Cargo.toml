@@ -27,7 +27,7 @@ dev-overrides = []
 tilo-paths.workspace = true
 # The vault's at-rest envelope, the store key derivation and the Secret
 # Service session encryption all live in tilo-seal.
-tilo-seal = { version = "0.1.0", path = "../tilo-seal" }
+tilo-seal = { version = "0.1.0", path = "../../core/tilo-seal" }
 # Owner-only files, written atomically.
 tilo-files = { path = "../../platform/tilo-files" }
 serde.workspace = true
@@ -43,7 +43,7 @@ clap.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time", "process"] }
 zbus = { workspace = true, features = ["tokio"] }
 futures-util.workspace = true
-tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
+tilo-device-identity = { version = "0.1.0", path = "../../core/tilo-device-identity" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
@@ -53,9 +53,9 @@ workspace-hack = { version = "0.1" }
 tempfile.workspace = true
 # tests/identity_ownership.rs: where the production identity and vault code
 # keep their keys when this service answers, is locked, or is absent.
-tilo-identity = { path = "../../runtime/tilo-identity" }
-tilo-identity-client = { path = "../../runtime/tilo-identity-client" }
-tilo-secret-vault = { path = "../secret-vault" }
+tilo-identity = { path = "../../core/tilo-identity" }
+tilo-identity-client = { path = "../../core/tilo-identity-client" }
+tilo-secret-vault = { path = "../../core/secret-vault" }
 # The client half of the device-identity proof a non-dumpable caller makes.
 tilo-secrets = { path = "../../platform/tilo-secrets" }
 ed25519-dalek.workspace = true

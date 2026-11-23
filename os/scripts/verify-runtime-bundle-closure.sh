@@ -32,7 +32,7 @@ lib=$bundle/lib
 fail() { printf 'verify-runtime-bundle-closure: %s\n' "$*" >&2; exit 1; }
 # Whether the bundle signs NEEDED entry $1: at the top of lib/, or, for the
 # loader, at one of the launcher's canonical interpreter paths
-# (CANONICAL_LOADER_PATHS in crates/packaging/launcher/src/sandbox.rs).
+# (CANONICAL_LOADER_PATHS in crates/core/launcher/src/sandbox.rs).
 signed() {
   [ -f "$lib/$1" ] && return 0
   case $1 in ld-linux*) ;; *) held "$lib" "$1" && return 0 ;; esac

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The web entry's bundle (crates/browser/tilo-browser-runtime, release), which the web entry's
+# The web entry's bundle (crates/core/tilo-browser-runtime, release), which the web entry's
 # image serves and the browser checks drive: the site's pages and modules, and the module that
 # gets a browser into a workspace. The apps are not in it — a page's app is the server's,
 # rendered as HTML.
@@ -23,11 +23,11 @@ mkdir -p "$(dirname -- "$out")"
 case $part in
   wasm)
     python3 tools/font-catalog.py root crates/ui/ui-core/assets/fonts --scope fixtures --cache "$TILO_FONT_ASSET_CACHE" >/dev/null
-    crates/browser/tilo-browser-runtime/scripts/build.sh "$out" --profile "${3:-release}" --wasm-only >/dev/null
+    crates/core/tilo-browser-runtime/scripts/build.sh "$out" --profile "${3:-release}" --wasm-only >/dev/null
     ;;
   bundle)
     wasm=${3:?$usage}
-    crates/browser/tilo-browser-runtime/scripts/build.sh "$out" --profile "${4:-release}" --wasm-from "$wasm" >/dev/null
+    crates/core/tilo-browser-runtime/scripts/build.sh "$out" --profile "${4:-release}" --wasm-from "$wasm" >/dev/null
     ;;
   *) echo "$usage" >&2; exit 2 ;;
 esac

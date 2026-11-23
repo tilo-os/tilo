@@ -17,7 +17,7 @@ INPUTS = (
     "tools/ci/cgroup_memory.py", "scripts/ci-run.sh",
     "os/dev/assert-native-arch.sh", "tools/font-catalog.py",
 )
-PACKAGES = ("crates/collab/collab-types", "crates/platform/tilo-clock", "crates/platform/wire-frame")
+PACKAGES = ("crates/core/collab-types", "crates/platform/tilo-clock", "crates/platform/wire-frame")
 
 
 def fingerprint(root: Path) -> str:

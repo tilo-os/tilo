@@ -117,7 +117,7 @@ repository, so the triggers below are what this repository watches for:
 |---|---|---|
 | SoC and board device trees (`arch/arm64/boot/dts/qcom/`) | `linux-arm-msm`, then a mainline tag, then Fedora's kernel | a DTB path exists for a profile; check the Fedora kernel carries it before naming it |
 | IRQ, pinctrl, clock and interconnect changes the new SoC needs | same, as series | the patches this repository carries for the 1st generation may need a 2nd-generation equivalent — `os/kernel/patches.toml` is where that is recorded |
-| Adreno generation support in Turnip | Mesa releases, then Fedora's `mesa-vulkan-drivers` | the launcher pins whatever ICD claims the render node (`crates/packaging/launcher/src/gpu.rs`), so no Tilo change is needed once the ICD reports the node |
+| Adreno generation support in Turnip | Mesa releases, then Fedora's `mesa-vulkan-drivers` | the launcher pins whatever ICD claims the render node (`crates/core/launcher/src/gpu.rs`), so no Tilo change is needed once the ICD reports the node |
 | firmware names the kernel requests | linux-firmware, then Fedora's `qcom-firmware` | decide per file whether the distro package or a staged local set supplies it |
 | A bootloader DMI/ACPI→DT mapping table | the bootloader that ships with the board | if a 2nd-generation machine needs one to describe itself, that bootloader becomes a board input like the Orange Pi's U-Boot, not a Tilo change |
 

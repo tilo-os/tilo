@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The web entry image's build context (crates/browser/tilo-browser-runtime/container): the
+# The web entry image's build context (crates/core/tilo-browser-runtime/container): the
 # web entry's bundle (web-entry-bundle.sh, the web-entry-bundle check's output) laid out under
 # its content version, the developer docs (tools/docs/build-site.sh, the docs-site check's output)
 # under docs/, and the server's files.
@@ -15,7 +15,7 @@ cd "$repo_root"
 [[ -f $docs/index.html && -f $docs/llms.txt ]] || die "no developer docs at $docs"
 rm -rf "$out"
 mkdir -p "$out"
-container=crates/browser/tilo-browser-runtime/container
+container=crates/core/tilo-browser-runtime/container
 python3 -I "$container/layout.py" "$bundle" "$out/site"
 cp -a "$docs" "$out/site/docs"
 cp "$container/Containerfile" "$container/Caddyfile" "$container/entrypoint.sh" "$container/compress.sh" "$out/"

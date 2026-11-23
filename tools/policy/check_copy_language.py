@@ -691,6 +691,11 @@ SURFACE_ROOTS += (
 LIBRARY_SKIP = ("crates/sdk/", "crates/session/")
 # Crates of the same kind that live in other groups.
 LIBRARY_SKIP += (
+    "crates/core/tilo-resource/",
+    "crates/core/tilo-resource-macros/",
+)
+# Crates of the same kind that live in other groups.
+LIBRARY_SKIP += (
     "crates/ui/font-catalog/",
     "crates/ui/theme-painter-wasm/",
     "crates/ui/theme-sdk/",

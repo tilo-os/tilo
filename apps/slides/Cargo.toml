@@ -28,12 +28,12 @@ tilo-files = { path = "../../crates/platform/tilo-files" }
 runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The Tilo action model: doc-mutating operations are replayable, undoable actions.
-tilo-actions = { path = "../../crates/collab/actions" }
+tilo-actions = { path = "../../crates/core/actions" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
-tilo-content = { path = "../../crates/system/content" }
+tilo-content = { path = "../../crates/core/content" }
 # Text boxes are tilo-doc rich text, edited and drawn by the SDK editor.
 tilo-doc = { path = "../../crates/sdk/tilo-doc" }
 tilo-document = { path = "../../crates/sdk/tilo-document" }

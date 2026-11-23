@@ -2,7 +2,7 @@
 # Lint (or, with --check, type-check) what builds for wasm32-unknown-unknown:
 # the browser crates named on the command line, then what the browser builds,
 # each with the packages and features of the script that builds it
-# (crates/browser/tilo-browser-runtime/scripts/build.sh). A lint of each crate
+# (crates/core/tilo-browser-runtime/scripts/build.sh). A lint of each crate
 # alone never compiles the page runtime with every web app linked into it.
 #
 #   tools/ci/check-wasm.sh [--check] [-p <browser crate>]...

@@ -534,7 +534,11 @@ pub struct Clouds;
 impl super::Source for Clouds {
     fn here(&self, cx: &super::Cx<'_>, row: &'static Source) -> super::Here {
         super::Here {
-            next: if cx.place.field::<String>(row.key, ACCOUNT).is_ok_and(|kept| kept.is_some()) {
+            next: if cx
+                .place
+                .field::<String>(row.key, ACCOUNT)
+                .is_ok_and(|kept| kept.is_some())
+            {
                 Some(format!("tilo migrate review {}", row.key))
             } else {
                 row.connect_command()

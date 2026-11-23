@@ -5285,7 +5285,7 @@ tilo_test_env::scenario! {
         let tilo_app = checkout.path().join("crates/sdk/tilo-app/Cargo.toml");
         let runtime = checkout
             .path()
-            .join("crates/runtime/tilo-runtime/Cargo.toml");
+            .join("crates/core/tilo-runtime/Cargo.toml");
         for manifest in [&tilo_app, &runtime] {
             std::fs::create_dir_all(manifest.parent().expect("parent")).expect("crate dir");
             std::fs::write(manifest, "[package]\n").expect("manifest");

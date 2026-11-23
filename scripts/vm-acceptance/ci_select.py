@@ -38,19 +38,19 @@ FEATURES = [
     (re.compile(r"^crates/session/compositor/src/(input|client_input\.rs|lock_|backend/drm/)"), INPUT),
     (re.compile(r"^os/usr/lib/udev/"), INPUT),
     (re.compile(r"^os/hardware/profiles/lenovo-83ed/input/"), INPUT),
-    (re.compile(r"^crates/runtime/tilo-runtime/src/(session_api|mcp|daemon|cli)"), "agent"),
+    (re.compile(r"^crates/core/tilo-runtime/src/(session_api|mcp|daemon|cli)"), "agent"),
     (re.compile(r"^crates/session/session/src/(compositor/mcp_server|shell/agent_admission)"), "agent"),
     # Where the compositor's secrets go: the store, its client, the MLS vault, the portal
     # backend and the identity's secret providers.
     (re.compile(r"^crates/system/secret-service/"), "secrets"),
     (re.compile(r"^crates/platform/tilo-secrets/"), "secrets"),
     (re.compile(r"^crates/session/session/src/(shell/mls_vault\.rs|portal/secret\.rs)$"), "secrets"),
-    (re.compile(r"^crates/runtime/tilo-identity/src/store/secure_store\.rs$"), "secrets"),
+    (re.compile(r"^crates/core/tilo-identity/src/store/secure_store\.rs$"), "secrets"),
     # What keeps the machine's own apps open through an in-place desktop restart: the keeper,
     # the session's launch and adoption of kept apps, the launcher starting them behind it, and
     # the wrapper and the session telling a restart from a logout.
     (re.compile(r"^crates/session/app-(keeper|launch)/"), "A18"),
-    (re.compile(r"^crates/packaging/launcher/src/host\.rs$"), "A18"),
+    (re.compile(r"^crates/core/launcher/src/host\.rs$"), "A18"),
     (re.compile(r"^crates/session/session/src/(apps|restart|restore)\.rs$"), "A18"),
     (re.compile(r"^os/usr/libexec/tilo-session$"), "A18"),
     # The guest-side MCP client belongs to the agent checks that run it.

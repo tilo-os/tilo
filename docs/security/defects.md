@@ -32,7 +32,7 @@ The in-source comment says it outright: *"clearly NOT useful for signing."*
 Any identity minted through the UI ceremony produces signatures that do not verify against its own
 recorded public key.
 
-Compounding: `crates/runtime/tilo-identity/src/store/unix.rs` detects the pubkey/secret
+Compounding: `crates/core/tilo-identity/src/store/unix.rs` detects the pubkey/secret
 mismatch and **deliberately does not fail** — the only signal is a
 `#[cfg(debug_assertions)] eprintln!`. In a release build the failure is silent.
 
@@ -46,17 +46,17 @@ branch, and make the mismatch fatal in the identity store rather than advisory.
 **Resolved.** A person's root is a plain ed25519 key; the identity store persists its seed, and
 its record loader refuses a record whose secret does not derive its recorded public key, in every
 build profile. Every writer goes through one encoder (`IdentityRecord::from_root` in
-`crates/runtime/tilo-identity/src/store/unix.rs`). Held by
-`crates/runtime/tilo-identity/src/store/unix.rs::tests::a_minted_identity_round_trips_and_signs_for_itself`
+`crates/core/tilo-identity/src/store/unix.rs`). Held by
+`crates/core/tilo-identity/src/store/unix.rs::tests::a_minted_identity_round_trips_and_signs_for_itself`
 (phase `the_recorded_secret_signs_for_the_recorded_public_key`) and
-`crates/runtime/tilo-identity/src/store/unix.rs::tests::a_local_secret_must_derive_the_recorded_key_to_sign`
+`crates/core/tilo-identity/src/store/unix.rs::tests::a_local_secret_must_derive_the_recorded_key_to_sign`
 (phase `secret_that_does_not_derive_the_recorded_pubkey_is_refused`).
 
 ---
 
 ## P0-2 — The FUSE replication path performs no authentication
 
-`crates/system/fs/src/sync.rs:159-195`
+`crates/core/fs/src/sync.rs:159-195`
 
 `SyncProtocol::accept` takes any connection on `TILO_FS_SYNC_ALPN` and:
 
@@ -67,9 +67,9 @@ There is no identity check, no ACL consultation, and no signature verification o
 The same applies to `fetch_remote_doc` (`sync.rs:104-113`) and the anti-entropy full-document merge
 (`sync.rs:317`).
 
-The ACL in `crates/system/fs/src/acl.rs` is well-built — fail-closed, deny-biased, delegating to
+The ACL in `crates/core/fs/src/acl.rs` is well-built — fail-closed, deny-biased, delegating to
 `collab_types::decide_capability`, and it aborts the mount rather than serving unenforced. But it is
-consulted only on the FUSE syscall path (`crates/system/fs/src/fs.rs:432`, `:456`, `:561`), i.e. against local
+consulted only on the FUSE syscall path (`crates/core/fs/src/fs.rs:432`, `:456`, `:561`), i.e. against local
 processes. **It is not a replication boundary.**
 
 Any peer that can reach the endpoint and speak the ALPN can read and rewrite the whole namespace.
@@ -79,7 +79,7 @@ ACL per-connection. Depends on a real, persistent device identity existing first
 
 **Resolved in source; runtime qualification separate.** At
 [Tilo `260d8c7d3f`](https://code.tilo.so/tilo/tilo/commit/260d8c7d3f7133c36bf8a7d97a87fb264c286926),
-[`SyncProtocol::accept`](../../crates/system/fs/src/sync.rs) calls
+[`SyncProtocol::accept`](../../crates/core/fs/src/sync.rs) calls
 `authenticate_connection` before request dispatch. `serve_request` refuses a different
 workspace and requires whole-workspace read authority for a document or write authority
 for sync. `accept_namespace_payload` checks authority and the workspace/device signature
@@ -87,9 +87,9 @@ before applying bytes; sync rounds recheck the live write authority. The histori
 unauthenticated replication description above is not a current-source vulnerability claim.
 
 Existing regression sources are
-[`peer_auth::tests`](../../crates/system/fs/src/peer_auth/tests.rs)::
+[`peer_auth::tests`](../../crates/core/fs/src/peer_auth/tests.rs)::
 `peer_auth_rejects_tampered_expired_future_or_revoked_certificates` and
-[`sync::tests`](../../crates/system/fs/src/sync/tests.rs)::
+[`sync::tests`](../../crates/core/fs/src/sync/tests.rs)::
 `namespace_documents_reach_only_entitled_peers_and_readers_cannot_author`,
 `a_host_refuses_a_namespace_request_for_another_workspace`, and
 `a_sync_message_of_another_workspace_is_refused_and_nothing_merges`.
@@ -100,23 +100,23 @@ no tests or installed/deployed acceptance were run by that check.
 
 ## P0-3 — The iroh node key is ephemeral, so FS attribution and ACL subject rotate every boot
 
-`crates/system/fs/src/sync.rs:89-96` builds the endpoint without ever passing a `secret_key`, so the iroh NodeId
+`crates/core/fs/src/sync.rs:89-96` builds the endpoint without ever passing a `secret_key`, so the iroh NodeId
 is freshly random on every process start.
 
 Consequences:
 
-- `crates/system/fs/src/main.rs:221,286` sets `author = endpoint.id().to_string()` — authorship attribution is a
+- `crates/core/fs/src/main.rs:221,286` sets `author = endpoint.id().to_string()` — authorship attribution is a
   new anonymous string each mount.
-- `crates/system/fs/src/main.rs:219,283` resolves the default ACL subject from the same key, so **any ACL grant
+- `crates/core/fs/src/main.rs:219,283` resolves the default ACL subject from the same key, so **any ACL grant
   written against the default subject is dead on the next boot**.
-- The node-id-reuse guard at `crates/system/fs/src/namespace.rs:147-152` ("a restart with the same author can't
+- The node-id-reuse guard at `crates/core/fs/src/namespace.rs:147-152` ("a restart with the same author can't
   reuse a node id") never engages, because the author is never the same twice.
 
 **Resolved.** The mount binds under the machine's device key, so the `NodeId` *is* the device's
 Ed25519 public key and is unchanged across a remount; a device key that will not load fails the
 mount rather than falling back to a random one. `bind_endpoint` is split into
 `bind_endpoint_with_key` and `bind_ephemeral_endpoint` so the random-identity path is named at
-every call site. Held by `crates/system/fs/src/identity.rs::tests::bound_endpoint_is_named_by_the_device_key`
+every call site. Held by `crates/core/fs/src/identity.rs::tests::bound_endpoint_is_named_by_the_device_key`
 and `::the_device_identity_is_the_iroh_key_and_survives_restart` (phase
 `identity_survives_a_restart`).
 
@@ -461,7 +461,7 @@ hardware is not recorded here.
 
 ## P1-3 — MLS does not rekey on member removal
 
-`crates/collab/key-group/src/group.rs:399-404` (as found) — `remove_member` is a `todo!()`. The design
+`crates/core/key-group/src/group.rs:399-404` (as found) — `remove_member` is a `todo!()`. The design
 guarantee is that the group key rotates on *every* membership change; removal is the case that
 matters, and it panics. The in-source workaround is "mint a fresh channel and invite only the
 desired members".
@@ -499,7 +499,7 @@ acknowledges the already durable targeted governance outbox. The ciphertext
 document server is intentionally not that adapter; it must never broadcast
 Welcome bytes.
 
-**Production adapter now present.** `crates/server/tilo-workspace-service/src/apps/workspace_keys.rs`
+**Production adapter now present.** `crates/core/tilo-workspace-service/src/apps/workspace_keys.rs`
 runs a key holder (`key_group::GroupPeer`) for every workspace a device takes part in: it
 reconciles each MLS group with the workspace's access policy, so an invite, a removal, a role change
 that ends access or a revoked device becomes a commit (`GroupPeer::reconcile`, which stages
@@ -518,7 +518,7 @@ Provisioning and recovery UX were not assessed by this reconciliation.
 ## P1-4 — The signed-op validator is never fed in production
 
 The 8-step (extended to 9) validation pipeline in
-`crates/collab/collab-types/src/validator.rs:589` is implemented and thoroughly tested, and the
+`crates/core/collab-types/src/validator.rs:589` is implemented and thoroughly tested, and the
 broker's default state is correctly fail-closed (`crates/session/session/src/app_wire.rs:797-800`: an
 empty `authorised_signers` rejects every signed op).
 
@@ -526,7 +526,7 @@ But `register_channel_state` has no non-test caller, and no production path mint
 `RoleAttestation`. `CollaborationManager::set_identity` / `with_identity` likewise have no callers
 in `crates/session/session/`, `crates/ui/ui-core/`, or `apps/`. Roles are therefore advisory in practice.
 
-`Space` (`crates/collab/collab-types/src/space.rs`) has zero consumers outside its own crate and
+`Space` (`crates/core/collab-types/src/space.rs`) has zero consumers outside its own crate and
 tests. A channel-browser widget with no shell call site has since been removed.
 
 **Resolved.** Both production ingress paths now call
@@ -543,9 +543,9 @@ refuses a replayed duplicate. The old `register_channel_state` observation descr
 bootstrap shape; current authority is populated from admitted workspace state
 at the ingress boundary instead of trusting an app-supplied role attestation.
 Held by the broker ingress tests in
-`crates/server/tilo-workspace-service/src/apps/{collab_broker.rs,collab_app_broker.rs,collab_inbound.rs}`
+`crates/core/tilo-workspace-service/src/apps/{collab_broker.rs,collab_app_broker.rs,collab_inbound.rs}`
 and `crates/session/session/src/app_wire.rs`, plus
-`crates/collab/collab-types/tests/validator.rs`.
+`crates/core/collab-types/tests/validator.rs`.
 
 ---
 
@@ -738,7 +738,7 @@ since changed to `panic = "unwind"` so the compositor can restart its collaborat
 **Residual:** `OffscreenRenderer::render` still `expect`s internally (`crates/ui/ui-core/src/offscreen.rs`, the
 `render_to_texture` and buffer-map paths). Those were nominally inside the same dead
 `catch_unwind`s, so nothing regressed, but a mid-render driver failure still aborts a release
-build. The `catch_unwind` pair in `crates/collab/key-group/src/group.rs:237,379` (now `:523`,
+build. The `catch_unwind` pair in `crates/core/key-group/src/group.rs:237,379` (now `:523`,
 `:710`) was checked
 and is *not* the same defect: it absorbs an openmls `debug_assert!(false, …)` that only fires in
 debug builds, which is where `catch_unwind` works.
@@ -747,7 +747,7 @@ debug builds, which is where `catch_unwind` works.
 
 ## P1-9 — A fetched namespace tree is not bound to the requesting workspace
 
-`crates/system/fs/src/sync.rs`, `sync/session.rs`, `main.rs`
+`crates/core/fs/src/sync.rs`, `sync/session.rs`, `main.rs`
 
 The namespace is one Automerge document per workspace, and nothing inside its bytes says which
 workspace it is. Every path that accepts one from a peer checked the peer's certificate, but none
@@ -783,13 +783,13 @@ payload only after `sync::accept_namespace_payload` has accepted it. That check 
 A host refuses a request for another workspace explicitly. Bootstrap takes the tree only from the
 ticket's node and from persisted peers registered for the same workspace. The share client refuses
 a snapshot whose session is not the invite's workspace and record. Held by
-`crates/system/fs/src/namespace_binding.rs::tests`, the
-`crates/system/fs/src/sync/tests.rs` tests from
+`crates/core/fs/src/namespace_binding.rs::tests`, the
+`crates/core/fs/src/sync/tests.rs` tests from
 `a_document_of_another_workspace_is_refused_although_validly_signed` to
 `read_only_member_never_downloads_full_snapshot` (which replaced
 `a_read_only_pull_merges_only_a_members_document_of_this_workspace`),
-`crates/system/fs/src/sync/session/tests.rs` and
-`crates/system/fs/src/record_repository.rs::tests::a_validly_signed_changeset_of_another_workspace_is_refused`.
+`crates/core/fs/src/sync/session/tests.rs` and
+`crates/core/fs/src/record_repository.rs::tests::a_validly_signed_changeset_of_another_workspace_is_refused`.
 
 ---
 
@@ -809,7 +809,7 @@ other's publishes. Held by
 (phase `distinct_peers_never_share_an_entry`),
 `crates/session/network-actor/src/behaviour.rs::tests::device_key_persists_and_is_never_replaced`
 (phase `liveness_and_salt_are_stable`) and
-`crates/collab/neighbour-wire/src/lib.rs::tests::peer_handle_is_fnv1a_of_the_device_key`.
+`crates/core/neighbour-wire/src/lib.rs::tests::peer_handle_is_fnv1a_of_the_device_key`.
 
 ## P2-2 — Corrupt peer-key file silently rotates identity
 
@@ -825,13 +825,13 @@ The write goes through an atomic write-with-mode, closing the TOCTOU window. The
 `/var/lib/tilo/device-private/keypair.bin` (`DEVICE_KEY_PATH`). Held by
 `crates/session/network-actor/src/behaviour.rs::tests::device_key_persists_and_is_never_replaced`
 (phase `malformed_key_is_never_replaced`), `::created_device_key_is_not_world_accessible`, and
-`crates/collab/tilo-device-identity/src/persist.rs::tests::device_keys_are_group_private_created_once_and_never_rotated_silently`.
+`crates/core/tilo-device-identity/src/persist.rs::tests::device_keys_are_group_private_created_once_and_never_rotated_silently`.
 
 ## P2-3 — Revocation is modelled but undeliverable
 
-`crates/collab/tilo-user-identity/src/revocation.rs` implements signed revocation entries with
+`crates/core/tilo-user-identity/src/revocation.rs` implements signed revocation entries with
 correct before/after-cutoff semantics (tested at
-`crates/collab/tilo-user-identity/src/revocation.rs::tests::revocations_verify_only_untampered_and_from_the_root`), but
+`crates/core/tilo-user-identity/src/revocation.rs::tests::revocations_verify_only_untampered_and_from_the_root`), but
 `PeerIdentityStore::set_revocations` has no non-test caller and there is no distribution mechanism.
 
 **Resolved.** Each workspace heartbeat now starts with an `IdentityHello` carrying the sender's
@@ -840,11 +840,11 @@ key, certificate, every revocation signature, expiry, and revocation status befo
 production collaboration message; a later revocation removes the peer immediately. Revocation
 also withdraws this machine's exported filesystem authority and stops the app identity broker
 from signing locally. Held by
-`crates/collab/tilo-peer-state/src/state/personal.rs::a_revoked_device_writes_nothing_after_its_revocation`
+`crates/core/tilo-peer-state/src/state/personal.rs::a_revoked_device_writes_nothing_after_its_revocation`
 (a heartbeat's hello is what admits a device, and its revocation removes it),
-`crates/collab/tilo-peer-state/src/direct.rs::a_revocation_refuses_only_the_device_its_own_root_certified`,
-`crates/collab/tilo-peer-state/src/admission_tests.rs::a_banned_person_cannot_redeem_an_invitation_until_unbanned`,
-and `crates/runtime/tilo-identity/src/broker.rs::tests::identity_service_wire_is_pinned` with
+`crates/core/tilo-peer-state/src/direct.rs::a_revocation_refuses_only_the_device_its_own_root_certified`,
+`crates/core/tilo-peer-state/src/admission_tests.rs::a_banned_person_cannot_redeem_an_invitation_until_unbanned`,
+and `crates/core/tilo-identity/src/broker.rs::tests::identity_service_wire_is_pinned` with
 `::privileged_moderation_signing_requires_the_selected_trusted_device`.
 
 
@@ -858,12 +858,12 @@ signed, at whatever time: a device added later, or one that came back, could rea
 removed device had written into (four of the five scenarios of
 `crates/session/client/tests/revoked_device_history.rs` failed, for each of the four reasons
 alike). Now the device that writes a removal into a workspace's governance writes its cut beside it
-(`crates/collab/tilo-peer-state/src/removals.rs`); a removed device's change is decided, when it is
+(`crates/core/tilo-peer-state/src/removals.rs`); a removed device's change is decided, when it is
 taken in and when it is handed to an app, by that cut
-(`crates/collab/tilo-peer-state/src/state/authority.rs::written_as`); a replica that knows a
+(`crates/core/tilo-peer-state/src/state/authority.rs::written_as`); a replica that knows a
 removal and not its cut holds such changes undecided; and the governing device writes the cut of a
 removal that was written before cuts were kept the next time it opens the workspace. Held by
-`crates/collab/tilo-peer-state/src/state/removal_tests.rs::removing_a_device_takes_its_future_and_keeps_its_persons_past`
+`crates/core/tilo-peer-state/src/state/removal_tests.rs::removing_a_device_takes_its_future_and_keeps_its_persons_past`
 (history for each reason; a device that keeps writing, dates its writes back, sends an old one
 again or signs a new compaction under a number it used; a cut nobody lowers or erases) and by the
 five scenarios named above.
@@ -887,10 +887,10 @@ removal holds a change the others never take.
 a server that was away and tried again, and a page that had not got in yet showed "Can't reach …"
 for as long as it stayed open. Now a server that refuses a hello for the removal alone answers it
 with that one reason, signed for that hello
-(`crates/server/tilo-server-protocol/src/auth.rs::HelloRefusal::said_of`, written by
+(`crates/core/tilo-server-protocol/src/auth.rs::HelloRefusal::said_of`, written by
 `say_refusal` in the server's own `handshake.rs`). The device checks it as it
 checks that server's acknowledgement and stops with `device-revoked`
-(`crates/server/tilo-server-session/src/client/handshake.rs::refusal`), and its page says "This
+(`crates/core/tilo-server-session/src/client/handshake.rs::refusal`), and its page says "This
 browser was removed from your devices". A device built before reads the refusal as it did, and a
 server built before sends none, which reads as it did too. Held by
 `crates/session/client/tests/carriers.rs::a_removed_device_is_told_that_it_was_removed`
@@ -899,7 +899,7 @@ that handshake's own tests (`a_removed_device_is_told_so_before_its_hello_is_clo
 `a_hello_refused_for_anything_else_is_closed_with_nothing_said`,
 `a_removed_device_at_an_entry_is_told_only_once_it_proved_its_key`,
 `a_refusal_that_says_why_is_held_until_its_device_let_go_of_the_stream`), and
-`crates/server/tilo-server-protocol/src/auth.rs::tests::a_refusal_says_why_only_where_the_refusal_already_tells`.
+`crates/core/tilo-server-protocol/src/auth.rs::tests::a_refusal_says_why_only_where_the_refusal_already_tells`.
 
 **Not built.** Every other refusal at the handshake is still closed with nothing said: a person
 the server no longer admits, and a certificate that expired or does not verify. Such a device
@@ -913,8 +913,8 @@ told them as much, since nothing else refuses that certificate there.
 ## P2-3c — A withdrawn delegation's work is kept by its cut; what a copy took before it heard of the withdrawal stays
 
 A member lets a server take their work in a workspace by a delegation their own device signs, and
-takes it back by a withdrawal (`crates/collab/collab-types/src/work_delegation.rs`,
-`crates/collab/tilo-peer-state/src/state/work_delegations.rs`).
+takes it back by a withdrawal (`crates/core/collab-types/src/work_delegation.rs`,
+`crates/core/tilo-peer-state/src/state/work_delegations.rs`).
 
 **As built.** Before this entry a write taken as kept history was decided as of the time its author
 stamped, and a withdrawn delegation read live before the time its withdrawal names: a server went
@@ -923,15 +923,15 @@ withdrawal carries its cut under the member's signature: what their device held 
 work, document by document (`HeldWork`, signed by `revoke_work_delegation`). A copy that holds a
 withdrawal takes of that server's work for that member what the cut keeps, as history, and refuses
 the rest, whoever hands it over and whatever time it names
-(`crates/collab/tilo-peer-state/src/state/authority.rs::written_as`, `withdrawal_keeping`); a
+(`crates/core/tilo-peer-state/src/state/authority.rs::written_as`, `withdrawal_keeping`); a
 document the cut does not name keeps nothing, and a withdrawal is read live at no time. Held by
-`crates/collab/tilo-peer-state/src/receipt_tests.rs`:
+`crates/core/tilo-peer-state/src/receipt_tests.rs`:
 `a_withdrawal_stops_the_servers_work_whatever_time_a_write_names`,
 `copies_that_hold_a_withdrawal_end_alike_whatever_order_they_met_it_in`,
 `a_document_the_withdrawal_names_no_cut_for_takes_nothing_of_the_server`,
 `a_withdrawal_is_read_live_at_no_time` and
 `only_a_device_of_the_member_signs_the_cut_of_their_withdrawal`, and by
-`crates/collab/collab-types/src/work_delegation.rs`:
+`crates/core/collab-types/src/work_delegation.rs`:
 `work_delegation::tests::a_withdrawal_keeps_what_its_cut_names_and_nothing_else`.
 
 **Not built.** The taking out. What a copy took of the server's work before the withdrawal reached
@@ -951,9 +951,9 @@ document it held, and nothing tells its person. Such a copy knows of governance 
 From that refusal on it takes in no write on the roles and grants of the document it kept: what
 they would admit is held, the way a write under governance not yet held is, and the base the copy
 takes later decides it
-(`crates/collab/tilo-peer-state/src/state/authority.rs::behind_its_governor`,
+(`crates/core/tilo-peer-state/src/state/authority.rs::behind_its_governor`,
 `authorize_document`); what they refuse stays refused, the withdrawn server's work with it. Held by
-`crates/collab/tilo-peer-state/src/withdrawal_base_tests.rs`:
+`crates/core/tilo-peer-state/src/withdrawal_base_tests.rs`:
 `a_copy_that_refused_its_governors_base_refuses_the_write_of_a_member_the_governor_demoted`,
 `a_copy_that_refused_its_governors_base_refuses_the_write_of_a_member_the_governor_removed`,
 `a_copy_that_refused_its_governors_base_refuses_the_use_of_a_grant_the_governor_revoked`,
@@ -964,13 +964,13 @@ that comes again before the copy's governor hands it the base again is decided o
 copy holds; once the base is handed to it and refused again, the copy holds again. And a member's
 batch to the workspace's own document on the old base is still decided by the old roles on that
 copy. The held writes wait where every held write waits, under that queue's bounds
-(`crates/collab/tilo-peer-state/src/state/held.rs`).
+(`crates/core/tilo-peer-state/src/state/held.rs`).
 
 ## P2-4 — Egress documentation describes a weaker mechanism than the code implements
 
 `docs/app-model/sandbox.md:162-172` describes DNS-layer filtering that direct-IP connections bypass.
 The code has no DNS proxy — `dns-only` resolves to `EgressDecision::Blocked`
-(`crates/packaging/launcher/src/egress_proxy.rs:241`) and address literals arrive as
+(`crates/core/launcher/src/egress_proxy.rs:241`) and address literals arrive as
 `Destination::Addr` and are matched as literals, pinned by the test
 `an_address_literal_never_matches_a_hostname_grant` (`egress_proxy.rs:1112`).
 
@@ -1093,7 +1093,7 @@ guarantee. ARM64 builds therefore lack this layer.
 
 ## P1-12 — A filesystem grant covering the home directory reaches Tilo's private stores
 
-`crates/packaging/launcher/src/capabilities.rs`, `is_bindable_path`. A granted path is bound and
+`crates/core/launcher/src/capabilities.rs`, `is_bindable_path`. A granted path is bound and
 allowed by Landlock with no filter beyond absolute-and-not-`/`, and Landlock cannot carve a hole
 beneath an allowed directory. An app granted `$HOME` or `~/.config` therefore reads, as the same
 uid, the identity store's fallback secrets (`~/.config/tilo/identity/secrets/*.key`, the person's
@@ -1119,7 +1119,7 @@ profile confines the same plan (`launcher_macos::policy::SeatbeltPolicy::resolve
 grant and the chooser's picked-path extension, denies each store outright and every write to each
 directory and symlink its path resolves through, spelled as the disk spells it, so nothing can
 rename an ancestor aside (`SeatbeltPolicy::hidden`/`pinned`). Held by the live `sandbox-exec`
-launches in `crates/packaging/launcher-macos/tests/seatbelt_launch.rs`
+launches in `crates/core/launcher-macos/tests/seatbelt_launch.rs`
 (`a_home_grant_never_reaches_tilos_private_stores` and its symlink and sibling-grant cases).
 
 The Settings app's own bind of the store is not a grant, and it used to bind the whole
@@ -1139,7 +1139,7 @@ launch.
 
 ## P2-9 — The per-launch identity broker loads the root secret and never uses it
 
-`crates/packaging/launcher/src/run.rs`, `start_identity_broker`. Every authored launch loads the
+`crates/core/launcher/src/run.rs`, `start_identity_broker`. Every authored launch loads the
 selected record *with* its secret (`load_for_launch`, a Secret Service round
 trip or a read of the fallback file) into a broker thread that refuses `sign` for every record
 it can be given (`SigningIdentity::signs_with_root_key` is true whenever `device_certificate` is
@@ -1156,10 +1156,10 @@ answers metadata and refuses every `sign` with the same bytes. Neither contacts 
 provider; an unsecured store record still fails the launch, as does one naming a provider this
 session cannot resolve. The secret-loading `load_for_launch`, the identity-backed `broker::serve`
 and its dead local-signing arm are gone. Held by
-`crates/packaging/launcher/src/run.rs::identity_resolution_tests::a_launch_never_reads_the_identity_secret`
+`crates/core/launcher/src/run.rs::identity_resolution_tests::a_launch_never_reads_the_identity_secret`
 (the secret is deleted from its provider before the launch),
-`crates/runtime/tilo-identity/src/store/unix.rs::tests::a_launch_reads_public_fields_without_the_secret_provider`
-and `crates/runtime/tilo-identity/src/broker.rs::tests::broker_answers_metadata_and_refuses_every_sign_over_pinned_bounded_frames`.
+`crates/core/tilo-identity/src/store/unix.rs::tests::a_launch_reads_public_fields_without_the_secret_provider`
+and `crates/core/tilo-identity/src/broker.rs::tests::broker_answers_metadata_and_refuses_every_sign_over_pinned_bounded_frames`.
 
 ---
 
@@ -1229,9 +1229,9 @@ These are load-bearing and correct. Changing them requires understanding why the
   *"send the guest another invite"* becomes a way to re-point them at an attacker.
 - `crates/session/session/src/:1078-1084` — a role **is** the verb on the membership capability, not a
   separately stored field, so the two cannot drift.
-- `crates/packaging/launcher/src/egress_proxy.rs` — egress is fail-closed: if the check cannot start the
+- `crates/core/launcher/src/egress_proxy.rs` — egress is fail-closed: if the check cannot start the
   launch is refused, not downgraded.
-- `crates/collab/collab-types/src/caps/net.rs` (`host_covers`) — `host_covers` is shared by the grant model and the
+- `crates/core/collab-types/src/caps/net.rs` (`host_covers`) — `host_covers` is shared by the grant model and the
   egress proxy specifically so the two interpretations cannot diverge.
 - `docs/app-model/trust.md:218` — package revocation is re-read at every launch; there is no
   "trust the install-time verification forever" cache.

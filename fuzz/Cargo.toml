@@ -12,10 +12,10 @@ libfuzzer-sys = "0.4"
 landlock = "0.4"
 postcard = { version = "1", features = ["alloc"] }
 
-tilo-app-package = { path = "../crates/packaging/tilo-app-package" }
-launcher = { path = "../crates/packaging/launcher" }
-tilo-user-identity = { path = "../crates/collab/tilo-user-identity" }
-tilo-workspace-join = { path = "../crates/collab/workspace-join" }
+tilo-app-package = { path = "../crates/core/tilo-app-package" }
+launcher = { path = "../crates/core/launcher" }
+tilo-user-identity = { path = "../crates/core/tilo-user-identity" }
+tilo-workspace-join = { path = "../crates/core/workspace-join" }
 tilo-render-protocol = { path = "../crates/ui/tilo-render-protocol" }
 tilo-font-catalog = { path = "../crates/ui/font-catalog" }
 vello_encoding = { package = "tilo-vello-encoding", path = "../vendor/vello_encoding" }
@@ -62,4 +62,4 @@ members = ["."]
 # The fuzz workspace resolves the same patched crates as the main workspace:
 # Rustls roots through tilo-native-certs (no OpenSSL path probing).
 [patch.crates-io]
-rustls-native-certs = { path = "../crates/system/tilo-native-certs" }
+rustls-native-certs = { path = "../crates/core/tilo-native-certs" }

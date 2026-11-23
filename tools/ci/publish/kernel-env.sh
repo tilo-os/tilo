@@ -11,8 +11,8 @@ kernel_signer_crate() {
   local out=$1
   rm -rf "$out" && mkdir -p "$out/src"
   python3 os/kernel/project-crate.py --workspace Cargo.toml \
-    --member crates/system/tilo-crypto/Cargo.toml --lockfile Cargo.lock --output "$out"
-  cp crates/system/tilo-crypto/src/lib.rs crates/system/tilo-crypto/src/main.rs "$out/src/"
+    --member crates/core/tilo-crypto/Cargo.toml --lockfile Cargo.lock --output "$out"
+  cp crates/core/tilo-crypto/src/lib.rs crates/core/tilo-crypto/src/main.rs "$out/src/"
   # Resolving the projected crate prunes the copied lockfile to its own dependencies. Where
   # there is no cargo (the buildah image) it stays the whole lockfile, which the kernel build's
   # own cargo prunes as it resolves.

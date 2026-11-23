@@ -15,7 +15,7 @@ server = ["dep:wayland-server", "dep:wayland-scanner", "dep:wayland-backend"]
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
-tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+tilo-actions = { version = "0.1.0", path = "../../core/actions" }
 wayland-client = { workspace = true, optional = true }
 wayland-server = { version = "=0.31.13", optional = true }
 wayland-backend = { version = "0.3", optional = true }

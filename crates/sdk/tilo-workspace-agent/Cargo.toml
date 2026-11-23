@@ -10,18 +10,18 @@ homepage.workspace = true
 description = "A workspace's agents: one record Chat keeps, holding each agent's name, the person it acts for, and model"
 
 [dependencies]
-collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
+collab-types = { version = "0.1.0", path = "../../core/collab-types" }
 serde.workspace = true
 serde_json.workspace = true
-tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
-tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
-tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
+tilo-action-policy = { version = "0.1.0", path = "../../core/action-policy" }
+tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }
+tilo-app-id = { version = "0.1.0", path = "../../core/tilo-app-id" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+tilo-actions = { version = "0.1.0", path = "../../core/actions" }
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 
 [lints]

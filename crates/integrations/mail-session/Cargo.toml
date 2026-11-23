@@ -29,7 +29,7 @@ rustls.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "time"] }
 # The vocabulary a page's mail actions carry: what a folder read answers and
 # what a send is told.
-tilo-actions = { path = "../../collab/actions" }
+tilo-actions = { path = "../../core/actions" }
 futures-util.workspace = true
 serde_json.workspace = true
 # A deadline that is the same clock on every machine, a page included.

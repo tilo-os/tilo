@@ -11,9 +11,9 @@ serde_json.workspace = true
 # The object a migration rewrites a person's hints in.
 automerge.workspace = true
 serde.workspace = true
-tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-resource = { path = "../../core/tilo-resource" }
 uuid.workspace = true
-tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
+tilo-app-id = { version = "0.1.0", path = "../../core/tilo-app-id" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }

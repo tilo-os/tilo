@@ -128,7 +128,7 @@ REQUEST = "What is left for the release?"
 FIXED_REPLY = "Three tasks are left in the release. (This is the e2e test model's fixed reply.)"
 TEST_MODEL = "e2e-fixed-reply"
 # The tool calls the test-only model makes before it replies, one a turn: it lists the apps, reads
-# Notes and makes a note, through the tools every agent works with (crates/runtime/tilo-mcp).
+# Notes and makes a note, through the tools every agent works with (crates/core/tilo-mcp).
 TOOL_TURNS = [
     ("tilo_ls", {}),
     ("tilo_ls", {"path": "notes"}),

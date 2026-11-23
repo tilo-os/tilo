@@ -18,7 +18,7 @@ cd "$repo_root"
 # buildah bind-mounts single files only from a writable context, so the build gets a copy of
 # exactly the files the Containerfile uses.
 context_files=(dist/ci/install-build-deps.sh os/external-assets/github-assets.tsv
-  crates/browser/tilo-browser-runtime/Cargo.toml os/containers/tilo-sh/caddy.env
+  crates/core/tilo-browser-runtime/Cargo.toml os/containers/tilo-sh/caddy.env
   tools/ci/check-build-env.sh tools/ci/install-android-ndk.sh tools/ci/install-pdfium.sh
   tools/ci/native-mold-linker.sh tools/ci/verify-native-mold.sh tools/ci/windows/wine-prefix.sh
   tools/ci/install-wine.sh os/external-assets/wine/*.patch
@@ -31,7 +31,7 @@ context_files=(dist/ci/install-build-deps.sh os/external-assets/github-assets.ts
 # also the version a stack's build binds with. One file names it, so the image and the build
 # cannot disagree.
 wasm_bindgen_version() {
-  sed -n 's/^wasm-bindgen = "=\(.*\)"$/\1/p' crates/browser/tilo-browser-runtime/Cargo.toml \
+  sed -n 's/^wasm-bindgen = "=\(.*\)"$/\1/p' crates/core/tilo-browser-runtime/Cargo.toml \
     | head -n 1
 }
 

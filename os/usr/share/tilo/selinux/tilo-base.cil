@@ -172,7 +172,7 @@
 (allow tilo_fs_t NetworkManager_var_run_t (dir (getattr search open read)))
 (allow tilo_fs_t NetworkManager_var_run_t (file (getattr open read)))
 
-; The device's copies of public files (crates/system/fs/src/public_content.rs)
+; The device's copies of public files (crates/core/fs/src/public_content.rs)
 ; are fetched over HTTPS, verified against the system trust bundle under
 ; /etc/pki: without it the daemon has no client and never fetches a copy.
 (allow tilo_fs_t cert_t (dir (getattr search open read)))

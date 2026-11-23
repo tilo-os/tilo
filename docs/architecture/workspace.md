@@ -80,7 +80,7 @@ local writes and granted file paths stays on that device.
 ## Members and devices
 
 **A member is a person's identity**: a certified human root
-(`crates/collab/tilo-user-identity`). Membership, roles,
+(`crates/core/tilo-user-identity`). Membership, roles,
 grants and history name members, never devices.
 
 **A member has devices.** Each device has its own key, certified by the root;
@@ -430,7 +430,7 @@ Markdown file put in the folder stays a file, which Notes can open.
 
 Membership and permissions are workspace state, changed by actions like any
 other state and checked by the action policy
-(`crates/collab/action-policy`). A key holder with the grant admits a
+(`crates/core/action-policy`). A key holder with the grant admits a
 member or a device and hands over the keys; there is no single device that
 owns the workspace's governance.
 
@@ -708,19 +708,19 @@ nobody. The relaying device takes sixteen sessions through admission at
 once, at most four of them of one endpoint, and four more of endpoints that
 none of its workspaces names as a device, which therefore cannot keep a
 workspace's devices out (`MAX_ADMITTING`, `MAX_ADMITTING_OF_ONE` and
-`MAX_ADMITTING_STRANGERS` in `crates/collab/tilo-live/src/relay.rs`). One
+`MAX_ADMITTING_STRANGERS` in `crates/core/tilo-live/src/relay.rs`). One
 more it closes as busy, unread: it judged nobody, so the device it closed
 asks again the same way and reads as told busy by it (`relay-busy`), where a
 device that did not reach it reads as waiting to reach it and a device it
 judged and did not admit reads as refused. A live session reads thirty-two devices
-at once (`MAX_HEARD` in `crates/collab/tilo-live/src/live_session.rs`): each is
+at once (`MAX_HEARD` in `crates/core/tilo-live/src/live_session.rs`): each is
 three tracks that it and the relay hold open, about 250 KiB between them,
 and that, not the transport, is what a further device costs. A device that
 is in the live session beyond those is not heard on this device, and the live session's
 row says how many those are and why (`unheard`, `unheard_why`, `not_heard`).
 The connection to the relay is allowed the streams thirty-two devices take
 once its session is admitted (`MAX_BI_STREAMS` and `MAX_UNI_STREAMS` in
-`crates/collab/tilo-live/src/native.rs`), on a session's endpoint as on one
+`crates/core/tilo-live/src/native.rs`), on a session's endpoint as on one
 bound for the live session alone. The share's reading
 says how far that came, since a live session that is not open drops nothing and
 reports nothing by itself: `live` names each workspace's live session as open or by

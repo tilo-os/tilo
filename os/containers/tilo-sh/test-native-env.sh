@@ -95,7 +95,7 @@ status=0
 
 # What start_native_web hands its image's ENV: the two folders, and no other
 # name. Its image sets both, so the refusal above stops no start of it.
-web=$repo/crates/browser/tilo-browser-runtime/container/Containerfile
+web=$repo/crates/core/tilo-browser-runtime/container/Containerfile
 handed=$(sed -n '/^start_native_web() {/,/^}/p' "$here/stack.sh" | grep -c 'image_env_here "\$container/Containerfile"' || true)
 [[ $handed == 1 ]] || fault "start_native_web no longer hands its image's ENV on as this test reads it ($handed calls)"
 (image_env_here "$web" "XDG_DATA_HOME=$work/web/data" "XDG_CONFIG_HOME=$work/web/config") \

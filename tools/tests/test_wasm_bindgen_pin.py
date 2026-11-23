@@ -13,7 +13,7 @@ import subprocess
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-CRATE = ROOT / 'crates/browser/tilo-browser-runtime/Cargo.toml'
+CRATE = ROOT / 'crates/core/tilo-browser-runtime/Cargo.toml'
 ASSETS = ROOT / 'os/external-assets/github-assets.tsv'
 BUILDER = ROOT / 'os/Containerfile.builder'
 DEVELOPER = ROOT / 'dist/dev/Containerfile.fedora44'
@@ -38,7 +38,7 @@ class WasmBindgenPinTests(unittest.TestCase):
 
     def test_the_ci_builder_installs_the_crates_pin(self):
         text = BUILDER.read_text()
-        self.assertIn('crates/browser/tilo-browser-runtime/Cargo.toml', text)
+        self.assertIn('crates/core/tilo-browser-runtime/Cargo.toml', text)
         self.assertIsNone(
             re.search(r'wasm-bindgen-[0-9]+\.[0-9]+\.[0-9]+-', text),
             'the builder names a version instead of reading the crate manifest')

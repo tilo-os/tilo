@@ -63,7 +63,7 @@ wire-frame = { path = "../../platform/wire-frame" }
 tilo-files = { optional = true, path = "../../platform/tilo-files" }
 url.workspace = true
 agent-provider-config = { path = "../provider-config" }
-tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
+tilo-app-id = { version = "0.1.0", path = "../../core/tilo-app-id" }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 tilo-clock = { path = "../../platform/tilo-clock", optional = true }
@@ -84,7 +84,7 @@ bytes = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 # The person's model is asked through the session this computer holds with
 # their workspace's server, as its `tilo` commands are.
-tilo-api = { path = "../../server/tilo-api", optional = true }
+tilo-api = { path = "../../core/tilo-api", optional = true }
 anyhow = { workspace = true, optional = true }
 
 workspace-hack = { version = "0.1" }

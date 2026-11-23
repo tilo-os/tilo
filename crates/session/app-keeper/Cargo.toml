@@ -62,7 +62,7 @@ workspace-hack = { version = "0.1" }
 tilo-app-keeper = { path = ".", features = ["test-support"] }
 tilo-compositor = { path = "../compositor", features = ["test-support"] }
 # The colour a window's description says, as the desktop reads it back.
-neighbour-wire = { path = "../../collab/neighbour-wire" }
+neighbour-wire = { path = "../../core/neighbour-wire" }
 # A child started under the environment lock, outside every other test's scope.
 tilo-test-env = { path = "../../../tools/test-env" }
 tempfile.workspace = true

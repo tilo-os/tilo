@@ -1421,7 +1421,7 @@ mod tests {
             // Each refusal as it travels, with its code and words (tilo-actions holds the file to the
             // type): what the CLI, the API server and the page read off it.
             let file: Vec<Value> = serde_json::from_str(include_str!(
-                "../../../collab/actions/tests/provider_refusals.json"
+                "../../../core/actions/tests/provider_refusals.json"
             ))
             .unwrap();
             for entry in file {

@@ -17,9 +17,9 @@ ignored = ["napi-build"]
 napi = { version = "3", default-features = false, features = ["napi8", "async", "serde-json"] }
 napi-derive = "3"
 serde_json.workspace = true
-tilo-api = { path = "../../../crates/server/tilo-api" }
+tilo-api = { path = "../../../crates/core/tilo-api" }
 # Its workers, which start as the `tilo-automerge-worker` program shipped beside this library.
-tilo-automerge-isolate = { path = "../../../crates/doc/tilo-automerge-isolate" }
+tilo-automerge-isolate = { path = "../../../crates/core/tilo-automerge-isolate" }
 workspace-hack = { version = "0.1" }
 
 [build-dependencies]

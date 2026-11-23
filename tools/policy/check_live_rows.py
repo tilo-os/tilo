@@ -57,17 +57,17 @@ ROOT = Path(__file__).resolve().parents[2]
 # Every other crate — an app, and the SDK crates it builds its surfaces with —
 # declares.
 FRAMEWORK = (
-    "crates/agent/agent-session",
-    "crates/browser/tilo-browser-runtime",
-    "crates/collab/actions",
-    "crates/collab/automation",
-    "crates/collab/collaboration",
+    "crates/core/agent-session",
+    "crates/core/tilo-browser-runtime",
+    "crates/core/actions",
+    "crates/core/automation",
+    "crates/core/collaboration",
     "crates/lang/tilolang",
     "crates/sdk/tilo-app-window",
     "crates/lang/tilolang-tilo",
-    "crates/runtime/tilo-runtime/src/device/control",
+    "crates/core/tilo-runtime/src/device/control",
     "crates/sdk/tilo-app",
-    "crates/sdk/tilo-resource",
+    "crates/core/tilo-resource",
     "crates/ui/ui-core",
 )
 SCOPES = ("apps", "crates", "tools")

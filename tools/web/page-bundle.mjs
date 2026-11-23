@@ -1,6 +1,6 @@
 // The runtime module for a page test: what `serve` needs to answer a page
 // module's `./pkg/tilo_browser_runtime.js` import when the page's sources are
-// served straight from `crates/browser/tilo-browser-runtime/web/`.
+// served straight from `crates/core/tilo-browser-runtime/web/`.
 //
 // `pageBundle()` builds `pkg/` with the bundle script (one build path, the
 // one a release takes) in the `quick` profile, and hands back the directory
@@ -35,7 +35,7 @@ export function pageBundle({profile = 'quick'} = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'tilo-page-bundle-'));
   const result = spawnSync(
     'bash',
-    [join(repo, 'crates/browser/tilo-browser-runtime/scripts/build.sh'), dir, '--profile', profile, '--module-only'],
+    [join(repo, 'crates/core/tilo-browser-runtime/scripts/build.sh'), dir, '--profile', profile, '--module-only'],
     // The build's progress goes to stderr: a page driver's stdout is the
     // channel its test reads answers from.
     {cwd: repo, stdio: ['ignore', process.stderr, 'inherit']},

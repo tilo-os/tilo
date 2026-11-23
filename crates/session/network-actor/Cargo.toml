@@ -15,46 +15,46 @@ test-support = []
 [dependencies]
 blake3.workspace = true
 bytes.workspace = true
-collab-types = { path = "../../collab/collab-types" }
+collab-types = { path = "../../core/collab-types" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 getrandom.workspace = true
 hex.workspace = true
 libc.workspace = true
 iroh.workspace = true
 media = { package = "tilo-media", path = "../../engines/tilo-media", features = ["realtime"] }
-neighbour-wire = { path = "../../collab/neighbour-wire" }
+neighbour-wire = { path = "../../core/neighbour-wire" }
 os-actions = { path = "../../system/os-actions" }
 postcard = { workspace = true, features = ["alloc"] }
-runtime-collab = { path = "../../runtime/runtime-collab" }
+runtime-collab = { path = "../../core/runtime-collab" }
 serde.workspace = true
 serde_json.workspace = true
 settings-store = { path = "../../system/settings-store" }
 thiserror.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
-tilo-delivery-protocol = { path = "../../server/tilo-delivery-protocol" }
+tilo-delivery-protocol = { path = "../../core/tilo-delivery-protocol" }
 tilo-session-core = { path = "../core" }
 tilo-desktop-model = { path = "../desktop-model" }
-tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
+tilo-endpoint-reachability = { path = "../../core/endpoint-reachability" }
 # Who a device is and the revision a fact carries, as every host reads them.
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
-tilo-identity = { path = "../../runtime/tilo-identity" }
+tilo-identity = { path = "../../core/tilo-identity" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-nearby-service = { path = "../nearby-service" }
-tilo-peer-state = { path = "../../collab/tilo-peer-state" }
-tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
-tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["apps"] }
+tilo-peer-state = { path = "../../core/tilo-peer-state" }
+tilo-server-protocol = { path = "../../core/tilo-server-protocol" }
+tilo-workspace-service = { path = "../../core/tilo-workspace-service", features = ["apps"] }
 tilo-rt.workspace = true
-tilo-seal = { path = "../../system/tilo-seal" }
+tilo-seal = { path = "../../core/tilo-seal" }
 tilo-session-client = { path = "../client" }
 tilo-unlock-protocol = { path = "../../os/tilo-unlock-protocol" }
-tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+tilo-user-identity = { path = "../../core/tilo-user-identity" }
 # The join contract's transport hint, named where it is owned.
-tilo-workspace-join = { path = "../../collab/workspace-join" }
+tilo-workspace-join = { path = "../../core/workspace-join" }
 tokio = { workspace = true, features = ["full"] }
 tracing.workspace = true
 # Workspace sync states, as apps are told them.
 ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
-tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
+tilo-device-identity = { version = "0.1.0", path = "../../core/tilo-device-identity" }
 wire-frame = { path = "../../platform/wire-frame", features = ["tokio"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -67,7 +67,7 @@ p256 = { version = "0.14", features = ["ecdsa"] }
 fnv.workspace = true
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 tempfile.workspace = true
-tilo-peer-state = { path = "../../collab/tilo-peer-state", features = ["test-support"] }
+tilo-peer-state = { path = "../../core/tilo-peer-state", features = ["test-support"] }
 tilo-test-env = { path = "../../../tools/test-env" }
 
 [lints]

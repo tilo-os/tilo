@@ -41,7 +41,7 @@ class AppArtifactHandoffTests(unittest.TestCase):
             "tools/apps/assemble_app_collection.py",
             "apps/calculator/Cargo.toml", "apps/calculator/tilo-app.toml",
             "apps/calculator/surface.toml",
-            "crates/packaging/tilo-app-package/max-app-bytes",
+            "crates/core/tilo-app-package/max-app-bytes",
             "tools/apps/dev_app_versions.py", "dist/apps/app-collections.toml", ".cargo/config.toml", "tools/apps/app_package_isa.py",
         ):
             self.write(relative, (ROOT / relative).read_text())

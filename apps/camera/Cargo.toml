@@ -42,7 +42,7 @@ settings-model = { path = "../../crates/system/settings-model" }
 camera-model = { path = "../camera-model" }
 # The Tilo ACTION model: Camera's `actions` module exports capture/scan metadata
 # operations as replayable actions the host's Ctrl+K palette dispatches.
-tilo-content = { path = "../../crates/system/content" }
+tilo-content = { path = "../../crates/core/content" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -4,7 +4,7 @@
 Every `apps/*/tilo-app.toml` is one first-party package, and so is every tilolang package
 in `apps/tl` whose `app` line names a `so.tilo.<name>` id: the one that took over a native
 app's id when the native app was deleted. The ids are written to
-`crates/platform/tilo-app-id/src/apps/app_ids.rs`, which no one edits by hand: every
+`crates/core/tilo-app-id/src/apps/app_ids.rs`, which no one edits by hand: every
 crate that names a first-party app reads its constant from there.
 
   first-party-catalogue.py           write the ids
@@ -21,7 +21,7 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-OUTPUT = ROOT / "crates/platform/tilo-app-id/src/apps/app_ids.rs"
+OUTPUT = ROOT / "crates/core/tilo-app-id/src/apps/app_ids.rs"
 
 
 TILOLANG_APP = re.compile(r"^app (so\.tilo\.[a-z][a-z0-9-]*)\s", re.MULTILINE)

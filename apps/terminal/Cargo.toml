@@ -62,7 +62,7 @@ tracing.workspace = true
 # Kitty graphics transmissions carry base64-encoded payloads.
 base64.workspace = true
 # What a command printed, which its record names by content.
-tilo-content = { path = "../../crates/system/content", default-features = false }
+tilo-content = { path = "../../crates/core/content", default-features = false }
 
 # The desktop surface's dependencies, on by the `desktop` feature alone.
 tilo-process = { version = "0.1.0", path = "../../crates/platform/tilo-process", features = ["native-editor"], optional = true }
@@ -71,7 +71,7 @@ runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 portable-pty = { version = "0.9.0", optional = true }
 # The application runtime the terminal hosts. Only its client half is used:
 # the service protocol and the descriptor-passing helper.
-runtime-portal = { path = "../../crates/runtime/runtime-portal", optional = true }
+runtime-portal = { path = "../../crates/core/runtime-portal", optional = true }
 # The VT emulator: parser, grid with scrollback and reflow, modes and replies.
 alacritty_terminal = { version = "0.26.0", optional = true }
 # The window bar's search can find a regular expression in the scrollback.

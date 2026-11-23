@@ -36,7 +36,7 @@ git-client-model = { path = "../git-client-model" }
 # syntax highlight, whitespace, wrap), the repository the resource opens and the
 # shared repository projection are document state, changed by replayable
 # actions the shell's Ctrl+K palette dispatches too.
-tilo-actions = { path = "../../crates/collab/actions" }
+tilo-actions = { path = "../../crates/core/actions" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true

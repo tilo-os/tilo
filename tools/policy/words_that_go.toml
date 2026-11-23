@@ -211,4 +211,4 @@ idents = ["legacy row", "param row"]
 [[word]]
 row = "REST clients in our code (tilo-api client.rs, SDK HTTP runtimes)"
 idents = ["http transport"]
-paths = ["crates/server/tilo-api/src/client.rs", "crates/server/tilo-api/src/client/"]
+paths = ["crates/core/tilo-api/src/client.rs", "crates/core/tilo-api/src/client/"]

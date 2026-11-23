@@ -269,7 +269,7 @@ const PUBLISHED: &[Published] = &[
         roots: &[],
         // What a workspace's own actions are, written beside the service that publishes them.
         files: &[include_str!(
-            "../../../server/tilo-workspace-service/workspace-surface.toml"
+            "../../../core/tilo-workspace-service/workspace-surface.toml"
         )],
         described: false,
     },

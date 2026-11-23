@@ -23,7 +23,7 @@ wire-frame = { path = "../../platform/wire-frame", optional = true }
 tokio = { workspace = true, features = ["sync"], optional = true }
 tracing = { workspace = true, optional = true }
 accounts = { path = "../accounts", features = ["person"] }
-tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
+tilo-app-id = { version = "0.1.0", path = "../../core/tilo-app-id" }
 
 [target.'cfg(unix)'.dependencies]
 # The app's side of the service socket is reached by path.
@@ -33,7 +33,7 @@ tilo-files = { path = "../../platform/tilo-files" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-resource = { path = "../../core/tilo-resource" }
 
 [lints]
 workspace = true

@@ -351,7 +351,7 @@ runtime's own vtables, statics and Wayland interface tables in every app
 process.
 
 Cold, the same pages come from disk. `tilo-runtime-resident.service`
-(`tilo-launcher runtime-resident`, `crates/packaging/launcher/src/runtime_resident.rs`)
+(`tilo-launcher runtime-resident`, `crates/core/launcher/src/runtime_resident.rs`)
 maps the runtime library and the libraries of its bundle it needs, for every
 runtime the system registry names, read-only, and locks them once per boot,
 at idle I/O priority. The page cache then holds one copy that every app maps,

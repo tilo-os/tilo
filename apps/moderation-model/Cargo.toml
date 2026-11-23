@@ -10,11 +10,11 @@ description = "Reports and moderation decisions, kept in a workspace resource un
 serde.workspace = true
 serde_json.workspace = true
 automerge.workspace = true
-tilo-actions = { version = "0.1.0", path = "../../crates/collab/actions" }
-tilo-resource = { version = "0.1.0", path = "../../crates/sdk/tilo-resource" }
+tilo-actions = { version = "0.1.0", path = "../../crates/core/actions" }
+tilo-resource = { version = "0.1.0", path = "../../crates/core/tilo-resource" }
 
 [dev-dependencies]
-tilo-resource = { path = "../../crates/sdk/tilo-resource", features = ["test-support"] }
+tilo-resource = { path = "../../crates/core/tilo-resource", features = ["test-support"] }
 
 [lints]
 workspace = true

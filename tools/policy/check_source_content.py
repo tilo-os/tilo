@@ -96,6 +96,21 @@ def inherited_ids(root, parents, path):
     return found
 
 
+def pinned_ids(root, parents):
+    """The blob ids the parents' own exception manifests pin, at whatever path.
+
+    A pinned asset that moves keeps its exact bytes, so it admits nothing new.
+    """
+    found = set()
+    for parent in parents:
+        try:
+            manifest = git(root, "show", f"{parent}:{EXCEPTIONS}")
+        except subprocess.CalledProcessError:
+            continue
+        found.update(entry["oid"] for entry in json.loads(manifest))
+    return found
+
+
 def audit(root, staged=False):
     if staged:
         entries = []
@@ -139,6 +154,7 @@ def audit(root, staged=False):
             parents.extend(merge_path.read_text().splitlines())
         except FileNotFoundError:
             pass
+    pinned = pinned_ids(root, parents)
     failures = []
     with subprocess.Popen(
         ["git", "-C", str(root), "cat-file", "--batch"],
@@ -163,7 +179,9 @@ def audit(root, staged=False):
                 if len(data) != size or process.stdout.read(1) != b"\n":
                     raise ValueError("incomplete blob: " + path)
                 issues = content_issues(data)
-                changed_exception = staged and issues and oid not in inherited_ids(root, parents, path)
+                changed_exception = (
+                    staged and issues and oid not in pinned and oid not in inherited_ids(root, parents, path)
+                )
                 if issues and (allowed.get(path) != oid or changed_exception):
                     failures.append(path + ": " + ", ".join(issues) + ("; new/modified non-text or non-LF blobs are forbidden" if changed_exception else ""))
         process.stdin.close()

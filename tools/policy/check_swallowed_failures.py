@@ -60,9 +60,9 @@ ROOT = Path(__file__).resolve().parents[2]
 # Where a failure is the person's or a peer's problem when it is dropped: every
 # rule below holds here.
 SCANNED = (
-    Path("crates/server/tilo-workspace-service/src/apps"),
-    Path("crates/collab/tilo-peer-state"),
-    Path("crates/collab/collaboration"),
+    Path("crates/core/tilo-workspace-service/src/apps"),
+    Path("crates/core/tilo-peer-state"),
+    Path("crates/core/collaboration"),
     Path("crates/sdk/tilo-app"),
     Path("crates/session/session"),
     Path("crates/session/capture-studio"),
@@ -74,8 +74,8 @@ DECODE_ONLY = (
     Path("crates/lang/tilolang-process"),
     Path("crates/lang/tilolang-tilo"),
     Path("crates/sdk/tilo-app-window"),
-    Path("crates/server/tilo-workspace-service"),
-    Path("crates/runtime/runtime-portal"),
+    Path("crates/core/tilo-workspace-service"),
+    Path("crates/core/runtime-portal"),
 )
 # The call a dropped failure names its reason in (`crates/platform/tilo-failure`),
 # from its name to the bracket that closes it.

@@ -35,7 +35,7 @@ if (mode === 'call') {
   process.exit(process.exitCode ?? 0);
 }
 if (mode !== 'node') throw new Error('usage: page-driver.mjs node | call FIXTURE_URL WHO...');
-const web = fileURLToPath(new URL('../../../../browser/tilo-browser-runtime/web/', import.meta.url));
+const web = fileURLToPath(new URL('../../../../core/tilo-browser-runtime/web/', import.meta.url));
 const base64 = hex => Buffer.from(hex, 'hex').toString('base64');
 
 const bundle = pageBundle();

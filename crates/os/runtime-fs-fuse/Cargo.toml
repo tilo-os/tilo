@@ -18,7 +18,7 @@ name = "runtime_fs_fuse"
 path = "src/lib.rs"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-runtime-fs = { path = "../../runtime/runtime-fs" }
+runtime-fs = { path = "../../core/runtime-fs" }
 fuser.workspace = true
 libc.workspace = true
 

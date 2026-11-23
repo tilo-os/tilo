@@ -10,7 +10,7 @@ description = "The music catalogues of tilolang packages: keeps a package's musi
 tilolang-tilo = { path = "../../lang/tilolang-tilo" }
 tilolang-runtime = { path = "../../lang/tilolang-runtime" }
 # The action API an instance attaches to the connector over.
-runtime-portal = { path = "../../runtime/runtime-portal", optional = true }
+runtime-portal = { path = "../../core/runtime-portal", optional = true }
 # YouTube Music's own client, as Music reached it: each query compiled once beside rustypipe.
 tilo-innertube = { path = "../tilo-innertube", optional = true }
 rustypipe = { workspace = true, features = ["rustls-no-provider"], optional = true }

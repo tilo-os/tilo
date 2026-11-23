@@ -25,7 +25,7 @@ base64.workspace = true
 # The person's and the device's settings documents.
 automerge.workspace = true
 # Changes another process made, taken whole or not at all.
-tilo-automerge = { version = "0.1.0", path = "../../doc/tilo-automerge" }
+tilo-automerge = { version = "0.1.0", path = "../../core/tilo-automerge" }
 tracing.workspace = true
 unicode-normalization = "0.1.25"
 # Spec-correct `XDG_CONFIG_HOME` resolution (absolute, non-empty, else
@@ -40,8 +40,8 @@ durable-store = { version = "0.1.0", path = "../durable-store" }
 # The system locale that stands in when the person has chosen no language.
 tilo-process = { version = "0.1.0", path = "../../platform/tilo-process", features = ["native"] }
 # The sections' types as models, so an app edits them by path.
-tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource", optional = true }
-tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
+tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource", optional = true }
+tilo-app-id = { version = "0.1.0", path = "../../core/tilo-app-id" }
 settings-model = { version = "0.1.0", path = "../settings-model" }
 
 [features]

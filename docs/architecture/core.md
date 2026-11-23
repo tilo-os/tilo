@@ -570,7 +570,7 @@ session.
 ### Today
 
 A resource is an Automerge document. Its changes are carried as
-`neighbour_wire::NeighbourMsg` frames (`crates/collab/neighbour-wire`,
+`neighbour_wire::NeighbourMsg` frames (`crates/core/neighbour-wire`,
 5,046), sealed under MLS content keys from `key-group` (9,993) and
 `workspace-keys` (8,337).
 
@@ -970,7 +970,7 @@ actions of the daemon. Owner:
 ### Today
 
 The registry is already shared. Every entry point lists and invokes actions
-through `tilo_actions::remote::ActionProvider` (`crates/collab/actions`
+through `tilo_actions::remote::ActionProvider` (`crates/core/actions`
 `remote.rs`; `RemoteActionFrame`, `REMOTE_ACTIONS_VERSION = 2`), and about
 30 types implement it: the session, the workspace service, the agent
 session's `WorkspaceActions`, `SessionActions`, the standalone runtime,

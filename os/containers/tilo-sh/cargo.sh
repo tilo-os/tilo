@@ -5,7 +5,7 @@
 # `$TILO_SH_CARGO build ARGS…`, which must leave the programs in ./target as
 # cargo would. Anything
 # else (metadata) is this machine's cargo. It is also the CARGO the web
-# bundle's build script gets (crates/browser/tilo-browser-runtime/scripts/build.sh),
+# bundle's build script gets (crates/core/tilo-browser-runtime/scripts/build.sh),
 # which reads the module where this leaves it.
 # `cargo.sh [--fetch PATH]... exec PROGRAM ARGS…` runs PROGRAM on the build
 # server and mirrors PATH of its target dir back (`$TILO_SH_CARGO exec`): what

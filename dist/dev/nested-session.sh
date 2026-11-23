@@ -453,7 +453,7 @@ export TILO_LAUNCHER_BIN=$bin/tilo-launcher
 # A development session: the session hands a running tilolang app each
 # reinstall of its package, verified as a launch is, so `tilolang dev` swaps a
 # new build in without a restart
-# (crates/runtime/tilo-runtime/src/device/processes.rs). A shipped session ignores it.
+# (crates/core/tilo-runtime/src/device/processes.rs). A shipped session ignores it.
 export TILO_LAUNCHER_LIVE_MODULES=1
 # A development session logs warnings and errors unless RUST_LOG says
 # otherwise: a shipped session logs errors only, and a watch that could not

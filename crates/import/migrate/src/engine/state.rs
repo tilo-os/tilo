@@ -312,10 +312,11 @@ impl Fields for OnDisk {
     fn get(&self, source: &str, field: &str) -> Result<Option<Value>> {
         let path = self.path(source, field);
         match std::fs::read(&path) {
-            Ok(bytes) => Ok(Some(
-                serde_json::from_slice(&bytes)
-                    .with_context(|| format!("{} is damaged", path.display()))?,
-            )),
+            Ok(bytes) => {
+                Ok(Some(serde_json::from_slice(&bytes).with_context(|| {
+                    format!("{} is damaged", path.display())
+                })?))
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error).with_context(|| format!("{} is unreadable", path.display())),
         }
@@ -333,9 +334,7 @@ impl Fields for OnDisk {
             None => match std::fs::remove_file(&path) {
                 Ok(()) => Ok(()),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(error) => {
-                    Err(error).with_context(|| format!("forgetting {}", path.display()))
-                }
+                Err(error) => Err(error).with_context(|| format!("forgetting {}", path.display())),
             },
         }
     }

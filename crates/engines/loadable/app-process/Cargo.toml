@@ -42,8 +42,8 @@ runtime-dylib = { path = "../../../sdk/runtime-dylib", optional = true }
 # The features Store builds them with (the app host's client only, without
 # its daemon): one package-service in the thin graph, or the app's symbols would
 # name a crate hash this library does not export.
-package-service = { path = "../../../packaging/package-service", default-features = false, optional = true }
-app-catalogue = { path = "../../../packaging/app-catalogue", optional = true }
+package-service = { path = "../../../core/package-service", default-features = false, optional = true }
+app-catalogue = { path = "../../../core/app-catalogue", optional = true }
 # Optional like everything else: an empty build must not link the hack's whole
 # dependency set into a shared object.
 workspace-hack = { version = "0.1", optional = true }

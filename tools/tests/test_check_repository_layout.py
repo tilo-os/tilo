@@ -69,7 +69,7 @@ class RepositoryLayoutTests(unittest.TestCase):
                 ),
                 [
                     "tracked file is inside generated `__pycache__` directory: tools/__pycache__/check.cpython-314.pyc",
-                    "tracked file uses retired source root `fs/`; move it under `crates/system/fs/`: fs/src/lib.rs",
+                    "tracked file uses retired source root `fs/`; move it under `crates/core/fs/`: fs/src/lib.rs",
                 ],
             )
 
@@ -142,13 +142,13 @@ class RepositoryLayoutTests(unittest.TestCase):
                 [
                     "tracked file uses retired source root `apps/imager/profile-tool/`; move it under `tools/imager-profile/`: apps/imager/profile-tool/src/main.rs",
                     "tracked file uses retired source root `crates/app/`; move it under `crates/sdk/`: crates/app/tilo-app/src/lib.rs",
-                    "tracked file uses retired source root `crates/format/`; move it under `crates/doc/`: crates/format/format-host/src/main.rs",
-                    "tracked file uses retired source root `crates/identity/`; move it under `crates/collab/`: crates/identity/tilo-user-identity/src/lib.rs",
+                    "tracked file uses retired source root `crates/format/`; move it under `crates/sdk/`: crates/format/format-host/src/main.rs",
+                    "tracked file uses retired source root `crates/identity/`; move it under `crates/core/`: crates/identity/tilo-user-identity/src/lib.rs",
                     "tracked file uses retired source root `crates/packaging/hello/`; move it under `examples/packaging/hello/`: crates/packaging/hello/src/main.rs",
                     "tracked file uses retired source root `crates/packaging/notes-cli/`; move it under `examples/packaging/notes-cli/`: crates/packaging/notes-cli/src/main.rs",
                     "tracked file uses retired source root `crates/session/tilo-power/`; move it under `crates/os/power/`: crates/session/tilo-power/src/main.rs",
                     "tracked file uses retired source root `crates/system/windows-vm/`; move it under `crates/compat/windows-vm/`: crates/system/windows-vm/src/lib.rs",
-                    "tracked file uses retired source root `fs/`; move it under `crates/system/fs/`: fs/src/lib.rs",
+                    "tracked file uses retired source root `fs/`; move it under `crates/core/fs/`: fs/src/lib.rs",
                     "tracked file uses retired source root `os/usr/lib/systemd/system/tilo-power.service`; move it under `crates/os/power/`: os/usr/lib/systemd/system/tilo-power.service",
                     "tracked file uses retired source root `plan/`; move it under `docs/architecture/`: plan/security.md",
                     "tracked file uses retired source root `release/`; move it under `dist/`: release/local-models/recipe.sh",

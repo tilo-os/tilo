@@ -59,7 +59,7 @@ dx12-shader-cache = ["tilo-runner-native?/dx12-shader-cache"]
 [dependencies]
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 jiff.workspace = true
-registry-types = { version = "0.1.0", path = "../../packaging/registry-types" }
+registry-types = { version = "0.1.0", path = "../../core/registry-types" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # Scratch directories for test and capture profiles.
 tilo-paths.workspace = true
@@ -72,16 +72,16 @@ durable-store = { version = "0.1.0", path = "../../system/durable-store" }
 # Whose each app's records are, as the fleet's manifests declare (`[resources] own`).
 # The workspace's tree record, which a window that lists its folder's changes in History
 # opens for them.
-fs-protocol = { version = "0.1.0", path = "../../system/fs-protocol" }
+fs-protocol = { version = "0.1.0", path = "../../core/fs-protocol" }
 # The resource layer the framework binds views to; re-exported so the
 # `#[resource]` and `#[derive(Model)]` expansions resolve through the prelude.
-tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
-tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }
+tilo-actions = { version = "0.1.0", path = "../../core/actions" }
 # The spelling of a conversation's record id, shared with the workspace's own
 # record list.
-collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
+collab-types = { version = "0.1.0", path = "../../core/collab-types" }
 # The link grammar `share-link` renders.
-tilo-reference = { version = "0.1.0", path = "../../collab/reference" }
+tilo-reference = { version = "0.1.0", path = "../../core/reference" }
 tilo-history = { version = "0.1.0", path = "../tilo-history" }
 # The workspace's own emoji and its agents, which every window opens and
 # offers its views.
@@ -101,7 +101,7 @@ tempfile.workspace = true
 tracing.workspace = true
 # The content store a host lends the app (`ViewCx::content`), in every build;
 # the native build below adds its directory store for `render`.
-tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
+tilo-content = { version = "0.1.0", path = "../../core/content", default-features = false }
 
 [[test]]
 name = "it"
@@ -114,18 +114,18 @@ required-features = ["test-support"]
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 # `render` stores the picture it answers with.
-tilo-content = { version = "0.1.0", path = "../../system/content" }
+tilo-content = { version = "0.1.0", path = "../../core/content" }
 # The native process host lends the window the device content store.
-tilo-content-device = { version = "0.1.0", path = "../../system/content-device" }
+tilo-content-device = { version = "0.1.0", path = "../../core/content-device" }
 # The test hosts hold their workspace's content secret, as a route does.
-tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
+tilo-seal = { version = "0.1.0", path = "../../core/tilo-seal" }
 # The test hosts keep a profile's records in the native store.
 tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
 tilo-runner-native = { version = "0.1.0", path = "../runner-native", default-features = false, optional = true }
 # The headless test host decides the records another workspace holds as the workspace broker
 # does, in the workspace it holds (`test-support`): a window itself never decides them, so the
 # desktop and the apps reach no host's broker through this crate.
-tilo-broker-core = { version = "0.1.0", path = "../../collab/broker-core", optional = true }
+tilo-broker-core = { version = "0.1.0", path = "../../core/broker-core", optional = true }
 tilo-desktop-model = { version = "0.1.0", path = "../../session/desktop-model", optional = true }
 
 [dev-dependencies]

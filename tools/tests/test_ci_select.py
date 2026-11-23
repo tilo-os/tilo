@@ -487,7 +487,7 @@ class SelectorTests(unittest.TestCase):
                                  (["vendor/automerge-other/src/lib.rs"], {}),
                                  (["vendor/vello_encoding-other/src/lib.rs"], {}),
                                  (["vendor/iroh/src/lib.rs"], {}),
-                                 (["crates/doc/tilo-automerge/src/lib.rs"], {}),
+                                 (["crates/core/tilo-automerge/src/lib.rs"], {}),
                                  (["base/src/lib.rs"], {"all_suites": True})):
             with self.subTest(changes=changes, options=options):
                 unrelated = plan(changes, **options)

@@ -16,7 +16,7 @@ ignored = ["serde_bytes"]
 [dependencies]
 # What a window's command palette offers: the actions its app publishes, as the session's
 # action directory lists them.
-tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+tilo-actions = { version = "0.1.0", path = "../../core/actions" }
 peniko = "0.6.1"
 postcard = { workspace = true, features = ["alloc"] }
 serde.workspace = true

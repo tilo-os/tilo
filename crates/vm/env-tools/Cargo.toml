@@ -19,13 +19,13 @@ path = "src/main.rs"
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-files = { path = "../../platform/tilo-files" }
 bounded-command = { path = "../../platform/bounded-command" }
-tilo-app-package = { path = "../../packaging/tilo-app-package" }
+tilo-app-package = { path = "../../core/tilo-app-package" }
 # The publisher key file.
-registry-types = { path = "../../packaging/registry-types" }
+registry-types = { path = "../../core/registry-types" }
 tilo-environment = { path = "../environment" }
 # The build sandbox reaches its runtime's repositories and nothing else.
-tilo-egress = { path = "../../runtime/egress" }
-package-store = { path = "../../packaging/package-store", features = ["store"] }
+tilo-egress = { path = "../../core/egress" }
+package-store = { path = "../../core/package-store", features = ["store"] }
 
 anyhow.workspace = true
 blake3.workspace = true
@@ -39,7 +39,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 xattr = "1.6.1"
 tilo-paths.workspace = true
-tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
+tilo-device-identity = { version = "0.1.0", path = "../../core/tilo-device-identity" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

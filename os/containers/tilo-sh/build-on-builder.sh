@@ -88,7 +88,7 @@ build_programs() {
 # the same output), more the more threads.
 bindgen_tool() {
   local pinned tool carried
-  pinned=$(sed -n 's/^wasm-bindgen = "=\(.*\)"$/\1/p' "$repo/crates/browser/tilo-browser-runtime/Cargo.toml")
+  pinned=$(sed -n 's/^wasm-bindgen = "=\(.*\)"$/\1/p' "$repo/crates/core/tilo-browser-runtime/Cargo.toml")
   # A tool an earlier build made here is this tree's own, and native where the image's is musl.
   tool=$CARGO_TARGET_DIR/tools/wasm-bindgen-$pinned
   if [[ -x $tool/bin/wasm-bindgen ]]; then
@@ -117,7 +117,7 @@ bindgen_tool() {
 build_bundle() {
   local bindgen
   bindgen=$(bindgen_tool) || { echo 'could not build wasm-bindgen' >&2; return 1; }
-  WASM_BINDGEN=$bindgen bash "$repo/crates/browser/tilo-browser-runtime/scripts/build-wasm-on-builder.sh" "$bundle" "$run" \
+  WASM_BINDGEN=$bindgen bash "$repo/crates/core/tilo-browser-runtime/scripts/build-wasm-on-builder.sh" "$bundle" "$run" \
     --profile quick --no-wasm-opt --update
 }
 

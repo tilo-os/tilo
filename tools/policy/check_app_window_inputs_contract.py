@@ -9,7 +9,7 @@ is no process environment to read.
 This check fails on a process-environment read (`env::var`, `env::var_os`,
 `env::vars`, `env::args`) in `crates/ui/ui-core/src`,
 `crates/sdk/tilo-process-services/src`, the collab client below the toolkit
-(`crates/collab/collaboration/src`) and the process inputs themselves
+(`crates/core/collaboration/src`) and the process inputs themselves
 (`crates/platform/tilo-process/src/environment`) outside:
 
 * the native modules (`src/native/`);
@@ -40,7 +40,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SRC = Path("crates/ui/ui-core/src")
 BELOW_TOOLKIT = (
     (Path("crates/sdk/tilo-process-services/src"), None),
-    (Path("crates/collab/collaboration/src"), None),
+    (Path("crates/core/collaboration/src"), None),
     (Path("crates/platform/tilo-process/src"), "environment"),
 )
 

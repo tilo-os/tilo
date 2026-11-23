@@ -41,12 +41,12 @@ app-cli = { path = "../../crates/os/app-cli" }
 # api this app talks to over the launcher-issued capability, not code it
 # links; with it, the content store and the filesystem would also land in
 # the shared runtime every app maps.
-package-service = { path = "../../crates/packaging/package-service", default-features = false }
+package-service = { path = "../../crates/core/package-service", default-features = false }
 # The installed-package row the app host lists.
-package-store = { path = "../../crates/packaging/package-store" }
+package-store = { path = "../../crates/core/package-store" }
 # Flathub's cached AppStream metadata, shared with desktop search. The block
 # list comes through `ui::registry`.
-app-catalogue = { path = "../../crates/packaging/app-catalogue" }
+app-catalogue = { path = "../../crates/core/app-catalogue" }
 tilo-app-id.workspace = true
 blake3.workspace = true
 getrandom.workspace = true
@@ -68,9 +68,9 @@ tilo-net = { path = "../../crates/platform/tilo-net", features = ["blocking"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
+tilo-app-package = { path = "../../crates/core/tilo-app-package" }
 desktop-entry = { package = "tilo-desktop-entry", path = "../../crates/system/desktop-entry" }
-package-service = { path = "../../crates/packaging/package-service", default-features = false, features = ["test-support", "service"] }
+package-service = { path = "../../crates/core/package-service", default-features = false, features = ["test-support", "service"] }
 tempfile.workspace = true
 tilo-test-env = { path = "../../tools/test-env" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

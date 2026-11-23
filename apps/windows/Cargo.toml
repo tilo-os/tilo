@@ -19,14 +19,14 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-tilo-actions = { path = "../../crates/collab/actions" }
+tilo-actions = { path = "../../crates/core/actions" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 vello.workspace = true
 winit.workspace = true
 compat-service = { path = "../../crates/compat/compat-service" }
-runtime-portal = { path = "../../crates/runtime/runtime-portal" }
+runtime-portal = { path = "../../crates/core/runtime-portal" }
 bounded-command = { path = "../../crates/platform/bounded-command" }
 # Installs Windows support through the extension helper Settings uses.
 os-actions = { path = "../../crates/system/os-actions" }

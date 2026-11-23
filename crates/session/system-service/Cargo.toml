@@ -12,13 +12,13 @@ os-actions = { path = "../../system/os-actions" }
 serde.workspace = true
 serde_json.workspace = true
 settings-store = { path = "../../system/settings-store" }
-tilo-actions = { path = "../../collab/actions" }
+tilo-actions = { path = "../../core/actions" }
 # What is booted, staged and rolled back to, as the deployment status socket lists it.
 tilo-deployment-status = { path = "../../os/deployment-status" }
 # Following the live update's state as it is written.
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 tilo-location = { path = "../../platform/tilo-location" }
-tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-resource = { path = "../../core/tilo-resource" }
 tilo-service = { path = "../service" }
 # The resources' ids, actions and readings' types, which an app shares.
 tilo-system-resources = { path = "../../platform/tilo-system-resources" }

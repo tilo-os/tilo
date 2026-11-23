@@ -620,7 +620,7 @@ mod tests {
             let walk = walk(
                 "   3: statx\n   4: std::sys::fs::unix::try_statx\n   5: std::fs::metadata::<&std::path::Path>\n\
              \x20  6: <tilo_identity::store::registry::store::DirStamp>::of\n\
-             \x20            at ./crates/runtime/tilo-identity/src/store/registry/store.rs:234:20\n\
+             \x20            at ./crates/core/tilo-identity/src/store/registry/store.rs:234:20\n\
              \x20  7: <tilo_session::network::Network>::kick_periodic_sync\n\
              \x20  8: <tilo_session::network::Network>::frame_tick\n\
              \x20  9: tilo_session::Session::run\n  10: tilo_session::run\n  11: main",

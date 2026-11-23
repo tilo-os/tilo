@@ -16,7 +16,7 @@ name = "console_model"
 path = "src/lib.rs"
 
 [dependencies]
-tilo-resource = { path = "../../crates/sdk/tilo-resource" }
+tilo-resource = { path = "../../crates/core/tilo-resource" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }

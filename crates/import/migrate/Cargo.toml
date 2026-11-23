@@ -24,18 +24,18 @@ anyhow.workspace = true
 account-credentials = { path = "../../integrations/account-credentials" }
 cloud-source = { path = "../../integrations/cloud-source" }
 # A cloud drive is opened as the filesystem opens it.
-tilo-fs = { package = "tilo-fs", path = "../../system/fs" }
+tilo-fs = { package = "tilo-fs", path = "../../core/fs" }
 # A browser profile's bookmarks and history.
 browser-continuity = { workspace = true, features = ["native"] }
 # The accounts record a migration connects an account in, and the edit Settings makes of it.
-collab-types = { path = "../../collab/collab-types" }
-tilo-actions = { path = "../../collab/actions" }
+collab-types = { path = "../../core/collab-types" }
+tilo-actions = { path = "../../core/actions" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
-tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
+tilo-app-id = { version = "0.1.0", path = "../../core/tilo-app-id" }
 rand.workspace = true
 # Whether a run's process still runs.
 # What a typo-free edit to the workspace's accounts record is.
-tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-resource = { path = "../../core/tilo-resource" }
 base64.workspace = true
 blake3.workspace = true
 # Calendar's wall-time formats and dates.
@@ -57,7 +57,7 @@ serde_json.workspace = true
 sha2.workspace = true
 # Thunderbird's saved passwords (NSS: key4.db, logins.json), read so they move
 # to the person's vault; the one reviewed home of that cryptography.
-tilo-seal = { path = "../../system/tilo-seal" }
+tilo-seal = { path = "../../core/tilo-seal" }
 tempfile.workspace = true
 tilo-net = { workspace = true, features = ["blocking"] }
 # The stored RRULE spelling and the time-zone names a calendar keeps.

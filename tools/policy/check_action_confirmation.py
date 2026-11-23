@@ -40,7 +40,7 @@ TREES = ("apps", "crates", "tools", "examples")
 MANIFEST = "tools/policy/undoable-deletions.toml"
 
 # Kept in step with `GENERIC_CONFIRMATION_WORDS` in
-# crates/collab/actions/src/contract.rs.
+# crates/core/actions/src/contract.rs.
 GENERIC_WORDS = {
     "confirm", "confirmed", "yes", "ok", "okay", "sure", "agree", "i agree", "continue",
     "proceed", "accept", "delete", "remove", "erase", "wipe", "reset", "destroy",

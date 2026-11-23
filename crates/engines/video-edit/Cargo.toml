@@ -24,11 +24,11 @@ media = { package = "tilo-media", path = "../tilo-media", default-features = fal
 thumbnail = { package = "tilo-thumbnail", path = "../thumbnail" }
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-paths = { path = "../../platform/tilo-paths" }
-tilo-actions = { path = "../../collab/actions" }
+tilo-actions = { path = "../../core/actions" }
 # The project is a resource: its fields derive the document model.
-tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-resource = { path = "../../core/tilo-resource" }
 # Content addresses for imported media.
-tilo-content = { path = "../../system/content", default-features = false }
+tilo-content = { path = "../../core/content", default-features = false }
 tilo-lock = { path = "../../platform/tilo-lock" }
 tilo-rt = { path = "../../platform/tilo-rt" }
 # The toolkit's clock, so a capture or a replay reads one boundary.

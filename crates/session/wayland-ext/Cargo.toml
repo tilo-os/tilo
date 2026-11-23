@@ -9,7 +9,7 @@ license.workspace = true
 [dependencies]
 # Colorimetry and HDR10 metadata are the neighbour protocol's vocabulary, so a
 # shared surface keeps the description its client attached.
-neighbour-wire = { path = "../../collab/neighbour-wire" }
+neighbour-wire = { path = "../../core/neighbour-wire" }
 # A monitor's identity, read from its EDID, is the key a saved display
 # layout follows between ports.
 settings-store = { path = "../../system/settings-store" }

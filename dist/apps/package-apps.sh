@@ -32,7 +32,7 @@ source_epoch=${SOURCE_DATE_EPOCH:-0}
     exit 2
 }
 # The same byte count the Rust package checks compile in.
-size_policy=$repo_root/crates/packaging/tilo-app-package/max-app-bytes
+size_policy=$repo_root/crates/core/tilo-app-package/max-app-bytes
 policy_max_tapp_bytes=$(<"$size_policy")
 [[ $policy_max_tapp_bytes =~ ^[1-9][0-9]*$ ]] \
     || { printf '%s must hold a positive byte count\n' "$size_policy" >&2; exit 1; }

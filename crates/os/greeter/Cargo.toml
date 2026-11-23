@@ -16,7 +16,7 @@ path = "src/main.rs"
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # The sign-in screen's actions are declared with the resource macros.
-tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-resource = { path = "../../core/tilo-resource" }
 # Keyboards coming and going in /dev/input.
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 # Mirrors the dep set used by the in-tree `ui`-based apps
@@ -29,7 +29,7 @@ winit.workspace = true
 taffy.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-tilo-startup-metrics = { version = "0.1.0", path = "../../system/tilo-startup-metrics" }
+tilo-startup-metrics = { version = "0.1.0", path = "../../core/tilo-startup-metrics" }
 zeroize.workspace = true
 bounded-command = { path = "../../platform/bounded-command" }
 greetd-client = { path = "../greetd-client" }

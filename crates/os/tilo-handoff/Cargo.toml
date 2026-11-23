@@ -33,7 +33,7 @@ test-support = []
 base64 = { workspace = true, optional = true }
 ed25519-dalek = { workspace = true, optional = true }
 hex.workspace = true
-tilo-identity-client = { path = "../../runtime/tilo-identity-client", optional = true }
+tilo-identity-client = { path = "../../core/tilo-identity-client", optional = true }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -41,14 +41,14 @@ sha2.workspace = true
 # dependency.
 staging-handoff-model = { path = "../../../apps/staging-handoff-model" }
 tilo-files = { path = "../../platform/tilo-files", optional = true }
-tilo-identity = { path = "../../runtime/tilo-identity", optional = true }
+tilo-identity = { path = "../../core/tilo-identity", optional = true }
 tilo-net-p2p = { path = "../../platform/tilo-net-p2p", optional = true }
-tilo-seal = { path = "../../system/tilo-seal", optional = true }
-tilo-user-identity = { path = "../../collab/tilo-user-identity", optional = true }
+tilo-seal = { path = "../../core/tilo-seal", optional = true }
+tilo-user-identity = { path = "../../core/tilo-user-identity", optional = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"], optional = true }
 uuid.workspace = true
 zeroize = { workspace = true, optional = true }
-tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
+tilo-device-identity = { version = "0.1.0", path = "../../core/tilo-device-identity" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

@@ -148,7 +148,7 @@ impl Project {
 fn is_sdk_checkout(root: &Path) -> bool {
     root.join("crates/sdk/tilo-app/Cargo.toml").is_file()
         && root
-            .join("crates/browser/tilo-browser-runtime/Cargo.toml")
+            .join("crates/core/tilo-browser-runtime/Cargo.toml")
             .is_file()
 }
 
@@ -586,9 +586,7 @@ fn build_native(
 /// `tilo-runtime` package) in the app's profile. Outside the SDK checkout it
 /// builds under the app's target directory, never inside a Cargo git checkout.
 fn build_runtime_host(project: &Project, request: &TargetRequest) -> Result<PathBuf> {
-    let manifest = project
-        .sdk_root
-        .join("crates/runtime/tilo-runtime/Cargo.toml");
+    let manifest = project.sdk_root.join("crates/core/tilo-runtime/Cargo.toml");
     let mut command = ProcessCommand::new(cargo_program());
     command
         .arg("build")

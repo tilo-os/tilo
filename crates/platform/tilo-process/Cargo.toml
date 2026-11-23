@@ -22,7 +22,7 @@ native = ["dep:hex"]
 # The host inputs (`environment`): the message locale.
 unic-langid.workspace = true
 hex = { workspace = true, optional = true }
-runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal", default-features = false, optional = true }
+runtime-portal = { version = "0.1.0", path = "../../core/runtime-portal", default-features = false, optional = true }
 tilo-platform-caps = { version = "0.1.0", path = "../tilo-platform-caps" }
 # One rule for which language a locale names, shared with the packs.
 tilo-paths = { version = "0.1.0", path = "../tilo-paths" }

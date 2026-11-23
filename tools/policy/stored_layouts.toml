@@ -1,4 +1,4 @@
-schema = 2
+schema = 3
 
 # Rust types, functions and constants a build stores in its own bytes and a
 # later build reads back, beside the bytes a format's golden file pins, read by
@@ -27,11 +27,11 @@ schema = 2
 
 [[format]]
 name = "peer durable state"
-version = "crates/collab/tilo-peer-state/src/state/durable.rs:DURABLE_VERSION"
+version = "crates/core/tilo-peer-state/src/state/durable.rs:DURABLE_VERSION"
 
 [[format]]
 name = "peer store frames"
-version = "crates/collab/tilo-peer-state/src/store.rs:FRAMES_VERSION"
+version = "crates/core/tilo-peer-state/src/store.rs:FRAMES_VERSION"
 
 [[layout]]
 format = "peer durable state"
@@ -39,26 +39,26 @@ version = 11
 digest = "a09a73e698fb8f35"
 what = """a replica's durable state: its workspace, documents, certificates, receipts, the writes waiting to be sent (each a NeighbourMsg, a document write ending with its reader set) and each sealed document's writes, and the keys those writes are sealed under, derived from the document and its reader set (version 10 was written both with and without a waiting document write's reader set)"""
 types = [
-  "crates/collab/tilo-peer-state/src/state/durable.rs:Durable",
-  "crates/collab/neighbour-wire/src/lib.rs:NeighbourMsg",
-  "crates/collab/tilo-peer-state/src/state.rs:DurableDocument",
-  "crates/collab/collab-types/src/op.rs:SignedOp",
-  "crates/collab/collab-types/src/op.rs:DocumentMutation",
-  "crates/collab/collab-types/src/op.rs:EncryptionMetadata",
-  "crates/collab/collab-types/src/op.rs:document_artifact_id",
-  "crates/collab/collab-types/src/op.rs:document_attestation_id",
-  "crates/collab/collab-types/src/op.rs:derived_document_uuid",
-  "crates/collab/collab-types/src/op.rs:derived_uuid",
-  "crates/collab/collab-types/src/op.rs:DOCUMENT_ATTESTATION_DOMAIN",
-  "crates/collab/collab-types/src/readers.rs:content_artifact_id",
-  "crates/collab/collab-types/src/readers.rs:reader_group",
-  "crates/collab/collab-types/src/readers.rs:app_document_id",
-  "crates/collab/collab-types/src/readers.rs:store_document_readers",
-  "crates/collab/collab-types/src/readers.rs:reader_set_name",
-  "crates/collab/collab-types/src/readers.rs:EVERY_MEMBER",
-  "crates/collab/collab-types/src/readers.rs:CONTENT_ARTIFACT_DOMAIN",
-  "crates/collab/collab-types/src/readers.rs:READER_GROUP_DOMAIN",
-  "crates/server/tilo-server-protocol/src/live.rs:live_artifact",
+  "crates/core/tilo-peer-state/src/state/durable.rs:Durable",
+  "crates/core/neighbour-wire/src/lib.rs:NeighbourMsg",
+  "crates/core/tilo-peer-state/src/state.rs:DurableDocument",
+  "crates/core/collab-types/src/op.rs:SignedOp",
+  "crates/core/collab-types/src/op.rs:DocumentMutation",
+  "crates/core/collab-types/src/op.rs:EncryptionMetadata",
+  "crates/core/collab-types/src/op.rs:document_artifact_id",
+  "crates/core/collab-types/src/op.rs:document_attestation_id",
+  "crates/core/collab-types/src/op.rs:derived_document_uuid",
+  "crates/core/collab-types/src/op.rs:derived_uuid",
+  "crates/core/collab-types/src/op.rs:DOCUMENT_ATTESTATION_DOMAIN",
+  "crates/core/collab-types/src/readers.rs:content_artifact_id",
+  "crates/core/collab-types/src/readers.rs:reader_group",
+  "crates/core/collab-types/src/readers.rs:app_document_id",
+  "crates/core/collab-types/src/readers.rs:store_document_readers",
+  "crates/core/collab-types/src/readers.rs:reader_set_name",
+  "crates/core/collab-types/src/readers.rs:EVERY_MEMBER",
+  "crates/core/collab-types/src/readers.rs:CONTENT_ARTIFACT_DOMAIN",
+  "crates/core/collab-types/src/readers.rs:READER_GROUP_DOMAIN",
+  "crates/core/tilo-server-protocol/src/live.rs:live_artifact",
 ]
 
 [[layout]]
@@ -67,25 +67,25 @@ version = 2
 digest = "ebed316e3cbea33c"
 what = """the frames a store device keeps for its workspaces: one postcard NeighbourMsg per file in a store's workspaces directory, named by workspace, resource and author, under the version its frames-version file records (version 1, kept before that file, ended a document write before its reader set)"""
 types = [
-  "crates/collab/neighbour-wire/src/lib.rs:NeighbourMsg",
+  "crates/core/neighbour-wire/src/lib.rs:NeighbourMsg",
 ]
 
 [[layout]]
 format = "owner workspace document"
 version = 8
-digest = "8cb336fffd2a63b0"
+digest = "5576bcd4fc69d6b7"
 what = """the journal appended beside each workspace's entry in a device's owner state: one postcard entry per publication, each a delta of what the entry before left"""
 types = [
-  "crates/collab/tilo-peer-state/src/owner/journal.rs:Entry",
-  "crates/collab/tilo-peer-state/src/owner/journal.rs:Stretch",
-  "crates/collab/tilo-peer-state/src/owner/journal.rs:DocumentOps",
-  "crates/collab/tilo-peer-state/src/owner/journal.rs:Op",
-  "crates/collab/tilo-peer-state/src/owner/journal.rs:JournalAnswer",
-  "crates/collab/tilo-peer-state/src/owner/publication.rs:StoredOutgoing",
-  "crates/collab/tilo-peer-state/src/owner/answers.rs:AnswerSignature",
-  "crates/collab/tilo-peer-state/src/state.rs:Route",
-  "crates/collab/tilo-peer-state/src/owner_commit.rs:CommitBinding",
-  "crates/collab/tilo-peer-state/src/owner_commit.rs:CommitTarget",
+  "crates/core/tilo-peer-state/src/owner/journal.rs:Entry",
+  "crates/core/tilo-peer-state/src/owner/journal.rs:Stretch",
+  "crates/core/tilo-peer-state/src/owner/journal.rs:DocumentOps",
+  "crates/core/tilo-peer-state/src/owner/journal.rs:Op",
+  "crates/core/tilo-peer-state/src/owner/journal.rs:JournalAnswer",
+  "crates/core/tilo-peer-state/src/owner/publication.rs:StoredOutgoing",
+  "crates/core/tilo-peer-state/src/owner/answers.rs:AnswerSignature",
+  "crates/core/tilo-peer-state/src/state.rs:Route",
+  "crates/core/tilo-peer-state/src/owner_commit.rs:CommitBinding",
+  "crates/core/tilo-peer-state/src/owner_commit.rs:CommitTarget",
 ]
 
 [[layout]]
@@ -94,7 +94,7 @@ version = 3
 digest = "56bfe06527a2d93f"
 what = """the frames a store device keeps for its workspaces: one postcard NeighbourMsg per file in a store's workspaces directory, named by workspace, resource and author, under the version its frames-version file records (version 1, kept before that file, ended a document write before its reader set; version 3 is a document write whose envelope may name its own content key)"""
 types = [
-  "crates/collab/neighbour-wire/src/lib.rs:NeighbourMsg",
+  "crates/core/neighbour-wire/src/lib.rs:NeighbourMsg",
 ]
 
 [[layout]]
@@ -103,44 +103,44 @@ version = 4
 digest = "56bfe06527a2d93f"
 what = """the frames a store device keeps for its workspaces: one postcard NeighbourMsg per file in a store's workspaces directory, named by workspace, resource and author, under the version its frames-version file records (version 1, kept before that file, ended a document write before its reader set; version 3 is a document write whose envelope may name its own content key)"""
 types = [
-  "crates/collab/neighbour-wire/src/lib.rs:NeighbourMsg",
+  "crates/core/neighbour-wire/src/lib.rs:NeighbourMsg",
 ]
 
 [[layout]]
 format = "peer durable state"
 version = 13
-digest = "b288902c8025ebab"
+digest = "8cda5e841eb857ae"
 what = """a replica's durable state: its workspace, documents, certificates, receipts, the writes waiting to be sent (each a NeighbourMsg, a document write ending with its reader set) and each sealed document's writes, and the keys those writes are sealed under, derived from the document and its reader set (version 10 was written both with and without a waiting document write's reader set; version 13 is version 12's layout, whose certificates name the retired grants their binary form already carried)"""
 types = [
-  "crates/collab/tilo-peer-state/src/state/durable.rs:Durable",
-  "crates/collab/neighbour-wire/src/lib.rs:NeighbourMsg",
-  "crates/collab/tilo-peer-state/src/state.rs:DurableDocument",
-  "crates/collab/collab-types/src/op.rs:SignedOp",
-  "crates/collab/collab-types/src/op.rs:DocumentMutation",
-  "crates/collab/collab-types/src/op.rs:EncryptionMetadata",
-  "crates/collab/collab-types/src/op.rs:document_artifact_id",
-  "crates/collab/collab-types/src/op.rs:document_attestation_id",
-  "crates/collab/collab-types/src/op.rs:derived_document_uuid",
-  "crates/collab/collab-types/src/op.rs:derived_uuid",
-  "crates/collab/collab-types/src/op.rs:DOCUMENT_ATTESTATION_DOMAIN",
-  "crates/collab/collab-types/src/readers.rs:content_artifact_id",
-  "crates/collab/collab-types/src/readers.rs:reader_group",
-  "crates/collab/collab-types/src/readers.rs:app_document_id",
-  "crates/collab/collab-types/src/readers.rs:store_document_readers",
-  "crates/collab/collab-types/src/readers.rs:reader_set_name",
-  "crates/collab/collab-types/src/readers.rs:EVERY_MEMBER",
-  "crates/collab/collab-types/src/readers.rs:CONTENT_ARTIFACT_DOMAIN",
-  "crates/collab/collab-types/src/readers.rs:READER_GROUP_DOMAIN",
-  "crates/server/tilo-server-protocol/src/live.rs:live_artifact",
+  "crates/core/tilo-peer-state/src/state/durable.rs:Durable",
+  "crates/core/neighbour-wire/src/lib.rs:NeighbourMsg",
+  "crates/core/tilo-peer-state/src/state.rs:DurableDocument",
+  "crates/core/collab-types/src/op.rs:SignedOp",
+  "crates/core/collab-types/src/op.rs:DocumentMutation",
+  "crates/core/collab-types/src/op.rs:EncryptionMetadata",
+  "crates/core/collab-types/src/op.rs:document_artifact_id",
+  "crates/core/collab-types/src/op.rs:document_attestation_id",
+  "crates/core/collab-types/src/op.rs:derived_document_uuid",
+  "crates/core/collab-types/src/op.rs:derived_uuid",
+  "crates/core/collab-types/src/op.rs:DOCUMENT_ATTESTATION_DOMAIN",
+  "crates/core/collab-types/src/readers.rs:content_artifact_id",
+  "crates/core/collab-types/src/readers.rs:reader_group",
+  "crates/core/collab-types/src/readers.rs:app_document_id",
+  "crates/core/collab-types/src/readers.rs:store_document_readers",
+  "crates/core/collab-types/src/readers.rs:reader_set_name",
+  "crates/core/collab-types/src/readers.rs:EVERY_MEMBER",
+  "crates/core/collab-types/src/readers.rs:CONTENT_ARTIFACT_DOMAIN",
+  "crates/core/collab-types/src/readers.rs:READER_GROUP_DOMAIN",
+  "crates/core/tilo-server-protocol/src/live.rs:live_artifact",
 ]
 
 [[layout]]
 format = "peer store frames"
 version = 6
-digest = "b8bda738e3edf66a"
+digest = "96b0a67e596f00e4"
 what = """the frames a store device keeps for its workspaces: one postcard NeighbourMsg per file in a store's workspaces directory, named by workspace, resource and author, under the version its frames-version file records (version 1, kept before that file, ended a document write before its reader set; version 3 is a document write whose envelope may name its own content key; version 6 is version 5's layout, whose identity hello names a certificate carrying the retired grants its binary form already wrote)"""
 types = [
-  "crates/collab/neighbour-wire/src/lib.rs:NeighbourMsg",
+  "crates/core/neighbour-wire/src/lib.rs:NeighbourMsg",
 ]
 
 [[layout]]
@@ -149,14 +149,14 @@ version = 9
 digest = "dc9eb3f508b074a4"
 what = """the journal appended beside each workspace's entry in a device's owner state: one postcard entry per publication, each a delta of what the entry before left (version 9 is version 8's layout, whose write binding and target moved to the publication module under new names, with no stored byte changed)"""
 types = [
-  "crates/collab/tilo-peer-state/src/owner/journal.rs:Entry",
-  "crates/collab/tilo-peer-state/src/owner/journal.rs:Stretch",
-  "crates/collab/tilo-peer-state/src/owner/journal.rs:DocumentOps",
-  "crates/collab/tilo-peer-state/src/owner/journal.rs:Op",
-  "crates/collab/tilo-peer-state/src/owner/journal.rs:JournalAnswer",
-  "crates/collab/tilo-peer-state/src/owner/publication.rs:StoredOutgoing",
-  "crates/collab/tilo-peer-state/src/owner/answers.rs:AnswerSignature",
-  "crates/collab/tilo-peer-state/src/state.rs:Route",
-  "crates/collab/tilo-peer-state/src/owner/publication.rs:RecordBinding",
-  "crates/collab/tilo-peer-state/src/owner/publication.rs:RecordTarget",
+  "crates/core/tilo-peer-state/src/owner/journal.rs:Entry",
+  "crates/core/tilo-peer-state/src/owner/journal.rs:Stretch",
+  "crates/core/tilo-peer-state/src/owner/journal.rs:DocumentOps",
+  "crates/core/tilo-peer-state/src/owner/journal.rs:Op",
+  "crates/core/tilo-peer-state/src/owner/journal.rs:JournalAnswer",
+  "crates/core/tilo-peer-state/src/owner/publication.rs:StoredOutgoing",
+  "crates/core/tilo-peer-state/src/owner/answers.rs:AnswerSignature",
+  "crates/core/tilo-peer-state/src/state.rs:Route",
+  "crates/core/tilo-peer-state/src/owner/publication.rs:RecordBinding",
+  "crates/core/tilo-peer-state/src/owner/publication.rs:RecordTarget",
 ]

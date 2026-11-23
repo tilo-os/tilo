@@ -43,9 +43,9 @@ media = { version = "0.1.0", package = "tilo-media", path = "../tilo-media" }
 # A page as a display list an engine can report instead of pixels.
 tilo-paint-stream = { version = "0.1.0", path = "../paint-stream" }
 # The actors a page action names.
-tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+tilo-actions = { version = "0.1.0", path = "../../core/actions" }
 # The page resource a person typed into the page travels as the collaboration wire's JSON.
-runtime-collab = { version = "0.1.0", path = "../../runtime/runtime-collab", default-features = false }
+runtime-collab = { version = "0.1.0", path = "../../core/runtime-collab", default-features = false }
 # The page's URLs, and the lock an engine profile takes on its files.
 url.workspace = true
 tilo-advisory-lock = { version = "0.1.0", path = "../../platform/advisory-lock" }
@@ -72,8 +72,8 @@ tracing.workspace = true
 # conversion; blocking then runs inside WebKit's network process, not in Rust.
 tilo-content-blocker = { version = "0.1.0", path = "../content-blocker", optional = true }
 # Opens the engine library the adblock compiler lives in, on first use.
-tilo-engine-loader = { version = "0.1.0", path = "../../runtime/engine-loader", optional = true }
-runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal", optional = true }
+tilo-engine-loader = { version = "0.1.0", path = "../../core/engine-loader", optional = true }
+runtime-portal = { version = "0.1.0", path = "../../core/runtime-portal", optional = true }
 
 [dev-dependencies]
 tilo-test-env = { version = "0.1.0", path = "../../../tools/test-env" }

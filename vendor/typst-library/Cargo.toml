@@ -266,7 +266,7 @@ features = ["simd"]
 default-features = false
 
 [dependencies.tilo-wasm-host]
-path = "../../crates/runtime/tilo-wasm-host"
+path = "../../crates/core/tilo-wasm-host"
 default-features = false
 
 [dependencies.xmlwriter]

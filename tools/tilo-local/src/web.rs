@@ -14,7 +14,7 @@ use crate::{repo_root, seconds, state_home, target_dir};
 const HELP: &str = "\
 cargo web: the web entry on this machine, served by the local tilo.sh stack.
 
-Builds the entry's bundle (crates/browser/tilo-browser-runtime/scripts/build.sh
+Builds the entry's bundle (crates/core/tilo-browser-runtime/scripts/build.sh
 only what changed rebuilds) and serves it with the stack
 production's site runs on (os/containers/tilo-sh/stack.sh: the server, the API
 server and the web entry, all on 127.0.0.1). A running stack keeps running
@@ -193,7 +193,7 @@ fn build_bundle(repo: &Path, release: bool) -> Result<PathBuf, String> {
     );
     let began = Instant::now();
     let status = Command::new("bash")
-        .arg(repo.join("crates/browser/tilo-browser-runtime/scripts/build.sh"))
+        .arg(repo.join("crates/core/tilo-browser-runtime/scripts/build.sh"))
         .arg(&out)
         .args(&args)
         // The stack's own cargo: t's cached build, or the drop-in TILO_SH_CARGO names.

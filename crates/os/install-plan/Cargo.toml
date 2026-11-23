@@ -8,7 +8,7 @@ description = "An install plan for a machine at another place: the choices it ma
 
 [dependencies]
 install-profile-model = { path = "../install-profile-model" }
-tilo-device-identity = { path = "../../collab/tilo-device-identity" }
+tilo-device-identity = { path = "../../core/tilo-device-identity" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-files = { path = "../../platform/tilo-files" }
 rand.workspace = true

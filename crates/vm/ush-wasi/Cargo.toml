@@ -13,7 +13,7 @@ path = "src/lib.rs"
 [dependencies]
 ush-shell = { path = "../ush-shell" }
 # The engine and the limits every guest in Tilo runs under.
-tilo-wasm-host = { path = "../../runtime/tilo-wasm-host" }
+tilo-wasm-host = { path = "../../core/tilo-wasm-host" }
 wasmi = { version = "1.1", default-features = false, features = ["simd", "std"] }
 getrandom.workspace = true
 

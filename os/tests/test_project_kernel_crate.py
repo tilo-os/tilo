@@ -14,7 +14,7 @@ module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
 class ProjectionTests(unittest.TestCase):
     def test_projection_dependencies(self):
         with self.subTest(phase="actual_signer_dependencies_match_source"):
-            root=tomllib.loads((ROOT/'Cargo.toml').read_text());member=tomllib.loads((ROOT/'crates/system/tilo-crypto/Cargo.toml').read_text())
+            root=tomllib.loads((ROOT/'Cargo.toml').read_text());member=tomllib.loads((ROOT/'crates/core/tilo-crypto/Cargo.toml').read_text())
             projected=module.project_manifest(root,member)
             # The kernel builds the signer without default features: no optional dependency.
             required={name for name,value in member['dependencies'].items()
@@ -31,7 +31,7 @@ class ProjectionTests(unittest.TestCase):
             # The workspace's own lock and patches: a path patch the signer reaches
             # would fail the kernel build here first.
             with tempfile.TemporaryDirectory() as directory:
-                module.project(ROOT/'Cargo.toml',ROOT/'crates/system/tilo-crypto/Cargo.toml',
+                module.project(ROOT/'Cargo.toml',ROOT/'crates/core/tilo-crypto/Cargo.toml',
                                ROOT/'Cargo.lock',Path(directory))
         with self.subTest(phase="inherited_alias_target_features_and_defaults"):
             root={'workspace':{'package':{'license':'AGPL-3.0-only'},'dependencies':{'alias':{'package':'upstream','version':'=2.0','features':['base'],'default-features':False},'defaulted':'1'},'lints':{'rust':{'unsafe_code':'deny'}}}}

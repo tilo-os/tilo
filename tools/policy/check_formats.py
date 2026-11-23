@@ -45,6 +45,11 @@ ROOT = Path(__file__).resolve().parents[2]
 SCOPES = (Path("apps"), Path("crates/session"), Path("crates/sdk"))
 # Crates of the same kind that live in other groups.
 SCOPES += (
+    Path("crates/core/tilo-resource"),
+    Path("crates/core/tilo-resource-macros"),
+)
+# Crates of the same kind that live in other groups.
+SCOPES += (
     Path("crates/ui/font-catalog"),
     Path("crates/ui/theme-painter-wasm"),
     Path("crates/ui/theme-sdk"),

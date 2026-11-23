@@ -41,13 +41,13 @@ from rust_source import is_test_file, production_source  # noqa: E402
 ROOT = Path(__file__).resolve().parents[2]
 SCANNED = (Path("apps"), Path("crates"), Path("tools"))
 ALLOWED = (
-    Path("crates/system/content"),
-    Path("crates/system/content-device"),
+    Path("crates/core/content"),
+    Path("crates/core/content-device"),
     Path("crates/sdk/tilo-app/src/framework/app.rs"),
     Path("crates/lang/tilolang-process/src/lib.rs"),
-    Path("crates/system/fs/src/main.rs"),
-    Path("crates/runtime/tilo-runtime/src/cli.rs"),
-    Path("crates/runtime/tilo-runtime/src/device/services.rs"),
+    Path("crates/core/fs/src/main.rs"),
+    Path("crates/core/tilo-runtime/src/cli.rs"),
+    Path("crates/core/tilo-runtime/src/device/services.rs"),
 )
 CALL = re.compile(
     r"\b(?:tilo_content_device\s*::\s*for_app|ContentStore\s*::\s*local_for_app)\b"

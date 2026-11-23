@@ -13,7 +13,7 @@ WORKSPACE = {"tilo-actions", "tilo-session-host"}
 class ClientLicenseGraph(unittest.TestCase):
     def test_accepts_approved_expressions_and_cargo_duplicate_markers(self):
         dependencies = client_licenses.parse(
-            "tilo-actions v0.1.0 (/checkout/crates/collab/actions)\tMIT\n"
+            "tilo-actions v0.1.0 (/checkout/crates/core/actions)\tMIT\n"
             "dependency v1.0.0\tMIT OR Apache-2.0 (*)\n")
         self.assertEqual(client_licenses.findings(dependencies, {"MIT", "MIT OR Apache-2.0"}), [])
 

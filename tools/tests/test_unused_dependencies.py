@@ -134,12 +134,12 @@ class UnusedDependencyTests(unittest.TestCase):
                 "Cargo.toml": manifest,
                 "apps/a/Cargo.toml": manifest,
                 "crates/sdk/ui/Cargo.toml": manifest,
-                "crates/system/fs/Cargo.toml": manifest,
+                "crates/core/fs/Cargo.toml": manifest,
                 "crates/workspace-hack/Cargo.toml":
                     manifest + "\n### BEGIN HAKARI SECTION\n[dependencies]\ntokio = '1'\n"
                     "\n### END HAKARI SECTION\n",
                 "crates/workspace-hack/src/lib.rs": "// stub\n",
-                "crates/system/fs/src/lib.rs": "\n",
+                "crates/core/fs/src/lib.rs": "\n",
             }
             for name, text in files.items():
                 path = root / name
@@ -167,14 +167,14 @@ class UnusedDependencyTests(unittest.TestCase):
 
             with self.subTest(phase="a change inside the generated crate scans nothing"):
                 base = git("rev-parse", "HEAD")
-                for name in ("crates/workspace-hack/src/lib.rs", "crates/system/fs/src/lib.rs"):
+                for name in ("crates/workspace-hack/src/lib.rs", "crates/core/fs/src/lib.rs"):
                     (root / name).write_text("changed\n")
                 git("commit", "-qam", "change")
                 output.unlink()
                 result = subprocess.run(["bash", str(SCRIPT), "--changed", "", base], env=env,
                                         capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(output.read_text().splitlines()[2:], ["crates/system/fs"])
+                self.assertEqual(output.read_text().splitlines()[2:], ["crates/core/fs"])
 
     def test_changed_scope_scans_only_crates_that_own_a_change(self):
         with tempfile.TemporaryDirectory() as directory:

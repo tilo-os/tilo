@@ -23,7 +23,7 @@ fnv.workspace = true
 # compositor paints hardware-decoded frames with (`ui::gpu_video`).
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
-tilo-actions = { path = "../../crates/collab/actions" }
+tilo-actions = { path = "../../crates/core/actions" }
 automerge.workspace = true
 tilo-automerge.workspace = true
 serde.workspace = true

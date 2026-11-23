@@ -34,8 +34,8 @@ remote-model = { path = "../remote-model" }
 # The Tilo ACTION model: the saved-connection store is the app's shared-document
 # state, so add/edit/rename/favorite/delete of a profile are replayable actions
 # the shell's Ctrl+K palette dispatches — the same ones the on-screen affordances do.
-tilo-actions = { path = "../../crates/collab/actions" }
-runtime-collab = { path = "../../crates/runtime/runtime-collab" }
+tilo-actions = { path = "../../crates/core/actions" }
+runtime-collab = { path = "../../crates/core/runtime-collab" }
 tilo-callstream = { path = "../../crates/engines/tilo-callstream", features = ["unit-chain"] }
 # Tilo-device connections store the target's endpoint id; only the key types
 # are needed, not the iroh transport.

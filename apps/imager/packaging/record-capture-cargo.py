@@ -24,7 +24,7 @@ ROLES = {
     'imager_tests': ('apps/imager', 'imager', 'lib', True),
     'backend_tests': ('crates/os/imager-backend', 'imager_backend', 'lib', True),
     'shell': ('crates/session/session', 'tilo-session', 'bin', False),
-    'fs': ('crates/system/fs', 'fs', 'bin', False),
+    'fs': ('crates/core/fs', 'fs', 'bin', False),
     'credential_helper': ('crates/integrations/account-credentials', 'tilo-account-credential', 'bin', False),
     'prepared_helper': ('apps/imager', 'tilo-prepared-setup', 'bin', False),
     'home_seeds': ('crates/os/install-helpers', 'tilo-firstboot-home-seeds', 'bin', False),
@@ -33,11 +33,11 @@ ROLES = {
     'firstboot_files': ('crates/os/firstboot-files', 'tilo-firstboot-files', 'bin', False),
     'prepared_extract': ('apps/imager', 'tilo-installer-prepared-setup-extract', 'bin', False),
     'control': ('crates/session/control-cli', 'tilo-control', 'bin', False),
-    'launcher': ('crates/packaging/launcher', 'tilo-launcher', 'bin', False),
+    'launcher': ('crates/core/launcher', 'tilo-launcher', 'bin', False),
     'browser': ('apps/browser', 'browser', 'bin', False),
     'app_package': ('tools/tilo-app-package-cli', 'tilo-app-package', 'bin', False),
-    'runtime_bundle': ('crates/packaging/runtime-bundle', 'tilo-runtime-bundle', 'bin', False),
-    'install': ('crates/packaging/install', 'tilo-install', 'bin', False),
+    'runtime_bundle': ('crates/core/runtime-bundle', 'tilo-runtime-bundle', 'bin', False),
+    'install': ('crates/core/install', 'tilo-install', 'bin', False),
     'installer': ('apps/imager', 'tilo-installer', 'bin', False),
 }
 

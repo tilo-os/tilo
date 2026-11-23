@@ -13,15 +13,15 @@ mail-engine = { path = "../mail-engine", optional = true }
 accounts = { path = "../accounts", optional = true }
 tilolang-tilo = { path = "../../lang/tilolang-tilo" }
 wire-frame = { path = "../../platform/wire-frame" }
-tilo-content = { path = "../../system/content", optional = true }
+tilo-content = { path = "../../core/content", optional = true }
 # This device's content store, which the files messages carry are kept in: the store the app's
 # window reads them from.
-tilo-content-device = { path = "../../system/content-device", optional = true }
+tilo-content-device = { path = "../../core/content-device", optional = true }
 # Whether the device is online: an unreachable mail server is tried again when the network
 # comes back, followed on a thread of its own.
 tilo-net = { path = "../../platform/tilo-net", optional = true }
 # The descriptors the session hands the connector: one per instance that attaches.
-runtime-portal = { path = "../../runtime/runtime-portal", optional = true }
+runtime-portal = { path = "../../core/runtime-portal", optional = true }
 tokio = { workspace = true, features = ["rt"], optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

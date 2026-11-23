@@ -814,7 +814,7 @@ class CatalogueGateTests(unittest.TestCase):
         self.assertEqual(self.names("crates/ui/ui-graph/components.json"), ["ui-graph"])
 
     def test_a_change_elsewhere_names_nothing(self):
-        self.assertEqual(self.names("crates/server/tilo-server/src/web/tickets.rs"), [])
+        self.assertEqual(self.names("crates/core/tilo-server/src/web/tickets.rs"), [])
 
     def test_the_check_runs_in_the_same_t_batch_as_the_clippy_checks(self):
         module = pre_push_lint()

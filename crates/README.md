@@ -1,34 +1,27 @@
 # Workspace crate map
 
-The root `Cargo.toml` lists every workspace member, grouped by domain. Package
-names and binaries stay stable when directories move. `apps/README.md` describes
-the desktop applications; `session/session/` contains the session's desktop,
-`session/compositor/` its display server and `session/desktop-surface/` the
-surfaces it shows, while `sdk/ui-core/` implements the application toolkit
-behind `sdk/tilo-app`, and `system/fs/` owns the collaborative filesystem
-service.
+The root `Cargo.toml` lists every workspace member. The groups follow the code
+layout in `docs/architecture/core.md`, and `tools/policy/check_crate_layout.py`
+keeps what the core, platform, services and UI groups link. Package names and
+binaries stay stable when directories move. `apps/README.md` describes the
+applications; `core/fs/` owns the collaborative filesystem service, and
+`ui/ui-core/` implements the toolkit behind `sdk/tilo-app`.
 
 | Directory | Role |
 |---|---|
-| `agent/` | Provider configuration, model gateway, and local-model services |
-| `collab/` | Production collaboration protocols, actions, identity primitives, and reference state |
-| `compat/` | Running Windows programs: the compatibility catalogue, its broker and the managed Windows VM |
-| `dev/` | The dev-image daemon and its device-admin route; developer tools live in `../tools/` |
-| `doc/` | Native document model, format-provider interfaces and import/export adapters |
-| `engines/` | PDF, media, document codecs, search and the other engines apps share, and the engine libraries the runtime loads |
-| `hosting/` | Relay and home-peer services |
-| `import/` | Reading another product's data (browser profiles, other computers' accounts), behind `tilo migrate` |
-| `integrations/` | Other services Tilo connects to: mail, calendars and DAV, cloud drives, messaging bridges and model providers |
+| `core/` | The foundation and the device daemon: wire types, crypto, identity and keys, the resource store, actions, the filesystem, packages and the runtime. Nothing per app, no importers, no product features |
+| `platform/` | One API per operating-system capability on Linux, macOS and the web; the only place app-reachable code may use target `cfg` |
+| `ui/` | The UI library, which knows nothing about Tilo: ui-core, its paint and backends, rich text, formats, themes and the render protocol |
+| `sdk/` | The one app SDK, for tilolang and Rust apps: `tilo-app`, the document model, the view and the app window |
 | `lang/` | tilolang: its compiler, runtime and app process |
+| `services/` | Device services that run on any device, which the daemon mounts as providers |
+| `engines/` | PDF, media, document codecs, search and the other engines apps share, and the engine libraries the runtime loads |
 | `os/` | The operating system: install and boot, disks, hardware, networking, rollback and system extensions |
-| `packaging/` | Package format, registry, installation, sandboxed launch, and app hosting |
-| `platform/` | Per-capability platform crates with one API on Linux, macOS and the web; the only place app-reachable code may use target `cfg` |
-| `runtime/` | App-facing service clients, CLI helpers, and optional dynamic SDK |
-| `sdk/` | Public application SDK (`tilo-app`) and its private UI implementation (`ui-core`) |
-| `session/` | Desktop shell, greeter, installer, unlock helper, and power entrypoints |
-| `system/` | OS integration, policy, settings, device services, and system tools |
-| `text/` | Shared text services such as spellchecking |
 | `vm/` | VMs and sandboxes: Linux VMs, ush environments and their images, tinker layers |
+| `compat/` | Running Windows programs: the compatibility catalogue, its broker and the managed Windows VM |
+| `integrations/` | Other services Tilo connects to: mail, calendars and DAV, cloud drives, messaging bridges and model providers |
+| `import/` | Reading another product's data (browser profiles, other computers' accounts), behind `tilo migrate` |
+| `session/`, `system/`, `packaging/` | The desktop session and the crates still leaving these groups for `desktop/`, `os/` and `services/` |
 
 ## Developer tools and fixtures
 
@@ -42,7 +35,7 @@ service.
   run from the shell's and desktop's tests with their own allow-lists.
 - `../examples/packaging/hello` and `../examples/packaging/notes-cli`: executable
   packaging/SDK examples used by walkthroughs and integration scripts.
-- `packaging/launcher/tests/fixtures/hello`: independent launcher test fixture.
+- `core/launcher/tests/fixtures/hello`: independent launcher test fixture.
 
 Zero incoming Cargo dependencies do not imply that a crate is unused: binaries
 can be invoked by system services, packaging, scripts, or developers. Check those

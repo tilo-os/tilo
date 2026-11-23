@@ -584,8 +584,8 @@ done
 
 game_planner="$repo/crates/compat/compat-service/src/plan.rs"
 game_executor="$repo/crates/compat/compat-service/src/execute.rs"
-game_performance="$repo/crates/packaging/launcher/src/performance.rs"
-native_launcher="$repo/crates/packaging/launcher/src/run.rs"
+game_performance="$repo/crates/core/launcher/src/performance.rs"
+native_launcher="$repo/crates/core/launcher/src/run.rs"
 grep -Fq 'libc::SYS_sched_setattr' "$game_performance" \
   || bad 'trusted Proton launches do not consume the kernel uclamp support'
 grep -Fq 'libc::PR_SET_TIMERSLACK' "$game_performance" \
@@ -753,7 +753,7 @@ for unit in tilo-server tilo-local-model; do
     || bad "$unit.service can see other users' processes (ProtectProc=invisible missing)"
 done
 grep -Fq 'libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0)' \
-  "$repo/crates/collab/tilo-device-identity/src/persist.rs" \
+  "$repo/crates/core/tilo-device-identity/src/persist.rs" \
   || bad 'identity key holders no longer turn non-dumpable'
 [ "$fail" -ne 0 ] || ok 'process visibility: per-service ProtectProc, non-dumpable key holders, no global hidepid'
 
@@ -956,7 +956,7 @@ if [ "$(grep -Fxc 'ExecStopPost=-/usr/bin/umount --lazy /var/workspace' <<<"$fs_
   bad 'fs.service lost its lazy-umount backstop for a killed daemon'
   fs_stop_fail=1
 fi
-grep -Fq 'config.mount_options.push(MountOption::AutoUnmount);' "$repo/crates/system/fs/src/mount.rs" \
+grep -Fq 'config.mount_options.push(MountOption::AutoUnmount);' "$repo/crates/core/fs/src/mount.rs" \
   || { bad 'fs no longer mounts with auto_unmount, so a stopped daemon can leave /var/workspace attached'; fs_stop_fail=1; }
 if sed 's/;.*//' "$repo/os/usr/share/tilo/selinux/tilo-base.cil" | grep -Eq '\(allow init_t fusermount_exec_t'; then
   bad 'tilo-base.cil lets init_t execute fusermount3; stop fs.service without it'

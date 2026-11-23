@@ -97,7 +97,7 @@ Keeping data intact and reversible across edits relies on `app.ids` and CRDT his
 ## 2. Package format and publish-time checks
 
 Whether published to a workspace or to a public registry, a tilolang app ships as a single,
-architecture-independent `.tapp` package (`crates/packaging/tilo-app-package`):
+architecture-independent `.tapp` package (`crates/core/tilo-app-package`):
 
 - **Signed manifest (`tapp.toml`)**:
   - `AppId`, semantic `version`, optional `previously` (for verified renames per

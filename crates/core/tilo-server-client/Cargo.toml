@@ -1,0 +1,66 @@
+[package]
+name = "tilo-server-client"
+version = "0.1.0"
+edition = "2024"
+publish = true
+description = "Client side of the Tilo server every peer shares: the frame codec both ends of a server stream use, the co-edit payloads, device certification and the device-signer boundary."
+license = "MIT OR Apache-2.0"
+repository.workspace = true
+homepage.workspace = true
+
+# What a device says on its links lives here, next to
+# the delivery, join and transport records they speak. This crate holds what a
+# browser peer needs as well: the frame codec, the co-edit payloads, the
+# signer boundary and (with `iroh`) the certification dialer, and the identity
+# layer's device side: a computer signing in as one of a person's devices, the
+# login code it reads, and the certificates a person's root issues.
+[dependencies]
+tilo-server-protocol = { version = "0.1.0", path = "../tilo-server-protocol" }
+collab-types = { version = "0.1.0", path = "../collab-types" }
+tilo-user-identity = { version = "0.1.0", path = "../tilo-user-identity" }
+# The one link grammar the page writes a login code with, read here.
+tilo-reference = { version = "0.1.0", path = "../reference" }
+iroh-base.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "rt", "sync", "time"] }
+# A dial's deadline, in a page too, where tokio has no clock.
+n0-future = "0.3"
+ed25519-dalek.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+uuid.workspace = true
+postcard = { workspace = true, features = ["use-std"] }
+thiserror.workspace = true
+wire-frame = { version = "0.1.0", path = "../../platform/wire-frame", features = ["postcard", "tokio"] }
+# The browser-safe clock: the HTTPS calls a device makes before it holds a
+# session sign with it too, with or without the iroh dialers.
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+hex.workspace = true
+# The link's WebTransport backend: the browser's own in a page.
+tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", features = ["webtransport"] }
+web-transport-trait = { version = "0.4.0", optional = true }
+
+[features]
+default = ["dial"]
+# The dialers: certification and the link to a host (`link`), over iroh
+# natively and over the browser's WebTransport in a page.
+dial = ["dep:iroh", "dep:noq-proto", "dep:web-transport-trait"]
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+iroh = { workspace = true, optional = true }
+# The congestion controller an endpoint starts with (`host::transport`):
+# iroh takes noq's factory but does not re-export it.
+noq-proto = { version = "1.1", default-features = false, optional = true }
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+# What a native peer's HTTPS goes through, as a page's does through its `fetch`.
+tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", features = ["http"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# A page reaches a server that takes no WebTransport (one behind a NAT) through its packet relay,
+# over iroh's browser endpoint: relay-only, no UDP.
+iroh = { version = "1.0.3", default-features = false, features = ["tls-ring"], optional = true }

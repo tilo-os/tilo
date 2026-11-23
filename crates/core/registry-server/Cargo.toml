@@ -1,0 +1,81 @@
+[package]
+autotests = false
+name = "registry-server"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[lib]
+name = "registry_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilo-registry-server"
+path = "src/main.rs"
+
+# Self-hostable HTTP registry for `.tapp` bundles. Serves the
+# `RegistryHandshake`, entry index, and a signed-POST endpoint so
+# publishers can add / update / delete their own entries. Owner
+# controls a `publishers.toml` allowlist; TLS is deliberately out
+# of scope — deployments put the server behind nginx or Caddy.
+
+[dependencies]
+tilo-advisory-lock = { path = "../../platform/advisory-lock" }
+tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-paths.workspace = true
+# Crash-safe file replacement (temp + fsync + rename + dir fsync).
+tilo-files = { path = "../../platform/tilo-files" }
+registry-types = { path = "../registry-types" }
+app-registry = { path = "../app-registry" }
+tilo-app-package = { path = "../tilo-app-package" }
+tilo-automation = { path = "../automation" }
+
+tokio = { workspace = true, features = ["macros", "net", "rt", "signal", "sync", "fs", "time", "io-util"] }
+# Namespace proofs read DNS TXT records; the resolver iroh already brings.
+hickory-resolver = { version = "0.26", default-features = false, features = ["tokio", "system-config"] }
+tilo-rt.workspace = true
+hyper        = { version = "1", features = ["server", "http1"] }
+hyper-util   = { version = "0.1", features = ["tokio", "server-auto"] }
+http-body-util = "0.1"
+
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+clap.workspace = true
+ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
+hex.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+bytes.workspace = true
+anyhow.workspace = true
+blake3 = { workspace = true }
+zeroize.workspace = true
+# Moderation fetches run in the deployed container. Use its maintained CA
+# bundle so newly issued public certificates do not depend on the root set
+# compiled into an older pinned application image.
+reqwest = { workspace = true, features = ["blocking", "json"] }
+tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+# Compaction tests verify served snapshots with the native and browser clients.
+app-cli = { path = "../../os/app-cli" }
+# The bot directory test plans an install from what it published.
+tilo-bot-directory = { path = "../../integrations/bot-directory" }
+tilo-action-policy = { path = "../action-policy" }
+tilo-test-env = { path = "../../../tools/test-env" }
+getrandom.workspace = true
+tempfile.workspace = true
+test-http = { path = "../../../tools/test-http" }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true

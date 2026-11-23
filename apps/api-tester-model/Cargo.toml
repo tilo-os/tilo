@@ -18,7 +18,7 @@ path = "src/lib.rs"
 [dependencies]
 serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
-tilo-resource = { path = "../../crates/sdk/tilo-resource" }
+tilo-resource = { path = "../../crates/core/tilo-resource" }
 uuid.workspace = true
 
 [dev-dependencies]

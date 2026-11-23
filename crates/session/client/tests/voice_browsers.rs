@@ -252,7 +252,7 @@ impl Browser {
     async fn open(members: Vec<(&'static str, Member)>, host: [u8; 32]) -> Self {
         let members = Arc::new(members);
         let web = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../browser/tilo-browser-runtime/web");
+            .join("../../core/tilo-browser-runtime/web");
         let page = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/voice_browsers/page.html");
         let fixture = Responder::handle({

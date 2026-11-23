@@ -12,7 +12,7 @@ assert SPEC.loader is not None
 sys.modules[SPEC.name] = contract
 SPEC.loader.exec_module(contract)
 
-OWNER = "crates/collab/tilo-peer-state"
+OWNER = "crates/core/tilo-peer-state"
 SYNC = "crates/session/session/src/sync"
 
 
@@ -145,7 +145,7 @@ class ClockContractTests(unittest.TestCase):
         self.assertEqual(contract.audit(root), [])
 
     def test_tokio_timers_keep_their_reason_and_every_other_file_needs_one(self):
-        listed = "crates/server/tilo-workspace-service/src/peer/delivery.rs"
+        listed = "crates/core/tilo-workspace-service/src/peer/delivery.rs"
         with self.subTest(phase="a listed timer file passes"):
             root = self.fixture(
                 {
@@ -156,11 +156,11 @@ class ClockContractTests(unittest.TestCase):
             )
             self.assertEqual(contract.audit(root), [])
         with self.subTest(phase="an unlisted timer read is reported"):
-            unlisted = "crates/server/tilo-workspace-service/src/peer/other.rs"
+            unlisted = "crates/core/tilo-workspace-service/src/peer/other.rs"
             root = self.fixture({unlisted: "fn go() -> tokio::time::Instant { tokio::time::Instant::now() }\n"})
             self.assertEqual(self.paths(root), [unlisted])
         with self.subTest(phase="a bare timer read is told apart by its import"):
-            bare = "crates/server/tilo-workspace-service/src/peer/other.rs"
+            bare = "crates/core/tilo-workspace-service/src/peer/other.rs"
             root = self.fixture(
                 {bare: "use tokio::time::Instant;\nfn go() -> Instant { Instant::now() }\n"}
             )
@@ -177,7 +177,7 @@ class ClockContractTests(unittest.TestCase):
             {
                 f"{SYNC}/client/adopt.rs": "fn at() { std::time::SystemTime::now(); }\n",
                 "crates/session/session/src/other.rs": "fn at() { std::time::SystemTime::now(); }\n",
-                "crates/collab/collaboration/src/broker.rs": "fn at() { SystemTime::now(); }\n",
+                "crates/core/collaboration/src/broker.rs": "fn at() { SystemTime::now(); }\n",
             }
         )
         self.assertEqual(self.paths(root), [f"{SYNC}/client/adopt.rs"])

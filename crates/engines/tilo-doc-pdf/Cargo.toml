@@ -8,7 +8,7 @@ description = "Paginated PDF export for tilo-doc DocSnapshot documents (Tilo)"
 
 [dependencies]
 tilo-doc = { path = "../../sdk/tilo-doc" }
-tilo-content = { path = "../../system/content", default-features = false }
+tilo-content = { path = "../../core/content", default-features = false }
 # Image decode for `image` blocks. PDF export supports PNG/JPEG; disabling
 # defaults avoids pulling every codec into the shared graph.
 image = { workspace = true, default-features = false, features = ["jpeg", "png"] }

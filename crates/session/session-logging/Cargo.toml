@@ -8,7 +8,7 @@ license.workspace = true
 
 [dependencies]
 # The launch-timing lines the log always keeps.
-tilo-startup-metrics = { version = "0.1.0", path = "../../system/tilo-startup-metrics" }
+tilo-startup-metrics = { version = "0.1.0", path = "../../core/tilo-startup-metrics" }
 # Every panic's record.
 tilo-crash-reports = { path = "../crash-reports" }
 # The filter `RUST_LOG` sets, written to stderr.

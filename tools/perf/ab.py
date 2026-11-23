@@ -435,7 +435,7 @@ GROUPS: dict[str, Group] = {group.name: group for group in (
     Group("server", "release", "none",
           (("cargo", "build", "--locked", "--release", "-p", "tilo-server", "--example", "server_load"),),
           {"server_load": "target/release/examples/server_load"}, {}, {}, run_server,
-          {"keystroke_writes": ("crates/server/tilo-server/examples/keystroke_writes.rs",
+          {"keystroke_writes": ("crates/core/tilo-server/examples/keystroke_writes.rs",
                                 ("cargo", "build", "--locked", "-p", "tilo-server", "--example",
                                  "keystroke_writes"),
                                 "target/debug/examples/keystroke_writes")}),
@@ -485,7 +485,7 @@ def test_executable(command: tuple[str, ...], target: str, repo: Path, log: Path
 
 def side_group(group: Group, repo: Path) -> Group:
     """Keep A/B comparisons with refs before a benchmark moved usable."""
-    if group.name == "fs" and not (repo / "crates/system/fs/tests/performance_timing.rs").is_file():
+    if group.name == "fs" and not (repo / "crates/core/fs/tests/performance_timing.rs").is_file():
         # The latency scenarios were the performance check until it counted work.
         return dataclasses.replace(group, tests={"performance_timing": (
             ("cargo", "test", "--locked", "-p", "tilo-fs", "--test", "performance_check", "--no-run"),

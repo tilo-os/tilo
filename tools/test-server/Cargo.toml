@@ -16,11 +16,11 @@ description = "A host on this machine's loopback and fresh device keys for tests
 questions = ["tilo-server/web"]
 
 [dependencies]
-tilo-server = { path = "../../crates/server/tilo-server" }
-tilo-endpoint-reachability = { path = "../../crates/system/endpoint-reachability" }
+tilo-server = { path = "../../crates/core/tilo-server" }
+tilo-endpoint-reachability = { path = "../../crates/core/endpoint-reachability" }
 settings-store = { path = "../../crates/system/settings-store" }
-tilo-workspace-join = { path = "../../crates/collab/workspace-join" }
-tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
+tilo-workspace-join = { path = "../../crates/core/workspace-join" }
+tilo-user-identity = { path = "../../crates/core/tilo-user-identity" }
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
 tempfile.workspace = true

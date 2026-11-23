@@ -14,7 +14,7 @@ COPY tools/apps/stage_sdk_services.py /build/tools/apps/
 # The tilolang packages' packing steps, which the release's packing shares.
 COPY tools/apps/tilolang_packages.sh /build/tools/apps/
 COPY os/usr/share/tilo/system-interfaces.toml /build/os/usr/share/tilo/system-interfaces.toml
-COPY crates/packaging/tilo-app-package/max-app-bytes /build/crates/packaging/tilo-app-package/max-app-bytes
+COPY crates/core/tilo-app-package/max-app-bytes /build/crates/core/tilo-app-package/max-app-bytes
 ARG TILO_PREBUILT_APPS=0
 ARG TILO_WITH_BROWSER
 # thin or off, as the compile was (os/image/compile.sh): a build without LTO only reports

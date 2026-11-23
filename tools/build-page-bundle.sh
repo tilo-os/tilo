@@ -43,5 +43,5 @@ bundle="$target/page-bundle"
 mkdir -p "$bundle"
 # Its progress to stderr: a setup script's stdout is nextest's. `--update`
 # binds the module again only when Cargo linked a new one.
-bash crates/browser/tilo-browser-runtime/scripts/build.sh "$bundle" --profile quick --module-only --update >&2
+bash crates/core/tilo-browser-runtime/scripts/build.sh "$bundle" --profile quick --module-only --update >&2
 hand "$bundle"

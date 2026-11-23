@@ -9,7 +9,7 @@ license.workspace = true
 [dependencies]
 # The stream envelopes, peer and surface ids, colorimetry and HDR10 metadata
 # a share announces are the neighbour protocol's vocabulary.
-neighbour-wire = { path = "../../collab/neighbour-wire" }
+neighbour-wire = { path = "../../core/neighbour-wire" }
 # The frame transport, encode throttle and encode errors the chat call app
 # shares; this crate adds the share session over them.
 tilo-callstream = { path = "../../engines/tilo-callstream" }

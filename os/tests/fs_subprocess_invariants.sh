@@ -5,7 +5,7 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
-monitor="$root/crates/system/fs/src/smart_monitor.rs"
+monitor="$root/crates/core/fs/src/smart_monitor.rs"
 
 grep -Fq 'tilo_nm::watch()' "$monitor"
 grep -Fq 'allows_speculative_traffic()' "$monitor"

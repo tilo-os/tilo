@@ -1,6 +1,6 @@
 # A model module runs in a host that is not a JavaScript page: nothing it does
 # is answered by a browser API. `tilo_no_js` is the repository's cfg for that
-# (crates/platform/tilo-clock, crates/collab/actions), and getrandom takes its
+# (crates/platform/tilo-clock, crates/core/actions), and getrandom takes its
 # custom backend, answered by the guest's own fill. A module links no
 # wasm-bindgen glue, which is what lets any host run it. `tilo_model_guest`
 # makes its documents the host's (vendor/automerge/src/model_device): a verb

@@ -6,7 +6,7 @@ DNS directory that signs this device's key in on the spot and republishes it
 every five minutes, whatever the endpoint is doing. What Tilo decided instead: keep
 the relays and the directory, and check what is published — by the same
 condition that holds the relays back — in
-``crates/system/endpoint-reachability/src/directory.rs``.
+``crates/core/endpoint-reachability/src/directory.rs``.
 
 A durable endpoint that binds ``presets::N0`` therefore quietly restores the
 unguarded behaviour. This check refuses it in production code and points at the
@@ -38,7 +38,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 # Where the decision lives. This is the only file that may reach for the
 # preset, because reaching for it is what the policy is about.
-DECISION = "crates/system/endpoint-reachability/src/directory.rs"
+DECISION = "crates/core/endpoint-reachability/src/directory.rs"
 
 # Production files that still bind `presets::N0`, with why each may. A
 # one-line process or a transport that only dials with the address it was
@@ -46,7 +46,7 @@ DECISION = "crates/system/endpoint-reachability/src/directory.rs"
 EXEMPT = {
     # The registry transport dials the registry with an address it was given.
     # The server's admin client.
-    "crates/server/tilo-server/src/admin.rs": "server admin client",
+    "crates/core/tilo-server/src/admin.rs": "server admin client",
     # A client of the device administrator, which chooses its own relays.
     # The initrd's sibling unlock: it asks the siblings named in a token that
     # a boot already holds, and the process ends with the unlock.
@@ -57,7 +57,7 @@ EXEMPT = {
     # A P2P node that dials the peers a caller names.
     "crates/platform/tilo-net-p2p/src/lib.rs": "net-p2p dialer",
     # The server daemon's own endpoint, which is what devices dial.
-    "crates/server/tilo-server/src/daemon.rs": "server daemon",
+    "crates/core/tilo-server/src/daemon.rs": "server daemon",
 }
 
 PRESET = re.compile(r"\bpresets::N0\b")

@@ -1,0 +1,165 @@
+[package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
+name = "launcher"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Builds the sandbox every Tilo app runs in (bwrap, seccomp, Landlock, egress proxy)."
+
+# Tilo application launcher. Reads a package manifest, constructs a
+# bubblewrap-based sandbox per its declarations (bubblewrap + Landlock
+# + seccomp), passes well-known service sockets in via SCM_RIGHTS, and
+# execs the entrypoint binary inside the sandbox.
+#
+# It decodes no manifest of its own: `tilo_app_package::view` is the one
+# decoder, and code that only reads manifests depends on that, not on this
+# crate.
+
+[[bin]]
+name = "tilo-launcher"
+path = "src/main.rs"
+
+[[bin]]
+name = "tilo-signal-provider"
+path = "src/bin/tilo-signal-provider.rs"
+
+[lib]
+name = "launcher"
+path = "src/lib.rs"
+
+[features]
+# Honour the developer-only environment overrides (`package_store::dev_env`)
+# in a release build. Debug builds always honour them; shipped images never
+# enable this.
+dev-overrides = ["package-store/dev-overrides"]
+# Explicit opt-in qualification for the native tests that need real root and kernel facilities.
+native-qualification = []
+# Explicit signed-worker/FUSE alias qualification; no authority constructor.
+native-home-alias-qualification = []
+
+[dependencies]
+browser-continuity = { workspace = true, features = ["native"] }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+# Kernel-authenticated ownership of the executing native service peer.
+runtime-portal = { path = "../runtime-portal", default-features = false }
+tilo-advisory-lock = { path = "../../platform/advisory-lock" }
+# Supervisors sleep on a child's pidfd and a wake descriptor instead of polling.
+bounded-command = { path = "../../platform/bounded-command" }
+blake3.workspace = true
+sha2.workspace = true
+hex.workspace = true
+tempfile.workspace = true
+tilo-paths.workspace = true
+# The MPRIS name a launched package's player requests, so the session-bus
+# filter grants that same name (`dbus_proxy::media_player_name`).
+tilo-process = { path = "../../platform/tilo-process" }
+# Where the files a person chose for the app are served (the paths only).
+tilo-documents.workspace = true
+tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-files = { path = "../../platform/tilo-files" }
+# Where no session serves the clipboard, this process serves the same wire from
+# the OS clipboard, so an app on a person's own desktop still copies and pastes.
+tilo-clipboard = { path = "../../platform/tilo-clipboard", features = ["os"] }
+# Launch phase marks, handed to the app so its startup file covers the time
+# before its own `main` (run.rs, `splice_startup_marks`).
+tilo-startup-metrics = { path = "../tilo-startup-metrics" }
+clap.workspace = true
+serde.workspace = true
+# Also how `gpu.rs` reads an EGL vendor / Vulkan ICD manifest's
+# `library_path` to match an installed driver to the compositor's
+# chosen render node.
+serde_json.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+libc.workspace = true
+getrandom.workspace = true
+runtime-bundle = { path = "../runtime-bundle" }
+# The canonical manifest schema and its one decoder (`view`), so the
+# sandbox reads exactly what the registry and the installer read.
+tilo-app-package = { path = "../tilo-app-package" }
+# The handoff it writes on the connection it hands the package service; the
+# client side only, as the apps use.
+package-service = { path = "../package-service", default-features = false }
+# Which packages are installed and where: the one registry, read-only, and
+# the lease a launch holds on its payload tree until its sandbox exits.
+package-store = { path = "../package-store", features = ["lease"] }
+# The capability vocabulary. Workspace grants arrive as `CapOverride`
+# records and are evaluated with the same fail-closed decision function
+# the compositor and the filesystem use — a launcher-local permission
+# type would be a second vocabulary to drift out of sync.
+collab-types = { path = "../collab-types" }
+wire-frame = { path = "../../platform/wire-frame" }
+tilo-render-protocol = { path = "../../ui/tilo-render-protocol" }
+# The system information service's handoff, written before the app holds
+# the connection (`system_stats`).
+tilo-system-stats = { path = "../../system/system-stats" }
+uuid.workspace = true
+# Host applications: the `.desktop` entries already installed on the
+# machine. Kept in its own crate because nothing about it is Tilo
+# packaging — it is the freedesktop format, and the compositor's search
+# providers read it directly too.
+desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-entry" }
+# The interface language a host entry is named in: the person's, as every
+# surface resolves it, not the machine's locale.
+settings-store = { path = "../../system/settings-store" }
+# The identity wire an app's identity client reads: the launcher writes the
+# per-app handshake in it before the sandbox can use the service.
+tilo-identity-client = { path = "../tilo-identity-client" }
+# Landlock ruleset construction and the baseline seccomp filter. A leaf
+# crate, so the launcher still depends on nothing in the compositor.
+tilo-sandbox-core = { path = "../../platform/sandbox-core" }
+# The egress proxy and the in-sandbox relay serve their connections as tasks on
+# a bounded runtime rather than an OS thread (or two) per connection.
+tilo-rt.workspace = true
+# Asks the session for the AT-SPI bus address (`org.a11y.Bus.GetAddress`),
+# which the launcher's filtered accessibility proxy forwards.
+zbus = { workspace = true, features = ["tokio", "blocking-api"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tilo-action-policy = { path = "../action-policy" }
+# Tests whose subject is the environment itself (session variables, service
+# and store lookups) scope their changes through it and restore them.
+tilo-test-env = { path = "../../../tools/test-env" }
+# An installed package launches from the store the desktop reads; the lease
+# tests interleave a launch with the collection after an update.
+package-store = { path = "../package-store", features = ["store"] }
+ed25519-dalek.workspace = true
+# Kernel probes proving the resolved seccomp profile is what the kernel enforces.
+tilo-sandbox-core = { path = "../../platform/sandbox-core", features = ["test-support"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# A sandboxed app's real AT-SPI bridge behind the launcher's AT-SPI proxy
+# (`tests/bus_filters.rs`): what another client on the bus may do with its tree.
+accesskit = "0.25.0"
+accesskit_unix = { version = "0.23.0", default-features = false, features = ["tokio"] }
+# A sandboxed app's secrets, kept through the Secret portal (`tests/bus_filters.rs`).
+tilo-secrets = { path = "../../platform/tilo-secrets" }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock.workspace = true
+rustix = { workspace = true, features = ["event", "fs", "net", "process", "std"] }
+# `gpu.rs` asks each installed Vulkan ICD directly which render node its
+# devices are on (`VK_EXT_physical_device_drm`), loading the library itself
+# so every answer belongs to exactly one manifest.
+ash = { version = "0.38", default-features = false, features = ["std"] }
+libloading = "0.8"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }

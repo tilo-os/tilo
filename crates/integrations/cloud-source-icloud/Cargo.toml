@@ -27,7 +27,7 @@ unicode-normalization = "0.1.25"
 test-http = { version = "0.1.0", path = "../../../tools/test-http", optional = true }
 # The fake's idmsa answers SRP with Apple's group through the server half of
 # the crypto crate's `srp_apple`.
-tilo-crypto = { version = "0.1.0", path = "../../system/tilo-crypto", default-features = false, features = ["srp-test-server"], optional = true }
+tilo-crypto = { version = "0.1.0", path = "../../core/tilo-crypto", default-features = false, features = ["srp-test-server"], optional = true }
 
 [features]
 # `cloud_source_icloud::fake::FakeICloud`: Apple's sign-in, setup, drivews,

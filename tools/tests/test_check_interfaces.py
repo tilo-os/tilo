@@ -363,10 +363,10 @@ class WordListTests(unittest.TestCase):
 
     def test_the_runtime_interface_lists_the_words_of_a_declared_shape(self):
         spec, committed = interfaces.load_spec(
-            interfaces.ROOT / "crates/runtime/runtime-portal/interface.toml")
+            interfaces.ROOT / "crates/core/runtime-portal/interface.toml")
         self.assertEqual(spec.words, [
-            "crates/collab/actions/src/params.rs:SCHEMA_ASSERTIONS",
-            "crates/collab/actions/src/params.rs:SCHEMA_ANNOTATIONS",
+            "crates/core/actions/src/params.rs:SCHEMA_ASSERTIONS",
+            "crates/core/actions/src/params.rs:SCHEMA_ANNOTATIONS",
         ])
         self.assertEqual(committed["SCHEMA_ASSERTIONS::additionalProperties"], "word")
         self.assertEqual(committed["SCHEMA_ANNOTATIONS::description"], "word")

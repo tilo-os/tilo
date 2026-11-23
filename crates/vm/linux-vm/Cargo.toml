@@ -33,17 +33,17 @@ path = "src/jail_main.rs"
 ignored = ["serde_bytes"]
 
 [dependencies]
-collab-types = { path = "../../collab/collab-types" }
-tilo-action-policy = { path = "../../collab/action-policy" }
+collab-types = { path = "../../core/collab-types" }
+tilo-action-policy = { path = "../../core/action-policy" }
 blake3.workspace = true
 # A refusal carries the host contract's typed reason and next steps.
-tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+tilo-actions = { version = "0.1.0", path = "../../core/actions" }
 fnv.workspace = true
 # The material a browser environment's session is started with, and the
 # endpoint address it names the server by: one type the server and this host
 # both build against.
 iroh-base.workspace = true
-tilo-server-protocol = { version = "0.1.0", path = "../../server/tilo-server-protocol" }
+tilo-server-protocol = { version = "0.1.0", path = "../../core/tilo-server-protocol" }
 linux-vm-protocol = { path = "../linux-vm-protocol" }
 libc.workspace = true
 serde.workspace = true
@@ -68,7 +68,7 @@ tempfile.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
 tilo-desktop-entry = { path = "../../system/desktop-entry" }
 # A device certificate, for a material's device.
-tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
+tilo-user-identity = { version = "0.1.0", path = "../../core/tilo-user-identity" }
 
 [lints]
 workspace = true
@@ -85,4 +85,4 @@ linux-vm-agent = { path = "../linux-vm-agent" }
 tilo-app-keeper = { path = "../../session/app-keeper", optional = true }
 # The VM network's bridge filter, over the same nf_tables encoder as a
 # sandbox's egress filter.
-tilo-egress = { path = "../../runtime/egress" }
+tilo-egress = { path = "../../core/egress" }

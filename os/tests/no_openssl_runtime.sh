@@ -76,7 +76,7 @@ else
   bad 'late public trust parser is not confined to its exact read-only build mount'
 fi
 
-crypto_source="$repo/crates/system/tilo-crypto/src/lib.rs"
+crypto_source="$repo/crates/core/tilo-crypto/src/lib.rs"
 development_signer="$repo/os/dev/development-signer.py"
 development_signer_setup="$repo/os/dev/setup-development-signer.py"
 development_trust="$repo/os/dev/development-trust.py"
@@ -257,7 +257,7 @@ grep -Fq 'installed systemd-coredump' "$repo/os/usr/libexec/tilo-security-audit"
   && grep -Fq 'systemd-coredump.socket' "$repo/os/Containerfile" \
   || bad 'runtime can retain process memory through inherited systemd-coredump'
 
-native_roots="$repo/crates/system/tilo-native-certs/src/lib.rs"
+native_roots="$repo/crates/core/tilo-native-certs/src/lib.rs"
 if grep -Fq 'const TILO_CA_BUNDLE: &str = "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"' "$native_roots" \
    && grep -Fq 'Path::new(TILO_CA_BUNDLE)' "$native_roots" \
    && ! grep -Fq 'var_os("SSL_CERT_FILE")' "$native_roots"; then

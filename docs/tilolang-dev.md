@@ -192,7 +192,7 @@ module to the tilolang process that runs the app's instances. Nothing else can.
 
 The windows, their sandboxes and grants stay as they were launched. The only thing
 that changes is which verified module the host interprets. The code is in
-`crates/runtime/tilo-runtime/src/device/processes.rs` and `crates/lang/tilolang-process`.
+`crates/core/tilo-runtime/src/device/processes.rs` and `crates/lang/tilolang-process`.
 
 On the desktop there is no session to hand anything over: the tool runs the app itself and
 publishes into a directory of its own, private to the person, which the app reads

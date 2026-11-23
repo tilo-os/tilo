@@ -99,7 +99,7 @@ the image's signed hash, as for any system image (`local_materialized_tree`).
 ### Resolving images
 
 ```rust
-/// crates/packaging/package-store
+/// crates/core/package-store
 pub fn local_materialized_tree(store: &Store, id: &PackageId) -> Result<PathBuf, MaterializeError>;
 ```
 
@@ -195,7 +195,7 @@ layer; there is no separate package manifest.
   answered, for the record's TTL (60 s to 4 h). An address literal, DNS to
   any other server and every ungranted name fail. `*` is unrestricted; no
   grants is no network. A session whose grants cannot be enforced does not
-  start. See [`ush`](ush.md#the-network) and `crates/runtime/egress`.
+  start. See [`ush`](ush.md#the-network) and `crates/core/egress`.
 - Seccomp and Landlock as today (`Profile::Ush`); `guard status` keeps testing
   enforcement.
 
@@ -458,7 +458,7 @@ that workspace environment's own, never in a guest sharing the host's kernel
   server (`tilo.server`, `server.account/account`) as a live read: the plans
   offered, the account's access, usage per workspace, limits, credit,
   invoices and where billing is managed, sent again whenever the plans file
-  changes (`crates/server/tilo-server-account`). A host that sells nothing
+  changes (`crates/core/tilo-server-account`). A host that sells nothing
   answers no plans and no access.
 - **ush** runs the program through the VM's agent with the shell's streams
   relayed, when the host names its hosted-VM service (`TILO_HOSTED_VM_SOCKET`,
@@ -486,7 +486,7 @@ that workspace environment's own, never in a guest sharing the host's kernel
   for them through the workspace's actions, held to their access and an
   agent's bound, and History keeps what it does as that agent's; a session
   nobody is known to have started is refused before anyone is asked
-  ([`machine_agents.rs`](../../crates/server/tilo-server/src/machine_agents.rs)).
+  ([`machine_agents.rs`](../../crates/core/tilo-server/src/machine_agents.rs)).
   This holds where the server runs its workspaces' shells itself; where their
   machines are on VM hosts, the hosts do not carry these connections back yet.
 - **Secrets:** a workspace hands items of its vault to the programs its VM
@@ -554,7 +554,7 @@ server's runs. A member that runs the workspace's VMs also answers its browser
 environments' opens there (`tilo_actions::remote::browser`), which the host's
 hosted-VM service starts beside the Linux VM; the server asks for them the way
 it asks for a shell command, as a Linux turn the member takes
-(`crates/server/tilo-server/src/linux_devices.rs`). The first time the server
+(`crates/core/tilo-server/src/linux_devices.rs`). The first time the server
 asks about a workspace the member does not hold yet, the member enters it: it asks
 the server's own `workspace.enter`, which answers an invitation naming the member's
 person, and redeems it as a device joins any workspace. The server decides
