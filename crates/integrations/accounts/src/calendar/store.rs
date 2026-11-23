@@ -3,7 +3,9 @@
 //! this device's: the app asks the session for it when it signs in.
 
 use crate::person::AccountList;
-use crate::{Account as StoredAccount, AccountId};
+#[cfg(test)]
+use crate::AccountId;
+use crate::Account as StoredAccount;
 use serde::{Deserialize, Serialize};
 
 use super::{CalDavConfig, CalendarAccount, CalendarAccounts, RemoteCalendar, TYPE_ID};
