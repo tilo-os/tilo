@@ -209,13 +209,7 @@ impl Apps {
         self.installed()
             .into_iter()
             .find(|app| app.app_id == app_id)
-            .map(|app| {
-                let declared = app.declared_actions();
-                AppActionAccess {
-                    query: declared.query,
-                    invoke: declared.invoke,
-                }
-            })
+            .map(|app| app.declared_actions())
             .unwrap_or_default()
     }
 

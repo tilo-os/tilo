@@ -410,8 +410,6 @@ fn named(installed: &[app_catalogue::apps::InstalledApp]) -> Vec<collab_types::h
         .collect()
 }
 
-/// Each app's declared reach of the action API, from its signed manifest: the ceiling the broker
-/// admits its calls against.
 /// The resource kinds each installed app declares, by package id.
 fn resource_kinds(
     installed: &[app_catalogue::apps::InstalledApp],
@@ -422,21 +420,14 @@ fn resource_kinds(
         .collect()
 }
 
+/// Each app's declared reach of the action API, from its signed manifest: the ceiling the broker
+/// admits its calls against.
 fn declared(
     installed: &[app_catalogue::apps::InstalledApp],
 ) -> BTreeMap<String, tilo_broker_core::access::AppActionAccess> {
     installed
         .iter()
-        .map(|app| {
-            let declared = app.declared_actions();
-            (
-                app.app_id.to_string(),
-                tilo_broker_core::access::AppActionAccess {
-                    query: declared.query,
-                    invoke: declared.invoke,
-                },
-            )
-        })
+        .map(|app| (app.app_id.to_string(), app.declared_actions()))
         .collect()
 }
 

@@ -133,11 +133,8 @@ impl InstalledApp {
 
     /// What the signed manifest's `[actions]` table declares.
     #[must_use]
-    pub fn declared_actions(&self) -> DeclaredActions {
-        DeclaredActions {
-            query: self.manifest.actions.query,
-            invoke: self.manifest.actions.invoke,
-        }
+    pub fn declared_actions(&self) -> tilo_app_package::manifest::ActionAccess {
+        self.manifest.actions
     }
 
     /// The resource kinds the signed manifest's `[resources]` table declares
@@ -173,13 +170,7 @@ impl InstalledApp {
 
 /// What an application declared it may do on the action API under its own
 /// identity. A ceiling, never a grant.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct DeclaredActions {
-    /// Read the catalogue of actions the person using the app is offered.
-    pub query: bool,
-    /// Invoke actions other apps publish, as this app.
-    pub invoke: bool,
-}
+pub use tilo_app_package::manifest::ActionAccess as DeclaredActions;
 
 /// Every package `catalog` holds, GUI or not, freshly read. A package whose
 /// manifest cannot be read is skipped, not a failure of the whole
@@ -688,6 +679,58 @@ mod tests {
         assert!(
             InstalledApp::from_package(&install(tmp.path(), "so.tilo.gone", "not a manifest"))
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn declared_actions_come_from_the_signed_manifest_as_action_access() {
+        let tmp = tempfile::tempdir().unwrap();
+        let package =
+            "id = \"so.tilo.notes\"\nname = \"Notes\"\nversion = \"1.0.0\"\nkind = \"app\"";
+        let entrypoint = "[entrypoint]\nbin = \"bin/notes\"\ntype = \"gui\"\n";
+        let plain = app_of(tmp.path(), &manifest(package, entrypoint));
+        let empty: tilo_app_package::manifest::ActionAccess = plain.declared_actions();
+        assert_eq!(empty, DeclaredActions::default());
+        assert!(empty.is_empty());
+
+        let query_only = app_of(
+            tmp.path(),
+            &manifest(package, &format!("{entrypoint}[actions]\nquery = true\n")),
+        );
+        let access: tilo_app_package::manifest::ActionAccess = query_only.declared_actions();
+        assert_eq!(
+            access,
+            DeclaredActions {
+                query: true,
+                invoke: false,
+            }
+        );
+
+        let invoke_only = app_of(
+            tmp.path(),
+            &manifest(package, &format!("{entrypoint}[actions]\ninvoke = true\n")),
+        );
+        assert_eq!(
+            invoke_only.declared_actions(),
+            DeclaredActions {
+                query: false,
+                invoke: true,
+            }
+        );
+
+        let both = app_of(
+            tmp.path(),
+            &manifest(
+                package,
+                &format!("{entrypoint}[actions]\nquery = true\ninvoke = true\n"),
+            ),
+        );
+        assert_eq!(
+            both.declared_actions(),
+            tilo_app_package::manifest::ActionAccess {
+                query: true,
+                invoke: true,
+            }
         );
     }
 }

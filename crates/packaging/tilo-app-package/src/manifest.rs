@@ -656,13 +656,18 @@ impl TrustAttestation {
     }
 }
 
-/// `[actions]` — an application's own on the session's action API.
+/// `[actions]` — what an application declared it may do on the session's action
+/// API under its own identity.
+///
+/// The declaration is a ceiling, never a grant: invoking another app's action
+/// still needs the workspace to grant it to the app.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActionAccess {
     /// Read the catalogue of actions the person using the app is offered:
     /// labels, typed parameters and contracts, never their data.
     #[serde(default)]
     pub query: bool,
+    /// Invoke actions other apps publish, as this app.
     #[serde(default)]
     pub invoke: bool,
 }
@@ -1336,18 +1341,60 @@ mode = "off"
 
         phase declared_action_access_survives_the_signed_manifest_round_trip;
         {
-            let undeclared = Manifest::from_toml_str(bare()).unwrap();
-            assert_eq!(undeclared.actions, ActionAccess::default());
-            assert!(!undeclared.to_toml_string().unwrap().contains("[actions]"));
+            let bare_encoded = Manifest::from_toml_str(bare())
+                .unwrap()
+                .to_toml_string()
+                .unwrap();
+            assert!(!bare_encoded.contains("[actions]"), "{bare_encoded}");
 
-            let (declared, _) = round_trip("[actions]\nquery = true\n");
-            assert_eq!(
-                declared.actions,
-                ActionAccess {
-                    query: true,
-                    invoke: false
-                }
-            );
+            for tail in [
+                "",
+                "[actions]\n",
+                "[actions]\nquery = false\ninvoke = false\n",
+            ] {
+                let (undeclared, encoded) = round_trip(tail);
+                assert_eq!(
+                    undeclared.actions,
+                    ActionAccess {
+                        query: false,
+                        invoke: false,
+                    },
+                    "{tail}"
+                );
+                assert_eq!(undeclared.actions, ActionAccess::default(), "{tail}");
+                assert_eq!(encoded, bare_encoded, "{tail}");
+            }
+
+            for (table, expected, written) in [
+                (
+                    "[actions]\nquery = true\n",
+                    ActionAccess {
+                        query: true,
+                        invoke: false,
+                    },
+                    "\n[actions]\nquery = true\ninvoke = false\n\n",
+                ),
+                (
+                    "[actions]\ninvoke = true\n",
+                    ActionAccess {
+                        query: false,
+                        invoke: true,
+                    },
+                    "\n[actions]\nquery = false\ninvoke = true\n\n",
+                ),
+                (
+                    "[actions]\nquery = true\ninvoke = true\n",
+                    ActionAccess {
+                        query: true,
+                        invoke: true,
+                    },
+                    "\n[actions]\nquery = true\ninvoke = true\n\n",
+                ),
+            ] {
+                let (declared, encoded) = round_trip(table);
+                assert_eq!(declared.actions, expected, "{table}");
+                assert!(encoded.contains(written), "{encoded}");
+            }
         }
 
         phase declared_resource_kinds_survive_the_signed_manifest_round_trip;
