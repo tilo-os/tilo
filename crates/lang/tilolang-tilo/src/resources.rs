@@ -325,6 +325,9 @@ struct Inner {
     /// Who the writes made now are made for, when the invoker is not the person at this device
     /// (a page whose reader is a member): the actor the changes name as theirs.
     serving_invoker: RefCell<Option<String>>,
+    /// The person the invoker acts for, when software does (an agent): the records it makes are
+    /// that person's, which a type that names `readers: author` seals them to.
+    serving_acted_for: RefCell<Option<String>>,
     /// The invocation as the caller signed it, when the writes made now serve one a caller asked
     /// for under their own key: what each change keeps, for the holders that check it.
     serving_signed: RefCell<Option<Box<tilo_actions::remote::SignedCall>>>,
@@ -569,6 +572,18 @@ fn published_verb(note: &ChangeNote) -> String {
 /// A field's value, by the field's id.
 pub type FieldOf = (String, FieldValue);
 
+/// The person the writes it is held around are made for (see [`ResourceStore::acting_for`]).
+pub struct ActingFor {
+    inner: Rc<Inner>,
+    previous: Option<String>,
+}
+
+impl Drop for ActingFor {
+    fn drop(&mut self) {
+        *self.inner.serving_acted_for.borrow_mut() = self.previous.take();
+    }
+}
+
 impl ResourceStore {
     /// A store sending its commands to `port`.
     #[must_use]
@@ -598,6 +613,7 @@ impl ResourceStore {
                 run: RefCell::default(),
                 serving: RefCell::default(),
                 serving_invoker: RefCell::default(),
+                serving_acted_for: RefCell::default(),
                 serving_signed: RefCell::default(),
                 made: RefCell::default(),
                 burst: RefCell::default(),
@@ -3101,6 +3117,19 @@ impl ResourceStore {
         *self.inner.serving_invoker.borrow_mut() = invoker;
     }
 
+    /// The writes made from now on are made for `person`, whom the invoker acts for, until the
+    /// guard drops: the records an agent makes are that person's, so a type that names
+    /// `readers: author` seals them to them and their devices. The person in place before is
+    /// restored, so a call made while another acts for someone leaves that one in place.
+    #[must_use]
+    pub fn acting_for(&self, person: Option<String>) -> ActingFor {
+        let previous = std::mem::replace(&mut *self.inner.serving_acted_for.borrow_mut(), person);
+        ActingFor {
+            inner: Rc::clone(&self.inner),
+            previous,
+        }
+    }
+
     /// The writes made from now on serve the call `call` as its caller signed it (none: none),
     /// and each change keeps it.
     pub fn serve_signed(&self, call: Option<Box<tilo_actions::remote::SignedCall>>) {
@@ -3250,6 +3279,7 @@ impl ResourceStore {
                         .flatten()
                         .unwrap_or_default()
                 }),
+            acted_for: self.inner.serving_acted_for.borrow().clone(),
             invocation,
             membership: Vec::new(),
             undoes: None,

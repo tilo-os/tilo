@@ -62,9 +62,12 @@ impl Store {
                     let author = if held.is_some() {
                         self.author(kind, id)
                     } else {
-                        stamp.invoked_by()
+                        Author {
+                            actor: stamp.invoked_by(),
+                            acted_for: stamp.acted_for.clone(),
+                        }
                     };
-                    resource.readers = readers_by_rule(rule, author.as_ref(), &resource.fields)
+                    resource.readers = readers_by_rule(rule, &author, &resource.fields)
                         .map_err(|reason| StoreError::Readers(format!("a {kind}: {reason}")))?;
                 } else if resource.readers.is_empty()
                     && let Some(parent) = &resource.parent
@@ -94,9 +97,15 @@ impl Store {
         self.index.readers(&held.doc).map(str::to_owned)
     }
 
-    /// Who made the resource `id` of `kind`: the invoker of its first version.
-    fn author(&self, kind: &str, id: &str) -> Option<Actor> {
-        self.version_end(kind, id, false)?.stamp?.invoked_by()
+    /// Who made the resource `id` of `kind`: the invoker of its first version, and the person it
+    /// acted for.
+    fn author(&self, kind: &str, id: &str) -> Author {
+        self.version_end(kind, id, false)
+            .and_then(|version| version.stamp)
+            .map_or_else(Author::default, |stamp| Author {
+                actor: stamp.invoked_by(),
+                acted_for: stamp.acted_for,
+            })
     }
 
     /// Whether the change `received` of the document `doc_id`, of readers `readers`, leaves each
@@ -138,13 +147,16 @@ impl Store {
                 continue;
             };
             let author = if made {
-                stamp
-                    .as_ref()
-                    .and_then(collab_types::stamp::Stamp::invoked_by)
+                Author {
+                    actor: stamp
+                        .as_ref()
+                        .and_then(collab_types::stamp::Stamp::invoked_by),
+                    acted_for: stamp.as_ref().and_then(|stamp| stamp.acted_for.clone()),
+                }
             } else {
                 self.author(&kind, id)
             };
-            let expected = readers_by_rule(rule, author.as_ref(), &resource.fields)
+            let expected = readers_by_rule(rule, &author, &resource.fields)
                 .map_err(|reason| Refusal::Undeclared(format!("a {kind}: {reason}")))?;
             if expected != readers {
                 return Err(Refusal::Undeclared(format!(
@@ -156,13 +168,20 @@ impl Store {
     }
 }
 
+/// Who made a resource: the actor, and the person it acted for when that is not itself.
+#[derive(Clone, Debug, Default)]
+struct Author {
+    actor: Option<Actor>,
+    acted_for: Option<String>,
+}
+
 /// The reader set of a resource whose kind's rule is `rule`, made by `author`, with `fields`:
 /// [`collab_types::EVERY_MEMBER`], or each person it names, sorted, each once. A person reads on
 /// each of their devices; an agent's record is the person's it acts for.
 ///
 fn readers_by_rule(
     rule: &ReaderRule,
-    author: Option<&Actor>,
+    author: &Author,
     fields: &BTreeMap<String, Cell>,
 ) -> Result<String, String> {
     let mut people: Vec<String> = match rule {
@@ -172,7 +191,7 @@ fn readers_by_rule(
             }
             vec![
                 author
-                    .and_then(person_of)
+                    .person()
                     .ok_or("only its author reads it, and no person made it")?,
             ]
         }
@@ -183,7 +202,7 @@ fn readers_by_rule(
                     Value::Text(text) => serde_json::from_str::<Actor>(text)
                         .ok()
                         .as_ref()
-                        .and_then(person_of)
+                        .and_then(person_of_actor)
                         .ok_or_else(|| format!("its {field} names `{text}`, who is no person")),
                     other => Err(format!("its {field} names {other:?}, who is no person")),
                 })
@@ -199,8 +218,19 @@ fn readers_by_rule(
     Ok(people.join(","))
 }
 
-/// The person `actor` is, as a reader set names them.
-fn person_of(actor: &Actor) -> Option<String> {
+impl Author {
+    /// The person whose record this is, as a reader set names them: the actor when it is a
+    /// person, else the person it acted for.
+    fn person(&self) -> Option<String> {
+        self.actor
+            .as_ref()
+            .and_then(person_of_actor)
+            .or_else(|| self.acted_for.as_deref().map(str::to_ascii_lowercase))
+    }
+}
+
+/// The person `actor` is, as a reader set names them; `None` for software acting by itself.
+fn person_of_actor(actor: &Actor) -> Option<String> {
     actor
         .member_id()
         .and_then(MemberId::person_id)

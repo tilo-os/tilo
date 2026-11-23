@@ -811,6 +811,13 @@ impl HostInner {
         if let Some(caller) = request.caller.filter(|caller| caller.agent) {
             self.admit_agent(caller);
         }
+        // The records an agent makes belong to the person it acts for: a type that names
+        // `readers: author` seals them to that person, not to the agent's own membership.
+        let _acting_for = self.store.acting_for(
+            request
+                .caller
+                .and_then(|caller| caller.on_behalf_of.clone()),
+        );
         let recorded = match self.planned_args(&package, action, request)? {
             Some((args, recorded)) => {
                 self.store.take_made();

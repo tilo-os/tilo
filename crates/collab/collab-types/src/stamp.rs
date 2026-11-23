@@ -13,6 +13,11 @@ pub struct Stamp {
     /// History names the change's author by it, so it is the actor every reader parses back
     /// ([`Stamp::invoked_by`]), never a bare id.
     pub invoker: String,
+    /// The person the invoker acted for, when someone acted for a person and the invoker is not
+    /// one (an agent): the records it makes are that person's, so a record under
+    /// `readers: author` is read by them and their devices, as one made by them directly is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acted_for: Option<String>,
     /// The invocation: every change it made, in every document, names it, so history and undo
     /// take them as one step.
     pub invocation: String,

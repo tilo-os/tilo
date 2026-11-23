@@ -7,6 +7,7 @@ use tilo_resource_store::wire::{Command, Reply};
 use tilo_resource_store::{Filter, Query};
 use tilolang_runtime::{Actor, ResourceRef, Value};
 use tilolang_tilo::meta::MetaExt as _;
+use tilolang_tilo::publish::Caller;
 use tilolang_tilo::runtime::ids::MemberId;
 
 use crate::fixtures::{Replica, Workspace, action_id, target};
@@ -113,6 +114,15 @@ fn subjects(replica: &Replica, desk: &ResourceRef) -> Vec<String> {
 
 fn person(name: &str) -> Actor {
     Actor::from(MemberId::person(name))
+}
+
+/// The caller an agent of `person` works as, through the app's published action API.
+fn agent(person: Option<&str>) -> Caller {
+    Caller {
+        actor: Actor::from(MemberId::agent("helper")),
+        agent: true,
+        on_behalf_of: person.map(str::to_owned),
+    }
 }
 
 #[test]
@@ -243,4 +253,61 @@ fn a_record_reaches_the_devices_of_its_readers_and_no_other_members() {
         (0, 0, 0, false),
         "who it does not name does not"
     );
+}
+
+#[test]
+fn a_record_an_agent_makes_is_the_person_it_acts_for() {
+    let (ada, packages) = Replica::new("ada", Workspace::new(), &[(DESK, "")]);
+    let meta = packages[0].meta.clone();
+    let ids = packages[0].ids.clone();
+    let desk = ada.root(APP);
+    let [laptop, ben] = ["ada", "ben"].map(|name| {
+        let replica = Replica::new(name, Workspace::new(), &[(DESK, &ids)]).0;
+        ada.send_to(&replica);
+        replica
+    });
+    // The action runs where the API publishes it, as an agent of Ada's.
+    let draft_for = |caller: Caller| {
+        let args = serde_json::json!({ "subject": "Drafted for Ada" });
+        ada.carry(
+            APP,
+            &meta.kind_of("Desk"),
+            &action_id(&meta, "write"),
+            Some(&tilolang_tilo::publish::resource_id(APP, &desk.id_string())),
+            args.as_object().expect("an object"),
+            Some(&caller),
+            None,
+        )
+    };
+    draft_for(agent(Some("ada"))).expect("an agent drafts for the person it acts for");
+    let made = ada.host.store().take_made();
+    let [draft] = made.as_slice() else {
+        panic!("the action made one draft: {made:?}");
+    };
+    ada.commit();
+    for other in [&laptop, &ben] {
+        ada.send_to(other);
+    }
+    let kind = meta.kind_of("Draft");
+    assert_eq!(
+        found(&laptop, &kind, "drafted", draft),
+        (1, 1, 1, true),
+        "the person's other device reads what their agent made for them"
+    );
+    assert_eq!(
+        found(&ben, &kind, "drafted", draft),
+        (0, 0, 0, false),
+        "another member lists, counts, finds and reads none of it"
+    );
+    assert!(
+        subjects(&ben, &desk).is_empty(),
+        "Ben's desk shows no draft an agent made for Ada"
+    );
+
+    // An agent acting for nobody is no person's record: the store refuses it.
+    let refused = draft_for(agent(None))
+        .err()
+        .or_else(|| ada.host.store().take_refusal())
+        .expect("an agent that acts for nobody makes no record under a reader rule");
+    assert!(refused.contains("no person made it"), "{refused}");
 }
