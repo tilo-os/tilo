@@ -782,7 +782,7 @@ One verb makes it, on the shell's chrome beside `new-workspace`:
 `desktop:chrome` `branch-workspace` {`source`, `name`}, where `source` is the
 workspace's name, its decimal id or the id it is shared under. The shell,
 agents and automations use that action; the workspace menu and search offer it
-as "Branch workspace", and the CLI is `tilo workspace branch <source> <name>`.
+as "Branch workspace", and the CLI is `tilo do branch-workspace`.
 Tools that spell the workspace verbs `workspace.create` and `workspace.branch`
 on the control socket reach the same two actions. The action answers the new
 workspace's id at once; the copy runs off the session's loop, so the shell never

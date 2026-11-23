@@ -56,7 +56,7 @@ def generate(arguments: argparse.Namespace) -> str:
         sections.append(page.prose(
             "Every call carries a key as `Authorization: Bearer $TILO_API_KEY`. A key "
             "minted for one workspace reaches that workspace and nothing else; the "
-            "commands of the command line that mint one are under `tilo keys`."
+            "command line mints one with `tilo do account/keys#mint`."
         ))
     documented = {tag["name"]: tag for tag in spec.get("tags") or [] if isinstance(tag, dict)}
     for tag in order(spec, operations):

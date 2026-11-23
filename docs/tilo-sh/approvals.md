@@ -130,8 +130,8 @@ try {
 console.log("off:", await tilo.workspace(template.id).unattended(false));
 ```
 
-From the command line, `tilo workspace unattended <workspace>` asks and waits for the answer;
-`--off` turns it off.
+From the command line, `tilo do account/workspaces#unattended workspace=<workspace> on=true` asks and
+waits for the answer; `on=false` turns it off.
 
 ## The hosted Browser
 

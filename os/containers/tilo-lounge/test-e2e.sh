@@ -18,7 +18,7 @@
 # overwrite.
 #
 #   signin         a fresh startup identity approves on the site a server key
-#                  `tilo keys create` asks for (tilo-sh/check.sh's step 1); the
+#                  `tilo do account/keys#create` asks for (tilo-sh/check.sh's step 1); the
 #                  visa run reads the key it made
 #   directory      the Lounge lists itself in its public directory as the
 #                  deployment named it, with its entry and default role, and

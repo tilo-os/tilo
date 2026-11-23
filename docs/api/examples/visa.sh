@@ -98,7 +98,7 @@ say "4. The minted key reaches that workspace and nothing else, until it is revo
 other=$(jq -r "[.result.workspaces[] | select(.id != \"$first\")][0].id" <<<"$listed")
 call "$agent" GET "/v1/workspaces/$other/resources" > /dev/null
 check '[[ $(status) == 403 ]]' "another workspace refuses it"
-call "$key" POST "$account/keys/actions/revoke" "$(json "{\"grant\": \"$grant\"}")" "idempotency-key: revoke-$$" > /dev/null
+call "$key" POST "$account/keys/$grant/actions/revoke" "{}" "idempotency-key: revoke-$$" > /dev/null
 check '[[ $(status) == 200 ]]' "the backend revokes it"
 gone=$(call "$agent" GET "$base/resources")
 check '[[ $(status) == 401 && $(jq -r .error.code <<<"$gone") == key_revoked ]]' "the revoked key is refused"

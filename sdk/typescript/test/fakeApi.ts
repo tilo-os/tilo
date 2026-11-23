@@ -274,8 +274,8 @@ export class FakeApi {
           },
         });
       }
-      if (rest.length === 5 && rest[3] === "actions" && method === "POST") {
-        return this.account(rest[2] as string, rest[4] as string, call);
+      if (rest.at(-2) === "actions" && method === "POST") {
+        return this.account(rest.slice(2, -2).join("/"), rest.at(-1) as string, call);
       }
     }
     if (rest[0] === "workspaces" && rest.length > 2) {
@@ -709,10 +709,13 @@ export class FakeApi {
         return ok({ keys: this.keys });
       case "keys#mint":
         return this.mintKey(call);
-      case "keys#revoke":
-        return ok({ revoked: asked.grant });
-      default:
+      default: {
+        const grant = resource.startsWith("keys/") ? resource.slice("keys/".length) : "";
+        if (action === "revoke" && grant !== "") {
+          return ok({ revoked: grant });
+        }
         return this.refuse("not_found", 404, `the account has no ${resource}#${action}`);
+      }
     }
   }
 

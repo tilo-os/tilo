@@ -112,6 +112,9 @@ pub struct ActionRow {
     pub params: Vec<Param>,
     /// `read`, `undoable` or `outside`: what running it may reach.
     pub kind: String,
+    /// The JSON schema of what it answers, where it declares one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<Value>,
 }
 
 /// What a row a listing does not speak for is: a resource of its own, read.

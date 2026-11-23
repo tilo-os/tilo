@@ -165,7 +165,7 @@ e2e-ws-branch`, `t test e2e-ws-branch`; `--test hold` keeps a failed run's VM up
 The person makes a workspace, a note in it through Notes, a Terminal environment, and from its
 shell a question, a tool in `~/.local/bin` and a git checkout where the environment has git;
 a few hundred megabytes of data go into its tree beside them (WB01). They branch it twice
-through the shell's `workspace.branch` and once with `tilo workspace branch`; each branch is
+through the shell's `workspace.branch` and once with `tilo do branch-workspace`; each branch is
 timed to its data in its own tree while a thread times the shell's answers, and an answer slower
 than `SHELL_STALL_S` fails the branch as blocking the shell (WB02). Each branch holds the note, the
 files, the environment (opened from Terminal there, the tool runs, the checkout reads, and

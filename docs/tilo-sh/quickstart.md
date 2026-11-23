@@ -9,9 +9,9 @@ Open [tilo.sh](https://tilo.sh) and sign in. In the workspace overview, choose *
 name it `First steps`.
 
 > [!NOTE]
-> You can also create a workspace from the CLI (`tilo workspace create "First steps"`) or SDK
+> You can also create a workspace from the CLI (`tilo do account/workspaces#create name="First steps"`) or SDK
 > (`tilo.workspaces.create("First steps")`). Once a workspace is set up the way you want, branch it
-> instead of starting over: `tilo workspace branch "First steps" "Second try"`
+> instead of starting over: `tilo do account/workspaces#branch workspace="First steps" name="Second try"`
 > ([branch a workspace](workspaces.md#branch-a-workspace)).
 
 ## 2. Connect your agent
@@ -35,19 +35,19 @@ Scripts and backends authenticate with an API key instead of a browser session:
 
 ```sh
 curl -fsSL https://tilo.sh | sh   # installs the `tilo` CLI into ~/.local/bin
-tilo keys create "My script"
+tilo login                        # this computer as one of your devices, approved in Tilo
+tilo do account/keys#create name="My script" --out my-script.key
 ```
 
-The command prints an approval link. Open it, approve the key in Tilo, and the CLI prints the key
-once:
+The command prints an approval link. Open it and approve the key in Tilo; the key is written to
+`my-script.key`, which only you can read, and never printed:
 
-```text
-Approved. Your key (shown once):
-export TILO_API_KEY=tilo_sk_…
+```sh
+export TILO_API_KEY=$(cat my-script.key)   # what the SDKs read
 ```
 
 Store it in your secret manager. Account-wide keys remain valid until revoked
-(`tilo keys revoke <grant>`). You can also create and revoke keys on
+(`tilo do "account/keys/<grant>#revoke"`). You can also create and revoke keys on
 [your grants page](https://mcp.tilo.sh/grants).
 
 ## 4. Make your first call

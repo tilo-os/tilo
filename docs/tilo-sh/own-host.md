@@ -35,8 +35,9 @@ wants `caddy` and `bubblewrap`, and says which is missing. Everything listens on
 Then use it exactly as the hosted one:
 
 ```sh
-tilo keys create "My backend"        # approve the link it prints in `stack.sh browser`
-export TILO_API_KEY=tilo_sk_…
+tilo login                              # this computer as one of your devices, approved in Tilo
+tilo do account/keys#create name="My backend" --out my-backend.key
+export TILO_API_KEY=$(cat my-backend.key)   # what the SDKs read
 ```
 
 and point your agent's MCP configuration at `http://localhost:24110/mcp`.

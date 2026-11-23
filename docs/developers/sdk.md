@@ -17,18 +17,16 @@ is `tilo`: plain `tilo` on PyPI is another project's name, so only the distribut
 | MCP tools (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`, `tilo_link`, `tilo_status`, `tilo`) | agents | paths and arguments | compact text, priced per token |
 | SDK (Python, TypeScript) | your code | the same calls | typed values (JSON on the wire) |
 | tilolang (`tilo` tool, `tilo run`) | agents and scripts | programs | values, pasteable as input |
-| CLI (`tilo do`, `tilo files`, `tilo workspace …`) | shells | the API's `/v1` routes | text, or `--json` |
+| CLI (`tilo do`, `tilo ls`, `tilo files`) | shells | the API's `/v1` routes | text, or `--json` |
 
 The CLI calls [`/v1`](api.md): `POST
 /v1/workspaces/<workspace>/resources/<path>/actions/<action>` for an action,
 `POST /v1/resources/account/workspaces/actions/create` for one more workspace,
-`…/actions/branch` for a branch of one. It reaches the API through an
-API server with `TILO_API_KEY`, or with no server at all: on a computer `tilo
-login` made one of your devices, through the process holding that device's
-session, and for a script, as a key of its own in process (`tilo keys export
-"<what will use it>"` asks for a new key, approved as `tilo keys create`'s is,
-and writes it as a file `tilo --key-file` acts with; it never holds the
-computer's own key, which has one holder).
+`…/actions/branch` for a branch of one. It reaches the API as the person this computer
+logged in with (`tilo login`), or for a script, with a key file of its own
+(`tilo do account/keys#create name="<what will use it>" --out <file>` asks for a new key,
+approved as any key is, and writes it as a file `tilo --key-file` acts with; it never takes
+the computer's own key, which stays in one process).
 
 Every resource has a **path**, `app/resource#action`, as MCP's `tilo_do` takes it:
 `pdf-viewer/application.pdf#read-form-fields`. The account is a resource too:

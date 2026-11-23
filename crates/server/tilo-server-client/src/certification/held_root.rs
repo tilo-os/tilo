@@ -3,7 +3,7 @@
 
 use crate::{CertifyError, DeviceSigner};
 use tilo_user_identity::{
-    CertificationPolicy, DeviceCapabilities, DeviceCert,
+    AgentScope, CertificationPolicy, DeviceCapabilities, DeviceCert,
     certification::{CERTIFICATION_CLOCK_ALLOWANCE_NS, MAX_CERTIFICATION_LABEL_BYTES},
     check_agent_grant, sign_device_cert_async, verify_device_cert_at,
 };
@@ -195,6 +195,84 @@ pub async fn issue_agent_grant(
     let cert = signed(root, cert).await?;
     verify_device_cert_at(&cert, now).map_err(|e| request(&e))?;
     Ok(cert)
+}
+
+/// What a service's sign-in asks the person's Tilo to sign: the service's origin and its
+/// challenge, the client that asks, and the grant the person lets it hold, when it asks for one.
+pub struct SignInAsk<'a> {
+    pub audience: &'a str,
+    pub challenge: [u8; 32],
+    pub client: &'a str,
+    pub grant: Option<GrantAsk>,
+}
+
+/// The grant a sign-in asks the root to certify: the key the service generated for it, what it
+/// reaches, until when, whether it is a key the person makes for their own backend
+/// (`server_key`, which alone may last until revoked), and whether it operates web pages in
+/// Browser without asking each time.
+pub struct GrantAsk {
+    pub key: [u8; 32],
+    pub scope: AgentScope,
+    pub expires_at_ns: Option<u64>,
+    pub server_key: bool,
+    pub browser_pages: bool,
+}
+
+/// What the person's Tilo answers a sign-in with: the proof, and the grant's certificate when
+/// one was asked for, each as the service decodes it ([`encode`](crate::encode)).
+pub struct SignedIn {
+    pub proof: String,
+    pub grant: Option<String>,
+}
+
+/// The person's answer to `ask`, wherever they approve it: `root` certifies `device` (called
+/// `device_label`) for the proof alone ([`issue_sign_in_cert`]), the device proves the person
+/// to the service, and the root certifies the grant's key ([`issue_agent_grant`]). The one
+/// signer of a sign-in, for the page and for a computer that holds the root alike.
+///
+/// # Errors
+///
+/// [`CertifyError::Request`] for a grant of an agent that names no expiry, a label or expiry
+/// the root refuses, or a signature that fails.
+pub async fn answer_sign_in(
+    root: &dyn DeviceSigner,
+    device: &dyn DeviceSigner,
+    device_label: &str,
+    ask: &SignInAsk<'_>,
+) -> Result<SignedIn, CertifyError> {
+    let request = |error: &dyn std::fmt::Display| CertifyError::Request(error.to_string());
+    let cert = issue_sign_in_cert(root, device.device_public_key(), device_label).await?;
+    let proof = crate::sign_in_proof(cert, device, ask.audience, ask.challenge)
+        .await
+        .map_err(|error| request(&error))?;
+    let proof = crate::encode(&proof).map_err(|error| request(&error))?;
+    let Some(grant) = &ask.grant else {
+        return Ok(SignedIn { proof, grant: None });
+    };
+    let capabilities = if grant.server_key {
+        DeviceCapabilities::own_key_grant(grant.scope)
+    } else if grant.expires_at_ns.is_some() {
+        DeviceCapabilities::agent_grant(grant.scope)
+    } else {
+        return Err(CertifyError::Request(
+            "an agent's grant lasts until a time it names; only a server key may last until \
+             revoked"
+                .into(),
+        ));
+    };
+    let cert = issue_agent_grant(
+        root,
+        grant.key,
+        &crate::grant_label(ask.client, ask.audience),
+        capabilities.with_browser_pages(grant.browser_pages),
+        grant.expires_at_ns,
+    )
+    .await?;
+    let grant = crate::encode(&cert).map_err(|error| request(&error))?;
+    Ok(SignedIn {
+        proof,
+        grant: Some(grant),
+    })
 }
 
 /// Certify the device behind `signer` with the root the page holds, and

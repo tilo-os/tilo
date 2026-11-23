@@ -229,7 +229,7 @@ class DocExampleTests(unittest.TestCase):
     def test_a_shell_block_may_stand_alone(self) -> None:
         self.page(PYTHON, TYPESCRIPT, """
             ```sh
-            tilo workspace ls
+            tilo do account/workspaces#list
             ```
             """)
         status, output = self.check()
@@ -277,7 +277,7 @@ class DocExampleTests(unittest.TestCase):
     def test_run_passes_and_fails_each_block(self) -> None:
         api, tilo = self.shell_book("""
             ```sh example=listing
-            tilo workspace ls
+            tilo do account/workspaces#list
             ```
 
             ```sh example=broken
@@ -295,7 +295,7 @@ class DocExampleTests(unittest.TestCase):
     def test_run_only_runs_the_named_example(self) -> None:
         api, tilo = self.shell_book("""
             ```sh example=listing
-            tilo workspace ls
+            tilo do account/workspaces#list
             ```
 
             ```sh example=broken
@@ -309,7 +309,7 @@ class DocExampleTests(unittest.TestCase):
     def test_run_names_an_unknown_example(self) -> None:
         api, tilo = self.shell_book("""
             ```sh example=listing
-            tilo workspace ls
+            tilo do account/workspaces#list
             ```
             """)
         status, output = self.run_tool("run", "--api", str(api), "--tilo", str(tilo), "--only", "missing")
@@ -319,7 +319,7 @@ class DocExampleTests(unittest.TestCase):
     def test_run_says_what_a_shell_example_needs(self) -> None:
         api, _ = self.shell_book("""
             ```sh example=listing
-            tilo workspace ls
+            tilo do account/workspaces#list
             ```
             """)
         status, output = self.run_tool("run", "--api", str(api))

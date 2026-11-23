@@ -8,8 +8,8 @@
 //! removing accounts and marking mail are no row.
 
 use tilo_actions::remote::{
-    CatalogueRow, WORKSPACE_MAIL_ACCOUNTS, person_accounts, workspace_governance_child,
-    workspace_governance_resource,
+    CatalogueRow, WORKSPACE_MAIL_ACCOUNTS, person_accounts, person_vault,
+    workspace_governance_child, workspace_governance_resource,
 };
 #[cfg(feature = "agents")]
 use tilo_actions::{ActionContract, contract::Audience};
@@ -344,13 +344,19 @@ impl super::super::Workspaces {
 }
 
 /// A workspace's mail accounts in its governance tree
-/// (`workspace/mail-accounts`): listing them, and adding one, which the
-/// workspace's server signs in to before it keeps it and seals its password
-/// in the workspace's vault. Each is `tilo.accounts`'s own action, decided by
-/// the workspace's policy on its mail as any call of it is.
-const ACCOUNT_VERBS: [(&Verb, &str); 2] = [
-    // Listing them is listing the accounts an agent of the workspace's reads.
+/// (`workspace/mail-accounts`): every `tilo.accounts` action an agent may ask (listing them,
+/// reading and sending their mail), adding one, and adding one whose sign-in the vault keeps
+/// by reference. Each is decided by the workspace's policy on its mail as any call of it is.
+const ACCOUNT_VERBS: [(&Verb, &str); 11] = [
     (&VERBS[0], person_accounts::LIST),
+    (&VERBS[1], person_accounts::ARRIVED),
+    (&VERBS[2], person_accounts::FETCH),
+    (&VERBS[3], person_accounts::READ),
+    (&VERBS[4], person_accounts::SEARCH),
+    (&VERBS[5], person_accounts::BEGIN_SEND),
+    (&VERBS[6], person_accounts::SEND_PIECE),
+    (&VERBS[7], person_accounts::SAVE_DRAFT),
+    (&VERBS[8], person_accounts::SEND),
     (
         &Verb {
             id: "add",
@@ -360,6 +366,16 @@ const ACCOUNT_VERBS: [(&Verb, &str); 2] = [
             params: add_account_params,
         },
         person_accounts::ADD_MAIL,
+    ),
+    (
+        &Verb {
+            id: person_accounts::ADD_MAIL_WITH_ITEM,
+            label: "Add a mail account from the vault",
+            check: "",
+            kind: ActionKind::Outside,
+            params: add_account_with_item_params,
+        },
+        person_accounts::ADD_MAIL_WITH_ITEM,
     ),
 ];
 
@@ -394,6 +410,36 @@ fn add_account_params() -> Vec<ActionParam> {
             "identities",
             ParamType::Array,
             "Other names and addresses it sends as, each `Name <address>`.",
+        ),
+    ]
+}
+
+fn add_account_with_item_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required("address", ParamType::Text, "The account's address."),
+        ActionParam::optional(
+            "displayName",
+            ParamType::Text,
+            "The name its mail is sent under.",
+        ),
+        ActionParam::optional(
+            "username",
+            ParamType::Text,
+            "The sign-in name, when it is neither the item's own nor the address.",
+        ),
+        ActionParam::required("incomingHost", ParamType::Text, "The IMAP server."),
+        ActionParam::optional("incomingPort", ParamType::Integer, "The IMAP port."),
+        ActionParam::required("outgoingHost", ParamType::Text, "The SMTP server."),
+        ActionParam::optional("outgoingPort", ParamType::Integer, "The SMTP port."),
+        person_vault::item_param(
+            "password",
+            "The vault item that is the account's sign-in, by its reference.",
+        ),
+        ActionParam::optional(
+            "reason",
+            ParamType::Text,
+            "Why whoever asks needs it, in one sentence their person reads when they are asked \
+             whether they may.",
         ),
     ]
 }
@@ -467,6 +513,12 @@ impl crate::workspaces::Workspaces {
         }
         let mut asking = request.clone();
         asking.target = person_accounts::target(action);
+        // It takes its sign-in from the vault by reference, which the provider
+        // resolves on this host.
+        if action == person_accounts::ADD_MAIL_WITH_ITEM {
+            return Box::pin(self.vault_use_invoke(workspace_id, caller, certificate, &asking))
+                .await;
+        }
         Box::pin(self.person_accounts_invoke(workspace_id, caller, certificate, &asking)).await
     }
 }

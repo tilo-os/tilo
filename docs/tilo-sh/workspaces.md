@@ -26,8 +26,9 @@ either. Names match case-insensitively, and the `tilo` command matches their wor
 | `tilo.workspace("Applicant: Jane Doe")` | the same workspace |
 | `tilo.workspace("3f2a8c1e-0b4d-4e5f-9a6b-7c8d9e0f1a2b")` | the workspace with that id |
 
-A command that names no workspace acts on this computer. With `-w`, it acts in the hosted workspace named,
-using the key in `TILO_API_KEY`.
+A command that names no workspace acts on this computer. With `-w`, it acts in the hosted workspace
+named, as the person this computer logged in with (`tilo login`), or with the key file `--key-file`
+names.
 
 ## Yours, and ones you were invited into
 
@@ -45,8 +46,8 @@ Making one is an action on your account, like minting a key. So it appears in hi
 and can be done from the page, the command or the SDK:
 
 ```sh
-tilo workspace create "Q2 Launch" --label team=product
-tilo workspace ls --label team=product
+tilo do account/workspaces#create name="Q2 Launch" labels='{"team":"product"}'
+tilo do account/workspaces#list labels='{"team":"product"}'
 ```
 
 Labels are yours, for your scripts and agents to find a workspace by.
@@ -58,7 +59,7 @@ The host removes its records, files and history, stops counting them against you
 who has it open that it was deleted, and revokes every key that reached only it.
 
 ```sh
-tilo workspace rm q2-launch   # {"deleted": …, "revoked_keys": [...]}
+tilo do account/workspaces#delete workspace=q2-launch   # every key that reached only it is revoked
 ```
 
 Only a key that reaches all your workspaces deletes, and only workspaces of your own: one you were
@@ -76,7 +77,8 @@ the branch alone ([approvals](approvals.md#commands-in-a-workspaces-machine)).
 So set a workspace up once, then branch it for each task or each customer:
 
 ```sh
-tilo workspace branch "Onboarding template" "Onboarding: Acme" --label customer_id=cus_8121
+tilo do account/workspaces#branch workspace="Onboarding template" name="Onboarding: Acme" \
+  labels='{"customer_id":"cus_8121"}'
 ```
 
 ```python example=branch-workspace
@@ -187,7 +189,7 @@ A key you created that reaches all your workspaces invites as you would, as far 
 workspace goes. An agent asks you first, unless you allowed it in the workspace's settings, under Agents. Tilo sends
 no mail to the address an invitation names: hand the link over. `workspace/invitations#list` names the invitations
 nobody has accepted yet. One you no longer want is cancelled with
-`tilo workspace people revoke <invitation>` (`workspace/invitations#cancel {invite}`):
+`tilo do workspace/invitations#cancel invite=<invitation>` (`workspace/invitations#cancel {invite}`):
 its link lets nobody in from then on. Once the person is in, your agent's record links open
 straight in the record's app for them, because a link opens for the workspace's members and carries no
 secret.
@@ -199,18 +201,18 @@ everyone else in, always through an action of the workspace: an administrator ma
 owner makes owners.
 
 ```sh
-tilo workspace people add KEY --role editor --name "Ada Lovelace" -w Lounge   # in at once, no link to hand over
-tilo workspace people invite --role editor -w Lounge                          # a link; whoever opens it joins
-tilo workspace people wait-list -w Lounge                                     # who left an address at an entry
-tilo workspace people invite --waiting ENTRY --role editor -w Lounge          # invite one of them
-tilo workspace people unlist ENTRY -w Lounge                                  # take the address off again
+tilo do workspace/members#add person=KEY role=editor name="Ada Lovelace" -w Lounge   # in at once, no link to hand over
+tilo do workspace/invitations#invite role=editor -w Lounge                         # a link; whoever opens it joins
+tilo do workspace/waiting#list -w Lounge                                           # who left an address at an entry
+tilo do workspace/invitations#invite wait_list_entry=ENTRY role=editor -w Lounge   # invite one of them
+tilo do workspace/waiting#unlist entry=ENTRY -w Lounge                             # take the address off again
 ```
 
-`tilo workspace people add` takes a person's user public key (`tilo login --new-identity --json` names it), so it
-lets someone in before any device of theirs joins. `--role administrator` makes another administrator.
-A workspace has one owner, and `--role owner` hands it on, which only that owner does, from a device of
-their own. `tilo workspace people invite` answers a link instead: `--email` names the address it is
-for, and `--waiting` invites an address already on the wait list.
+`tilo do workspace/members#add` takes a person's user public key (`tilo login --new-identity --json` names it), so it
+lets someone in before any device of theirs joins. `role=administrator` makes another administrator.
+A workspace has one owner, and `role=owner` hands it on, which only that owner does, from a device of
+their own. `tilo do workspace/invitations#invite` answers a link instead: `invitee_name=` names the address it is
+for, and `wait_list_entry=` invites an address already on the wait list.
 
 The same actions are the workspace's own resources, which an agent reaches over MCP (`tilo_do {"path":
 "workspace/members#add", "args": {"person": KEY, "role": "editor"}}`, `workspace/invitations#invite`,

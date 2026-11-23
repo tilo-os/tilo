@@ -123,7 +123,7 @@ try {
     await until(lin.tab, arrived, `${HOST}’s page arriving`, stepLimit(6));
     await until(lin.tab, refusedByWaitList, 'the closed entry for the host', stepLimit(4));
     // The stack's own owner invites the host as an owner, as a deployment's
-    // owners add one: `tilo workspace people invite --role owner`, whose link
+    // owners add one: `tilo do workspace/invitations#invite role=owner`, whose link
     // anyone opens to become an owner.
     if (!stack) fail('STORY_STACK names no stack, so the host cannot be made an owner');
     const said = execFileSync('bash', [stack, 'owner'], {encoding: 'utf8', timeout: 120_000});

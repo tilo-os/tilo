@@ -342,10 +342,11 @@ impl Hosted {
         loop {
             let answer = self
                 .runtime
-                .block_on(
-                    self.client
-                        .invocation(&self.workspace, &invocation, INVOCATION_WAIT),
-                )
+                .block_on(self.client.invocation(
+                    Some(&self.workspace),
+                    &invocation,
+                    INVOCATION_WAIT,
+                ))
                 .map_err(|error| Self::refused(error, action))?;
             match status(&answer) {
                 "ok" => return Ok(Self::answered(&answer)),
@@ -446,7 +447,7 @@ impl Workspace for Hosted {
             .runtime
             .block_on(
                 self.client
-                    .act(&self.workspace, resource, verb, &args, action),
+                    .act(Some(&self.workspace), resource, verb, &args, action),
             )
             .map_err(|error| Self::refused(error, action))?;
         match status(&answer) {
@@ -463,7 +464,7 @@ impl Workspace for Hosted {
             .runtime
             .block_on(
                 self.client
-                    .act(&self.workspace, path, action, &args, &named),
+                    .act(Some(&self.workspace), path, action, &args, &named),
             )
             .map_err(|error| Self::refused(error, &named))?;
         match status(&answer) {

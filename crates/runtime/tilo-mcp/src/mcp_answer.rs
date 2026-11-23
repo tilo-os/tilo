@@ -298,8 +298,8 @@ pub(super) fn answer_of(value: &Value) -> Value {
     Value::Object(answer)
 }
 
-/// One action of a listing, typed: what it is called, what it takes, and
-/// what running it may reach.
+/// One action of a listing, typed: what it is called, what it takes, what
+/// running it may reach, and the schema of its result where it declares one.
 pub(super) fn action_row(action: &ActionDescriptor) -> Value {
     let mut row = json!({
         "id": action.address.action,
@@ -307,14 +307,17 @@ pub(super) fn action_row(action: &ActionDescriptor) -> Value {
         "params": action.params,
         "kind": action.contract.kind,
     });
-    if let (Some(fields), Some(description)) = (
-        row.as_object_mut(),
-        action
+    if let Some(fields) = row.as_object_mut() {
+        if let Some(description) = action
             .description
             .as_deref()
-            .filter(|text| !text.trim().is_empty()),
-    ) {
-        fields.insert("description".into(), json!(description.trim()));
+            .filter(|text| !text.trim().is_empty())
+        {
+            fields.insert("description".into(), json!(description.trim()));
+        }
+        if let tilo_actions::ResultSpec::Json { schema } = &action.contract.result {
+            fields.insert("result".into(), schema.clone());
+        }
     }
     row
 }

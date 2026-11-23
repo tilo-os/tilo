@@ -58,8 +58,9 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
                          agent of the stack restarts it from its own Terminal
   stack.sh env
       The environment that points everything at this stack: eval "\$(stack.sh env)",
-      then tilo keys create "My backend", the Python SDK (Tilo()), the TS SDK
-      (new Tilo()) and an agent's MCP client all reach the local API server.
+      then the Python SDK (Tilo()), the TS SDK (new Tilo()) and an agent's MCP
+      client all reach the local API server; a computer logged in to it
+      (tilo login) reaches it with tilo do too.
   stack.sh status        what runs, at which address, and whether it answers
   stack.sh logs NAME     a service's log (server, tls, api, web, discord, releases,
                          mail), or \`remote\` for the stack's own log when it runs on
@@ -92,7 +93,7 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
                          eval "\$(stack.sh owner --here)" holds it; stack.sh env
                          exports it from then on
   stack.sh tilo ARGS...  tilo as that owner, with their key:
-                         stack.sh tilo workspace people wait-list -w <lounge id>
+                         stack.sh tilo do workspace/waiting#list -w <lounge id>
   stack.sh person ARGS...
                          tilo as that owner on their own device, with no key:
                          what the host answers the person alone, as their
@@ -106,23 +107,23 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
                          With KEY, the person with that user public key is an
                          administrator at once (NAME is how the Lounge names
                          them): the stack's owner runs
-                         tilo workspace people add KEY --role administrator
+                         tilo do workspace/members#add person=KEY role=administrator -w WORKSPACE
   stack.sh invite [WORKSPACE] [-- --role ROLE] [--email ADDRESS]
                          an invite link to WORKSPACE (its id; the Lounge when
-                         none), made by the stack's owner with tilo workspace people
-                         invite: ROLE is viewer, commenter, editor (the
+                         none), made by the stack's owner with tilo do
+                         workspace/invitations#invite: ROLE is viewer, commenter, editor (the
                          default), administrator or owner. Opened in any
                          browser, it makes the person's identity on the spot
                          and lets them in
-  stack.sh tilo workspace servers add HOST-LINE -w WORKSPACE
+  stack.sh tilo do workspace/servers#add host=HOST-LINE -w WORKSPACE
                          the stack's owner has the stack whose own
                          web-host.json is HOST-LINE keep WORKSPACE as well:
                          both keep it and a change on either reaches the
                          other. That stack takes it only for a person it let
                          in: make this stack's owner one of its people there
                          first (stack.sh owner KEY there, KEY this stack's
-                         \$TILO_SH_STATE/owner/key). servers ls and servers
-                         remove NAME too
+                         \$TILO_SH_STATE/owner/key). workspace/servers#list
+                         and workspace/servers#remove server=NAME too
   stack.sh browser       a Chromium on a fresh profile, opened on the local site
   stack.sh check
                          bring the stack up and run the end-to-end check on it
@@ -1021,7 +1022,7 @@ EOF
 
 # invite [WORKSPACE] [-- --role ROLE] [--email ADDRESS]: an invite link to
 # WORKSPACE (the Lounge when none), made by the stack's own person, its owner,
-# with `tilo workspace people invite`, as any owner makes one. Opened in any browser,
+# with `tilo do workspace/invitations#invite`, as any owner makes one. Opened in any browser,
 # one with no Tilo identity yet included, the page makes the person's identity
 # and joins.
 invite_link() {
@@ -1039,14 +1040,15 @@ invite_link() {
         ;;
       --email)
         [[ $# -ge 2 ]] || die 'invite --email: the address'
-        asked+=(--email "$2")
+        asked+=("invitee_name=$2")
         shift 2
         ;;
       *) die "invite [WORKSPACE] [-- --role viewer|commenter|editor|administrator|owner] [--email ADDRESS], not $1" ;;
     esac
   done
   [[ -n $workspace ]] || workspace=$(lounge_id)
-  owner_tilo workspace people invite --role "$role" "${asked[@]}" -w "$workspace" | head -1
+  owner_tilo do workspace/invitations#invite role="$role" "${asked[@]}" -w "$workspace" --json \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["link"])'
 }
 
 # The Lounge's workspace id, once it runs.
@@ -1061,8 +1063,8 @@ lounge_id() {
 # administrator of the Lounge and lets them in. The Lounge has one owner, the
 # stack's own person, and only they hand it on, from a device of their own.
 # With KEY, the person whose user public key (hex) is KEY is an administrator
-# at once: the stack's own person adds them (`tilo workspace people add KEY
-# --role administrator`), and a key of theirs reaches the Lounge before any
+# at once: the stack's own person adds them (`tilo do workspace/members#add
+# person=KEY role=administrator`), and a key of theirs reaches the Lounge before any
 # device of theirs joins. NAME is how the Lounge names them then.
 declare_owner() {
   local key=''
@@ -1092,8 +1094,8 @@ declare_owner() {
   fi
   [[ $key =~ ^[0-9a-f]{64}$ ]] || die 'owner KEY: the person'"'"'s user public key, 64 hex characters (tilo login --json names it as user_public_key)'
   local -a named=()
-  [[ -z $name ]] || named=(--name "$name")
-  owner_tilo workspace people add "$key" --role administrator "${named[@]}" -w "$(lounge_id)" >/dev/null \
+  [[ -z $name ]] || named=("name=$name")
+  owner_tilo do workspace/members#add person="$key" role=administrator "${named[@]}" -w "$(lounge_id)" >/dev/null \
     || die "the Lounge did not make $key an administrator"
   say "$key is an administrator of the Lounge: let in at once${name:+ as $name}"
 }
@@ -1123,7 +1125,7 @@ owner_run() {
     XDG_DATA_HOME=$home/.local/share XDG_CACHE_HOME=$home/.cache \
     TILO_IDENTITY_ROOT=$home/.local/share/tilo \
     TILO_DEVICE_PORT=$person_port \
-    TILO_API_URL=$api_origin TILO_SITE=$site_origin "$@" 9>&-
+    TILO_SITE=$site_origin "$@" 9>&-
 }
 
 # The daemon of the stack's person's device, once they logged in, run as their service would
@@ -1164,53 +1166,55 @@ stack_person() {
 # The API key the stack's own person approved for themself, approved the
 # first time it is asked for.
 owner_api_key() {
-  local answer api_key said=$state/owner/keys-create.err status=0
+  local said=$state/owner/keys-create.err status=0
   if [[ ! -s $state/owner/api-key ]]; then
     mkdir -p "$state/owner"
-    # A person named by owner/key but kept on no computer here (a stack another server's person
-    # moves to) approves nothing until they sign in: tilo would wait for a browser instead. An
-    # earlier tilo (TILO_SH_TILO_BIN) keeps them in its state folder instead.
+    # The person's own device asks for the key, and their root here approves it: nobody is
+    # asked. A person named by owner/key but kept on no computer here (a stack another server's
+    # person moves to) approves nothing until they sign in: tilo would wait for a browser
+    # instead. An earlier tilo (TILO_SH_TILO_BIN) keeps them in its state folder instead.
     [[ -d $state/owner/home/.config/tilo/identity \
       || -f $state/owner/home/.local/state/tilo/identity/user-identity/privkey.bin ]] \
       || die "the stack's person ($(cat "$state/owner/key")) is not signed in here: stack.sh person login --recovery-key, with their 24 words on standard input"
-    answer=$(as_owner keys create 'Local stack' --json 2>"$said") || status=$?
+    owner_tilo do account/keys#create name='Local stack' --out "$state/owner/api-key" \
+      >/dev/null 2>"$said" || status=$?
     if ((status != 0)); then
       # Why, in tilo's own words (it says them on stderr), and whether the
       # API server it asked answers at all: a bring-up that stopped early
       # leaves none to approve the key.
       local why
       why=$(cat "$said" 2>/dev/null)
-      why=${why:-${answer:-tilo keys create exited $status and said nothing}}
+      why=${why:-tilo do account/keys#create exited $status and said nothing}
+      rm -f "$state/owner/api-key"
       curl -fsS --max-time 5 "$api_origin/health" >/dev/null 2>&1 \
         || why+=$'\n'"the API server does not answer at $api_origin/health: stack.sh up did not finish (stack.sh status, stack.sh logs api)"
       die "the owner's key was not approved: $why"
     fi
     rm -f "$said"
-    api_key=$(python3 -c 'import json,sys
-answer = json.loads(sys.argv[1])
-print(next(answer[field] for field in ("key", "token", "api_key") if answer.get(field)))' "$answer") \
-      || die "tilo answered no key: $answer"
-    printf '%s\n' "$api_key" > "$state/owner/api-key"
     chmod 600 "$state/owner/api-key"
   fi
   cat "$state/owner/api-key"
 }
 
-# tilo as the stack's own person, with their API key.
+# tilo as the device of the stack's own person: what it asks them, their root here answers.
 owner_tilo() {
-  local api_key
-  api_key=$(owner_api_key) || exit 1
-  TILO_API_KEY=$api_key as_owner "$@"
+  stack_person >/dev/null
+  owner_daemon
+  as_owner "$@"
 }
 
 # tilo as the stack's own person on the device their root certified, with no
 # key: a key is the person's agent, which the host refuses their vault and
-# their mail accounts.
+# their mail accounts. A `do` is asked as them, not as the computer's agent.
 owner_person() {
   stack_person >/dev/null
   owner_daemon
-  (unset TILO_API_KEY && as_owner "$@")
-  owner_daemon
+  if [[ ${1-} == do ]]; then
+    shift
+    as_owner do --in-person "$@"
+  else
+    as_owner "$@"
+  fi
 }
 
 # owner --here [NAME]: the stack's own person, the Lounge's first owner,
@@ -1223,7 +1227,7 @@ owner_here() {
   stack_person >/dev/null
   api_key=$(owner_api_key) || exit 1
   if [[ -n $name ]]; then
-    owner_tilo workspace people name "$name" -w "$(lounge_id)" >/dev/null \
+    owner_tilo do workspace/members#name name="$name" -w "$(lounge_id)" >/dev/null \
       || die "the Lounge did not name its owner $name"
   fi
   say "the owner's key is kept for stack.sh env; stack.sh tilo … acts as them"
@@ -1231,11 +1235,12 @@ owner_here() {
 }
 
 # An administrator link: whoever opens it is an administrator from then on,
-# as the stack's own person invites them (`tilo workspace people invite --role
-# administrator`).
+# as the stack's own person invites them (`tilo do
+# workspace/invitations#invite role=administrator`).
 owner_link() {
   local link
-  link=$(owner_tilo workspace people invite --role administrator -w "$(lounge_id)" | head -1) \
+  link=$(owner_tilo do workspace/invitations#invite role=administrator -w "$(lounge_id)" --json \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["link"])') \
     || die 'the Lounge made no administrator link'
   say 'opening this link in any browser makes that person an administrator of the Lounge:'
   printf '%s\n' "$link"
@@ -2333,7 +2338,8 @@ up() {
   if [[ $remote == 1 ]]; then
     link=$(remote_cmd owner | head -1) || true
   else
-    link=$(owner_tilo workspace people invite --role administrator -w "$(lounge_id)" | head -1) || true
+    link=$(owner_tilo do workspace/invitations#invite role=administrator -w "$(lounge_id)" --json \
+      | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["link"])') || true
   fi
   if [[ -n $link ]]; then
     say 'opening this link in any browser makes that person an administrator of the Lounge'
@@ -2599,14 +2605,14 @@ status() {
   else
     printf '\nRunning the images (up --images).\n'
   fi
-  printf 'Next: eval "$(%s env)", then tilo keys create "My backend"; or %s browser.\n' "$0" "$0"
+  printf 'Next: eval "$(%s env)" for the SDKs and agents; or %s browser for the page.\n' "$0" "$0"
 }
 
 print_env() {
   [[ -f $state/mode ]] || die 'the stack has not run here yet: stack.sh up'
   cat <<EOF
-# tilo.sh on this machine (stack.sh). The tilo command, the SDKs and agents
-# reach the local API server; nothing here touches tilo.sh.
+# tilo.sh on this machine (stack.sh). The SDKs and agents reach the local API
+# server; nothing here touches tilo.sh.
 export TILO_API_URL=$api_origin
 export TILO_SITE=$site_origin
 EOF
@@ -2900,7 +2906,7 @@ status_remote() {
   printf '%-9s %-8s %s\n' vm-host skipped "it runs from its images, beside a stack here (TILO_SH_REMOTE=0)"
   printf '\nThe programs and the state are on the build server (%s there); %s logs remote reads its log.\n' \
     "$remote_state" "$0"
-  printf 'Next: eval "$(%s env)", then tilo keys create "My backend"; or %s browser.\n' "$0" "$0"
+  printf 'Next: eval "$(%s env)" for the SDKs and agents; or %s browser for the page.\n' "$0" "$0"
 }
 
 # stop_supervisor: the bring-up process holding this stack's ports, and with it the forward.

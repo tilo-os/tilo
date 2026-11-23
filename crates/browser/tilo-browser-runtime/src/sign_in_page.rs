@@ -6,7 +6,8 @@
 //! device proves the person to the service
 //! ([`tilo_server_client::sign_in_proof`]), and — when the person lets an
 //! agent act for them — the root certifies the key the service generated for
-//! the grant ([`tilo_server_client::certification::issue_agent_grant`]).
+//! the grant, all in the one sign-in signer
+//! ([`tilo_server_client::certification::answer_sign_in`]).
 //!
 //! The certificate the proof carries is issued for this answer alone: a host
 //! issues the page's device certificate when it joins a workspace, and a
@@ -19,9 +20,8 @@
 //! certificate is, and the service keeps its exact check.
 
 use serde::{Deserialize, Serialize};
-use tilo_server_client::certification::{issue_agent_grant, issue_sign_in_cert};
-use tilo_server_client::{DeviceSigner as _, encode, grant_label, sign_in_proof};
-use tilo_user_identity::{AgentScope, DeviceCapabilities};
+use tilo_server_client::certification::{GrantAsk, SignInAsk, answer_sign_in};
+use tilo_user_identity::AgentScope;
 use wasm_bindgen::prelude::*;
 
 use crate::peer::{PageSigner, device_key, js_error};
@@ -99,43 +99,36 @@ pub async fn sign_in_answer(
     let ask: Ask = serde_json::from_str(&ask).map_err(js_error)?;
     let root = PageSigner::from_js(&root)?;
     let device = PageSigner::from_js(&ownership)?;
-    let challenge = device_key(&ask.challenge)?;
-    let cert = issue_sign_in_cert(&root, device.device_public_key(), BROWSER_LABEL)
-        .await
-        .map_err(js_error)?;
-    let proof = sign_in_proof(cert, &device, &ask.audience, challenge)
-        .await
-        .map_err(js_error)?;
-    let proof = encode(&proof).map_err(js_error)?;
-    let grant = match (ask.grant_key, ask.grant_scope, ask.expires_at_ms) {
-        (None, None, None) if !ask.server_key => None,
-        (Some(key), Some(scope), expires) if expires.is_some() || ask.server_key => {
-            let scope = AgentScope::parse(&scope)
-                .ok_or_else(|| js_error("a grant's scope is `all` or a workspace id"))?;
-            let capabilities = if ask.server_key {
-                DeviceCapabilities::own_key_grant(scope)
-            } else {
-                DeviceCapabilities::agent_grant(scope)
-            };
-            let cert = issue_agent_grant(
-                &root,
-                device_key(&key)?,
-                &grant_label(&ask.client, &ask.audience),
-                capabilities.with_browser_pages(ask.operate_browser_pages),
-                expires.map(nanoseconds).transpose()?,
-            )
-            .await
-            .map_err(js_error)?;
-            Some(encode(&cert).map_err(js_error)?)
-        }
-        _ => {
-            return Err(js_error(
-                "a grant asks for its key, scope and expiry together; only a server key may \
-                 last until revoked",
-            ));
-        }
+    let grant = match (ask.grant_key, ask.grant_scope) {
+        (None, None) if !ask.server_key && ask.expires_at_ms.is_none() => None,
+        (Some(key), Some(scope)) => Some(GrantAsk {
+            key: device_key(&key)?,
+            scope: AgentScope::parse(&scope)
+                .ok_or_else(|| js_error("a grant's scope is `all` or a workspace id"))?,
+            expires_at_ns: ask.expires_at_ms.map(nanoseconds).transpose()?,
+            server_key: ask.server_key,
+            browser_pages: ask.operate_browser_pages,
+        }),
+        _ => return Err(js_error("a grant asks for its key and scope together")),
     };
-    serde_json::to_string(&Answer { proof, grant }).map_err(js_error)
+    let signed = answer_sign_in(
+        &root,
+        &device,
+        BROWSER_LABEL,
+        &SignInAsk {
+            audience: &ask.audience,
+            challenge: device_key(&ask.challenge)?,
+            client: &ask.client,
+            grant,
+        },
+    )
+    .await
+    .map_err(js_error)?;
+    serde_json::to_string(&Answer {
+        proof: signed.proof,
+        grant: signed.grant,
+    })
+    .map_err(js_error)
 }
 
 /// `ms` as Unix nanoseconds, exactly: a whole millisecond the page can hold.

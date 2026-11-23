@@ -45,7 +45,7 @@ GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
 
 LEAD = """\
 An agent reaches a workspace through the MCP server a hosted workspace serves at
-its URL, with a key minted for that one workspace (`tilo keys mint -w <workspace>`).
+its URL, with a key minted for that one workspace (`tilo do account/keys#mint workspace=<workspace>`).
 The agent lists these tools and calls one by name; every call is a step of the
 agent's run, so an app's undo takes it back and history shows who did it.
 """

@@ -347,8 +347,8 @@ class FakeApi:
             return self.ok(call, {"keys": self.keys})
         if (resource, action) == ("keys", "mint"):
             return self.mint_key(call)
-        if (resource, action) == ("keys", "revoke"):
-            return self.revoke_key(call, asked.get("grant", ""))
+        if action == "revoke" and resource.startswith("keys/"):
+            return self.revoke_key(call, resource.removeprefix("keys/"))
         return self.refuse(404, "not_found", f"the account has no {resource}#{action}")
 
     def ok(self, call: dict[str, Any], result: dict[str, Any]) -> httpx.Response:

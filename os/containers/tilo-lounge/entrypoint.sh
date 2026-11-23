@@ -18,8 +18,8 @@
 # The workspace's first owners, by their user public keys (64 hex
 # characters each, comma-separated): declared at every start where they are no
 # owner yet. Everyone else comes in through the workspace's own actions, which
-# its owners and administrators ask with a key of theirs (`tilo workspace people add`,
-# `tilo workspace people invite`, the API's /v1/workspaces/{w}/members):
+# its owners and administrators ask with a key of theirs (`tilo do workspace/members#add`,
+# `tilo do workspace/invitations#invite`, the API's /v1/workspaces/{w}/members):
 #   TILO_WORKSPACES_OWNERS     the owners' keys
 #
 # The operator socket takes what only the host's operator does: having

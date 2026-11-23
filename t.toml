@@ -2334,7 +2334,7 @@ name = "e2e-ws-branch"
 egress = { to = ["0.0.0.0/0", "::/0"] }
 # A workspace set up once on one booted tilo box (a note, files, a Terminal environment with a
 # tool in it, a window on its shell) and branched twice through `workspace.branch` and once
-# through `tilo workspace branch`: each branch starts with all of it and only its owner, no
+# through `tilo do branch-workspace`: each branch starts with all of it and only its owner, no
 # chat, and from then on changes apart from its source and its sibling, also after the session
 # restarts; an agent in a branch's environment acts there alone
 # (scripts/vm-acceptance/acceptance/checks/ws_branch_e2e.py).

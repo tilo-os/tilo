@@ -265,7 +265,7 @@ impl Repl {
     /// `ls [path]`: the workspace's listing, as its host words it.
     async fn list(&self, path: &str) -> Vec<String> {
         let path = (!path.is_empty()).then_some(path);
-        match Box::pin(self.calls.list(&self.workspace, path, None)).await {
+        match Box::pin(self.calls.list(Some(&self.workspace), path, None)).await {
             Ok(listed) => text_of(&listed).lines().map(str::to_owned).collect(),
             Err(error) => error_line(&error.to_string()),
         }

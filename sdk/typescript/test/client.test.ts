@@ -203,8 +203,8 @@ describe("keys", () => {
   it("revokes a key", async () => {
     const api = new FakeApi();
     expect(await open(api).keys.revoke("g-root")).toEqual({ revoked: "g-root" });
-    expect(api.last()?.path).toBe("/v1/resources/account/keys/actions/revoke");
-    expect(api.last()?.body).toBe('{"grant":"g-root"}');
+    expect(api.last()?.path).toBe("/v1/resources/account/keys/g-root/actions/revoke");
+    expect(api.last()?.body).toBe("{}");
   });
 
   it("asks the person for a key, and answers it once they approve", async () => {

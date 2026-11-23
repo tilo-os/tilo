@@ -33,7 +33,7 @@ printed and who ran it. History keeps it as that person's or agent's run.
 
 usage: hosted-terminal.py API_URL SERVER_KEY OUT_DIR [--refused|--card|--terminal|--agent|--isolated|--gui]
 
-SERVER_KEY is the startup's own key (`tilo keys create`, named for the backend
+SERVER_KEY is the startup's own key (`tilo do account/keys#create`, named for the backend
 that asked for it). OUT_DIR is the hosted Browser's work directory: its
 `open.json` names the workspace, and the key its agent was minted, which is
 the key scoped to that one workspace. Without it — a run of these steps alone
@@ -54,6 +54,7 @@ runs. Prints one JSON line, and keeps what it read in OUT_DIR.
 from __future__ import annotations
 
 import asyncio
+import base64
 import itertools
 import json
 import os
@@ -494,16 +495,26 @@ async def terminal() -> dict[str, object]:
         await person_client.aclose()
 
 
+def key_file(key: str) -> Path:
+    """The key as a file `tilo --key-file` acts with: its token carries the key and its
+    certificate, and this names the API server the check runs."""
+    carried = json.loads(base64.urlsafe_b64decode(
+        (encoded := key.removeprefix("tilo_sk_")) + "=" * (-len(encoded) % 4)))
+    path = Path(OUT) / "agent-key.json"
+    path.write_text(json.dumps({"host": CLI_API_URL, "name": carried["name"],
+                                "key": carried["secret"], "cert": carried["cert"]}))
+    path.chmod(0o600)
+    return path
+
+
 def run_cli(workspace: str, key: str, command: str) -> tuple[int, str, str]:
-    """`tilo -w WORKSPACE do terminal#run command=…`, with the key in the
-    environment as the command takes it."""
-    env = dict(os.environ, TILO_API_KEY=key, TILO_API_URL=CLI_API_URL)
+    """`tilo --key-file KEY -w WORKSPACE do terminal#run command=…`, as an agent's key runs it."""
     ran = subprocess.run(
-        [CLI, "--api", CLI_API_URL, "-w", workspace, "do", "terminal#run", f"command={command}"],
+        [CLI, "--key-file", str(key_file(key)), "-w", workspace, "do", "terminal#run", f"command={command}"],
         capture_output=True,
         text=True,
         timeout=600,
-        env=env,
+        env=dict(os.environ),
     )
     return ran.returncode, ran.stdout, ran.stderr
 

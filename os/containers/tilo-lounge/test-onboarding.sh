@@ -5,7 +5,7 @@
 # stack.sh), so the entry a stranger meets here is the one tilo.sh runs — taking
 # people by invitation, keeping a wait list, and mailing through a sink this run
 # reads. The person who runs it is made an owner by the stack's own owner with
-# `tilo workspace people add`, the action any owner takes, which is how a fresh
+# `tilo do workspace/members#add`, the action any owner takes, which is how a fresh
 # invitation-only Lounge gets its first member.
 #
 # The stranger's walk: the wait list and its confirmation mail; the invitation

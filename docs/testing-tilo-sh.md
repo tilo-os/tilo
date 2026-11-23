@@ -185,25 +185,26 @@ With `--images`, the first three are the images themselves.
 eval "$(os/containers/tilo-sh/stack.sh env)"
 ```
 
-This sets `TILO_API_URL` and `TILO_SITE`, and everything points at the local
-stack:
+This sets `TILO_API_URL` and `TILO_SITE`, and the SDKs and agents point at the
+local stack:
 
 - **You, an administrator:** open the administrator link `up` printed
   (`stack.sh owner` prints it again) in your browser. It makes your identity on
   the spot and you are in the Lounge as an administrator. The stack's own person, the
   owner it started the Lounge with, needs no browser:
   `eval "$(stack.sh owner --here)"` gives you a key for them, and
-  `stack.sh tilo workspace people … -w Lounge` runs `tilo` as them.
+  `stack.sh tilo do workspace/waiting#list -w Lounge` runs `tilo` as them.
 - **Someone you invite:** `stack.sh invite [WORKSPACE] -- --role editor` prints
-  an invite link the stack's owner makes with `tilo workspace people invite` (the card
+  an invite link the stack's owner makes with `tilo do workspace/invitations#invite` (the card
   names the workspace). Opened in a browser with no Tilo identity yet, the page
   makes one and joins; being in any workspace here also lets them past the
   invite-only sign-up and into the Lounge.
 - **A fresh visitor:** `stack.sh browser` opens Chromium on a throwaway profile
   at the local site. `integration/person.mjs SITE SERVER OUT` does the same
   headless and prints the time until they are in the Lounge.
-- **The `tilo` command:** `tilo keys create "My backend"` prints a link.
-  Approve it in the browser `stack.sh browser` opened, and the command prints
+- **The `tilo` command:** `tilo login` makes this computer one of your devices;
+  `tilo do account/keys#create name="My backend" --out my-backend.key` then prints
+  a link. Approve it in the browser `stack.sh browser` opened, and the file has
   the key.
 - **Python SDK:** `Tilo()` reads `TILO_API_URL` and `TILO_API_KEY`, e.g.
   `uv run --project sdk/python python sdk/python/examples/visa_proof.py`.
@@ -226,7 +227,7 @@ os/containers/tilo-sh/stack.sh check
 ```
 
 The check brings the stack up and uses it as people and backends do: a fresh
-identity approves the server key `tilo keys create` asks for on `/sign-in`; the
+identity approves the server key `tilo do account/keys#create` asks for on `/sign-in`; the
 visa run (`sdk/python/examples/visa_proof.py`) creates applicant workspaces,
 mints a one-workspace key and its MCP URL, and an agent fills a form and writes
 a letter; a reviewer joins by invitation, reads the filled form and undoes the

@@ -2,7 +2,7 @@
 # The local tilo.sh, brought up and used end to end (stack.sh check):
 #
 #   1. a fresh startup identity, in its own headless Chromium on the local
-#      site, approves a server key `tilo keys create` asks for, on the site's
+#      site, approves a server key `tilo do account/keys#create` asks for, on the site's
 #      own /sign-in page; the pictures of what it reads there (the sign-in
 #      card, the API server's grants page, and the key that page makes) are kept in
 #      WORK/startup, light and dark. The page stays open on the site, holding
@@ -125,7 +125,7 @@ step() {
 # -- the steps ---------------------------------------------------------------
 
 # 1: a person who has never been here, on the site, approves the server key
-# `tilo keys create` asks for, and one that may not operate web pages. The
+# `tilo do account/keys#create` asks for, and one that may not operate web pages. The
 # site lets people in by invitation, as production's does: they arrive through
 # one the Lounge's owner made for them (`stack.sh invite`), as a newcomer does.
 startup_identity() {

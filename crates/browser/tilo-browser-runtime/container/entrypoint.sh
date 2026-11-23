@@ -30,8 +30,7 @@
 # home host's own (https://<host>/directory) unless one is named:
 #   TILO_WEB_DIRECTORY  the directory's https:// address, http:// on this
 #                       machine (unset: the home's)
-# The `tilo` command on a computer logged in with this site asks its API server
-# for the keys it makes (`tilo keys create`, `tilo keys export`):
+# The site's API server, named in its entry:
 #   TILO_WEB_API        the API server's https:// address, http:// on this
 #                       machine (unset: none named; such a computer is told to
 #                       name one)

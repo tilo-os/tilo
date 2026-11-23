@@ -239,7 +239,7 @@ start TILO_WEB_DIRECTORY=https://workspaces.example/peer/v1/directory
 [[ $(get /entry.json) == '{"directory":"https://workspaces.example/peer/v1/directory"}' ]] \
   || fail "entry.json directory: $(get /entry.json)"
 entry TILO_WEB_DIRECTORY=http://workspaces.example/directory && fail "a directory that is not https must refuse to start"
-# The API server a computer logged in with the site asks for its keys.
+# The site's API server, named in its entry.
 start TILO_WEB_API=https://api.workspaces.example
 [[ $(get /entry.json) == '{"api":"https://api.workspaces.example"}' ]] \
   || fail "entry.json api: $(get /entry.json)"

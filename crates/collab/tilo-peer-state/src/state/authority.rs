@@ -16,7 +16,7 @@ use collab_types::signer::DeviceSigner;
 /// its person approved for the key (or its grant was revoked), and the one
 /// command that approves one.
 const KEY_NOT_APPROVED: &str = ". This key is not approved for this workspace, or its grant \
-     was revoked: the person types `tilo keys create \"<name>\"` and approves the new key in \
+     was revoked: the person types `tilo do account/keys#create name=\"<name>\"` and approves the new key in \
      their Tilo tab (on their own computer, `tilo login` again)";
 
 /// How much work deriving access did on this thread, for the tests that hold

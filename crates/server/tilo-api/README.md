@@ -52,7 +52,7 @@ its own session with the server:
   (`docs/architecture/workspace-api.md`).
 
 Revoking a grant at `/grants` (or the agent revoking its refresh token, or
-`account/keys#revoke`) ends its tokens and sessions at once, with every grant
+`account/keys/<key>#revoke`) ends its tokens and sessions at once, with every grant
 it minted, and forgets their keys. The person can also revoke the grant's key
 from their devices like any other device; the server then refuses it from its
 own revocation list. Past its certificate's expiry a grant issues no token and

@@ -34,14 +34,14 @@ console.log(listing.workspaces.map((workspace) => workspace.name));
 ```
 
 ```sh example=create-a-workspace
-tilo workspace create "Example customer"
-tilo workspace ls
+tilo do account/workspaces#create name="Example customer"
+tilo do account/workspaces#list
 ```
 
 A shell block that only shows a command needs no id:
 
 ```sh
-tilo workspace ls
+tilo ls account/keys
 ```
 
 A snippet that is not a program says `fragment`:

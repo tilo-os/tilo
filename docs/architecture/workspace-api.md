@@ -16,7 +16,7 @@ entry. An agent reaches it through OAuth today: it registers, the person
 approves in their own Tilo, and the agent redeems a code for tokens.
 
 An API key is the same grant with the OAuth client taken out. The person
-asks for one (the grants page, or `tilo keys create`), the API server makes the key,
+asks for one (the grants page, or `tilo do account/keys#create`), the API server makes the key,
 and the person's own Tilo signs them in and certifies the key exactly as it
 does for an agent (`/sign-in`, the same proof and certificate). The person's
 device is still the only thing that certifies. What changes is what comes
@@ -36,7 +36,7 @@ A key reaching all of a person's workspaces is a server key: it runs a
 backend unattended, and a backend whose key ran out every three months would
 break silently. So, like Stripe's and AWS's secret keys, it lasts until the
 person revokes it. They may choose an expiry instead: `expires_in` (seconds)
-on `/keys/new` and `account/keys#create`, `tilo keys create --expires-in`, the
+on `/keys/new` and `account/keys#create`, `tilo do account/keys#create expires_in=…`, the
 SDKs' `keys.create(..., expires_in)`, or the expiry menu on the grants page.
 
 The certificate says it is a server key itself
@@ -53,11 +53,11 @@ and end:
 
 - the `tilo_sk_` prefix lets secret scanners recognise the token;
 - the token is shown exactly once (the API server keeps only its digest);
-- the keys list (`/grants`, `account/keys#list`, `tilo keys ls`) shows when
+- the keys list (`/grants`, `account/keys#list`, `tilo ls account/keys`) shows when
   each key was last used and which of the person's devices approved it;
-- revoking is one click on `/grants`, `account/keys#revoke`, or `tilo keys revoke <grant>`.
+- revoking is one click on `/grants`, or `tilo do "account/keys/<key>#revoke"` (a key by its name or grant).
 
-`tilo keys create` cannot open a browser on a server, so it follows the
+`tilo do account/keys#create` cannot open a browser on a server, so it follows the
 device-authorization pattern. It asks the API server for an approval link and a poll
 secret, prints the link, and polls until the person approves. The key goes
 only to the poller; the browser shows "approved". A key created from the
@@ -94,8 +94,8 @@ admits it only to its own workspace.
 
 There are two places a grant ends, and both cascade:
 
-- **At the API server**: revoking a grant (at `/grants`, `account/keys#revoke`,
-  or `tilo keys revoke`) revokes every grant it minted, forgets their keys,
+- **At the API server**: revoking a grant (at `/grants`, `account/keys/<key>#revoke`,
+  or `tilo do "account/keys/<grant>#revoke"`) revokes every grant it minted, forgets their keys,
   invalidates their tokens and ends their sessions. The API server holds the keys,
   so nothing can act with them afterwards.
 - **In the identity**: a revocation the person's root signs for the parent
@@ -111,8 +111,8 @@ There are two places a grant ends, and both cascade:
 Making workspaces and keys are actions on the account, reached through the
 same tools as everything else (see [the SDK design](../developers/sdk.md)).
 The API runs them as it runs any action ([`api.md`](../developers/api.md)):
-`POST /v1/resources/account/<resource>/actions/<action>`, which `tilo workspace` and
-`tilo keys` call. Every route is the same call an agent makes. In a session at the
+`POST /v1/resources/account/<resource>/actions/<action>`, which `tilo do` calls.
+Every route is the same call an agent makes. In a session at the
 entry's root (`/mcp`) with a grant reaching all workspaces, a call that names
 no `workspace` and whose path is under `account` is answered by the API server:
 
@@ -125,7 +125,7 @@ no `workspace` and whose path is under `account` is answered by the API server:
 | `account/keys#list` | this key and the keys it minted, each with `expires_at_ms` (`null` until revoked), `last_used_at_ms` and `created_by` |
 | `account/keys#create {name, workspace?, expires_in?}` | asks the person; the run is `pending` until they approve, and `tilo_status` then answers the key |
 | `account/keys#mint {workspace, name?, expires_in?}` | a minted grant: `{grant, token, mcp_url, expires_at_ms}` |
-| `account/keys#revoke {grant}` | this key or one it minted, and everything it minted |
+| `account/keys/<key>#revoke` (a key by its name or grant) | this key or one it minted, and everything it minted |
 
 Answers are the agent surface's text (`ok`, `failed: …`, `pending <id>`) and
 the same answer typed in `structuredContent`, so programs get JSON.

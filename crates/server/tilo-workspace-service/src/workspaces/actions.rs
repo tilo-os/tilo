@@ -85,10 +85,14 @@ mod invocation_states;
 mod mail;
 #[cfg(not(target_arch = "wasm32"))]
 mod model_asks;
+#[cfg(not(target_arch = "wasm32"))]
+mod models;
 mod server;
 use invocation_states::{answered_within, ended, failed, still_running, succeeded};
 #[cfg(not(target_arch = "wasm32"))]
 mod telling;
+#[cfg(not(target_arch = "wasm32"))]
+mod vault;
 
 use super::authority::WorkspaceOp;
 #[cfg(not(target_arch = "wasm32"))]
@@ -1471,6 +1475,19 @@ impl Workspaces {
                     self.mail_account_rows((Some(workspace_id), caller, certificate), &id)
                         .await,
                 );
+                // Its vault and the model providers its agents run on, as its
+                // policy on each lets the caller ask them.
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    rows.extend(
+                        self.vault_rows((Some(workspace_id), caller, certificate), &id)
+                            .await,
+                    );
+                    rows.extend(
+                        self.models_rows((Some(workspace_id), caller, certificate), &id)
+                            .await,
+                    );
+                }
                 offer.add(GOVERNANCE, &id, governance_tree(rows, &name));
             } else if let Some((governed, _device)) = operating {
                 // An agent of the person's asks what they ask of their
@@ -1622,6 +1639,11 @@ impl Workspaces {
         Ok(tilo_server_protocol::workspaces::fetch_grant_answer(token))
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one request answered by the provider it names: each provider has its own \
+                  dispatch"
+    )]
     async fn invoke(
         &self,
         workspace_id: Option<WorkspaceId>,
@@ -1634,6 +1656,24 @@ impl Workspaces {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(asked) = mail::account_action(&request.target.address) {
                     return Box::pin(self.mail_account_invoke(
+                        (Some(workspace_id), caller, certificate),
+                        asked,
+                        request,
+                    ))
+                    .await;
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(asked) = vault::vault_action(&request.target.address) {
+                    return Box::pin(self.vault_invoke(
+                        (Some(workspace_id), caller, certificate),
+                        asked,
+                        request,
+                    ))
+                    .await;
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(asked) = models::models_action(&request.target.address) {
+                    return Box::pin(self.models_invoke(
                         (Some(workspace_id), caller, certificate),
                         asked,
                         request,

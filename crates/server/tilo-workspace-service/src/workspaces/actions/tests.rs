@@ -354,6 +354,91 @@ async fn the_catalogue_offers_what_the_workspaces_governance_lets_each_caller_do
     server.shutdown().await;
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn the_persons_vault_models_and_mail_are_paths_of_the_workspace() {
+    use tilo_actions::remote::{
+        WORKSPACE_MAIL_ACCOUNTS, WORKSPACE_MODELS, WORKSPACE_VAULT, person_accounts, person_models,
+        person_vault,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let provider = host.in_workspace_as(workspace_id, &owner);
+    let owner_caller = caller(&owner);
+    let query = CatalogueQuery {
+        provider: Some(WORKSPACE_GOVERNANCE_PROVIDER.into()),
+        parent_resource: Some(tilo_actions::remote::workspace_governance_resource(
+            &workspace,
+        )),
+        max_results: 200,
+        ..CatalogueQuery::default()
+    };
+    let page = settled(provider.query(&owner_caller, query)).await.unwrap();
+    // Each of the person's own resources is published under the workspace's root, and the
+    // action's address is the one the host dispatches to the provider it belongs to.
+    let published = |child: &str, action: &str, params: usize| {
+        let resource = workspace_governance_child(&workspace, Some(child));
+        let row = page
+            .rows
+            .iter()
+            .find(|row| {
+                row.resource.id == resource
+                    && row
+                        .action
+                        .as_ref()
+                        .is_some_and(|found| found.address.action == action)
+            })
+            .unwrap_or_else(|| panic!("{child}#{action} is published"));
+        assert_eq!(row.provider, WORKSPACE_GOVERNANCE_PROVIDER);
+        let found = row.action.as_ref().expect("a row of an action");
+        assert_eq!(found.params.len(), params, "{child}#{action}");
+        found.address.clone()
+    };
+    let entries = published(WORKSPACE_VAULT, person_vault::ENTRIES, 0);
+    assert_eq!(
+        super::vault::vault_action(&entries),
+        Some((workspace.as_str(), person_vault::ENTRIES))
+    );
+    let add_provider = published(WORKSPACE_MODELS, person_models::ADD_PROVIDER, 4);
+    assert_eq!(
+        super::models::models_action(&add_provider),
+        Some((workspace.as_str(), person_models::ADD_PROVIDER))
+    );
+    let fetch = published(WORKSPACE_MAIL_ACCOUNTS, person_accounts::FETCH, 5);
+    assert_eq!(
+        super::mail::account_action(&fetch),
+        Some((workspace.as_str(), person_accounts::FETCH))
+    );
+    // Asking one is handed to its provider, never refused as unknown here.
+    for address in [entries, add_provider, fetch] {
+        let request = InvokeRequest {
+            invocation: InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
+                address: address.clone(),
+            },
+            argument: InvokeArgument::Json(Map::new()),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        if provider.invoke(&owner_caller, request).await
+            == Some(Err(ActionCallError::UnknownAction))
+        {
+            panic!("{} is not dispatched to its provider", address.resource);
+        }
+    }
+    server.shutdown().await;
+}
+
 #[tokio::test]
 async fn an_invitation_lasts_the_seconds_the_desktop_asked() {
     let dir = tempfile::tempdir().unwrap();

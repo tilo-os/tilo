@@ -218,6 +218,12 @@ pub const WORKSPACE_APPS: &str = "apps";
 /// The mail accounts a workspace keeps on its server, under its governance
 /// root (`workspace/mail-accounts`): `tilo.accounts`'s, reached by path.
 pub const WORKSPACE_MAIL_ACCOUNTS: &str = "mail-accounts";
+/// The items of a workspace's vault, under its governance root
+/// (`workspace/vault`): `tilo.vault`'s, reached by path.
+pub const WORKSPACE_VAULT: &str = "vault";
+/// The model providers a workspace keeps on its server, under its governance
+/// root (`workspace/models`): `tilo.models`'s, reached by path.
+pub const WORKSPACE_MODELS: &str = "models";
 /// The people in a workspace, under its governance root (`workspace/members`).
 pub const WORKSPACE_MEMBERS: &str = "members";
 /// One person among a workspace's people (`workspace/members/<person>`, their user public key
@@ -884,7 +890,7 @@ pub const KEY_REVOKED: &str = "key_revoked";
 
 /// What a key that no longer acts (revoked, expired, or no longer granted in its workspace) is
 /// told to do: the one command that approves a key again.
-pub const APPROVE_AGAIN: &str = "approve a new key: the person types `tilo keys create \"<name>\"` \
+pub const APPROVE_AGAIN: &str = "approve a new key: the person types `tilo do account/keys#create name=\"<name>\"` \
      and approves it in their Tilo tab (on their own computer, `tilo login` again)";
 
 /// The refusal of a server that does not know `person` (their root key) yet, saying what to do:

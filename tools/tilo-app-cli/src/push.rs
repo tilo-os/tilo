@@ -31,7 +31,7 @@ pub struct PushArgs {
     /// The workspace to push to, by its id or the name it is listed under.
     #[arg(long = "workspace")]
     workspace: String,
-    /// A key this computer has (`tilo keys export`), instead of the key
+    /// A key this computer has (`tilo do account/keys#create --out FILE`), instead of the key
     /// `tilo login` kept here.
     #[arg(long)]
     key_file: Option<PathBuf>,

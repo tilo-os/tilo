@@ -64,7 +64,7 @@ pub fn add(
         let args = json!({ "plan": plan, "server": server.then_some(true) });
         let issued = client
             .act(
-                &workspace,
+                Some(&workspace),
                 "devices",
                 tilo_device_identity::login::ISSUE,
                 &args,
@@ -90,7 +90,7 @@ pub fn add(
         }
         let done = client
             .act(
-                &workspace,
+                Some(&workspace),
                 "devices",
                 tilo_device_identity::login::ISSUE,
                 &json!({ "wait": true }),
@@ -161,7 +161,7 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
         let workspace = here.workspace.clone();
         let answer = client
             .act(
-                &workspace,
+                Some(&workspace),
                 "devices",
                 PENDING,
                 &json!({"ticket": text}),
@@ -215,7 +215,7 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
         };
         client
             .act(
-                &here.workspace,
+                Some(&here.workspace),
                 "devices",
                 APPROVE,
                 &argument,

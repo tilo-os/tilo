@@ -608,8 +608,8 @@ fn target(row: &Offer) -> RemoteActionTarget {
 }
 
 /// Do the desktop's own action `target` with `args`, called `title` where
-/// the answer names it: a verb `tilo` spells itself (`tilo workspace
-/// branch`), which needs no listing to find. Says what it answers, as `tilo
+/// the answer names it: a verb `tilo` spells itself, which needs no listing
+/// to find. Says what it answers, as `tilo
 /// do` says an answer.
 pub fn run_target(
     sockets: &[ControlSocket],
@@ -758,13 +758,33 @@ fn said(answered: Result<(), String>, io: &mut Io<'_>) -> u8 {
 }
 
 /// An action's answer, as Tilo's API gives it, in the lines a person reads:
-/// how it stands and the resource it acted on, what it answered, what it
-/// made or changed, and the links to it.
+/// the links it answered first, how it stands and the resource it acted on, what it answered
+/// (each list of records a table, each other field a `name: value` line), and what it made or
+/// changed.
 #[must_use]
 pub fn answer_text(answer: &Value) -> String {
     use std::fmt::Write as _;
     let text = |name: &str| answer.get(name).and_then(Value::as_str).unwrap_or_default();
     let path = text("path");
+    let result = answer.get("result").filter(|result| !result.is_null());
+    let links_of = |value: Option<&Value>| -> Vec<String> {
+        let Some(value) = value else {
+            return Vec::new();
+        };
+        let mut found: Vec<String> = value
+            .get("links")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .chain(value.get("link"))
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect();
+        found.dedup();
+        found
+    };
+    let mut lines = links_of(Some(answer));
+    lines.extend(links_of(result));
     // An action names the resource it resolved to; one that names none says
     // its status alone.
     let mut said = match text("status") {
@@ -784,14 +804,31 @@ pub fn answer_text(answer: &Value) -> String {
         status if path.is_empty() => status.to_owned(),
         status => format!("{status} {path}"),
     };
-    match answer.get("result") {
-        None | Some(Value::Null) => {}
-        Some(Value::String(result)) => {
-            let _ = write!(said, "\n{result}");
+    match result {
+        None => {}
+        Some(Value::Object(fields)) => {
+            for (name, value) in fields {
+                if matches!(name.as_str(), "link" | "links") {
+                    continue;
+                }
+                match records(value) {
+                    Some(rows) => {
+                        let _ = write!(said, "\n{name}:\n{}", table(rows));
+                    }
+                    None => {
+                        let _ = write!(said, "\n{name}: {}", scalar(value));
+                    }
+                }
+            }
         }
-        Some(result) => {
-            let _ = write!(said, "\n{result}");
-        }
+        Some(value) => match records(value) {
+            Some(rows) => {
+                let _ = write!(said, "\n{}", table(rows));
+            }
+            None => {
+                let _ = write!(said, "\n{}", scalar(value));
+            }
+        },
     }
     // What the action answered it made or changed, as the workspace names it:
     // the path the next command can take as it is.
@@ -804,17 +841,67 @@ pub fn answer_text(answer: &Value) -> String {
     {
         let _ = write!(said, "\n-> {resource}");
     }
-    let links = answer
-        .get("links")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .chain(answer.get("link").and_then(Value::as_str));
-    for link in links {
-        let _ = write!(said, "\n{link}");
+    lines.push(said);
+    lines.join("\n")
+}
+
+/// `value` as a list of records, when it is one: an array whose every item is an object.
+fn records(value: &Value) -> Option<&[Value]> {
+    let rows = value.as_array()?;
+    (!rows.is_empty() && rows.iter().all(Value::is_object)).then_some(rows.as_slice())
+}
+
+/// A value as one cell or line reads it: text as it is, anything else as JSON.
+fn scalar(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        Value::Null => String::new(),
+        other => other.to_string(),
     }
-    said
+}
+
+/// `rows` as a table: a column for each field any of them has, in the order first seen, under
+/// a header, each column as wide as its widest cell.
+fn table(rows: &[Value]) -> String {
+    let mut columns: Vec<&str> = Vec::new();
+    for row in rows.iter().filter_map(Value::as_object) {
+        for name in row.keys() {
+            if !columns.contains(&name.as_str()) {
+                columns.push(name);
+            }
+        }
+    }
+    let cells: Vec<Vec<String>> =
+        std::iter::once(columns.iter().map(|c| (*c).to_owned()).collect())
+            .chain(rows.iter().map(|row| {
+                columns
+                    .iter()
+                    .map(|column| row.get(*column).map(scalar).unwrap_or_default())
+                    .collect()
+            }))
+            .collect();
+    let widths: Vec<usize> = (0..columns.len())
+        .map(|at| {
+            cells
+                .iter()
+                .filter_map(|row| row.get(at))
+                .map(|cell| cell.chars().count())
+                .max()
+                .unwrap_or(0)
+        })
+        .collect();
+    cells
+        .iter()
+        .map(|row| {
+            let line: Vec<String> = row
+                .iter()
+                .zip(&widths)
+                .map(|(cell, width)| format!("{cell:<width$}"))
+                .collect();
+            format!("  {}", line.join("  ").trim_end())
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Whether `item` is a link (`https://…`, `mailto:…`) rather than a path.

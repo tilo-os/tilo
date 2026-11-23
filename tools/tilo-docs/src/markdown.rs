@@ -346,8 +346,11 @@ mod tests {
             "{}",
             page.text
         );
-        let inline = render("Run `tilo keys revoke <grant>`), then *stop*.\n");
-        assert_eq!(inline.text, "Run tilo keys revoke <grant>), then stop.");
+        let inline = render("Run `tilo do account/keys/G#revoke`), then *stop*.\n");
+        assert_eq!(
+            inline.text,
+            "Run tilo do account/keys/G#revoke), then stop."
+        );
     }
 
     fn one_examples_blocks_become_tabs_in_a_fixed_order() {

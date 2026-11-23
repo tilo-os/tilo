@@ -112,7 +112,7 @@ The account's actions, each run with `POST /v1/resources/account/{resource}/acti
 | `workspaces#delete` `{workspace}` | `{"deleted", "revoked_keys": [...]}`: final, with everything in it and every key minted for it |
 | `keys#list` | `{"keys": [{"grant", "name", "scope", "expires_at_ms", "last_used_at_ms", "created_by"}]}`: this key and the keys it minted, read from the workspace's own document when the key reaches one |
 | `keys#mint` `{workspace, name?, expires_in?}` | a key for one workspace, minted from this one: `{"grant", "name", "token", "workspace", "mcp_url", "expires_at_ms"}`; the person is not asked |
-| `keys#revoke` `{grant}` | revokes this key or one it minted, and every key it minted; the workspace a revoked key reaches records the revocation, so every API server and holder refuses it |
+| `keys/<key>#revoke` (a key by its name or grant) | revokes this key or one it minted, and every key it minted; the workspace a revoked key reaches records the revocation, so every API server and holder refuses it |
 
 A key for one workspace lists the workspaces and keys it reaches and revokes its keys; every other
 action of the account answers `not_permitted`.

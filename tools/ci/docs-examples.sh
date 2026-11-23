@@ -3,7 +3,7 @@
 #
 # The examples reach a host the way the published ones reach tilo.sh: the api-on-server example
 # of tilo-agent-session serves one on loopback and runs each program with TILO_API_URL,
-# TILO_API_KEY and TILO_INVITEE set. That example and the tilo command sh examples run are built by the
+# TILO_API_KEY, TILO_KEY_FILE and TILO_INVITEE set. That example and the tilo command sh examples run are built by the
 # docs-examples-build check, whose outputs this script is handed.
 #
 # The Python and TypeScript environments come from the ci-sdk image, offline, as the sdk-python

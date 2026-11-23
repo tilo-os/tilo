@@ -7,9 +7,8 @@
 //! on a computer that holds the root can read it, so asking a tab adds nothing
 //! there: while a command is under way, the root answers its agent's
 //! questions as any device holding the root does (the server's question list,
-//! signed by the root), and the command goes on in one go. `tilo keys create`
-//! approves its key here the same way. A computer without the root leaves the
-//! question to the person, and the command says it waits for them.
+//! signed by the root), and the command goes on in one go. A computer without the root leaves
+//! the question to the person, and the command says it waits for them.
 //!
 //! The root is read in a process of its own (`tilo approve-here`), started
 //! beside the command: a process that reads it makes itself undumpable, and

@@ -201,21 +201,22 @@ def daemons(markers: list[str]) -> list[int]:
 
 
 def workspace_of(computer: Computer, deadline: float = 45.0) -> dict:
-    """The workspace a computer that entered one holds, as `tilo workspace ls`
-    lists it: its id and its name. A computer enters just after logging in, so
-    the list is asked until it carries one, as a person typing the command a
-    moment later sees it."""
+    """The workspace a computer that entered one is in, as `tilo do
+    account/workspaces#list` lists it: its id and its name. A computer enters just after
+    logging in, so the list is asked until it carries one, as a person typing the
+    command a moment later sees it."""
     last: object = None
 
     def listed():
         nonlocal last
         try:
-            answer = computer.json("workspace", "ls", "--json")
+            answer = computer.json("do", "account/workspaces#list", "--json")
         except Failed as refusal:
             last = str(refusal)
             return None
         last = answer
-        workspaces = answer.get("workspaces") if isinstance(answer, dict) else None
+        result = answer.get("result") if isinstance(answer, dict) else None
+        workspaces = result.get("workspaces") if isinstance(result, dict) else None
         if not workspaces:
             return None
         if len(workspaces) > 1:

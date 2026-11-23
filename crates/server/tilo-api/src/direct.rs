@@ -142,13 +142,27 @@ impl KeyFile {
         })
     }
 
-    /// The key file at `path`.
+    /// The key file at `path`: a key file, or a key alone as an action answers one (what
+    /// `tilo do account/keys#create --out FILE` writes, and the SDKs take), which reaches the
+    /// server this computer's login reaches.
     ///
     /// # Errors
-    /// It cannot be read, or is not a key file.
+    /// It cannot be read, or is neither, or holds a key alone on a computer not logged in.
     pub fn read(path: &std::path::Path) -> Result<Self, String> {
         let bytes = std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
-        serde_json::from_slice(&bytes).map_err(|error| format!("{}: {error}", path.display()))
+        if let Ok(file) = serde_json::from_slice(&bytes) {
+            return Ok(file);
+        }
+        let token = String::from_utf8_lossy(&bytes);
+        crate::calls::script_key(token.trim())
+            .map_err(|error| format!("{}: {error:#}", path.display()))?
+            .ok_or_else(|| {
+                format!(
+                    "{}: a key alone reaches the server this computer's login reaches, and this \
+                     computer is not logged in (tilo login)",
+                    path.display()
+                )
+            })
     }
 }
 
@@ -613,7 +627,7 @@ mod tests {
         let listed = calls.workspaces().await.unwrap();
         assert_eq!(listed["workspaces"][0]["id"], WORKSPACE, "{listed}");
         assert_eq!(listed["workspaces"][0]["name"], "Release", "{listed}");
-        let apps = calls.list(WORKSPACE, None, None).await.unwrap();
+        let apps = calls.list(Some(WORKSPACE), None, None).await.unwrap();
         assert!(apps["rows"].is_array(), "{apps}");
         assert_eq!(
             *entered.lock().unwrap(),

@@ -3,7 +3,7 @@
 A person sets a workspace up the way they work in it: a note, files (a question, a tool in
 `~/.local/bin`, a git checkout where the environment has git, and a few hundred megabytes of
 data), a Terminal environment, windows on its shell. They branch it per research question or per
-customer: through the shell's `workspace.branch` (twice) and `tilo workspace branch` (once). A
+customer: through the shell's `workspace.branch` (twice) and `tilo do branch-workspace` (once). A
 branch starts as a copy of everything but the people: its owner is its only member, and the
 source's chat stays behind. From then on the branches and their source change apart: an edit in
 one (a note, a file, an environment) shows in no other, also after the session restarts. An
@@ -38,7 +38,7 @@ from . import agents_e2e as ae
 
 AREA = "ws-branch-e2e"
 # The person's workspace, and the branches they make of it: two through the shell's action, one
-# through `tilo workspace branch`.
+# through `tilo do branch-workspace`.
 SOURCE = "Research"
 BRANCHES = ("Question A", "Question B")
 CLI_BRANCH = "Question C"
@@ -678,29 +678,32 @@ def branch_said(ctx, name: str, workspace: str) -> dict:
 
 
 def branch_by_cli(ctx, source: dict, name: str, field: str) -> tuple[dict, dict]:
-    """Branch `source` into `name` with `tilo workspace branch`, as the person types it."""
-    before = {w["id"] for w in workspace_rows(ctx.state())}
+    """Branch `source` into `name` with `tilo do branch-workspace --json`, as the person types it."""
     started = time.monotonic()
-    out = ctx.vm.exec(f"tilo workspace branch {shlex.quote(ws_key(source, field))} {shlex.quote(name)} 2>&1; "
+    out = ctx.vm.exec(f"tilo do branch-workspace source={shlex.quote(ws_key(source, field))} "
+                      f"name={shlex.quote(name)} --json 2>&1; "
                       "echo E2E-STATUS $?", timeout=BRANCH_S, check=False)
     seconds = round(time.monotonic() - started, 2)
     status = out.rsplit("E2E-STATUS", 1)[-1].strip()
     if status != "0":
-        raise CheckFailed(f"`tilo workspace branch` exited {status}: {out[-600:]}")
+        raise CheckFailed(f"`tilo do branch-workspace` exited {status}: {out[-600:]}")
     text = out.rsplit("E2E-STATUS", 1)[0].strip()
-    # The branch goes on the shell once what it holds is copied; the command says its id at once.
+    try:
+        answered = json.loads(text[text.index("{"):text.rindex("}") + 1])
+        made_id = str(answered["result"])
+    except (ValueError, KeyError, TypeError):
+        raise CheckFailed(f"`tilo do branch-workspace` answered no JSON with the branch's id: {text[-600:]!r}") from None
     made = wait_until(lambda: awake(ctx) and next((w for w in workspace_rows(ctx.state())
-                                    if w["id"] not in before and (w.get("name") == name or str(w.get("id")) in text)),
-                                   None), BRANCH_S, interval=1.0)
+                                    if w["id"] == made_id and w.get("name") == name), None),
+                      BRANCH_S, interval=1.0)
     if made is None:
-        raise CheckFailed(f"`tilo workspace branch` said {text[-300:]!r}; the shell shows no workspace {name!r}")
+        raise CheckFailed(f"`tilo do branch-workspace` said {text[-300:]!r}; the shell shows no workspace {name!r}")
     ctx.wait_state(lambda s: ae.held_here(s, made["id"]), 120, f"{name} held on this device")
-    named = [w for w in (str(made.get("id")),) if w in text]
-    return made, {"seconds": seconds, "said": text[-300:], "names_it": bool(named)}
+    return made, {"seconds": seconds, "said": text[-300:]}
 
 
 @check("WB02", AREA, "The person branches the workspace twice through the shell's workspace.branch and once "
-                     "with `tilo workspace branch`; each branch is timed, and none blocks the shell")
+                     "with `tilo do branch-workspace`; each branch is timed, and none blocks the shell")
 def branch(ctx, res):
     scene = _scene(ctx)
     source, run, field = scene["source"], scene["run"], scene["field"]
@@ -754,8 +757,6 @@ def branch(ctx, res):
         timings[CLI_BRANCH] = timing
         timing["said_complete"] = branch_said(ctx, name, str(made.get("id")))
         problems.want(not timing["said_complete"]["missing"], f"{name} is not complete: {timing['said_complete']}")
-        problems.want(timing["names_it"], f"`tilo workspace branch` did not say the new workspace's id: "
-                                          f"{timing['said']!r}")
         scene["cli_branch"] = made
     except CheckFailed as exc:
         problems.append(str(exc))

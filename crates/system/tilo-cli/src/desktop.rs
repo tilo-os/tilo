@@ -50,25 +50,6 @@ pub enum ActionCmd {
     },
 }
 
-/// `tilo workspace branch SOURCE NAME` on a Tilo desktop: the shell's own
-/// verb, as the workspace menu and an agent invoke it.
-pub fn branch_workspace(source: &str, name: &str, spelling: &Spelling) -> ExitCode {
-    let sockets = sockets();
-    with_io(|io| {
-        front::run_target(
-            &sockets,
-            tilo_actions::remote::RemoteActionTarget {
-                provider: tilo_actions::remote::SESSION_ACTIONS_PROVIDER.to_owned(),
-                address: tilo_actions::ActionAddress::new("desktop:chrome", "branch-workspace"),
-            },
-            "Branch a workspace",
-            &serde_json::json!({ "source": source, "name": name }),
-            spelling,
-            io,
-        )
-    })
-}
-
 /// The sockets of this process.
 pub fn sockets() -> Vec<ControlSocket> {
     sockets_from_env()

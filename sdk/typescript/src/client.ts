@@ -502,7 +502,7 @@ export class Tilo {
 
   /** @internal */
   async revokeKey(grant: string): Promise<Record<string, unknown>> {
-    return this.accountAction("account/keys#revoke", { grant });
+    return this.accountAction(`account/keys/${grant}#revoke`);
   }
 
   /** @internal A key the person approves on their own device: `AskPending` until they do. */

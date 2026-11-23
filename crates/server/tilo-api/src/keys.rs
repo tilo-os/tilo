@@ -25,7 +25,7 @@
 //!
 //! - **From the grants page** (`POST /grants/keys`): the page they return to
 //!   shows the key once.
-//! - **From a terminal** (`tilo keys create`): the terminal asks
+//! - **From a terminal** (`tilo do account/keys#create`): the terminal asks
 //!   `POST /keys/new` and gets an approval link and a poll secret. It shows
 //!   the link and polls `POST /keys/poll` until the person approves, then gets
 //!   the key. The browser only says it was approved: the key goes only to the
@@ -292,7 +292,7 @@ impl Server {
                 StatusCode::NOT_FOUND,
                 &pages::message(
                     "This link expired",
-                    "Ask for the key again: run `tilo keys create` once more.",
+                    "Ask for the key again: run `tilo do account/keys#create` once more.",
                 ),
             ),
         }
@@ -324,7 +324,7 @@ impl Server {
                 StatusCode::FORBIDDEN,
                 "access_denied",
                 "the person declined the key",
-                "ask again with `tilo keys create` if that was a mistake",
+                "ask again with `tilo do account/keys#create` if that was a mistake",
             ),
             Answer::Waiting { .. } => {
                 json_reply(StatusCode::ACCEPTED, &json!({"status": "pending"}))
@@ -333,7 +333,7 @@ impl Server {
                 StatusCode::NOT_FOUND,
                 "expired",
                 "no key waits for this poll secret: it expired or was already collected",
-                "ask again with `tilo keys create`",
+                "ask again with `tilo do account/keys#create`",
             ),
         }
     }

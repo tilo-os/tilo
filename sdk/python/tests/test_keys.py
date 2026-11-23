@@ -54,7 +54,7 @@ async def test_a_key_is_revoked_and_answers_which(tilo, api):
     answer = await tilo.keys.revoke("g-root")
 
     assert answer == {"revoked": "g-root"}
-    assert api.asked("POST", "/account/keys/actions/revoke")[-1]["body"] == b'{"grant": "g-root"}'
+    assert api.asked("POST", "/account/keys/g-root/actions/revoke")[-1]["body"] == b"{}"
     assert [key.grant for key in await tilo.keys.list()] == []
 
 

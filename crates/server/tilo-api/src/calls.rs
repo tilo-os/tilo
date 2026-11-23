@@ -450,37 +450,37 @@ impl Calls {
         shaped::<answers::ProgramAnswer>(answer)
     }
 
-    /// What `path` lists in `workspace` (the workspace itself with none), from `cursor`, as
-    /// `tilo_ls` lists it.
+    /// What `path` lists in `workspace` (the account with none; the workspace itself with no
+    /// path), from `cursor`, as `tilo_ls` lists it.
     ///
     /// # Errors
     /// The listing was refused.
     pub async fn list(
         &self,
-        workspace: &str,
+        workspace: Option<&str>,
         path: Option<&str>,
         cursor: Option<&str>,
     ) -> Result<Value> {
         let mut arguments = json!({});
         put(&mut arguments, "path", path);
         put(&mut arguments, "cursor", cursor);
-        shaped::<answers::Listing>(
-            self.typed(Some(workspace), "tilo_ls", arguments, None)
-                .await?,
-        )
+        shaped::<answers::Listing>(self.typed(workspace, "tilo_ls", arguments, None).await?)
     }
 
-    /// The resource `path` names in `workspace`, from `cursor`, as `tilo_read` reads it.
+    /// The resource `path` names in `workspace` (the account with none), from `cursor`, as
+    /// `tilo_read` reads it.
     ///
     /// # Errors
     /// The read was refused.
-    pub async fn read(&self, workspace: &str, path: &str, cursor: Option<&str>) -> Result<Value> {
+    pub async fn read(
+        &self,
+        workspace: Option<&str>,
+        path: &str,
+        cursor: Option<&str>,
+    ) -> Result<Value> {
         let mut arguments = json!({"path": path});
         put(&mut arguments, "cursor", cursor);
-        shaped::<answers::Resource>(
-            self.typed(Some(workspace), "tilo_read", arguments, None)
-                .await?,
-        )
+        shaped::<answers::Resource>(self.typed(workspace, "tilo_read", arguments, None).await?)
     }
 
     /// What the app's window shows for `path` in `workspace`, as `tilo_view` reads it, with a
@@ -595,29 +595,46 @@ impl Calls {
             .ok_or_else(|| anyhow!("this computer's daemon serves no workspace to log in to"))
     }
 
-    /// Run `action` on `resource` in `workspace`, titled `title` in History: its answer, which
-    /// is `pending` when the person has not answered it within a while.
+    /// Run `action` on `resource` in `workspace` (the account with none), titled `title` in
+    /// History: its answer, which is `pending` when the person has not answered it within a
+    /// while.
     ///
     /// # Errors
     /// The action was refused or failed.
     pub async fn act(
         &self,
-        workspace: &str,
+        workspace: Option<&str>,
         resource: &str,
         action: &str,
         args: &Value,
         title: &str,
     ) -> Result<Value> {
-        let answer = self
-            .invoke(
-                Some(workspace),
-                &format!("{resource}#{action}"),
-                args,
-                Some(fresh_group(title)),
-                None,
-            )
-            .await?;
-        self.awaited(workspace, answer).await
+        let answer = self.start(workspace, resource, action, args, title).await?;
+        self.follow(workspace, answer).await
+    }
+
+    /// Run `action` on `resource` in `workspace` (the account with none), titled `title` in
+    /// History, waited for a short while only: its answer, `pending` while it runs on, which
+    /// [`Self::follow`] follows.
+    ///
+    /// # Errors
+    /// The action was refused or failed.
+    pub async fn start(
+        &self,
+        workspace: Option<&str>,
+        resource: &str,
+        action: &str,
+        args: &Value,
+        title: &str,
+    ) -> Result<Value> {
+        self.invoke(
+            workspace,
+            &format!("{resource}#{action}"),
+            args,
+            Some(fresh_group(title)),
+            None,
+        )
+        .await
     }
 
     /// Run `action` on `resource` in `workspace` as the step `step` of the invocation `run`,
@@ -645,17 +662,17 @@ impl Calls {
         .await
     }
 
-    /// The invocation `run` in `workspace`, followed while it is pending for up to `wait`
-    /// seconds: its answer, `pending` while it still is.
+    /// The invocation `run` in `workspace` (the account with none), followed while it is
+    /// pending for up to `wait` seconds: its answer, `pending` while it still is.
     ///
     /// # Errors
     /// The invocation is not one these calls reach.
-    pub async fn invocation(&self, workspace: &str, run: &str, wait: u64) -> Result<Value> {
+    pub async fn invocation(&self, workspace: Option<&str>, run: &str, wait: u64) -> Result<Value> {
         let until = Instant::now().checked_add(Duration::from_secs(wait));
         loop {
             let answer = action_answer(
                 self.typed(
-                    Some(workspace),
+                    workspace,
                     "tilo_status",
                     json!({"invocation_id": run}),
                     None,
@@ -687,7 +704,10 @@ impl Calls {
 
     /// `answer`, followed while it waits for the person, for a while: it says once where they
     /// approve it.
-    async fn awaited(&self, workspace: &str, mut answer: Value) -> Result<Value> {
+    ///
+    /// # Errors
+    /// The invocation is not one these calls reach.
+    pub async fn follow(&self, workspace: Option<&str>, mut answer: Value) -> Result<Value> {
         let until = Instant::now().checked_add(ANSWER_DEADLINE);
         let mut told = false;
         while answer.get("status").and_then(Value::as_str) == Some("pending")
@@ -1246,7 +1266,7 @@ pub fn login_key(name: Option<&str>) -> Result<Option<crate::direct::KeyFile>> {
     }))
 }
 
-/// The key a script was approved (`token`, as `tilo keys create` answers it), as a key file
+/// The key a script was approved (`token`, as `tilo do account/keys#create` answers it), as a key file
 /// reaching where this computer's login reaches: a key of its own, never the device's, so the
 /// script's session and the computer's each have one session. `None` when this computer did not
 /// log in.

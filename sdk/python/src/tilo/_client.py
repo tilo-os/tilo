@@ -432,7 +432,7 @@ class AsyncTilo:
         return MintedKey.of(await self._account("keys", "mint", body))
 
     async def _revoke(self, grant: str) -> Any:
-        return await self._account("keys", "revoke", {"grant": grant})
+        return await self._account(f"keys/{grant}", "revoke")
 
     async def _key_create(
         self,

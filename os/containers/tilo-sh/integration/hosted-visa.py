@@ -49,7 +49,7 @@ usage: hosted-visa.py API_URL SERVER_KEY OUT_DIR FORM_URL [--open|--page|--fill]
 there, so what renders in the VM is what its proofs of the sandbox and the
 memory read.
 
-SERVER_KEY is the startup's server key (`tilo keys create`). OUT_DIR keeps
+SERVER_KEY is the startup's server key (`tilo do account/keys#create`). OUT_DIR keeps
 what it found: the capture, the page as the agent read it back, the reviewer's
 History, the questions the person was asked, and its report. TILO_INVITEE
 names the stack's reviewer helper (integration/reviewer.py);

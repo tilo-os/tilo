@@ -9,9 +9,9 @@
 // Then, as asked:
 //
 //   --follow LINK   they follow an invitation link and press Join on its card;
-//   --key NAME      they make an API key: `tilo keys create NAME` runs as a
-//                   backend's terminal runs it, and the person approves the
-//                   link it prints on the site's own /sign-in page, in this
+//   --key NAME      they make an API key: `tilo do account/keys#create name=NAME`
+//                   runs as a backend's terminal runs it, and the person approves
+//                   the link it prints on the site's own /sign-in page, in this
 //                   same browser, by pressing Allow;
 //   --no-pages      the key they make on the api's grants page does not
 //                   operate web pages in Browser: the box is unticked;
@@ -577,12 +577,12 @@ if (pageName) {
 
 if (keyName) {
   if (!tiloBin || !api) await finish(2, '--key needs --tilo and --api');
-  // A backend's terminal: its own home, the local api.
+  // A backend's terminal: its own home.
   const home = join(out, 'terminal');
   mkdirSync(home, {recursive: true});
-  const terminal = spawn(tiloBin, ['keys', 'create', keyName], {
+  const terminal = spawn(tiloBin, ['do', 'account/keys#create', `name=${keyName}`, '--json'], {
     env: {...process.env, HOME: home, XDG_STATE_HOME: join(home, 'state'), XDG_CONFIG_HOME: join(home, 'config'),
-      TILO_API_URL: api},
+      TILO_SITE: site},
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let said = '';
@@ -590,12 +590,12 @@ if (keyName) {
   terminal.stderr.on('data', chunk => { said += chunk; });
   terminal.stdout.on('data', chunk => { printed += chunk; });
   const ended = new Promise(resolve => terminal.on('exit', resolve));
-  waiting = 'tilo keys create to print the link';
+  waiting = 'tilo do account/keys#create to print the link';
   const deadline = Date.now() + stepLimit(6);
   let link = null;
   while (!link) {
-    link = said.match(/^\s*(https?:\/\/\S+)\s*$/m)?.[1] ?? null;
-    if (!link && Date.now() > deadline) await finish(1, `tilo keys create printed no link: ${said}`);
+    link = said.match(/approve it at (\S+)/)?.[1] ?? null;
+    if (!link && Date.now() > deadline) await finish(1, `tilo do account/keys#create printed no link: ${said}`);
     if (!link) await sleep(100);
   }
   report.approveLink = link;
@@ -609,14 +609,18 @@ if (keyName) {
   // what it may do in Browser.
   await capture('sign-in');
   await tab.evaluate(`document.getElementById('sign-in-allow').click()`);
-  waiting = 'tilo keys create to get the key';
+  waiting = 'tilo do account/keys#create to get the key';
   const code = await Promise.race([ended, sleep(stepLimit(24)).then(() => 'timeout')]);
   if (code !== 0) {
     terminal.kill();
-    await finish(1, `tilo keys create did not get the key (${code}): ${said} | the page: ${await text()}`);
+    await finish(1, `tilo do account/keys#create did not get the key (${code}): ${said} | the page: ${await text()}`);
   }
-  report.key = printed.match(/TILO_API_KEY=(\S+)/)?.[1] ?? null;
-  if (!report.key) await finish(1, `tilo keys create printed no key: ${printed}`);
+  try {
+    report.key = JSON.parse(printed)?.result?.key ?? null;
+  } catch {
+    report.key = null;
+  }
+  if (!report.key) await finish(1, `tilo do account/keys#create printed no key: ${printed}`);
   console.error(`ok: they approved "${keyName}" on the site's sign-in page and the terminal got its key`);
 
   // The grants page the same browser is now signed in to: the keys, each

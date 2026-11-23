@@ -9,7 +9,8 @@
 //!   `#delete {workspace}`, `#unattended {workspace, on}`, and on a computer's own Tilo service
 //!   `#import {sealed_with?, groups?, workspaces?}`, which takes in once what its desktop kept;
 //! - `account/keys#list`, `#create {name, workspace?, expires_in?}`,
-//!   `#mint {workspace, name?, expires_in?}`, `#revoke {grant}`;
+//!   `#mint {workspace, name?, expires_in?}`, and one resource per listed key,
+//!   `account/keys/<grant>#revoke`;
 //! - `account/usage#read`;
 //! - `account/models#ask {workspace, request}`;
 //! - `account/webhooks#list {workspace?}`, `#create {workspace, url, events?, path?}`,
@@ -55,7 +56,7 @@ use tilo_actions::remote::{
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionFailure, ActionKind, ActionOutput,
     ActionParam, ExecutionLocus, InputSpec, InvocationId, InvocationUpdate, OperationKind,
-    ParamType, RiskLevel,
+    ParamType, ResultSpec, RiskLevel,
 };
 use tilo_server_protocol::workspaces::{
     BRANCH_OWN_WORKSPACE, CREATE_OWN_WORKSPACE, CreatedWorkspace, DELETE_WORKSPACE,
@@ -71,6 +72,8 @@ pub const PROVIDER: &str = "tilo.account";
 pub const WORKSPACES: &str = "account/workspaces";
 /// The keys to them.
 pub const KEYS: &str = "account/keys";
+/// One of the keys, as a resource of its own: the key's name, revoked where it is listed.
+const KEY_KIND: &str = "account.keys.key";
 /// What the workspaces keep and ran.
 pub const USAGE: &str = "account/usage";
 /// The person's own model.
@@ -110,6 +113,7 @@ enum Op {
 }
 
 /// An action as the account publishes it.
+#[derive(Clone, Copy)]
 struct Verb {
     resource: &'static str,
     id: &'static str,
@@ -117,6 +121,8 @@ struct Verb {
     kind: ActionKind,
     op: Op,
     params: fn() -> Vec<ActionParam>,
+    /// The JSON schema of what it answers, where it answers a secret.
+    result: Option<fn() -> Value>,
 }
 
 const fn verb(
@@ -134,10 +140,24 @@ const fn verb(
         kind,
         op,
         params,
+        result: None,
     }
 }
 
-const VERBS: [Verb; 19] = [
+/// `verb`, declaring the schema of what it answers.
+const fn answers(verb: Verb, schema: fn() -> Value) -> Verb {
+    Verb {
+        resource: verb.resource,
+        id: verb.id,
+        label: verb.label,
+        kind: verb.kind,
+        op: verb.op,
+        params: verb.params,
+        result: Some(schema),
+    }
+}
+
+const VERBS: [Verb; 18] = [
     verb(
         WORKSPACES,
         "list",
@@ -289,56 +309,49 @@ const VERBS: [Verb; 19] = [
         Op::ListKeys,
         Vec::new,
     ),
-    verb(
-        KEYS,
-        "create",
-        "Ask the person for a new key; it waits for them",
-        ActionKind::Outside,
-        Op::CreateKey,
-        || {
-            vec![
-                ActionParam::required("name", ParamType::Text, "What the key is called."),
-                ActionParam::optional(
-                    "workspace",
-                    ParamType::Text,
-                    "The one workspace it reaches; all of the person's when omitted.",
-                ),
-                expires_in_param(),
-                ActionParam::optional(
-                    "browser_pages",
-                    ParamType::Boolean,
-                    "Whether it operates web pages in the workspace's browser.",
-                ),
-            ]
-        },
+    answers(
+        verb(
+            KEYS,
+            "create",
+            "Ask the person for a new key; it waits for them",
+            ActionKind::Outside,
+            Op::CreateKey,
+            || {
+                vec![
+                    ActionParam::required("name", ParamType::Text, "What the key is called."),
+                    ActionParam::optional(
+                        "workspace",
+                        ParamType::Text,
+                        "The one workspace it reaches; all of the person's when omitted.",
+                    )
+                    .of_resource_kind("tilo.workspace"),
+                    expires_in_param(),
+                    ActionParam::optional(
+                        "browser_pages",
+                        ParamType::Boolean,
+                        "Whether it operates web pages in the workspace's browser.",
+                    ),
+                ]
+            },
+        ),
+        || secret_result("key"),
     ),
-    verb(
-        KEYS,
-        "mint",
-        "A key for one workspace, for an agent there",
-        ActionKind::Outside,
-        Op::MintKey,
-        || {
-            vec![
-                workspace_param(),
-                ActionParam::optional("name", ParamType::Text, "What the key is called."),
-                expires_in_param(),
-            ]
-        },
-    ),
-    verb(
-        KEYS,
-        "revoke",
-        "Revoke this key or one it minted, and every key it minted",
-        ActionKind::Outside,
-        Op::RevokeKey,
-        || {
-            vec![ActionParam::required(
-                "grant",
-                ParamType::Text,
-                "The key, as account/keys#list names it.",
-            )]
-        },
+    answers(
+        verb(
+            KEYS,
+            "mint",
+            "A key for one workspace, for an agent there",
+            ActionKind::Outside,
+            Op::MintKey,
+            || {
+                vec![
+                    workspace_param(),
+                    ActionParam::optional("name", ParamType::Text, "What the key is called."),
+                    expires_in_param(),
+                ]
+            },
+        ),
+        || secret_result("token"),
     ),
     verb(
         USAGE,
@@ -372,35 +385,41 @@ const VERBS: [Verb; 19] = [
         ActionKind::Read,
         Op::ListWebhooks,
         || {
-            vec![ActionParam::optional(
-                "workspace",
-                ParamType::Text,
-                "Only this workspace's, by id.",
-            )]
-        },
-    ),
-    verb(
-        WEBHOOKS,
-        "create",
-        "Post a workspace's events to a URL, signed; answers the secret once",
-        ActionKind::Outside,
-        Op::CreateWebhook,
-        || {
             vec![
-                workspace_param(),
-                ActionParam::required("url", ParamType::Text, "Where each event is posted."),
                 ActionParam::optional(
-                    "events",
-                    ParamType::Array,
-                    "The kinds to post (change, invocation, presence); all when omitted.",
-                ),
-                ActionParam::optional(
-                    "path",
+                    "workspace",
                     ParamType::Text,
-                    "One resource's changes only, and what is under it.",
-                ),
+                    "Only this workspace's, by id.",
+                )
+                .of_resource_kind("tilo.workspace"),
             ]
         },
+    ),
+    answers(
+        verb(
+            WEBHOOKS,
+            "create",
+            "Post a workspace's events to a URL, signed; answers the secret once",
+            ActionKind::Outside,
+            Op::CreateWebhook,
+            || {
+                vec![
+                    workspace_param(),
+                    ActionParam::required("url", ParamType::Text, "Where each event is posted."),
+                    ActionParam::optional(
+                        "events",
+                        ParamType::Array,
+                        "The kinds to post (change, invocation, presence); all when omitted.",
+                    ),
+                    ActionParam::optional(
+                        "path",
+                        ParamType::Text,
+                        "One resource's changes only, and what is under it.",
+                    ),
+                ]
+            },
+        ),
+        || secret_result("secret"),
     ),
     verb(
         WEBHOOKS,
@@ -424,6 +443,15 @@ fn workspace_param() -> ActionParam {
         ParamType::Text,
         "The workspace, by id, as account/workspaces#list names it.",
     )
+    .of_resource_kind("tilo.workspace")
+}
+
+/// The schema of a result that answers the secret `field`: a reader withholds it.
+fn secret_result(field: &str) -> Value {
+    json!({
+        "type": "object",
+        "properties": { field: {"type": "string", "format": "password"} },
+    })
 }
 
 fn labels_param() -> ActionParam {
@@ -502,17 +530,79 @@ impl Verb {
                         RiskLevel::Privileged
                     },
                     tags,
+                    result: self
+                        .result
+                        .map_or(ResultSpec::None, |schema| ResultSpec::Json {
+                            schema: schema(),
+                        }),
                     ..ActionContract::default()
                 },
                 input: InputSpec::None,
                 params: (self.params)(),
                 view: None,
             }),
-            has_children: false,
+            has_children: self.resource == KEYS,
             visibility: None,
             surface: None,
         }
     }
+}
+
+/// One key as a resource under `account/keys`: named by the key's own name, and revoked
+/// where it is listed.
+fn key_row(key: &Value) -> CatalogueRow {
+    let grant = key["grant"].as_str().unwrap_or_default();
+    let name = key["name"]
+        .as_str()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or(grant);
+    let id = format!("{KEYS}/{grant}");
+    CatalogueRow {
+        offered: None,
+        provider: PROVIDER.into(),
+        app_id: PROVIDER.into(),
+        parent_resource: KEYS.into(),
+        resource: CatalogueResource {
+            id: id.clone(),
+            kind: KEY_KIND.into(),
+            label: name.into(),
+            presentation: None,
+        },
+        action: Some(ActionDescriptor {
+            did: None,
+            state: tilo_actions::ActionState::default(),
+            semantic_identity: None,
+            address: ActionAddress::new(id.as_str(), "revoke"),
+            resource_kind: KEY_KIND.into(),
+            resource_label: name.into(),
+            action_label: "Revoke this key and every key it minted".into(),
+            keywords: Vec::new(),
+            icon: None,
+            description: None,
+            locus: ExecutionLocus::ServerPreferred,
+            kind: OperationKind::Effect,
+            contract: ActionContract {
+                kind: ActionKind::Outside,
+                risk: RiskLevel::Privileged,
+                ..ActionContract::default()
+            },
+            input: InputSpec::None,
+            params: Vec::new(),
+            view: None,
+        }),
+        has_children: false,
+        visibility: None,
+        surface: None,
+    }
+}
+
+/// The key `resource` addresses, when it addresses one: `account/keys/<grant>`.
+fn key_of(resource: &str) -> Option<&str> {
+    resource
+        .strip_prefix(KEYS)?
+        .strip_prefix('/')
+        .filter(|grant| !grant.is_empty())
 }
 
 /// The account's actions, as one key's session reaches them.
@@ -702,6 +792,67 @@ impl Account {
         page
     }
 
+    /// The page `query` asks of the account, in the tree of `workspace`: the keys as they
+    /// are now when it asks for them, the verbs otherwise.
+    fn ask(
+        &self,
+        query: CatalogueQuery,
+        workspace: &str,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        if !Self::asks_keys(&query) {
+            return Pending::ready(Ok(Self::page(&query, workspace)));
+        }
+        let account = self.clone();
+        let workspace = workspace.to_owned();
+        let (done, answer) = pending();
+        tokio::spawn(async move {
+            done.complete(Ok(account.keys_page(query, &workspace).await));
+        });
+        answer
+    }
+
+    /// Whether `query` asks for the keys as they are now: what is under `account/keys`, or
+    /// the exact action on one of them.
+    fn asks_keys(query: &CatalogueQuery) -> bool {
+        (query.parent_resource.as_deref() == Some(KEYS)
+            || query
+                .target
+                .as_ref()
+                .is_some_and(|target| key_of(&target.resource).is_some()))
+            && query
+                .provider
+                .as_deref()
+                .is_none_or(|provider| provider == PROVIDER)
+    }
+
+    /// The page `query` asks of the keys the account lists under `account/keys`.
+    async fn keys_page(&self, query: CatalogueQuery, workspace: &str) -> CataloguePage {
+        let rows = match self.keys_rows().await {
+            Ok(rows) => rows,
+            Err(reason) => return CataloguePage::unavailable(REVISION.into(), reason),
+        };
+        let mut page = CataloguePage::from_rows(REVISION.into(), rows, &query);
+        if query.provider.is_none() && query.cursor.is_empty() {
+            page.providers.push(publisher(workspace));
+        }
+        page
+    }
+
+    /// Each key `account/keys#list` lists, as a resource under `account/keys`.
+    async fn keys_rows(&self) -> Result<Vec<CatalogueRow>, String> {
+        match self.answer(Op::ListKeys, InvocationId::new(), &json!({})).await {
+            Outcome::Ok(value) => Ok(value
+                .get("keys")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(key_row)
+                .collect()),
+            Outcome::Failed { message, .. } => Err(message),
+            _ => Err("the keys were not listed".into()),
+        }
+    }
+
     fn keep(&self, id: InvocationId, run: Run) {
         let mut running = crate::lock(&self.0.running);
         if running.by_id.insert(id, run).is_none() {
@@ -758,19 +909,24 @@ impl Account {
             _ => json!({}),
         };
         let address = &request.target.address;
-        let outcome = match VERBS
+        let outcome = if let Some(verb) = VERBS
             .iter()
             .find(|verb| (verb.resource, verb.id) == (&*address.resource, &*address.action))
         {
-            Some(verb) => self.answer(verb.op, id, &args).await,
-            None => {
+            self.answer(verb.op, id, &args).await
+        } else {
+            // A key is a resource of its own, revoked where it is listed.
+            let Some(grant) = key_of(&address.resource).filter(|_| address.action == "revoke")
+            else {
                 return InvocationReceipt {
                     invocation: id,
                     status: ReceiptStatus::Rejected {
                         error: ActionCallError::UnknownAction,
                     },
                 };
-            }
+            };
+            self.answer(Op::RevokeKey, id, &json!({"grant": grant}))
+                .await
         };
         let status = match outcome {
             Outcome::Ok(value) => ReceiptStatus::Completed {
@@ -1529,7 +1685,7 @@ impl ActionProvider for Account {
         _caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        Pending::ready(Ok(Self::page(&query, ROOT_TREE)))
+        self.ask(query, ROOT_TREE)
     }
 
     fn invoke(
@@ -1631,7 +1787,7 @@ impl ActionProvider for Joined {
             .as_ref()
             .filter(|_| query.provider.as_deref() != Some(PROVIDER))
         else {
-            return Pending::ready(Ok(Account::page(&query, &self.workspace)));
+            return self.account.ask(query, &self.workspace);
         };
         if query.provider.is_some() || !query.cursor.is_empty() {
             return actions.query(caller, query);

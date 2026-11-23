@@ -4,7 +4,8 @@
 
 mod held_root;
 pub use held_root::{
-    IssuedRole, certify_with_root, issue_agent_grant, issue_device_cert, issue_sign_in_cert,
+    GrantAsk, IssuedRole, SignInAsk, SignedIn, answer_sign_in, certify_with_root,
+    issue_agent_grant, issue_device_cert, issue_sign_in_cert,
 };
 
 use crate::{CertifyError, DeviceSigner, MemberServer, decide_pairing, pending_pairings};

@@ -17,7 +17,6 @@ fn repl(args: &[&str], state: &Path, runtime: &Path) -> String {
         .env("XDG_STATE_HOME", state)
         .env("XDG_RUNTIME_DIR", runtime)
         .env("TILO_IDENTITY_ROOT", state.join("identity"))
-        .env_remove("TILO_API_KEY")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

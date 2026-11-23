@@ -379,12 +379,12 @@ mod tests {
             "{html}"
         );
         assert!(html.contains("<span class=\"c\"># c</span>"), "{html}");
-        let shell = highlight("sh", "tilo keys create \"Visa\" --expires-in 60 # note\n");
-        assert!(shell.contains("<span class=\"f\">tilo</span>"), "{shell}");
-        assert!(
-            shell.contains("<span class=\"a\">--expires-in</span>"),
-            "{shell}"
+        let shell = highlight(
+            "sh",
+            "tilo do account/keys#create name=\"Visa\" --json # note\n",
         );
+        assert!(shell.contains("<span class=\"f\">tilo</span>"), "{shell}");
+        assert!(shell.contains("<span class=\"a\">--json</span>"), "{shell}");
         assert!(shell.contains("<span class=\"c\"># note</span>"), "{shell}");
         let json = highlight("json", "{\"id\": \"x\"}");
         assert!(

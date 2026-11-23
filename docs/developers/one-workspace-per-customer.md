@@ -15,17 +15,18 @@ You need three things, all from one API key:
 ## Get a key
 
 ```sh
-tilo keys create "Visa backend"     # prints a link: approve it in your Tilo
-export TILO_API_KEY=tilo_sk_…       # what it prints once you approved
+tilo login                            # this computer as one of your devices, approved in Tilo
+tilo do account/keys#create name="Visa backend" --out visa.key   # approve the link it prints
+export TILO_API_KEY=$(cat visa.key)   # what the SDKs read
 ```
 
-The key is shown once: keep it in your secret store. It works until you revoke it, so your backend does not
-break when some date passes. To have it expire anyway, say when: `tilo keys create "Nightly job"
---expires-in 2592000` (seconds).
+The key is written once: keep it in your secret store. It works until you revoke it, so your backend does not
+break when some date passes. To have it expire anyway, say when: `tilo do account/keys#create
+name="Nightly job" expires_in=2592000` (seconds).
 
 You can also create a key on [your grants page](https://mcp.tilo.sh/grants). Keys are listed there with the
 agents you connected, when each was last used, and which of your devices approved it. If a key leaks,
-revoke it there with one click, or with `tilo keys revoke <grant>`: that ends every key it minted too. The
+revoke it there with one click, or with `tilo do "account/keys/<grant>#revoke"`: that ends every key it minted too. The
 `tilo_sk_` prefix lets secret scanners find a key committed by mistake.
 
 ## A workspace per customer
@@ -258,8 +259,8 @@ the server holds no more than the reads in flight however much a workspace holds
 side by side up to a bound; the rest wait their turn rather than fail. The files the
 resources name are `tilo.content:` references: download each with `files.download` (`GET
 /v1/workspaces/<workspace>/contents/<hash>`) while the workspace still exists. From a shell,
-`tilo workspace create "Applicant cus_8121" --label customer_id=cus_8121` and
-`tilo workspace ls --label customer_id=cus_8121` do the same.
+`tilo do account/workspaces#create name="Applicant cus_8121" labels='{"customer_id":"cus_8121"}'` and
+`tilo do account/workspaces#list labels='{"customer_id":"cus_8121"}'` do the same.
 
 [`sdk/typescript/examples/workspace_per_customer.ts`](../../sdk/typescript/examples/workspace_per_customer.ts)
 is all of this at a backend's scale: it makes 300 labelled workspaces at once, finds each by its customer
@@ -310,9 +311,10 @@ names, so the agent can end its work by handing a person the link to what it did
 Open the workspace in Tilo, or invite the person who reviews it:
 
 ```sh
-tilo workspace people invite --role editor --email ops@example.com -w "Applicant: Jane Doe"
-tilo workspace people ls -w "Applicant: Jane Doe"
-tilo workspace people name "Jane Doe" -w "Applicant: Jane Doe"   # what its people and your invitations call you
+tilo do workspace/invitations#invite role=editor invitee_name=ops@example.com -w "Applicant: Jane Doe"
+tilo do workspace/members#list -w "Applicant: Jane Doe"
+tilo do workspace/invitations#list -w "Applicant: Jane Doe"
+tilo do workspace/members#name name="Jane Doe" -w "Applicant: Jane Doe"   # what its people and your invitations call you
 ```
 
 Following the link signs them in to Tilo (by approving an agent) and lands them in the
@@ -336,7 +338,7 @@ changed ([invocations and history](../tilo-sh/invocations-and-history.md)). Watc
 Delete their workspace, and their data goes with it:
 
 ```sh
-tilo workspace rm "Applicant: Jane Doe"   # {"deleted": id, "revoked_keys": [...]}
+tilo do account/workspaces#delete workspace="Applicant: Jane Doe"   # final; every key that reached only it is revoked
 ```
 
 Deleting is final: there is no undo, and nothing asks again, so the call is the confirmation. The host
@@ -353,18 +355,18 @@ A key the host turns away says why: `KeyRevoked`, `KeyExpired` (a minted key pas
 ## The same from a shell
 
 ```sh
-tilo workspace create "Applicant: Jane Doe"
-tilo workspace branch "Onboarding template" "Applicant: Amir Haddad"   # or start from one set up once
+tilo do account/workspaces#create name="Applicant: Jane Doe"
+tilo do account/workspaces#branch workspace="Onboarding template" name="Applicant: Amir Haddad"   # or start from one set up once
 tilo files put passport.png -w "Applicant: Jane Doe"
 tilo -w "Applicant: Jane Doe" do pdf-viewer#import-pdf-content content=tilo.content:… name=application.pdf
 tilo -w "Applicant: Jane Doe" do pdf-viewer/application.pdf#read-form-fields
 tilo -w "Applicant: Jane Doe" do word-processor#export-content format=docx
 tilo files get tilo.content:… -w "Applicant: Jane Doe" -o cover-letter.docx
-tilo keys mint -w "Applicant: Jane Doe" --name "Jane Doe's agent"
-tilo workspace people invite --role editor --email ops@example.com -w "Applicant: Jane Doe"
-tilo workspace people ls -w "Applicant: Jane Doe"
-tilo keys revoke <grant>
-tilo workspace rm "Applicant: Jane Doe"   # when the customer leaves
+tilo do account/keys#mint workspace="Applicant: Jane Doe" name="Jane Doe's agent"
+tilo do workspace/invitations#invite role=editor invitee_name=ops@example.com -w "Applicant: Jane Doe"
+tilo do workspace/members#list -w "Applicant: Jane Doe"
+tilo do "account/keys/<grant>#revoke"
+tilo do account/workspaces#delete workspace="Applicant: Jane Doe"   # when the customer leaves
 ```
 
 ## What is underneath

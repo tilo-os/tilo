@@ -1364,7 +1364,7 @@ impl Server {
                 &json!({"error": {
                     "code": "unauthorized",
                     "message": "send a key: Authorization: Bearer <key>",
-                    "next_steps": ["create one with `tilo keys create`"],
+                    "next_steps": ["create one with `tilo do account/keys#create`"],
                 }}),
             ))),
         }
@@ -1483,7 +1483,7 @@ impl Server {
 impl Server {
     /// Have `grant`, a key the person just approved, enter every workspace it reaches, in the
     /// background: each workspace keeps the keys it admitted, which every server holding it and
-    /// every API server reads, so the key is listed (`account/keys#list`, `tilo keys ls`) and
+    /// every API server reads, so the key is listed (`account/keys#list`, `tilo ls account/keys`) and
     /// revocable wherever the person asks, before anything used it.
     pub(crate) fn admit_into_its_workspaces(self: &Arc<Self>, grant: &store::Grant) {
         let Some(key) = grant.key() else {
@@ -1689,7 +1689,7 @@ pub(crate) fn denial(denied: store::Denied) -> Value {
     let (message, next, when) = match denied {
         store::Denied::Unknown => (
             "this is not a key or token this server issued".to_owned(),
-            "check the key you pass, or create one with `tilo keys create`",
+            "check the key you pass, or create one with `tilo do account/keys#create`",
             None,
         ),
         store::Denied::Revoked { at_ms } => (

@@ -519,7 +519,7 @@ pub(crate) fn report(
         let workspace = client.founded_workspace().await?;
         client
             .act(
-                &workspace,
+                Some(&workspace),
                 "devices",
                 REPORTED,
                 &json!({"ticket": ticket, "step": step, "agent": agent.name, "detail": detail}),

@@ -46,7 +46,7 @@ approval, since the parent key already has access to that workspace. A minted ke
 its parent, and revoking the parent revokes every child key minted from it.
 
 ```sh
-tilo keys mint -w project-alpha --name "Alpha agent"   # prints MCP URL and token
+tilo do account/keys#mint workspace=project-alpha name="Alpha agent"   # prints MCP URL and token
 ```
 
 Revoke any key via the CLI or on [your grants page](https://mcp.tilo.sh/grants). Revocation
@@ -59,10 +59,10 @@ By default, a key can drive pages inside a workspace's Browser (navigate, fill f
 click, read back), and keys minted from it inherit that setting. Actions that leave the page —
 submitting a form, uploading a file, or entering a password — always require interactive approval
 regardless of scope ([approvals](approvals.md#the-hosted-browser)). To require approval for every
-browser page action, pass `--no-browser-pages`:
+browser page action, create it with `browser_pages=false`:
 
 ```sh
-tilo keys create "Read-only agent" -w project-alpha --no-browser-pages
+tilo do account/keys#create name="Read-only agent" workspace=project-alpha browser_pages=false
 ```
 
 ## A key in practice
@@ -140,8 +140,8 @@ apps=$(curl -sS --fail-with-body "$api/workspaces/$workspace/resources" -H "$age
 echo "the agent sees $apps apps"
 
 # Revoking it ends the agent's access at once.
-curl -sS --fail-with-body "$api/resources/account/keys/actions/revoke" -H "$auth" -H "Content-Type: application/json" \
-  -d "{\"grant\": \"$(jq -r .grant <<<"$minted")\"}" > /dev/null
+curl -sS --fail-with-body "$api/resources/account/keys/$(jq -r .grant <<<"$minted")/actions/revoke" \
+  -H "$auth" -H "Content-Type: application/json" -d '{}' > /dev/null
 curl -sS "$api/workspaces/$workspace/resources" -H "$agent" \
   | jq -r '"after revoking: \(.error.code) at \(.error.revoked_at_ms)"'
 ```
@@ -150,7 +150,7 @@ curl -sS "$api/workspaces/$workspace/resources" -H "$agent" \
 
 - **Your grants page**, `https://mcp.tilo.sh/grants`: every key and every agent you let in, with its
   scope, when it was last used, which of your devices approved it, and a Revoke button.
-- **The command**: `tilo keys create "My backend"`, `tilo keys ls`, `tilo keys mint -w <workspace>`,
-  `tilo keys revoke <grant>`, and `tilo keys export "<what will use it>" --out <file>` for a new key, approved as
-  `tilo keys create`'s is, written as a key file a program here acts with.
+- **The command**: `tilo do account/keys#create name="My backend"` (with `--out <file>` it writes the
+  key there instead), `tilo ls account/keys`, `tilo do account/keys#mint workspace=<workspace>`, and
+  `tilo do "account/keys/<grant>#revoke"`.
 - **The SDKs**: `tilo.keys.list()`, `create()`, `mint()`, `revoke()`, and `workspace.keys.mint()`.

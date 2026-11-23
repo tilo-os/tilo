@@ -21,8 +21,8 @@
  * memory and CPU through the run.
  *
  *     eval "$(os/containers/tilo-sh/stack.sh env)"   # TILO_API_URL, TILO_SITE
- *     eval "$(tilo keys create "Customer backend" | head -1)"  # TILO_API_KEY, approved in the
- *                                                    # browser that opened stack.sh owner's link
+ *     tilo do account/keys#create name="Customer backend" --out backend.key  # approved in the
+ *     export TILO_API_KEY=$(cat backend.key)          # browser that opened stack.sh owner's link
  *     CUSTOMERS=300 bun sdk/typescript/examples/workspace_per_customer.ts
  *
  * Every step runs for every customer, whatever happened to the others: what

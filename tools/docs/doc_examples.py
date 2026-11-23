@@ -16,8 +16,9 @@ up and runs it with `--host <name>`, and `run` without `--host` leaves it out.
 `check` enforces the conventions and runs nothing. `list` prints what the pages
 carry. `run` executes every block against a local Tilo: `--api` names the
 `api-on-server` example of `tilo-agent-session`, which serves a host with its
-API and runs the program with `TILO_API_URL`, `TILO_API_KEY` and `TILO_INVITEE`
-set, so an example reaches the API the way the published one reaches tilo.sh.
+API and runs the program with `TILO_API_URL`, `TILO_API_KEY`, `TILO_KEY_FILE`
+and `TILO_INVITEE` set, so an example reaches the API the way the published one
+reaches tilo.sh.
 With `--host`, the examples of that host run instead, in the environment as it
 is (a stack's check exports `TILO_API_URL` and `TILO_API_KEY`), and `--api` is
 not needed. Python runs
@@ -343,7 +344,8 @@ def execute(
     """Run one block with an API server of its own, so it sees a fresh Tilo and a key of its own.
 
     `api` is `None` when the block runs on its own host: its program runs in the environment as it
-    is, which the check that brought that host up handed it (`TILO_API_URL`, `TILO_API_KEY`).
+    is, which the check that brought that host up handed it (`TILO_API_URL`, `TILO_API_KEY`,
+    `TILO_KEY_FILE`).
     """
     command = command_for(block, repository, tilo)
     program = command if api is None else [str(api), "--", *command]
@@ -475,7 +477,7 @@ def main(argv: list[str] | None = None) -> int:
     running = commands.add_parser("run", help="run every example against a local Tilo")
     running.add_argument(
         "--api", type=Path,
-        help="the api-on-server example: it serves a host with its API and sets TILO_API_URL and TILO_API_KEY",
+        help="the api-on-server example: it serves a host with its API and sets TILO_API_URL, TILO_API_KEY and TILO_KEY_FILE",
     )
     running.add_argument(
         "--host", metavar="NAME",
