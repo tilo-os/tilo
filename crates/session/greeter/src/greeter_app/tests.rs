@@ -519,7 +519,7 @@ fn seed_password(app: &GreeterApp, pw: &str) {
     clippy::too_many_lines,
     reason = "one person's first sign-in, from the greeting to the session starting"
 )]
-fn a_person_signs_in_on_their_own_device() {
+fn a_person_signs_in_on_a_device_of_theirs() {
     let screen = Screen::personal();
     assert_eq!(
         typed_username(&screen.app),

@@ -1269,7 +1269,7 @@ impl App {
     /// A record another workspace holds (a person's profile record in a window of another
     /// workspace) is admitted where it is held: the broker decides it there, never this window,
     /// which only shows what that workspace said of it.
-    fn held_invocation_needs_broker(
+    fn is_decided_by_the_records_workspace(
         resource: &tilo_actions::ResourceSpec,
         invocation: Option<tilo_actions::InvocationId>,
         has_delivery: bool,
@@ -1366,7 +1366,7 @@ impl App {
                     invocation,
                     has_delivery,
                     connected,
-                ) || Self::held_invocation_needs_broker(
+                ) || Self::is_decided_by_the_records_workspace(
                     resource,
                     invocation,
                     has_delivery,

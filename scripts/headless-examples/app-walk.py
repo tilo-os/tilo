@@ -113,7 +113,7 @@ def at_path(value, path: str):
     return at
 
 
-class MailStandIn:
+class LocalMailServer:
     """The tree's stand-in mail server, run beside the walk's session as the
     provider of the address a mail account is added against: the server names in
     `/etc/hosts`, its IMAP and SMTP sockets on the ports a mail program asks a
@@ -520,7 +520,7 @@ class Walk:
         self.window: dict | None = None
         self.appearance: dict | None = None
         # The stand-in mail server a step started, stopped when the walk ends.
-        self.mail: MailStandIn | None = None
+        self.mail: LocalMailServer | None = None
         # The frames a step's window drew when its `window_frames` first ran.
         self.frames_seen: dict[str, int] = {}
         # The stand-in services this walk started beside the session (op `serve`),
@@ -1436,7 +1436,7 @@ class Walk:
         self.session.control({"op": "scroll", "x": x, "y": y, "dy": dy})
         return {"scrolled": dy, "at": at}
 
-    def op_mail_stand_in(self, value) -> dict:
+    def op_local_mail_server(self, value) -> dict:
         """Start the tree's stand-in mail server and stage it as the provider of
         the address a mail account is added against (`lab@story.tilo.test`, its
         `imap.` and `smtp.` servers on this machine): one made-up login and three
@@ -1445,7 +1445,7 @@ class Walk:
         session already running reads the trust bundles it started with, so a
         step that adds an account after this one restarts the session."""
         if self.mail is None:
-            self.mail = MailStandIn(self.out / "mail-stand-in")
+            self.mail = LocalMailServer(self.out / "mail-stand-in")
         return self.mail.stage()
 
     def op_read(self, value) -> dict:

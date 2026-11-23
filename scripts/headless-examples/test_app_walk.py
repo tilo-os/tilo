@@ -520,7 +520,7 @@ class FindingAnAction(unittest.TestCase):
         self.assertEqual(found["resource"]["id"], "tl:so.tilo.shell:root-7ea1")
 
 
-class ReadingAStandInsAddresses(unittest.TestCase):
+class ReadingAProvidersAddresses(unittest.TestCase):
     def test_each_printed_address_is_named_by_its_line(self):
         said = ("OPENAI_ISSUER=http://127.0.0.1:9/auth\n"
                 "CHATGPT_BACKEND=http://127.0.0.1:9/backend-api/codex\n"

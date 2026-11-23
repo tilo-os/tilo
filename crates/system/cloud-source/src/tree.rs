@@ -333,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn sibling_names_are_unique_safe_and_stable() {
+    fn names_in_one_folder_are_unique_safe_and_stable() {
         let mut tree = Tree::new(ItemId::new("root"));
         tree.upsert(item("b", &["root"], "Report.pdf", ItemKind::File));
         tree.upsert(item("a", &["root"], "Report.pdf", ItemKind::File));

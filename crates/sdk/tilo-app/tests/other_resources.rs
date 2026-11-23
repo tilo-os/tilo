@@ -471,7 +471,7 @@ tilo_test_env::scenario! {
         assert!(app.invoke(Board::RETITLE.with("not theirs")).is_err());
     }
 
-    phase a_verb_of_the_persons_record_is_undoable_and_decided_in_their_own_workspace;
+    phase a_verb_of_the_persons_record_is_undoable_and_decided_where_it_is_kept;
     // A verb of the person's own record keeps what it does: a destructive one
     // Undo takes back is undoable, so it runs at once and asks nothing, and it
     // needs what it declares. The person's own workspace holds the record and

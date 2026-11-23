@@ -2945,7 +2945,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "one handoff walked through its deferral and its copy"
     )]
-    fn a_migration_handoff_is_deferred_then_copied_with_its_cleanup_retried() {
+    fn a_migration_is_deferred_then_copied_with_its_cleanup_retried() {
         use launcher::retained_view::installed_copy::{CopyOwnerCommand, CopyOwnerEvent};
         use std::os::unix::fs::PermissionsExt;
         {

@@ -214,7 +214,7 @@ fn adopt_login(place: &tilo_device_identity::login::Place, device: &Device) {
         return;
     }
     let enrolled = tilo_identity::store::identity_dir_from_env().and_then(|dir| {
-        tilo_identity::provisioning::adopt_login_enrolment(
+        tilo_identity::provisioning::adopt_login_certificate(
             &dir,
             place.keys(),
             &device.cert,

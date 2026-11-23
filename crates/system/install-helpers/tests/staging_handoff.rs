@@ -526,19 +526,19 @@ fn the_staged_plan_is_accepted_or_refused() {
     *fixture.lsblk.borrow_mut() = document;
     assert_refused(&fixture.check("guided", &[]), "no longer unallocated");
     // A handoff for another medium, or one whose extents overlap.
-    let handoff_refusal = |edit: &dyn Fn(&mut Value), esp_only: bool, message: &str| {
+    let staging_refusal = |edit: &dyn Fn(&mut Value), esp_only: bool, message: &str| {
         let fixture = Fixture::new();
         let mut document = handoff_document();
         edit(&mut document);
         fixture.set_handoff(&document, esp_only);
         assert_refused(&fixture.check("guided", &[]), message);
     };
-    handoff_refusal(
+    staging_refusal(
         &|d| d["target_extent"]["last_lba"] = json!(STAGING_ESP.0),
         false,
         "overlap",
     );
-    handoff_refusal(
+    staging_refusal(
         &|d| d["target_extent"]["first_lba"] = json!(TARGET.0 + 2048),
         true,
         "differs from the staging ESP",

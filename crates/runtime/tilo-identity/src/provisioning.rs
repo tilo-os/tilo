@@ -578,7 +578,7 @@ pub fn complete_enrolled_device(
 ///
 /// # Errors
 /// The certificate is not one this device may take, or the identity cannot be written.
-pub fn adopt_login_enrolment(
+pub fn adopt_login_certificate(
     identity_dir: &Path,
     paths: &IdentityPaths,
     cert: &tilo_user_identity::DeviceCert,
