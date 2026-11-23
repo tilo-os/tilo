@@ -421,7 +421,7 @@ async fn typed_for(workspaces: &Workspaces, item: &ItemRef, ask: &MailAsk) -> Op
 /// Take the item `id` out of the workspace's vault again.
 async fn take_out(workspaces: &Workspaces, workspace: &str, id: &ItemId) {
     let taken = workspaces
-        .changing_vault(workspace, |items| Ok(items.remove(id)))
+        .changing_vault(workspace, None, |items| Ok(items.remove(id)))
         .await;
     if let Err(error) = taken {
         tracing::warn!(%error, "an item typed for a mail account that was not signed in stays in the workspace's vault");

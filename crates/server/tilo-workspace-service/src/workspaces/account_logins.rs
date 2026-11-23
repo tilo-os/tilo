@@ -184,7 +184,7 @@ impl Workspaces {
             places,
         } = login;
         let kept = self
-            .changing_vault(workspace, |items| {
+            .changing_vault(workspace, Some(by.acting()), |items| {
                 items.keep(
                     id.as_ref(),
                     NewItem {
@@ -241,7 +241,7 @@ impl Workspaces {
         let what = format!("{app} signed in to {name}");
         let mut refusal = None;
         let released = self
-            .changing_vault(workspace, |items| {
+            .changing_vault(workspace, Some(by.acting()), |items| {
                 items
                     .use_as_kept(
                         &id,

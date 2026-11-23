@@ -112,7 +112,7 @@ async fn keep_recovery_key(
         .await
         .map_err(ActionCallError::refused)?;
     workspaces
-        .write_vault(&opened, vec![VaultChange::Keep(entry)])
+        .write_vault(&opened, vec![VaultChange::Keep(entry)], None)
         .await
         .map_err(|error| {
             ActionCallError::refused(format!("the recovery key was not kept: {error}"))

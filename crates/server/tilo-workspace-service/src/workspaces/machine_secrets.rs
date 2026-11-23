@@ -89,7 +89,7 @@ impl Workspaces {
         let what = format!("handed to the workspace's machine in {variable}");
         // The workspace's one vault, as this server holds it: the item is used wherever it
         // belongs, and its use is written down before its secret is handed to the machine.
-        self.changing_vault(workspace, |items| {
+        self.changing_vault(workspace, None, |items| {
             let facts = items
                 .facts()
                 .into_iter()

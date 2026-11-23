@@ -23,7 +23,7 @@
 
 use std::path::PathBuf;
 
-use tilo_action_policy::{ActionKind, Answer, Context, TreePath};
+use tilo_action_policy::{Acting, ActionKind, Answer, Context, TreePath};
 use tilo_actions::remote::{ActionCallError, Caller};
 use tilo_server_protocol::certify::PendingConfirmation;
 use tilo_user_identity::DeviceCert;
@@ -108,6 +108,10 @@ pub struct Reach {
     /// What the policy answered: [`Answer::Allow`], or [`Answer::Ask`] for an
     /// agent its person is asked about first.
     pub answer: Answer,
+    /// The caller as it acted: the person themselves, or the agent acting for
+    /// one, which every write a store makes on their behalf names as its
+    /// invoker.
+    pub acting: Acting,
 }
 
 impl Reach {
@@ -221,6 +225,7 @@ impl Workspaces {
             person: certificate.user_public_key,
             agent,
             answer,
+            acting: acting.clone(),
         })
     }
 

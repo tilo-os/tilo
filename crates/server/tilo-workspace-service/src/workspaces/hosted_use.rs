@@ -617,7 +617,7 @@ async fn page_text(
     by: &str,
 ) -> Result<PageText, String> {
     workspaces
-        .changing_vault(workspace, |items| match kind {
+        .changing_vault(workspace, None, |items| match kind {
             vault_items::ItemKind::CodeGenerator => {
                 items.code_at(item, site, by).map(PageText::Code)
             }
