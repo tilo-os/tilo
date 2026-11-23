@@ -560,19 +560,19 @@ view place_content(p: LayoutPlace) {
 /// its notice instead of an empty well, and one whose app stopped answering keeps its content
 /// under the hung card, so the person answers the app where they are working.
 view place_view(p: LayoutPlace) {
-    layers(fill) {
-        if let w = window_showing(p) {
-            if not w.local {
-                window_elsewhere(w)
-            } else {
-                place_body(p)
-                if w.not_responding {
-                    hung_card(w)
-                }
+    if let w = window_showing(p) {
+        if w.elsewhere {
+            window_elsewhere(w)
+        } else if w.not_responding {
+            layers(fill) {
+                place_body(p, fill)
+                hung_card(w)
             }
         } else {
             place_body(p)
         }
+    } else {
+        place_body(p)
     }
 }
 

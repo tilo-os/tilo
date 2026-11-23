@@ -2769,7 +2769,7 @@ scenario "a window on another device" {
                     icon: "notebook",
                     strip: "Drafts",
                     workspace: "Studio",
-                    local: false,
+                    elsewhere: true,
                     device: "9f2c",
                     device_name: "Mia's laptop",
                     recency: 1,
