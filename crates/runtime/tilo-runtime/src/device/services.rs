@@ -197,7 +197,7 @@ pub(crate) fn founds_a_person() -> bool {
 ///
 /// # Errors
 /// The identity cannot be made or kept.
-pub(crate) fn found_a_person() -> io::Result<()> {
+pub fn found_a_person() -> io::Result<()> {
     tilo_identity::provisioning::ensure_foreign_collaboration_identity(
         &tilo_identity::store::identity_dir_from_env()?,
         &tilo_identity::provisioning::collaboration_identity_paths(),
@@ -233,6 +233,13 @@ impl Daemon {
     #[must_use]
     pub fn workspaces(&self) -> &tilo_workspace_service::workspaces::Workspaces {
         self.workspaces.copies()
+    }
+
+    /// Where this device's endpoint is dialled: the address its workspaces' other devices ask
+    /// its actions at (`tilo-actions/1`).
+    #[must_use]
+    pub fn endpoint_addr(&self) -> iroh::EndpointAddr {
+        self.workspaces.endpoint().addr()
     }
 
     /// The device's workspace service, as the runtime serves it.

@@ -190,17 +190,39 @@ pub fn serve(
                 let Shown { title, css, body } = page.open(frame, show.as_deref());
                 WindowAnswer::Shown { title, css, body }
             }
-            WindowAsk::Act { id, target, action } => WindowAnswer::Changed(patches(page.act(
-                frame,
+            WindowAsk::Act {
                 id,
-                target.as_deref(),
-                &semantic(action),
-            ))),
+                target,
+                action,
+                signed,
+                invoker,
+            } => {
+                // The act serves the call its reader signed for it, and only the act does.
+                let call = signed
+                    .map(|call| serde_json::to_vec(&call))
+                    .transpose()
+                    .map_err(std::io::Error::other)?;
+                let serving = call.is_some();
+                if let Some(call) = call {
+                    serving_call(frame, call, invoker);
+                }
+                let changed = page.act(frame, id, target.as_deref(), &semantic(action));
+                if serving {
+                    serving_call(frame, Vec::new(), None);
+                }
+                WindowAnswer::Changed(patches(changed))
+            }
             WindowAsk::Changed => WindowAnswer::Changed(patches(page.changed(frame))),
         };
         window::send(link, &answer)?;
     }
     Ok(())
+}
+
+fn serving_call(frame: &mut FrameHarness, call: Vec<u8>, invoker: Option<String>) {
+    if let Some(window) = frame.widget_mut::<HostedWindow>() {
+        window.serve_call(call, invoker);
+    }
 }
 
 fn patches(patches: Vec<Patch>) -> Vec<PagePatch> {

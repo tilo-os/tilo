@@ -1149,6 +1149,22 @@ pub fn recorded_contexts(
         .collect())
 }
 
+/// The stamp each change of a cleartext op names it by, where it names one: what a receiver
+/// checks the invocation a resource store's change keeps against (`tilo_server_protocol`'s
+/// `invocation::verify_stamp`). Empty for a sealed op, a snapshot or one segment of a larger
+/// mutation.
+///
+/// # Errors
+/// [`ReceiptRefusal::Unclaimed`] for a payload whose changes do not read.
+pub fn recorded_stamps(op: &crate::op::SignedOp) -> Result<Vec<crate::Stamp>, ReceiptRefusal> {
+    Ok(cleartext_changes(op)?
+        .unwrap_or_default()
+        .iter()
+        .filter_map(automerge::Change::message)
+        .filter_map(crate::Stamp::of_message)
+        .collect())
+}
+
 /// The hashes of the changes a cleartext op carries; `None` for a sealed
 /// op or one segment of a larger mutation, whose changes are checked once
 /// readable.

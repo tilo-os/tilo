@@ -30,11 +30,15 @@ pub enum WindowAsk {
     /// The page whole, after the view opens what `show` names, when the page's address names
     /// something it shows.
     Open { show: Option<String> },
-    /// What the person did on the element numbered `id`, at the semantic `target` it carries.
+    /// What the person did on the element numbered `id`, at the semantic `target` it carries:
+    /// under `signed`, the call they signed for it, as the member `invoker` names, when they
+    /// signed one. Each change the act makes keeps it.
     Act {
         id: u32,
         target: Option<String>,
         action: PageAction,
+        signed: Option<Box<tilo_actions::remote::SignedCall>>,
+        invoker: Option<String>,
     },
     /// What changed on the page since the window last answered.
     Changed,
@@ -117,17 +121,12 @@ impl WindowLink {
         }
     }
 
-    /// What `action` on the element `id` changed, as [`WindowAsk::Act`] asks it.
+    /// What `act` changed, as [`WindowAsk::Act`] asks it.
     ///
     /// # Errors
     /// As [`Self::open`].
-    pub fn act(
-        &mut self,
-        id: u32,
-        target: Option<String>,
-        action: PageAction,
-    ) -> std::io::Result<Vec<PagePatch>> {
-        self.changes(&WindowAsk::Act { id, target, action })
+    pub fn act(&mut self, act: &WindowAsk) -> std::io::Result<Vec<PagePatch>> {
+        self.changes(act)
     }
 
     /// What changed since the window last answered.

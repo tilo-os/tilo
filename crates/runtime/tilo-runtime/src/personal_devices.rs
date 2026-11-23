@@ -86,7 +86,8 @@ impl PersonalDevices {
         Ok(())
     }
 
-    fn revocations(&self) -> RevocationList {
+    /// The revocations this device's own service holds.
+    pub(crate) fn revocations(&self) -> RevocationList {
         self.workspaces.revocations()
     }
 }

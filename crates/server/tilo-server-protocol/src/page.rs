@@ -188,6 +188,11 @@ pub enum PageAsk {
         id: u32,
         target: Option<String>,
         action: PageAction,
+        /// The call its person signed for it, naming the page's app: whose the change the act
+        /// makes is, which the serving device checks and every holder of the change checks
+        /// again. `None` for an act signed by no key of theirs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signed: Option<Box<tilo_actions::remote::SignedCall>>,
     },
 }
 
@@ -358,6 +363,7 @@ mod tests {
                 id: 7,
                 target: Some("notes.block-text:b1".into()),
                 action: PageAction::Value("Milk".into()),
+                signed: None,
             }
         );
         let ask: PageAsk =

@@ -751,6 +751,16 @@ impl<'a> Validator<'a> {
                     self.string(argument)?;
                 }
             }
+            ToApp::Serving { call, invoker } => {
+                if call.len() > self.limits.string_bytes as usize {
+                    return Err(Refused::invalid(
+                        "a signed call is over the limit of a string",
+                    ));
+                }
+                if let Some(invoker) = invoker {
+                    self.string(invoker)?;
+                }
+            }
             ToApp::Back
             | ToApp::Answer(_)
             | ToApp::Undo

@@ -39,4 +39,8 @@ impl crate::key_sessions::Sessions for HostRuns {
             .map_err(|error| error.to_string())?;
         Ok((Arc::new(run), caller))
     }
+
+    fn dispatch(&self) -> crate::key_sessions::SessionHost {
+        Arc::new(self.provider.clone())
+    }
 }
