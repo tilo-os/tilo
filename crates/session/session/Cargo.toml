@@ -264,6 +264,9 @@ tilo-identity-authority = { path = "../identity-authority" }
 # them on the apps' own routes.
 accounts = { path = "../../system/accounts", features = ["person"] }
 account-credentials = { path = "../../system/account-credentials" }
+# The workspace's contact directory, which Contacts keeps and the session publishes as
+# `contacts:tilo.contacts.identities`, one record every member reads and changes (contacts.rs).
+tilo-contact-directory = { path = "../../platform/tilo-contact-directory" }
 # The sign-ins and calendar look-ups adding an account makes, made here for Settings, whose
 # sandbox has no network (services::accounts).
 tilo-account-probe = { path = "../../platform/account-probe" }

@@ -762,3 +762,34 @@ fn a_projected_picture_shows_for_the_one_person_with_that_mailbox() {
             .is_err()
     );
 }
+
+/// A view of another language reads the directory as a list of its people,
+/// each a value of the surface's `Person`: the collection's entry ids are the
+/// record's, and a reading names no item by id.
+#[test]
+fn a_reading_of_the_directory_is_a_list_of_its_people() {
+    let mut record = fixture().expect("fixture succeeds");
+    record
+        .apply(ContactDirectory::CONFIRM_ENDPOINT.with((
+            first(),
+            Id::from_raw("00000000-0000-4000-8000-000000000009"),
+            "signal".into(),
+            "+12025550123".into(),
+        )))
+        .expect("the endpoint confirms");
+    let state = record.state().expect("readable");
+    let reading = tilo_resource::read::reading::<ContactDirectory>(&state);
+    let people = reading["people"].as_array().expect("a list of people");
+    assert_eq!(people.len(), 2);
+    let [ada, _] = people.as_slice() else {
+        panic!("two people: {reading}");
+    };
+    assert_eq!(ada["label"], "Alex");
+    assert_eq!(ada["removed"], false);
+    assert_eq!(ada["endpoints"][0]["service"], "signal");
+    assert_eq!(ada["endpoints"][0]["recipient"], "+12025550123");
+    assert!(
+        ada.get("id").is_none(),
+        "a view names no person by an id the surface does not declare: {ada}"
+    );
+}

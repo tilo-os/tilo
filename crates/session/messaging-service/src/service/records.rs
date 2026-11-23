@@ -1,4 +1,4 @@
-//! The person's accounts and contacts, as the compositor holds them now,
+//! The workspace's accounts and contacts, as the compositor holds them now,
 //! deciding every route an account sends on or receives from.
 //!
 //! Each query asks the compositor for the records afresh, bounded by a

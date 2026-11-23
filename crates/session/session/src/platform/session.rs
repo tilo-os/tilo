@@ -1489,6 +1489,17 @@ impl Session {
         services
             .borrow_mut()
             .add(Box::new(crate::send_to::SendToService::new(sends.clone())));
+        // The workspaces' contact directory: one record every member reads and changes, its
+        // actions the ones Contacts publishes, answered here for a tilolang view, an agent and
+        // a script whether or not Contacts is open.
+        services
+            .borrow_mut()
+            .add(Box::new(crate::contacts::Contacts::new(
+                records.clone(),
+                handle.clone(),
+                &options.person,
+                options.wake.handle(),
+            )));
         // The shell's own records reach the API as any app's do the moment its package runs.
         if let Some(shell) = &shell {
             shell.share_records(&services, &session_services);

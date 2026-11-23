@@ -152,6 +152,8 @@ mod config;
 #[cfg(target_os = "linux")]
 pub mod connectors;
 #[cfg(target_os = "linux")]
+mod contacts;
+#[cfg(target_os = "linux")]
 mod content;
 #[cfg(target_os = "linux")]
 pub mod controller_nav;

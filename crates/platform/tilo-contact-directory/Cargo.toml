@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Shared person-owned contact identities and explicitly confirmed messaging endpoints"
+description = "The workspace's contact directory and explicitly confirmed messaging endpoints"
 
 [dependencies]
 # The object a migration rewrites a person's hints in.
