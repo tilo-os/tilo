@@ -3,9 +3,9 @@
 //! an entry cannot describe a package as something it is not. The registry checks the same things
 //! again; these checks only fail early.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context as _, Result, anyhow, bail};
 use ed25519_dalek::SigningKey;
 use serde::Deserialize;
 use tilo_app_package::chunks::ObjectDir;
@@ -67,6 +67,26 @@ pub struct EntryMetadata {
     pub source_url: Option<String>,
     #[serde(default)]
     pub homepage: Option<String>,
+}
+
+impl EntryMetadata {
+    /// Read and decode publisher-authored store presentation JSON from `path`.
+    pub fn from_file(path: &Path) -> Result<Self> {
+        let bytes = std::fs::read(path)
+            .with_context(|| format!("read entry metadata {}", path.display()))?;
+        serde_json::from_slice(&bytes)
+            .with_context(|| format!("decode entry metadata {}", path.display()))
+    }
+}
+
+/// Unix timestamp for a release entry: `SOURCE_DATE_EPOCH` when set to a valid
+/// integer, otherwise the current wall clock.
+#[must_use]
+pub fn release_time() -> u64 {
+    std::env::var("SOURCE_DATE_EPOCH")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or_else(tilo_clock::unix_now)
 }
 
 /// A package that decoded, carries its whole payload within the limits and
@@ -236,10 +256,7 @@ fn entry_for_checked(
         }
     };
     let package = &checked.manifest.package;
-    let now = std::env::var("SOURCE_DATE_EPOCH")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or_else(tilo_clock::unix_now);
+    let now = release_time();
     let version = registry_types::RegistryVersion {
         version: package.version.clone(),
         released_at_unix: now,
@@ -814,6 +831,30 @@ module = "{module}"
                 versions.first().map(|v| v.version.as_str()),
                 Some(&*format!("1.0.{limit}"))
             );
+        }
+
+        phase shared_metadata_loader_and_release_time_honor_inputs;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("metadata.json");
+            std::fs::write(
+                &path,
+                serde_json::to_vec(&serde_json::json!({
+                    "name": {"en": "Example"},
+                    "description": {"en": "An example app"},
+                    "tagline": {"en": "Example tagline"},
+                    "supported_languages": ["en"]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let loaded = EntryMetadata::from_file(&path).unwrap();
+            assert_eq!(loaded.supported_languages, ["en"]);
+            assert!(EntryMetadata::from_file(&dir.path().join("missing.json")).is_err());
+
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("SOURCE_DATE_EPOCH", "1700000123");
+            assert_eq!(release_time(), 1_700_000_123);
         }
     }
 }

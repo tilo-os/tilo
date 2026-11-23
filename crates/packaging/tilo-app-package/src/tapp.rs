@@ -1,11 +1,13 @@
 //! The `.tapp` archive: how a package travels as one file.
 
 use std::collections::BTreeMap;
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
-use crate::blobs::{BlobHash, BlobSink, BlobSource, HashingReader};
+use crate::blobs::{BlobHash, BlobSink, BlobSource, DiscardBlobs, HashingReader};
 use crate::id::PackageId;
 use crate::package::{MetaError, PackageMeta};
 use crate::signed::SIGNED_ROOT_LEN;
@@ -115,6 +117,17 @@ pub enum TappError {
     HeaderIdMismatch { header: PackageId, root: PackageId },
     #[error("payload blob {0} is not available to write")]
     MissingBlob(BlobHash),
+    #[error("application tapp is {bytes} bytes; limit is {limit} bytes")]
+    PackageTooLarge { bytes: u64, limit: u64 },
+    #[error("written archive lacks {0} payload blob(s)")]
+    IncompleteArchive(usize),
+    #[error("written archive id {actual} does not match {expected}")]
+    WrittenIdMismatch {
+        expected: PackageId,
+        actual: PackageId,
+    },
+    #[error("written archive does not verify: {0}")]
+    VerificationFailed(String),
     #[error(transparent)]
     Meta(#[from] MetaError),
 }
@@ -359,6 +372,210 @@ pub fn to_bytes(
     write(Vec::new(), meta, payload)
 }
 
+/// What [`write_file`] does when the output path already exists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExistingOutput {
+    /// Atomically replace an existing file once the new archive passes every check.
+    Replace,
+    /// Refuse to overwrite an existing file (fails with [`TappError::Io`] of
+    /// [`io::ErrorKind::AlreadyExists`]); the existing file is untouched.
+    Refuse,
+}
+
+/// Which size limit [`write_file`] enforces on an application archive.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SizeLimit {
+    /// Enforce [`crate::app_size_limit`] of the manifest.
+    #[default]
+    Manifest,
+    /// Enforce [`crate::local_build_size_limit`] of the manifest, for unpublished
+    /// developer builds installed only into a local development store.
+    LocalBuild,
+}
+
+/// How [`write_file`] writes and checks a `.tapp` archive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WriteOptions {
+    pub existing: ExistingOutput,
+    pub size_limit: SizeLimit,
+}
+
+impl WriteOptions {
+    /// Replace any existing file at the output path, enforcing [`crate::app_size_limit`].
+    #[must_use]
+    pub const fn replace() -> Self {
+        Self {
+            existing: ExistingOutput::Replace,
+            size_limit: SizeLimit::Manifest,
+        }
+    }
+
+    /// Refuse to overwrite an existing file at the output path, enforcing [`crate::app_size_limit`].
+    #[must_use]
+    pub const fn create_new() -> Self {
+        Self {
+            existing: ExistingOutput::Refuse,
+            size_limit: SizeLimit::Manifest,
+        }
+    }
+
+    /// Use [`crate::local_build_size_limit`] instead of [`crate::app_size_limit`].
+    #[must_use]
+    pub const fn local_build(mut self) -> Self {
+        self.size_limit = SizeLimit::LocalBuild;
+        self
+    }
+}
+
+/// What [`write_file`] wrote and verified on disk.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Written {
+    pub id: PackageId,
+    pub bytes: u64,
+}
+
+static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+struct TempGuard {
+    path: Option<PathBuf>,
+}
+
+impl TempGuard {
+    fn disarm(&mut self) {
+        self.path = None;
+    }
+}
+
+impl Drop for TempGuard {
+    fn drop(&mut self) {
+        if let Some(path) = self.path.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+fn parent_or_current(path: &Path) -> &Path {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    }
+}
+
+fn temp_path(path: &Path, sequence: u64) -> PathBuf {
+    let name = path
+        .file_name()
+        .map_or_else(|| "file".to_owned(), |n| n.to_string_lossy().into_owned());
+    let tmp_name = format!(".{name}.{}.{sequence}.tmp", std::process::id());
+    match path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir.join(tmp_name),
+        _ => PathBuf::from(tmp_name),
+    }
+}
+
+fn create_temp_file(path: &Path) -> io::Result<(PathBuf, std::fs::File)> {
+    for _ in 0..32 {
+        let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let tmp = temp_path(path, sequence);
+        match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+        {
+            Ok(file) => return Ok((tmp, file)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not allocate a unique temporary archive file",
+    ))
+}
+
+/// Write `meta` (full when `payload` is given, thin otherwise) to `path`
+/// atomically, enforce the application size ceiling, read the written archive
+/// back to verify every carried blob and the publisher signature, and publish
+/// it only once every check passes.
+///
+/// A failure at any step removes the temporary file and leaves `path`
+/// (absent or existing) untouched.
+pub fn write_file(
+    path: &Path,
+    meta: &PackageMeta,
+    payload: Option<&dyn BlobSource>,
+    options: WriteOptions,
+) -> Result<Written, TappError> {
+    if options.existing == ExistingOutput::Refuse {
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => {
+                return Err(TappError::Io(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("{} already exists", path.display()),
+                )));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(TappError::Io(error)),
+        }
+    }
+
+    let (tmp_path, file) = create_temp_file(path)?;
+    let mut guard = TempGuard {
+        path: Some(tmp_path.clone()),
+    };
+
+    let bytes = {
+        let mut file = file;
+        let mut archive = write(io::BufWriter::new(&mut file), meta, payload)?;
+        archive.flush()?;
+        drop(archive);
+
+        let bytes = file.metadata()?.len();
+        let limit = match options.size_limit {
+            SizeLimit::Manifest => crate::app_size_limit(&meta.manifest),
+            SizeLimit::LocalBuild => crate::local_build_size_limit(&meta.manifest),
+        };
+        if let Some(limit) = limit
+            && bytes > limit
+        {
+            return Err(TappError::PackageTooLarge { bytes, limit });
+        }
+
+        file.seek(io::SeekFrom::Start(0))?;
+        let decoded = read(io::BufReader::new(&mut file), &mut DiscardBlobs)?;
+        if payload.is_some() && !decoded.missing().is_empty() {
+            return Err(TappError::IncompleteArchive(decoded.missing().len()));
+        }
+        if decoded.meta.id != meta.id {
+            return Err(TappError::WrittenIdMismatch {
+                expected: meta.id,
+                actual: decoded.meta.id,
+            });
+        }
+        match crate::verify(&decoded.meta, &[meta.publisher()]) {
+            crate::Verification::Trusted { .. } => {}
+            other => return Err(TappError::VerificationFailed(format!("{other:?}"))),
+        }
+
+        file.sync_all()?;
+        bytes
+    };
+
+    match options.existing {
+        ExistingOutput::Replace => {
+            std::fs::rename(&tmp_path, path)?;
+            guard.disarm();
+        }
+        ExistingOutput::Refuse => {
+            std::fs::hard_link(&tmp_path, path)?;
+            drop(guard);
+        }
+    }
+    tilo_files::native::atomic::sync_directory(parent_or_current(path))?;
+
+    Ok(Written { id: meta.id, bytes })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -586,6 +803,267 @@ type = "gui"
         {
             assert!(read(&[][..], &mut DiscardBlobs).is_err());
             assert!(crate::SignedRoot::decode(&[]).is_err());
+        }
+    }
+
+    fn deterministic_app(payload_len: usize) -> (tempfile::TempDir, crate::Packed) {
+        let identity = SigningIdentity::from_seed(&[0x11; 32]);
+        let dir = tempfile::tempdir().unwrap();
+        let payload = dir.path().join("payload");
+        std::fs::create_dir_all(payload.join("bin")).unwrap();
+        std::fs::write(payload.join("bin/app"), vec![0x42; payload_len]).unwrap();
+        let manifest = Manifest::from_toml_str(&format!(
+            r#"
+[package]
+id = "so.tilo.fixture"
+version = "1.0.0"
+kind = "app"
+
+[publisher]
+identity = "ed25519:{}"
+signature = ""
+
+[sandbox]
+namespaces = ["user"]
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[entrypoint]
+bin = "bin/app"
+type = "gui"
+"#,
+            hex::encode(identity.public_key_bytes())
+        ))
+        .unwrap();
+        let packed = pack(&payload, &manifest, &identity).unwrap();
+        (dir, packed)
+    }
+
+    fn entries_in(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    tilo_test_env::scenario! {
+        fn write_file_enforces_limits_verifies_and_keeps_exact_bytes;
+
+        phase valid_full_and_thin_archives_match_to_bytes_byte_for_byte;
+        {
+            let (_src, packed) = deterministic_app(1024);
+            let out_dir = tempfile::tempdir().unwrap();
+
+            let full_path = out_dir.path().join("fixture.tapp");
+            let expected_full = to_bytes(&packed.meta, Some(&packed)).unwrap();
+            let written = write_file(
+                &full_path,
+                &packed.meta,
+                Some(&packed),
+                WriteOptions::create_new(),
+            )
+            .unwrap();
+            assert_eq!(written.id, packed.meta.id);
+            assert_eq!(written.bytes, expected_full.len() as u64);
+            let on_disk = std::fs::read(&full_path).unwrap();
+            assert_eq!(on_disk, expected_full, "full archive bytes must not change");
+            assert_eq!(entries_in(out_dir.path()), ["fixture.tapp"]);
+
+            let thin_path = out_dir.path().join("fixture-thin.tapp");
+            let expected_thin = to_bytes(&packed.meta, None).unwrap();
+            let written_thin =
+                write_file(&thin_path, &packed.meta, None, WriteOptions::replace()).unwrap();
+            assert_eq!(written_thin.id, packed.meta.id);
+            assert_eq!(written_thin.bytes, expected_thin.len() as u64);
+            assert_eq!(
+                std::fs::read(&thin_path).unwrap(),
+                expected_thin,
+                "thin archive bytes must not change"
+            );
+        }
+
+        phase existing_output_rule_is_honored_on_replace_and_refuse;
+        {
+            let (_src, packed) = deterministic_app(256);
+            let out_dir = tempfile::tempdir().unwrap();
+            let target = out_dir.path().join("app.tapp");
+            std::fs::write(&target, b"existing release").unwrap();
+
+            let refused = write_file(
+                &target,
+                &packed.meta,
+                Some(&packed),
+                WriteOptions::create_new(),
+            )
+            .unwrap_err();
+            assert!(
+                matches!(
+                    refused,
+                    TappError::Io(ref error) if error.kind() == io::ErrorKind::AlreadyExists
+                ),
+                "expected AlreadyExists, got {refused}"
+            );
+            assert_eq!(std::fs::read(&target).unwrap(), b"existing release");
+            assert_eq!(entries_in(out_dir.path()), ["app.tapp"]);
+
+            let written = write_file(
+                &target,
+                &packed.meta,
+                Some(&packed),
+                WriteOptions::replace(),
+            )
+            .unwrap();
+            assert_eq!(
+                std::fs::read(&target).unwrap(),
+                to_bytes(&packed.meta, Some(&packed)).unwrap()
+            );
+            assert_eq!(written.id, packed.meta.id);
+            assert_eq!(entries_in(out_dir.path()), ["app.tapp"]);
+        }
+
+        phase oversized_app_is_refused_and_leaves_nothing_behind;
+        {
+            let oversized = usize::try_from(crate::MAX_APP_TAPP_BYTES).unwrap();
+            let (_src, packed) = deterministic_app(oversized);
+            let out_dir = tempfile::tempdir().unwrap();
+
+            // Absent destination: nothing created, no temporary files left.
+            let fresh = out_dir.path().join("fresh.tapp");
+            let error = write_file(
+                &fresh,
+                &packed.meta,
+                Some(&packed),
+                WriteOptions::create_new(),
+            )
+            .unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    TappError::PackageTooLarge { limit, .. } if limit == crate::MAX_APP_TAPP_BYTES
+                ),
+                "{error}"
+            );
+            assert!(entries_in(out_dir.path()).is_empty());
+
+            // Existing destination with Replace: prior file preserved, no temp files left.
+            let prior = out_dir.path().join("prior.tapp");
+            std::fs::write(&prior, b"previous").unwrap();
+            let error = write_file(
+                &prior,
+                &packed.meta,
+                Some(&packed),
+                WriteOptions::replace(),
+            )
+            .unwrap_err();
+            assert!(matches!(error, TappError::PackageTooLarge { .. }), "{error}");
+            assert_eq!(std::fs::read(&prior).unwrap(), b"previous");
+            assert_eq!(entries_in(out_dir.path()), ["prior.tapp"]);
+
+            // LocalBuild honors local_build_size_limit (64 MiB).
+            let local = out_dir.path().join("local.tapp");
+            let written = write_file(
+                &local,
+                &packed.meta,
+                Some(&packed),
+                WriteOptions::replace().local_build(),
+            )
+            .unwrap();
+            assert!(written.bytes > crate::MAX_APP_TAPP_BYTES);
+            assert!(local.is_file());
+
+            // Non-app bundles (such as runtimes) are not subject to MAX_APP_TAPP_BYTES.
+            let identity = SigningIdentity::from_seed(&[0x12; 32]);
+            let runtime_src = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(runtime_src.path().join("bin")).unwrap();
+            std::fs::write(
+                runtime_src.path().join("bin/runtime"),
+                vec![0x33; oversized],
+            )
+            .unwrap();
+            let runtime_manifest = Manifest::from_toml_str(&format!(
+                r#"
+[package]
+id = "so.tilo.fixture.runtime"
+version = "1.0.0"
+kind = "runtime"
+provides = "tilo-runtime/2026.07"
+
+[publisher]
+identity = "ed25519:{}"
+signature = ""
+
+[sandbox]
+namespaces = []
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[entrypoint]
+bin = "bin/runtime"
+type = "cli"
+"#,
+                hex::encode(identity.public_key_bytes())
+            ))
+            .unwrap();
+            let packed_runtime = pack(runtime_src.path(), &runtime_manifest, &identity).unwrap();
+            let runtime_tapp = out_dir.path().join("runtime.tapp");
+            let written_runtime = write_file(
+                &runtime_tapp,
+                &packed_runtime.meta,
+                Some(&packed_runtime),
+                WriteOptions::replace(),
+            )
+            .unwrap();
+            assert!(written_runtime.bytes > crate::MAX_APP_TAPP_BYTES);
+            assert!(runtime_tapp.is_file());
+        }
+
+        phase unverified_or_incomplete_archive_is_refused_and_leaves_nothing_behind;
+        {
+            let (_src, packed) = deterministic_app(128);
+            let out_dir = tempfile::tempdir().unwrap();
+
+            // Unsigned root fails signature verification and leaves no file.
+            let unsigned_root = crate::SignedRoot {
+                signature: None,
+                ..packed.meta.root
+            };
+            let unsigned_meta = PackageMeta::from_root(
+                unsigned_root,
+                packed.meta.manifest_bytes.clone(),
+                packed.meta.collection_bytes.clone(),
+            )
+            .unwrap();
+            let target = out_dir.path().join("unsigned.tapp");
+            let error = write_file(
+                &target,
+                &unsigned_meta,
+                Some(&packed),
+                WriteOptions::replace(),
+            )
+            .unwrap_err();
+            assert!(matches!(error, TappError::VerificationFailed(_)), "{error}");
+            assert!(entries_in(out_dir.path()).is_empty());
+
+            // Missing payload blob in source fails and leaves no file.
+            let empty_source: BTreeMap<BlobHash, Vec<u8>> = BTreeMap::new();
+            let missing_target = out_dir.path().join("missing-blob.tapp");
+            let error = write_file(
+                &missing_target,
+                &packed.meta,
+                Some(&empty_source),
+                WriteOptions::replace(),
+            )
+            .unwrap_err();
+            assert!(matches!(error, TappError::MissingBlob(_)), "{error}");
+            assert!(entries_in(out_dir.path()).is_empty());
         }
     }
 }
