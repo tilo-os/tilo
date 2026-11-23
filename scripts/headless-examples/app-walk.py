@@ -357,6 +357,13 @@ class MachineFiles:
                                    or f"/run/user/{self.account.pw_uid}"),
                "TILO_MACHINE": "hosted",
                "RUST_LOG": os.environ.get("RUST_LOG", "warn,tilo_fs=info")}
+        # What a daemon the walk before this one left behind: a mount that answers nothing
+        # cannot be mounted over, and a socket with no server would pass for one.
+        if os.path.ismount(self.WORKSPACE):
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
+                subprocess.run(["umount", "--lazy", str(self.WORKSPACE)],
+                               capture_output=True, timeout=30, check=False)
+        self.BLOB_SOCKET.unlink(missing_ok=True)
         self.log = (logs / "machine-files.log").open("w")
         self.proc = subprocess.Popen(argv, stdout=self.log, stderr=subprocess.STDOUT,
                                      env=env, start_new_session=True)
