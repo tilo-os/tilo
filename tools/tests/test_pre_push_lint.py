@@ -783,5 +783,47 @@ class PrePushLintTests(unittest.TestCase):
         ])
 
 
+def pre_push_lint():
+    """The check as a module, for the rules a push asks of a path without a repository."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "pre_push_lint", ROOT / "tools/ci/pre_push_lint.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class CatalogueGateTests(unittest.TestCase):
+    """A push that reaches what the component catalogue is made from names t's ui-graph."""
+
+    def names(self, *files: str) -> list[str]:
+        module = pre_push_lint()
+        return module.catalogue_checks(module.Push(set(files), [], [], []))
+
+    def test_a_widget_change_names_the_catalogue_check(self):
+        self.assertEqual(self.names("crates/sdk/ui-core/src/widget/button.rs"), ["ui-graph"])
+
+    def test_a_rich_edit_change_names_it_too(self):
+        self.assertEqual(self.names("crates/sdk/tilo-rich-edit/src/editor.rs"), ["ui-graph"])
+
+    def test_the_windows_registry_names_it_too(self):
+        self.assertEqual(
+            self.names("crates/platform/tilo-app-window/src/components.rs"), ["ui-graph"])
+
+    def test_an_edit_of_the_catalogue_names_it(self):
+        self.assertEqual(self.names("crates/dev/ui-graph/components.json"), ["ui-graph"])
+
+    def test_a_change_elsewhere_names_nothing(self):
+        self.assertEqual(self.names("crates/server/tilo-server/src/web/tickets.rs"), [])
+
+    def test_the_check_runs_in_the_same_t_batch_as_the_clippy_checks(self):
+        module = pre_push_lint()
+        selection = module.Selection(["fixture-native"], {})
+        runs = module.lint_runs(Path("/"), selection, [], ["clippy/fixture-native", "ui-graph"])
+        batches = [run.command for run in runs if run.t]
+        self.assertEqual(batches, [
+            [module.T_CARGO[0], "test", "clippy/fixture-native", "ui-graph", "--json"]])
+
+
 if __name__ == "__main__":
     unittest.main()

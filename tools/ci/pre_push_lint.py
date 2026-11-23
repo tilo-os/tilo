@@ -615,6 +615,31 @@ def surface_checks(root: Path, push: Push) -> list[str]:
     return []
 
 
+# What the component catalogue (`crates/dev/ui-graph/components.json`) is
+# generated from: the toolkit's widgets and the window that builds them by name.
+# The catalogue is committed, so a push that changes one of these without
+# regenerating it lands it stale.
+CATALOGUE_INPUTS = (
+    "crates/sdk/ui-core/src/",
+    "crates/sdk/tilo-rich-edit/src/",
+    "crates/platform/tilo-app-window/",
+    "crates/dev/ui-graph/",
+)
+
+
+def catalogue_checks(push: Push) -> list[str]:
+    """t's `ui-graph` when the push reaches what the component catalogue is made from.
+
+    The check regenerates the catalogue from the tree and compares it with the
+    committed file, which is the same answer the toolkit's own test holds; t keys
+    it by its inputs, so a push of a tree whose catalogue was already checked
+    costs nothing.
+    """
+    if any(path.startswith(CATALOGUE_INPUTS) for path in push.files):
+        return ["ui-graph"]
+    return []
+
+
 def rustfmt_available() -> bool:
     """Whether the repository's format check can run here.
 
@@ -885,14 +910,17 @@ def main(argv: list[str]) -> int:
             print(f"dependants: {' '.join(selection.dependants)}")
         if lints_through_t():
             members = package_maps(selection.metadata, root)[0]
-            print(f"t: {' '.join(t_checks(root, selection.native, set(members))[0])}")
+            named = t_checks(root, selection.native, set(members))[0]
+            named += [name for name in catalogue_checks(push) if name not in named]
+            print(f"t: {' '.join(named)}")
         return 0
     checks = None
     if lints_through_t():
         try:
             members = set(package_maps(selection.metadata, root)[0])
             checks, uncovered = t_checks(root, selection.native, members)
-            checks += [name for name in surface_checks(root, push) if name not in checks]
+            extra = [*surface_checks(root, push), *catalogue_checks(push)]
+            checks += [name for name in extra if name not in checks]
         except (OSError, ValueError, KeyError) as error:
             say(f"pre-push: cannot read which of t's checks lint these packages from {T_TOML}: {error}")
             return 1
