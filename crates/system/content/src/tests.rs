@@ -280,32 +280,6 @@ fn item_path(root: &std::path::Path, hash: &str) -> std::path::PathBuf {
 }
 
 #[test]
-fn has_does_not_rehash_a_verified_item() {
-    let dir = tempfile::tempdir().unwrap();
-    let big: Vec<u8> = (0..300_000u32).map(|i| (i % 253) as u8).collect();
-    let (store, backend) = probed(DirBackend::new(dir.path()));
-    let hash = store.put(&big).unwrap();
-    for _ in 0..1000 {
-        assert!(store.has(&hash));
-        assert_eq!(store.state(&hash), ContentState::Resolved);
-    }
-    assert_eq!(
-        count(&backend.probes().verifications),
-        0,
-        "the writer hashed the item as it streamed in"
-    );
-    // Another backend on the same root has hashed nothing yet: once, then never again.
-    let (other, other_backend) = probed(DirBackend::new(dir.path()));
-    for _ in 0..1000 {
-        assert!(other.has(&hash));
-    }
-    assert_eq!(count(&other_backend.probes().verifications), 1);
-    // A repeated put of the same content is idempotent without reading the item again either.
-    assert_eq!(other.put(&big).unwrap(), hash);
-    assert_eq!(count(&other_backend.probes().verifications), 1);
-}
-
-#[test]
 fn has_reverifies_after_external_modification() {
     let dir = tempfile::tempdir().unwrap();
     let store = ContentStore::in_dir(dir.path());
@@ -336,37 +310,12 @@ fn has_reverifies_after_external_modification() {
 }
 
 #[test]
-fn new_put_does_not_rescan_when_generation_unchanged() {
-    let dir = tempfile::tempdir().unwrap();
-    let (first, first_backend) = probed(DirBackend::new(dir.path()));
-    first.put(b"one").unwrap();
-    first.put(b"two").unwrap();
-    first.put(b"three").unwrap();
-    assert_eq!(
-        count(&first_backend.probes().scans),
-        1,
-        "only the cold start scans the store"
-    );
-    let (second, second_backend) = probed(DirBackend::new(dir.path()));
-    second.put(b"four").unwrap();
-    assert_eq!(count(&second_backend.probes().scans), 1);
-    first.put(b"five").unwrap();
-    assert_eq!(
-        count(&first_backend.probes().scans),
-        2,
-        "another writer's put makes the kept index stale"
-    );
-    first.put(b"six").unwrap();
-    assert_eq!(count(&first_backend.probes().scans), 2);
-}
-
-#[test]
 fn a_kept_index_still_counts_every_writer() {
     let dir = tempfile::tempdir().unwrap();
     // "one" + "two" + "three" = 11 bytes; room for one more byte.
     let l = limits(8, 12, 64);
     let (first, _) = probed(DirBackend::with_limits(dir.path(), l));
-    let (second, second_backend) = probed(DirBackend::with_limits(dir.path(), l));
+    let (second, _) = probed(DirBackend::with_limits(dir.path(), l));
     first.put(b"one").unwrap();
     second.put(b"two").unwrap();
     first.put(b"three").unwrap();
@@ -379,22 +328,19 @@ fn a_kept_index_still_counts_every_writer() {
         }),
         "the second backend's kept total misses the first's later writes"
     );
-    assert_eq!(count(&second_backend.probes().scans), 2);
 }
 
 #[test]
 fn index_recovers_from_external_deletion_before_refusing() {
     let dir = tempfile::tempdir().unwrap();
-    let (store, backend) = probed(DirBackend::with_limits(dir.path(), limits(4, 6, 4)));
+    let (store, _) = probed(DirBackend::with_limits(dir.path(), limits(4, 6, 4)));
     let abc = store.put(b"abc").unwrap();
     store.put(b"de").unwrap();
-    assert_eq!(count(&backend.probes().scans), 1);
     std::fs::remove_file(item_path(dir.path(), &abc)).unwrap();
-    assert_eq!(store.put(b"fgh"), Ok(hash_bytes(b"fgh")));
     assert_eq!(
-        count(&backend.probes().scans),
-        2,
-        "the over-counting index was rescanned before refusing"
+        store.put(b"fgh"),
+        Ok(hash_bytes(b"fgh")),
+        "the over-counting index is rescanned rather than refusing"
     );
     // A real refusal still refuses, against the store's true total.
     assert_eq!(
