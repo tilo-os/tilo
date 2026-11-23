@@ -273,6 +273,10 @@ impl StatePeer {
 
     /// `device`'s certificate when it is a device of a person who governs the
     /// workspace's history ([`Self::governs_history`]), current at `now`.
+    #[expect(
+        dead_code,
+        reason = "the native publication cut it served is gone; the governor branch goes with the call path's push"
+    )]
     pub(super) fn governor_device(
         &self,
         device: &[u8; 32],

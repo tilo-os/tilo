@@ -189,20 +189,6 @@ pub(crate) async fn signed_turn<T, E: TurnError>(
     Err(E::unsigned(UNSIGNED.into()))
 }
 
-/// What a signed turn drafts in its first run, with `draft`, which its later runs sign and
-/// commit as they are.
-pub(crate) fn drafted_once<'a, D>(
-    memo: &'a mut Option<D>,
-    draft: &mut Option<impl FnOnce(&NativeCommittedView) -> Result<D, String>>,
-    view: &NativeCommittedView,
-) -> Result<&'a mut D, String> {
-    if let Some(draft) = draft.take() {
-        *memo = Some(draft(view)?);
-    }
-    memo.as_mut()
-        .ok_or_else(|| "the turn's first run drafted nothing".to_owned())
-}
-
 impl DeviceSigner for Signatures {
     fn device_public_key(&self) -> [u8; 32] {
         self.device

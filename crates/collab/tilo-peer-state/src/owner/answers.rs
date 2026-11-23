@@ -1,8 +1,5 @@
-//! The writes a device holds that its server has not taken, by signature: what a compaction of
-//! a document's history never covers.
-use super::publication::StoredPublication;
-use super::stored;
-use collab_types::SignedOp;
+//! The writes a device held that its server had not taken, by signature: the
+//! record layout an earlier build wrote, read so its journal replays.
 use serde::{Deserialize, Serialize};
 
 /// A write's signature, as base64 text like the file's other opaque bytes.
@@ -32,38 +29,4 @@ pub(super) mod unanswered_list {
             .map(|signature| (signature, ()))
             .collect())
     }
-}
-impl AnswerSignature {
-    pub(super) fn of(write: &SignedOp) -> Self {
-        Self(write.signature.0.to_vec())
-    }
-}
-
-impl StoredPublication {
-    /// Keep `write`, this device's, as one its server has not taken.
-    pub(super) fn unanswered_write(&mut self, write: &SignedOp) {
-        self.unanswered.insert(AnswerSignature::of(write), ());
-    }
-
-    /// Take `write`, this device's, out of what its server has not taken.
-    pub(super) fn answered_write(&mut self, write: &SignedOp) {
-        self.unanswered.remove(&AnswerSignature::of(write));
-    }
-
-    /// Whether `write`, this device's, waits for its server to take it.
-    pub(super) fn unanswered(&self, write: &SignedOp) -> bool {
-        self.unanswered.contains_key(&AnswerSignature::of(write))
-    }
-}
-
-/// Keep `write`, this device's, as one its server has not taken yet.
-pub(crate) fn note_unanswered(
-    view: &mut stored::StoredWorkspace,
-    write: &SignedOp,
-) -> Result<(), String> {
-    view.publication
-        .as_mut()
-        .ok_or("publication absent")?
-        .unanswered_write(write);
-    Ok(())
 }

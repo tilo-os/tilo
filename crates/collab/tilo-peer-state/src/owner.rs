@@ -208,7 +208,7 @@ pub struct NativeWorkspaceOwner(pub(crate) Arc<SharedOwner>);
 /// Does not keep the owner alive; a host's writer holds one to fence it.
 #[derive(Clone)]
 pub struct WeakNativeWorkspaceOwner(Weak<SharedOwner>);
-struct SharedOwner {
+pub(crate) struct SharedOwner {
     pub(crate) store: Arc<dyn Store>,
     /// The committed record; replaced only inside a publication's `install`.
     pub(crate) authority: RwLock<NativeAuthorityStorage>,
@@ -220,7 +220,7 @@ struct SharedOwner {
     history_keys: Mutex<Option<Arc<dyn SealedHistoryKeys>>>,
 }
 #[derive(Default)]
-struct Current {
+pub(crate) struct Current {
     pub(crate) workspaces: BTreeMap<WorkspaceId, Arc<NativeCommittedView>>,
     pub(crate) required: BTreeSet<WorkspaceId>,
     pub(crate) denied: BTreeSet<WorkspaceId>,
