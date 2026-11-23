@@ -6,28 +6,21 @@ use tilo_actions::entry::{Did, PathStep};
 use tilo_actions::params::ParamType;
 
 use super::event::{ConnectorEvent, Event};
-use super::{Cause, MAX_CHAIN_DEPTH};
 use crate::AutomationInvocationId;
 use crate::shortcut::{ActorFilter, ChangeFilter, EVENT_INPUT, Shortcut, TriggerSpec};
 
-/// Who a firing runs as.
+/// Who a firing runs as: a saved shortcut, by id, and the person who saved it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Firer<'a> {
-    /// An installed bot, by installation id.
-    Bot { installation: &'a str },
-    /// A person's saved Shortcut, by id, and the person who saved it.
-    Shortcut { shortcut: &'a str, saver: &'a str },
+pub struct Firer<'a> {
+    pub shortcut: &'a str,
+    pub saver: &'a str,
 }
 
 impl Firer<'_> {
-    /// `bot:<installation>` or `shortcut:<id>`: the key its firings are
-    /// queued under, and for a bot the actor id its changes carry.
+    /// `shortcut:<id>`: what its firings' invocation ids are derived under.
     #[must_use]
     pub fn key(&self) -> String {
-        match self {
-            Self::Bot { installation } => format!("bot:{installation}"),
-            Self::Shortcut { shortcut, .. } => format!("shortcut:{shortcut}"),
-        }
+        format!("shortcut:{}", self.shortcut)
     }
 }
 
@@ -46,8 +39,6 @@ pub struct Firing {
     pub trigger: TriggerSpec,
     pub invocation: AutomationInvocationId,
     pub inputs: Map<String, Value>,
-    /// What the invocation records on each change it makes (bots only).
-    pub cause: Option<Cause>,
     /// The event's identity ([`Event::identity`]).
     pub event: String,
 }
@@ -56,10 +47,6 @@ pub struct Firing {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Skipped {
     SelfTriggered,
-    /// The invocation would have been this deep.
-    TooDeep {
-        depth: u8,
-    },
     /// The change was an invocation's, and the shortcut that made it would fire on
     /// its own work: these two shortcuts would run each other forever.
     Loop {
@@ -93,21 +80,12 @@ pub fn dispatch(armed: &[Armed<'_>], event: Event<'_>) -> Dispatched {
                 out.skipped.push((key, index, Skipped::Loop { through }));
                 continue;
             }
-            let cause = cause_for(&armed.firer, event);
-            if let Some(cause) = &cause
-                && cause.depth > MAX_CHAIN_DEPTH
-            {
-                out.skipped
-                    .push((key, index, Skipped::TooDeep { depth: cause.depth }));
-                continue;
-            }
             out.firings.push(Firing {
                 firer: key,
                 trigger_index: index,
                 trigger: trigger.clone(),
                 invocation: invocation_id(&armed.firer, index, event),
                 inputs: inputs(armed.shortcut, event),
-                cause,
                 event: event.identity(),
             });
         }
@@ -172,10 +150,7 @@ fn matches(trigger: &TriggerSpec, index: usize, armed: &Armed<'_>, event: Event<
                         .any(|path| fields.iter().any(|pattern| field_matches(pattern, path))))
         }
         (TriggerSpec::IncomingMessage { app_id, from }, Event::Record(change)) => {
-            let saver = match armed.firer {
-                Firer::Shortcut { saver, .. } => Some(saver),
-                Firer::Bot { .. } => None,
-            };
+            let saver = armed.firer.saver;
             change.incoming_message
                 && app_id
                     .as_ref()
@@ -183,7 +158,7 @@ fn matches(trigger: &TriggerSpec, index: usize, armed: &Armed<'_>, event: Event<
                 && from
                     .as_ref()
                     .is_none_or(|from| change.actor.person_id() == Some(from.as_str()))
-                && saver.is_none_or(|saver| change.actor.person_id() != Some(saver))
+                && change.actor.person_id() != Some(saver)
         }
         (
             TriggerSpec::Connector {
@@ -192,10 +167,7 @@ fn matches(trigger: &TriggerSpec, index: usize, armed: &Armed<'_>, event: Event<
                 filter,
             },
             Event::Connector(fired),
-        ) => {
-            matches!(armed.firer, Firer::Bot { .. })
-                && connector_matches(app_id, source, filter, fired)
-        }
+        ) => connector_matches(app_id, source, filter, fired),
         (TriggerSpec::AppEvent { app_id, kind }, Event::AppEvent(declared)) => {
             declared.app_id == *app_id && declared.kind == *kind
         }
@@ -229,53 +201,27 @@ fn actor_counts(filter: ActorFilter, actor: &Acting) -> bool {
     }
 }
 
-/// A bot never fires on a change it made, and a person's Shortcut never
-/// on a change one of its invocations made.
+/// A shortcut never fires on a change one of its invocations made.
 fn self_triggered(firer: &Firer<'_>, event: Event<'_>) -> bool {
     let Event::Record(change) = event else {
         return false;
     };
-    match firer {
-        Firer::Bot { installation } => change.actor.bot_id() == Some(*installation),
-        Firer::Shortcut { shortcut, .. } => change.shortcut.as_deref() == Some(*shortcut),
-    }
+    change.shortcut.as_deref() == Some(firer.shortcut)
 }
 
 /// The shortcut a change came from when firing on it would run this
 /// shortcut into that one's run and back: the change a shortcut made is
 /// not one its own invocation is watching for. Only a shortcut's own save-time
 /// check sees a chain between shortcuts it can look up; a shortcut calling
-/// another, or a bot's own loop, is caught here, at the invocation.
+/// another is caught here, at the invocation.
 fn looped(firer: &Firer<'_>, event: Event<'_>) -> Option<String> {
-    match (firer, event) {
-        (Firer::Shortcut { shortcut, .. }, Event::Record(change)) => change
-            .shortcut
-            .clone()
-            .filter(|through| through != shortcut),
-        _ => None,
-    }
-}
-
-/// A bot run continues the chain of the change that fired it when that
-/// change came from a bot run, else starts one at depth 1. A person's
-/// Shortcut records no cause.
-fn cause_for(firer: &Firer<'_>, event: Event<'_>) -> Option<Cause> {
-    let Firer::Bot { installation } = firer else {
+    let Event::Record(change) = event else {
         return None;
     };
-    let parent = match event {
-        // Only a bot's own change can continue a chain: a depth any other
-        // actor claims is ignored, so nobody can lengthen or shorten one.
-        Event::Record(change) if change.actor.is_bot() => {
-            event.caused_by().map_or(0, |cause| cause.depth)
-        }
-        _ => 0,
-    };
-    Some(Cause {
-        installation: (*installation).to_owned(),
-        event: event.identity(),
-        depth: parent.saturating_add(1),
-    })
+    change
+        .shortcut
+        .clone()
+        .filter(|through| through != firer.shortcut)
 }
 
 fn inputs(shortcut: &Shortcut, event: Event<'_>) -> Map<String, Value> {

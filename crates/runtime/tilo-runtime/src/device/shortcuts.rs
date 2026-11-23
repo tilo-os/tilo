@@ -16,39 +16,19 @@ use tilo_workspace_service::apps::automation::{ShortcutChange, validate_trigger}
 use tilo_workspace_service::apps::services::{
     ShortcutLibraryRequest, ShortcutLibraryServices, ShortcutStore,
 };
-use tilo_workspace_service::service::ServiceSlot;
+use tilo_workspace_service::service::{ServiceSlot, WorkspacesAt};
 use tilo_workspace_service::workspaces::Workspaces;
 
 /// The person's saved shortcuts, as a device's broker keeps and runs them.
 pub struct Shortcuts {
     /// The workspaces this device holds: where a saved shortcut is committed.
-    held: Source,
+    held: WorkspacesAt,
     /// The device this library signs as: the one its workspace has admitted.
     device: DeviceCert,
     /// Signs as `device`: the shortcut's own proof of who saved it.
     signer: Arc<dyn DeviceSigner>,
     /// Where a shortcut's run executes and the change that saves one is committed.
     runs: tokio::runtime::Handle,
-}
-
-/// Where the workspaces this library saves in are.
-#[derive(Clone)]
-enum Source {
-    /// Held now, as a daemon's workspace service is when it starts its broker.
-    Held(Workspaces),
-    /// Installed when this device's own workspace service opens, as a desktop session's is after
-    /// it starts its broker: a save waits for the service rather than failing on that order.
-    Opening(ServiceSlot),
-}
-
-impl Source {
-    /// The workspaces to commit in, waiting for this device's service to open when it has not.
-    async fn workspaces(&self) -> Workspaces {
-        match self {
-            Self::Held(workspaces) => workspaces.clone(),
-            Self::Opening(service) => service.installed().await.workspaces().clone(),
-        }
-    }
 }
 
 impl Shortcuts {
@@ -61,7 +41,7 @@ impl Shortcuts {
         device: DeviceCert,
         signer: Arc<dyn DeviceSigner>,
     ) -> std::io::Result<Self> {
-        Self::over(Source::Held(workspaces), device, signer)
+        Self::over(WorkspacesAt::Held(workspaces), device, signer)
     }
 
     /// A library over the workspaces the service `service` installs, signing as `device` with
@@ -74,11 +54,11 @@ impl Shortcuts {
         device: DeviceCert,
         signer: Arc<dyn DeviceSigner>,
     ) -> std::io::Result<Self> {
-        Self::over(Source::Opening(service), device, signer)
+        Self::over(WorkspacesAt::Opening(service), device, signer)
     }
 
     fn over(
-        held: Source,
+        held: WorkspacesAt,
         device: DeviceCert,
         signer: Arc<dyn DeviceSigner>,
     ) -> std::io::Result<Self> {
@@ -138,15 +118,28 @@ impl ShortcutLibraryServices for Shortcuts {
 /// watch, signed as its saver's own device, then committed through the service that holds the
 /// workspace.
 async fn store_shortcut(
-    held: Source,
+    held: WorkspacesAt,
     device: DeviceCert,
     signer: Arc<dyn DeviceSigner>,
     request: ShortcutLibraryRequest,
 ) -> Result<(), String> {
     let person = hex::encode(device.user_public_key);
-    if request.actor.person_id() != Some(person.as_str()) {
-        return Err("a shortcut is saved from its saver's own device".into());
-    }
+    // An agent saves for the person it acts for, signed with its own key; a person saves from
+    // a device of their own.
+    let agent = match (request.actor.agent_id(), request.acting_for.as_deref()) {
+        (Some(agent), Some(acts_for)) => {
+            let root: [u8; 32] = hex::decode(acts_for)
+                .ok()
+                .and_then(|root| root.try_into().ok())
+                .ok_or("the agent acts for nobody this device knows")?;
+            Some((agent.to_owned(), root))
+        }
+        (Some(_), None) => return Err("an agent saves a shortcut only for its person".into()),
+        (None, _) if request.actor.person_id() != Some(person.as_str()) => {
+            return Err("a shortcut is saved from its saver's own device".into());
+        }
+        (None, _) => None,
+    };
     let change = match &request.change {
         ShortcutChange::Save(shortcut) => {
             let mut shortcut = shortcut.as_ref().clone();
@@ -155,17 +148,48 @@ async fn store_shortcut(
             for trigger in &shortcut.triggers {
                 validate_trigger(trigger)?;
             }
-            tilo_peer_state::workspace::sign_saved_shortcut(
-                &request.workspace,
-                &mut shortcut,
-                &device,
-                signer.as_ref(),
-            )?;
+            // A change the saver's proof does not cover (a pause) keeps that proof, and so
+            // whose shortcut it is; any other change is signed again here.
+            let revocations = held
+                .get()
+                .await
+                .state(&request.workspace)
+                .await
+                .and_then(|state| {
+                    state
+                        .admitted_workspace()
+                        .map(tilo_peer_state::workspace::workspace_revocations)
+                });
+            let still_proven = shortcut.saved_proof.is_some()
+                && revocations.is_some_and(|revocations| {
+                    tilo_peer_state::workspace::proven_saver(
+                        &request.workspace,
+                        &shortcut,
+                        &revocations,
+                        tilo_clock::unix_now_ns(),
+                    )
+                    .is_some()
+                });
+            match (&agent, still_proven) {
+                (_, true) => {}
+                (Some((agent, root)), false) => {
+                    held.get()
+                        .await
+                        .sign_shortcut_as_agent(&request.workspace, agent, root, &mut shortcut)
+                        .await?;
+                }
+                (None, false) => tilo_peer_state::workspace::sign_saved_shortcut(
+                    &request.workspace,
+                    &mut shortcut,
+                    &device,
+                    signer.as_ref(),
+                )?,
+            }
             ShortcutChange::Save(Box::new(shortcut))
         }
         delete @ ShortcutChange::Delete(_) => delete.clone(),
     };
-    let workspaces = held.workspaces().await;
+    let workspaces = held.get().await;
     let command = WorkspaceMembershipCommand::Settings(SettingsChange::Shortcuts(change));
     // A workspace another device serves takes the change in this device's member copy and sends
     // it there; the workspace founded here is committed as its governor.

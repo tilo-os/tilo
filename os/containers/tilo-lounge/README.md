@@ -1,21 +1,16 @@
 # Tilo Lounge
 
 One always-on public Tilo workspace, hosted by one process: `tilo-server`'s
-persistent public workspace, the deployment routes beside it, and the Discord
-bridge whose bot programs it runs.
+persistent public workspace and the deployment route beside it.
 
 ```
 GET /mode                 {"server":"up","revision":"<commit>"}   the readiness probe
-GET /avatars/<name>       an avatar a bridged author published (immutable)
-GET /discord/callback     Discord's OAuth redirect: links the account, then
-                          sends the browser back to the web entry with its
-                          one-time link secret
 anything else             404; anything but GET     405
 ```
 
 The workspace's own pages are the Tilo app at the web entry; browsers reach
 the workspace through the ingress that forwards the workspace's origin to
-`9780`. The process serves the routes on `8790` and the server on `9780`, both
+`9780`. The process serves the route on `8790` and the server on `9780`, both
 plain HTTP behind that ingress, which ends TLS.
 
 Pages reach the host over WebTransport, the browser's own transport: their
@@ -44,7 +39,7 @@ its settings. Required:
 | --- | --- |
 | `TILO_WORKSPACES_PERSISTENT` | the workspace's name; its state is `$TILO_WORKSPACES_STATE/$TILO_WORKSPACES_PERSISTENT` |
 | `TILO_WORKSPACES_ROOT_FILE` | the workspace's owner root, 64 hex characters, from the operator's secrets |
-| `TILO_WORKSPACES_SERVER_ORIGIN` | the `https://` origin the ingress publishes: pages, avatars and the callback |
+| `TILO_WORKSPACES_SERVER_ORIGIN` | the `https://` origin the ingress publishes: the workspace's pages |
 | `TILO_WORKSPACES_DESCRIPTION` | what the public directory says the workspace is; listed, anyone joins through its entry |
 | `TILO_WORKSPACES_WEB_ENTRY` | the Tilo app's web entry the links the host mints open |
 
@@ -57,7 +52,6 @@ Optional, with these defaults:
 | `TILO_WORKSPACES_CHAT_CHANNELS` | `general` | comma-separated channels the Chat opens with |
 | `TILO_WORKSPACES_FEEDBACK_CHANNEL` | none | the channel members report problems to |
 | `TILO_WORKSPACES_SEED_APPS` | `so.tilo.chat` | comma-separated apps authored at the first start |
-| `TILO_WORKSPACES_BOTS` | none | `;`-separated bot specs (`<program or directory entry> key=value …`) |
 | `TILO_WORKSPACES_PERSON_STORAGE_GB` | `10` | gigabytes per person, shared by the workspaces of their own the host gives anyone who asks |
 | `TILO_WORKSPACES_STATE` | `/run/tilo-workspaces` | the volume the workspace lives on |
 | `TILO_WORKSPACES_OWNERS` | none | comma-separated user public keys (64 hex characters) the workspace is started with as its owners: the people who let everyone else in, added at every start where they are not members yet. A deployment names its first ones here |
@@ -78,14 +72,6 @@ Optional, with these defaults:
 | `TILO_WORKSPACES_LINK_ORIGIN` | the public origin | the `https://host:port` origin pages open WebTransport sessions at; set with `TILO_WORKSPACES_LINK` |
 | `TILO_WORKSPACES_HTTP` | `0.0.0.0:8790` | the listener the routes are served on |
 | `TILO_WORKSPACES_FETCH_PROXY` | on | `0` turns the fetch proxy off |
-| `TILO_WORKSPACES_MODERATION_KEY_FILE` | `/run/secrets/moderation-model-key` | the model key the moderation agent asks with |
-| `TILO_WORKSPACES_MODERATION_MODEL` | the server's | the model it asks |
-| `TILO_WORKSPACES_DISCORD_CLIENT_ID` | none | the Discord application members connect, once sign-in is set up |
-| `TILO_WORKSPACES_DISCORD_CLIENT_SECRET_FILE` | `/run/secrets/discord-client-secret` | its secret |
-| `TILO_WORKSPACES_DISCORD_REDIRECT_URL` | `$TILO_WORKSPACES_SERVER_ORIGIN/discord/callback` | where Discord sends the browser back |
-| `TILO_WORKSPACES_DISCORD_AUTHORIZE_URL` | `https://discord.com/oauth2/authorize` | Discord's consent page |
-| `TILO_WORKSPACES_DISCORD_API_BASE` | `https://discord.com` | where Discord's API is, for a test server: the sign-in and the bridge's worker both reach it |
-| `TILO_WORKSPACES_DISCORD_TOKEN_FILE` | `/run/secrets/discord-bot-token` | the bridge's bot token, read when the file is there |
 
 `TILO_SOURCE_REVISION` is the image's own revision, which `/mode` reports;
 `TILO_SECRETS_DIR` already points into the state volume, where the workspace
@@ -99,15 +85,13 @@ raise.
 ```
 $TILO_WORKSPACES_STATE/$TILO_WORKSPACES_PERSISTENT/
   relay/         the workspace's own state: identity, host key, records,
-                 bots, blobs, seeded apps
+                 blobs, seeded apps
   workspace-id        the workspace's UUID, kept across restarts
-  avatars/       avatars the host serves at /avatars/<name>
   secrets/       this host's secret store (TILO_SECRETS_DIR), sealed files
 ```
 
 The directory layout is the one the wrapper this image replaces left on the
-volume: a migrated deployment keeps its workspace, its identity and its bot
-state.
+volume: a migrated deployment keeps its workspace and its identity.
 
 The layout is the workspace's shared desktop record, so the host has no
 layout flag. `TILO_WORKSPACES_LAYOUT` is still read and not passed on, so a

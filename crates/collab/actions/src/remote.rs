@@ -252,7 +252,7 @@ pub const WORKSPACE_WAITING: &str = "waiting";
 /// person names it. An operation not listed is published on the root under its
 /// own name; one listed on [`WORKSPACE_MEMBER`] is published on each person, who
 /// is its `person`.
-pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 23] = [
+pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 21] = [
     ("member.list", Some(WORKSPACE_MEMBERS), "list"),
     (
         "member.add",
@@ -286,12 +286,6 @@ pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 23] = [
     ("install-app", Some(WORKSPACE_APPS), "install-app"),
     ("uninstall-app", Some(WORKSPACE_APPS), "uninstall-app"),
     ("upload-app-file", Some(WORKSPACE_APPS), "upload-app-file"),
-    ("request-bot", Some(WORKSPACE_APPS), "request-bot"),
-    (
-        "withdraw-bot-request",
-        Some(WORKSPACE_APPS),
-        "withdraw-bot-request",
-    ),
 ];
 
 /// The resource `child` of `workspace`'s governance tree: the root for `None`.

@@ -1,14 +1,11 @@
-//! `tilo-app push`: run a build of an app, or a bot's program, in a
-//! workspace that is running now, for everyone in it.
+//! `tilo-app push`: run a build of an app in a workspace that is running
+//! now, for everyone in it.
 //!
 //! The workspace records which version of the app it runs (its `install-app`
 //! governance action); every member is to run it, and a change
-//! made with another version waits until its author has. A bot's program
-//! goes to the workspace's host as the workspace's request for that bot
-//! (`request-bot`), which the host runs at once, keeping the bot's
-//! installation.
+//! made with another version waits until its author has.
 //!
-//! Both are the workspace's governance in its action API, so this command
+//! That is the workspace's governance in its action API, so this command
 //! opens the API as a key of the developer's (`TILO_API_KEY`, a `--key-file`,
 //! or the key `tilo login` kept here) and invokes them on the workspace's
 //! `workspace/apps` path, exactly as `tilo do` does. The workspace decides
@@ -20,7 +17,7 @@ use anyhow::{Context as _, Result, bail};
 use serde_json::{Map, Value, json};
 use tilo_api::client::{Client, Reach};
 
-/// The path of a workspace's apps and bots in its action API.
+/// The path of a workspace's apps in its action API.
 const APPS: &str = "workspace/apps";
 /// The bytes of a package file one `upload-app-file` piece carries: the most
 /// the workspace's server takes in one call.
@@ -45,21 +42,12 @@ pub struct PushArgs {
     key_file: Option<PathBuf>,
     /// The `.tapp` to run; defaults to the newest in the app's `dist/`
     /// (`tilo-app package`).
-    #[arg(long, conflicts_with = "bot")]
+    #[arg(long)]
     package: Option<PathBuf>,
     /// A package reviewed and listed by a registry, rather than your own
     /// build. Every window of a dev build says whose it is.
-    #[arg(long, conflicts_with = "bot")]
+    #[arg(long)]
     published: bool,
-    /// Push this bot program (JSON) instead of the app.
-    #[arg(long, requires_all = ["entry", "version"])]
-    bot: Option<PathBuf>,
-    /// The bot's directory entry, such as `dev.ada.greeter`.
-    #[arg(long)]
-    entry: Option<String>,
-    /// The version the bot's program is pushed as.
-    #[arg(long)]
-    version: Option<String>,
 }
 
 /// What `tilo-app push` sends the workspace: the governance action and its
@@ -74,20 +62,12 @@ pub struct Push {
 }
 
 pub fn run_push(args: PushArgs) -> Result<Value> {
-    let push = if let Some(program) = &args.bot {
-        bot_push(
-            program,
-            args.entry.as_deref().unwrap_or_default(),
-            args.version.as_deref().unwrap_or_default(),
-        )?
-    } else {
-        let app_dir = crate_app_dir(args.path.as_deref())?;
-        let package = match args.package {
-            Some(package) => package,
-            None => newest_package(&app_dir.join("dist"))?,
-        };
-        app_push(&app_dir, &package, !args.published)?
+    let app_dir = crate_app_dir(args.path.as_deref())?;
+    let package = match args.package {
+        Some(package) => package,
+        None => newest_package(&app_dir.join("dist"))?,
     };
+    let push = app_push(&app_dir, &package, !args.published)?;
     let client = Client::open(Reach {
         api: args.api.as_deref(),
         key_file: args.key_file.as_deref(),
@@ -163,11 +143,7 @@ fn describe(push: &Push) -> String {
             .and_then(Value::as_str)
             .unwrap_or("?")
     };
-    if push.action == "request-bot" {
-        format!("bot {} {}", text("entry"), text("version"))
-    } else {
-        format!("{} {}", text("app"), text("version"))
-    }
+    format!("{} {}", text("app"), text("version"))
 }
 
 fn crate_app_dir(path: Option<&Path>) -> Result<PathBuf> {
@@ -244,26 +220,6 @@ pub fn app_push(app_dir: &Path, package: &Path, dev: bool) -> Result<Push> {
         action: "install-app",
         argument,
         upload: Some(package.to_path_buf()),
-    })
-}
-
-/// The workspace's `request-bot` carrying the program in `program`.
-pub fn bot_push(program: &Path, entry: &str, version: &str) -> Result<Push> {
-    let text =
-        std::fs::read_to_string(program).with_context(|| format!("read {}", program.display()))?;
-    let shortcut = tilo_automation::program::parse_program(text.as_bytes())
-        .map_err(|error| anyhow::anyhow!("{}: {error}", program.display()))?;
-    let canonical = tilo_automation::program::canonical_bytes(&shortcut)
-        .map_err(|error| anyhow::anyhow!("{}: {error}", program.display()))?;
-    let argument = object([
-        ("entry", json!(entry)),
-        ("version", json!(version)),
-        ("program", json!(String::from_utf8(canonical)?)),
-    ]);
-    Ok(Push {
-        action: "request-bot",
-        argument,
-        upload: None,
     })
 }
 

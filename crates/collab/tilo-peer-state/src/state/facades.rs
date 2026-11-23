@@ -36,7 +36,7 @@ pub struct PeerOutboxMut<'peer> {
 }
 
 /// The workspace's membership and its governance, read side: who is a member,
-/// agent or bot and with what access, and the checks that verify a member's
+/// agent and with what access, and the checks that verify a member's
 /// or owner's refresh against the admitted roster.
 #[derive(Clone, Copy)]
 pub struct PeerGovernance<'peer> {

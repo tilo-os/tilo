@@ -118,9 +118,8 @@ for program in tilo-server discord-worker; do
   [[ $(head -c 4 "$root/usr/local/bin/$program" | od -An -c | tr -d ' ') == '177ELF' ]] \
     || fail "/usr/local/bin/$program is not a program"
 done
-[[ -f $root/usr/local/share/tilo/bots/discord-bridge.json ]] || fail "the bridge's bot program is missing"
 # The catalog must be this build's: a container has no system fonts, so the
-# bridge's app components would lay text out in whatever is left.
+# app components would lay text out in whatever is left.
 cmp -s "$root/usr/share/fonts/tilo/manifest.toml" "$repo_root/crates/ui/ui-core/assets/fonts/manifest.toml" \
   || fail "the installed font catalog is not the one this build pins"
 

@@ -12,29 +12,29 @@
 //!
 //! Only the person the turn was for is told, and only the words that are
 //! in their conversation already. What kind of thing it is comes from its
-//! cause only where an event that person keeps on this server asked: a
-//! reminder is one because they set it up. Whatever else names a cause
-//! makes news of the answer, whatever kind it says it is, as what an agent
-//! tells is news.
+//! cause only where an event of that person's own asked, as a firing of the
+//! shortcut it is ([`tilo_automation::FIRING_INPUT`]): a reminder is one
+//! because they set it up. Whatever else names a cause makes news of the
+//! answer, whatever kind it says it is, as what an agent tells is news.
 
 use tilo_actions::remote::person_telling::{Cause, Kind, Tell, Teller};
 use tilo_resource::Id;
 
 use super::questions::at_message;
-use crate::agents::events::WorkspaceEvents;
 use crate::agents::{Ask, Outcome, Turn};
 use crate::workspaces::{ToTell, Workspaces};
 
 /// The app that keeps the conversations.
 const CHAT: &str = "so.tilo.chat";
 
-/// What asked with `message`, and who wrote it.
-type Asked = (Cause, Option<String>);
+/// What asked with `message`, and whether the person's own event asked it.
+type Asked = (Cause, bool);
 
 /// What asked with `message` in the part of Chat's messages `bytes` hold,
 /// where it was a cause asking for `person`: the cause as a thing told
-/// keeps it, and the agent or the event that wrote the message. None for
-/// their own words, and for a message that is not there.
+/// keeps it, and whether a firing of one of the person's own shortcuts wrote
+/// the message. None for their own words, and for a message that is not
+/// there.
 ///
 /// # Errors
 /// The part does not read.
@@ -52,30 +52,49 @@ fn asked_by(bytes: &[u8], message: &Id, person: &str) -> Result<Option<Asked>, S
                 label: cause.label.clone(),
                 key: cause.key.0.clone(),
             },
-            held.author.agent_id().map(str::to_owned),
+            held.author.person_id() == Some(person)
+                && cause.key.0.starts_with(tilo_automation::FIRING_PREFIX),
         ))
     }))
 }
 
-/// Whether `author`, who wrote the message that asked, is an event this
-/// server keeps in `workspace`.
-fn their_event(events: Option<&WorkspaceEvents>, workspace: &str, author: Option<&str>) -> bool {
-    let (Some(events), Some(author)) = (events, author) else {
-        return false;
+/// The firing of its person's own event that asked for `turn` in `workspace`, by the key it
+/// asked under ([`tilo_automation::FIRING_PREFIX`]). None for every other turn.
+pub(crate) async fn firing(
+    workspaces: &Workspaces,
+    workspace: &str,
+    turn: &Turn,
+) -> Option<String> {
+    if turn.typed || turn.line.is_some() {
+        return None;
+    }
+    let Ask::Message { part, message, .. } = &turn.ask else {
+        return None;
     };
-    events.keeps(workspace, author)
+    let bytes = workspaces
+        .resource_document(workspace, CHAT, part)
+        .await
+        .ok()
+        .flatten()?;
+    let message = Id::from_raw(message.as_str());
+    match asked_by(&bytes, &message, &turn.person) {
+        Ok(Some((cause, true))) => Some(cause.key),
+        Ok(_) => None,
+        Err(error) => {
+            tracing::warn!(%workspace, %message, %error, "what asked for a turn could not be read");
+            None
+        }
+    }
 }
 
 /// Tell the person `turn` was for how it ended as `outcome`, where a cause
-/// started it. `person` is that person, in `workspace`, and `events` what
-/// this server carries out for its people.
+/// started it. `person` is that person, in `workspace`.
 ///
 /// A turn its person wrote for themselves tells nothing, nor one they
 /// stopped, nor one that left no words. A sub-agent's turn tells nothing
 /// either: it answers the agent that started it, whose own turn tells.
 pub(crate) async fn turn_ended(
     workspaces: &Workspaces,
-    events: Option<&WorkspaceEvents>,
     person: &[u8; 32],
     workspace: &str,
     turn: &Turn,
@@ -106,7 +125,7 @@ pub(crate) async fn turn_ended(
         Ok(None) => Ok(None),
         Err(error) => Err(error.to_string()),
     };
-    let (cause, author) = match read {
+    let (cause, their_event) = match read {
         Ok(Some(asked)) => asked,
         Ok(None) => return,
         Err(error) => {
@@ -115,7 +134,7 @@ pub(crate) async fn turn_ended(
         }
     };
     // What it is, is its cause's to say only for an event its person keeps.
-    let kind = if their_event(events, workspace, author.as_deref()) {
+    let kind = if their_event {
         Kind::of_cause(Some(&cause))
     } else {
         Kind::News

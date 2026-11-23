@@ -86,10 +86,6 @@ impl ServedWorkspace {
 /// Canonical payload for the signed Iroh address of a workspace's device.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "each is a separate claim the holder signs about itself"
-)]
 pub struct WorkspaceDeviceHintV1 {
     /// Frozen payload version.
     pub version: u32,
@@ -109,10 +105,6 @@ pub struct WorkspaceDeviceHintV1 {
     /// whose operator can read what the machine holds.
     #[serde(default)]
     pub cloud: bool,
-    /// Whether the holder has a moderation agent for this workspace: one a
-    /// person who governs it may turn on, which decides reports filed in Chat.
-    #[serde(default)]
-    pub moderates: bool,
     /// The web origin the holder's site answers at (`https://eu1.tilo.sh`), when it serves
     /// one: where a member's device finds the site's pages and API. `None` for a holder
     /// reached over iroh alone. Left out when there is none, so a holder without one signs

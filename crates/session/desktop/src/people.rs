@@ -79,7 +79,7 @@ pub struct RosterRow {
     pub label: String,
     pub initial: char,
     pub color: Color,
-    /// Who they are: a person, an agent or one of the workspace's bots.
+    /// Who they are: a person or an agent.
     pub member: tilo_action_policy::MemberId,
     pub role: Option<String>,
     /// Where they are: the app or document in front of them.
@@ -111,7 +111,7 @@ pub struct RosterRow {
 }
 
 impl RosterRow {
-    /// Software, not a person: an agent or a bot.
+    /// Software, not a person: an agent.
     #[must_use]
     pub fn is_agent(&self) -> bool {
         !self.member.is_person()
@@ -1125,7 +1125,6 @@ impl PeopleOverlay {
             );
         }
         let agent_tag = t("people-panel-agent-tag");
-        let bot_tag = t("people-panel-bot-tag");
         let follow_label = t("people-panel-follow");
         let stop_label = t("people-panel-stop-following");
         let wave_label = t("people-panel-wave");
@@ -1196,16 +1195,8 @@ impl PeopleOverlay {
                     ui::widget::SurfaceLevel::Floating.color(ctx.theme),
                 );
             };
-            // Software is tagged after its name: Bot for the workspace's bots,
-            // Agent for agents.
-            let tags = [(
-                if row.member.is_bot() {
-                    bot_tag.as_str()
-                } else {
-                    agent_tag.as_str()
-                },
-                ChipStyle::Neutral,
-            )];
+            // Software is tagged after its name: Agent for agents.
+            let tags = [(agent_tag.as_str(), ChipStyle::Neutral)];
             let mut face = ListRowFace::new(&row.label);
             let subtitle = joined.as_deref().unwrap_or(&lines.0);
             if !subtitle.is_empty() {

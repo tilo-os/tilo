@@ -19,6 +19,7 @@ fn armed_with(trigger: &TriggerSpec) -> Armed {
         workspace: workspace.to_string(),
         shortcut,
         saver: "person".into(),
+        agent: None,
         starter: [1; 32],
         described: tilo_desktop_model::Workspace::new(workspace, "Home".to_owned()),
     }

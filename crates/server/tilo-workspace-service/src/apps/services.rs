@@ -74,6 +74,9 @@ pub trait WorkspaceMemberships: Send + Sync {
 pub struct ShortcutLibraryRequest {
     pub workspace: String,
     pub actor: tilo_action_policy::MemberId,
+    /// The person an agent `actor` acts for, by their root, hex: what the agent saves is
+    /// theirs, signed with the agent's own key. `None` for a person saving for themselves.
+    pub acting_for: Option<String>,
     pub change: crate::apps::automation::ShortcutChange,
     /// The provenance the change leaves in workspace activity.
     pub context: tilo_actions::ActionContext,

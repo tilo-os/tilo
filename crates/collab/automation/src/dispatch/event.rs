@@ -374,15 +374,4 @@ impl Event<'_> {
             Self::Source(event) => Value::Object(event.payload.clone()),
         }
     }
-
-    pub(super) const fn caused_by(&self) -> Option<&Cause> {
-        match self {
-            Self::Record(event) => event.caused_by.as_ref(),
-            Self::Connector(_)
-            | Self::AppEvent(_)
-            | Self::Schedule(_)
-            | Self::Time(_)
-            | Self::Source(_) => None,
-        }
-    }
 }

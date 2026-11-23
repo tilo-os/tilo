@@ -515,7 +515,12 @@ async fn a_firing_goes_to_its_starter_then_a_server_then_any_device() {
     assert_eq!(
         takes_turn(workspaces, &workspace, &theirs).await.err(),
         Some(NotTaken::Ineligible(Ineligible::CannotActAs)),
-        "a device runs only its own person's automations"
+        "a device that is no server runs only its own person's automations"
+    );
+    offer_compute(&host, &cert, true).await;
+    assert!(
+        takes_turn(workspaces, &workspace, &theirs).await.is_ok(),
+        "an always-on server runs a member's automations for them"
     );
     host.shutdown().await;
 }

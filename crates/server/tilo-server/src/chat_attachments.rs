@@ -10,7 +10,7 @@
 //! member asks. A report's receipt waits for the host to keep them. The pieces members answer it with are
 //! assembled and verified as a page assembles them
 //! ([`neighbour_wire::content::ContentWants`]) and kept in the workspace's
-//! content store on this host, beside what its bots fetched ([`crate::content`]),
+//! content store on this host ([`crate::content`]),
 //! from which the host answers members' requests for content it keeps
 //! ([`crate::workspaces::WorkspaceContent`]).
 //!
@@ -22,7 +22,7 @@
 //! workspace again. The pieces answering the host's requests count against these
 //! quotas alone, not a member's general content budget
 //! ([`crate::workspaces::ContentKeeper::expects`]), so a file as large as the cap
-//! reaches the host. A file the host kept before for another reason (its bots fetched
+//! reaches the host. A file the host kept before for another reason (an app made
 //! it) is neither counted nor ever let go of here. Which files it keeps,
 //! and for whom is kept in a log beside the workspace's state, so
 //! a restart keeps counting.
@@ -36,8 +36,8 @@ use neighbour_wire::content::ContentWants;
 use serde::{Deserialize, Serialize};
 use tilo_lock::MutexRecover as _;
 
-use super::CHAT;
 use crate::workspaces::{ContentKeeper, ResourceWrite, Workspaces};
+use tilo_app_id::apps::CHAT;
 use tilo_content::ContentStore;
 use tilo_resource::MemberId;
 
@@ -554,6 +554,8 @@ impl ContentKeeper for WorkspaceAttachments {
 mod tests {
 
     use super::*;
+
+    mod posted;
 
     tilo_test_env::scenario! {
         fn the_host_keeps_reported_files_for_their_reporters_within_a_quota;

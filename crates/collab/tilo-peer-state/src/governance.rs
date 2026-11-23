@@ -276,7 +276,7 @@ fn known_person_name(
         .filter_map(|(id, identity)| {
             let identity = identity.as_ref().ok()?;
             let cert = &identity.device_cert;
-            // A name of their own: not a delegate's name (an agent's or a bot's), and not the
+            // A name of their own: not a delegate's name (an agent's), and not the
             // stand-in a device nobody named carries.
             if cert.user_public_key != person
                 || identity.delegate.is_some()

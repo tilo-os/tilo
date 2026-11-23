@@ -76,14 +76,20 @@ impl PeerWorkspaceMut<'_> {
         let changed = match change {
             ShortcutChange::Save(shortcut) => {
                 if let Some(saver) = &shortcut.saved_by {
-                    let proven = crate::workspace::proven_saver(
+                    let proven = crate::workspace::proven(
                         &self.peer.core.workspace,
                         shortcut,
                         &crate::workspace::workspace_revocations(workspace),
                         now_ns,
                     );
-                    if proven.as_ref() != Some(saver)
-                        || *saver != hex::encode(caller.user_public_key)
+                    // A person's device commits what it signed; an agent's grant signed for
+                    // its agent wherever the agent works, and the device it works on commits
+                    // it.
+                    let committed_by_saver = proven.as_ref().is_some_and(|proven| {
+                        proven.agent.is_some() || *saver == hex::encode(caller.user_public_key)
+                    });
+                    if proven.as_ref().map(|proven| &proven.person) != Some(saver)
+                        || !committed_by_saver
                     {
                         return Err(
                             "a shortcut is saved only as its caller, by their device's proof"

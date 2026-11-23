@@ -320,36 +320,6 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
 tilo_test_env::scenario! {
     fn an_agent_is_admitted_and_withdrawn_only_as_an_agent;
 
-    phase admit_agent_refuses_a_bot_delegation;
-    {
-        let (mut governor, authority, _, _, now) = crate::admission_tests::seeded();
-        let workspace = governor.workspace_id().to_owned();
-        let person = SigningKey::from_bytes(&ROOT_SEED);
-        let (_, cert) = agent(&person, 8);
-        let bot = Delegation::sign(
-            &person,
-            cert.device_public_key,
-            tilo_workspace_join::delegation::Delegate::Bot {
-                installation: "6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6".into(),
-            },
-            "Bridge",
-            [0; 3],
-            DelegateScope {
-                workspaces: vec![WorkspaceId::parse(&workspace).unwrap()],
-                apps: vec![],
-            },
-            ns(now - Duration::from_secs(1)),
-            ns(now + Duration::from_secs(10)),
-        )
-        .unwrap();
-        assert_eq!(
-            governor
-                .governance_mut()
-                .admit_agent(cert, bot, &authority, now),
-            Err("the delegation is not an agent's".into())
-        );
-    }
-
     phase a_withdrawn_agent_is_dead_at_once_and_never_readmitted;
     {
         let (mut governor, authority, _, _, now) = crate::admission_tests::seeded();

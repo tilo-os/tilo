@@ -75,17 +75,11 @@ fn watch_chat(by: ActorFilter) -> TriggerSpec {
     }
 }
 
-fn as_bot<'a>(installation: &'a str, shortcut: &'a Shortcut) -> [Armed<'a>; 1] {
+/// `shortcut` saved as `id` by ada.
+fn saved_as<'a>(id: &'a str, shortcut: &'a Shortcut) -> [Armed<'a>; 1] {
     [Armed {
-        firer: Firer::Bot { installation },
-        shortcut,
-    }]
-}
-
-fn as_shortcut(shortcut: &Shortcut) -> [Armed<'_>; 1] {
-    [Armed {
-        firer: Firer::Shortcut {
-            shortcut: "bridge",
+        firer: Firer {
+            shortcut: id,
             saver: "ada",
         },
         shortcut,
@@ -106,7 +100,7 @@ fn a_trigger_saved_under_an_apps_earlier_kind_fires_after_the_rename() {
     let shortcut = program(vec![saved]);
     let mut event = post(person("bob"), &"b".repeat(64), None);
     event.kind = "tl.so.tilo.tasks.Task".into();
-    let out = dispatch(&as_bot("b1", &shortcut), Event::Record(&event));
+    let out = dispatch(&as_shortcut(&shortcut), Event::Record(&event));
     assert_eq!(
         out.firings.len(),
         1,
@@ -121,37 +115,33 @@ fn a_trigger_saved_under_an_apps_earlier_kind_fires_after_the_rename() {
         by: ActorFilter::Anyone,
     };
     let shortcut = program(vec![other]);
-    let out = dispatch(&as_bot("b1", &shortcut), Event::Record(&event));
+    let out = dispatch(&as_shortcut(&shortcut), Event::Record(&event));
     assert!(
         out.firings.is_empty(),
         "another app's kind stays as written"
     );
 }
 
+fn as_shortcut(shortcut: &Shortcut) -> [Armed<'_>; 1] {
+    saved_as("bridge", shortcut)
+}
+
 tilo_test_env::scenario! {
     fn a_firing_carries_the_event_that_fired_it;
 
-    phase a_post_by_a_person_fires_the_bot_with_the_event_bound;
+    phase a_post_by_a_person_fires_the_shortcut_with_the_event_bound;
     {
         let shortcut = program(vec![watch_chat(ActorFilter::Anyone)]);
         let event = post(person("bob"), &"a".repeat(64), None);
-        let out = dispatch(&as_bot("b1", &shortcut), Event::Record(&event));
+        let out = dispatch(&saved_as("b1", &shortcut), Event::Record(&event));
         assert_eq!(out.firings.len(), 1);
         let firing = &out.firings[0];
-        assert_eq!(firing.firer, "bot:b1");
+        assert_eq!(firing.firer, "shortcut:b1");
         assert_eq!(firing.inputs["event"]["after"]["text"], "hi");
         assert_eq!(
         firing.inputs["event"]["actor"]["by"]["member"]["person"],
         "bob"
     );
-        assert_eq!(
-            firing.cause,
-            Some(Cause {
-                installation: "b1".into(),
-                event: "a".repeat(64),
-                depth: 1
-            })
-        );
     }
 
     phase a_program_without_an_event_input_still_fires_with_no_inputs;
@@ -159,7 +149,7 @@ tilo_test_env::scenario! {
         let mut shortcut = program(vec![watch_chat(ActorFilter::Anyone)]);
         shortcut.inputs.clear();
         let event = post(person("bob"), &"5".repeat(64), None);
-        let out = dispatch(&as_bot("b1", &shortcut), Event::Record(&event));
+        let out = dispatch(&saved_as("b1", &shortcut), Event::Record(&event));
         assert!(out.firings[0].inputs.is_empty());
     }
 
@@ -214,7 +204,7 @@ fn housekeeping_fires_only_a_trigger_that_names_its_action() {
     read.housekeeping = true;
     let any_change = program(vec![watch_chat(ActorFilter::Anyone)]);
     assert!(
-        dispatch(&as_bot("b1", &any_change), Event::Record(&read))
+        dispatch(&saved_as("b1", &any_change), Event::Record(&read))
             .firings
             .is_empty(),
         "marking a channel read changes nothing the record holds"
@@ -227,7 +217,7 @@ fn housekeeping_fires_only_a_trigger_that_names_its_action() {
         filter: crate::shortcut::ChangeFilter::default(),
     }]);
     assert_eq!(
-        dispatch(&as_bot("b1", &reads), Event::Record(&read))
+        dispatch(&saved_as("b1", &reads), Event::Record(&read))
             .firings
             .len(),
         1
@@ -236,18 +226,6 @@ fn housekeeping_fires_only_a_trigger_that_names_its_action() {
 
 tilo_test_env::scenario! {
     fn an_invocation_never_fires_itself_again;
-
-    phase a_bot_never_fires_on_its_own_change;
-    {
-        let shortcut = program(vec![watch_chat(ActorFilter::Anyone)]);
-        let event = post(bot("b1"), &"b".repeat(64), None);
-        let out = dispatch(&as_bot("b1", &shortcut), Event::Record(&event));
-        assert!(out.firings.is_empty());
-        assert_eq!(
-            out.skipped,
-            vec![("bot:b1".to_string(), 0, Skipped::SelfTriggered)]
-        );
-    }
 
     phase a_shortcut_never_fires_on_a_change_its_own_run_made;
     {
@@ -274,48 +252,10 @@ tilo_test_env::scenario! {
                 through: "tidy".into()
             }
         );
-        // A person's own change still fires it, and records no cause.
+        // A person's own change still fires it.
         let typed = post(person("bob"), &"e".repeat(64), None);
         let out = dispatch(&as_shortcut(&shortcut), Event::Record(&typed));
         assert_eq!(out.firings.len(), 1);
-        assert_eq!(out.firings[0].cause, None, "a Shortcut records no cause");
-    }
-
-    phase a_chain_stops_after_four_hops;
-    {
-        let shortcut = program(vec![watch_chat(ActorFilter::Anyone)]);
-        for (depth, fires) in [(0_u8, true), (3, true), (4, false), (9, false)] {
-            let caused = (depth > 0).then(|| Cause {
-                installation: "b1".into(),
-                event: "x".into(),
-                depth,
-            });
-            let event = post(bot("b1"), &"d".repeat(64), caused);
-            let out = dispatch(&as_bot("b2", &shortcut), Event::Record(&event));
-            assert_eq!(!out.firings.is_empty(), fires, "depth {depth}");
-            if fires {
-                assert_eq!(out.firings[0].cause.as_ref().unwrap().depth, depth + 1);
-            } else {
-                assert_eq!(out.skipped[0].2, Skipped::TooDeep { depth: depth + 1 });
-            }
-        }
-    }
-
-    phase the_depth_of_a_bot_change_comes_from_the_run_not_the_claim;
-    {
-        // A person's change claims a cause; a bot firing on it starts a new
-        // chain at depth 1 regardless, whether the claim is short or long.
-        let shortcut = program(vec![watch_chat(ActorFilter::Anyone)]);
-        for claimed in [0, 9] {
-            let forged = Some(Cause {
-                installation: "b9".into(),
-                event: "y".into(),
-                depth: claimed,
-            });
-            let event = post(person("mallory"), &"e".repeat(64), forged);
-            let out = dispatch(&as_bot("b2", &shortcut), Event::Record(&event));
-            assert_eq!(out.firings[0].cause.as_ref().unwrap().depth, 1);
-        }
     }
 }
 
@@ -326,14 +266,14 @@ fn the_same_change_gives_the_same_invocation_id() {
         watch_chat(ActorFilter::People),
     ]);
     let event = post(person("bob"), &"f".repeat(64), None);
-    let first = dispatch(&as_bot("b1", &shortcut), Event::Record(&event));
-    let again = dispatch(&as_bot("b1", &shortcut), Event::Record(&event));
+    let first = dispatch(&saved_as("b1", &shortcut), Event::Record(&event));
+    let again = dispatch(&saved_as("b1", &shortcut), Event::Record(&event));
     assert_eq!(first.firings[0].invocation, again.firings[0].invocation);
     // Each trigger index is its own invocation.
     assert_ne!(first.firings[0].invocation, first.firings[1].invocation);
-    // Another installation of the same program is another invocation.
+    // Another shortcut with the same program is another invocation.
     assert_ne!(
-        dispatch(&as_bot("b2", &shortcut), Event::Record(&event)).firings[0].invocation,
+        dispatch(&saved_as("b2", &shortcut), Event::Record(&event)).firings[0].invocation,
         first.firings[0].invocation
     );
 }
@@ -354,7 +294,7 @@ tilo_test_env::scenario! {
         for (actor, by_people, by_not_bots) in cases {
             let event = post(actor.clone(), &"0".repeat(64), None);
             let fires = |shortcut: &Shortcut| {
-                !dispatch(&as_bot("b1", shortcut), Event::Record(&event))
+                !dispatch(&saved_as("b1", shortcut), Event::Record(&event))
                     .firings
                     .is_empty()
             };
@@ -378,7 +318,7 @@ tilo_test_env::scenario! {
         }]);
         let event = post(person("bob"), &"1".repeat(64), None);
         assert!(
-            dispatch(&as_bot("b1", &only_edits), Event::Record(&event))
+            dispatch(&saved_as("b1", &only_edits), Event::Record(&event))
                 .firings
                 .is_empty()
         );
@@ -390,7 +330,7 @@ tilo_test_env::scenario! {
             filter: crate::shortcut::ChangeFilter::default(),
         }]);
         assert!(
-            dispatch(&as_bot("b1", &other_kind), Event::Record(&event))
+            dispatch(&saved_as("b1", &other_kind), Event::Record(&event))
                 .firings
                 .is_empty()
         );
@@ -418,7 +358,7 @@ tilo_test_env::scenario! {
         });
         assert_eq!(edited_paths(&renamed.did), vec!["channels.c1.name"]);
         assert_eq!(
-            dispatch(&as_bot("b1", &names), Event::Record(&renamed))
+            dispatch(&saved_as("b1", &names), Event::Record(&renamed))
                 .firings
                 .len(),
             1
@@ -488,21 +428,14 @@ tilo_test_env::scenario! {
                 ("content".to_string(), json!("yo")),
             ]),
         };
-        let out = dispatch(&as_bot("b1", &shortcut), Event::Connector(&event));
+        let out = dispatch(&saved_as("b1", &shortcut), Event::Connector(&event));
         assert_eq!(out.firings.len(), 1);
         assert_eq!(out.firings[0].inputs["event"]["payload"]["content"], "yo");
         assert_eq!(out.firings[0].event, "so.tilo.discord/message-created/1188");
-        assert_eq!(out.firings[0].cause.as_ref().unwrap().depth, 1);
         let mut elsewhere = event.clone();
         elsewhere.payload.insert("channel".into(), json!("7"));
         assert!(
-            dispatch(&as_bot("b1", &shortcut), Event::Connector(&elsewhere))
-                .firings
-                .is_empty()
-        );
-        // A person's Shortcut never fires on a connector event.
-        assert!(
-            dispatch(&as_shortcut(&shortcut), Event::Connector(&event))
+            dispatch(&saved_as("b1", &shortcut), Event::Connector(&elsewhere))
                 .firings
                 .is_empty()
         );
@@ -616,14 +549,14 @@ tilo_test_env::scenario! {
             trigger: 1,
             due_ms: 90_000,
         };
-        let out = dispatch(&as_bot("b1", &shortcut), Event::Schedule(&moment));
+        let out = dispatch(&saved_as("b1", &shortcut), Event::Schedule(&moment));
         assert_eq!(out.firings.len(), 1, "only the trigger whose time came: {out:?}");
         let firing = &out.firings[0];
         assert_eq!(firing.trigger, TriggerSpec::Once { at_ms: 90_000 });
         assert_eq!(firing.inputs["event"]["due_ms"], 90_000);
         // A host that restarted before it kept the answer hands the moment
         // over again: the run is the same one, so its steps act once.
-        let again = dispatch(&as_bot("b1", &shortcut), Event::Schedule(&moment));
+        let again = dispatch(&saved_as("b1", &shortcut), Event::Schedule(&moment));
         assert_eq!(again.firings[0].invocation, firing.invocation);
     }
 
@@ -642,7 +575,7 @@ tilo_test_env::scenario! {
             trigger: 0,
             due_ms: 120_000,
         };
-        let out = dispatch(&as_bot("b1", &shortcut), Event::Schedule(&tick));
+        let out = dispatch(&saved_as("b1", &shortcut), Event::Schedule(&tick));
         assert_eq!(out.firings.len(), 1, "{out:?}");
         assert_eq!(out.firings[0].trigger_index, 0);
         // A fire time named for a trigger that waits for something else.
@@ -652,7 +585,7 @@ tilo_test_env::scenario! {
             due_ms: 120_000,
         };
         assert!(
-            dispatch(&as_bot("b1", &shortcut), Event::Schedule(&stray))
+            dispatch(&saved_as("b1", &shortcut), Event::Schedule(&stray))
                 .firings
                 .is_empty()
         );
@@ -675,26 +608,26 @@ tilo_test_env::scenario! {
             key: "ada@example.com:7:4".into(),
             payload: Map::from_iter([("item".to_string(), json!("ada@example.com:7:4"))]),
         };
-        let out = dispatch(&as_bot("b1", &shortcut), Event::Source(&found));
+        let out = dispatch(&saved_as("b1", &shortcut), Event::Source(&found));
         assert_eq!(out.firings.len(), 1, "only the trigger it was found for: {out:?}");
         let firing = &out.firings[0];
         assert_eq!(firing.trigger_index, 1);
         assert_eq!(firing.inputs["event"]["item"], "ada@example.com:7:4");
         // Found again, it is the same invocation, so its steps act once.
-        let again = dispatch(&as_bot("b1", &shortcut), Event::Source(&found));
+        let again = dispatch(&saved_as("b1", &shortcut), Event::Source(&found));
         assert_eq!(again.firings[0].invocation, firing.invocation);
         // Another thing found there is another invocation.
         let next = SourceEvent {
             key: "ada@example.com:7:5".into(),
             ..found.clone()
         };
-        let other = dispatch(&as_bot("b1", &shortcut), Event::Source(&next));
+        let other = dispatch(&saved_as("b1", &shortcut), Event::Source(&next));
         assert_eq!(other.firings.len(), 1, "{other:?}");
         assert_ne!(other.firings[0].invocation, firing.invocation);
         // Found for a trigger that waits for something else: nothing.
         let stray = SourceEvent { trigger: 0, ..found };
         assert!(
-            dispatch(&as_bot("b1", &shortcut), Event::Source(&stray))
+            dispatch(&saved_as("b1", &shortcut), Event::Source(&stray))
                 .firings
                 .is_empty()
         );

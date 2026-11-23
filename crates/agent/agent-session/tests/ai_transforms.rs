@@ -239,6 +239,7 @@ fn ai_shortcut(prompt: &str, output: Option<Value>, input: Option<Binding>) -> S
         triggers: Vec::new(),
         saved_by: None,
         saved_proof: None,
+        paused: false,
     }
 }
 

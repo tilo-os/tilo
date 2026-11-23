@@ -215,14 +215,22 @@ impl AppBrokerState {
             .as_ref()
             .and_then(|membership| membership.workspace_revocations(workspace))
             .ok_or(ActionCallError::NotPermitted)?;
-        if tilo_peer_state::workspace::proven_saver(
+        // An agent that saved it with its own key runs it as itself, for its person; a device's
+        // proof runs it as the person.
+        let runs_as_saver = tilo_peer_state::workspace::proven(
             workspace,
             &shortcut,
             &revocations,
             tilo_clock::unix_now_ns(),
         )
-        .is_none_or(|saver| actor.member().person_id() != Some(saver.as_str()))
-        {
+        .is_some_and(|saver| match &saver.agent {
+            Some(agent) => {
+                caller.acting().agent_id() == Some(agent.as_str())
+                    && caller.acting_for_person() == Some(saver.person.as_str())
+            }
+            None => actor.member().person_id() == Some(saver.person.as_str()),
+        });
+        if !runs_as_saver {
             return Err(ActionCallError::NotPermitted);
         }
         if !shortcut.triggers.contains(trigger) {
@@ -515,6 +523,15 @@ impl AppBrokerState {
     /// Shortcut runs finished since the last call, oldest first.
     pub fn take_finished_invocations(&self) -> Vec<automation::FinishedInvocation> {
         self.ended_invocations.finished.take()
+    }
+
+    /// How the run `invocation` of `shortcut` ended, when it is one this broker kept.
+    pub fn shortcut_run_report(
+        &self,
+        invocation: tilo_automation::AutomationInvocationId,
+        shortcut: &str,
+    ) -> Option<tilo_automation::InvocationReport> {
+        self.ended_invocations.finished.report(invocation, shortcut)
     }
 
     /// Whether a finished shortcut run is waiting to be taken.

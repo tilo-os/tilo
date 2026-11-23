@@ -15,7 +15,7 @@ pub fn resource_provider(route: &DocumentRoute) -> String {
     format!("{RESOURCE_PROVIDER}:{}:{}", route.app_id, route.document)
 }
 
-pub(crate) fn resource_of(provider: &str, workspace: &str) -> Option<DocumentRoute> {
+pub fn resource_of(provider: &str, workspace: &str) -> Option<DocumentRoute> {
     let rest = provider
         .strip_prefix(RESOURCE_PROVIDER)?
         .strip_prefix(':')?;
@@ -82,7 +82,7 @@ pub(crate) fn api_outcome(error: &ApiError) -> Outcome {
     }
 }
 
-pub(crate) fn api_status(error: &ApiError) -> ReceiptStatus {
+pub fn api_status(error: &ApiError) -> ReceiptStatus {
     match api_outcome(error) {
         Outcome::Rejected(error) => ReceiptStatus::Rejected { error },
         Outcome::Failed(error) => ReceiptStatus::Failed { error },

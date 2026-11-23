@@ -129,8 +129,6 @@ fn founding_rows(
         super::keeping_devices::WORKSPACE_KEEPING_DEVICES_KEY,
         super::app_versions::APP_VERSIONS,
         super::calls::CALLS,
-        super::bot_members::PROGRAMS,
-        super::bot_members::REQUESTS,
         tilo_desktop_model::projection::WORKSPACE_AUTOMATIONS_KEY,
         tilo_desktop_model::projection::WORKSPACE_PRESETS_KEY,
         tilo_desktop_model::projection::WORKSPACE_SANDBOX_KEY,

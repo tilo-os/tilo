@@ -851,6 +851,7 @@ mod tests {
                 triggers: vec![],
                 saved_by: None,
                 saved_proof: None,
+                paused: false,
             };
             assert_eq!(unused_rules(&shortcut), vec![delete]);
         }
@@ -906,6 +907,7 @@ mod tests {
                 triggers: vec![],
                 saved_by: None,
                 saved_proof: None,
+                paused: false,
             };
             assert!(unused_rules(&shortcut).is_empty());
         }
@@ -979,6 +981,7 @@ mod tests {
                 triggers: vec![],
                 saved_by: None,
                 saved_proof: None,
+                paused: false,
             };
             assert!(unused_rules(&shortcut).is_empty());
         }

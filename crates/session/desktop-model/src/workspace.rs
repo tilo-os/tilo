@@ -36,8 +36,8 @@ pub struct Workspace {
     /// 2D surface ([`crate::layout`]).
     #[serde(default, skip_serializing_if = "WorkspaceLayout::is_default")]
     pub layout: WorkspaceLayout,
-    /// The workspace's members: its people with their roles, the agents
-    /// admitted in it and its bots, each with the colour it wears everywhere.
+    /// The workspace's members: its people with their roles and the agents
+    /// admitted in it, each with the colour it wears everywhere.
     /// Placed from [`Workspace::policy`] and presence before a surface reads
     /// them; never read back from a stored workspace.
     /// `skip_deserializing` rather than `skip`: reading is the direction
@@ -83,12 +83,6 @@ pub struct Workspace {
     /// reaches.
     #[serde(default)]
     pub shortcuts: Vec<tilo_automation::SavedShortcut>,
-    /// The workspace's bots, projected from its governance on every change: the
-    /// installed ones and those a member asked the workspace's host to run. Never
-    /// read back from a stored workspace; the workspace's governance is their
-    /// one source.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub bots: Vec<crate::bots::WorkspaceBot>,
     /// Surfaces from this workspace being streamed to peers. Keys are
     /// wayland `wl_surface` ids; values are the target Iroh peers
     /// (hashed to `u64`) — a `HashSet` for multi-recipient streaming.
@@ -151,7 +145,6 @@ impl From<StoredWorkspace> for Workspace {
             default_apps: stored.default_apps,
             effect_receipts: stored.effect_receipts,
             shortcuts: stored.shortcuts,
-            bots: Vec::new(),
             shared_surfaces: stored.shared_surfaces,
             closed_tabs: crate::closed_tabs::ClosedTabs::default(),
             people_names: BTreeMap::new(),
@@ -912,7 +905,6 @@ impl Workspace {
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             effect_receipts: Vec::new(),
             shortcuts: Vec::new(),
-            bots: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
             closed_tabs: crate::closed_tabs::ClosedTabs::default(),
             people_names: BTreeMap::new(),
@@ -949,7 +941,6 @@ impl Workspace {
             default_apps,
             effect_receipts: _,
             shortcuts: _,
-            bots,
             shared_surfaces,
             closed_tabs: _,
         } = self;
@@ -966,7 +957,6 @@ impl Workspace {
             default_apps: default_apps.clone(),
             effect_receipts: Vec::new(),
             shortcuts: Vec::new(),
-            bots: bots.clone(),
             shared_surfaces: shared_surfaces.clone(),
             closed_tabs: crate::closed_tabs::ClosedTabs::default(),
             people_names: people_names.clone(),

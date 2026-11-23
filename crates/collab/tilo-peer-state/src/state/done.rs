@@ -85,6 +85,31 @@ impl PeerWorkspace<'_> {
     pub fn done(self, id: &str) -> Option<Done> {
         earliest(rows_of(self.peer.core.workspace_doc.as_deref(), id))
     }
+
+    /// What was kept of the work done under every lease whose id starts with `prefix`, by lease
+    /// id, each as [`Self::done`] reads it.
+    #[must_use]
+    pub fn done_under(self, prefix: &str) -> std::collections::BTreeMap<String, Done> {
+        let mut rows = std::collections::BTreeMap::<String, Vec<Done>>::new();
+        for (id, device, json) in
+            device_rows::rows_under(self.peer.core.workspace_doc.as_deref(), DONE_KEY, prefix)
+        {
+            let Some(stored) = tilo_failure::ignored!(
+                "a done row another build wrote is one this build cannot read, as `rows_of` reads it",
+                serde_json::from_str::<StoredDone>(&json).ok()
+            ) else {
+                continue;
+            };
+            rows.entry(id).or_default().push(Done {
+                device,
+                done_at_ns: stored.done_at_ns,
+                answer: stored.answer,
+            });
+        }
+        rows.into_iter()
+            .filter_map(|(id, rows)| Some((id, earliest(rows)?)))
+            .collect()
+    }
 }
 
 impl PeerWorkspaceMut<'_> {

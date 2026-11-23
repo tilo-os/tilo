@@ -44,6 +44,84 @@ pub fn sign_saved_shortcut(
     Ok(())
 }
 
+/// Sign `shortcut` as saved in `workspace` by the agent `agent`, for the person its key's
+/// grant `grant` was certified by, with that key: sets `saved_by` to the person and attaches a
+/// proof that names the agent beside its grant. The shortcut then acts as that agent, held to
+/// the agent's grants as well as its own.
+///
+/// # Errors
+///
+/// `key` is not the grant's, the grant is no grant for `agent`, or it does not encode.
+pub fn sign_saved_shortcut_as_agent(
+    workspace: &str,
+    shortcut: &mut Shortcut,
+    agent: &str,
+    grant: &DeviceCert,
+    key: &dyn DeviceSigner,
+) -> Result<(), String> {
+    if key.device_public_key() != grant.device_public_key {
+        return Err("the signing key is not the agent's grant".into());
+    }
+    if !grant_for(grant, agent, workspace) {
+        return Err(format!(
+            "the key is no grant of the agent `{agent}` in this workspace"
+        ));
+    }
+    shortcut.saved_by = Some(hex::encode(grant.user_public_key));
+    shortcut.saved_proof = None;
+    let signature =
+        collab_types::signer::sign_now(key, shortcut.saved_signing_digest(workspace).to_vec())
+            .map_err(|error| error.to_string())?;
+    shortcut.saved_proof = Some(SavedProof {
+        device_cert: serde_json::to_value(AgentProof {
+            agent: agent.to_owned(),
+            grant: serde_json::to_value(grant).map_err(|error| error.to_string())?,
+        })
+        .map_err(|error| error.to_string())?,
+        signature: hex::encode(signature),
+    });
+    Ok(())
+}
+
+/// A proof's certificate where an agent saved the shortcut: the agent, and the grant its key
+/// was certified with. A build that reads only a device's certificate there finds none, and the
+/// shortcut does not arm on it.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgentProof {
+    agent: String,
+    grant: serde_json::Value,
+}
+
+/// Who a proof shows saved a shortcut.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Saver {
+    /// The person, by their root, hex.
+    pub person: String,
+    /// The agent of theirs that saved it with its own key: the shortcut acts as that agent.
+    /// `None` where a device of the person's saved it.
+    pub agent: Option<String>,
+    /// The key that signed it: the device's, or the agent's grant's.
+    pub key: [u8; 32],
+}
+
+/// Whether `cert` is a grant its person certified for `agent` alone, reaching `workspace`:
+/// the grant an agent acts by, never a device's own key nor a key a person made for their own
+/// programs, which act as the person.
+fn grant_for(cert: &DeviceCert, agent: &str, workspace: &str) -> bool {
+    let Some(scope) = cert.capabilities.agent.as_ref() else {
+        return false;
+    };
+    let certified = tilo_action_policy::key_of_agent(agent).map_or_else(
+        || scope.is_agent(agent),
+        |key| key == cert.device_public_key,
+    );
+    let reaches = scope.workspace().is_none_or(|reached| {
+        uuid::Uuid::parse_str(workspace).is_ok_and(|id| *id.as_bytes() == reached)
+    });
+    !cert.capabilities.server_key && certified && reaches
+}
+
 /// The person who saved `shortcut` in `workspace`, when its proof shows it at
 /// `now_ns`: a certificate that chains to that person's root and is current,
 /// a device the workspace has not revoked, and that device's signature over the
@@ -57,9 +135,39 @@ pub fn proven_saver(
     revocations: &RevocationList,
     now_ns: u64,
 ) -> Option<String> {
+    proven(workspace, shortcut, revocations, now_ns).map(|saver| saver.person)
+}
+
+/// Who saved `shortcut` in `workspace`, as [`proven_saver`] reads its proof, with the agent of
+/// theirs that saved it with its own key, where one did: its grant certified for that agent
+/// alone, reaching this workspace, current and not revoked.
+#[must_use]
+pub fn proven(
+    workspace: &str,
+    shortcut: &Shortcut,
+    revocations: &RevocationList,
+    now_ns: u64,
+) -> Option<Saver> {
     let saver = shortcut.saved_by.as_deref()?;
     let proof = shortcut.saved_proof.as_ref()?;
-    let device: DeviceCert = serde_json::from_value(proof.device_cert.clone()).ok()?;
+    let (device, agent) = match serde_json::from_value::<AgentProof>(proof.device_cert.clone()) {
+        Ok(signed) => {
+            let grant: DeviceCert = serde_json::from_value(signed.grant).ok()?;
+            if !grant_for(&grant, &signed.agent, workspace) {
+                return None;
+            }
+            (grant, Some(signed.agent))
+        }
+        Err(_) => {
+            let device: DeviceCert = serde_json::from_value(proof.device_cert.clone()).ok()?;
+            // An agent's grant acts as its agent, never as the person: it saves only with the
+            // agent named beside it.
+            if device.capabilities.agent.is_some() && !device.capabilities.server_key {
+                return None;
+            }
+            (device, None)
+        }
+    };
     if hex::encode(device.user_public_key) != saver {
         return None;
     }
@@ -75,7 +183,11 @@ pub fn proven_saver(
             &ed25519_dalek::Signature::from_bytes(&signature),
         )
         .ok()?;
-    Some(saver.to_owned())
+    Some(Saver {
+        person: saver.to_owned(),
+        agent,
+        key: device.device_public_key,
+    })
 }
 
 /// Every device revocation the workspace `doc` records, each verified under the

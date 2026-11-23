@@ -42,7 +42,7 @@
 //! turn costs is counted on the agent's record, and an agent whose daily limit is reached stops
 //! and says so.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -70,19 +70,17 @@ use tracing::Instrument as _;
 
 use crate::workspaces::Workspaces;
 use crate::workspaces::person_model::{ModelRefusal, PersonModel, Spender};
-use events::{Authority, WorkspaceEvents};
-use initiative::Initiative;
-use tilo_actions::remote::workspace_events;
-use tilo_actions::remote::workspace_initiative;
 use turn_provider::TurnProvider;
 
 pub mod agent_keys;
 pub mod assistant;
 #[cfg(unix)]
 pub mod coding;
+pub mod connectors;
+#[cfg(feature = "apps")]
 pub mod events;
+#[cfg(feature = "apps")]
 pub mod initiative;
-pub mod kept;
 pub mod telling;
 pub mod triggered;
 
@@ -176,71 +174,14 @@ const KEEP_WORK: &str = "record-work";
 pub struct WorkspaceActionProvider {
     actions: EngineActions,
     workspace: WorkspaceId,
-    /// The events this device runs for its workspaces, where it runs any: what an agent sets up,
-    /// pauses, changes and removes for the person its turn is for.
-    events: Option<WorkspaceEvents>,
-    /// What the workspaces' assistants find to do on their own, where this server keeps it: the
-    /// look-round an agent reads, turns on and off for the person its turn is for.
-    initiative: Option<Initiative>,
     /// What this service answers itself for the one turn it serves, beside the workspace's
     /// resources ([`TurnProvider`]).
     own: Vec<Arc<dyn TurnProvider>>,
     /// How the calls those took ended; `None` while it answers none of them.
     ended: Option<turn_provider::Ended>,
-    /// What its own services answered, for a caller that follows an invocation.
-    answered: OwnAnswers,
     /// What the person asked of the turn this serves, in their words: the purpose History
     /// keeps with each change the turn makes, so its agent session reads as what it was asked.
     purpose: Option<String>,
-}
-
-/// What the services answered here have said, kept for whoever follows the invocation. They
-/// answer with the receipt alone and the workspace's actions never hear of it, while a turn's
-/// tools read how an invocation ended by observing it: without this an action that was carried
-/// out is told to the model as one still pending.
-#[derive(Clone, Default)]
-struct OwnAnswers(Arc<Mutex<VecDeque<(InvocationId, Caller, InvocationUpdate)>>>);
-
-impl OwnAnswers {
-    /// The most answers kept. A turn's tools observe an invocation as soon as it is admitted,
-    /// so only the newest are ever asked for.
-    const KEPT: usize = 64;
-
-    /// Keep how `receipt` says `caller`'s invocation ended. One that admitted nothing, or
-    /// says nothing of the end yet, leaves nothing to follow.
-    fn keep(&self, caller: &Caller, receipt: &InvocationReceipt) {
-        let invocation = receipt.invocation;
-        let update = match &receipt.status {
-            ReceiptStatus::Completed { output } => InvocationUpdate::Succeeded {
-                invocation,
-                output: output.clone(),
-            },
-            ReceiptStatus::Failed { error } => InvocationUpdate::Failed {
-                invocation,
-                error: error.clone(),
-            },
-            ReceiptStatus::Cancelled { message } => InvocationUpdate::Cancelled {
-                invocation,
-                message: message.clone(),
-            },
-            ReceiptStatus::Rejected { .. } | ReceiptStatus::Accepted => return,
-        };
-        let mut kept = self.0.lock_recover();
-        if kept.len() >= Self::KEPT {
-            kept.pop_front();
-        }
-        kept.push_back((invocation, caller.clone(), update));
-    }
-
-    /// How invocation `id` ended, for the `caller` that made it and nobody else.
-    fn of(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        self.0
-            .lock_recover()
-            .iter()
-            .rev()
-            .find(|(invocation, by, _)| invocation == id && by == caller)
-            .map(|(_, _, update)| InvocationState::new(*id, update.clone()))
-    }
 }
 
 impl WorkspaceActionProvider {
@@ -249,54 +190,19 @@ impl WorkspaceActionProvider {
         Self {
             actions,
             workspace,
-            events: None,
             own: Vec::new(),
             ended: None,
-            initiative: None,
-            answered: OwnAnswers::default(),
             purpose: None,
         }
     }
 
-    /// What `caller` is offered of the workspace's records, its events and
-    /// its assistant's initiative, as the workspace's policy decides it for a
-    /// turn this server carries out for them.
+    /// What `caller` is offered of the workspace's records, as the workspace's policy decides
+    /// it for a turn this server carries out for them.
     async fn page(
         &self,
         caller: &Caller,
         query: CatalogueQuery,
     ) -> Result<CataloguePage, ActionCallError> {
-        if let Some(events) = &self.events
-            && query.provider.as_deref() == Some(workspace_events::PROVIDER)
-        {
-            return Ok(events
-                .catalogue(self.workspace, caller, &Authority::Turn, &query)
-                .await);
-        }
-        if let Some(initiative) = &self.initiative
-            && query.provider.as_deref() == Some(workspace_initiative::PROVIDER)
-        {
-            return Ok(initiative
-                .catalogue(self.workspace, caller, &Authority::Turn, &query)
-                .await);
-        }
-        let initiative = match &self.initiative {
-            Some(initiative) if query.provider.is_none() => {
-                initiative
-                    .provider(self.workspace, caller, &Authority::Turn)
-                    .await
-            }
-            _ => None,
-        };
-        // A listing of everything names the events' provider beside the records'.
-        let events = match &self.events {
-            Some(events) if query.provider.is_none() => {
-                events
-                    .provider(self.workspace, caller, &Authority::Turn)
-                    .await
-            }
-            _ => None,
-        };
         // One provider id is answered by every provider of the turn's own that holds a
         // resource of it: their rows make one page.
         let own: Vec<_> = self
@@ -334,9 +240,7 @@ impl WorkspaceActionProvider {
         {
             Some(RemoteActionMessage::CatalogueResponse { result, .. }) => {
                 result.map(|mut page| {
-                    page.providers.extend(events);
                     page.providers.extend(offered);
-                    page.providers.extend(initiative);
                     page
                 })
             }
@@ -350,22 +254,6 @@ impl WorkspaceActionProvider {
     fn serving_ask(mut self, asked: &str) -> Self {
         let asked = asked.trim();
         self.purpose = (!asked.is_empty()).then(|| asked.to_owned());
-        self
-    }
-
-    /// This service, answering also for `initiative`: the server's own actions on what a
-    /// person's assistant finds to do on its own.
-    #[must_use]
-    pub fn offering_initiative(mut self, initiative: Option<Initiative>) -> Self {
-        self.initiative = initiative;
-        self
-    }
-
-    /// This service, answering also for `events`: this server's own actions on the workspace's
-    /// scheduled work and events, listed and taken beside its resources.
-    #[must_use]
-    pub fn offering(mut self, events: Option<WorkspaceEvents>) -> Self {
-        self.events = events;
         self
     }
 
@@ -449,38 +337,6 @@ impl ActionProvider for WorkspaceActionProvider {
         if let Some(reason) = shares::refuses(caller, &request) {
             return Pending::ready(Err(ActionCallError::InvalidRequest { reason }));
         }
-        if let Some(events) = &self.events
-            && request.target.provider == workspace_events::PROVIDER
-        {
-            // Kept whoever still waits: a tool that stopped waiting asks later how it went.
-            let (answered, by) = (self.answered.clone(), caller.clone());
-            let (completer, answer) = pending();
-            events
-                .invoking(self.workspace, caller, Authority::Turn, request)
-                .then(move |receipt| {
-                    if let Some(receipt) = receipt {
-                        answered.keep(&by, &receipt);
-                        completer.complete(Ok(receipt));
-                    }
-                });
-            return answer;
-        }
-        if let Some(initiative) = &self.initiative
-            && request.target.provider == workspace_initiative::PROVIDER
-        {
-            // Kept whoever still waits: a tool that stopped waiting asks later how it went.
-            let (answered, by) = (self.answered.clone(), caller.clone());
-            let (completer, answer) = pending();
-            initiative
-                .invoking(self.workspace, caller, Authority::Turn, request)
-                .then(move |receipt| {
-                    if let Some(receipt) = receipt {
-                        answered.keep(&by, &receipt);
-                        completer.complete(Ok(receipt));
-                    }
-                });
-            return answer;
-        }
         if let Some(own) = self.own.iter().find(|own| own.takes(&request.target))
             && let Some(ended) = &self.ended
         {
@@ -500,7 +356,6 @@ impl ActionProvider for WorkspaceActionProvider {
             .as_ref()
             .and_then(|ended| ended.of(id))
             .or_else(|| self.actions.observe(caller, id))
-            .or_else(|| self.answered.of(caller, id))
     }
 
     fn observed(&self, _caller: &Caller, id: &InvocationId, state: Option<&InvocationState>) {
@@ -640,6 +495,22 @@ pub async fn on_device(
     run_on_device(workspaces, actions).await;
 }
 
+/// What a device's own services act through on its broker `provider`: each call decided there
+/// as the person's own calls are, an agent's signed with the key this device made for it. None
+/// where the device's identity store is not open.
+#[must_use]
+pub fn device_actions(provider: Arc<dyn ActionProvider + Send + Sync>) -> Option<EngineActions> {
+    match agent_keys::FleetAgentKeys::from_env() {
+        Ok(keys) => Some(EngineActions::new(provider, Arc::new(keys))),
+        Err(error) => {
+            tracing::warn!(
+                "this device's agents sign nothing: its identity store is not open ({error})"
+            );
+            None
+        }
+    }
+}
+
 /// [`on_device`] for the service whose `workspaces` the device opened already.
 pub async fn run_on_device(workspaces: Workspaces, actions: Arc<dyn ActionProvider + Send + Sync>) {
     // The person's own device calls the model their workspace linked where it is, one on their
@@ -699,6 +570,9 @@ pub enum Ask {
         cause: String,
     },
 }
+
+/// What a turn says when the event that asked for it told a waiting task to go on instead.
+const TASK_WENT_ON: &str = "The task that waited for this went on.";
 
 /// One turn the server owes an agent: who asks what, of whom.
 #[derive(Clone, Debug, PartialEq)]
@@ -917,6 +791,32 @@ impl crate::work::AgentEngine for EngineKeys {
         }
         answer
     }
+
+    fn sign_shortcut<'a>(
+        &'a self,
+        workspace: &'a str,
+        agent: &'a str,
+        acts_for: &'a [u8; 32],
+        shortcut: &'a mut tilo_automation::Shortcut,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move {
+            let workspace =
+                WorkspaceId::parse(workspace).ok_or("the shortcut is saved in no workspace")?;
+            match &self.roster {
+                Roster::Hosted(server, sessions) => {
+                    let device = server
+                        .session_device(sessions, workspace, agent, acts_for)
+                        .await
+                        .ok_or("the agent has no approved signing session for this workspace")?;
+                    sessions.sign_shortcut_as(&device, workspace, agent, shortcut)
+                }
+                Roster::Device(keys) => {
+                    let key = keys.grant(workspace, agent, agent, *acts_for)?;
+                    keys.sign_shortcut(workspace, &key, agent, shortcut)
+                }
+            }
+        })
+    }
 }
 
 /// The agents a host runs for the workspaces it governs.
@@ -935,12 +835,8 @@ pub struct ServerAgents {
     /// The turns going now: one for each agent in each conversation, with what reaches it
     /// while it works.
     going: Arc<going::Turns>,
-    /// The events this host runs for its people, which a turn's tools reach for its person.
-    events: Option<WorkspaceEvents>,
     /// What carries out the answers to what code of this server asked.
     carriers: asks::Carriers,
-    /// What the people's assistants find to do on their own, which a turn's tools reach too.
-    initiative: Option<Initiative>,
     /// The agents whose answer the engine takes, as it last read its workspaces' records
     /// ([`EngineKeys::answering`]).
     answering: Arc<Mutex<Vec<(String, String)>>>,
@@ -1014,9 +910,7 @@ impl ServerAgents {
             model,
             language: None,
             going: Arc::default(),
-            events: None,
             carriers: Arc::default(),
-            initiative: None,
             answering,
             answers: Arc::new(Mutex::new(Some(asked))),
             browsers: None,
@@ -1128,14 +1022,6 @@ impl ServerAgents {
         self
     }
 
-    /// These agents, whose turns reach `initiative`: an agent reads its person's look-round and
-    /// turns it on and off through the server's own actions.
-    #[must_use]
-    pub fn with_initiative(mut self, initiative: Option<Initiative>) -> Self {
-        self.initiative = initiative;
-        self
-    }
-
     /// These agents, whose turns reach the Browser windows `browsers` places: a turn's open of
     /// Browser has its window placed in the turn's workspace, and a turn has a field of the
     /// page in its workspace's window filled from its person's vault by reference. With `None`
@@ -1143,14 +1029,6 @@ impl ServerAgents {
     #[must_use]
     pub fn placing(mut self, browsers: Option<Arc<dyn windows::Windows>>) -> Self {
         self.browsers = browsers;
-        self
-    }
-
-    /// These agents, whose turns reach `events`: an agent sets its person's scheduled work and
-    /// events up, pauses, changes and removes them through the host's own actions.
-    #[must_use]
-    pub fn with_events(mut self, events: Option<WorkspaceEvents>) -> Self {
-        self.events = events;
         self
     }
 
@@ -1919,8 +1797,6 @@ impl ServerAgents {
         let agent = self.agent_caller(workspace_id, &turn.agent, person).await?;
         let mut scope = TurnScope {
             provider: WorkspaceActionProvider::new(self.actions.clone(), workspace_id)
-                .offering(self.events.clone())
-                .offering_initiative(self.initiative.clone())
                 .serving_ask(&turn.request),
             agent,
             person,
@@ -2077,7 +1953,6 @@ impl ServerAgents {
             let ended = reply.finished(&left).await;
             crate::agents::telling::turn_ended(
                 &self.workspaces,
-                self.events.as_ref(),
                 &scope.person,
                 workspace,
                 &turn,
@@ -2086,6 +1961,32 @@ impl ServerAgents {
             .await;
             self.sub_ended(&scope, &turn, &left, false).await;
             return (turn.ask, ended, None);
+        }
+        // A firing of the person's own event that a task of theirs waits for tells that task to
+        // go on, and asks no model.
+        if let Some(key) = telling::firing(&self.workspaces, workspace, &turn).await
+            && let Some(automation) = tilo_automation::fired_shortcut(&key)
+        {
+            match task_waits::go_on(
+                &self.workspaces,
+                workspace,
+                &turn.person,
+                automation,
+                &turn.request,
+            )
+            .await
+            {
+                Ok(0) => {}
+                Ok(_) => {
+                    let ended = reply
+                        .finished(&Outcome::Answered(TASK_WENT_ON.to_owned()))
+                        .await;
+                    return (turn.ask, ended, None);
+                }
+                Err(error) => {
+                    tracing::warn!(%workspace, %automation, %error, "the tasks that wait for an automation are not read");
+                }
+            }
         }
         #[cfg(unix)]
         if coding::codes(&turn.agent) {
@@ -2181,7 +2082,6 @@ impl ServerAgents {
         let ended = reply.finished_with(&outcome, cost, &usage).await;
         crate::agents::telling::turn_ended(
             &self.workspaces,
-            self.events.as_ref(),
             &scope.person,
             workspace,
             &turn,
@@ -2306,9 +2206,16 @@ impl ServerAgents {
                 });
             // A turn a look of its person's look-round started counts on the
             // look-round's own day as well, and stops where that day's limit is reached.
-            let look_round = self.initiative.as_ref().and_then(|initiative| {
-                initiative.day_of_turn(&workspace_id.to_string(), &turn.person, &turn.cause, day)
-            });
+            #[cfg(feature = "apps")]
+            let look_round = initiative::day_of_turn(
+                &self.workspaces,
+                &workspace_id.to_string(),
+                &turn.person,
+                &turn.cause,
+                day,
+            );
+            #[cfg(not(feature = "apps"))]
+            let look_round: Option<Spender> = None;
             match look_round {
                 Some(look_round) => theirs.spending_as(look_round),
                 None => theirs,

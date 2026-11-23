@@ -280,6 +280,14 @@ pub(crate) fn start_app_wire(
     // What Browser's asks for vault items are answered with: kept here as well, so a session
     // that holds a workspace's Browser can say so and name who asks its server.
     let item_lending = std::sync::Arc::new(crate::item_lending::ItemLending::default());
+    // The workspace's events and its assistant's look-round, served beside the shortcuts they
+    // are saved as.
+    let initiative = shortcuts.clone().map(|library| {
+        let events = std::sync::Arc::new(
+            tilo_workspace_service::agents::events::WorkspaceEvents::new(service.clone(), library),
+        );
+        tilo_workspace_service::agents::initiative::Initiative::new(service.clone(), events)
+    });
     let (broker, hosting) = app_wire::serve(
         path.clone(),
         std::sync::Arc::clone(&link),
@@ -295,6 +303,7 @@ pub(crate) fn start_app_wire(
             records,
             layout: std::sync::Arc::clone(&layout),
             shortcuts,
+            initiative: initiative.clone(),
             activity: activity_wire,
             agents: services.agents,
             agent_sessions: services.agent_sessions,
@@ -351,6 +360,16 @@ pub(crate) fn start_app_wire(
     // one engine a workspace's host runs, in this process, each turn's calls decided by this
     // broker as the person's own calls are.
     if let Some(broker) = broker.app_action_broker() {
+        // What the assistant proposes is filed in the workspace's tracker through this broker.
+        if let Some((initiative, actions)) =
+            initiative
+                .as_ref()
+                .zip(tilo_workspace_service::agents::device_actions(
+                    broker.device_host(),
+                ))
+        {
+            initiative.act_through(actions);
+        }
         tilo_rt::app()
             .handle()
             .spawn(tilo_workspace_service::agents::on_device(

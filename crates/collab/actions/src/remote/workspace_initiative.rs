@@ -57,6 +57,11 @@ pub const ACCEPT: &str = "accept";
 /// Turn a proposal down ([`Decline`]), answering the [`Proposal`].
 pub const DECLINE: &str = "decline";
 
+/// The look-round's look: what is new for its person since its last look, found with no model,
+/// that the look-round's shortcut hands its assistant, or nothing new.
+pub const LOOK: &str = "look";
+/// What the look's answer names what it found under.
+pub const FOUND: &str = "found";
 /// How often it looks round when nobody said: every half hour.
 pub const DEFAULT_WHEN: &str = "every 1800 seconds";
 /// The shortest time between two looks, in seconds.

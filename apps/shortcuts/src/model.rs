@@ -458,6 +458,7 @@ impl Draft {
             step_timeout_secs: program.step_timeout_secs,
             saved_by: None,
             saved_proof: None,
+            paused: false,
         }
     }
 }

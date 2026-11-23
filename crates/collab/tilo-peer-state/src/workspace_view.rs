@@ -84,8 +84,6 @@ pub struct Holder {
     /// Whether the machine under it is rented from a cloud provider, whose operator can read what
     /// it holds.
     pub cloud: bool,
-    /// Whether it has a moderation agent for the workspace.
-    pub moderates: bool,
 }
 
 /// How one workspace stands for the device's person: what the shell reads of it, decided by the

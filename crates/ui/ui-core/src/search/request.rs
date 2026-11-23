@@ -450,8 +450,8 @@ mod tests {
         phase an_offered_action_round_trips_and_a_malformed_offer_is_none;
         {
             let request = SearchRequest::offering(
-                "bot.add",
-                [("entry", "so.tilo.bots.standup"), ("version", "1.2.0")],
+                "app.add",
+                [("entry", "so.tilo.notes"), ("version", "1.2.0")],
             );
             assert_eq!(SearchRequest::from_arguments(&request.arguments()), request);
             assert_eq!(
@@ -461,8 +461,8 @@ mod tests {
             let invocation = open_search_binding(&request).invoke(()).unwrap();
             let carried = SearchRequest::from_invocation(&invocation).unwrap();
             let offer = carried.offer.expect("the offer travels with the request");
-            assert_eq!(offer.action, "bot.add");
-            assert_eq!(offer.arguments["entry"], "so.tilo.bots.standup");
+            assert_eq!(offer.action, "app.add");
+            assert_eq!(offer.arguments["entry"], "so.tilo.notes");
             assert_eq!(offer.arguments["version"], "1.2.0");
 
             let mut arguments = SearchRequest::this_app().arguments();

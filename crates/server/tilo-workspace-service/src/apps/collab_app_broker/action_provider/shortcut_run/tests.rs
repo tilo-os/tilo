@@ -617,6 +617,7 @@ fn waiting_shortcut() -> tilo_automation::Shortcut {
         triggers: Vec::new(),
         saved_by: None,
         saved_proof: None,
+        paused: false,
     }
 }
 

@@ -47,7 +47,6 @@ pub fn adopt_workspace(
         &mut workspace.presets,
         projection::workspace_presets_of(doc),
     );
-    changed |= replace(&mut workspace.bots, super::workspace_bots_of(doc));
 
     changed |= replace(
         &mut workspace.shortcuts,
@@ -114,6 +113,7 @@ mod tests {
             triggers: Vec::new(),
             saved_by: None,
             saved_proof: None,
+            paused: false,
         })
     }
 

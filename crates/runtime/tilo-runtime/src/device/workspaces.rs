@@ -549,6 +549,21 @@ impl WorkspaceAuthority for ServiceWorkspaces {
         Some(revocations)
     }
 
+    /// The work kept done in the workspace's replica on this device: what counts a shortcut's
+    /// triggered runs here.
+    fn done_under(&self, workspace: &str, prefix: &str) -> Vec<serde_json::Value> {
+        WorkspaceId::parse(workspace)
+            .and_then(|id| self.peer(id))
+            .map(|peer| {
+                peer.workspace()
+                    .done_under(prefix)
+                    .into_values()
+                    .map(|done| done.answer)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Every workspace this device holds, as one tree.
     fn with_tree(&self, read: &mut dyn FnMut(&Layout)) -> Result<(), String> {
         let tree = Layout {

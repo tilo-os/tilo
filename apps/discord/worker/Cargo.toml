@@ -56,31 +56,10 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 fake-discord = { path = "../../../tools/fake-discord" }
 tempfile.workspace = true
-collab-types = { path = "../../../crates/collab/collab-types" }
-# `relay`: the loopback packet relay the bridge's host takes as its home.
-tilo-test-env = { path = "../../../tools/test-env", features = ["iroh-relay"] }
+tilo-test-env = { path = "../../../tools/test-env" }
 tokio = { workspace = true, features = ["test-util"] }
 tilo-secrets = { path = "../../../crates/platform/tilo-secrets" }
-# The bridge end to end: its program on a workspace's host, with this binary.
-tilo-server = { path = "../../../crates/server/tilo-server", features = ["agents"] }
-# The record of an app a workspace keeps and seeds, as the bridge's host names it.
-tilo-workspace-service = { path = "../../../crates/server/tilo-workspace-service", features = ["agents", "test-support"] }
-tilo-server-protocol = { path = "../../../crates/server/tilo-server-protocol" }
-# The workspace's live session a member's device takes part in the bridged call on.
-tilo-live = { path = "../../../crates/collab/tilo-live", features = ["relay"] }
-tilo-agent-session = { path = "../../../crates/agent/agent-session" }
-tilo-automation = { path = "../../../crates/collab/automation" }
-tilo-user-identity = { path = "../../../crates/collab/tilo-user-identity" }
-ui = { package = "tilo-app", path = "../../../crates/sdk/tilo-app" }
-chat = { path = "../../chat", features = ["samples"] }
-tilo-reference = { path = "../../../crates/collab/reference" }
 discord = { path = ".." }
-automerge.workspace = true
-ed25519-dalek.workspace = true
-hex.workspace = true
-iroh.workspace = true
-tilo-automerge.workspace = true
-tilo-automerge-isolate.workspace = true
 
 [lints]
 workspace = true

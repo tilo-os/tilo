@@ -704,3 +704,8 @@ reason = "the host's call events go with the host-kept calls: a page reads who i
 file = "crates/os/tilo-device-protocol/src/lib.rs"
 enum = "LayerSource"
 reason = "a device-control action's argument, JSON by name, read once by the step that imports the layer and never kept. `Upload` named bytes sent in request lines to tilo-vmd, which is gone: a layer now arrives as a content blob the action names"
+
+[[break]]
+file = "crates/agent/agent-session/src/apps.rs"
+enum = "ReplicaActor"
+reason = "sent only from a supervisor to the app worker it starts from its own running image (/proc/self/exe), so both ends are one build, and kept only in that worker's memory to send again on a revive: no bytes written by another build are read"

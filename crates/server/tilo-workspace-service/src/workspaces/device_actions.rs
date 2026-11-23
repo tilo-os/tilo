@@ -386,9 +386,9 @@ impl DeviceWork {
                     work.run_linux(claim, &caller, *run, completer).await;
                     return;
                 }
-                // The take action asks for no action that runs once: the agent
-                // engine, the trigger runner and the app's own process take those.
-                Turn::Once { .. } => {
+                // The take action asks for no action that runs once and no connector's send:
+                // the agent engine, the trigger runner and the app's own process take those.
+                Turn::Send { .. } | Turn::Once { .. } => {
                     work.log.lock_recover().abandon(&invocation);
                     completer.complete(Err(ActionCallError::UnknownAction));
                     return;
@@ -885,6 +885,26 @@ impl super::Workspaces {
     /// turns (a [`crate::work::Turn::Once`] acting as an agent); `None` where it runs none.
     pub(crate) fn agent_keys(&self) -> Option<Arc<dyn crate::work::AgentEngine>> {
         self.inner.jobs.agents.read_recover().clone()
+    }
+
+    /// Sign `shortcut` as saved in `workspace` by `agent`, acting for the person whose root is
+    /// `acts_for`, with the agent's own key the engine this device runs holds.
+    ///
+    /// # Errors
+    /// This device runs no agents, or holds no key of `agent` there.
+    pub async fn sign_shortcut_as_agent(
+        &self,
+        workspace: &str,
+        agent: &str,
+        acts_for: &[u8; 32],
+        shortcut: &mut tilo_automation::Shortcut,
+    ) -> Result<(), String> {
+        let engine = self
+            .agent_keys()
+            .ok_or("this device runs no agents, so it holds no agent's key")?;
+        engine
+            .sign_shortcut(workspace, agent, acts_for, shortcut)
+            .await
     }
 
     /// This device runs `engine` from now on.

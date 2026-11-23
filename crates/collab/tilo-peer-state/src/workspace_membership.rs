@@ -2,123 +2,6 @@
 use serde::{Deserialize, Serialize};
 use tilo_action_policy::{Grant, GrantId, TreePath};
 
-use crate::installation::{Installation, InstallationId};
-use tilo_user_identity::DeviceCert;
-use tilo_workspace_join::delegation::Delegation;
-
-/// A bot's device: its capability-free certificate and its installer's
-/// delegation naming it the installation in this workspace.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BotDevice {
-    /// The bot device's certificate, signed by its installer's root.
-    pub cert: DeviceCert,
-    /// The installer's delegation naming the device.
-    pub delegation: Delegation,
-}
-
-/// Install a bot, or update an installed bot's program.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BotInstall {
-    /// The row to install, or the updated row.
-    pub installation: Installation,
-    /// The program's canonical bytes, as text. The workspace keeps them so every
-    /// member can read exactly what runs.
-    pub program: String,
-    /// Required for a new installation, absent for an update.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub device: Option<BotDevice>,
-}
-
-/// Take over an installed bot: its new device and the adopter's delegation.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BotAdoption {
-    /// The installed bot.
-    pub installation: InstallationId,
-    /// The adopter's new device for it and their delegation naming it.
-    pub device: BotDevice,
-}
-
-/// A fresh delegation for an installed bot, on its device or a new one.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BotRenewal {
-    /// The installed bot.
-    pub installation: InstallationId,
-    /// Its device, the same or a new one, and the fresh delegation.
-    pub device: BotDevice,
-}
-
-/// A bot from the registry's directory that the workspace asks its host to run:
-/// the host installs it as itself and keeps it a governed member for as
-/// long as the request stands.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BotRequest {
-    /// The directory entry (`so.tilo.bots.standup`).
-    pub entry: String,
-    /// The listed version to install.
-    pub version: String,
-    /// The bot's inputs the request gives its host (a bridge's
-    /// `guild=<server id>` and `server=<name>`): settings every member may
-    /// read, never a secret. A secret reaches the host on its own, through
-    /// the workspace's `set-connector-secret` action.
-    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub inputs: std::collections::BTreeMap<String, String>,
-    /// A developer's own program for the entry, canonical text, run instead
-    /// of the listed one: the workspace keeps it with the request, so every
-    /// member reads exactly what runs, and `version` names the build. The
-    /// person asking must hold every grant the program asks for.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub program: Option<String>,
-}
-
-/// Most bytes a requested entry or version takes.
-const MAX_BOT_REQUEST_ID: usize = 128;
-/// Most inputs a request gives, and the most bytes of one input's name and
-/// value.
-const MAX_BOT_INPUTS: usize = 8;
-const MAX_BOT_INPUT_NAME: usize = 32;
-const MAX_BOT_INPUT_VALUE: usize = 256;
-
-impl BotRequest {
-    /// Validate the entry and version the request names.
-    pub fn validate(&self) -> Result<(), String> {
-        validate_bot_entry(&self.entry)?;
-        if self.version.is_empty()
-            || self.version.len() > MAX_BOT_REQUEST_ID
-            || !self
-                .version
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+'))
-        {
-            return Err("invalid bot version".into());
-        }
-        if self.inputs.len() > MAX_BOT_INPUTS {
-            return Err("too many bot inputs".into());
-        }
-        for (name, value) in &self.inputs {
-            if name.is_empty()
-                || name.len() > MAX_BOT_INPUT_NAME
-                || !name
-                    .bytes()
-                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-            {
-                return Err("invalid bot input name".into());
-            }
-            if value.len() > MAX_BOT_INPUT_VALUE || value.chars().any(char::is_control) {
-                return Err(format!("invalid value for the bot input `{name}`"));
-            }
-        }
-        if let Some(program) = &self.program {
-            if program.len() > tilo_automation::program::MAX_PROGRAM_BYTES {
-                return Err("the bot program is too large".into());
-            }
-            tilo_automation::program::parse_program(program.as_bytes())
-                .map_err(|error| format!("the bot program does not parse: {error}"))?;
-        }
-        Ok(())
-    }
-}
-
 /// The version of an app a workspace runs. Every member's desktop runs this
 /// version, and a change made with another version waits until its author
 /// runs this one: mixed versions never write each other's data unseen.
@@ -234,20 +117,6 @@ fn validate_app_id(app: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// A directory entry id, as the registry names bots: lowercase, dotted.
-fn validate_bot_entry(entry: &str) -> Result<(), String> {
-    if entry.is_empty()
-        || entry.len() > MAX_BOT_REQUEST_ID
-        || entry.split('.').any(str::is_empty)
-        || !entry.bytes().all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'-' | b'_')
-        })
-    {
-        return Err("invalid bot directory entry".into());
-    }
-    Ok(())
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum WorkspaceMembershipCommand {
     /// Record `grant` in the workspace, as the caller gives it: they must hold the
@@ -256,28 +125,6 @@ pub enum WorkspaceMembershipCommand {
     /// Take back the grant `grant`, as the caller: they must hold the workspace's
     /// revoke action.
     Revoke { grant: GrantId },
-    /// Install a bot or update its program ([`BotInstall`]).
-    InstallBot(Box<BotInstall>),
-    /// Renew an installed bot's delegation, or move it to a new device key.
-    RenewBot(Box<BotRenewal>),
-    /// Withdraw a bot and revoke its grants; its row stays.
-    UninstallBot { installation: InstallationId },
-    /// Stop a bot from starting runs.
-    PauseBot { installation: InstallationId },
-    /// Let a paused bot start runs again.
-    ResumeBot { installation: InstallationId },
-    /// Change whether a bot may post under other names.
-    SetBotAppearance {
-        installation: InstallationId,
-        appearance: crate::installation::AppearancePolicy,
-    },
-    /// Become a bot's installer ([`BotAdoption`]).
-    AdoptBot(Box<BotAdoption>),
-    /// Ask the workspace's host to run a bot from the directory ([`BotRequest`]).
-    RequestBot(BotRequest),
-    /// Take back the request for directory entry `entry`: its host
-    /// uninstalls the bot it installed for it.
-    WithdrawBotRequest { entry: String },
     /// Run this release of its app in the workspace, for every member
     /// ([`AppRelease`]).
     InstallApp(AppRelease),
@@ -478,19 +325,6 @@ impl WorkspaceMembershipCommand {
             }
             return Ok(());
         }
-        if let Self::InstallBot(install) = self {
-            install.installation.validate()?;
-            if install.program.len() > tilo_automation::program::MAX_PROGRAM_BYTES {
-                return Err("the bot program is too large".into());
-            }
-            return Ok(());
-        }
-        if let Self::RequestBot(request) = self {
-            return request.validate();
-        }
-        if let Self::WithdrawBotRequest { entry } = self {
-            return validate_bot_entry(entry);
-        }
         if let Self::InstallApp(release) = self {
             return release.validate();
         }
@@ -499,19 +333,6 @@ impl WorkspaceMembershipCommand {
         }
         if let Self::Call { channel, .. } = self {
             return collab_types::calls::validate_channel(channel);
-        }
-        // Installation ids are checked when they are read; a bot command
-        // carries nothing else free-form.
-        if matches!(
-            self,
-            Self::RenewBot(_)
-                | Self::UninstallBot { .. }
-                | Self::PauseBot { .. }
-                | Self::ResumeBot { .. }
-                | Self::SetBotAppearance { .. }
-                | Self::AdoptBot(_)
-        ) {
-            return Ok(());
         }
         if let Self::Grant { grant } = self
             && grant.id.as_str().trim().is_empty()
@@ -610,70 +431,7 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        fn bot_and_agent_identifiers_are_canonical;
-
-        phase a_bot_request_names_a_canonical_entry_and_version;
-        {
-            let request = |entry: &str, version: &str| {
-                WorkspaceMembershipCommand::RequestBot(BotRequest {
-                    entry: entry.into(),
-                    version: version.into(),
-                    inputs: std::collections::BTreeMap::new(),
-                    program: None,
-                })
-                .validate()
-            };
-            let with_inputs = |inputs: &[(&str, &str)]| {
-                BotRequest {
-                    entry: "so.tilo.bots.discord-bridge".into(),
-                    version: "0.1.0".into(),
-                    inputs: inputs
-                        .iter()
-                        .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
-                        .collect(),
-                    program: None,
-                }
-                .validate()
-            };
-            with_inputs(&[("guild", "123456789012345678"), ("server", "Garden club")]).unwrap();
-            assert!(
-                with_inputs(&[("Guild", "1")]).is_err(),
-                "names are lowercase"
-            );
-            assert!(
-                with_inputs(&[("guild", "1\n2")]).is_err(),
-                "no control characters"
-            );
-            assert!(with_inputs(&[("server", &"x".repeat(257))]).is_err());
-            let old: BotRequest =
-                serde_json::from_str(r#"{"entry":"so.tilo.bots.standup","version":"1.0.0"}"#).unwrap();
-            assert!(old.inputs.is_empty());
-            request("so.tilo.bots.standup", "1.2.0").unwrap();
-            request("so.tilo.bots.standup", "1.2.0-rc.1+build.7").unwrap();
-            for (entry, version) in [
-                ("", "1.0.0"),
-                ("So.Tilo.Bots", "1.0.0"),
-                ("so..tilo", "1.0.0"),
-                ("so.tilo bot", "1.0.0"),
-                (&"x".repeat(129), "1.0.0"),
-                ("so.tilo.bots.standup", ""),
-                ("so.tilo.bots.standup", "1.0 beta"),
-            ] {
-                assert!(request(entry, version).is_err(), "{entry:?} {version:?}");
-            }
-            WorkspaceMembershipCommand::WithdrawBotRequest {
-                entry: "so.tilo.bots.standup".into(),
-            }
-            .validate()
-            .unwrap();
-            assert!(
-                WorkspaceMembershipCommand::WithdrawBotRequest {
-                    entry: "../standup".into(),
-                }
-                .validate()
-                .is_err()
-            );
-        }
+        fn agent_identifiers_are_canonical;
 
         phase agent_identifiers_are_canonical;
         {
@@ -698,8 +456,8 @@ mod tests {
                     vec![0x01, 0x01, b'g'],
                 ),
                 (
-                    WorkspaceMembershipCommand::WithdrawBotRequest { entry: "e".into() },
-                    vec![0x0a, 0x01, b'e'],
+                    WorkspaceMembershipCommand::UninstallApp { app: "e".into() },
+                    vec![0x03, 0x01, b'e'],
                 ),
             ];
             for (command, golden) in cases {

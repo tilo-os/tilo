@@ -750,7 +750,7 @@ pub(super) struct Naming {
 impl Naming {
     /// Take the name `identity` goes by when it is a device of the person's
     /// own: one they hold and act with, not one made to act for them. `theirs`
-    /// is false for a delegate of theirs — an agent or an installed bot — which
+    /// is false for a delegate of theirs, an agent, which
     /// goes by a name of its own whatever its certificate says.
     pub(super) fn learn(&mut self, identity: &DeviceCert, theirs: bool, name: Option<&str>) {
         let capabilities = &identity.capabilities;

@@ -178,14 +178,12 @@ impl Agents {
     }
 
     /// The Agents tab as it stands for `person` : the agents that work in the workspace from Chat's
-    /// record, the services beside them — its server's moderation agent where
-    /// `moderation` says its server offers one — and, for `review`, what one of them may do.
+    /// record, and, for `review`, what one of them may do.
     pub(crate) fn pane(
         &self,
         tree: &Layout,
         person: &UserId,
         (names, apps): (&PeopleNames, &dyn domain::AppDirectory),
-        moderation: bool,
         review: Option<&str>,
     ) -> sheet::Agents {
         let Some(workspace) = tree.active_workspace() else {
@@ -201,9 +199,7 @@ impl Agents {
             manage: self.host.manages(workspace, person),
         };
         let config = self.host.models(workspace);
-        let mut pane = Self::pane_of(workspace, &record, (names, apps, &config), may, review);
-        pane.moderation = moderation.then(|| moderation_row(workspace, may));
-        pane
+        Self::pane_of(workspace, &record, (names, apps, &config), may, review)
     }
 
     /// The tab with nothing to show here: no workspace in front, or the agents could not be opened
@@ -313,24 +309,6 @@ impl Agents {
                 t("workspace-settings-agents-empty-title"),
                 t("workspace-settings-agents-empty-detail"),
             ),
-            offers_bots: true,
-            bots_header: t("workspace-settings-bots-header"),
-            bots_help: t("workspace-settings-bots-help"),
-            add_bot: t("workspace-settings-add-bot"),
-            bot_tag: t("workspace-settings-bot-tag"),
-            remove_bot: t("workspace-settings-remove-bot"),
-            bots: workspace
-                .bots
-                .iter()
-                .map(|bot| sheet::Bot {
-                    name: bot.name.clone(),
-                    entry: bot.requested.then(|| bot.entry.clone()).flatten(),
-                    detail: domain::bot_detail(bot),
-                })
-                .collect(),
-            // Shown where the workspace's server offers it ([`Self::pane`]).
-            moderation: None,
-            bots_empty: t("workspace-settings-bots-empty"),
             footnote: (!manage).then(|| t("workspace-settings-owner-only")),
             review,
         }
@@ -860,23 +838,6 @@ impl Agents {
                 }),
             )
             .map_err(|error| error.to_string())
-    }
-}
-
-/// The row of the moderation agent the workspace's server offers: on while the workspace holds its
-/// grant, and turned by whoever may grant.
-fn moderation_row(workspace: &Workspace, may: May) -> sheet::Moderation {
-    let on = domain::moderates(workspace);
-    sheet::Moderation {
-        name: t("workspace-settings-moderation"),
-        detail: t("workspace-settings-moderation-detail"),
-        on,
-        switchable: may.manage,
-        state: t(if on {
-            "workspace-settings-moderation-on"
-        } else {
-            "workspace-settings-moderation-off"
-        }),
     }
 }
 

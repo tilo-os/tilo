@@ -451,6 +451,7 @@ pub(crate) fn shortcut(id: &str, steps: Vec<Step>) -> Shortcut {
         triggers: Vec::new(),
         saved_by: None,
         saved_proof: None,
+        paused: false,
     }
 }
 

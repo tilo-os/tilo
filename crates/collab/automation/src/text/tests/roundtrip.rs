@@ -194,6 +194,7 @@ fn generate(seed: &mut Seed) -> Shortcut {
         triggers: triggers(seed),
         saved_by: None,
         saved_proof: None,
+        paused: false,
     }
 }
 

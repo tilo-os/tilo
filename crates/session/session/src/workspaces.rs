@@ -2171,7 +2171,6 @@ mod tests {
                 runs_work: false,
                 label: String::new(),
                 cloud: false,
-                moderates: false,
                 origin: None,
                 workspace_id: tilo_peer_state::join::WorkspaceId::parse(&workspace).expect("an id"),
                 endpoint_addr: iroh::EndpointAddr::new(

@@ -1264,7 +1264,6 @@ impl Engine {
                     },
                     reads: payload.holds_keys,
                     cloud: payload.cloud,
-                    moderates: payload.moderates,
                 })
             })
             .collect();

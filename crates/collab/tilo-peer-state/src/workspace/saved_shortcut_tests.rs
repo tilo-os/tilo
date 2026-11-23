@@ -57,6 +57,7 @@ pub(crate) fn shortcut(id: &str) -> Shortcut {
         triggers: Vec::new(),
         saved_by: None,
         saved_proof: None,
+        paused: false,
     }
 }
 
@@ -274,4 +275,96 @@ fn the_workspaces_revocations_are_those_its_identity_rows_carry() {
     let revocations = workspace_revocations(&doc);
     assert!(revocations.is_revoked(&ada.cert.user_public_key, &ada.cert.device_public_key));
     assert_eq!(revocations.len(), 1);
+}
+
+/// The grant `root`'s person certified for `agent` in `workspace`, with key seed `key`.
+fn agent_grant(
+    root: &SigningKey,
+    key: u8,
+    agent: &str,
+    workspace: &str,
+) -> (DeviceCert, SigningKey) {
+    let key = SigningKey::from_bytes(&[key; 32]);
+    let workspace = *uuid::Uuid::parse_str(workspace).unwrap().as_bytes();
+    let mut cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: "An agent's grant".into(),
+        capabilities: tilo_user_identity::DeviceCapabilities::agent_grant(
+            tilo_user_identity::AgentScope::agent_in(workspace, agent),
+        ),
+        issued_at_ns: 1,
+        expires_at_ns: Some(tilo_user_identity::MAX_AGENT_GRANT_LIFETIME_NS),
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, root).unwrap();
+    (cert, key)
+}
+
+/// An agent working away from its person's devices saves with its own grant: the shortcut is
+/// its person's, acting as that agent. The grant proves nothing as the person, nothing for
+/// another agent, and nothing in a workspace it does not reach.
+#[test]
+fn an_agents_grant_proves_a_shortcut_saved_as_that_agent_and_never_as_its_person() {
+    let ada = device(1, 2);
+    let none = RevocationList::new();
+    let (grant, key) = agent_grant(&ada.root, 3, "scout", WORKSPACE);
+
+    let mut saved = shortcut("brief");
+    sign_saved_shortcut_as_agent(WORKSPACE, &mut saved, "scout", &grant, &key).unwrap();
+    assert_eq!(
+        proven(WORKSPACE, &saved, &none, NOW_NS),
+        Some(Saver {
+            person: ada.person(),
+            agent: Some("scout".into()),
+            key: grant.device_public_key,
+        })
+    );
+    assert_eq!(
+        proven_saver(WORKSPACE, &saved, &none, NOW_NS),
+        Some(ada.person())
+    );
+    assert_eq!(
+        proven(
+            WORKSPACE,
+            &ada.saves(WORKSPACE, shortcut("brief")),
+            &none,
+            NOW_NS
+        )
+        .and_then(|saver| saver.agent),
+        None,
+        "a device's own proof acts as its person"
+    );
+    assert_eq!(proven(OTHER_WORKSPACE, &saved, &none, NOW_NS), None);
+
+    // Signed as a device would sign, the grant is no device of the person's.
+    let mut as_person = shortcut("brief");
+    sign_saved_shortcut(WORKSPACE, &mut as_person, &grant, &key).unwrap();
+    assert_eq!(proven(WORKSPACE, &as_person, &none, NOW_NS), None);
+
+    // Another agent's grant cannot sign for this one, nor one for another workspace.
+    let (other, other_key) = agent_grant(&ada.root, 4, "courier", WORKSPACE);
+    assert!(
+        sign_saved_shortcut_as_agent(WORKSPACE, &mut shortcut("x"), "scout", &other, &other_key)
+            .is_err()
+    );
+    let (elsewhere, elsewhere_key) = agent_grant(&ada.root, 5, "scout", OTHER_WORKSPACE);
+    assert!(
+        sign_saved_shortcut_as_agent(
+            WORKSPACE,
+            &mut shortcut("x"),
+            "scout",
+            &elsewhere,
+            &elsewhere_key
+        )
+        .is_err()
+    );
+
+    // The agent named beside the grant is part of what holds: naming another breaks it.
+    let mut renamed = saved.clone();
+    if let Some(proof) = renamed.saved_proof.as_mut() {
+        proof.device_cert["agent"] = serde_json::json!("courier");
+    }
+    assert_eq!(proven(WORKSPACE, &renamed, &none, NOW_NS), None);
 }

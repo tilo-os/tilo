@@ -382,6 +382,9 @@ pub struct Hosted {
     /// The workspace's shortcuts as the broker saves and runs them, from this device's own
     /// workspace service; no session without a device identity keeps any.
     pub shortcuts: Option<std::sync::Arc<dyn ShortcutLibraryServices>>,
+    /// The workspace's events and its assistant's look-round, saved through those shortcuts:
+    /// what a person and their assistant set up, change and pause.
+    pub initiative: Option<tilo_workspace_service::agents::initiative::Initiative>,
     pub activity: std::sync::Arc<ActivityWire>,
     /// Who keeps each workspace's agents, as its record of them names them:
     /// what the broker admits an agent's session on.
@@ -1085,6 +1088,7 @@ fn broker_services(
         records,
         layout,
         shortcuts,
+        initiative,
         activity,
         agents,
         agent_sessions,
@@ -1442,6 +1446,16 @@ fn broker_services(
                     .map(|settings| settings as std::sync::Arc<dyn HostStepServices>)
                     .into_iter()
                     .collect(),
+                // The workspace's events and its assistant's look-round, each a shortcut of
+                // its person's, saved and signed through the library above.
+                initiative
+                    .map(|initiative| {
+                        vec![
+                            initiative.events_served() as std::sync::Arc<dyn HostStepServices>,
+                            std::sync::Arc::new(initiative),
+                        ]
+                    })
+                    .unwrap_or_default(),
             ]
             .concat(),
         ),
@@ -1783,6 +1797,7 @@ mod tests {
                 Names::default(),
             )),
             shortcuts: None,
+            initiative: None,
             activity: crate::activity_provider::wire(requests()),
             agents: None,
             agent_sessions: None,
@@ -2404,6 +2419,7 @@ mod tests {
             None,
             Hosted {
                 shortcuts: Some(std::sync::Arc::new(library)),
+                initiative: None,
                 ..hosted(None)
             },
             None,
@@ -2425,6 +2441,7 @@ mod tests {
             .store(ShortcutLibraryRequest {
                 workspace: workspace.clone(),
                 actor: tilo_action_policy::MemberId::person(hex::encode(cert.user_public_key)),
+                acting_for: None,
                 change: serde_json::from_value(serde_json::json!({
                     "save": { "id": "tidy", "name": "Tidy", "steps": [], "triggers": [] },
                 }))

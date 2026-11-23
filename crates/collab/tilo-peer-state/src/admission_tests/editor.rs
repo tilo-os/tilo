@@ -12,18 +12,14 @@ pub(super) fn owner_signs(
     crate::members::op::tests_support::sign_into(doc, by, at, changes);
     doc.commit();
 }
-/// The device of the person [`seeded_editor`]'s workspace is owned by.
+/// The device of the person [`seeded_editor_with_second_device`]'s workspace is owned by.
 pub(crate) fn other_owner() -> (SigningKey, DeviceCert) {
     crate::members::op::tests_support::device(200)
 }
 /// [`seeded`], with the workspace owned by another person ([`other_owner`],
 /// whose device the returned governor key is) and the fixture's person an
-/// Editor of it: a member whose grants a governor can narrow.
-pub(crate) fn seeded_editor() -> (StatePeer, SigningKey, SigningKey, DeviceCert, SystemTime) {
-    editor_with_devices(None)
-}
-
-/// Include the same member's second certified device in the initial workspace.
+/// Editor of it, a member whose grants a governor can narrow, with a second
+/// certified device of that member in the initial workspace.
 pub(crate) fn seeded_editor_with_second_device() -> (
     StatePeer,
     SigningKey,

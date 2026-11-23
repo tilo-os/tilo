@@ -133,6 +133,7 @@ fn program() -> Shortcut {
         }],
         saved_by: None,
         saved_proof: None,
+        paused: false,
     }
 }
 
@@ -196,6 +197,7 @@ tilo_test_env::scenario! {
             triggers: Vec::new(),
             saved_by: None,
             saved_proof: None,
+            paused: false,
         };
         let (text, _) = match render(&shared, &shortcut, &BTreeMap::new()) {
             Ok(rendered) => rendered,
@@ -256,6 +258,7 @@ tilo_test_env::scenario! {
             triggers: Vec::new(),
             saved_by: None,
             saved_proof: None,
+            paused: false,
         };
         let (text, _) = match render(&shared, &shortcut, &BTreeMap::new()) {
             Ok(rendered) => rendered,
@@ -463,6 +466,7 @@ tilo_test_env::scenario! {
             triggers: triggers.clone(),
             saved_by: None,
             saved_proof: None,
+            paused: false,
         };
         let (text, _) = match render(&shared, &shortcut, &BTreeMap::new()) {
             Ok(rendered) => rendered,
@@ -581,6 +585,7 @@ tilo_test_env::scenario! {
             triggers: Vec::new(),
             saved_by: None,
             saved_proof: None,
+            paused: false,
         };
         let (text, outline) = match render(&shared, &shortcut, &BTreeMap::new()) {
             Ok(rendered) => rendered,
@@ -804,5 +809,6 @@ fn every_other_step(folder: Binding) -> Shortcut {
         triggers: Vec::new(),
         saved_by: None,
         saved_proof: None,
+        paused: false,
     }
 }

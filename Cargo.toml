@@ -266,7 +266,6 @@ members = [
     "crates/collab/reference",
     "crates/sdk/feedback-review",
     "crates/sdk/feedback",
-    "crates/collab/moderation",
     "crates/engines/tilo-callstream",
     "crates/collab/tilo-live",
     "crates/os/tilo-unlock-protocol",

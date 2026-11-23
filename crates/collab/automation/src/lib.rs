@@ -92,6 +92,25 @@ pub use tilo_app_id::apps::SHORTCUTS as SHORTCUTS_APP_ID;
 /// Resource kind of one saved shortcut; its id is
 /// `shortcuts.shortcut:<shortcut id>` (see [`shortcut_resource_id`]).
 pub const SHORTCUT_RESOURCE_KIND: &str = "shortcuts.shortcut";
+/// The resource carrying a workspace's shortcut library's actions, and its kind.
+pub const LIBRARY_RESOURCE: &str = "shortcuts";
+pub const LIBRARY_RESOURCE_KIND: &str = "shortcuts.library";
+/// The library's action that counts a triggered run of a saved shortcut: how many of its runs
+/// counted, this one included, and whether that count reached a multiple of `every`.
+pub const COUNT_ACTION: &str = "count";
+/// What the lease of every firing of a saved shortcut starts with: a firing of shortcut `id` runs
+/// `shortcuts.shortcut:<id>#run` once, leased as `once/shortcuts.shortcut:<id>#run/<hash>`, and a
+/// triggered run is handed that lease as its `firing` input, the key it does once-only work under.
+pub const FIRING_PREFIX: &str = "once/shortcuts.shortcut:";
+
+/// The shortcut whose firing `lease` is ([`FIRING_PREFIX`]); `None` for any other lease.
+#[must_use]
+pub fn fired_shortcut(lease: &str) -> Option<&str> {
+    lease
+        .strip_prefix(FIRING_PREFIX)?
+        .split_once("#run/")
+        .map(|(shortcut, _)| shortcut)
+}
 pub const SHORTCUT_RUN_ACTION: &str = "run";
 
 /// Application that publishes the model-backed transform actions an

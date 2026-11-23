@@ -16,7 +16,10 @@ pub use admit::{
 pub use adopt::adopt_workspace;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 pub use rows::{GovernanceRow, changed_rows, changed_rows_by, governance_rows};
-pub use saved_shortcut::{proven_saver, sign_saved_shortcut, workspace_revocations};
+pub use saved_shortcut::{
+    Saver, proven, proven_saver, sign_saved_shortcut, sign_saved_shortcut_as_agent,
+    workspace_revocations,
+};
 use std::collections::BTreeMap;
 use tilo_automerge::ReadTyped as _;
 /// Every governed value a workspace document records, exactly as stored.
@@ -208,77 +211,6 @@ pub(crate) fn redemptions_kept(before: Option<&AutoCommit>, after: &AutoCommit) 
                     && written.iter().all(|value| held.contains(value))
             })
         })
-}
-
-/// Every bot of the workspace `doc` governs, by name: each installed bot that
-/// was not withdrawn, and each request of a member that no installed bot
-/// answers yet. A requested bot the host installed is one bot, marked as
-/// requested, so taking the request back is how it is removed. Rows that do
-/// not decode are skipped.
-#[must_use]
-pub fn workspace_bots_of(doc: &AutoCommit) -> Vec<tilo_desktop_model::WorkspaceBot> {
-    let requests = crate::state::bot_requests_in(doc);
-    let mut bots: Vec<tilo_desktop_model::WorkspaceBot> = governance_of(Some(doc))
-        .identities
-        .values()
-        .filter_map(|bytes| {
-            tilo_failure::ignored!(
-                "a row that does not decode names no bot, per this reader's contract",
-                crate::state::GovernedIdentity::decode(bytes).ok()
-            )
-        })
-        .filter_map(|identity| {
-            let row = identity.delegate?;
-            if row.withdrawn_at_ns.is_some() {
-                return None;
-            }
-            let installation = row.installation?;
-            let entry = installation
-                .source
-                .as_ref()
-                .map(|source| source.entry.clone());
-            let requested = entry.as_ref().is_some_and(|entry| {
-                requests
-                    .iter()
-                    .any(|request| &request.request.entry == entry)
-            });
-            Some(tilo_desktop_model::WorkspaceBot {
-                name: installation.name,
-                installation: Some(installation.id.as_str().to_owned()),
-                device: Some(hex::encode(identity.device_cert.device_public_key)),
-                version: installation.source.map(|source| source.version),
-                entry,
-                added_by: installation.installed_by,
-                requested,
-                paused: installation.paused,
-            })
-        })
-        .collect();
-    for request in requests {
-        if bots
-            .iter()
-            .any(|bot| bot.entry.as_deref() == Some(request.request.entry.as_str()))
-        {
-            continue;
-        }
-        bots.push(tilo_desktop_model::WorkspaceBot {
-            name: request.request.entry.clone(),
-            installation: None,
-            device: None,
-            entry: Some(request.request.entry),
-            version: Some(request.request.version),
-            added_by: request.requested_by,
-            requested: true,
-            paused: false,
-        });
-    }
-    bots.sort_by(|a, b| {
-        a.name
-            .to_lowercase()
-            .cmp(&b.name.to_lowercase())
-            .then_with(|| a.installation.cmp(&b.installation))
-    });
-    bots
 }
 
 /// The workspace's name and authority as `candidate` records them, for the workspace

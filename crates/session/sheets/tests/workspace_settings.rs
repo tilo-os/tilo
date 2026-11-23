@@ -490,9 +490,9 @@ tilo_test_env::scenario! {
 
 tilo_test_env::scenario! {
     /// The Agents tab of workspace settings, and the review of one agent.
-    fn the_agents_tab_lists_agents_and_bots_and_reviews_an_agent;
+    fn the_agents_tab_lists_agents_and_reviews_an_agent;
 
-    phase the_agents_tab_lists_agents_and_bots_apart;
+    phase the_agents_tab_lists_agents_apart;
     {
         let mut app = staged("agents");
         for text in [
@@ -503,9 +503,6 @@ tilo_test_env::scenario! {
             "Model: Sonnet from Anthropic",
             "Reviewer",
             "Encrypted backup",
-            "Bots",
-            "Bots run small programs here on their own",
-            "Standup",
         ] {
             assert!(says(&mut app, text), "{text:?} is shown");
         }
@@ -513,7 +510,7 @@ tilo_test_env::scenario! {
         assert!(says(&mut empty, "No agents yet"));
     }
 
-    phase agent_and_bot_controls_name_what_they_act_on;
+    phase agent_controls_name_what_they_act_on;
     {
         let (mut app, state) = mounted("agents");
         press(&mut app, "ws-agents-review-claude");
@@ -539,16 +536,12 @@ tilo_test_env::scenario! {
             "the form holds the name typed into it"
         );
         press(&mut app, "ws-agents-create");
-        press(&mut app, "ws-bots-add");
         assert_eq!(
             state.take_asked(),
-            [
-                WorkspaceSettingsEffect::AddAgent {
-                    name: "Analyst".to_owned(),
-                    model: String::new(),
-                },
-                WorkspaceSettingsEffect::AddBot,
-            ]
+            [WorkspaceSettingsEffect::AddAgent {
+                name: "Analyst".to_owned(),
+                model: String::new(),
+            }]
         );
     }
 
@@ -591,55 +584,6 @@ tilo_test_env::scenario! {
             (after - scrolled).abs() < 1.0,
             "the sheet stays where it was: {scrolled} then {after}"
         );
-    }
-
-    phase a_requested_bot_is_removed_here_and_a_hosts_bot_is_not;
-    // Remove takes back a bot a member asked for, and the tab offers no Remove
-    // for one the workspace's host runs from its own choice.
-    {
-        let (mut app, state) = mounted("agents");
-        let removes = app
-            .harness()
-            .a11y_nodes()
-            .into_iter()
-            .filter(|(_, node)| node.label() == Some("Remove"))
-            .count();
-        // One per agent, and one for the only bot a member asked for.
-        assert_eq!(
-            removes, 4,
-            "only the bot a member asked for has a bot's Remove"
-        );
-        press(&mut app, "ws-bots-remove-so.tilo.bots.standup");
-        assert_eq!(
-            state.take_asked(),
-            [WorkspaceSettingsEffect::RemoveBot {
-                bot: "so.tilo.bots.standup".to_owned()
-            }]
-        );
-    }
-
-    phase the_moderation_switch_is_offered_only_to_who_may_turn_it;
-    // Someone who may grant turns the server's moderation agent with its switch;
-    // anyone else reads whether it is on.
-    {
-        let (mut app, state) = mounted("agents");
-        assert!(says(&mut app, "Answers reports in Chat"));
-        press(&mut app, "ws-bots-moderation-switch");
-        assert_eq!(
-            state.take_asked(),
-            [WorkspaceSettingsEffect::SetModeration { on: false }]
-        );
-        let mut settings = staged_settings("agents");
-        let moderation = settings.agents.moderation.as_mut().unwrap();
-        moderation.switchable = false;
-        let (mut app, _) = mounted_with(settings);
-        assert!(
-            !app.harness()
-                .targets()
-                .contains_key("ws-bots-moderation-switch"),
-            "no switch for someone who may not grant"
-        );
-        assert!(says(&mut app, "On"));
     }
 
     phase an_agent_review_shows_its_answers_model_and_exceptions;

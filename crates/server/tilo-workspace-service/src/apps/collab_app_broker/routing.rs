@@ -371,17 +371,6 @@ impl AppBrokerState {
         }
         peer_id
     }
-    /// The registry of one of a workspace's surfaces: the membership this
-    /// device writes, or its people's governance.
-    pub(super) fn workspace_surface_peers(
-        &self,
-        surface: workspace_memberships::Surface,
-    ) -> &Mutex<HashMap<String, u64>> {
-        match surface {
-            workspace_memberships::Surface::Membership => &self.workspace_membership_peers,
-            workspace_memberships::Surface::Governance => &self.workspace_governance_peers,
-        }
-    }
     /// Withdraw the services a broker thread that unwound had started, as
     /// if their connections had closed, before a new thread starts them.
     pub(super) fn forget_service_peers(&self) {

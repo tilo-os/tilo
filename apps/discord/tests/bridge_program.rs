@@ -882,6 +882,7 @@ fn program() -> Shortcut {
         triggers: triggers(),
         saved_by: None,
         saved_proof: None,
+        paused: false,
     }
 }
 
@@ -1048,7 +1049,10 @@ fn blocking_a_persona_removes_what_was_mirrored_of_them() {
     let record = event_of("w", "guild", KIND, &change, &version.context.unwrap());
     let shortcut = program();
     let armed = [Armed {
-        firer: Firer::Bot { installation: "b1" },
+        firer: Firer {
+            shortcut: "b1",
+            saver: "u_ada",
+        },
         shortcut: &shortcut,
     }];
     let fired = dispatch(&armed, Event::Record(&record));

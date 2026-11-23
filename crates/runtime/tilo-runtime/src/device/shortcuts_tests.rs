@@ -24,6 +24,7 @@ fn saving(workspace: &str, actor: &MemberId, change: ShortcutChange) -> Shortcut
     ShortcutLibraryRequest {
         workspace: workspace.to_owned(),
         actor: actor.clone(),
+        acting_for: None,
         change,
         context: tilo_actions::ActionContext::default(),
         invocation: tilo_actions::InvocationId::new(),

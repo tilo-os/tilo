@@ -50,7 +50,7 @@
 //! never reads it. Two records are left to the
 //! keepers that own them: the shared desktop, whose layout names no content
 //! and is written with every window moved, and Chat's, whose members' files
-//! are kept within a quota ([`crate::workspace_bots::attachments`]).
+//! are kept within a quota ([`crate::chat_attachments`]).
 //!
 //! What it keeps goes into the workspace's store ([`crate::content`]), from
 //! where the host answers members asking for content
@@ -174,7 +174,7 @@ fn now_ms() -> u64 {
 /// Whether the content a record of `app` names is kept by another keeper: the
 /// shared desktop's layout, which names none and is written with every window
 /// moved, and Chat's, whose members' files are kept within a quota
-/// ([`crate::workspace_bots::attachments`]).
+/// ([`crate::chat_attachments`]).
 fn another_keeper(app: &str) -> bool {
     app == tilo_desktop_model::ownership::DESKTOP_APP || app == tilo_app_id::apps::CHAT
 }

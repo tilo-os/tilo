@@ -26,8 +26,7 @@ mod people;
 mod permissions;
 
 pub use agents::{
-    AccessApp, Agent, AgentReview, Agents, Bot, Exception, Intro, KindLine, Limit, ModelChoice,
-    Models, Moderation,
+    AccessApp, Agent, AgentReview, Agents, Exception, Intro, KindLine, Limit, ModelChoice, Models,
 };
 pub use apps::{AppRow, Apps};
 pub use emoji::{Emoji, EmojiPane, Notice, Picture};
@@ -229,23 +228,6 @@ pub enum WorkspaceSettingsEffect {
     RemoveAgent {
         #[param("The agent, by its key in the list")]
         agent: String,
-    },
-    /// Find a bot for the workspace
-    #[effect(own_device, kind = "read")]
-    AddBot,
-    /// Take back the workspace's request for a bot: its host stops it
-    #[effect(kind = "outside")]
-    #[effect(destructive, attended)]
-    RemoveBot {
-        #[param("The bot, by its directory entry")]
-        bot: String,
-    },
-    /// Turn the moderation agent on the workspace's server on or off
-    #[effect(kind = "outside")]
-    #[effect(attended)]
-    SetModeration {
-        #[param("Whether it answers reports")]
-        on: bool,
     },
     /// Give someone in the workspace a permission beyond their role
     #[effect(kind = "outside")]
@@ -603,8 +585,6 @@ impl ResourceApp for WorkspaceSettingsApp {
             "people-refused",
             "agents",
             "agents-empty",
-            "agents-moderation",
-            "agents-moderation-member",
             "agent-review",
             "permissions",
             "permissions-until",
@@ -687,8 +667,6 @@ pub fn scenario(name: Option<&str>) -> Settings {
             tab: Tab::Agents,
             agents: Agents {
                 agents: Vec::new(),
-                bots: Vec::new(),
-                moderation: None,
                 intro: Intro {
                     title: "No agents".to_owned(),
                     ..agents::sample().intro
@@ -697,28 +675,6 @@ pub fn scenario(name: Option<&str>) -> Settings {
             },
             ..sample()
         },
-        // The workspace's server offers moderation, and nothing else works here yet.
-        Some(name @ ("agents-moderation" | "agents-moderation-member")) => {
-            let member = name == "agents-moderation-member";
-            let shown = agents::sample();
-            Settings {
-                tab: Tab::Agents,
-                agents: Agents {
-                    agents: Vec::new(),
-                    bots: Vec::new(),
-                    manage: !member,
-                    moderation: shown.moderation.clone().map(|moderation| Moderation {
-                        on: member,
-                        switchable: !member,
-                        ..moderation
-                    }),
-                    footnote: member
-                        .then(|| "Only the workspace owner can change permissions.".to_owned()),
-                    ..shown
-                },
-                ..sample()
-            }
-        }
         Some("agent-review") => Settings {
             tab: Tab::Agents,
             agents: Agents {

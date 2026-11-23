@@ -5,8 +5,6 @@
 // Automerge workers are this binary started again with their test's name as
 // its filter, which matches that test under its module too.
 
-#[path = "bridge.rs"]
-mod bridge;
 #[path = "connector.rs"]
 mod connector;
 #[path = "voice.rs"]

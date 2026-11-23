@@ -259,7 +259,6 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
         runs_work: false,
         label: String::new(),
         cloud: false,
-        moderates: false,
         origin: None,
         workspace_id,
         endpoint_addr: iroh_base::EndpointAddr::new(

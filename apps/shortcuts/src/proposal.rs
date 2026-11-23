@@ -158,6 +158,7 @@ impl Proposal {
             step_timeout_secs: None,
             saved_by: None,
             saved_proof: None,
+            paused: false,
         }
     }
 }

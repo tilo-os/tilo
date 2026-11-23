@@ -261,6 +261,7 @@ pub fn edit(shared: &Shared<'_>, before: &Shortcut, text: &str) -> Result<Edit, 
         id: before.id.clone(),
         saved_by: before.saved_by.clone(),
         saved_proof: before.saved_proof.clone(),
+        paused: before.paused,
         steps,
         ..parsed.shortcut
     };
@@ -1567,6 +1568,7 @@ impl Reader<'_> {
             triggers: Vec::new(),
             saved_by: None,
             saved_proof: None,
+            paused: false,
         };
         let mut named = false;
         let mut index = 0;
