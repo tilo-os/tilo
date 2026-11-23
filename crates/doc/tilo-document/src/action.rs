@@ -2315,33 +2315,7 @@ pub fn set_hyperlink_action(region: RegionKind, spans: Vec<Span>, target: &str) 
 /// Accept only link targets the editor can safely activate and round-trip.
 /// Imported documents may preserve other URI forms for fidelity, but newly
 /// authored actions deliberately have a narrower contract.
-pub fn valid_hyperlink_target(target: &str) -> bool {
-    if target.is_empty() || target.trim() != target || target.chars().count() > 2_048 {
-        return false;
-    }
-    if let Some(fragment) = target.strip_prefix('#') {
-        return !fragment.is_empty()
-            && fragment.len() <= 128
-            && fragment
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
-    }
-    let Ok(url) = url::Url::parse(target) else {
-        return false;
-    };
-    match url.scheme() {
-        "https" => {
-            url.host_str().is_some() && url.username().is_empty() && url.password().is_none()
-        }
-        "mailto" => {
-            let address = url.path();
-            address
-                .split_once('@')
-                .is_some_and(|(local, domain)| !local.is_empty() && !domain.is_empty())
-        }
-        _ => false,
-    }
-}
+pub use tilo_doc_codecs::inline::valid_hyperlink_target;
 
 /// Set one block attribute on `blocks`.
 pub fn set_block_attr_action(

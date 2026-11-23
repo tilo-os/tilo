@@ -16,7 +16,9 @@ pub mod anchor;
 pub mod annotation;
 pub mod block_actions;
 pub mod block_edit;
-pub mod block_markdown;
+/// A body's lines as Markdown with its block ids: the one Markdown dialect, kept beside the
+/// document codec that reads and writes a whole document's Markdown.
+pub use tilo_doc_codecs::blocks as block_markdown;
 pub mod field;
 mod replace_text;
 mod validate;

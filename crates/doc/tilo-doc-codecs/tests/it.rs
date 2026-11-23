@@ -22,6 +22,8 @@ mod convergence;
 mod docx_header_footer;
 #[path = "import_memory.rs"]
 mod import_memory;
+#[path = "markdown_paths.rs"]
+mod markdown_paths;
 #[path = "office_entities.rs"]
 mod office_entities;
 #[path = "office_fidelity.rs"]

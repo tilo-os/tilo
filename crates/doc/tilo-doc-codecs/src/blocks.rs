@@ -20,15 +20,27 @@
 //! numbered items, checklist items (`- [ ]`, `- [x]`), quotes (`>`),
 //! callouts (`> [!WARNING] text`, a GitHub alert on one line), fenced
 //! code, a `---` divider, and the inline marks `**bold**`, `*italic*` /
-//! `_italic_`, `~~struck~~`, `` `code` `` and `[text](url)`. A line break
-//! inside a block ends the line with a backslash. Blocks Markdown cannot
-//! carry (a table, an image) read as `[kind] ^id` and are kept as they are.
+//! `_italic_`, `~~struck~~`, `` `code` `` and `[text](url)`, read and
+//! written by the crate's one [`inline`](crate::inline) dialect. A line
+//! break inside a block ends the line with a backslash. Blocks Markdown
+//! cannot carry (a table, an image) read as `[kind] ^id` and are kept as
+//! they are.
+//!
+//! It lives beside the document codec because both are Markdown: this is
+//! the body's lines, with the ids a reader names a block by.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use tilo_doc::document::{MarkSpan, MarkValue};
 use tilo_doc::snapshot::{AttrVal, BlockView};
+
+use crate::inline;
+use crate::markdown::fence_for;
+
+pub use crate::markdown::CALLOUTS;
+pub use crate::markdown::callout_named;
+pub use crate::markdown::guard_paragraph;
 
 /// The fewest characters of an id a reader shows.
 pub const MIN_ID_CHARS: usize = 4;
@@ -42,7 +54,7 @@ pub const MAX_HEADING: i64 = 6;
 /// How a block is stored, in the terms the editor draws: what a line of
 /// Markdown says a block is.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Shape {
+pub enum Shape {
     Paragraph,
     Heading(i64),
     Bullet(i64),
@@ -56,29 +68,18 @@ pub(crate) enum Shape {
     Divider,
 }
 
-/// The callouts a quote can be, by the name its `alert` attribute stores:
-/// GitHub-flavoured Markdown's alerts.
-pub const CALLOUTS: [&str; 5] = ["note", "tip", "important", "warning", "caution"];
-
 /// The stored attribute that makes a quote a callout.
 const CALLOUT_ATTR: &str = "alert";
 
-pub(crate) fn callout_named(name: &str) -> Option<&'static str> {
-    // Lower-cased once, then compared exactly: a case-insensitive comparison
-    // per callout is unrolled into a loop for each name.
-    let name = name.trim().to_ascii_lowercase();
-    CALLOUTS.into_iter().find(|callout| *callout == name)
-}
-
 /// What to do with one stored attribute when a block takes a shape.
-pub(crate) enum Want {
+pub enum Want {
     Set(AttrVal),
     Clear,
     Keep,
 }
 
 /// The stored kind of a shape and what its attributes must be.
-pub(crate) struct Stored {
+pub struct Stored {
     pub kind: &'static str,
     pub attrs: [(&'static str, Want); 7],
 }
@@ -100,7 +101,7 @@ fn bool_attr(view: &BlockView, key: &str) -> Option<bool> {
 impl Shape {
     /// The shape a stored block has, or `None` for a block Markdown cannot
     /// carry: a table cell, a table kept as its source, an image.
-    pub(crate) fn of_view(view: &BlockView) -> Option<Self> {
+    pub fn of_view(view: &BlockView) -> Option<Self> {
         if view.attrs.contains_key("table_source") {
             return None;
         }
@@ -131,7 +132,7 @@ impl Shape {
     }
 
     /// How this shape is stored.
-    pub(crate) fn stored(&self) -> Stored {
+    pub fn stored(&self) -> Stored {
         use AttrVal::{Bool, Int, Str};
         match self {
             Self::Paragraph | Self::Quote | Self::Callout(_) | Self::Divider => Stored {
@@ -209,7 +210,7 @@ impl Shape {
     }
 
     /// Whether the block's text is code, read verbatim.
-    pub(crate) fn is_code(&self) -> bool {
+    pub fn is_code(&self) -> bool {
         matches!(self, Self::Code(_))
     }
 }
@@ -274,184 +275,18 @@ pub fn resolve<'a>(ids: impl IntoIterator<Item = &'a str>, token: &str) -> Resul
 // Rendering
 // ---------------------------------------------------------------------------
 
-/// A mark the Markdown dialect can carry.
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Tag {
-    Link(String),
-    Strong,
-    Em,
-    Strike,
-    Code,
-}
-
-impl Tag {
-    fn of(mark: &MarkSpan) -> Option<Self> {
-        match (mark.name.as_str(), &mark.value) {
-            (_, MarkValue::Bool(false)) => None,
-            ("strong", _) => Some(Self::Strong),
-            ("em", _) => Some(Self::Em),
-            ("strike", _) => Some(Self::Strike),
-            ("fontFamily", MarkValue::Str(family)) if family == "mono" => Some(Self::Code),
-            ("link", MarkValue::Str(url)) if !url.is_empty() => Some(Self::Link(url.clone())),
-            _ => None,
-        }
-    }
-
-    /// Where the tag sits in a nest: outermost first.
-    fn rank(&self) -> u8 {
-        match self {
-            Self::Link(_) => 0,
-            Self::Strong => 1,
-            Self::Em => 2,
-            Self::Strike => 3,
-            Self::Code => 4,
-        }
-    }
-}
-
-/// The marks of `marks` the dialect carries, as `(start, end, tag)` over
-/// the `len` characters of the text.
-fn tags(marks: &[MarkSpan], len: usize) -> Vec<(usize, usize, Tag)> {
-    marks
-        .iter()
-        .filter_map(|mark| {
-            let end = mark.end.min(len);
-            (mark.start < end)
-                .then(|| Tag::of(mark).map(|tag| (mark.start, end, tag)))
-                .flatten()
-        })
-        .collect()
-}
-
-fn is_alphanumeric(c: Option<&char>) -> bool {
-    c.is_some_and(|c| c.is_alphanumeric())
-}
-
+/// A block's text and marks as the one inline dialect writes them, a line break as the
+/// backslash that reads back as the same break.
 fn inline(text: &str, marks: &[MarkSpan]) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    let spans = tags(marks, chars.len());
-    let mut cuts: Vec<usize> = vec![0, chars.len()];
-    for (start, end, _) in &spans {
-        cuts.push(*start);
-        cuts.push(*end);
-    }
-    cuts.sort_unstable();
-    cuts.dedup();
-    let mut out = String::new();
-    let mut open: Vec<Tag> = Vec::new();
-    for pair in cuts.windows(2) {
-        let (Some(&from), Some(&to)) = (pair.first(), pair.get(1)) else {
-            continue;
-        };
-        let mut wanted: Vec<Tag> = spans
-            .iter()
-            .filter(|(start, end, _)| *start <= from && to <= *end)
-            .map(|(_, _, tag)| tag.clone())
-            .collect();
-        wanted.sort_by_key(Tag::rank);
-        wanted.dedup_by_key(|tag| tag.rank());
-        let keep = open
-            .iter()
-            .zip(&wanted)
-            .take_while(|(have, want)| have == want)
-            .count();
-        while open.len() > keep {
-            if let Some(tag) = open.pop() {
-                close_tag(&mut out, &tag);
-            }
-        }
-        for tag in wanted.iter().skip(keep) {
-            open_tag(&mut out, tag, chars.get(from.wrapping_sub(1)), from > 0);
-            open.push(tag.clone());
-        }
-        let piece: Vec<char> = chars.get(from..to).unwrap_or_default().to_vec();
-        if open.contains(&Tag::Code) {
-            let raw: String = piece.iter().collect();
-            out.push_str(&raw);
-        } else {
-            escape_into(&mut out, &piece);
-        }
-    }
-    while let Some(tag) = open.pop() {
-        close_tag(&mut out, &tag);
-    }
-    out
-}
-
-fn open_tag(out: &mut String, tag: &Tag, before: Option<&char>, has_before: bool) {
-    match tag {
-        Tag::Link(_) => out.push('['),
-        Tag::Strong => out.push_str("**"),
-        // `_` cannot open inside a word, `*` can.
-        Tag::Em => out.push(if has_before && is_alphanumeric(before) {
-            '*'
-        } else {
-            '_'
-        }),
-        Tag::Strike => out.push_str("~~"),
-        Tag::Code => out.push('`'),
-    }
-}
-
-fn close_tag(out: &mut String, tag: &Tag) {
-    match tag {
-        Tag::Link(url) => {
-            out.push_str("](");
-            for c in url.chars() {
-                match c {
-                    ' ' => out.push_str("%20"),
-                    ')' => out.push_str("%29"),
-                    '(' => out.push_str("%28"),
-                    _ => out.push(c),
-                }
-            }
-            out.push(')');
-        }
-        Tag::Strong => out.push_str("**"),
-        Tag::Em => out.push('_'),
-        Tag::Strike => out.push_str("~~"),
-        Tag::Code => out.push('`'),
-    }
-}
-
-/// The characters that mean something inline, escaped; a line break is a
-/// backslash at the end of the line.
-fn escape_into(out: &mut String, chars: &[char]) {
-    for &c in chars {
-        match c {
-            '\\' | '`' | '*' | '_' | '[' | ']' | '~' => {
-                out.push('\\');
-                out.push(c);
-            }
-            '\n' => out.push_str("\\\n"),
-            _ => out.push(c),
-        }
-    }
-}
-
-/// A paragraph's text must not read as a block marker.
-fn guard_paragraph(rendered: String) -> String {
-    let chars: Vec<char> = rendered.chars().collect();
-    let first = chars.first().copied();
-    let digits = chars.iter().take_while(|c| c.is_ascii_digit()).count();
-    let numbered = digits > 0 && matches!(chars.get(digits), Some('.' | ')'));
-    match first {
-        Some('#' | '>' | '-' | '+') => format!("\\{rendered}"),
-        _ if numbered => {
-            let head: String = chars.iter().take(digits).collect();
-            let tail: String = chars.iter().skip(digits).collect();
-            format!("{head}\\{tail}")
-        }
-        _ => rendered,
-    }
+    crate::inline::render(text, marks, inline::Style::BLOCK)
 }
 
 /// One non-code block as a line, without its id.
-pub(crate) fn render_line(shape: &Shape, text: &str, marks: &[MarkSpan]) -> String {
+pub fn render_line(shape: &Shape, text: &str, marks: &[MarkSpan]) -> String {
     let body = || inline(text, marks);
     let pad = |indent: &i64| "  ".repeat(usize::try_from(*indent).unwrap_or(0));
     match shape {
-        Shape::Paragraph => guard_paragraph(body()),
+        Shape::Paragraph => guard_paragraph(&body()),
         Shape::Heading(level) => format!(
             "{} {}",
             "#".repeat(usize::try_from(*level).unwrap_or(1)),
@@ -476,29 +311,26 @@ pub(crate) fn render_line(shape: &Shape, text: &str, marks: &[MarkSpan]) -> Stri
     }
 }
 
+/// The lines of a code block's text: a trailing newline ends its last line, and is not a line
+/// of its own.
+fn text_lines(text: &str) -> impl Iterator<Item = &str> {
+    text.strip_suffix('\n').unwrap_or(text).split('\n')
+}
+
 /// What makes two blocks the same line, ids aside: its shape, its text and
 /// the marks the dialect carries.
-pub(crate) fn line_key(shape: &Shape, text: &str, marks: &[MarkSpan]) -> String {
+pub fn line_key(shape: &Shape, text: &str, marks: &[MarkSpan]) -> String {
     match shape {
-        Shape::Code(lang) => format!("```{}\n{text}", lang.as_deref().unwrap_or("")),
+        Shape::Code(lang) => format!(
+            "```{}\n{}",
+            lang.as_deref().unwrap_or(""),
+            text.strip_suffix('\n').unwrap_or(text)
+        ),
         _ => render_line(shape, text, marks),
     }
 }
 
-fn fence_for(lines: &[&str]) -> String {
-    let longest = lines
-        .iter()
-        .map(|line| {
-            let line = line.trim_start();
-            let run = line.chars().take_while(|c| *c == '`').count();
-            if run >= 3 { run } else { 0 }
-        })
-        .max()
-        .unwrap_or(0);
-    "`".repeat(longest.saturating_add(1).max(3))
-}
-
-/// `blocks` as the lines [`RichTextAction::InsertMarkdown`](crate::RichTextAction) writes back
+/// `blocks` as the lines `InsertMarkdown` writes back
 /// as the same blocks, with their marks: what a caller that read Markdown its own way inserts so
 /// the text is the invoker's. `None` when a block has no line of its own (a table, a picture) or
 /// links somewhere a line cannot name (a page of an app, another resource).
@@ -511,7 +343,7 @@ pub fn lines_of(blocks: &[BlockView]) -> Option<String> {
                 && view.marks.iter().all(|mark| {
                     mark.name != "link"
                         || matches!(&mark.value, MarkValue::Str(target)
-                            if crate::action::valid_hyperlink_target(target))
+                            if inline::valid_hyperlink_target(target))
                 })
         })
         .then(|| render(blocks, &BTreeMap::new(), false))
@@ -563,14 +395,14 @@ pub fn render(blocks: &[BlockView], shown: &BTreeMap<&str, String>, ids: bool) -
         }
         let lines: Vec<&str> = run
             .iter()
-            .flat_map(|block| block.text.split('\n'))
+            .flat_map(|block| text_lines(&block.text))
             .collect();
         let fence = fence_for(&lines);
         out.push_str(&fence);
         out.push_str(lang.as_deref().unwrap_or(""));
         out.push('\n');
         for block in &run {
-            let mut parts = block.text.split('\n').peekable();
+            let mut parts = text_lines(&block.text).peekable();
             while let Some(part) = parts.next() {
                 out.push_str(part);
                 if parts.peek().is_none() {
@@ -590,7 +422,7 @@ pub fn render(blocks: &[BlockView], shown: &BTreeMap<&str, String>, ids: bool) -
 // ---------------------------------------------------------------------------
 
 /// What a line's trailing `^id` means.
-pub(crate) enum Ids<'a> {
+pub enum Ids<'a> {
     /// A `^id` names the block, when `known` says it is one.
     Known(&'a dyn Fn(&str) -> Option<String>),
     /// Ids are dropped: the lines are new blocks.
@@ -598,7 +430,7 @@ pub(crate) enum Ids<'a> {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum Parsed {
+pub enum Parsed {
     /// A block of the page, left as it is (`[table] ^id`).
     Keep(String),
     Block(Item),
@@ -606,7 +438,7 @@ pub(crate) enum Parsed {
 
 /// One block a line of Markdown says.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Item {
+pub struct Item {
     pub shape: Shape,
     pub text: String,
     pub marks: Vec<MarkSpan>,
@@ -617,7 +449,7 @@ pub(crate) struct Item {
 }
 
 impl Item {
-    pub(crate) fn key(&self) -> String {
+    pub fn key(&self) -> String {
         line_key(&self.shape, &self.text, &self.marks)
     }
 }
@@ -742,7 +574,7 @@ fn code_lines(body: &[&str], lang: &str, fence: usize, ids: &Ids<'_>) -> Vec<Par
 }
 
 /// Parse `markdown` as the blocks it says.
-pub(crate) fn parse(markdown: &str, ids: &Ids<'_>) -> Result<Vec<Parsed>, String> {
+pub fn parse(markdown: &str, ids: &Ids<'_>) -> Result<Vec<Parsed>, String> {
     let lines: Vec<&str> = markdown.lines().collect();
     let mut out = Vec::new();
     let mut fences = 0_usize;
@@ -840,18 +672,9 @@ pub(crate) fn parse(markdown: &str, ids: &Ids<'_>) -> Result<Vec<Parsed>, String
     Ok(out)
 }
 
-fn is_punctuation(c: char) -> bool {
-    c.is_ascii_punctuation()
-}
-
 /// The inline marks of `source`, and its text without their delimiters.
-pub(crate) fn parse_inline(source: &str) -> (String, Vec<MarkSpan>) {
-    let chars: Vec<char> = source.chars().collect();
-    let mut text: Vec<char> = Vec::new();
-    let mut spans = Vec::new();
-    inline_into(&chars, &mut text, &mut spans);
-    spans.sort_by_key(|span: &MarkSpan| (span.start, span.end));
-    (text.into_iter().collect(), spans)
+pub fn parse_inline(source: &str) -> (String, Vec<MarkSpan>) {
+    inline::parse(source, &inline::valid_hyperlink_target)
 }
 
 /// Whether `source` says anything in inline Markdown: a mark (**bold**,
@@ -859,204 +682,9 @@ pub(crate) fn parse_inline(source: &str) -> (String, Vec<MarkSpan>) {
 /// neither reads the same as plain text, so writing it plain keeps the marks
 /// it is written into; text with either means what the Markdown says, as
 /// the read that showed it to the writer does.
-pub(crate) fn has_inline_markdown(source: &str) -> bool {
+pub fn has_inline_markdown(source: &str) -> bool {
     let (text, marks) = parse_inline(source);
     !marks.is_empty() || text != source
-}
-
-fn run_of(chars: &[char], from: usize, c: char) -> usize {
-    chars
-        .iter()
-        .skip(from)
-        .take_while(|candidate| **candidate == c)
-        .count()
-}
-
-/// Where the code span opened at `from` (a run of `ticks` backticks) closes.
-fn code_end(chars: &[char], from: usize, ticks: usize) -> Option<usize> {
-    let mut at = from.saturating_add(ticks);
-    while at < chars.len() {
-        if chars.get(at) == Some(&'`') {
-            let run = run_of(chars, at, '`');
-            if run == ticks {
-                return Some(at);
-            }
-            at = at.saturating_add(run);
-        } else {
-            at = at.saturating_add(1);
-        }
-    }
-    None
-}
-
-/// The `]` that closes the `[` at `from`, when `](url)` follows it.
-fn link_end(chars: &[char], from: usize) -> Option<(usize, usize, String)> {
-    let mut depth = 0_usize;
-    let mut at = from;
-    while let Some(c) = chars.get(at) {
-        match c {
-            '\\' => at = at.saturating_add(1),
-            '`' => {
-                let run = run_of(chars, at, '`');
-                match code_end(chars, at, run) {
-                    Some(end) => at = end.saturating_add(run).saturating_sub(1),
-                    None => at = at.saturating_add(run).saturating_sub(1),
-                }
-            }
-            '[' => depth = depth.saturating_add(1),
-            ']' => {
-                if depth == 0 {
-                    break;
-                }
-                depth = depth.saturating_sub(1);
-            }
-            _ => {}
-        }
-        at = at.saturating_add(1);
-    }
-    let close = at;
-    if chars.get(close) != Some(&']') || chars.get(close.saturating_add(1)) != Some(&'(') {
-        return None;
-    }
-    let url_start = close.saturating_add(2);
-    let url_len = chars
-        .iter()
-        .skip(url_start)
-        .take_while(|c| **c != ')')
-        .count();
-    let end = url_start.saturating_add(url_len);
-    if chars.get(end) != Some(&')') {
-        return None;
-    }
-    let url: String = chars
-        .get(url_start..end)?
-        .iter()
-        .collect::<String>()
-        .replace("%20", " ")
-        .replace("%28", "(")
-        .replace("%29", ")");
-    Some((close, end, url))
-}
-
-/// Where the emphasis `delim` opened before `from` closes.
-fn emphasis_end(chars: &[char], from: usize, c: char, len: usize) -> Option<usize> {
-    let mut at = from;
-    while let Some(&current) = chars.get(at) {
-        if current == '\\' {
-            at = at.saturating_add(2);
-            continue;
-        }
-        if current == '`' {
-            let run = run_of(chars, at, '`');
-            at = code_end(chars, at, run)
-                .map_or_else(|| at.saturating_add(run), |end| end.saturating_add(run));
-            continue;
-        }
-        if current == c {
-            let run = run_of(chars, at, c);
-            let previous = at.checked_sub(1).and_then(|before| chars.get(before));
-            let next = chars.get(at.saturating_add(run));
-            let closes = run >= len
-                && at > from
-                && !previous.is_some_and(|p| p.is_whitespace())
-                && (c != '_' || !is_alphanumeric(next));
-            if closes {
-                // Of a longer run, the last delimiters close; the rest are inside.
-                return Some(at.saturating_add(run).saturating_sub(len));
-            }
-            at = at.saturating_add(run);
-            continue;
-        }
-        at = at.saturating_add(1);
-    }
-    None
-}
-
-fn mark_span(start: usize, end: usize, name: &str, value: MarkValue) -> MarkSpan {
-    MarkSpan {
-        start,
-        end,
-        name: name.to_owned(),
-        value,
-    }
-}
-
-fn inline_into(chars: &[char], text: &mut Vec<char>, spans: &mut Vec<MarkSpan>) {
-    let mut at = 0;
-    while let Some(&c) = chars.get(at) {
-        let next = at.saturating_add(1);
-        match c {
-            '\\' if chars.get(next).copied().is_some_and(is_punctuation) => {
-                text.extend(chars.get(next));
-                at = next.saturating_add(1);
-            }
-            '`' => {
-                let run = run_of(chars, at, '`');
-                if let Some(end) = code_end(chars, at, run) {
-                    let inner = chars.get(at.saturating_add(run)..end).unwrap_or_default();
-                    let start = text.len();
-                    text.extend_from_slice(inner);
-                    spans.push(mark_span(
-                        start,
-                        text.len(),
-                        "fontFamily",
-                        MarkValue::Str("mono".to_owned()),
-                    ));
-                    at = end.saturating_add(run);
-                } else {
-                    text.extend(std::iter::repeat_n('`', run));
-                    at = at.saturating_add(run);
-                }
-            }
-            '[' => {
-                if let Some((close, end, url)) = link_end(chars, next)
-                    && crate::action::valid_hyperlink_target(&url)
-                {
-                    let start = text.len();
-                    inline_into(chars.get(next..close).unwrap_or_default(), text, spans);
-                    spans.push(mark_span(start, text.len(), "link", MarkValue::Str(url)));
-                    at = end.saturating_add(1);
-                } else {
-                    text.push('[');
-                    at = next;
-                }
-            }
-            '*' | '_' | '~' => {
-                let run = run_of(chars, at, c);
-                let len = if run >= 2 { 2 } else { 1 };
-                let before = at.checked_sub(1).and_then(|before| chars.get(before));
-                let after = chars.get(at.saturating_add(len));
-                let opens = !after.is_none_or(|a| a.is_whitespace())
-                    && (c != '_' || !is_alphanumeric(before))
-                    && (c != '~' || len == 2);
-                let closing = opens
-                    .then(|| emphasis_end(chars, at.saturating_add(len), c, len))
-                    .flatten();
-                if let Some(end) = closing {
-                    let start = text.len();
-                    inline_into(
-                        chars.get(at.saturating_add(len)..end).unwrap_or_default(),
-                        text,
-                        spans,
-                    );
-                    let name = match (c, len) {
-                        ('~', _) => "strike",
-                        (_, 2) => "strong",
-                        _ => "em",
-                    };
-                    spans.push(mark_span(start, text.len(), name, MarkValue::Bool(true)));
-                    at = end.saturating_add(len);
-                } else {
-                    text.push(c);
-                    at = next;
-                }
-            }
-            _ => {
-                text.push(c);
-                at = next;
-            }
-        }
-    }
 }
 
 #[cfg(test)]

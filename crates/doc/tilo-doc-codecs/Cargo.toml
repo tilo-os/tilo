@@ -41,6 +41,9 @@ bounded-zip = { version = "0.1.0", path = "../bounded-zip", optional = true }
 pulldown-cmark = { version = "0.12", default-features = false, optional = true }
 quick-xml = { workspace = true, optional = true }
 zip = { workspace = true, optional = true }
+# A hyperlink's target is judged where Markdown is read, so a link no document may carry stays
+# the words it is written as.
+url.workspace = true
 
 [dev-dependencies]
 tilo-doc = { path = "../tilo-doc", features = ["bulk-instrumentation"] }

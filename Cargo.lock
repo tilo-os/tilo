@@ -19173,6 +19173,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-content",
  "tilo-doc",
+ "url",
  "workspace-hack",
  "zip",
 ]
@@ -19216,7 +19217,6 @@ dependencies = [
  "tilo-doc-codecs",
  "tilo-resource",
  "tilo-wake",
- "url",
  "workspace-hack",
 ]
 

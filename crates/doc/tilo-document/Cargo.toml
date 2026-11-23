@@ -20,8 +20,6 @@ tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-actions = { path = "../../collab/actions" }
 # Comment and reply dates as ISO-8601 times.
 jiff.workspace = true
-# Hyperlink targets a rich-text action may carry.
-url.workspace = true
 
 [dev-dependencies]
 # A test edits in a window's wake scope, as an app's code does.
