@@ -17,7 +17,7 @@ test-support = ["tilo-peer-state/test-support", "dep:tilo-test-env", "tilo-accou
 # Agents on the host: workspaces keep apps' confined replicas and hand their
 # records' channel keys to pages, and the agents themselves run here
 # ([`agents`]).
-agents = ["device-keys", "dep:tilo-broker-core", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:collaboration", "dep:ui", "dep:calendar-model", "dep:tilo-model-gateway", "dep:tilo-environment", "dep:chat", "dep:tilo-mcp", "dep:tilo-agent-turn", "dep:runtime-collab", "dep:tilo-web-search", "dep:jiff", "dep:tilo-identity", "tilo-clock/local"]
+agents = ["device-keys", "dep:tilo-broker-core", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:collaboration", "dep:ui", "dep:calendar-model", "dep:tilo-model-gateway", "dep:tilo-environment", "dep:tilo-mcp", "dep:tilo-agent-turn", "dep:runtime-collab", "dep:tilo-web-search", "dep:jiff", "dep:tilo-identity", "tilo-clock/local"]
 # A device's own workspace service and the key service beside it: what every device and
 # the server open, whether or not they serve apps. A key holder keeps the records its members
 # write sealed and opens them with the channels' keys it holds.
@@ -188,7 +188,6 @@ tilo-formats = { path = "../../ui/tilo-formats" }
 # server's agent surface), the turns their model takes, what a turn recalls of
 # a conversation, the one fetch a page read and an event's watched address go
 # through, and the clock an event's schedule fires on.
-chat = { path = "../../../apps/chat", default-features = false, optional = true }
 tilo-mcp = { path = "../../runtime/tilo-mcp", optional = true }
 tilo-agent-turn = { path = "../../integrations/agent-turn", optional = true }
 tilo-web-search = { path = "../../integrations/tilo-web-search", optional = true }
@@ -233,7 +232,6 @@ tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 # A test's mail server answers over real sockets, and the tester trusts its
 # certificate, which no authority signed.
 tilo-account-probe = { path = "../../integrations/account-probe", features = ["test-support"] }
-chat = { path = "../../../apps/chat", default-features = false, features = ["samples"] }
 ui = { package = "tilo-ui", path = "../../ui/ui-core" }
 
 # The format of an app's surface file, which this crate's own is written in (`tilo-app surface`).
