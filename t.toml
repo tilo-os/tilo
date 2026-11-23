@@ -4523,8 +4523,8 @@ arch = ["x86_64", "aarch64"]
 
 # The tarball, AppImage and Flatpak a person downloads, built natively for each architecture: the
 # only thing that keeps them building, so main's newest head gets it whenever t has room,
-# bisected when it breaks. Not a micro-VM: the release profile's whole-program link of the
-# imager needs more memory than a guest boots with.
+# bisected when it breaks. A micro-VM: Flatpak's builder sandboxes each step and the packagers
+# install their tools, which a job container's read-only system does not allow.
 [[check]]
 name = "package/linux-{arch}"
 # Fetches from mirrors, registries and Flathub: no fixed host list.
@@ -4533,6 +4533,7 @@ run = "bash tools/ci/linux-imager/package.sh {arch} /target/linux/{arch}/package
 needs = ["os-assets-appimage-{arch}"]
 requires = ["arch={arch}"]
 outputs = ["/target/linux/{arch}/package/*"]
+isolation = "vm"
 timeout_secs = 7200
 on = ["idle"]
 [check.matrix]
@@ -4549,6 +4550,7 @@ requires = ["arch={arch}"]
 outputs = ["/target/linux/{arch}/release/*"]
 secrets = ["TILO_CAPTURE_RUNTIME_IDENTITY_KEY", "TILO_CAPTURE_SERVICE_IDENTITY_KEY", "TILO_CAPTURE_QUALIFIER_BASE", "TILO_CAPTURE_SOURCE_ASSETS"]
 cache = false
+isolation = "vm"
 timeout_secs = 7200
 on = ["tag:imager-v*"]
 [check.matrix]
