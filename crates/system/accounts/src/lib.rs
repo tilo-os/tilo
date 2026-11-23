@@ -10,12 +10,10 @@
 //! - [`Account`] — the type-agnostic envelope. `config` is opaque type-specific JSON,
 //!   (de)serialised by the owning type. **No secret fields live here.**
 //! - [`AccountStore`] — the canonical multi-account store, one pretty-JSON document at
-//!   `$XDG_CONFIG_HOME/tilo/accounts/store.json`, holding every account plus the per-type
-//!   active selection.
+//!   `$XDG_CONFIG_HOME/tilo/accounts/store.json`, holding every account.
 //! - [`SecretVault`] — the encrypted-at-rest credential store keyed by [`AccountId`] (see
 //!   [`vault`]). Credentials go here, never into [`AccountStore`].
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -214,14 +212,12 @@ fn default_true() -> bool {
     true
 }
 
-/// The canonical multi-account store: every configured account of every type, plus which
-/// account is active per type. Persisted as one pretty-JSON document at [`store_path`].
+/// The canonical multi-account store: every configured account of every type,
+/// persisted as one pretty-JSON document at [`store_path`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccountStore {
     #[serde(default)]
     accounts: Vec<Account>,
-    #[serde(default)]
-    active: BTreeMap<AccountTypeId, AccountId>,
 }
 
 impl AccountStore {
@@ -286,68 +282,22 @@ impl AccountStore {
         self.accounts.iter().find(|a| &a.id == id)
     }
 
-    /// Add or replace (by id) an account, preserving insertion position on replace. If this is
-    /// the type's first account it becomes active.
+    /// Add or replace (by id) an account, preserving insertion position on replace.
     pub fn upsert(&mut self, account: Account) {
-        let type_id = account.type_id.clone();
-        let is_first_of_type = !self.accounts.iter().any(|a| a.type_id == type_id);
         if let Some(slot) = self.accounts.iter_mut().find(|a| a.id == account.id) {
             *slot = account;
         } else {
-            let id = account.id.clone();
             self.accounts.push(account);
-            if is_first_of_type {
-                self.active.insert(type_id, id);
-            }
         }
     }
 
-    /// Remove an account by id. Clears the per-type active pointer if it named the removed
-    /// account, falling back to the type's first remaining one.
+    /// Remove an account by id.
     pub fn remove(&mut self, id: &AccountId) -> bool {
         let Some(pos) = self.accounts.iter().position(|a| &a.id == id) else {
             return false;
         };
-        let removed = self.accounts.remove(pos);
-        if self.active.get(&removed.type_id) == Some(id) {
-            match self.list(&removed.type_id).first() {
-                Some(next) => {
-                    self.active.insert(removed.type_id.clone(), next.id.clone());
-                }
-                None => {
-                    self.active.remove(&removed.type_id);
-                }
-            }
-        }
+        self.accounts.remove(pos);
         true
-    }
-
-    /// The active account for a type: the explicitly-selected one, else the type's first
-    /// account, else `None`.
-    pub fn active(&self, type_id: &AccountTypeId) -> Option<&Account> {
-        if let Some(id) = self.active.get(type_id)
-            && let Some(a) = self
-                .accounts
-                .iter()
-                .find(|a| &a.id == id && &a.type_id == type_id)
-        {
-            return Some(a);
-        }
-        self.list(type_id).into_iter().next()
-    }
-
-    pub fn set_active(&mut self, type_id: &AccountTypeId, id: &AccountId) {
-        if self
-            .accounts
-            .iter()
-            .any(|a| &a.id == id && &a.type_id == type_id)
-        {
-            self.active.insert(type_id.clone(), id.clone());
-        }
-    }
-
-    pub fn active_id(&self, type_id: &AccountTypeId) -> Option<&AccountId> {
-        self.active(type_id).map(|a| &a.id)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -461,43 +411,31 @@ mod tests {
     }
 
     #[test]
-    fn store_upserts_by_id_and_tracks_the_active_account_per_type() {
-        {
-            let mut store = AccountStore::new();
-            store.upsert(email("a@x.example", "imap.x"));
-            store.upsert(email("b@y.example", "imap.y"));
-            let mut cal = Account::new("cal-1", "caldav");
-            cal.display_name = "Work".into();
-            store.upsert(cal);
+    fn store_upserts_by_id_and_removes() {
+        let mut store = AccountStore::new();
+        store.upsert(email("a@x.example", "imap.x"));
+        store.upsert(email("b@y.example", "imap.y"));
+        let mut cal = Account::new("cal-1", "caldav");
+        cal.display_name = "Work".into();
+        store.upsert(cal);
 
-            assert_eq!(store.list(&"email".into()).len(), 2);
-            assert_eq!(store.list(&"caldav".into()).len(), 1);
+        assert_eq!(store.list(&"email".into()).len(), 2);
+        assert_eq!(store.list(&"caldav".into()).len(), 1);
 
-            store.upsert(email("a@x.example", "imap.new"));
-            assert_eq!(store.list(&"email".into()).len(), 2);
-            assert_eq!(
-                store
-                    .get(&"a@x.example".into())
-                    .unwrap()
-                    .config_as::<DemoConfig>()
-                    .unwrap()
-                    .host,
-                "imap.new"
-            );
-        }
-
-        {
-            let mut store = AccountStore::new();
-            store.upsert(email("a@x.example", "imap.x"));
-            store.upsert(email("b@y.example", "imap.y"));
-            let email_ty: AccountTypeId = "email".into();
-
-            assert_eq!(store.active(&email_ty).unwrap().id, "a@x.example".into());
-            store.set_active(&email_ty, &"b@y.example".into());
-            assert_eq!(store.active(&email_ty).unwrap().id, "b@y.example".into());
-            assert!(store.remove(&"b@y.example".into()));
-            assert_eq!(store.active(&email_ty).unwrap().id, "a@x.example".into());
-        }
+        store.upsert(email("a@x.example", "imap.new"));
+        assert_eq!(store.list(&"email".into()).len(), 2);
+        assert_eq!(
+            store
+                .get(&"a@x.example".into())
+                .unwrap()
+                .config_as::<DemoConfig>()
+                .unwrap()
+                .host,
+            "imap.new"
+        );
+        assert!(store.remove(&"b@y.example".into()));
+        assert_eq!(store.list(&"email".into()).len(), 1);
+        assert!(!store.remove(&"b@y.example".into()), "already gone");
     }
 
     #[test]
@@ -506,7 +444,6 @@ mod tests {
             let root = temp_root();
             let mut store = AccountStore::new();
             store.upsert(email("a@x.example", "imap.x"));
-            store.set_active(&"email".into(), &"a@x.example".into());
             store.save_in(&root).expect("save");
 
             let back = AccountStore::load_in(&root);
