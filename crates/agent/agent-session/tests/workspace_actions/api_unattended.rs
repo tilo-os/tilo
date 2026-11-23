@@ -209,7 +209,7 @@ async fn own_key_runs_unasked_only_while_let() {
     let question = person
         .asked_about(run.parse().expect("an invocation id"))
         .await;
-    let AskedBy::Agent(who) = &question.by else {
+    let AskedBy::Agent(who) = &question.facts.by else {
         panic!("an agent asks: {question:?}");
     };
     assert_eq!(who.name, "Jane Doe's agent", "{question:?}");

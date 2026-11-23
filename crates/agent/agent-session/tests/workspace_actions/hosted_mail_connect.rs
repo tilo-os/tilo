@@ -150,21 +150,21 @@ async fn approves(hosted: &mut Hosted, resolution: &str) {
 fn asks_for_her_password(asked: &tilo_actions::remote::asked::Asked, servers: &[&str]) -> String {
     use tilo_actions::remote::asked::Fact;
     assert_eq!(
-        asked.takes.as_deref(),
+        asked.facts.takes.as_deref(),
         Some("tilo.vault/vault#add"),
         "the vault's own add answers it: {asked:?}"
     );
-    assert_eq!(asked.verb, "sign in", "{asked:?}");
+    assert_eq!(asked.facts.verb, "sign in", "{asked:?}");
     assert!(
-        asked.facts.contains(&Fact::new("kind", "login")),
+        asked.facts.facts.contains(&Fact::new("kind", "login")),
         "{asked:?}"
     );
     assert!(
-        servers.iter().all(|part| asked.words.contains(part)),
+        servers.iter().all(|part| asked.facts.words.contains(part)),
         "the question names her account and both servers: {}",
-        asked.words
+        asked.facts.words
     );
-    asked.words.clone()
+    asked.facts.words.clone()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -181,7 +181,7 @@ async fn the_assistant_signs_a_mail_account_in_from_its_address_alone() {
     asks_for_her_password(&asked, &[ADDRESS, READS, SENDS, "Scout"]);
     assert!(
         matches!(
-            &asked.by,
+            &asked.facts.by,
             tilo_actions::remote::asked::AskedBy::Agent(who) if who.id == SCOUT
         ),
         "who asks is her assistant: {asked:?}"

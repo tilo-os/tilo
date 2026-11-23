@@ -72,26 +72,33 @@ async fn she_tells_and_is_asked(
         .await;
     let told = hosted.last_tool_result();
     assert!(
-        told.contains(super::ASKED),
+        told.contains(crate::workspace_actions::hosted_secret_use::ASKED),
         "her assistant is told that she is asked: {told}"
     );
     let asked = hosted.page.asks().await;
     assert_eq!(asked.len(), 1, "the telling asks for one password: {told}");
     let ask = asked.into_iter().next().unwrap();
     assert_eq!(
-        ask.takes.as_deref(),
+        ask.facts.takes.as_deref(),
         Some("tilo.vault/vault#add"),
         "the vault's own add answers it: {ask:?}"
     );
-    assert_eq!(ask.verb, "connect", "{ask:?}");
-    assert_eq!(ask.on.as_deref(), Some(ACCOUNT), "{ask:?}");
-    assert!(ask.facts.contains(&Fact::new("kind", "login")), "{ask:?}");
+    assert_eq!(ask.facts.verb, "connect", "{ask:?}");
+    assert_eq!(ask.facts.on.as_deref(), Some(ACCOUNT), "{ask:?}");
+    assert!(
+        ask.facts.facts.contains(&Fact::new("kind", "login")),
+        "{ask:?}"
+    );
     assert!(
         ask.facts
+            .facts
             .contains(&Fact::new("belongsTo", place_of(address))),
         "{ask:?}"
     );
-    assert!(ask.facts.contains(&Fact::new("username", ADA)), "{ask:?}");
+    assert!(
+        ask.facts.facts.contains(&Fact::new("username", ADA)),
+        "{ask:?}"
+    );
     ask
 }
 
@@ -349,7 +356,7 @@ async fn a_mail_address_alone_is_asked_for_at_the_server_of_its_name() {
     hosted.workspaces.call_private_model_addresses(true);
     let ask = she_tells_and_is_asked(&mut hosted, "ada@calendar.example.test").await;
     assert!(
-        ask.words.contains("https://calendar.example.test"),
+        ask.facts.words.contains("https://calendar.example.test"),
         "the question names the server her address belongs to: {ask:?}"
     );
     assert!(her_accounts(&mut hosted).await.is_empty());

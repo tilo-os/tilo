@@ -405,10 +405,10 @@ async fn a_send_asks_and_nothing_leaves(
     let question = it_asks_to_send(hosted, ("mail-8", "mail-9"), words).await;
     assert!(servers.asked("send").is_empty(), "nothing left unasked");
     assert!(
-        matches!(&question.by, AskedBy::Agent(who) if who.id == SCOUT),
+        matches!(&question.facts.by, AskedBy::Agent(who) if who.id == SCOUT),
         "only its own person is asked: {question:?}"
     );
-    assert_eq!(question.verb, "send", "{question:?}");
+    assert_eq!(question.facts.verb, "send", "{question:?}");
     for (label, value) in [
         ("From", "ada@example.test"),
         ("Goes to", "2 addresses"),
@@ -417,12 +417,13 @@ async fn a_send_asks_and_nothing_leaves(
         ("Message", "Friday at one works. \u{23ce} See you there."),
     ] {
         assert!(
-            question.facts.contains(&Fact::new(label, value)),
+            question.facts.facts.contains(&Fact::new(label, value)),
             "{label:?} is a fact of the record: {question:?}"
         );
     }
     assert!(
         question
+            .facts
             .facts
             .iter()
             .any(|fact| fact.label == "Subject" && fact.value.ends_with("Re: Lunch on Friday?")),

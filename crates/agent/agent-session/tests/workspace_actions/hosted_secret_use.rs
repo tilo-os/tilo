@@ -29,7 +29,7 @@ pub(super) const PASSWORD: &str = "only-the-mail-server-may-read-this";
 const IMAP: &str = "imap://imap.example.test:993";
 const SMTP: &str = "smtp://smtp.example.test:465";
 /// What the agent is told when its person is asked first.
-const ASKED: &str = "asked:";
+pub(super) const ASKED: &str = "asked:";
 
 /// Every log line the test's process writes, at every level.
 #[derive(Clone, Default)]
@@ -484,27 +484,30 @@ pub(super) async fn the_password_goes_from_the_persons_device_to_their_vault(
     assert_eq!(asked.len(), 1, "{asked:?}");
     let ask = &asked[0];
     assert_eq!(
-        ask.takes.as_deref(),
+        ask.facts.takes.as_deref(),
         Some("tilo.vault/vault#add"),
         "{ask:?}"
     );
-    assert_eq!(ask.verb, "keep", "{ask:?}");
+    assert_eq!(ask.facts.verb, "keep", "{ask:?}");
     assert!(
-        ask.words.contains(&format!(
+        ask.facts.words.contains(&format!(
             "asks for the password of ada at {IMAP} and {SMTP}."
         )),
         "in the system's words: {ask:?}"
     );
     assert!(
         ask.facts
+            .facts
             .contains(&tilo_actions::remote::asked::Fact::new("kind", "login")),
         "{ask:?}"
     );
     assert!(
-        ask.facts.contains(&tilo_actions::remote::asked::Fact::new(
-            "belongsTo",
-            format!("{IMAP} {SMTP}")
-        )),
+        ask.facts
+            .facts
+            .contains(&tilo_actions::remote::asked::Fact::new(
+                "belongsTo",
+                format!("{IMAP} {SMTP}")
+            )),
         "{ask:?}"
     );
 
@@ -602,7 +605,7 @@ pub(super) async fn the_first_use_asks_and_always_signs_in(hosted: &mut Hosted, 
     assert_eq!(asked.len(), 1, "one question about the use: {asked:?}");
     let question = &asked[0];
     assert_eq!(
-        question.words, "You asked me to read your mail.",
+        question.facts.words, "You asked me to read your mail.",
         "why, in the agent's words"
     );
     let shown = format!("{question:?}");

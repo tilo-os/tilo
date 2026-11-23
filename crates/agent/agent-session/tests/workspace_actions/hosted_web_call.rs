@@ -98,23 +98,25 @@ async fn the_assistant_calls_a_service_with_a_key_it_never_sees() {
     let question = &asked[0];
     assert!(
         matches!(
-            &question.by,
+            &question.facts.by,
             tilo_actions::remote::asked::AskedBy::Agent(who) if who.id == SCOUT
         ),
         "{question:?}"
     );
     assert_eq!(
-        question.words, "To read this month's numbers.",
+        question.facts.words, "To read this month's numbers.",
         "why, in the agent's words"
     );
     assert!(
         question
+            .facts
             .facts
             .contains(&tilo_actions::remote::asked::Fact::new("Item", "key")),
         "{question:?}"
     );
     assert!(
         question
+            .facts
             .facts
             .iter()
             .any(|fact| fact.label == "Goes to" && fact.value.contains(&service.url())),

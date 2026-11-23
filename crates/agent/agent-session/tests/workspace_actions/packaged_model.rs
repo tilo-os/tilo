@@ -637,7 +637,7 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     };
-    assert!(question.destructive, "{question:?}");
+    assert!(question.facts.destructive, "{question:?}");
     assert_eq!(question.name, "delete-area", "{question:?}");
     person
         .resolve(&question, "approve", None)

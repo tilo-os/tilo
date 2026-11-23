@@ -368,16 +368,20 @@ async fn an_action_that_asks_first_waits_for_its_person_and_is_done_once_on_thei
         hosted.tool_results()
     );
     let question = &asked[0];
-    let AskedBy::Agent(who) = &question.by else {
+    let AskedBy::Agent(who) = &question.facts.by else {
         panic!("an agent asks: {question:?}");
     };
     assert_eq!((who.id.as_str(), who.name.as_str()), (SCOUT, "Scout"));
     assert_eq!(question.record.workspace, hosted.workspace);
     assert_eq!(question.workspace_name, "Team", "{question:?}");
     assert_eq!(question.name, "Remove from library", "{question:?}");
-    assert!(question.destructive, "Undo cannot bring the book back");
+    assert!(
+        question.facts.destructive,
+        "Undo cannot bring the book back"
+    );
     assert!(
         question
+            .facts
             .facts
             .iter()
             .any(|fact| fact.value.contains("book:dusk")),
@@ -600,12 +604,13 @@ async fn the_removal_asks_first_inside(carrier: &str) {
     assert!(
         question
             .facts
+            .facts
             .iter()
             .any(|fact| fact.value.contains("book:dusk")),
         "inside {carrier} it names the book: {question:?}"
     );
     assert!(
-        question.destructive,
+        question.facts.destructive,
         "inside {carrier} it does not say Undo takes it back"
     );
     assert_eq!(

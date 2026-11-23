@@ -274,7 +274,7 @@ async fn command_asks_then_is_done() async fn command_asks_then_is_done() {
     // The person reads the command that would run before allowing it.
     assert!(
         asked[0]
-            .facts
+            .facts.facts
             .iter()
             .any(|fact| fact.value.contains("first-echo")),
         "{:?}",

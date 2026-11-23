@@ -144,7 +144,7 @@ async fn the_call_waits_for_its_person_and_their_answer_runs_it_once() {
     // The person's own device lists it among the questions that wait for them: who asks, what
     // would be done, on which record and in which workspace, and that Undo cannot take it back.
     let asked = with.page.asked_about(invocation).await;
-    let tilo_actions::remote::asked::AskedBy::Agent(who) = &asked.by else {
+    let tilo_actions::remote::asked::AskedBy::Agent(who) = &asked.facts.by else {
         panic!("an agent asks: {asked:?}");
     };
     assert_eq!(who.name, "Jane Doe’s agent", "{asked:?}");
@@ -155,16 +155,16 @@ async fn the_call_waits_for_its_person_and_their_answer_runs_it_once() {
     );
     assert_eq!(asked.name, "Remove from library", "{asked:?}");
     assert_eq!(
-        asked.on.as_deref(),
+        asked.facts.on.as_deref(),
         Some("1 book"),
         "the library by its name: named by the state it holds, one book on the shelf: {asked:?}"
     );
     assert!(
-        asked.destructive,
+        asked.facts.destructive,
         "Undo cannot give the reader back the book's file: {asked:?}"
     );
     assert_eq!(
-        asked.facts,
+        asked.facts.facts,
         [tilo_actions::remote::asked::Fact::new("Book", "book:dusk")]
     );
 

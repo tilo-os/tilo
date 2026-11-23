@@ -672,7 +672,7 @@ async fn the_assistant_has_a_sign_in_field_filled_with_a_password_only_the_page_
     let question = &asked[0];
     assert!(
         matches!(
-            &question.by,
+            &question.facts.by,
             tilo_actions::remote::asked::AskedBy::Agent(who) if who.id == SCOUT
         ),
         "only its own person is asked: {question:?}"

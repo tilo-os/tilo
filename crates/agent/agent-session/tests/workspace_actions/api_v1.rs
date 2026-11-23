@@ -1172,7 +1172,7 @@ async fn a_logged_in_computers_agent_reads_and_invites_people_as_its_grants_let_
     let question = ada_at_page
         .asked_about(invocation.parse().expect("an invocation id"))
         .await;
-    let tilo_actions::remote::asked::AskedBy::Agent(who) = &question.by else {
+    let tilo_actions::remote::asked::AskedBy::Agent(who) = &question.facts.by else {
         panic!("an agent asks: {question:?}");
     };
     assert_eq!(who.name, "Claude Code", "{question:?}");

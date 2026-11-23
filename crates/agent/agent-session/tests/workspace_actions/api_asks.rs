@@ -53,12 +53,15 @@ async fn the_person_answers_what_the_agent_asks_and_the_agent_hears_it() {
     // What is asked, in the agent's words, and each choice it offers; who asks, as the system
     // names them: never as the agent words itself.
     let asked = with.page.asked_about(invocation).await;
-    let AskedBy::Agent(who) = &asked.by else {
+    let AskedBy::Agent(who) = &asked.facts.by else {
         panic!("an agent asks: {asked:?}");
     };
     assert_eq!(who.name, "Jane Doe’s agent", "{asked:?}");
-    assert_eq!(asked.words, "Which consulate should I book?", "{asked:?}");
-    assert_eq!(asked.choices, ["Berlin", "Munich"], "{asked:?}");
+    assert_eq!(
+        asked.facts.words, "Which consulate should I book?",
+        "{asked:?}"
+    );
+    assert_eq!(asked.facts.choices, ["Berlin", "Munich"], "{asked:?}");
     assert!(
         asked.name.is_empty(),
         "it asks to allow no action: {asked:?}"

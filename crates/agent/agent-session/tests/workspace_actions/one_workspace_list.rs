@@ -265,7 +265,7 @@ async fn approve_as_root(
         let mut answered = 0;
         loop {
             for asked in page.asks().await {
-                let AskedBy::Agent(who) = &asked.by else {
+                let AskedBy::Agent(who) = &asked.facts.by else {
                     continue;
                 };
                 if who.id == agent && page.resolve(&asked, "approve", None).await.is_ok() {

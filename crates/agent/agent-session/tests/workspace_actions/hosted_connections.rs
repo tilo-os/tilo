@@ -243,7 +243,7 @@ async fn a_command_that_changes_something_asks_first(
     let asked = hosted.page.asks().await;
     assert_eq!(asked.len(), 1, "one question about the call: {asked:?}");
     let question = &asked[0];
-    let AskedBy::Agent(who) = &question.by else {
+    let AskedBy::Agent(who) = &question.facts.by else {
         panic!("an agent asks: {question:?}");
     };
     assert_eq!(who.id, SCOUT, "only its own person is asked");
@@ -253,17 +253,21 @@ async fn a_command_that_changes_something_asks_first(
         .trim_end_matches("/mcp")
         .to_owned();
     assert_eq!(
-        question.on.as_deref(),
+        question.facts.on.as_deref(),
         Some(format!("plant_tree at {site}").as_str()),
         "the command and where it calls: {question:?}"
     );
     assert_eq!(
-        question.facts,
+        question.facts.facts,
         [Fact::new("Arguments", r#"{"kind":"apple"}"#)],
         "the arguments as they will be sent: {question:?}"
     );
-    assert_eq!(question.verb, "call", "{question:?}");
-    assert_eq!(question.plural.as_deref(), Some("commands"), "{question:?}");
+    assert_eq!(question.facts.verb, "call", "{question:?}");
+    assert_eq!(
+        question.facts.plural.as_deref(),
+        Some("commands"),
+        "{question:?}"
+    );
     assert_eq!(
         question.offers,
         [Offer::Approve, Offer::ApproveAndGrant, Offer::Decline],
