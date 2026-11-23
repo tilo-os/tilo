@@ -134,7 +134,7 @@ pub async fn start(
         waiting: Mutex::new(BTreeMap::new()),
         next: AtomicU64::new(0),
         state: Mutex::new(PeerState::default()),
-        store: content,
+        store: Arc::clone(&content),
         access: tokio::sync::watch::channel(None).0,
         shown: Mutex::new(None),
     });
