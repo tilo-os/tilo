@@ -492,6 +492,10 @@ pub struct ActionTypes {
     words: u64,
     /// Per type name, the action types of its resources.
     on_type: std::collections::BTreeMap<String, TypeActions>,
+    /// Whether any of the package's types holds what an outside service sent (`origin:
+    /// imap.message`): what its resources read back was written by people outside the workspace,
+    /// so each read action says it carries untrusted content.
+    outside_origin: bool,
 }
 
 /// The action types of the resources of one tilolang type.
@@ -571,6 +575,7 @@ impl ActionTypes {
             meta: meta.clone(),
             planner: Arc::clone(planner),
             words: words.revision(),
+            outside_origin: meta.types.iter().any(|ty| ty.origin.is_some()),
             on_type,
         }
     }
@@ -605,8 +610,16 @@ impl ActionTypes {
         };
         let published = resource_id(&self.meta.app, id);
         // What it holds is the workspace's content, read as data: an agent reads a note's text
-        // rather than a screenshot of it.
-        let read = tilo_resource::read::spec(Some(&published));
+        // rather than a screenshot of it. A type that holds what an outside service sent reads
+        // back words its person did not write, and the action says so: a model that reads them is
+        // told they are data to weigh, never instructions.
+        let mut read = tilo_resource::read::spec(Some(&published));
+        if self.outside_origin {
+            read.type_mut()
+                .contract
+                .tags
+                .push(tilo_actions::UNTRUSTED_CONTENT_TAG.to_owned());
+        }
         let mut resource = ResourceSpec::new(published, self.meta.kind_of(type_name), label)
             .with_action(open)
             .with_action(read);

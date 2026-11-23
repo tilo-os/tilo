@@ -1359,3 +1359,50 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+/// A package whose types hold what an outside service sent (`origin: imap.message`) publishes
+/// its read action saying that what it answers is untrusted: an agent that reads a message
+/// through it is told the words are a stranger's, data to weigh and never instructions. A
+/// package of the workspace's own data reads as trusted.
+#[test]
+fn a_read_action_of_a_package_of_outside_text_carries_untrusted_content() {
+    const MAILISH: &str = r#"app so.tilo.lang.mailish "Mailish"
+
+type Message (origin: imap.message, title: subject) {
+    subject: Text
+    body: Text
+}
+
+root Message
+
+default view main for Message
+
+view main(m: Message) {
+  page {
+    text(m.subject)
+  }
+}
+"#;
+    let read_is_untrusted = |source: &str, ty: &str| {
+        let (_, packages) = Replica::new("ada", Workspace::new(), &[(source, "")]);
+        let meta = &packages[0].meta;
+        let planner: Arc<dyn Planner> = Arc::new(NoPlanner);
+        let types = ActionTypes::new(meta, &planner, &SourceWords);
+        publish_resource(&types, ty, "one", "One")
+            .actions
+            .into_iter()
+            .find(|spec| spec.id == "read")
+            .expect("every resource reads")
+            .action_type()
+            .contract
+            .carries_untrusted_content()
+    };
+    assert!(
+        read_is_untrusted(MAILISH, "Message"),
+        "a message's words are written by whoever sent it"
+    );
+    assert!(
+        !read_is_untrusted(SHAPES, "Shelf"),
+        "the workspace's own data is trusted"
+    );
+}
