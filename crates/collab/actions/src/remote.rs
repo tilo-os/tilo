@@ -996,6 +996,30 @@ impl ActionCallError {
         }
     }
 
+    /// The provider refused for a reason of its own.
+    #[must_use]
+    pub fn refused(reason: impl Into<String>) -> Self {
+        Self::Refused {
+            reason: reason.into(),
+        }
+    }
+
+    /// The request is malformed for this action.
+    #[must_use]
+    pub fn invalid_request(reason: impl Into<String>) -> Self {
+        Self::InvalidRequest {
+            reason: reason.into(),
+        }
+    }
+
+    /// The provider serves no actions right now.
+    #[must_use]
+    pub fn unavailable(reason: impl Into<String>) -> Self {
+        Self::Unavailable {
+            reason: reason.into(),
+        }
+    }
+
     /// Stable machine-readable code.
     #[must_use]
     pub const fn code(&self) -> &'static str {
@@ -3256,5 +3280,44 @@ mod tests {
             Ok(Reservation::Reserved),
             "an abandoned start ran nothing and may be admitted again"
         );
+    }
+
+    #[test]
+    fn action_call_error_constructors_build_the_exact_variants() {
+        let refused = ActionCallError::refused("not allowed now");
+        assert_eq!(
+            refused,
+            ActionCallError::Refused {
+                reason: "not allowed now".to_owned(),
+            }
+        );
+        assert_eq!(refused.code(), "refused");
+        assert_eq!(refused.said(), "refused: not allowed now");
+        let owned_refusal = String::from("not allowed now");
+        assert_eq!(ActionCallError::refused(owned_refusal), refused);
+
+        let invalid = ActionCallError::invalid_request("missing field");
+        assert_eq!(
+            invalid,
+            ActionCallError::InvalidRequest {
+                reason: "missing field".to_owned(),
+            }
+        );
+        assert_eq!(invalid.code(), "invalid_arguments");
+        assert_eq!(invalid.said(), "invalid_arguments: missing field");
+        let owned_invalid = String::from("missing field");
+        assert_eq!(ActionCallError::invalid_request(owned_invalid), invalid);
+
+        let unavailable = ActionCallError::unavailable("service off");
+        assert_eq!(
+            unavailable,
+            ActionCallError::Unavailable {
+                reason: "service off".to_owned(),
+            }
+        );
+        assert_eq!(unavailable.code(), "remote_actions_unavailable");
+        assert_eq!(unavailable.said(), "unavailable: service off");
+        let owned_unavailable = String::from("service off");
+        assert_eq!(ActionCallError::unavailable(owned_unavailable), unavailable);
     }
 }
