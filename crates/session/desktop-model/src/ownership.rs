@@ -279,6 +279,35 @@ pub fn foreign_acts(
     touched
 }
 
+/// The windows of `after` whose own state ([`crate::window_state`]) differs from what `before`
+/// held, by tab (`was`, `now`: each window's sealed state as the record keeps it), that `writer`
+/// did not make and that are not [`released`]. A window's state is its person's: unlike its
+/// place, no member and no moderator changes it, so every one of these is refused.
+#[must_use]
+pub fn restated_windows(
+    (before, was): (&SharedDesktop, &BTreeMap<TabId, String>),
+    (after, now): (&SharedDesktop, &BTreeMap<TabId, String>),
+    writer: &str,
+    members: Option<&BTreeSet<String>>,
+) -> Vec<TabId> {
+    let live = index(&after.tree).tabs;
+    let mut tabs: Vec<TabId> = was
+        .keys()
+        .chain(now.keys())
+        .copied()
+        .filter(|tab| live.contains_key(tab) && was.get(tab) != now.get(tab))
+        .collect();
+    tabs.compact_sort();
+    tabs.dedup();
+    // A window opened in this write is its author's as the write names them ([`claimed`]).
+    let authors = |tab: TabId| before.authors.get(&tab).or_else(|| after.authors.get(&tab));
+    tabs.retain(|tab| {
+        authors(*tab).is_none_or(|author| author != writer)
+            && !released(&before.authors, *tab, members)
+    });
+    tabs
+}
+
 /// What `after` did to `strip`, when the first of `foreign` names it, and to the windows in it
 /// that the second names: the strip closed or renamed, its windows closed or moved, and other
 /// people's windows reordered among themselves.

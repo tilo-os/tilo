@@ -98,6 +98,8 @@ pub fn check_owned(command: &DesktopCommand, owned: impl Fn(u64) -> bool) -> Res
         | DesktopCommand::RemoveStrip { strip }
         | DesktopCommand::MoveStrip { strip, .. } => own(*strip),
         DesktopCommand::ReopenClosed { strip } => own_all(&[*strip]),
+        // Only the device that opened a window seals its state.
+        DesktopCommand::SetWindowState { tab, .. } => own(*tab),
         DesktopCommand::CreateStrip { .. }
         | DesktopCommand::RenameWorkspace { .. }
         | DesktopCommand::ClaimNamespace { .. }

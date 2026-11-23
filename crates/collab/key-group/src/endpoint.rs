@@ -206,8 +206,15 @@ impl ContentKeys {
             hex::decode(encoded).map_err(|error| Error::Serialization(error.to_string()))?;
         let (metadata, sealed): (EncryptionMetadata, Vec<u8>) = postcard::from_bytes(&bytes)
             .map_err(|error| Error::Serialization(error.to_string()))?;
-        if !matches!(metadata.scheme, EncryptionScheme::DocumentContentKey { group, .. } if group == self.workspace)
-        {
+        // A group that is no document's own (a workspace's, a reader set's) seals with its plain
+        // content key, which names no group: the field's address is its group's all the same
+        // (`private_field_artifact`), so no other group's keys open it.
+        let ours = match metadata.scheme {
+            EncryptionScheme::DocumentContentKey { group, .. } => group == self.workspace,
+            EncryptionScheme::ContentKey { .. } => !self.workspace.is_document_key_group(),
+            EncryptionScheme::MlsApplication => false,
+        };
+        if !ours {
             return Err(Error::InvalidState(
                 "field was sealed for another document".into(),
             ));
@@ -725,6 +732,44 @@ mod tests {
         bytes.push(0);
         assert!(ContentKeys::from_bytes(&bytes).is_err());
         assert!(!format!("{decoded:?}").contains("key:"));
+    }
+
+    #[test]
+    fn a_reader_groups_keys_open_the_fields_they_sealed_and_no_other_groups_do() {
+        let workspace = WorkspaceId::new();
+        let keys = |readers: &str| {
+            let group = collab_types::reader_group(workspace, readers).unwrap();
+            KeyGroup::create(group, MemberKey::generate("reader").unwrap())
+                .unwrap()
+                .content_keys()
+                .unwrap()
+        };
+        let ada = keys(&hex::encode([0xa0; 32]));
+        let bob = keys(&hex::encode([0xb0; 32]));
+        let everyone = keys(collab_types::EVERY_MEMBER);
+        for sealer in [&ada, &everyone] {
+            let sealed = sealer.seal_private_field("window/state", b"mode").unwrap();
+            let held = ContentKeys::from_bytes(&sealer.to_bytes().unwrap()).unwrap();
+            assert_eq!(
+                held.open_private_field("window/state", &sealed)
+                    .unwrap()
+                    .as_slice(),
+                b"mode"
+            );
+            assert!(held.open_private_field("window/other", &sealed).is_err());
+            assert!(bob.open_private_field("window/state", &sealed).is_err());
+        }
+        let document = WorkspaceId::from_u128(0xe0_u128 << 56);
+        let document_keys = KeyGroup::create(document, MemberKey::generate("owner").unwrap())
+            .unwrap()
+            .content_keys()
+            .unwrap();
+        let sealed = ada.seal_private_field("window/state", b"mode").unwrap();
+        assert!(
+            document_keys
+                .open_private_field("window/state", &sealed)
+                .is_err()
+        );
     }
 
     #[test]

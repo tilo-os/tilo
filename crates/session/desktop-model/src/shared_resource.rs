@@ -11,7 +11,7 @@
 //! workspaces: { <id>: { order: f64, workspace: <map, no strips>, layout? } }
 //! strips:     { <id>: { workspace: <id>, order: f64, name, author?,
 //!                       groups: { <id>: { order: f64, place?, float?, windows: { <id>: f64 } } } } }
-//! windows:    { <id>: { tab: <map>, author?, record?, opened_by? } }
+//! windows:    { <id>: { tab: <map>, author?, record?, opened_by?, state? } }
 //! ```
 //! A workspace, a window and a place are maps of their own fields, not one blob of
 //! text each, so two people editing different fields of the same one keep both
@@ -52,6 +52,9 @@ const FLOAT: &str = "float";
 /// The agent run that opened a window ([`crate::ownership::OpenedBy`]). No
 /// writer deletes it: it goes with its window's entry.
 const OPENED_BY: &str = "opened_by";
+/// A window's own state, sealed to its readers ([`crate::window_state`]). No writer of the
+/// layout knows it: only [`put_window_state`] writes it, and it goes with its window's entry.
+const STATE: &str = "state";
 
 /// A document read now or as of some heads.
 struct At<'a, D: ReadDoc> {
@@ -489,6 +492,46 @@ fn layout_of(doc: &AutoCommit, heads: Option<&[ChangeHash]>) -> Option<SharedDes
         authors: crate::desktop_doc::window_authors(&layout_doc),
         opened_by: crate::desktop_doc::opened_by(&layout_doc),
     })
+}
+
+/// The sealed state ([`crate::window_state`]) each window's entry holds, now (`None`) or as of
+/// `heads`, as its text.
+pub(crate) fn window_states(
+    doc: &AutoCommit,
+    heads: Option<&[ChangeHash]>,
+) -> BTreeMap<TabId, String> {
+    let at = At { doc, heads };
+    at.placed_entries(WINDOWS)
+        .into_iter()
+        .filter_map(|(id, (entry, _))| Some((id.parse().ok()?, at.text(&entry, STATE)?)))
+        .collect()
+}
+
+/// Write `state` as the sealed state of window `tab`'s entry, or take it out (`None`). Whether
+/// it changed the entry; `None` when the record holds no entry for the window.
+///
+/// # Errors
+/// The document refused a write.
+pub(crate) fn put_window_state(
+    doc: &mut AutoCommit,
+    tab: TabId,
+    state: Option<&str>,
+) -> Result<Option<bool>, automerge::AutomergeError> {
+    let at = At {
+        doc: &*doc,
+        heads: None,
+    };
+    let Some((entry, _)) = at.placed_entries(WINDOWS).remove(&tab.to_string()) else {
+        return Ok(None);
+    };
+    if at.text(&entry, STATE).as_deref() == state {
+        return Ok(Some(false));
+    }
+    match state {
+        Some(state) => doc.put(&entry, STATE, state)?,
+        None => doc.delete(&entry, STATE)?,
+    }
+    Ok(Some(true))
 }
 
 /// `doc`'s changes up to `heads` as a document of their own, so that the

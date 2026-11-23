@@ -222,14 +222,26 @@ pub enum DesktopCommand {
         group: u64,
         float: Option<crate::layout::FloatPlace>,
     },
+    /// Set the field `state` of window `tab`'s own state to `value`: `state`
+    /// is the id of the view's `state` declaration, `value` the tilolang
+    /// runtime's JSON form of its typed value, as JSON text. The state is
+    /// sealed to its readers, so only the device that opened the window
+    /// applies this, with their keys ([`crate::window_state::apply`]); any
+    /// other device, agent or palette asks it. Placement-independent.
+    /// Appended last: existing encodings are unchanged.
+    SetWindowState {
+        tab: u64,
+        state: String,
+        value: String,
+    },
 }
 
 impl DesktopCommand {
     /// Whether the owner applies this against its own current desktop, so it
     /// needs no source revision: an [`Self::OpenApp`] it places itself, a
     /// namespace claim that changes only the registry, a governance
-    /// command that touches no topology, or the reopen of a window this
-    /// device closed.
+    /// command that touches no topology, the reopen of a window this
+    /// device closed, or a change of a window's own state.
     pub fn is_placement_independent(&self) -> bool {
         matches!(
             self,
@@ -238,6 +250,7 @@ impl DesktopCommand {
                 | Self::SavePreset { .. }
                 | Self::AssignPreset { .. }
                 | Self::ReopenClosed { .. }
+                | Self::SetWindowState { .. }
         )
     }
 }
@@ -773,6 +786,12 @@ pub fn apply_command(
     match command {
         DesktopCommand::SavePreset { .. } | DesktopCommand::AssignPreset { .. } => {
             return Err("only the workspace's native owner applies this command".into());
+        }
+        DesktopCommand::SetWindowState { .. } => {
+            return Err(
+                "a window's state is sealed to its readers: the device that opened it applies this with their keys"
+                    .into(),
+            );
         }
         DesktopCommand::OpenApp { .. } => {
             let resolved = resolve_open_app(workspace, command.clone(), |_| true)?;

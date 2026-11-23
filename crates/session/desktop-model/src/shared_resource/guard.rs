@@ -15,7 +15,8 @@
 //! every strip or window it adds in someone else's name, is one the workspace
 //! lets them do ([`crate::ownership::act_node`]), and it binds no window to
 //! another record than the one it showed: a record route is a window's
-//! identity, so not even its maker rebinds it. Whoever holds the
+//! identity, so not even its maker rebinds it. Nor does it change the state of
+//! a window someone else opened, which is that person's alone. Whoever holds the
 //! record decides a write with it before taking it in: a server at its api,
 //! a governor admitting it, and every device that receives it.
 
@@ -28,6 +29,7 @@ use tilo_automerge::ApplyIncoming as _;
 use crate::ids::TabId;
 use crate::ownership::{
     DESKTOP_APP, DESKTOP_DOCUMENT, Touched, claimed, foreign_acts, rebound_windows,
+    restated_windows,
 };
 
 /// Whether `(app, record)` is a workspace's shared desktop.
@@ -70,6 +72,12 @@ pub enum DesktopRefusal {
         "{writer} may not place window {window} on the shared desktop: it is a person's own and stays on their layout"
     )]
     Personal { writer: String, window: TabId },
+    /// It changes the state of a window someone else opened ([`crate::window_state`]): only the
+    /// window's own device writes that, for the window's person.
+    #[error(
+        "{writer} may not change the state of window {window}: it is its person's, set by the device that opened it"
+    )]
+    WindowState { writer: String, window: TabId },
     /// It is not a desktop, or not one that can be read.
     #[error("not a shared desktop: {0}")]
     Unreadable(String),
@@ -116,6 +124,23 @@ pub fn judge(
         crate::personal::leave_out(&mut left);
         if let Some(window) = rebound_windows(&seen, &left).first() {
             return Err(DesktopRefusal::Rebound {
+                writer: writer.person.to_owned(),
+                window: *window,
+            });
+        }
+        let states = (
+            crate::window_state::states(doc, Some(change.deps())),
+            crate::window_state::states(doc, Some(&[change.hash()])),
+        );
+        if let Some(window) = restated_windows(
+            (&seen, &states.0),
+            (&left, &states.1),
+            writer.person,
+            writer.members,
+        )
+        .first()
+        {
+            return Err(DesktopRefusal::WindowState {
                 writer: writer.person.to_owned(),
                 window: *window,
             });

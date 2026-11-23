@@ -18900,6 +18900,7 @@ dependencies = [
  "collab-types",
  "desktop-policy",
  "hex",
+ "key-group",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -18911,6 +18912,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-sort",
  "tilo-test-env",
+ "tilolang-runtime",
  "uuid",
 ]
 
