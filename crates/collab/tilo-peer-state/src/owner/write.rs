@@ -387,8 +387,9 @@ impl NativeWorkspaceOwner {
         record.generation = record
             .generation
             .checked_add(1)
-            .ok_or("native owner generation exhausted")?;
-        self.publish_document(workspace, &candidate, record, None)?;
+            .ok_or_else(|| WriteRefusal::Refused("native owner generation exhausted".into()))?;
+        self.publish_document(workspace, &candidate, record, None)
+            .map_err(WriteRefusal::from)?;
         Ok(())
     }
 

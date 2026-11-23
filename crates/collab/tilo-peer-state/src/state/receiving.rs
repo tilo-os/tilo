@@ -355,6 +355,34 @@ impl StatePeer {
             .map(|report| report.summary)
             .map_err(err)
     }
+    /// The device a frame came from, and whether it came as part of what
+    /// another device retains rather than as live traffic.
+    pub(super) fn resolve_origin(
+        &self,
+        origin: TransportOrigin,
+        message: &NeighbourMsg,
+        _now: SystemTime,
+    ) -> Result<([u8; 32], bool), AdmissionError> {
+        match origin {
+            TransportOrigin::ServerDelta(source) => Ok((source, false)),
+            TransportOrigin::RetainedServerDelta(source) => Ok((source, true)),
+            TransportOrigin::RetainedNativePublication { .. } => Err(AdmissionError::malformed(
+                "a retained native publication is no longer a carrier",
+            )),
+            TransportOrigin::UntrustedPresence(source) => {
+                if matches!(
+                    message,
+                    NeighbourMsg::SyncResp { .. } | NeighbourMsg::AppDocument { .. }
+                ) {
+                    return Err(AdmissionError::malformed(
+                        "state requires server-authenticated Delta carrier",
+                    ));
+                }
+                Ok((source, false))
+            }
+        }
+    }
+
     pub(super) fn receive_with_context(
         &mut self,
         source: [u8; 32],
