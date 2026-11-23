@@ -9,8 +9,8 @@ use std::collections::BTreeMap;
 
 use crate::engine::Engine;
 use tilo_action_policy::{Change, Grant, Role, WorkspacePolicy};
-use tilo_desktop_model::grants::PolicyEdit;
-use tilo_desktop_model::{UserId, Workspace, WorkspaceId};
+use tilo_action_policy::PolicyEdit;
+use tilo_desktop_model::{Workspace, WorkspaceId};
 use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
 
 /// The workspaces a member shows, as a workspace's governance writes into them: the ones it
@@ -327,7 +327,7 @@ impl<'a> Membership<'a> {
 /// that holds the workspace reads it there, the sharer's own included. Whether anything changed.
 pub fn project(workspace: &mut Workspace, policy: &WorkspacePolicy) -> bool {
     let owner = policy.owner.as_deref();
-    let members: BTreeMap<UserId, Role> = policy
+    let members: BTreeMap<String, Role> = policy
         .members
         .iter()
         .filter(|(person, _)| owner != Some(person.as_str()))

@@ -16,8 +16,8 @@ use crate::ids::{MintIds, StripId, WorkspaceId};
 use crate::layout::{Strip, Tab, TileContent, WindowGroup};
 use crate::topology::DropTarget;
 use crate::tree::Layout;
+use crate::tree::Workspace;
 use crate::width::WindowWidth;
-use crate::workspace::Workspace;
 
 mod admission;
 mod placement;
@@ -31,6 +31,55 @@ pub use policy::{Refusal, Requester, may_command, may_create_workspace};
 pub const APP_ID: &str = "so.tilo.desktop";
 pub const RESOURCE: &str = "desktop:session";
 pub const ACTION: &str = "command";
+
+/// The grant letting app `app_id` use the desktop's actions beyond its own
+/// window (`tilo action` typed in a terminal), given by `by`: an action grant
+/// naming the app, on the desktop's own node.
+#[must_use]
+pub fn control_grant(
+    policy: &tilo_action_policy::WorkspacePolicy,
+    app_id: &str,
+    by: tilo_action_policy::Grantee,
+) -> tilo_action_policy::Grant {
+    tilo_action_policy::Grant::new(
+        format!("desktop-control:{app_id}"),
+        tilo_action_policy::Grantee::app(app_id),
+        policy.node().app(APP_ID),
+        tilo_action_policy::KindSet::ALL,
+        tilo_action_policy::Answer::Allow,
+        by,
+    )
+}
+
+/// Whether app `app_id` may act on this desktop beyond its own window at
+/// `now`: what the workspace's grants naming the app answer for the desktop's
+/// own actions.
+#[must_use]
+pub fn has_control_at(
+    policy: &tilo_action_policy::WorkspacePolicy,
+    app_id: &str,
+    now: u64,
+) -> bool {
+    policy
+        .party_of(tilo_action_policy::Grantee::app(app_id))
+        .decide(
+            &policy.node().app(APP_ID),
+            tilo_action_policy::ActionKind::Undoable,
+            &tilo_action_policy::Context::at_secs(now),
+        )
+        .answer
+        == tilo_action_policy::Answer::Allow
+}
+
+/// Take back app `app_id`'s control of the desktop: every grant naming it on
+/// the desktop's actions, whatever its lifetime. Whether there was one.
+pub fn stop_control(policy: &mut tilo_action_policy::WorkspacePolicy, app_id: &str) -> bool {
+    let node = policy.node().app(APP_ID);
+    let app = tilo_action_policy::Grantee::app(app_id);
+    !policy
+        .revoke_grants_matching(|grant| grant.grantee == app && grant.node == node)
+        .is_empty()
+}
 
 /// The desktop's layout actions on this device's broker, on [`RESOURCE`]:
 /// what an agent opens and arranges windows with, by id.

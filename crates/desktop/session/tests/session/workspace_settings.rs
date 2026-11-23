@@ -864,6 +864,7 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
     let held = session.handle().read(|tree| {
         tree.active_workspace()
             .unwrap()
+            .policy
             .agent_members_at(tilo_clock::unix_now())
             .len()
     });
@@ -1358,6 +1359,7 @@ fn workspace_settings_makes_the_workspaces_agents() {
     let admitted = session.handle().read(|tree| {
         tree.active_workspace()
             .unwrap()
+            .policy
             .agent_members_at(tilo_clock::unix_now())
             .is_empty()
     });
@@ -1415,6 +1417,7 @@ fn workspace_settings_retires_the_workspaces_agents() {
     let live = session.handle().read(|tree| {
         tree.active_workspace()
             .unwrap()
+            .policy
             .agent_members_at(tilo_clock::unix_now())
             .len()
     });

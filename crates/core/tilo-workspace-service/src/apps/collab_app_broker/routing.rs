@@ -733,7 +733,7 @@ impl AppBrokerState {
             .as_ref()?
             .decide_in_workspace(workspace, |workspace| {
                 let workspace = workspace?;
-                let agents = workspace.agent_members_at(now);
+                let agents = workspace.policy.agent_members_at(now);
                 let people: Vec<(String, String)> = workspace
                     .roster()
                     .into_iter()
@@ -891,6 +891,7 @@ impl AppBrokerState {
             .decide_in_workspace(&route.cluster_id, |workspace| {
                 let workspace = workspace.ok_or("native context workspace is unavailable")?;
                 let agents: Vec<(String, String)> = workspace
+                    .policy
                     .agent_members_at(now)
                     .into_iter()
                     .map(|(agent, _)| (agent.clone(), agent))

@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use crate::ids::WorkspaceId;
 use crate::tree::Layout;
-use crate::workspace::Workspace;
+use crate::tree::Workspace;
 
 impl Layout {
     /// The salt replication treats as this tree's own — the id range this
@@ -80,7 +80,7 @@ impl Layout {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::Workspace;
+    use crate::tree::Workspace;
 
     tilo_test_env::scenario! {
         fn a_layouts_local_view;

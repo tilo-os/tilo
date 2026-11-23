@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use crate::ids::{GroupId, StripId, WorkspaceId};
 use crate::layout::{Strip, WindowGroup};
 use crate::serde_ids::deserialize_id_btree_map;
-use crate::workspace::Workspace;
+use crate::tree::Workspace;
 
 /// A display as the partition knows it: which monitor it is, the backend's
 /// output id for it right now, and where it sits in the logical desktop.

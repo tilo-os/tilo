@@ -99,7 +99,13 @@ impl crate::Shared {
                 grants.iter().try_fold(
                     tilo_session_core::desktop::workspace_settings::PolicyEdit::default(),
                     |edit, cap| {
-                        Ok(edit.and(workspace.grant_sandbox_as_at(actor, cap.clone(), now)?))
+                        Ok(edit.and(collab_types::caps::sandbox::grant_as_at(
+                            &workspace.policy,
+                            &mut workspace.sandbox,
+                            actor,
+                            cap.clone(),
+                            now,
+                        )?))
                     },
                 )
             };

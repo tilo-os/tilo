@@ -445,7 +445,12 @@ fn decide_written(
     let allows = |invoker: Option<&tilo_action_policy::Acting>,
                   node: &tilo_action_policy::TreePath,
                   kind| match invoker {
-        None => workspace.answer_at(actor_key, node, kind, unix_now()) == Answer::Allow,
+        None => {
+            workspace
+                .policy
+                .answer_at(actor_key, node, kind, unix_now())
+                == Answer::Allow
+        }
         Some(invoker) => {
             let access = access.get_or_init(|| {
                 tilo_action_policy::MemberAccess::person(workspace.policy.clone(), actor_key)
@@ -453,7 +458,7 @@ fn decide_written(
             access.invoked_by(invoker).answer(
                 node,
                 kind,
-                &tilo_desktop_model::context_at(unix_now()),
+                &tilo_action_policy::Context::at_secs(unix_now()),
             ) == Answer::Allow
         }
     };
@@ -547,7 +552,7 @@ fn sign_collaboration_op(
     }
     let actor_key = hex::encode(profile.user_public_key);
     let decided = read_workspace(tree, bound_workspace, |workspace| {
-        workspace.role_of(&actor_key)?;
+        workspace.policy.role_of(&actor_key)?;
         Some(decide_written(
             workspace,
             &actor_key,
@@ -637,7 +642,10 @@ fn group_keys(
                 route.app_id,
                 route.document_id,
             );
-            workspace.answer_at(&actor_key, &node, ActionKind::Read, unix_now()) == Answer::Allow
+            workspace
+                .policy
+                .answer_at(&actor_key, &node, ActionKind::Read, unix_now())
+                == Answer::Allow
         })
         .unwrap_or(false);
     if !reads {
@@ -730,6 +738,7 @@ mod tests {
             "notes-sign-save",
             Grantee::person("owner"),
             workspace
+                .policy
                 .node()
                 .app("so.tilo.notes")
                 .resource(DEVICE_SIGNATURE_RESOURCE)
@@ -738,6 +747,7 @@ mod tests {
             Answer::Allow,
             Grantee::person(
                 workspace
+                    .policy
                     .owner()
                     .map_or_else(String::new, ToString::to_string),
             ),
@@ -850,7 +860,7 @@ mod tests {
             let author = Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
 
             let mut committed = Workspace::new(workspace, "Workspace");
-            committed.set_owner(profile.person_id());
+            committed.policy.set_owner(profile.person_id());
             let mut tree = WorkspaceTree::default();
             tree.desktop.workspaces.push(committed);
             let tree = tree.shared();
@@ -936,8 +946,8 @@ mod tests {
 
             let mut tree_guard = tree.write();
             let committed = &mut tree_guard.desktop.workspaces[0];
-            committed.set_owner("someone-else");
-            committed.admit(profile.person_id(), Role::Commenter);
+            committed.policy.set_owner("someone-else");
+            committed.policy.add_member(profile.person_id(), Role::Commenter);
             drop(tree_guard);
             // Without the app's surface a change is decided as an edit of the
             // record, which a commenter is not granted.
@@ -1038,7 +1048,7 @@ params = []
             ));
             let mut tree_guard = tree.write();
             let committed = &mut tree_guard.desktop.workspaces[0];
-            committed.admit(profile.person_id(), Role::Viewer);
+            committed.policy.add_member(profile.person_id(), Role::Viewer);
             drop(tree_guard);
             assert!(matches!(
                 sign_collaboration_op(
@@ -1081,7 +1091,7 @@ params = []
                 .expect("device key");
             let author = Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
             let mut committed = Workspace::new(workspace, "Workspace");
-            committed.set_owner(profile.person_id());
+            committed.policy.set_owner(profile.person_id());
             let mut tree = WorkspaceTree::default();
             tree.desktop.workspaces.push(committed);
             let tree = tree.shared();
@@ -1116,8 +1126,8 @@ params = []
             );
             let mut tree_guard = tree.write();
             let committed = &mut tree_guard.desktop.workspaces[0];
-            committed.set_owner("someone-else");
-            committed.admit(profile.person_id(), Role::Viewer);
+            committed.policy.set_owner("someone-else");
+            committed.policy.add_member(profile.person_id(), Role::Viewer);
             drop(tree_guard);
             assert!(matches!(
                 sign(&emoji),
@@ -1173,7 +1183,7 @@ params = []
             // The person this device signs as belongs to the workspace: the
             // operation is signed with the device's key, no identity picked.
             let mut committed = Workspace::new(workspace, "Workspace");
-            committed.set_owner(profile.person_id());
+            committed.policy.set_owner(profile.person_id());
             let mut tree = WorkspaceTree::default();
             tree.desktop.workspaces.push(committed);
             let tree = tree.shared();
@@ -1184,7 +1194,7 @@ params = []
             // report, never a question to put to the app.
             let mut elsewhere = Workspace::new(workspace, "Workspace");
             let other_person = hex::encode([9; 32]);
-            elsewhere.set_owner(other_person.clone());
+            elsewhere.policy.set_owner(other_person.clone());
             tree.write().desktop.workspaces = vec![elsewhere];
             match sign(&tree) {
                 Response::Error(message) => {
@@ -1197,7 +1207,7 @@ params = []
             // device's person a member beside them: the signature is theirs,
             // again without anything chosen first.
             let mut shared = Workspace::new(workspace, "Workspace");
-            shared.set_owner(other_person);
+            shared.policy.set_owner(other_person);
             shared
                 .policy
                 .members
@@ -1231,7 +1241,7 @@ params = []
                 .unwrap();
             let original = std::fs::read(&profile.record_path).unwrap();
             let mut committed = Workspace::new(workspace, "Workspace");
-            committed.set_owner(profile.person_id());
+            committed.policy.set_owner(profile.person_id());
             let mut tree = WorkspaceTree::default();
             tree.desktop.workspaces.push(committed);
             let socket = temp.path().join("identity.sock");
@@ -1338,7 +1348,7 @@ params = []
                 .expect("registry")
                 .expect("profile");
             let mut committed = Workspace::new(workspace, "Workspace");
-            committed.set_owner(profile.person_id());
+            committed.policy.set_owner(profile.person_id());
             let mut tree = WorkspaceTree::default();
             tree.desktop.workspaces.push(committed);
             let tree = Arc::new(tree.shared());
@@ -1394,9 +1404,9 @@ params = []
             // document operation below; no request shape turns either into a
             // signature over caller-chosen bytes.
             let grant = signing_grant(&tree.read().desktop.workspaces[0]);
-            tree.write().desktop.workspaces[0].grant(grant);
-            let node = tree.read().desktop.workspaces[0].node();
-            tree.write().desktop.workspaces[0].grant(Grant::new(
+            tree.write().desktop.workspaces[0].policy.grant(grant);
+            let node = tree.read().desktop.workspaces[0].policy.node();
+            tree.write().desktop.workspaces[0].policy.grant(Grant::new(
                 "notes-outside",
                 Grantee::person("owner"),
                 node,
@@ -1678,7 +1688,7 @@ params = []
                 .expect("registry")
                 .expect("profile");
             let mut committed = Workspace::new(workspace, "Workspace");
-            committed.set_owner(profile.person_id());
+            committed.policy.set_owner(profile.person_id());
             let mut tree = WorkspaceTree::default();
             tree.desktop.workspaces.push(committed);
             let tree = tree.shared();

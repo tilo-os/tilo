@@ -61,7 +61,7 @@ pub(crate) fn render_key(
         // A workspace this session does not know is nobody's private one.
         return format!("workspace:{workspace}");
     };
-    let readers = held.workspace_readers_at(tilo_clock::unix_now());
+    let readers = held.policy.readers_at(tilo_clock::unix_now());
     if readers.iter().all(|(user, _)| user == person) {
         PRIVATE.to_owned()
     } else {

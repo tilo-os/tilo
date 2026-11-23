@@ -22,7 +22,7 @@ use tilo_app::tilo_workspace_agent::{
 };
 use tilo_session_core::desktop::people::PeopleNames;
 use tilo_session_core::desktop::workspace_settings::{self as domain, agent_access};
-use tilo_desktop_model::{Layout, UserId, Workspace};
+use tilo_desktop_model::{Layout, Workspace};
 use tilo_resource::Id;
 use tilo_session_client::daemon_documents::DaemonShell;
 use tilo_session_core::desktop::i18n::{t, t_args};
@@ -133,7 +133,7 @@ pub(crate) struct Agents {
 /// The list as the tab follows it.
 struct Open {
     workspace: String,
-    person: UserId,
+    person: String,
     /// The grants it was followed at: they decide what the tab offers, so a workspace whose
     /// grants changed follows it again.
     policy: tilo_action_policy::WorkspacePolicy,
@@ -200,7 +200,7 @@ impl Agents {
     pub(crate) fn pane(
         &self,
         tree: &Layout,
-        person: &UserId,
+        person: &str,
         (names, apps): (&PeopleNames, &dyn domain::AppDirectory),
         review: Option<&str>,
     ) -> sheet::Agents {
@@ -462,7 +462,7 @@ impl Agents {
     /// Whether the tab would show something else now: the record moved, or it could not be opened
     /// yet and is asked for again. `false` before the tab first opened it.
     #[cfg(target_os = "linux")]
-    pub(crate) fn moved(&self, tree: &Layout, person: &UserId) -> bool {
+    pub(crate) fn moved(&self, tree: &Layout, person: &str) -> bool {
         let Some(workspace) = tree.active_workspace() else {
             return false;
         };
@@ -486,7 +486,7 @@ impl Agents {
     fn record(
         &self,
         workspace: Option<&Workspace>,
-        person: &UserId,
+        person: &str,
     ) -> Option<FollowedResource<Record>> {
         let workspace = workspace?;
         let workspace_id = workspace.id().to_string();
@@ -526,7 +526,7 @@ impl Agents {
     /// Nothing happens until the tab opened the record here: no other tab
     /// reads it.
     #[cfg(target_os = "linux")]
-    pub(crate) fn settle(&self, tree: &Layout, person: &UserId) {
+    pub(crate) fn settle(&self, tree: &Layout, person: &str) {
         let Some(workspace) = tree.active_workspace() else {
             return;
         };
@@ -569,7 +569,7 @@ impl Agents {
         let state = record.get();
         let mut taken: Vec<String> = state.active().map(|agent| agent.name.clone()).collect();
         let mut number: u64 = 0;
-        for (agent, _) in workspace.agent_members_at(tilo_clock::unix_now()) {
+        for (agent, _) in workspace.policy.agent_members_at(tilo_clock::unix_now()) {
             if state.get(&Id::from_raw(agent.clone())).is_some() {
                 continue;
             }
@@ -626,7 +626,7 @@ impl Agents {
     pub(crate) fn answer(
         &self,
         workspace: Option<&Workspace>,
-        person: &UserId,
+        person: &str,
         effect: &sheet::WorkspaceSettingsEffect,
     ) -> Option<Answered> {
         use sheet::WorkspaceSettingsEffect as Ask;
@@ -715,7 +715,7 @@ impl Agents {
     pub(crate) fn create(
         &self,
         workspace: Option<&Workspace>,
-        person: &UserId,
+        person: &str,
         (name, mcp_client): (&str, Option<&str>),
         model: &str,
     ) -> Result<(String, String), String> {
@@ -744,7 +744,7 @@ impl Agents {
     pub(crate) fn of_client(
         &self,
         workspace: Option<&Workspace>,
-        person: &UserId,
+        person: &str,
         client: &str,
     ) -> Option<(String, String)> {
         let record = self.record(workspace, person)?;
@@ -776,7 +776,7 @@ impl Agents {
     pub(crate) fn set_answers(
         &self,
         workspace: Option<&Workspace>,
-        person: &UserId,
+        person: &str,
         agent: &str,
         answers: &[(AnswerScope, ActionKind, Option<Answer>)],
     ) -> Result<(), String> {

@@ -51,7 +51,7 @@ fn group(id: u64, tabs: &[u64]) -> WindowGroup {
 /// One workspace with strip 1 holding group 10 [100, 101].
 fn layout() -> Layout {
     let mut workspace = Workspace::new(identity(), "Studio");
-    workspace.set_owner("ada");
+    workspace.policy.set_owner("ada");
     let mut strip = Strip::new(StripId(1), "A");
     strip.window_groups = vec![group(10, &[100, 101])];
     workspace.strips = vec![strip];
@@ -139,7 +139,7 @@ tilo_test_env::scenario! {
         assert_eq!(reopened.records, held.records);
         assert_eq!(reopened.authors, held.authors);
         assert_eq!(
-            reopened.tree.workspaces[0].owner().map(String::as_str),
+            reopened.tree.workspaces[0].policy.owner(),
             Some("ada"),
             "who owns the workspace came with it"
         );

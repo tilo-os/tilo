@@ -390,8 +390,8 @@ fn strip_acts(
 /// as moving it along a strip. Placing one that stood nowhere yet (a canvas
 /// finding room for a window someone opened) moves nothing.
 fn moved_on_canvas(
-    before: &crate::workspace::Workspace,
-    after: Option<&crate::workspace::Workspace>,
+    before: &crate::tree::Workspace,
+    after: Option<&crate::tree::Workspace>,
     foreign: &dyn Fn(u64) -> bool,
 ) -> Vec<TabId> {
     before
@@ -453,8 +453,8 @@ pub fn rebound_windows(before: &SharedDesktop, after: &SharedDesktop) -> Vec<Tab
 mod tests {
     use super::*;
     use crate::layout::{Strip, Tab, TileContent, WindowGroup};
+    use crate::tree::Workspace;
     use crate::width::WindowWidth;
-    use crate::workspace::Workspace;
 
     const ADA: &str = "ada";
     const BEN: &str = "ben";

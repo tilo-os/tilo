@@ -17,7 +17,6 @@ pub mod branch;
 pub mod closed_tabs;
 pub mod commands;
 pub mod desktop_doc;
-pub mod grants;
 pub mod history;
 pub mod ids;
 pub mod layout;
@@ -40,7 +39,6 @@ mod view;
 pub mod width;
 pub mod window_share;
 pub mod window_state;
-pub mod workspace;
 
 pub use app::{APP_ID_PREFIX, AppId, AppKind};
 pub use closed_tabs::{CLOSED_TABS_PER_WORKSPACE, ClosedTab, ClosedTabs, Leaving, Reopened};
@@ -58,9 +56,5 @@ pub use present::{Present, Status};
 pub use receipt::WorkspaceEffectReceipt;
 pub use shared_surfaces::SharedSurfaces;
 pub use topology::{DropTarget, GroupShape, RemovedTab, TabMove};
-pub use tree::{Layout, STATE_SCHEMA_VERSION};
+pub use tree::{Layout, STATE_SCHEMA_VERSION, Workspace, WorkspaceDefaultError};
 pub use width::WindowWidth;
-pub use workspace::{
-    APP_ACTION_GRANT_ACTION_ID, APP_ACTION_REVOKE_ACTION_ID, PresetMutationError, UserId,
-    WORKSPACE_GOVERNANCE_APP_ID, Workspace, WorkspaceDefaultError, context_at, preset_assign_node,
-};

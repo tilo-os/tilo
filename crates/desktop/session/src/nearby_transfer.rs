@@ -1333,19 +1333,19 @@ fn link_of(inner: &Inner) -> Result<&SharedLink, String> {
 /// The folders the workspace lets Files reach with `access` , as its sandbox decides it now.
 fn files_folders(workspace: &tilo_desktop_model::Workspace, access: Access) -> Vec<PathBuf> {
     let now = tilo_clock::unix_now();
-    workspace
-        .app_capabilities_at(FILES_APP_ID, now)
+    collab_types::caps::sandbox::of_app_at(&workspace.sandbox, FILES_APP_ID, now)
         .into_iter()
         .filter_map(|capability| match &capability.scope {
             Scope::FsPath(path) => Some(path),
             _ => None,
         })
         .filter(|path| {
-            workspace.sandbox_decide_at(
+            collab_types::caps::decide_app(
                 FILES_APP_ID,
                 &ResourceRef::FsPath((*path).clone()),
                 access,
-                now,
+                &workspace.sandbox,
+                Some(now.saturating_mul(1000)),
             ) == CapDecision::Allow
         })
         .map(PathBuf::from)
@@ -2405,7 +2405,8 @@ mod transfers_between_devices {
     fn session(folder: &Path) -> Session {
         let workspace_id = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
         let mut workspace = Workspace::new(workspace_id, "Session");
-        workspace.grant_sandbox(
+        collab_types::caps::sandbox::grant(
+            &mut workspace.sandbox,
             collab_types::caps::CapOverride::grant(
                 tilo_action_policy::Grantee::person("ada"),
                 collab_types::caps::Scope::FsPath(folder.to_string_lossy().into_owned()),

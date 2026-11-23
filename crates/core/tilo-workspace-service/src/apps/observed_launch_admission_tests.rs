@@ -54,7 +54,9 @@ async fn installed_launch_requires_signed_admission_and_durable_terminal() {
                 if scenario == "revoked_at_effect" {
                     let membership = env.membership.clone();
                     rig.state.set_observed_launch_effect_hook(move || {
-                        membership.write().workspaces[0].revoke_grants_matching(|_| true);
+                        membership.write().workspaces[0]
+                            .policy
+                            .revoke_grants_matching(|_| true);
                     });
                 }
                 let handle = caller.handle.clone();

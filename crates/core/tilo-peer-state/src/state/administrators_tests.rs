@@ -224,7 +224,7 @@ tilo_test_env::scenario! {
         let on_set = tilo_action_policy::Grant::new(
             "assign-readers",
             tilo_action_policy::Grantee::person(hex::encode(user)),
-            tilo_desktop_model::preset_assign_node(peer.workspace_id(), "Readers"),
+            tilo_action_policy::roles::preset_assign_node(peer.workspace_id(), "Readers"),
             KindSet::OUTSIDE,
             tilo_action_policy::Answer::Allow,
             tilo_action_policy::Grantee::person(owner),

@@ -32,7 +32,8 @@ pub fn allows(
         .iter()
         .find(|held| held.id().to_string() == workspace)
         .is_some_and(|workspace| {
-            workspace.answer_at(person, &workspace.node().join(node), *kind, now) == Answer::Allow
+            let policy = &workspace.policy;
+            policy.answer_at(person, &policy.node().join(node), *kind, now) == Answer::Allow
         })
 }
 

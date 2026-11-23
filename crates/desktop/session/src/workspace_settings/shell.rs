@@ -13,7 +13,7 @@ use tilo_session_core::desktop::authority::WorkspaceAuthority as _;
 use tilo_session_core::desktop::host::chrome::ChromeIntent;
 use tilo_session_core::desktop::people::PeopleNames;
 use tilo_session_core::desktop::workspace_settings as domain;
-use tilo_desktop_model::{Layout, UserId, Workspace};
+use tilo_desktop_model::{Layout, Workspace};
 use tilo_session_core::desktop::i18n::{t, t_args};
 use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_sheets::SheetState as _;
@@ -63,7 +63,7 @@ impl WorkspaceTabs {
 /// and the workspace's own records its tabs read.
 pub(crate) struct Feeding<'a> {
     pub(crate) handle: &'a DesktopHandle,
-    pub(crate) person: &'a UserId,
+    pub(crate) person: &'a str,
     /// This session's search: the machine's app lists, and the apps a page or a link the sheet asks
     /// for opens in.
     pub(crate) search: &'a SessionSearch,
@@ -424,7 +424,7 @@ fn custom_role_change(
     change: tilo_action_policy::Change,
 ) {
     govern(state, fed, move |ws, actor| {
-        ws.govern_all_at(actor, vec![change.clone()], tilo_clock::unix_now())
+        ws.policy.change_all_as_at(actor, vec![change.clone()], tilo_clock::unix_now())
     });
 }
 
@@ -455,8 +455,8 @@ fn refused(state: &sheet::WorkspaceSettingsState, reason: &str) {
 /// nothing.
 fn edit(
     handle: &DesktopHandle,
-    person: &UserId,
-    edit: impl FnOnce(&mut Workspace, &UserId) -> domain::PolicyEdit,
+    person: &str,
+    edit: impl FnOnce(&mut Workspace, &str) -> domain::PolicyEdit,
 ) {
     edit_changed(handle, person, |workspace, actor| {
         !edit(workspace, actor).is_empty()
@@ -469,7 +469,7 @@ fn edit(
 fn govern(
     state: &sheet::WorkspaceSettingsState,
     fed: &Feeding<'_>,
-    edit: impl Fn(&mut Workspace, &UserId) -> Result<domain::PolicyEdit, Refusal> + 'static,
+    edit: impl Fn(&mut Workspace, &str) -> Result<domain::PolicyEdit, Refusal> + 'static,
 ) {
     let Some(workspace) = fed
         .handle
@@ -508,8 +508,8 @@ fn refuse(state: &sheet::WorkspaceSettingsState, fed: &Feeding<'_>, reason: &str
 /// something changed.
 fn edit_changed(
     handle: &DesktopHandle,
-    person: &UserId,
-    change: impl FnOnce(&mut Workspace, &UserId) -> bool,
+    person: &str,
+    change: impl FnOnce(&mut Workspace, &str) -> bool,
 ) {
     let mut tree = handle.read(Clone::clone);
     let Some(workspace) = tree.active_workspace_mut() else {
@@ -712,7 +712,7 @@ fn move_workspace(handle: &DesktopHandle, step: i32) {
 /// Everything the sheet shows of `tree` for `person` .
 fn settings(
     tree: &Layout,
-    person: &UserId,
+    person: &str,
     apps: &dyn domain::AppDirectory,
     tab: sheet::Tab,
     review: Option<&str>,
@@ -780,7 +780,7 @@ fn settings(
 /// they are in it.
 fn general(
     tree: &Layout,
-    person: &UserId,
+    person: &str,
     personal: Option<&RefCell<Personal>>,
     view: Option<&WorkspaceView>,
 ) -> sheet::General {
@@ -1019,7 +1019,7 @@ fn own_name() -> Option<String> {
 fn people(
     ws: &Workspace,
     names: &PeopleNames,
-    person: &UserId,
+    person: &str,
     holders: &[Holder],
 ) -> sheet::People {
     let kept: Vec<domain::people::MemberHolder> = holders
@@ -1044,7 +1044,7 @@ fn people(
 /// composer giving one more.
 fn permissions(
     ws: &Workspace,
-    person: &UserId,
+    person: &str,
     apps: &dyn domain::AppDirectory,
     engine: Option<&Engine>,
     held: &dyn tilo_peer_state::workspace_documents::DeviceDocuments,
@@ -1145,7 +1145,7 @@ fn permissions(
 
 fn document_access(
     ws: &Workspace,
-    person: &UserId,
+    person: &str,
     apps: &dyn domain::AppDirectory,
     engine: Option<&Engine>,
     held: &dyn tilo_peer_state::workspace_documents::DeviceDocuments,
@@ -1194,7 +1194,7 @@ fn document_access(
 
 /// The Apps & Files tab: which app opens each kind of file and link here,
 /// the workspace's choice and the person's own.
-fn apps_pane(ws: &Workspace, person: &UserId, lists: &AppLists) -> sheet::Apps {
+fn apps_pane(ws: &Workspace, person: &str, lists: &AppLists) -> sheet::Apps {
     let manage = ws.may_administer(person);
     sheet::Apps {
         intro: sheet::Intro {

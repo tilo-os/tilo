@@ -1,7 +1,7 @@
 //! Which app opens a kind of file or link: the workspace's choice and each person's own, in the
 //! words the Apps & Files tab uses.
 
-use tilo_desktop_model::{UserId, Workspace};
+use tilo_desktop_model::Workspace;
 use tilo_sort::CompactSort as _;
 
 use crate::desktop::i18n::{t, t_args};
@@ -89,7 +89,7 @@ pub struct DefaultAppChoice {
 #[must_use]
 pub fn default_app_choices(
     ws: &Workspace,
-    local_user: &UserId,
+    local_user: &str,
     candidates: &[desktop_policy::AppCandidate],
 ) -> Vec<DefaultAppChoice> {
     let mut resources: Vec<_> = candidates
@@ -115,7 +115,7 @@ pub fn default_app_choices(
 /// Both choices for one kind, as the person reads them.
 pub(crate) fn default_app_labels(
     ws: &Workspace,
-    local_user: &UserId,
+    local_user: &str,
     resource: &desktop_policy::ResourceKind,
     candidates: &[desktop_policy::AppCandidate],
 ) -> (String, String) {

@@ -1,14 +1,8 @@
 //! A workspace's append-only history stays out of what reads the desktop as
-//! it is now: [`history::without_history`] serialisation and
-//! [`Workspace::policy_view`].
+//! it is now: [`history::without_history`] serialisation.
 
-use collab_types::caps::{Access, CapOverride, ResourceRef, Scope};
-use tilo_action_policy::{ActionKind, Answer, Grant, Grantee, KindSet, TreePath};
 use tilo_actions::{ActionContext, EffectReceiptStatus, InvocationId};
 use tilo_desktop_model::*;
-
-/// The clock these fixtures run at, Unix seconds.
-const NOW: u64 = 1_800_000_000;
 
 fn receipt(n: u128) -> WorkspaceEffectReceipt {
     WorkspaceEffectReceipt {
@@ -23,7 +17,7 @@ fn receipt(n: u128) -> WorkspaceEffectReceipt {
 /// A desktop whose one workspace has `receipts` effect receipts.
 fn desktop(receipts: u128) -> Layout {
     let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Home");
-    workspace.set_owner("owner");
+    workspace.policy.set_owner("owner");
     workspace.strips.push(Strip::new(StripId(7), "Main"));
     workspace.effect_receipts = (0..receipts).map(receipt).collect();
     Layout {
@@ -84,72 +78,4 @@ tilo_test_env::scenario! {
                 .is_none()
         );
     }
-}
-
-#[test]
-fn a_policy_view_decides_like_the_workspace_and_carries_no_layout_or_history() {
-    let mut workspace = desktop(50).workspaces.remove(0);
-    workspace.admit("editor", tilo_action_policy::Role::Editor);
-    let notes = workspace.node().app("so.tilo.notes");
-    workspace.grant(Grant::new(
-        "notes-reads",
-        Grantee::person("editor"),
-        notes,
-        KindSet::READ,
-        Answer::Allow,
-        Grantee::person("owner"),
-    ));
-    workspace.grant_sandbox(
-        CapOverride::grant(
-            Grantee::person("editor"),
-            Scope::FsPath("/var/workspace/notes".into()),
-            Access::Read,
-        )
-        .through("so.tilo.notes"),
-    );
-    let view = workspace.policy_view();
-
-    assert!(view.strips.is_empty());
-    assert!(view.effect_receipts.is_empty());
-    assert!(view.shortcuts.is_empty());
-    assert_eq!(
-        (view.id(), &view.id(), &view.name),
-        (workspace.id(), &workspace.id(), &workspace.name)
-    );
-
-    let people = ["owner", "editor", "stranger"];
-    let decided_at = [workspace.node(), workspace.node().app("so.tilo.notes")];
-    for person in people {
-        assert_eq!(
-            view.may_govern_at(person, tilo_action_policy::roles::governance::GRANT, NOW),
-            workspace.may_govern_at(person, tilo_action_policy::roles::governance::GRANT, NOW),
-            "{person}"
-        );
-        assert_eq!(view.role_of(person), workspace.role_of(person));
-        for kind in ActionKind::ALL {
-            for node in &decided_at {
-                assert_eq!(
-                    view.answer_at(person, node, kind, NOW),
-                    workspace.answer_at(person, node, kind, NOW),
-                    "{person} {kind:?} {node}"
-                );
-            }
-        }
-    }
-    let app = |ws: &Workspace| {
-        ws.subject_authority(Grantee::person("editor"))
-            .decide(
-                &ws.node().join(&TreePath::root().app("so.tilo.notes")),
-                ActionKind::Read,
-                &context_at(NOW),
-            )
-            .answer
-    };
-    assert_eq!(app(&view), app(&workspace));
-    let code = "so.tilo.notes";
-    let notes_files = ResourceRef::FsPath("/var/workspace/notes/a.md".into());
-    assert_eq!(
-        view.sandbox_decide_at(code, &notes_files, Access::Read, NOW),
-        workspace.sandbox_decide_at(code, &notes_files, Access::Read, NOW),
-    );
 }

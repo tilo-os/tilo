@@ -6,8 +6,8 @@ tilo_automerge_isolate::test_worker!();
 
 use ed25519_dalek::SigningKey;
 use pollster::FutureExt as _;
+use tilo_action_policy::PolicyEdit;
 use tilo_action_policy::{Change, Grantee, Role, WorkspacePolicy};
-use tilo_desktop_model::grants::PolicyEdit;
 use tilo_desktop_model::{Workspace, WorkspaceId};
 use tilo_network_actor::DeviceIdentity;
 use tilo_peer_state::owner::testing::{self, workspace::TestWorkspace};
@@ -257,9 +257,14 @@ fn what_one_member_lets_an_app_reach_reaches_every_members_session() {
         Access::Read,
     )
     .through("so.tilo.mail");
-    let edit = workspace
-        .grant_sandbox_as_at(&owner, network, tilo_clock::unix_now())
-        .expect("the owner may let an app reach the network");
+    let edit = collab_types::caps::sandbox::grant_as_at(
+        &workspace.policy,
+        &mut workspace.sandbox,
+        &owner,
+        network,
+        tilo_clock::unix_now(),
+    )
+    .expect("the owner may let an app reach the network");
     // A member who may not grant in the workspace lets no app reach anything for everyone: the
     // workspace refuses it, here and on every device.
     let member = hex::encode(sessions.session_cert.user_public_key);
@@ -827,17 +832,19 @@ fn a_refused_grant_change_says_why_and_keeps_the_grant() {
     let mut session = a_governed_session();
     // The workspace grants an app the camera, as one of its devices wrote.
     let mut tree = session.session().handle().read(Clone::clone);
-    tree.active_workspace_mut()
-        .expect("a workspace in front")
-        .grant_sandbox(
-            collab_types::caps::CapOverride::grant(
-                tilo_action_policy::Grantee::person("ada"),
-                collab_types::caps::Scope::Device(collab_types::caps::DeviceCap::Camera),
-                collab_types::caps::Access::Read,
-            )
-            .through("so.tilo.notes")
-            .lasting(tilo_action_policy::Lifetime::Session),
-        );
+    collab_types::caps::sandbox::grant(
+        &mut tree
+            .active_workspace_mut()
+            .expect("a workspace in front")
+            .sandbox,
+        collab_types::caps::CapOverride::grant(
+            tilo_action_policy::Grantee::person("ada"),
+            collab_types::caps::Scope::Device(collab_types::caps::DeviceCap::Camera),
+            collab_types::caps::Access::Read,
+        )
+        .through("so.tilo.notes")
+        .lasting(tilo_action_policy::Lifetime::Session),
+    );
     session.session().handle().replace_tree(tree);
     let mut app = settings_sheet(&mut session);
     app.effect(

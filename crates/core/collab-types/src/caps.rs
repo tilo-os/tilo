@@ -15,6 +15,7 @@
 
 use serde::{Deserialize, Serialize};
 pub mod net;
+pub mod sandbox;
 
 pub use net::{Allowed, EgressPolicy, HostPattern, NetHostError, NetHostPattern, host_covers};
 use tilo_action_policy::{Acting, Grantee, Lifetime, MemberId};

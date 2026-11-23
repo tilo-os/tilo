@@ -24,7 +24,7 @@
 use super::TabPlacement;
 use crate::ids::{GroupId, StripId};
 use crate::tree::Layout;
-use crate::workspace::Workspace;
+use crate::tree::Workspace;
 
 /// One group's horizontal extent, in the strip's **unscrolled canvas
 /// space**, so a border's position doesn't move when the strip is panned.

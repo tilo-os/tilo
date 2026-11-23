@@ -382,7 +382,7 @@ impl AppBrokerState {
         };
         let allowed = admitted
             .with_current_authority(self.membership.as_ref(), &route.cluster_id, |access| {
-                let cx = tilo_desktop_model::context_at(now);
+                let cx = tilo_action_policy::Context::at_secs(now);
                 let allows = |invoker: Option<&tilo_action_policy::Acting>,
                               node: &tilo_action_policy::TreePath,
                               kind| {

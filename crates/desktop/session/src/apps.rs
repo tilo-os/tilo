@@ -1880,7 +1880,10 @@ impl Apps {
     /// their authority in it is projected from.
     fn launching_into(shown: &tilo_desktop_model::Workspace) -> Workspace {
         let mut launched = Workspace::under(&runtime_dir(), shown.id().to_string());
-        launched.grants = shown.launch_grants();
+        launched.grants = collab_types::caps::LaunchGrants {
+            sandbox: shown.sandbox.clone(),
+            ..collab_types::caps::LaunchGrants::default()
+        };
         launched.policy = Some(shown.policy.clone());
         launched
     }

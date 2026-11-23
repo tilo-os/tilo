@@ -520,7 +520,7 @@ tilo_test_env::scenario! {
                         .decide(
                             &tree.workspaces[0].node().app("so.tilo.notes"),
                             ActionKind::Undoable,
-                            &tilo_desktop_model::context_at(0),
+                            &tilo_action_policy::Context::at_secs(0),
                         )
                         .answer
                 })
@@ -584,7 +584,7 @@ tilo_test_env::scenario! {
                         .decide(
                             &tree.workspaces[0].node().app("so.tilo.notes"),
                             kind,
-                            &tilo_desktop_model::context_at(0),
+                            &tilo_action_policy::Context::at_secs(0),
                         )
                         .answer
                 })
@@ -683,7 +683,7 @@ tilo_test_env::scenario! {
                 .with_authority(Some(&tree.desktop), &route.cluster_id, |access| {
                     access
                         .authority()
-                        .decide(node, kind, &tilo_desktop_model::context_at(0))
+                        .decide(node, kind, &tilo_action_policy::Context::at_secs(0))
                         .answer
                 })
                 .unwrap()
@@ -970,7 +970,7 @@ fn the_persons_workspace_admits_only_its_own_roots_devices_as_owner() {
                 .decide(
                     &roles::governance_action(&route.cluster_id, roles::governance::ADD_MEMBER),
                     roles::GOVERNANCE_KIND,
-                    &tilo_desktop_model::context_at(0),
+                    &tilo_action_policy::Context::at_secs(0),
                 )
                 .answer
         })

@@ -1207,7 +1207,7 @@ impl WorkspaceLayout {
     }
 }
 
-impl crate::workspace::Workspace {
+impl crate::tree::Workspace {
     /// Every place stands for a window on the layout: one that left it takes its place and its float
     /// with it, so the next window stands in the room it left instead of beside a hole. Called
     /// wherever a group can go — a close, a command, a layout read back from its record.

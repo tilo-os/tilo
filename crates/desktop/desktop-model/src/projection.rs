@@ -21,7 +21,7 @@ use crate::ids::WorkspaceId;
 use crate::layout::TileContent;
 use crate::receipt::WorkspaceEffectReceipt;
 use crate::tree::Layout;
-use crate::workspace::Workspace;
+use crate::tree::Workspace;
 
 /// Key naming the workspace a document describes (a UUID string).
 pub const WORKSPACE_ID_KEY: &str = "workspace";
@@ -198,7 +198,7 @@ pub fn workspace_presets_of(doc: &AutoCommit) -> Vec<tilo_action_policy::Preset>
         .map(|(_, preset)| preset)
         .filter(|preset: &tilo_action_policy::Preset| preset.validate().is_ok())
         .collect();
-    crate::grants::sort_presets(&mut presets);
+    tilo_action_policy::sort_presets(&mut presets);
     presets
 }
 

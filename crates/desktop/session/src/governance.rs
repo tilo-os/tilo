@@ -27,7 +27,7 @@ impl Workspaces for Session<'_> {
 /// answered.
 pub(crate) struct Governing<'a> {
     pub(crate) handle: &'a tilo_session_core::desktop::state::DesktopHandle,
-    pub(crate) person: &'a tilo_desktop_model::UserId,
+    pub(crate) person: &'a str,
     pub(crate) view: Option<&'a std::sync::Arc<crate::workspace_view::WorkspaceView>>,
     pub(crate) landings: &'a crate::landing::Landings,
 }
@@ -42,7 +42,7 @@ pub(crate) fn govern(
     workspace_id: WorkspaceId,
     edit: impl Fn(
         &mut Workspace,
-        &tilo_desktop_model::UserId,
+        &str,
     )
         -> Result<tilo_session_core::desktop::workspace_settings::PolicyEdit, tilo_action_policy::Refusal>
     + 'static,

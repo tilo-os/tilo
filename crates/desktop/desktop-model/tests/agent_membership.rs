@@ -13,7 +13,7 @@ const NOW: u64 = 1_800_000_000;
 
 fn workspace() -> Workspace {
     let mut ws = Workspace::new(WorkspaceId::from_u128(1), "Demo");
-    ws.set_owner("ada");
+    ws.policy.set_owner("ada");
     ws
 }
 
@@ -38,25 +38,25 @@ tilo_test_env::scenario! {
         // The floor, and the one that matters most: a workspace nobody has
         // admitted an agent to has no agents in it.
         {
-            assert!(workspace().agent_members_at(NOW).is_empty());
+            assert!(workspace().policy.agent_members_at(NOW).is_empty());
         }
         // A grant admits the agent and a revoke removes it.
         {
             let mut ws = workspace();
-            let grant = agent_grant(&ws, "scribe-member", ws.node());
-            ws.govern_as_at("ada", Change::Grant(grant), NOW)
+            let grant = agent_grant(&ws, "scribe-member", ws.policy.node());
+            ws.policy.change_as_at("ada", Change::Grant(grant), NOW)
                 .expect("the owner may grant in the workspace");
 
             assert_eq!(
-                ws.agent_members_at(NOW),
+                ws.policy.agent_members_at(NOW),
                 vec![("scribe".to_string(), KindSet::READ_UNDOABLE)],
                 "the kinds of the workspace grant are what the agent may do",
             );
 
-            ws.govern_as_at("ada", Change::Revoke(GrantId::new("scribe-member")), NOW)
+            ws.policy.change_as_at("ada", Change::Revoke(GrantId::new("scribe-member")), NOW)
                 .expect("the owner may revoke");
             assert!(
-                ws.agent_members_at(NOW).is_empty(),
+                ws.policy.agent_members_at(NOW).is_empty(),
                 "revoking the grant is the whole of taking the agent out",
             );
         }
@@ -66,11 +66,11 @@ tilo_test_env::scenario! {
         // of the roster.
         {
             let mut ws = workspace();
-            let grant = agent_grant(&ws, "scribe-app", ws.node().app("so.tilo.word-processor"));
-            ws.govern_as_at("ada", Change::Grant(grant), NOW)
+            let grant = agent_grant(&ws, "scribe-app", ws.policy.node().app("so.tilo.word-processor"));
+            ws.policy.change_as_at("ada", Change::Grant(grant), NOW)
                 .expect("owner grants");
             assert!(
-                ws.agent_members_at(NOW).is_empty(),
+                ws.policy.agent_members_at(NOW).is_empty(),
                 "a grant naming one app is a share, not membership",
             );
         }
@@ -79,29 +79,29 @@ tilo_test_env::scenario! {
         {
             let mut ws = workspace();
             let grant =
-                agent_grant(&ws, "scribe-expired", ws.node()).with_lifetime(Lifetime::Until(1_000));
-            ws.govern_as_at("ada", Change::Grant(grant), NOW)
+                agent_grant(&ws, "scribe-expired", ws.policy.node()).with_lifetime(Lifetime::Until(1_000));
+            ws.policy.change_as_at("ada", Change::Grant(grant), NOW)
                 .expect("owner grants");
-            assert!(ws.agent_members_at(NOW).is_empty());
+            assert!(ws.policy.agent_members_at(NOW).is_empty());
         }
     }
 
     phase a_grant_on_another_workspace_is_not_membership_here;
     {
         let mut ws = workspace();
-        let here = agent_grant(&ws, "member", ws.node());
-        ws.grant(Grant {
+        let here = agent_grant(&ws, "member", ws.policy.node());
+        ws.policy.grant(Grant {
             grantee: Grantee::agent("member"),
             ..here
         });
-        ws.grant(Grant {
+        ws.policy.grant(Grant {
             id: GrantId::new("other-workspace"),
             grantee: Grantee::agent("other-workspace"),
             node: TreePath::workspace("a-different-durable-workspace"),
-            ..agent_grant(&ws, "other-workspace", ws.node())
+            ..agent_grant(&ws, "other-workspace", ws.policy.node())
         });
         assert_eq!(
-            ws.agent_members_at(NOW),
+            ws.policy.agent_members_at(NOW),
             vec![("member".to_string(), KindSet::READ_UNDOABLE)]
         );
     }
@@ -109,8 +109,8 @@ tilo_test_env::scenario! {
     phase the_people_roster_is_the_owner_and_the_members;
     {
         let mut ws = workspace();
-        ws.admit("member", Role::Viewer);
-        ws.grant(Grant::new(
+        ws.policy.add_member("member", Role::Viewer);
+        ws.policy.grant(Grant::new(
             "elsewhere",
             Grantee::person("not-a-member-here"),
             TreePath::workspace("other-workspace"),
@@ -119,11 +119,11 @@ tilo_test_env::scenario! {
             Grantee::person("ada"),
         ));
         assert_eq!(
-            ws.roster(),
+            ws.policy.people(),
             vec![("ada".into(), Role::Owner), ("member".into(), Role::Viewer),]
         );
-        assert_eq!(ws.role_of("member"), Some(Role::Viewer));
-        assert_eq!(ws.role_of("not-a-member-here"), None);
+        assert_eq!(ws.policy.role_of("member"), Some(Role::Viewer));
+        assert_eq!(ws.policy.role_of("not-a-member-here"), None);
     }
 }
 
@@ -133,21 +133,21 @@ tilo_test_env::scenario! {
     phase a_members_role_decides_what_they_may_do;
     {
         let mut ws = workspace();
-        ws.admit("remote-editor", Role::Editor);
-        assert_eq!(ws.role_of("remote-editor"), Some(Role::Editor));
+        ws.policy.add_member("remote-editor", Role::Editor);
+        assert_eq!(ws.policy.role_of("remote-editor"), Some(Role::Editor));
         assert_eq!(
-            ws.answer_at(
+            ws.policy.answer_at(
                 "remote-editor",
-                &ws.node().app("so.tilo.notes").action("rename"),
+                &ws.policy.node().app("so.tilo.notes").action("rename"),
                 ActionKind::Undoable,
                 NOW,
             ),
             Answer::Allow
         );
         assert_eq!(
-            ws.answer_at(
+            ws.policy.answer_at(
                 "remote-editor",
-                &ws.node().app("so.tilo.notes").action("publish"),
+                &ws.policy.node().app("so.tilo.notes").action("publish"),
                 ActionKind::Outside,
                 NOW,
             ),
@@ -161,7 +161,7 @@ tilo_test_env::scenario! {
     // that second one is the OS claiming a person is present when none is.
     {
         let mut ws = workspace();
-        ws.govern_as_at(
+        ws.policy.change_as_at(
             "ada",
             Change::AddMember {
                 person: "bob".into(),
@@ -170,11 +170,11 @@ tilo_test_env::scenario! {
             NOW,
         )
         .expect("owner admits");
-        let grant = agent_grant(&ws, "scribe-member", ws.node());
-        ws.govern_as_at("ada", Change::Grant(grant), NOW)
+        let grant = agent_grant(&ws, "scribe-member", ws.policy.node());
+        ws.policy.change_as_at("ada", Change::Grant(grant), NOW)
             .expect("owner grants");
 
-        let people: Vec<String> = ws.roster().into_iter().map(|(u, _)| u).collect();
+        let people: Vec<String> = ws.policy.people().into_iter().map(|(u, _)| u).collect();
         assert!(people.contains(&"bob".to_string()));
         assert!(
             !people.contains(&"scribe".to_string()),
@@ -182,7 +182,7 @@ tilo_test_env::scenario! {
         );
 
         let agents: Vec<String> = ws
-            .agent_members_at(NOW)
+            .policy.agent_members_at(NOW)
             .into_iter()
             .map(|(a, _)| a)
             .collect();

@@ -1119,7 +1119,8 @@ fn read(workspace: &Workspace, person: &str, earlier: &[String]) -> WorkspaceRea
         id: workspace.id(),
         name: workspace.name.clone(),
         others: workspace
-            .workspace_readers_at(tilo_clock::unix_now())
+            .policy
+            .readers_at(tilo_clock::unix_now())
             .into_iter()
             .any(|(reader, _)| !mine(&reader)),
     }

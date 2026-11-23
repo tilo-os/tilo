@@ -409,7 +409,7 @@ mod tests {
             ));
 
             // The person takes the folder back while an app has it open.
-            assert!(tree.workspaces[0].revoke_sandbox("brief"));
+            assert!(collab_types::caps::sandbox::revoke(&mut tree.workspaces[0].sandbox, "brief"));
             let now = listed(&tree, PERSON, device);
             assert!(
                 !may_read(&now, &actor, &format!("{FOLDER}/plan.md")),

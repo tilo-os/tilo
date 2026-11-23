@@ -879,7 +879,7 @@ impl WorkspaceGrants for MemberListGrants {
             && WorkspaceId::parse(workspace)
                 .and_then(|id| self.workspaces.workspace(id))
                 .is_some_and(|held| {
-                    held.may_govern_at(
+                    held.policy.may_change_at(
                         person,
                         tilo_action_policy::roles::governance::GRANT,
                         tilo_clock::unix_now(),
@@ -897,7 +897,7 @@ impl WorkspaceGrants for MemberListGrants {
         let receipt = tilo_desktop_model::WorkspaceEffectReceipt::recorded(
             tilo_actions::InvocationId::new(),
             &tilo_actions::MemberId::person(request.person.clone()),
-            tilo_desktop_model::grants::app_action_grant_context(
+            app_action_grant_context(
                 &request.workspace,
                 &self.apps.display_name(&request.app_id),
                 &self.apps.display_name(&request.target_app),
@@ -937,6 +937,43 @@ impl WorkspaceGrants for MemberListGrants {
     }
 }
 
+/// What a workspace's history records when a person allows `app_label` to
+/// use `target_label`'s action `action_label` in `workspace`, for `lifetime`.
+fn app_action_grant_context(
+    workspace: &str,
+    app_label: &str,
+    target_label: &str,
+    action_label: &str,
+    lifetime: &str,
+) -> tilo_actions::ActionContext {
+    use tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER;
+    tilo_actions::ActionContext::for_resource(
+        format!("workspace.permissions:{workspace}"),
+        "workspace.permissions",
+        "App actions",
+    )
+    .with_app(WORKSPACE_GOVERNANCE_PROVIDER, "Workspace permissions")
+    .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
+        tilo_actions::ActionKey::new(
+            WORKSPACE_GOVERNANCE_PROVIDER,
+            "workspace.permissions",
+            "allow-app-action",
+        ),
+        [
+            ("app".to_owned(), tilo_actions::Scalar::text(app_label)),
+            (
+                "target".to_owned(),
+                tilo_actions::Scalar::text(target_label),
+            ),
+            (
+                "action".to_owned(),
+                tilo_actions::Scalar::text(action_label),
+            ),
+            ("lifetime".to_owned(), tilo_actions::Scalar::text(lifetime)),
+        ],
+    )))
+}
+
 /// `workspace` as `workspaces` hold it here, with its name: its member copy, or the workspace
 /// the service founded and keeps here.
 async fn copy_of(
@@ -963,9 +1000,10 @@ impl crate::apps::LaunchGrantsSource for ServiceWorkspaces {
         else {
             return collab_types::caps::LaunchGrants::default();
         };
-        let mut held = Workspace::new(id, String::new());
-        held.sandbox = sandbox;
-        held.launch_grants()
+        collab_types::caps::LaunchGrants {
+            sandbox,
+            ..collab_types::caps::LaunchGrants::default()
+        }
     }
 
     /// Whether this device's person, the one every launch here is for, is a member of

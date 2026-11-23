@@ -219,7 +219,9 @@ mod workspace_document_ownership {
                 {
                     let mut tree = workspace.membership.write();
                     let workspace = &mut tree.workspaces[0];
-                    workspace.revoke_grants_matching(|grant| grant.id.0 == "changes-for-a-while");
+                    workspace
+                        .policy
+                        .revoke_grants_matching(|grant| grant.id.0 == "changes-for-a-while");
                     workspace.set_owner("someone-else");
                     workspace.admit(actor, crate::apps::test_support::Role::Viewer);
                 }

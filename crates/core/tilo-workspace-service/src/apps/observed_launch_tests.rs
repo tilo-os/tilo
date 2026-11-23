@@ -280,7 +280,7 @@ async fn installed_launch_rpc_waits_for_adoption_preserves_signed_root_and_reval
                 );
                 if scenario == "revoked" {
                     let mut tree = env.membership.write();
-                    tree.workspaces[0].revoke_grants_matching(|_| true);
+                    tree.workspaces[0].policy.revoke_grants_matching(|_| true);
                 } else if scenario == "expired" {
                     env.control.advance_monotonic(Duration::from_secs(80));
                 }

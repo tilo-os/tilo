@@ -1184,7 +1184,7 @@ fn shell_agents(session: &Session) -> Vec<(String, tilo_action_policy::KindSet)>
     session.handle().read(|tree| {
         tree.workspaces
             .first()
-            .map(|workspace| workspace.agent_members_at(tilo_clock::unix_now()))
+            .map(|workspace| workspace.policy.agent_members_at(tilo_clock::unix_now()))
             .unwrap_or_default()
     })
 }

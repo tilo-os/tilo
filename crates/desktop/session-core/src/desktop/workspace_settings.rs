@@ -14,11 +14,11 @@ use crate::desktop::i18n::{t, t_args};
 use tilo_action_policy::{Grantee, Refusal};
 use tilo_sort::CompactSort as _;
 
-use collab_types::caps::{Access, CapOverride, DeviceCap, Effect, Scope};
+use collab_types::caps::{Access, CapOverride, DeviceCap, Effect, Scope, sandbox};
 use collab_types::role::Role as CapRole;
 use collab_types::{Member, MemberId};
 use tilo_action_policy::Lifetime;
-use tilo_desktop_model::{UserId, Workspace};
+use tilo_desktop_model::Workspace;
 
 pub mod agent_access;
 pub mod default_apps;
@@ -76,8 +76,6 @@ fn action_name(apps: &dyn AppDirectory, app_id: &str, action: &str) -> String {
     apps.action_display_name(app_id, action)
         .unwrap_or_else(|| tilo_actions::action_label(action))
 }
-
-pub use tilo_desktop_model::{APP_ACTION_GRANT_ACTION_ID, APP_ACTION_REVOKE_ACTION_ID};
 
 pub fn role_label(role: CapRole) -> String {
     t(match role {
@@ -515,7 +513,8 @@ pub fn draft_for(
 /// without running apps, a host could only grant to an app already granted something.
 pub fn grant_recipients(ws: &Workspace) -> Vec<GrantRecipient> {
     let mut out: Vec<GrantRecipient> = ws
-        .roster()
+        .policy
+        .people()
         .into_iter()
         .map(|(user, _)| GrantRecipient {
             kind: RecipientKind::Member,
@@ -524,7 +523,8 @@ pub fn grant_recipients(ws: &Workspace) -> Vec<GrantRecipient> {
         .collect();
 
     out.extend(
-        ws.agent_members_at(tilo_clock::unix_now())
+        ws.policy
+            .agent_members_at(tilo_clock::unix_now())
             .into_iter()
             .map(|(agent, _)| GrantRecipient {
                 kind: RecipientKind::Agent,
@@ -580,18 +580,19 @@ pub fn draft_capability(ws: &Workspace, person: &str, draft: &GrantDraft) -> Opt
 
 /// What a panel mutation changed, for the caller that applies it to the desktop. Empty means there
 /// was nothing to change.
-pub use tilo_desktop_model::grants::PolicyEdit;
+pub use tilo_action_policy::PolicyEdit;
 
 /// Set one person's or role's access to a published document.
 pub fn set_document_access(
     ws: &mut Workspace,
-    actor: &UserId,
+    actor: &str,
     (who, app, document): (&str, &str, &str),
     access: &str,
 ) -> Result<PolicyEdit, Refusal> {
     let changes =
         collab_types::document_access_changes(&ws.policy, actor, (who, app, document), access)?;
-    ws.govern_all_at(actor, changes, tilo_clock::unix_now())
+    ws.policy
+        .change_all_as_at(actor, changes, tilo_clock::unix_now())
 }
 
 /// Grant what `draft` names, as `actor`, through the workspace's governance:
@@ -601,12 +602,12 @@ pub fn set_document_access(
 /// The workspace refused the grant, saying why.
 pub fn apply_grant_draft(
     ws: &mut Workspace,
-    actor: &UserId,
+    actor: &str,
     draft: &GrantDraft,
 ) -> Result<PolicyEdit, Refusal> {
     let now = tilo_clock::unix_now();
     match draft_capability(ws, actor, draft) {
-        Some(cap) => ws.grant_sandbox_as_at(actor, cap, now),
+        Some(cap) => sandbox::grant_as_at(&ws.policy, &mut ws.sandbox, actor, cap, now),
         None => Ok(PolicyEdit::default()),
     }
 }
@@ -615,12 +616,12 @@ pub fn apply_grant_draft(
 ///
 /// # Errors
 /// The workspace refused the revocation, saying why.
-pub fn apply_revoke(ws: &mut Workspace, actor: &UserId, id: &str) -> Result<PolicyEdit, Refusal> {
+pub fn apply_revoke(ws: &mut Workspace, actor: &str, id: &str) -> Result<PolicyEdit, Refusal> {
     let now = tilo_clock::unix_now();
     if ws.sandbox.iter().any(|cap| cap.id == id) {
-        return ws.revoke_sandbox_as_at(actor, id, now);
+        return sandbox::revoke_as_at(&ws.policy, &mut ws.sandbox, actor, id, now);
     }
-    ws.govern_all_at(
+    ws.policy.change_all_as_at(
         actor,
         vec![tilo_action_policy::Change::Revoke(
             tilo_action_policy::GrantId::new(id),
@@ -636,8 +637,8 @@ pub fn apply_revoke(ws: &mut Workspace, actor: &UserId, id: &str) -> Result<Poli
 /// The workspace refused the change, saying why.
 pub fn set_member_role(
     ws: &mut Workspace,
-    actor: &UserId,
-    member: &UserId,
+    actor: &str,
+    member: &str,
     role: CapRole,
 ) -> Result<PolicyEdit, Refusal> {
     if role == CapRole::Owner {
@@ -662,18 +663,15 @@ pub fn set_member_role(
             role,
         }
     };
-    ws.govern_all_at(actor, vec![change], tilo_clock::unix_now())
+    ws.policy
+        .change_all_as_at(actor, vec![change], tilo_clock::unix_now())
 }
 
 /// Remove `member` and every grant naming them, as `actor`.
 ///
 /// # Errors
 /// The workspace refused the removal, saying why.
-pub fn remove_member(
-    ws: &mut Workspace,
-    actor: &UserId,
-    member: &UserId,
-) -> Result<PolicyEdit, Refusal> {
+pub fn remove_member(ws: &mut Workspace, actor: &str, member: &str) -> Result<PolicyEdit, Refusal> {
     // The owner is the workspace's root of trust; removing them would leave a workspace nobody
     // governs.
     if ws.is_owner(member) {
@@ -685,7 +683,7 @@ pub fn remove_member(
         )));
     }
     let now = tilo_clock::unix_now();
-    let mut edit = ws.govern_all_at(
+    let mut edit = ws.policy.change_all_as_at(
         actor,
         vec![tilo_action_policy::Change::RemoveMember {
             person: member.clone(),
@@ -700,14 +698,14 @@ pub fn remove_member(
         .map(|cap| cap.id.clone())
         .collect();
     for id in held {
-        if let Ok(revoked) = ws.revoke_sandbox_as_at(actor, &id, now) {
+        if let Ok(revoked) = sandbox::revoke_as_at(&ws.policy, &mut ws.sandbox, actor, &id, now) {
             edit = edit.and(revoked);
         }
     }
     Ok(edit)
 }
 
-fn grantee_is_person(grantee: &Grantee, user: &UserId) -> bool {
+fn grantee_is_person(grantee: &Grantee, user: &str) -> bool {
     match grantee {
         Grantee::Member(MemberId::Person(id)) => id == user,
         Grantee::Member(MemberId::Agent(_) | MemberId::Bot(_))
@@ -723,14 +721,15 @@ fn grantee_is_person(grantee: &Grantee, user: &UserId) -> bool {
 ///
 /// # Errors
 /// The workspace refused the change, saying why.
-pub fn set_moderation(ws: &mut Workspace, actor: &UserId, on: bool) -> Result<PolicyEdit, Refusal> {
+pub fn set_moderation(ws: &mut Workspace, actor: &str, on: bool) -> Result<PolicyEdit, Refusal> {
     use tilo_action_policy::bot::{MODERATION_GRANT, moderation_grant};
     let change = if on {
         tilo_action_policy::Change::Grant(moderation_grant(&ws.policy.workspace, actor))
     } else {
         tilo_action_policy::Change::Revoke(tilo_action_policy::GrantId::new(MODERATION_GRANT))
     };
-    ws.govern_all_at(actor, vec![change], tilo_clock::unix_now())
+    ws.policy
+        .change_all_as_at(actor, vec![change], tilo_clock::unix_now())
 }
 
 /// Whether the moderation agent on the workspace's server is on: the workspace holds its grant.
@@ -741,7 +740,7 @@ pub fn moderates(ws: &Workspace) -> bool {
 }
 
 /// Revoke every grant naming `agent` , as `actor` .
-pub fn remove_agent(ws: &mut Workspace, actor: &UserId, agent: &str) -> PolicyEdit {
+pub fn remove_agent(ws: &mut Workspace, actor: &str, agent: &str) -> PolicyEdit {
     let subject = tilo_action_policy::Grantee::agent(agent);
     let revokes = ws
         .policy
@@ -750,25 +749,12 @@ pub fn remove_agent(ws: &mut Workspace, actor: &UserId, agent: &str) -> PolicyEd
         .filter(|grant| grant.grantee == subject)
         .map(|grant| tilo_action_policy::Change::Revoke(grant.id.clone()))
         .collect();
-    ws.govern_all_at(actor, revokes, tilo_clock::unix_now())
+    ws.policy
+        .change_all_as_at(actor, revokes, tilo_clock::unix_now())
         .unwrap_or_default()
 }
 
 // Members pane
-
-/// The roster in a stable display order: owner first, then everyone
-/// else by id. [`Workspace::roster`]'s own order follows list position,
-/// which moves a row when a role change rewrites its capability.
-fn ordered_roster(ws: &Workspace) -> Vec<(UserId, CapRole)> {
-    let mut rows = ws.roster();
-    let owner = ws.owner().cloned();
-    rows.compact_sort_by(|a, b| {
-        let a_owner = Some(&a.0) == owner.as_ref();
-        let b_owner = Some(&b.0) == owner.as_ref();
-        b_owner.cmp(&a_owner).then_with(|| a.0.cmp(&b.0))
-    });
-    rows
-}
 
 /// A member by name, or by a shortened id.
 fn member_name_or_short_id(ws: &Workspace, id: &MemberId) -> String {
@@ -1098,7 +1084,7 @@ mod members_tests {
                 Answer::Allow,
                 tilo_action_policy::Grantee::person(OWNER),
             );
-            ws.govern_as_at(OWNER, Change::Grant(notes), tilo_clock::unix_now())
+            ws.policy.change_as_at(OWNER, Change::Grant(notes), tilo_clock::unix_now())
                 .expect("owner shares an app");
 
             let edit = remove_member(&mut ws, &OWNER.to_string(), &PEER.to_string())
@@ -1221,7 +1207,8 @@ mod members_tests {
                 Answer::Allow,
                 tilo_action_policy::Grantee::person(OWNER),
             );
-            ws.govern_as_at(OWNER, Change::Grant(admin), tilo_clock::unix_now())
+            ws.policy
+                .change_as_at(OWNER, Change::Grant(admin), tilo_clock::unix_now())
                 .expect("owner delegates administration");
             let before = ws.policy.clone();
 
@@ -1273,17 +1260,19 @@ mod agents_tests {
             Answer::Allow,
             tilo_action_policy::Grantee::person(OWNER),
         );
-        ws.govern_as_at(OWNER, Change::Grant(notes), tilo_clock::unix_now())
+        ws.policy
+            .change_as_at(OWNER, Change::Grant(notes), tilo_clock::unix_now())
             .expect("owner grants scoped access");
         ws
     }
 
     fn agent_answer(ws: &Workspace, app: &str, kind: ActionKind) -> Answer {
-        ws.subject_authority(tilo_action_policy::Grantee::agent(AGENT))
+        ws.policy
+            .party_of(tilo_action_policy::Grantee::agent(AGENT))
             .decide(
                 &ws.node().app(app),
                 kind,
-                &tilo_desktop_model::context_at(tilo_clock::unix_now()),
+                &tilo_action_policy::Context::at_secs(tilo_clock::unix_now()),
             )
             .answer
     }
@@ -1296,7 +1285,7 @@ mod agents_tests {
     fn agents_are_scoped_permission_subjects_presented_honestly() {
         {
             let ws = ws_with_agent();
-            let members = ws.agent_members_at(tilo_clock::unix_now());
+            let members = ws.policy.agent_members_at(tilo_clock::unix_now());
             assert_eq!(members.len(), 1, "listed with the workspace's agents");
             assert_eq!(members[0].0, AGENT);
             assert_eq!(
@@ -1318,7 +1307,7 @@ mod agents_tests {
                 tilo_action_policy::Grantee::person(OWNER),
             ));
             assert_eq!(
-                ws.agent_members_at(tilo_clock::unix_now()),
+                ws.policy.agent_members_at(tilo_clock::unix_now()),
                 vec![(AGENT.to_string(), KindSet::READ)]
             );
             assert_eq!(
@@ -1363,7 +1352,11 @@ mod agents_tests {
                 2,
                 "its workspace grant and its app grant"
             );
-            assert!(ws.agent_members_at(tilo_clock::unix_now()).is_empty());
+            assert!(
+                ws.policy
+                    .agent_members_at(tilo_clock::unix_now())
+                    .is_empty()
+            );
             assert_eq!(
                 agent_answer(&ws, "so.tilo.notes", ActionKind::Undoable),
                 Answer::Deny
@@ -1431,7 +1424,8 @@ mod permissions_tests {
     fn ws_with_grants() -> Workspace {
         let mut ws = Workspace::new(WorkspaceId::from_u128(3), "perm-test");
         ws.set_owner(OWNER);
-        ws.grant_sandbox(
+        sandbox::grant(
+            &mut ws.sandbox,
             CapOverride::grant(
                 Grantee::person(OWNER),
                 Scope::Device(DeviceCap::Camera),
@@ -1439,7 +1433,8 @@ mod permissions_tests {
             )
             .through("firefox"),
         );
-        ws.grant_sandbox(
+        sandbox::grant(
+            &mut ws.sandbox,
             CapOverride::grant(
                 Grantee::person(OWNER),
                 Scope::NetHost("*".into()),
@@ -1534,19 +1529,20 @@ mod permissions_tests {
                 ),
             )
             .expect("owner grants");
-            ws.govern_as_at(
-                OWNER,
-                tilo_action_policy::Change::Grant(tilo_action_policy::Grant::new(
-                    "editors-camera-app",
-                    tilo_action_policy::Grantee::role(CapRole::Editor),
-                    ws.node().app("so.tilo.camera"),
-                    tilo_action_policy::KindSet::READ,
-                    tilo_action_policy::Answer::Allow,
-                    tilo_action_policy::Grantee::person(OWNER),
-                )),
-                tilo_clock::unix_now(),
-            )
-            .expect("owner grants");
+            ws.policy
+                .change_as_at(
+                    OWNER,
+                    tilo_action_policy::Change::Grant(tilo_action_policy::Grant::new(
+                        "editors-camera-app",
+                        tilo_action_policy::Grantee::role(CapRole::Editor),
+                        ws.node().app("so.tilo.camera"),
+                        tilo_action_policy::KindSet::READ,
+                        tilo_action_policy::Answer::Allow,
+                        tilo_action_policy::Grantee::person(OWNER),
+                    )),
+                    tilo_clock::unix_now(),
+                )
+                .expect("owner grants");
             let rows = listed(&ws);
             let kinds: Vec<&str> = rows.iter().map(|r| r.section.as_str()).collect();
             for expected in [
@@ -2153,11 +2149,12 @@ mod moderation_tests {
     const MEMBER: &str = "member-user";
 
     fn bot_answer(ws: &Workspace, app: &str) -> Answer {
-        ws.subject_authority(Grantee::bot(tilo_action_policy::bot::MODERATION))
+        ws.policy
+            .party_of(Grantee::bot(tilo_action_policy::bot::MODERATION))
             .decide(
-                &ws.node().app(app),
+                &ws.policy.node().app(app),
                 ActionKind::Undoable,
-                &tilo_desktop_model::context_at(tilo_clock::unix_now()),
+                &tilo_action_policy::Context::at_secs(tilo_clock::unix_now()),
             )
             .answer
     }

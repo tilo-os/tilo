@@ -1394,11 +1394,12 @@ pub fn readable_folder(
         return Err("the saver is not a member of the workspace".into());
     };
     let acting = tilo_action_policy::Acting::person(saver);
-    if workspace.sandbox_decide_as_at(
+    if collab_types::caps::decide_capability(
         &acting,
         &collab_types::ResourceRef::FsPath(path.clone()),
         collab_types::caps::Access::Read,
-        tilo_clock::unix_now(),
+        &workspace.sandbox,
+        Some(tilo_clock::unix_now().saturating_mul(1000)),
     ) != collab_types::CapDecision::Allow
     {
         return Err(format!(

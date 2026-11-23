@@ -121,7 +121,7 @@ impl AppBrokerState {
             .is_some_and(|governance| governance.app_id() == target_app);
         if action.contract.kind == tilo_actions::ActionKind::Outside
             || governance
-            || target_app == tilo_desktop_model::WORKSPACE_GOVERNANCE_APP_ID
+            || target_app == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
         {
             return Ok(None);
         }
@@ -199,7 +199,7 @@ impl AppBrokerState {
                 let decision = held.policy.party_of(Grantee::app(app_id)).decide(
                     &node,
                     need.kind,
-                    &tilo_desktop_model::context_at(now),
+                    &tilo_action_policy::Context::at_secs(now),
                 );
                 Some(match decision.basis {
                     Basis::NoGrant => None,

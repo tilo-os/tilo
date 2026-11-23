@@ -48,7 +48,8 @@ impl StatePeer {
             }
             SettingsChange::SavePreset { preset } => {
                 workspace
-                    .save_preset_with_at(&authority, preset.clone(), seconds)
+                    .policy
+                    .save_preset_at(&mut workspace.presets, &authority, preset.clone(), seconds)
                     .map_err(|error| refused(&error))?;
                 self.governance_mut()
                     .put_governed_presets(&workspace.presets, key, now)
@@ -59,7 +60,9 @@ impl StatePeer {
                 lifetime,
             } => {
                 let assigned = workspace
-                    .assign_preset_with_at(
+                    .policy
+                    .assign_preset_at(
+                        &workspace.presets,
                         person_of(&member)?,
                         &authority,
                         preset,
@@ -84,7 +87,7 @@ impl StatePeer {
                     .put_governed_sandbox(&workspace.sandbox, key, now)
             }
             SettingsChange::RevokeSandbox { capability } => {
-                if !workspace.revoke_sandbox(capability) {
+                if !collab_types::caps::sandbox::revoke(&mut workspace.sandbox, capability) {
                     return Ok(false);
                 }
                 self.governance_mut()
@@ -132,9 +135,9 @@ fn grant_sandbox(
     }
     let mut capability = capability.clone();
     if capability.id.trim().is_empty() {
-        capability.id = format!("cap-{}", uuid::Uuid::new_v4().simple());
+        capability.id.clear();
     }
-    workspace.grant_sandbox(capability.granted_by(by));
+    collab_types::caps::sandbox::grant(&mut workspace.sandbox, capability.granted_by(by));
     Ok(())
 }
 

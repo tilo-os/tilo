@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tilo_automerge::ApplyIncoming as _;
 use tilo_desktop_model::{
-    AppKind, Layout, Strip, StripId, Tab, TileContent, UserId, WindowGroup, WindowWidth, Workspace,
+    AppKind, Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceEffectReceipt, WorkspaceId,
 };
 
@@ -349,7 +349,7 @@ impl TestTree {
     pub fn grant_in_workspace(
         &mut self,
         workspace_id: WorkspaceId,
-        grantor: &UserId,
+        grantor: &str,
         cap: CapOverride,
     ) -> Option<String> {
         let granted = self.grant_uncommitted(workspace_id, grantor, cap)?;
@@ -362,7 +362,7 @@ impl TestTree {
     pub fn grant_uncommitted(
         &mut self,
         workspace_id: WorkspaceId,
-        grantor: &UserId,
+        grantor: &str,
         cap: CapOverride,
     ) -> Option<String> {
         let granted = {
@@ -371,16 +371,16 @@ impl TestTree {
                 .workspaces
                 .iter_mut()
                 .find(|w| w.id() == workspace_id)?;
-            if !workspace.may_govern_at(
+            collab_types::caps::sandbox::grant_as_at(
+                &workspace.policy,
+                &mut workspace.sandbox,
                 grantor,
-                tilo_action_policy::roles::governance::GRANT,
+                cap,
                 tilo_clock::unix_now(),
-            ) {
-                return None;
-            }
-            workspace.grant_sandbox(
-                cap.granted_by(tilo_action_policy::MemberId::person(grantor.clone())),
             )
+            .ok()?
+            .sandbox_granted
+            .pop()?
         };
         self.write_governance(workspace_id);
         Some(granted)
@@ -389,7 +389,7 @@ impl TestTree {
     pub fn revoke_in_workspace(
         &mut self,
         workspace_id: WorkspaceId,
-        revoker: &UserId,
+        revoker: &str,
         cap_id: &str,
     ) -> bool {
         let allowed = {
@@ -401,11 +401,14 @@ impl TestTree {
             else {
                 return false;
             };
-            governed.may_govern_at(
+            collab_types::caps::sandbox::revoke_as_at(
+                &governed.policy,
+                &mut governed.sandbox,
                 revoker,
-                tilo_action_policy::roles::governance::REVOKE,
+                cap_id,
                 tilo_clock::unix_now(),
-            ) && governed.revoke_sandbox(cap_id)
+            )
+            .is_ok_and(|edit| !edit.sandbox_revoked.is_empty())
         };
         if !allowed {
             return false;
@@ -414,7 +417,7 @@ impl TestTree {
         true
     }
 
-    pub fn adopt_ownerless_workspaces(&mut self, user: &UserId) -> Vec<WorkspaceId> {
+    pub fn adopt_ownerless_workspaces(&mut self, user: &str) -> Vec<WorkspaceId> {
         let mut adopted = Vec::new();
         for workspace in &mut self.desktop.workspaces {
             if workspace.owner().is_none() {

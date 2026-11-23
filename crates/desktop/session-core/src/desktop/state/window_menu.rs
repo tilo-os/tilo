@@ -877,7 +877,7 @@ pub fn controls_desktop(tree: &Layout, route: &RouteIds) -> bool {
     let Some((workspace, app)) = holder_of(tree, route) else {
         return false;
     };
-    workspace.holds_desktop_control_at(&app, tilo_clock::unix_now())
+    tilo_desktop_model::commands::has_control_at(&workspace.policy, &app, tilo_clock::unix_now())
 }
 
 /// The workspace holding the window at `route` , and the app it runs.
@@ -1098,7 +1098,7 @@ pub fn stop_desktop_control(shared: &mut Shared, ids: RouteIds) -> bool {
         .workspaces
         .iter_mut()
         .find(|held| held.id() == workspace)
-        .is_some_and(|held| held.stop_desktop_control(&app))
+        .is_some_and(|held| tilo_desktop_model::commands::stop_control(&mut held.policy, &app))
 }
 
 impl crate::desktop::state::DesktopHandle {
@@ -2743,9 +2743,13 @@ mod tests {
         let route = first_route(&handle);
         assert!(row(&handle.window_menu(route.tab), STOP_DESKTOP_CONTROL).is_none());
         let mut tree = handle.read(Clone::clone);
-        let control = tree.workspaces[0]
-            .desktop_control_grant("so.tilo.app0", tilo_action_policy::Grantee::person("ada"));
-        tree.workspaces[0].grant(control);
+        let policy = &mut tree.workspaces[0].policy;
+        let control = tilo_desktop_model::commands::control_grant(
+            policy,
+            "so.tilo.app0",
+            tilo_action_policy::Grantee::person("ada"),
+        );
+        policy.grant(control);
         handle.replace_tree(tree);
         let rows = handle.window_menu(route.tab);
         let stop = row(&rows, STOP_DESKTOP_CONTROL).expect("the app controls the desktop");
@@ -2761,8 +2765,11 @@ mod tests {
             .unwrap();
         settle(&handle);
         assert!(
-            !handle.read(|tree| tree.workspaces[0]
-                .holds_desktop_control_at("so.tilo.app0", tilo_clock::unix_now())),
+            !handle.read(|tree| tilo_desktop_model::commands::has_control_at(
+                &tree.workspaces[0].policy,
+                "so.tilo.app0",
+                tilo_clock::unix_now()
+            )),
             "the grant is taken back"
         );
         assert!(row(&handle.window_menu(route.tab), STOP_DESKTOP_CONTROL).is_none());

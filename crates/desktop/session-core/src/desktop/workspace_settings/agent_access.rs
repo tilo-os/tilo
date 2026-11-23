@@ -115,7 +115,7 @@ pub fn answer_at(
     kind: ActionKind,
 ) -> AnswerCell {
     let subject = [Grantee::agent(agent)];
-    let cx = tilo_desktop_model::context_at(tilo_clock::unix_now());
+    let cx = tilo_action_policy::Context::at_secs(tilo_clock::unix_now());
     let node = scope.node(&ws.policy.workspace);
     let decision = decide(
         admission.iter().chain(ws.policy.grants.iter()),

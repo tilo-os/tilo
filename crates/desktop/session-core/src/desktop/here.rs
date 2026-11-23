@@ -1114,7 +1114,7 @@ fn member_rows(workspace: &Workspace, people: &[Person], now: u64) -> Vec<Member
             Some(row)
         })
         .collect();
-    for (agent, _) in workspace.agent_members_at(now) {
+    for (agent, _) in workspace.policy.agent_members_at(now) {
         let id = MemberId::agent(agent.clone());
         let mut row = Member::of_software(id.clone(), agent);
         if let Some(person) = here(&id) {

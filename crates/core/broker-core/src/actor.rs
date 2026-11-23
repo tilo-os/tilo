@@ -394,7 +394,7 @@ impl BrokerActor {
         now: u64,
     ) -> (Answer, Vec<tilo_action_policy::GrantId>) {
         let node = tilo_actions::action_node(
-            &workspace.node(),
+            &workspace.policy.node(),
             app,
             resource_kind,
             resource,
@@ -469,7 +469,7 @@ impl BrokerActor {
                 resource: record.as_ref(),
                 ceiling: self.ceiling,
             },
-            &tilo_desktop_model::context_at(now),
+            &tilo_action_policy::Context::at_secs(now),
         )
         .map_err(|_| refused())?;
         // The grant kept on the computer that admitted this agent from another of its person's
@@ -491,7 +491,7 @@ impl BrokerActor {
                 authority,
                 (node, kind, privileged),
                 self.ceiling,
-                &tilo_desktop_model::context_at(now),
+                &tilo_action_policy::Context::at_secs(now),
             )
         })
     }
@@ -512,7 +512,7 @@ impl BrokerActor {
     /// Whether this actor takes part in `workspace` at `now`: it may at
     /// least read the workspace.
     pub fn reads_in(&self, workspace: &Workspace, now: u64) -> bool {
-        self.answer_in(workspace, &workspace.node(), ActionKind::Read, now) != Answer::Deny
+        self.answer_in(workspace, &workspace.policy.node(), ActionKind::Read, now) != Answer::Deny
     }
 }
 

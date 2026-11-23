@@ -41,6 +41,7 @@ mod member;
 mod member_access;
 mod path;
 mod person;
+mod policy_edit;
 mod readers;
 pub mod roles;
 pub mod share;
@@ -83,6 +84,7 @@ pub use member::{
 pub use member_access::MemberAccess;
 pub use path::{Level, PathError, Segment, Specificity, TreePath};
 pub use person::{PersonId, PersonIdError};
+pub use policy_edit::{PolicyEdit, PresetMutationError, sort_presets, until_secs};
 pub use readers::ReaderRule;
 pub use roles::{Preset, PresetError, Rule};
 pub use workspace::{AgentMember, Change, PersonGrants, Refusal, WorkspacePolicy};

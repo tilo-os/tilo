@@ -19,8 +19,8 @@ use crate::apps::{app_ids_match, canonical_app_id};
 use crate::ids::{GroupId, StripId, TabId, WorkspaceId};
 use crate::layout::{Tab, WindowGroup};
 use crate::tree::Layout;
+use crate::tree::Workspace;
 use crate::width::WindowWidth;
-use crate::workspace::Workspace;
 
 /// How many closes each workspace remembers.
 pub const CLOSED_TABS_PER_WORKSPACE: usize = 25;

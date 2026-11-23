@@ -31,8 +31,8 @@ use crate::layout::{CanvasPlace, FloatPlace, LayoutKind, WorkspaceLayout};
 use crate::layout::{Strip, Tab, WindowGroup};
 use crate::ownership::SharedDesktop;
 use crate::tree::Layout;
+use crate::tree::Workspace;
 use crate::width::WindowWidth;
-use crate::workspace::Workspace;
 
 const WORKSPACES: &str = "workspaces";
 const STRIPS: &str = "strips";

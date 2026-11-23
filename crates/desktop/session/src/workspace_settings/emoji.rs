@@ -16,7 +16,7 @@ use tilo_app::tilo_workspace_emoji::{
 };
 use tilo_session_core::desktop::people::PeopleNames;
 use tilo_session_core::desktop::workspace_settings::{self as domain, emoji_pane};
-use tilo_desktop_model::{Layout, UserId, Workspace};
+use tilo_desktop_model::{Layout, Workspace};
 use tilo_session_client::daemon_documents::DaemonShell;
 use tilo_session_core::desktop::i18n::{t, t_args};
 use tilo_sheets::SheetState as _;
@@ -100,7 +100,7 @@ impl Emoji {
     pub(crate) fn pane(
         &self,
         tree: &Layout,
-        person: &UserId,
+        person: &str,
         names: &PeopleNames,
     ) -> sheet::EmojiPane {
         let Some(workspace) = tree.active_workspace() else {
@@ -186,7 +186,7 @@ impl Emoji {
     /// Whether the tab would show something else now: the record moved, or
     /// what this says of it changed. `false` while the record is not open,
     /// which the tab does when it is first shown.
-    pub(crate) fn moved(&self, tree: &Layout, person: &UserId) -> bool {
+    pub(crate) fn moved(&self, tree: &Layout, person: &str) -> bool {
         let Some(workspace) = tree.active_workspace() else {
             return false;
         };
@@ -211,7 +211,7 @@ impl Emoji {
     fn record(
         &self,
         workspace: Option<&Workspace>,
-        person: &UserId,
+        person: &str,
     ) -> Option<FollowedResource<Record>> {
         let workspace = workspace?;
         let workspace_id = workspace.id().to_string();
@@ -263,7 +263,7 @@ impl Emoji {
         &self,
         effect: &sheet::WorkspaceSettingsEffect,
         tree: &Layout,
-        person: &UserId,
+        person: &str,
         picker: Option<&FilePickerState>,
     ) {
         let workspace = tree.active_workspace();
@@ -282,7 +282,7 @@ impl Emoji {
     fn choose(
         &self,
         workspace: Option<&Workspace>,
-        person: &UserId,
+        person: &str,
         picker: Option<&FilePickerState>,
     ) {
         let (Some(workspace), Some(picker)) = (workspace, picker) else {
@@ -325,7 +325,7 @@ impl Emoji {
 
     /// Remove the emoji `name` as the workspace's grants let the person: their own by the plain
     /// removal, anyone's as a moderator.
-    fn remove(&self, workspace: Option<&Workspace>, person: &UserId, name: &str) {
+    fn remove(&self, workspace: Option<&Workspace>, person: &str, name: &str) {
         let Some(record) = self.record(workspace, person) else {
             return;
         };
@@ -349,7 +349,7 @@ impl Emoji {
     }
 
     /// Take up what came of the chooser: the picture added, or the tab saying why not.
-    pub(crate) fn settle(&self, tree: &Layout, person: &UserId, picker: Option<&FilePickerState>) {
+    pub(crate) fn settle(&self, tree: &Layout, person: &str, picker: Option<&FilePickerState>) {
         self.answer(tree.active_workspace(), person, picker);
     }
 
@@ -357,7 +357,7 @@ impl Emoji {
     fn answer(
         &self,
         workspace: Option<&Workspace>,
-        person: &UserId,
+        person: &str,
         picker: Option<&FilePickerState>,
     ) {
         let Some(handle) = self.choosing.borrow().clone() else {
@@ -391,7 +391,7 @@ impl Emoji {
     }
 
     /// Add the picture at `path` as one of the workspace's emoji.
-    fn add(&self, workspace: Option<&Workspace>, person: &UserId, path: &std::path::Path) {
+    fn add(&self, workspace: Option<&Workspace>, person: &str, path: &std::path::Path) {
         let Some(workspace) = workspace else {
             return;
         };
@@ -433,7 +433,7 @@ impl Emoji {
     fn add_small(
         &self,
         workspace: &Workspace,
-        person: &UserId,
+        person: &str,
         file: &str,
         small: &Small,
     ) -> Result<(), emoji_pane::EmojiNotice> {

@@ -75,7 +75,7 @@ pub(super) fn identity_reads_document(
             access.answer(
                 &node,
                 ActionKind::Read,
-                &tilo_desktop_model::context_at(now),
+                &tilo_action_policy::Context::at_secs(now),
             ) != Answer::Deny
         })
         .unwrap_or(false)

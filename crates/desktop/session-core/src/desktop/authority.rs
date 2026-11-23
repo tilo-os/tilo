@@ -2,11 +2,11 @@
 //! [`Workspace`] takes `now` explicitly so the model stays clock-free; every host asks through this
 //! one trait instead of reading the time itself.
 
-use collab_types::caps::{Access, CapDecision, CapOverride, ResourceRef};
+use collab_types::caps::{Access, CapDecision, CapOverride, ResourceRef, decide_capability, sandbox};
 use collab_types::role::Role as CapRole;
 use tilo_action_policy::{Acting, ActionKind, Answer, Grant, KindSet, TreePath, roles};
 use tilo_clock::unix_now;
-use tilo_desktop_model::{UserId, Workspace, WorkspaceDefaultError};
+use tilo_desktop_model::{Workspace, WorkspaceDefaultError};
 
 /// The model's authority questions answered at this machine's clock.
 pub trait WorkspaceAuthority {
@@ -17,7 +17,7 @@ pub trait WorkspaceAuthority {
     /// As [`Workspace::set_default_app_policy_as_at`].
     fn set_default_app_policy_as(
         &mut self,
-        actor: &UserId,
+        actor: &str,
         resource: desktop_policy::ResourceKind,
         policy: desktop_policy::WorkspaceDefaultPolicy,
         resolver: &desktop_policy::DefaultAppResolver<'_>,
@@ -28,19 +28,19 @@ pub trait WorkspaceAuthority {
     fn allows(&self, acting: &Acting, resource: &ResourceRef, access: Access) -> bool;
     /// Record the sandbox capability `cap` , as `grantor` , who must be allowed to grant in the
     /// workspace. The capability's id.
-    fn grant_as(&mut self, grantor: &UserId, cap: CapOverride) -> Option<String>;
+    fn grant_as(&mut self, grantor: &str, cap: CapOverride) -> Option<String>;
     /// Drop the sandbox capability or grant with id `id` , as `revoker` , who must be allowed to
     /// revoke in the workspace.
-    fn revoke_as(&mut self, revoker: &UserId, id: &str) -> bool;
+    fn revoke_as(&mut self, revoker: &str, id: &str) -> bool;
     /// Whether `user` may grant in the workspace.
-    fn may_administer(&self, user: &UserId) -> bool;
+    fn may_administer(&self, user: &str) -> bool;
     /// Whether `user` is allowed, without asking first, an action of `kind` at `relative` , a path
     /// below the workspace.
     fn person_allowed(&self, user: &str, relative: &TreePath, kind: ActionKind) -> bool;
-    fn role_of(&self, user: &UserId) -> Option<CapRole>;
+    fn role_of(&self, user: &str) -> Option<CapRole>;
     /// The acting a person is in this workspace.
-    fn acting_for_person(&self, user: &UserId) -> Acting;
-    fn roster(&self) -> Vec<(UserId, CapRole)>;
+    fn acting_for_person(&self, user: &str) -> Acting;
+    fn roster(&self) -> Vec<(String, CapRole)>;
     /// Agents admitted to the workspace, with the kinds of action their workspace grants allow.
     fn agent_members(&self) -> Vec<(String, KindSet)>;
     /// The grants naming one person each that reach `node` .
@@ -50,7 +50,7 @@ pub trait WorkspaceAuthority {
 impl WorkspaceAuthority for Workspace {
     fn set_default_app_policy_as(
         &mut self,
-        actor: &UserId,
+        actor: &str,
         resource: desktop_policy::ResourceKind,
         policy: desktop_policy::WorkspaceDefaultPolicy,
         resolver: &desktop_policy::DefaultAppResolver<'_>,
@@ -58,44 +58,53 @@ impl WorkspaceAuthority for Workspace {
         self.set_default_app_policy_as_at(actor, resource, policy, resolver, unix_now())
     }
     fn app_capabilities(&self, app_id: &str) -> Vec<&CapOverride> {
-        self.app_capabilities_at(app_id, unix_now())
+        sandbox::of_app_at(&self.sandbox, app_id, unix_now())
     }
     fn decide(&self, acting: &Acting, resource: &ResourceRef, access: Access) -> CapDecision {
-        self.sandbox_decide_as_at(acting, resource, access, unix_now())
+        decide_capability(
+            acting,
+            resource,
+            access,
+            &self.sandbox,
+            Some(unix_now().saturating_mul(1000)),
+        )
     }
     fn allows(&self, acting: &Acting, resource: &ResourceRef, access: Access) -> bool {
         self.decide(acting, resource, access) == CapDecision::Allow
     }
-    fn grant_as(&mut self, grantor: &UserId, cap: CapOverride) -> Option<String> {
-        self.grant_sandbox_as_at(grantor, cap, unix_now())
+    fn grant_as(&mut self, grantor: &str, cap: CapOverride) -> Option<String> {
+        sandbox::grant_as_at(&self.policy, &mut self.sandbox, grantor, cap, unix_now())
             .ok()?
             .sandbox_granted
             .pop()
     }
-    fn revoke_as(&mut self, revoker: &UserId, id: &str) -> bool {
+    fn revoke_as(&mut self, revoker: &str, id: &str) -> bool {
         crate::desktop::workspace_settings::apply_revoke(self, revoker, id)
             .is_ok_and(|edit| !edit.is_empty())
     }
-    fn may_administer(&self, user: &UserId) -> bool {
-        self.may_govern_at(user, roles::governance::GRANT, unix_now())
+    fn may_administer(&self, user: &str) -> bool {
+        self.policy
+            .may_change_at(user, roles::governance::GRANT, unix_now())
     }
     fn person_allowed(&self, user: &str, relative: &TreePath, kind: ActionKind) -> bool {
-        self.answer_at(user, &self.node().join(relative), kind, unix_now()) == Answer::Allow
+        self.policy
+            .answer_at(user, &self.policy.node().join(relative), kind, unix_now())
+            == Answer::Allow
     }
-    fn role_of(&self, user: &UserId) -> Option<CapRole> {
-        Workspace::role_of(self, user).filter(|_| !self.is_blocked(user))
+    fn role_of(&self, user: &str) -> Option<CapRole> {
+        self.policy.active_role(user)
     }
-    fn acting_for_person(&self, user: &UserId) -> Acting {
-        Acting::person(user.clone())
+    fn acting_for_person(&self, user: &str) -> Acting {
+        Acting::person(user.to_owned())
     }
-    fn roster(&self) -> Vec<(UserId, CapRole)> {
-        Workspace::roster(self)
+    fn roster(&self) -> Vec<(String, CapRole)> {
+        self.policy.people()
     }
     fn agent_members(&self) -> Vec<(String, KindSet)> {
-        self.agent_members_at(unix_now())
+        self.policy.agent_members_at(unix_now())
     }
     fn shares_of(&self, node: &TreePath) -> Vec<&Grant> {
-        self.shares_of_at(node, unix_now())
+        self.policy.shares_at(node, unix_now())
     }
 }
 
@@ -116,8 +125,8 @@ mod tests {
     /// invite.
     fn ws_with_member(role: CapRole) -> Workspace {
         let mut ws = Workspace::new(WorkspaceId::from_u128(23), "authority-test");
-        ws.set_owner(OWNER);
-        ws.admit(PEER, role);
+        ws.policy.set_owner(OWNER);
+        ws.policy.admit(PEER, role);
         ws
     }
 
@@ -146,10 +155,10 @@ mod tests {
             );
 
             let block = ws.policy.block(PEER, Grantee::person(OWNER));
-            ws.grant(block);
-            assert!(ws.is_blocked(PEER), "the block is on the whole workspace");
+            ws.policy.grant(block);
+            assert!(ws.policy.is_blocked(PEER), "the block is on the whole workspace");
             assert_eq!(
-                Workspace::role_of(&ws, PEER),
+                ws.policy.role_of(PEER),
                 Some(CapRole::Editor),
                 "the record still names the member"
             );

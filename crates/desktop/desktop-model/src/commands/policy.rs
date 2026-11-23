@@ -20,7 +20,7 @@ use tilo_action_policy::Role;
 
 use super::DesktopCommand;
 use crate::ownership::{Authors, made_by, released, shares_windows};
-use crate::workspace::Workspace;
+use crate::tree::Workspace;
 
 /// Who asks, and the role the workspace holds them to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

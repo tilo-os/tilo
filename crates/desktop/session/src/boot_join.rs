@@ -69,7 +69,7 @@ impl BootJoin {
             handle.read(|tree| {
                 tree.workspaces.iter().any(|held| {
                     held.id().to_string() == workspace
-                        && held.may_govern_at(
+                        && held.policy.may_change_at(
                             person,
                             tilo_action_policy::roles::governance::GRANT,
                             now,

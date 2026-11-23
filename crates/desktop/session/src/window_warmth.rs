@@ -146,7 +146,14 @@ fn workspace_sync(
     tilo_network_actor::workspace_sync::told(
         workspace_id,
         &workspace.name,
-        workspace.app_writes_at(&person, app, tilo_clock::unix_now()),
+        workspace.policy.role_of(&person).map(|_| {
+            workspace.policy.answer_at(
+                &person,
+                &workspace.policy.node().app(app),
+                tilo_action_policy::ActionKind::Undoable,
+                tilo_clock::unix_now(),
+            ) == tilo_action_policy::Answer::Allow
+        }),
     )
 }
 

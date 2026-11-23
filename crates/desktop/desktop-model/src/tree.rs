@@ -13,7 +13,14 @@ use crate::ids::{GroupId, StripId, WorkspaceId};
 use crate::layout::Tab;
 use crate::partition::OutputPartition;
 use crate::serde_ids::deserialize_id_map;
-use crate::workspace::Workspace;
+use collab_types::Member;
+use collab_types::caps::CapOverride;
+use tilo_action_policy::{Grantee, Preset, Role, WorkspacePolicy, roles};
+
+use crate::layout::{Strip, WorkspaceLayout};
+use crate::present::Present;
+use crate::receipt::WorkspaceEffectReceipt;
+use crate::shared_surfaces::SharedSurfaces;
 
 /// The shape of the persisted desktop this build writes and understands.
 /// Bump only when a change makes a file unreadable to an older build in a
@@ -151,15 +158,48 @@ impl Layout {
         })
     }
 
-    /// The first instant after `now` (Unix seconds) at which a grant of any
-    /// workspace stops being live ([`Workspace::next_grant_expiry_after`]): a
-    /// policy decision read from this tree at `now` holds until then, or
-    /// until the tree is written.
+    /// The first instant after `now` (Unix seconds) at which a grant or
+    /// sandbox capability of any workspace stops being live: a policy
+    /// decision read from this tree at `now` holds until then, or until the
+    /// tree is written.
     pub fn next_grant_expiry_after(&self, now: u64) -> Option<u64> {
         self.workspaces
             .iter()
-            .filter_map(|workspace| workspace.next_grant_expiry_after(now))
+            .flat_map(|workspace| {
+                [
+                    workspace.policy.next_grant_expiry_after(now),
+                    collab_types::caps::sandbox::next_expiry_after(&workspace.sandbox, now),
+                ]
+            })
+            .flatten()
             .min()
+    }
+
+    /// Record one terminal effect in `workspace_id`'s history, exactly once
+    /// per invocation: the receipt as stored, or `None` when the workspace is
+    /// gone or already holds a receipt for the invocation. An application's
+    /// effect is recorded [`WorkspaceEffectReceipt::redacted`]; a record the
+    /// host writes itself, such as a grant a person gave,
+    /// [`WorkspaceEffectReceipt::recorded`].
+    pub fn append_workspace_effect_receipt(
+        &mut self,
+        workspace_id: WorkspaceId,
+        receipt: WorkspaceEffectReceipt,
+    ) -> Option<WorkspaceEffectReceipt> {
+        let workspace = self
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id() == workspace_id)?;
+        if workspace
+            .effect_receipts
+            .iter()
+            .any(|held| held.invocation == receipt.invocation)
+        {
+            return None;
+        }
+        workspace.effect_receipts.push(receipt.clone());
+        crate::receipt::bounded_receipts(&mut workspace.effect_receipts);
+        Some(receipt)
     }
 
     /// The strip `workspace` shows: its recorded one while that strip exists,
@@ -503,5 +543,486 @@ impl Layout {
             self.active_group.remove(&strip_id);
             None
         }
+    }
+}
+
+/// A workspace on the desktop: its strips and canvas, with the policy,
+/// sandbox and grant sets its members' devices decide by.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(from = "StoredWorkspace")]
+pub struct Workspace {
+    id: WorkspaceId,
+    /// The workspace's name, as its governance records it: projected onto the shell by the
+    /// device showing it ([`Self::named_as`]), never stored or sent with the layout, so the
+    /// workspace has one name, the one every device and list of it reads.
+    #[serde(skip)]
+    pub name: String,
+    pub strips: Vec<Strip>,
+    /// Whether the workspace shows its strips or its canvas, and where each
+    /// window group stands on the canvas: the same windows, arranged on a
+    /// 2D surface ([`crate::layout`]).
+    #[serde(default, skip_serializing_if = "WorkspaceLayout::is_default")]
+    pub layout: WorkspaceLayout,
+    /// The workspace's members: its people with their roles and the agents
+    /// admitted in it, each with the colour it wears everywhere.
+    /// Placed from [`Workspace::policy`] and presence before a surface reads
+    /// them; never read back from a stored workspace.
+    /// `skip_deserializing` rather than `skip`: reading is the direction
+    /// that can fabricate a stale member, but `Serialize` still feeds the
+    /// control socket's state dump.
+    #[serde(skip_deserializing, default)]
+    pub members: Vec<Member>,
+    /// The name each person goes by, as the workspace's governance keeps it, by their root: the
+    /// name they gave themselves, which every surface showing someone who is not here reads
+    /// ([`Self::person_name`]). Projected by the device showing the workspace from the governance
+    /// it holds ([`Self::named_people`]); never stored or sent with the layout.
+    #[serde(skip)]
+    pub people_names: BTreeMap<String, String>,
+    /// How each of them is here now: where they are, what they say they are
+    /// doing, how available they are. Said again on every frame and never
+    /// written: presence, not the workspace's document.
+    #[serde(skip, default)]
+    pub present: Vec<Present>,
+    /// Who may do what in this workspace: its owner (structural, `None` until the
+    /// local user adopts it on load), each member's role preset, and every
+    /// grant on the workspace's tree. Changed only through governance actions.
+    pub policy: WorkspacePolicy,
+    /// What apps' code may reach outside their documents in this workspace:
+    /// filesystem paths, file records, devices and network hosts granted
+    /// through portals. Never what a person grants an agent.
+    #[serde(default)]
+    pub sandbox: Vec<CapOverride>,
+    /// Named grant sets people assign instead of writing grants one by one.
+    #[serde(default)]
+    pub presets: Vec<Preset>,
+    /// Default-application policy belongs to the workspace, while each
+    /// person's ordinary defaults remain in their personal settings. All
+    /// mutation goes through the authority-checked methods below.
+    #[serde(default)]
+    pub default_apps: desktop_policy::WorkspaceDefaults,
+    /// Consequential effects are activity, but never pretend to be edits to
+    /// an app's collaborative document.
+    #[serde(default, skip_serializing_if = "crate::history::omitted")]
+    pub effect_receipts: Vec<WorkspaceEffectReceipt>,
+    /// Shortcuts saved in this workspace: a person's own in their personal
+    /// workspace, shared ones in a collaborative one. Projected as a CRDT
+    /// map keyed by shortcut id, so they reach every desktop the workspace
+    /// reaches.
+    #[serde(default)]
+    pub shortcuts: Vec<tilo_automation::SavedShortcut>,
+    /// Surfaces from this workspace being streamed to peers. Keys are
+    /// wayland `wl_surface` ids; values are the target Iroh peers
+    /// (hashed to `u64`) — a `HashSet` for multi-recipient streaming.
+    #[serde(default)]
+    pub shared_surfaces: SharedSurfaces,
+    /// The windows closed here and not reopened, newest last
+    /// ([`crate::closed_tabs`]). This device's own history, so it is written
+    /// to no document and projected into no workspace: a close is undone where
+    /// the person closed it, with the app this device opens.
+    #[serde(skip)]
+    pub(crate) closed_tabs: crate::closed_tabs::ClosedTabs,
+}
+
+/// A workspace as stored: its policy names the workspace it was stored for, or is
+/// absent for a workspace that names no authority yet.
+#[derive(Deserialize)]
+struct StoredWorkspace {
+    id: WorkspaceId,
+    strips: Vec<Strip>,
+    #[serde(default)]
+    layout: WorkspaceLayout,
+    #[serde(skip_deserializing, default)]
+    members: Vec<Member>,
+    #[serde(default)]
+    policy: Option<WorkspacePolicy>,
+    #[serde(default)]
+    sandbox: Vec<CapOverride>,
+    #[serde(default)]
+    presets: Vec<Preset>,
+    #[serde(default)]
+    default_apps: desktop_policy::WorkspaceDefaults,
+    #[serde(default)]
+    effect_receipts: Vec<WorkspaceEffectReceipt>,
+    #[serde(default)]
+    shortcuts: Vec<tilo_automation::SavedShortcut>,
+    #[serde(default)]
+    shared_surfaces: SharedSurfaces,
+}
+
+impl From<StoredWorkspace> for Workspace {
+    fn from(stored: StoredWorkspace) -> Self {
+        let identity = stored.id;
+        let policy = match stored.policy {
+            Some(mut policy) => {
+                policy.rehome(identity.to_string());
+                policy
+            }
+            None => WorkspacePolicy::unowned(identity.to_string(), &Grantee::role(Role::Owner)),
+        };
+        Self {
+            id: identity,
+            name: String::new(),
+            strips: stored.strips,
+            layout: stored.layout,
+            members: stored.members,
+            present: Vec::new(),
+            policy,
+            sandbox: stored.sandbox,
+            presets: stored.presets,
+            default_apps: stored.default_apps,
+            effect_receipts: stored.effect_receipts,
+            shortcuts: stored.shortcuts,
+            shared_surfaces: stored.shared_surfaces,
+            closed_tabs: crate::closed_tabs::ClosedTabs::default(),
+            people_names: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum WorkspaceDefaultError {
+    #[error("only a workspace administrator may change workspace policy")]
+    NotAdministrator,
+    #[error("a person may only change their own workspace default")]
+    WrongIdentity,
+    #[error("invalid default application: {0}")]
+    InvalidSelection(desktop_policy::DefaultAppError),
+}
+
+/// Every question taking `now` reads the caller's clock, Unix seconds: grants
+/// expire, and the model does not read a clock of its own.
+impl Workspace {
+    /// Set the administrator layer of default-app policy. The shell supplies
+    /// the authenticated local identity; a caller cannot widen policy by
+    /// merely painting an enabled control.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkspaceDefaultError::NotAdministrator`] if `actor` may not
+    /// change the workspace's settings, or
+    /// [`WorkspaceDefaultError::InvalidSelection`] if `policy` names an app
+    /// package the resolver rejects for `resource`.
+    pub fn set_default_app_policy_as_at(
+        &mut self,
+        actor: &str,
+        resource: desktop_policy::ResourceKind,
+        policy: desktop_policy::WorkspaceDefaultPolicy,
+        resolver: &desktop_policy::DefaultAppResolver<'_>,
+        now: u64,
+    ) -> Result<(), WorkspaceDefaultError> {
+        if !self
+            .policy
+            .may_change_at(actor, roles::governance::SETTINGS, now)
+        {
+            return Err(WorkspaceDefaultError::NotAdministrator);
+        }
+        if let desktop_policy::WorkspaceDefaultPolicy::App(package) = &policy {
+            resolver
+                .validate_app(&resource, package)
+                .map_err(WorkspaceDefaultError::InvalidSelection)?;
+        }
+        self.default_apps.policy.insert(resource, policy);
+        Ok(())
+    }
+
+    /// Set a person's own workspace-level choice. Even a workspace owner may
+    /// not silently rewrite another person's preference; administrative
+    /// policy is the separate method above and remains visibly attributable.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkspaceDefaultError::WrongIdentity`] if `actor` differs
+    /// from `subject` — a person may only set their own choice — or
+    /// [`WorkspaceDefaultError::InvalidSelection`] if `choice` names an app
+    /// package the resolver rejects for `resource`.
+    pub fn set_default_app_choice_as(
+        &mut self,
+        actor: &str,
+        subject: &str,
+        resource: desktop_policy::ResourceKind,
+        choice: desktop_policy::UserWorkspaceChoice,
+        resolver: &desktop_policy::DefaultAppResolver<'_>,
+    ) -> Result<(), WorkspaceDefaultError> {
+        if actor != subject {
+            return Err(WorkspaceDefaultError::WrongIdentity);
+        }
+        if let desktop_policy::UserWorkspaceChoice::App(package) = &choice {
+            resolver
+                .validate_app(&resource, package)
+                .map_err(WorkspaceDefaultError::InvalidSelection)?;
+        }
+        self.default_apps
+            .user_choices
+            .entry(subject.to_owned())
+            .or_default()
+            .insert(resource, choice);
+        Ok(())
+    }
+
+    /// The workspace this workspace is, given when it was made and never changed.
+    #[must_use]
+    pub fn id(&self) -> WorkspaceId {
+        self.id
+    }
+
+    /// Project the name the workspace's governance records, `name`, onto this shell: the
+    /// workspace's one name, which the layout keeps none of, so the device showing the workspace
+    /// projects it here from the governance it holds. Naming it what it is already called changes
+    /// nothing. Whether the shell changed.
+    pub fn named_as(&mut self, name: &str) -> bool {
+        let name = name.trim();
+        if name.is_empty() || self.name == name {
+            return false;
+        }
+        name.clone_into(&mut self.name);
+        true
+    }
+
+    /// Project the names the workspace's governance gives its people, `names` (person root, hex,
+    /// to the name they go by), onto this shell. A blank name names nobody. Whether the shell
+    /// changed.
+    pub fn named_people<'a>(
+        &mut self,
+        names: impl IntoIterator<Item = (&'a str, &'a str)>,
+    ) -> bool {
+        let names: BTreeMap<String, String> = names
+            .into_iter()
+            .map(|(person, name)| (person.to_owned(), name.trim().to_owned()))
+            .filter(|(_, name)| !name.is_empty())
+            .collect();
+        if self.people_names == names {
+            return false;
+        }
+        self.people_names = names;
+        true
+    }
+
+    /// The name the person `person` (root, hex) goes by here: the one they show by while here,
+    /// else the one the workspace's governance keeps for them. `None` for someone nobody named,
+    /// never their key.
+    #[must_use]
+    pub fn person_name(&self, person: &str) -> Option<&str> {
+        fn shown(name: &str) -> Option<&str> {
+            let name = name.trim();
+            let key = name.len() >= 32 && name.bytes().all(|byte| byte.is_ascii_hexdigit());
+            (!name.is_empty() && !key).then_some(name)
+        }
+        self.members
+            .iter()
+            .find(|member| member.id.person_id() == Some(person))
+            .and_then(|member| shown(&member.name))
+            .or_else(|| self.people_names.get(person).and_then(|name| shown(name)))
+    }
+
+    /// `member` joins this workspace's member list: what a host places from its governance and
+    /// presence before a surface reads who is in the workspace. A member already listed keeps
+    /// their place.
+    pub fn list_member(&mut self, member: Member) {
+        match self
+            .members
+            .iter_mut()
+            .find(|listed| listed.id == member.id)
+        {
+            Some(listed) => *listed = member,
+            None => self.members.push(member),
+        }
+    }
+
+    /// `here` is `member`'s presence now, replacing what was said of them before.
+    pub fn place_presence(&mut self, here: Present) {
+        match self
+            .present
+            .iter_mut()
+            .find(|placed| placed.member == here.member)
+        {
+            Some(placed) => *placed = here,
+            None => self.present.push(here),
+        }
+    }
+
+    /// `members` join this workspace's member list, each of them here now saying nothing of
+    /// themselves.
+    pub fn members_here(&mut self, members: impl IntoIterator<Item = Member>) {
+        for member in members {
+            self.member_here(member);
+        }
+    }
+
+    /// `member` is one of this workspace's members and is here now, saying nothing of themselves
+    /// yet: what a host places for someone presence named before the roster listed them.
+    pub fn member_here(&mut self, member: Member) {
+        self.place_presence(Present::of(member.id.clone()));
+        self.list_member(member);
+    }
+}
+
+impl Workspace {
+    /// The workspace `id`, named `name`, with nothing in it yet.
+    pub fn new(id: WorkspaceId, name: impl Into<String>) -> Self {
+        Self {
+            id,
+            name: name.into(),
+            strips: Vec::new(),
+            layout: WorkspaceLayout::default(),
+            members: Vec::new(),
+            present: Vec::new(),
+            policy: WorkspacePolicy::unowned(id.to_string(), &Grantee::role(Role::Owner)),
+            sandbox: Vec::new(),
+            presets: Vec::new(),
+            default_apps: desktop_policy::WorkspaceDefaults::default(),
+            effect_receipts: Vec::new(),
+            shortcuts: Vec::new(),
+            shared_surfaces: SharedSurfaces::default(),
+            closed_tabs: crate::closed_tabs::ClosedTabs::default(),
+            people_names: BTreeMap::new(),
+        }
+    }
+
+    /// Every window of this workspace, in its order: strip by strip, group by group.
+    pub fn tabs(&self) -> impl Iterator<Item = &crate::Tab> {
+        self.strips
+            .iter()
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+    }
+
+    /// Mark `surface_id` as being streamed to `peer_id`. Additive — two
+    /// calls record both peers in the per-surface set.
+    pub fn share_surface(&mut self, surface_id: u64, peer_id: u64) {
+        self.shared_surfaces.share(surface_id, peer_id);
+    }
+
+    /// Drop the share entry for `surface_id` (no-op if unshared).
+    /// Returns the peers it was shared with, so callers can fire
+    /// `StopShare` for each without a second lookup.
+    pub fn unshare_surface(&mut self, surface_id: u64) -> Option<std::collections::HashSet<u64>> {
+        self.shared_surfaces.unshare(surface_id)
+    }
+
+    /// Stop streaming `surface_id` to one peer, leaving others intact.
+    /// Drops the surface key entirely once the last peer is removed, so
+    /// [`Self::is_surface_shared`] reports `false` again.
+    pub fn unshare_surface_from_peer(&mut self, surface_id: u64, peer_id: u64) -> bool {
+        self.shared_surfaces.unshare_peer(surface_id, peer_id)
+    }
+
+    /// Whether `surface_id` is currently streamed somewhere. Used by
+    /// the compositor's commit hook to short-circuit the readback for
+    /// unshared surfaces (~all of them in steady state).
+    pub fn is_surface_shared(&self, surface_id: u64) -> bool {
+        self.shared_surfaces.contains(surface_id)
+    }
+}
+
+impl Default for Workspace {
+    /// A workspace with a fresh id: two made this way are never the same workspace.
+    fn default() -> Self {
+        Self::new(WorkspaceId::new(), String::new())
+    }
+}
+
+#[cfg(test)]
+mod workspace_tests {
+    use super::*;
+
+    /// Someone is called what they show by while here, else what the workspace's governance
+    /// names them: never their key, and nobody named stays unnamed.
+    #[test]
+    fn a_person_goes_by_their_given_name_here_or_not() {
+        let ada = "ad".repeat(32);
+        let bo = "b0".repeat(32);
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Lounge");
+        assert!(workspace.named_people([(ada.as_str(), " Ada "), (bo.as_str(), bo.as_str())]));
+        assert!(
+            !workspace.named_people([(ada.as_str(), "Ada"), (bo.as_str(), bo.as_str())]),
+            "the same names change nothing"
+        );
+        assert_eq!(
+            workspace.person_name(&ada),
+            Some("Ada"),
+            "governance names someone not here"
+        );
+        assert_eq!(workspace.person_name(&bo), None, "a key is never a name");
+        assert_eq!(workspace.person_name("someone"), None);
+        workspace.member_here(Member::named(
+            collab_types::MemberId::person(ada.clone()),
+            "Ada Lovelace",
+        ));
+        assert_eq!(
+            workspace.person_name(&ada),
+            Some("Ada Lovelace"),
+            "who is here says their own"
+        );
+        assert!(
+            workspace.named_people([]),
+            "names leave with the people the workspace names"
+        );
+        assert_eq!(workspace.person_name(&bo), None);
+    }
+
+    /// A shell takes the name its workspace's governance records, whether it
+    /// landed before anything named the workspace or its copy is older.
+    #[test]
+    fn a_shell_takes_the_name_its_governance_records() {
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "");
+        assert!(workspace.named_as("Tilo"), "an unnamed shell takes it");
+        assert_eq!(workspace.name, "Tilo");
+        assert!(!workspace.named_as("Tilo"), "its own name changes nothing");
+        assert!(workspace.named_as("Tilo Coffee"), "a rename reaches it");
+        assert_eq!(workspace.name, "Tilo Coffee");
+        assert!(
+            !workspace.named_as("  "),
+            "a governance that names nothing leaves the name it has"
+        );
+        assert_eq!(workspace.name, "Tilo Coffee");
+        assert!(
+            workspace.named_as(" Tilo "),
+            "the name as written is trimmed"
+        );
+        assert_eq!(workspace.name, "Tilo");
+    }
+
+    #[test]
+    fn a_receipt_is_recorded_once_and_bounded() {
+        use tilo_actions::{ActionContext, EffectReceiptStatus, InvocationId, MemberId};
+        let id = WorkspaceId::from_u128(1);
+        let mut tree = Layout {
+            workspaces: vec![Workspace::new(id, "Home")],
+            ..Layout::default()
+        };
+        let invocation = InvocationId::new();
+        let receipt = tree
+            .append_workspace_effect_receipt(
+                id,
+                WorkspaceEffectReceipt::recorded(
+                    invocation,
+                    &MemberId::person("owner"),
+                    ActionContext::default(),
+                    EffectReceiptStatus::Succeeded,
+                    42,
+                ),
+            )
+            .unwrap();
+        assert!(
+            receipt
+                .context
+                .facets
+                .iter()
+                .any(|facet| facet.key == "tilo.invocation")
+        );
+        assert!(
+            tree.append_workspace_effect_receipt(
+                id,
+                WorkspaceEffectReceipt::redacted(
+                    invocation,
+                    &MemberId::person("owner"),
+                    ActionContext::default(),
+                    EffectReceiptStatus::Succeeded,
+                    43,
+                ),
+            )
+            .is_none()
+        );
+        assert_eq!(tree.workspaces[0].effect_receipts.len(), 1);
     }
 }

@@ -3,10 +3,10 @@
 //! resource publishes these readings, and the switcher's panel shows the walk over them.
 
 use serde::{Deserialize, Serialize};
-use tilo_session_core::desktop::overlays::{Overlay, Overlays, SwitcherScope};
 use tilo_desktop_model::{
     Layout, Strip, StripId, Tab, TileContent, WindowGroup, Workspace, WorkspaceId,
 };
+use tilo_session_core::desktop::overlays::{Overlay, Overlays, SwitcherScope};
 use tilo_session_core::desktop::state::DesktopHandle;
 
 /// The layout's windows as `session:windows` publishes them.
@@ -156,9 +156,11 @@ fn window_reading(
         } => (true, host.clone(), host_label.clone()),
         _ => (false, String::new(), String::new()),
     };
-    let controls_desktop = at
-        .workspace
-        .holds_desktop_control_at(&app, tilo_clock::unix_now());
+    let controls_desktop = tilo_desktop_model::commands::has_control_at(
+        &at.workspace.policy,
+        &app,
+        tilo_clock::unix_now(),
+    );
     Window {
         key: tab.id.to_string(),
         title: if title.is_empty() {

@@ -858,3 +858,32 @@ async fn a_server_answers_an_action_through_its_devices_dispatch() {
     );
     server.shutdown().await;
 }
+
+/// A grant a person gave is recorded as the verb its history names, its labels
+/// bounded and without control characters, under the workspace's own app.
+#[test]
+fn an_app_action_grant_is_recorded_as_its_verb() {
+    use tilo_actions::Did;
+    let context = super::app_action_grant_context(
+        "workspace",
+        "Caller\u{7}",
+        "Target",
+        &"x".repeat(400),
+        "once",
+    );
+    let Some(Did::Verb(verb)) = &context.what else {
+        panic!("the grant is recorded as a verb");
+    };
+    assert_eq!(verb.action.action, "allow-app-action");
+    let action = verb.args["action"].as_str().unwrap();
+    assert!(action.chars().count() <= tilo_actions::entry::MAX_SCALAR_CHARS + 1);
+    assert_eq!(
+        verb.args["app"].as_str(),
+        Some("Caller"),
+        "control characters are dropped"
+    );
+    assert_eq!(
+        context.app.as_ref().unwrap().id,
+        tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
+    );
+}

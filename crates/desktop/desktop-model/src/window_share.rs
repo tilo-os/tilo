@@ -16,7 +16,7 @@ use tilo_action_policy::{
 
 use crate::ids::{TabId, device_salt_of_key, peer_salt_of};
 use crate::layout::TileContent;
-use crate::workspace::Workspace;
+use crate::tree::Workspace;
 
 /// Key of the workspace's governed device identities, by device key.
 const PEER_IDENTITIES_KEY: &str = "peer_identities_v1";
@@ -218,7 +218,8 @@ impl Workspace {
     /// the workspace's policy into the workspace's document.
     pub fn end_window_shares(&mut self, tab: TabId) -> Vec<GrantId> {
         let share = window_share_id(tab);
-        self.revoke_grants_matching(|grant| is_of_share(grant, &share))
+        self.policy
+            .revoke_grants_matching(|grant| is_of_share(grant, &share))
     }
 }
 

@@ -20,7 +20,7 @@ use crate::layout::{Strip, Tab, TileContent, WindowGroup};
 use crate::ownership::SharedDesktop;
 use crate::projection::localise_tile;
 use crate::tree::Layout;
-use crate::workspace::Workspace;
+use crate::tree::Workspace;
 
 /// What every device sees of a tile: device-local handles and labels left
 /// out, and the windows that open as an app on each device alike.

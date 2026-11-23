@@ -2,8 +2,7 @@
 //! role and what the viewer may offer them, in the viewer's words.
 
 use super::{
-    CapRole, UserId, Workspace, member_row_name, member_row_offers, members_authority_note,
-    ordered_roster, role_label,
+    CapRole, Workspace, member_row_name, member_row_offers, members_authority_note, role_label,
 };
 use crate::desktop::i18n::{t, t_args};
 use crate::desktop::people::PeopleNames;
@@ -11,7 +10,7 @@ use crate::desktop::people::PeopleNames;
 /// One person of the list, in the viewer's words.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Person {
-    pub user: UserId,
+    pub user: String,
     pub name: String,
     pub you: bool,
     pub role: String,
@@ -83,7 +82,7 @@ pub struct MemberHolder {
 /// workspace's people: the shell's own policy, or a page's host answering for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Member {
-    pub user: UserId,
+    pub user: String,
     /// What the viewer calls them.
     pub name: String,
     pub role: CapRole,
@@ -97,8 +96,9 @@ pub struct Member {
 
 /// The members of `ws` in the tab's order, each named as `names` (the roster) names them.
 #[must_use]
-pub fn members(ws: &Workspace, names: &PeopleNames, viewer: &UserId) -> Vec<Member> {
-    ordered_roster(ws)
+pub fn members(ws: &Workspace, names: &PeopleNames, viewer: &str) -> Vec<Member> {
+    ws.policy
+        .people()
         .into_iter()
         .map(|(user, role)| {
             let grants = ws.policy.extra_grants(&user);
@@ -123,7 +123,7 @@ pub fn members(ws: &Workspace, names: &PeopleNames, viewer: &UserId) -> Vec<Memb
 pub fn content(
     ws: &Workspace,
     names: &PeopleNames,
-    viewer: &UserId,
+    viewer: &str,
     is_owner: bool,
     holders: &[MemberHolder],
 ) -> PeopleContent {
@@ -146,7 +146,7 @@ pub fn content(
 #[must_use]
 pub fn content_of(
     members: &[Member],
-    viewer: &UserId,
+    viewer: &str,
     is_owner: bool,
     holders: &[MemberHolder],
 ) -> PeopleContent {

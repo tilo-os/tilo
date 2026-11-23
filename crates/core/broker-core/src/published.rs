@@ -108,7 +108,7 @@ pub fn published_node(
     action: &PublishedAction,
 ) -> TreePath {
     tilo_actions::action_node(
-        &workspace.node(),
+        &workspace.policy.node(),
         app,
         &action.resource_kind,
         &action.resource,

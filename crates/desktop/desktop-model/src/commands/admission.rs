@@ -4,7 +4,7 @@
 
 use super::placement::{OpenContext, open_app_placement};
 use super::{DesktopCommand, TabLocation, TabPlacement};
-use crate::workspace::Workspace;
+use crate::tree::Workspace;
 
 /// `command` with [`DesktopCommand::OpenApp`] resolved to the
 /// [`DesktopCommand::OpenTab`] a person would make, placed in the owner's own

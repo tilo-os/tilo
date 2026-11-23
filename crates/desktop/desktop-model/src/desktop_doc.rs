@@ -40,8 +40,8 @@ use crate::projection::{WORKSPACE_AUTOMATIONS_KEY, WORKSPACE_EFFECT_RECEIPTS_KEY
 use crate::receipt::WorkspaceEffectReceipt;
 use crate::serde_ids::deserialize_id_map;
 use crate::tree::Layout;
+use crate::tree::Workspace;
 use crate::width::WindowWidth;
-use crate::workspace::{UserId, Workspace};
 
 const WORKSPACES_KEY: &str = "workspaces";
 pub(crate) const ACTIVE_KEY: &str = "active";
@@ -271,7 +271,7 @@ fn write_strip(doc: &mut AutoCommit, entry: &ObjId, strip: &Strip) {
 }
 
 fn write_workspace(doc: &mut AutoCommit, entry: &ObjId, ws: &Workspace) {
-    match ws.owner() {
+    match ws.policy.owner() {
         Some(owner) => {
             let _ = doc.put_str_if_changed(entry, "owner", owner);
         }
@@ -561,7 +561,7 @@ fn read_keyed_blob_map<T: serde::de::DeserializeOwned>(
 /// A workspace's people are its governance's, not the document's: old documents keep
 /// the `members` and `members_joined_v1` maps they were written with, and nothing
 /// reads them.
-type StoredPolicy = (Option<UserId>, Option<Vec<Grant>>);
+type StoredPolicy = (Option<String>, Option<Vec<Grant>>);
 
 /// Read policy fields independently: a new workspace has an owner before its
 /// grants map exists, while an explicit empty grants map revokes all grants.
@@ -604,7 +604,7 @@ fn read_policy(doc: &AutoCommit, entry: &ObjId) -> StoredPolicy {
 fn read_presets(doc: &AutoCommit, entry: &ObjId) -> Option<Vec<Preset>> {
     let mut presets: Vec<Preset> = read_blob_map(doc, entry, PRESETS_KEY)?;
     presets.retain(|preset| preset.validate().is_ok());
-    crate::grants::sort_presets(&mut presets);
+    tilo_action_policy::sort_presets(&mut presets);
     Some(presets)
 }
 
