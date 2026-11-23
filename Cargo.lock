@@ -29200,6 +29200,7 @@ dependencies = [
  "tilo-browser-runtime",
  "tilo-browser-sessions",
  "tilo-callstream",
+ "tilo-canonical-json",
  "tilo-caps",
  "tilo-capture",
  "tilo-capture-studio",

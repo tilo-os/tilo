@@ -1181,6 +1181,7 @@ doc = false
 "tilo-browser-runtime" = { path = "../../crates/browser/tilo-browser-runtime", default-features = false, features = ["default"] }
 "tilo-browser-sessions" = { path = "../../crates/import/tilo-browser-sessions", default-features = false, features = [] }
 "tilo-callstream" = { path = "../../crates/collab/tilo-callstream", default-features = false, features = ["recording", "surface-decoder", "unit-chain"] }
+"tilo-canonical-json" = { path = "../../crates/platform/tilo-canonical-json", default-features = false, features = [] }
 "tilo-caps" = { path = "../../crates/sdk/tilo-caps", default-features = false, features = [] }
 "tilo-capture" = { path = "../../crates/platform/tilo-capture", default-features = false, features = ["avfoundation", "camera", "default", "scanner", "test-support"] }
 "tilo-capture-studio" = { path = "../../crates/session/capture-studio", default-features = false, features = [] }
@@ -2451,6 +2452,7 @@ doc = false
 "tilo-automerge-fork-0_12_0" = { package = "tilo-automerge-fork", path = "../../vendor/automerge", default-features = false, features = [] }
 "tilo-automerge-isolate" = { path = "../../crates/doc/tilo-automerge-isolate", default-features = false, features = [] }
 "tilo-broker-core" = { path = "../../crates/collab/broker-core", default-features = false, features = [] }
+"tilo-canonical-json" = { path = "../../crates/platform/tilo-canonical-json", default-features = false, features = [] }
 "tilo-caps" = { path = "../../crates/sdk/tilo-caps", default-features = false, features = [] }
 "tilo-cli-kit" = { path = "../../crates/runtime/cli", default-features = false, features = [] }
 "tilo-clock" = { path = "../../crates/platform/tilo-clock", default-features = false, features = ["local", "test-support"] }
@@ -3836,6 +3838,7 @@ doc = false
 "tilo-browser-runtime" = { path = "../../crates/browser/tilo-browser-runtime", default-features = false, features = ["default"] }
 "tilo-browser-sessions" = { path = "../../crates/import/tilo-browser-sessions", default-features = false, features = [] }
 "tilo-callstream" = { path = "../../crates/collab/tilo-callstream", default-features = false, features = ["recording", "surface-decoder", "unit-chain"] }
+"tilo-canonical-json" = { path = "../../crates/platform/tilo-canonical-json", default-features = false, features = [] }
 "tilo-caps" = { path = "../../crates/sdk/tilo-caps", default-features = false, features = [] }
 "tilo-capture" = { path = "../../crates/platform/tilo-capture", default-features = false, features = ["avfoundation", "camera", "default", "scanner", "test-support"] }
 "tilo-capture-studio" = { path = "../../crates/session/capture-studio", default-features = false, features = [] }
@@ -5105,6 +5108,7 @@ doc = false
 "tilo-automerge-fork-0_12_0" = { package = "tilo-automerge-fork", path = "../../vendor/automerge", default-features = false, features = [] }
 "tilo-automerge-isolate" = { path = "../../crates/doc/tilo-automerge-isolate", default-features = false, features = [] }
 "tilo-broker-core" = { path = "../../crates/collab/broker-core", default-features = false, features = [] }
+"tilo-canonical-json" = { path = "../../crates/platform/tilo-canonical-json", default-features = false, features = [] }
 "tilo-caps" = { path = "../../crates/sdk/tilo-caps", default-features = false, features = [] }
 "tilo-cli-kit" = { path = "../../crates/runtime/cli", default-features = false, features = [] }
 "tilo-clock" = { path = "../../crates/platform/tilo-clock", default-features = false, features = ["local", "test-support"] }
