@@ -626,4 +626,50 @@ tilo_test_env::scenario! {
             world.mounted.is_empty()
         });
     }
+
+    phase housekeeping_runs_once_at_start_without_waiting_an_interval;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("control.sock");
+        let listener = tilo_files::native::socket::bind(&socket).unwrap();
+        let world = Arc::new(Mutex::new(World {
+            drives: vec![windows_partition()],
+            ..World::default()
+        }));
+        let mut service = Service::new(
+            Fake(Arc::clone(&world)),
+            GrantStore::new(dir.path().join("grants")),
+        );
+        assert!(matches!(
+            service.handle(
+                Caller::Shell { uid: UID },
+                Request::Open {
+                    drive: "nvme0n1p3:1".into(),
+                    consent: consent(Mode::Open, false),
+                },
+            ),
+            Response::Opened { .. }
+        ));
+        assert_eq!(world.lock().unwrap().mounted.len(), 1);
+        world.lock().unwrap().logged_out = true;
+
+        // Even with a long housekeeping interval and stop already set, startup
+        // housekeeping runs once before the poll loop and unmounts the stale
+        // drive immediately.
+        let stop = AtomicBool::new(true);
+        server::serve(
+            &listener,
+            &mut service,
+            |_| Ok(Caller::Shell { uid: UID }),
+            server::Pacing {
+                housekeeping: Duration::from_secs(60),
+                idle_exit: None,
+            },
+            &stop,
+        );
+        assert!(
+            world.lock().unwrap().mounted.is_empty(),
+            "startup housekeeping must close the logged-out person's drive at once"
+        );
+    }
 }
