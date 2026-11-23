@@ -2862,6 +2862,29 @@ mod tests {
         );
     }
 
+    /// A program refused by the compiler is answered with the compiler's own lines: each error's
+    /// place, code and the name it is about, so the person and the model read what to change
+    /// rather than only that nothing ran.
+    #[test]
+    fn a_programs_refusal_names_each_error_where_the_compiler_placed_it() {
+        let mut programs = Programs::default();
+        let answer = json!({
+            "state": "rejected",
+            "detail": [
+                "1:1: E014 unknown name `session`; variables in scope: none",
+                "1:42: E037 cannot tell which enum `.none` belongs to here",
+            ],
+        });
+        let (text, failed) = answer_text(&mut programs, "session.overview(open: .none)", &answer);
+        assert!(failed, "a refusal is an error: {text}");
+        assert_eq!(
+            text,
+            "error: the program does not compile; nothing ran\n\
+             1:1: E014 unknown name `session`; variables in scope: none\n\
+             1:42: E037 cannot tell which enum `.none` belongs to here"
+        );
+    }
+
     /// `history task` line by line: a run says what changed and where, and
     /// how it stands, never the values it carried (the host's words do not).
     #[test]
