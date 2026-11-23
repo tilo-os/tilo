@@ -301,8 +301,22 @@ view output is drawn as native widgets and as semantic HTML on the web page.
   `main`. Work that would do so either deletes the old copy first or stops.
 - No legacy readers. Tilo is pre-alpha, and a format that changes moves its
   data once, in one migration action, and then the old reader goes.
-- No UX loss. A deletion that would lose something a person does in their
-  first hour is blocked until the surviving path does it.
+- UX only gets better. Every push leaves what a person can do and how well
+  it works at least as good as before, on every platform it ran on, rarely
+  used features included. Before a deletion, list every capability of what
+  goes (each action, shortcut, gesture, setting, platform, error state) and
+  point each one at the place that now does it. Anything with no such place
+  blocks the deletion until it exists there.
+- Built but unused still counts. Capabilities nobody uses yet but that Tilo
+  needs stay and keep working: sending files to nearby devices, casting
+  (Chromecast, Miracast, AirPlay), the same open apps on every device (web
+  and every native install), agent chat, Shortcuts, shells written in
+  tilolang, audio across several speakers and devices, displays arranged
+  across devices, the full installer. "Never used" or "never shipped" is no
+  reason to cut one.
+- Proven end to end. A capability counts as kept when a fast, realistic
+  test drives it through its published actions and views, the way a person
+  or agent would, and the test runs in `t test`.
 - A removal lands whole. Deleting the old copy, moving every caller onto the
   survivor and the survivor's own changes are one branch and one push (or a
   few commits pushed together), never "move now, delete later". Older
@@ -644,8 +658,9 @@ The copies:
 | The Rust shell, replaced by `apps/tl/shell` | ~140,000 |
 
 This is the largest piece by far. A port lands together with the deletion of
-the Rust app, after a side-by-side walk of the first hour of use, and gaps
-are fixed in the shared framework, not in the app. Owners: **tilolang onto
+the Rust app once the port does everything the Rust app did, on every
+platform, each capability proven by a test through its actions and views,
+and gaps are fixed in the shared framework, not in the app. Owners: **tilolang onto
 the resource store** session (the language, its store and the single host);
 **cleanup** session (app host off the session, onto the server, one process
 per workspace and app, the web page); **legacy and compatibility readers**
