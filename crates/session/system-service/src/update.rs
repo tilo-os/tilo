@@ -434,8 +434,12 @@ mod tests {
         assert!(live_state_in("not json").is_none());
     }
 
+    /// What the machine asks for, and when: a staged update asks at most
+    /// every two days, an always-on host restarts into it while nobody is at
+    /// it, and a desktop restart waits until the person is away.
     #[test]
-    fn a_staged_update_asks_for_a_restart_at_most_every_two_days() {
+    #[allow(clippy::too_many_lines, reason = "one scenario, read top to bottom")]
+    fn an_update_is_asked_for_and_restarted_into_on_a_schedule_it_keeps() {
         let start = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
         let hours = |h: u64| start + Duration::from_secs(h * 60 * 60);
         assert!(
@@ -450,21 +454,7 @@ mod tests {
         );
         assert!(ask_due(true, Some(start), hours(48)));
         assert!(!ask_due(false, Some(start), hours(100)));
-    }
 
-    #[test]
-    fn the_desktop_restarts_to_finish_an_update_only_while_the_person_is_away_and_at_most_every_two_days()
-     {
-        let start = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
-        let hours = |h: u64| start + Duration::from_secs(h * 60 * 60);
-        let pending = Update {
-            staged: Some(Deployment {
-                digest: Some("sha256:aa".into()),
-                ..Deployment::default()
-            }),
-            desktop_pending: true,
-            ..Update::default()
-        };
         let away = Presence {
             idle: Duration::from_secs(10 * 60),
             away: true,
@@ -472,6 +462,19 @@ mod tests {
         let working = Presence {
             idle: Duration::from_secs(1),
             away: false,
+        };
+        assert!(host_restart_due(true, Some(away)));
+        assert!(!host_restart_due(true, Some(working)));
+        assert!(!host_restart_due(true, None), "presence not yet known");
+        assert!(!host_restart_due(false, Some(away)), "nothing staged");
+
+        let pending = Update {
+            staged: Some(Deployment {
+                digest: Some("sha256:aa".into()),
+                ..Deployment::default()
+            }),
+            desktop_pending: true,
+            ..Update::default()
         };
         let due = |update: &Update, last, at, presence, urgent, host| {
             desktop_restart_due(update, last, at, presence, urgent, host)
@@ -540,22 +543,6 @@ mod tests {
             "the restart of the machine covers it"
         );
         assert!(!due(&Update::default(), None, start, away, false, false));
-    }
-
-    #[test]
-    fn an_always_on_host_restarts_into_an_update_only_while_nobody_is_at_it() {
-        let away = Presence {
-            idle: Duration::from_secs(10 * 60),
-            away: true,
-        };
-        let working = Presence {
-            idle: Duration::from_secs(1),
-            away: false,
-        };
-        assert!(host_restart_due(true, Some(away)));
-        assert!(!host_restart_due(true, Some(working)));
-        assert!(!host_restart_due(true, None), "presence not yet known");
-        assert!(!host_restart_due(false, Some(away)), "nothing staged");
     }
 
     /// A deployment the machine went back from left a report: what did not

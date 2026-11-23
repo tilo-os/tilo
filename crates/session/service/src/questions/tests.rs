@@ -39,8 +39,11 @@ fn invoke(
     services.invoke(resource, action, arguments)
 }
 
+/// A question is published with what the sheet shows, answered through its
+/// action, and a declined one resolves to nothing; arguments outside the
+/// declared ones and addresses nobody publishes are refused.
 #[tokio::test]
-async fn an_answer_through_the_published_action_reaches_the_asker() {
+async fn a_question_is_published_answered_and_declined() {
     let questions = Questions::new();
     let asked = questions.ask(question("portal:1"));
 
@@ -63,6 +66,29 @@ async fn an_answer_through_the_published_action_reaches_the_asker() {
         .find(|action| action.id == "answer")
         .expect("answer action");
     assert!(answer.contract.is_attended(), "only the person answers");
+    let read = questions
+        .read(&question_resource("portal:1"))
+        .expect("published");
+    assert_eq!(read["kind"], "portal.file-chooser");
+    assert_eq!(read["details"]["multiple"], true);
+
+    let refused = invoke(
+        &mut services(&questions),
+        &question_resource("portal:1"),
+        "answer",
+        &arguments(json!({ "password": "hunter2" })),
+    );
+    assert!(matches!(refused, Some(Err(_))), "{refused:?}");
+    assert_eq!(questions.pending().len(), 1, "still asked");
+    assert!(
+        invoke(
+            &mut services(&questions),
+            &question_resource("gone"),
+            "answer",
+            &serde_json::Map::new(),
+        )
+        .is_none()
+    );
 
     let done = invoke(
         &mut services(&questions),
@@ -75,23 +101,9 @@ async fn an_answer_through_the_published_action_reaches_the_asker() {
     let answer = asked.await.expect("answered");
     assert_eq!(answer.uris, ["file:///home/me/a.txt"]);
     assert!(questions.pending().is_empty());
-}
+    assert!(questions.read(&question_resource("portal:1")).is_none());
 
-#[test]
-fn a_questions_reading_is_what_the_sheet_shows() {
-    let questions = Questions::new();
-    let _asked = questions.ask(question("portal:4"));
-    let read = questions
-        .read(&question_resource("portal:4"))
-        .expect("published");
-    assert_eq!(read["kind"], "portal.file-chooser");
-    assert_eq!(read["details"]["multiple"], true);
-    assert!(questions.read(&question_resource("gone")).is_none());
-}
-
-#[tokio::test]
-async fn declining_resolves_to_nothing() {
-    let questions = Questions::new();
+    // Declining resolves to nothing.
     let asked = questions.ask(question("portal:2"));
     let done = invoke(
         &mut services(&questions),
@@ -101,34 +113,6 @@ async fn declining_resolves_to_nothing() {
     );
     assert!(matches!(done, Some(Ok(_))), "{done:?}");
     assert!(asked.await.is_none());
-}
-
-#[test]
-fn arguments_outside_the_declared_ones_are_refused() {
-    let questions = Questions::new();
-    let _asked = questions.ask(question("portal:3"));
-    let refused = invoke(
-        &mut services(&questions),
-        &question_resource("portal:3"),
-        "answer",
-        &arguments(json!({ "password": "hunter2" })),
-    );
-    assert!(matches!(refused, Some(Err(_))), "{refused:?}");
-    assert_eq!(questions.pending().len(), 1, "still asked");
-}
-
-#[test]
-fn an_address_nobody_publishes_is_none() {
-    let questions = Questions::new();
-    assert!(
-        invoke(
-            &mut services(&questions),
-            &question_resource("gone"),
-            "answer",
-            &serde_json::Map::new(),
-        )
-        .is_none()
-    );
 }
 
 #[test]

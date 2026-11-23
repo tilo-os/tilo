@@ -130,9 +130,11 @@ fn arguments(value: Value) -> Map<String, Value> {
 }
 
 /// An action runs on the worker and its result lands in the reading the
-/// service publishes; the action API checks the arguments before anything runs.
+/// service publishes; the action API checks the arguments before anything
+/// runs, a device's refusal is published with why, and a destructive action
+/// waits for the person.
 #[test]
-fn an_action_lands_in_the_reading() {
+fn an_action_runs_and_is_refused_before_anything_happens() {
     let mut services = Services::default();
     let lamp = LampService::new();
     let bulb = Arc::clone(&lamp.bulb);
@@ -168,14 +170,7 @@ fn an_action_lands_in_the_reading() {
         1,
         "nothing invalid ran"
     );
-}
 
-/// An action the device cannot do now is published unavailable, and
-/// invoking it is refused with why.
-#[test]
-fn an_unavailable_action_is_refused() {
-    let mut services = Services::default();
-    services.add(Box::new(LampService::new()));
     let refused = services
         .invoke("lamp", "dim", &Map::new())
         .expect("the lamp publishes it");
@@ -183,13 +178,7 @@ fn an_unavailable_action_is_refused() {
         matches!(&refused, Err(ApiError::Unavailable { code, .. }) if code == "not_dimmable"),
         "{refused:?}"
     );
-}
 
-/// An action asking for confirmation runs only once the person confirmed.
-#[test]
-fn a_destructive_action_waits_for_confirmation() {
-    let mut services = Services::default();
-    services.add(Box::new(LampService::new()));
     assert_eq!(
         services.invoke("lamp", "smash", &Map::new()),
         Some(Err(ApiError::ConfirmationRequired))

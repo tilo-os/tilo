@@ -113,168 +113,6 @@ fn arguments(value: Value) -> Map<String, Value> {
 }
 
 #[test]
-fn the_power_mode_is_one_the_machine_offers() {
-    let fake = Fake::new();
-    let mut service = service(&fake);
-    assert_eq!(service.read(POWER).unwrap()["mode"], json!("balanced"));
-    assert_eq!(
-        service.invoke(
-            POWER,
-            "set-power-mode",
-            &arguments(json!({"mode": "saver"}))
-        ),
-        Ok(Started::Accepted)
-    );
-    service.settle();
-    assert_eq!(service.read(POWER).unwrap()["mode"], json!("saver"));
-    assert!(matches!(
-        service.invoke(
-            POWER,
-            "set-power-mode",
-            &arguments(json!({"mode": "performance"}))
-        ),
-        Err(ApiError::InvalidArguments(_))
-    ));
-    assert_eq!(fake.changes(), [Change::PowerMode(PowerMode::Saver)]);
-}
-
-#[test]
-fn restarting_and_powering_off_ask_for_confirmation() {
-    let fake = Fake::new();
-    let mut services = Services::default();
-    services.add(Box::new(service(&fake)));
-    for action in ["restart", "power-off", "log-out"] {
-        assert_eq!(
-            services.invoke(POWER, action, &Map::new()),
-            Some(Err(ApiError::ConfirmationRequired)),
-            "{action}"
-        );
-    }
-    assert!(matches!(
-        services.invoke(POWER, "suspend", &Map::new()),
-        Some(Ok(_))
-    ));
-    assert!(matches!(
-        services.invoke_confirmed(POWER, "restart", &Map::new()),
-        Some(Ok(_))
-    ));
-    services.settle();
-    assert_eq!(fake.changes(), [Change::Suspend, Change::Restart]);
-}
-
-#[test]
-fn locking_asks_nothing_and_switching_user_needs_a_seat_for_another() {
-    let fake = Fake::new();
-    let mut services = Services::default();
-    services.add(Box::new(service(&fake)));
-    assert!(matches!(
-        services.invoke(POWER, "lock", &Map::new()),
-        Some(Ok(_))
-    ));
-    assert!(
-        matches!(
-            services.invoke(POWER, "switch-user", &Map::new()),
-            Some(Err(ApiError::Unavailable { .. }))
-        ),
-        "nobody else can sign in here"
-    );
-    services.settle();
-    assert_eq!(fake.changes(), [Change::Lock]);
-}
-
-#[test]
-fn an_update_reports_what_it_needs() {
-    let fake = Fake::new();
-    let mut service = service(&fake);
-    assert_eq!(
-        service.read(SYSTEM_UPDATE).unwrap()["firmware"],
-        Value::Null,
-        "no fwupd reading yet"
-    );
-    *fake.update.lock().unwrap() = Update {
-        firmware: Some(2),
-        ..Update::default()
-    };
-    service.refresh();
-    service.settle();
-    assert_eq!(
-        service.read(SYSTEM_UPDATE).unwrap()["firmware"],
-        json!(2),
-        "what fwupd offers is published beside the system update"
-    );
-    *fake.update.lock().unwrap() = Update::default();
-    service.refresh();
-    service.settle();
-    assert!(
-        matches!(
-            service.invoke(SYSTEM_UPDATE, "restart-to-update", &Map::new()),
-            Err(ApiError::Unavailable { .. })
-        ),
-        "nothing waits for a restart"
-    );
-    service
-        .invoke(SYSTEM_UPDATE, "update-now", &Map::new())
-        .unwrap();
-    assert_eq!(
-        service.read(SYSTEM_UPDATE).unwrap()["updating"],
-        json!(true)
-    );
-    assert!(
-        matches!(
-            service.invoke(SYSTEM_UPDATE, "update-now", &Map::new()),
-            Err(ApiError::Unavailable { .. })
-        ),
-        "one update at a time"
-    );
-    service.settle();
-    let update = service.read(SYSTEM_UPDATE).unwrap();
-    assert_eq!(update["updating"], json!(false));
-    assert_eq!(update["problem"], json!("nothing newer to fetch"));
-}
-
-#[test]
-fn a_pending_desktop_restart_is_offered_only_while_the_desktop_waits() {
-    let fake = Fake::new();
-    let mut service = service(&fake);
-    assert!(
-        matches!(
-            service.invoke(SYSTEM_UPDATE, "restart-desktop", &Map::new()),
-            Err(ApiError::Unavailable { .. })
-        ),
-        "no part of the update waits for the desktop"
-    );
-    *fake.update.lock().unwrap() = Update {
-        desktop_pending: true,
-        ..Update::default()
-    };
-    service.refresh();
-    service.settle();
-    assert!(
-        service
-            .invoke(SYSTEM_UPDATE, "restart-desktop", &Map::new())
-            .is_ok()
-    );
-    service.settle();
-    assert_eq!(fake.changes(), [Change::RestartDesktop]);
-    // Once the machine itself must restart, restarting the desktop would not
-    // finish anything.
-    *fake.update.lock().unwrap() = Update {
-        desktop_pending: true,
-        restart_needed: true,
-        ..Update::default()
-    };
-    service.refresh();
-    service.settle();
-    assert!(
-        matches!(
-            service.invoke(SYSTEM_UPDATE, "restart-desktop", &Map::new()),
-            Err(ApiError::Unavailable { .. })
-        ),
-        "only the machine finishing the update is offered"
-    );
-}
-
-#[test]
 fn the_zone_follows_the_device_only_while_chosen_and_never_guesses() {
     let fake = Fake::new();
     let mut service = service(&fake);
@@ -371,6 +209,159 @@ fn the_keyboard_keys_step_the_keyboard_light_through_its_levels() {
         service.invoke(KEYBOARD_BACKLIGHT, "brighter", &Map::new()),
         Err(ApiError::Unavailable { .. })
     ));
+}
+
+/// The power actions switch, ask for confirmation where it is a real
+/// interruption, and refuse what this machine cannot do.
+#[test]
+fn the_power_actions_switch_ask_and_refuse() {
+    let fake = Fake::new();
+    let service = service(&fake);
+    assert_eq!(service.read(POWER).unwrap()["mode"], json!("balanced"));
+    let mut services = Services::default();
+    services.add(Box::new(service));
+    assert_eq!(
+        services.invoke(
+            POWER,
+            "set-power-mode",
+            &arguments(json!({"mode": "saver"}))
+        ),
+        Some(Ok(Started::Accepted))
+    );
+    services.settle();
+    assert_eq!(services.read(POWER).unwrap()["mode"], json!("saver"));
+    assert!(matches!(
+        services.invoke(
+            POWER,
+            "set-power-mode",
+            &arguments(json!({"mode": "performance"}))
+        ),
+        Some(Err(ApiError::InvalidArguments(_)))
+    ));
+    for action in ["restart", "power-off", "log-out"] {
+        assert_eq!(
+            services.invoke(POWER, action, &Map::new()),
+            Some(Err(ApiError::ConfirmationRequired)),
+            "{action}"
+        );
+    }
+    assert!(matches!(
+        services.invoke(POWER, "suspend", &Map::new()),
+        Some(Ok(_))
+    ));
+    assert!(matches!(
+        services.invoke_confirmed(POWER, "restart", &Map::new()),
+        Some(Ok(_))
+    ));
+    assert!(matches!(
+        services.invoke(POWER, "lock", &Map::new()),
+        Some(Ok(_))
+    ));
+    assert!(
+        matches!(
+            services.invoke(POWER, "switch-user", &Map::new()),
+            Some(Err(ApiError::Unavailable { .. }))
+        ),
+        "nobody else can sign in here"
+    );
+    services.settle();
+    assert_eq!(
+        fake.changes(),
+        [
+            Change::PowerMode(PowerMode::Saver),
+            Change::Suspend,
+            Change::Restart,
+            Change::Lock,
+        ]
+    );
+}
+
+#[test]
+fn the_update_resource_reports_what_it_needs_and_what_it_takes() {
+    let fake = Fake::new();
+    let mut service = service(&fake);
+    assert_eq!(
+        service.read(SYSTEM_UPDATE).unwrap()["firmware"],
+        Value::Null,
+        "no fwupd reading yet"
+    );
+    *fake.update.lock().unwrap() = Update {
+        firmware: Some(2),
+        ..Update::default()
+    };
+    service.refresh();
+    service.settle();
+    assert_eq!(
+        service.read(SYSTEM_UPDATE).unwrap()["firmware"],
+        json!(2),
+        "what fwupd offers is published beside the system update"
+    );
+    *fake.update.lock().unwrap() = Update::default();
+    service.refresh();
+    service.settle();
+    assert!(
+        matches!(
+            service.invoke(SYSTEM_UPDATE, "restart-to-update", &Map::new()),
+            Err(ApiError::Unavailable { .. })
+        ),
+        "nothing waits for a restart"
+    );
+    assert!(
+        matches!(
+            service.invoke(SYSTEM_UPDATE, "restart-desktop", &Map::new()),
+            Err(ApiError::Unavailable { .. })
+        ),
+        "no part of the update waits for the desktop"
+    );
+    service
+        .invoke(SYSTEM_UPDATE, "update-now", &Map::new())
+        .unwrap();
+    assert_eq!(
+        service.read(SYSTEM_UPDATE).unwrap()["updating"],
+        json!(true)
+    );
+    assert!(
+        matches!(
+            service.invoke(SYSTEM_UPDATE, "update-now", &Map::new()),
+            Err(ApiError::Unavailable { .. })
+        ),
+        "one update at a time"
+    );
+    service.settle();
+    let update = service.read(SYSTEM_UPDATE).unwrap();
+    assert_eq!(update["updating"], json!(false));
+    assert_eq!(update["problem"], json!("nothing newer to fetch"));
+
+    // A pending desktop restart is offered only while the desktop waits.
+    *fake.update.lock().unwrap() = Update {
+        desktop_pending: true,
+        ..Update::default()
+    };
+    service.refresh();
+    service.settle();
+    assert!(
+        service
+            .invoke(SYSTEM_UPDATE, "restart-desktop", &Map::new())
+            .is_ok()
+    );
+    service.settle();
+    assert_eq!(fake.changes().last(), Some(&Change::RestartDesktop));
+    // Once the machine itself must restart, restarting the desktop would not
+    // finish anything.
+    *fake.update.lock().unwrap() = Update {
+        desktop_pending: true,
+        restart_needed: true,
+        ..Update::default()
+    };
+    service.refresh();
+    service.settle();
+    assert!(
+        matches!(
+            service.invoke(SYSTEM_UPDATE, "restart-desktop", &Map::new()),
+            Err(ApiError::Unavailable { .. })
+        ),
+        "only the machine finishing the update is offered"
+    );
 }
 
 /// Wait for the service's worker to wake it, then take in what landed, until `done` holds or the
