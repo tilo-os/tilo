@@ -424,5 +424,5 @@ fn too_long() -> String {
 }
 
 #[cfg(test)]
-#[path = "mcp_put_tests.rs"]
+#[path = "mcp_content_tests.rs"]
 mod tests;

@@ -128,6 +128,25 @@ pub(super) struct Notes {
     asked_there: Arc<Mutex<Option<(&'static str, bool)>>>,
     /// How many more reads answer a loading view first; `u32::MAX` never settles.
     loading_outline: Arc<AtomicU32>,
+    /// Whether this host keeps a search of its own; one that holds no records to search
+    /// keeps none.
+    searches: bool,
+    /// What this host says carries content from outside.
+    outside: Outside,
+    /// What this host keeps outside its apps and reads by app and id, when it keeps any.
+    kept: Option<Arc<tilo_actions::remote::HeldCopies>>,
+}
+
+/// What a host says carries content from outside.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Outside {
+    /// Nothing.
+    Nothing,
+    /// A note's read, declared a document read, as an app that keeps documents declares its
+    /// own.
+    DocumentReads,
+    /// Everything it answers, as a provider that reads the web says of a page.
+    Everything,
 }
 
 /// Where the test app says a person is asked, as a workspace's service says it.
@@ -203,7 +222,34 @@ impl Notes {
             person_asked: Arc::default(),
             asked_there: Arc::default(),
             loading_outline: Arc::default(),
+            searches: true,
+            outside: Outside::Nothing,
+            kept: None,
         }
+    }
+
+    /// The same Notes, keeping no search of its own.
+    fn without_search(mut self) -> Self {
+        self.searches = false;
+        self
+    }
+
+    /// The same Notes, its read of a note declared a document read.
+    fn reading_documents(mut self) -> Self {
+        self.outside = Outside::DocumentReads;
+        self
+    }
+
+    /// The same Notes, saying of what it answers that it carries content from outside.
+    fn answering_from_outside(mut self) -> Self {
+        self.outside = Outside::Everything;
+        self
+    }
+
+    /// The same Notes, on a provider that also reads `kept` outside its apps.
+    fn keeping(mut self, kept: tilo_actions::remote::HeldCopies) -> Self {
+        self.kept = Some(Arc::new(kept));
+        self
     }
 
     /// The same app, its window answering a loading view `reads` times first.
@@ -1034,7 +1080,7 @@ impl ActionProvider for Notes {
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
         let slow = *self.slow.lock().unwrap();
-        match self.refused(&query) {
+        let answered = match self.refused(&query) {
             Some(refused) => Pending::ready(Err(refused)),
             // A listing taken a resource at a time is answered as the workspace answers it:
             // a resource's actions as one row, each action described once a page.
@@ -1058,7 +1104,30 @@ impl ActionProvider for Notes {
                     answer
                 }
             },
+        };
+        if self.outside != Outside::DocumentReads {
+            return answered;
         }
+        answered.map(|page| {
+            page.map(|mut page| {
+                // A row of each action, or a resource's actions as one row, each described once.
+                for row in &mut page.rows {
+                    let described = row.offered.as_mut().map(|offered| &mut offered.described);
+                    for action in row
+                        .action
+                        .iter_mut()
+                        .chain(described.into_iter().flatten())
+                        .filter(|action| action.address.action == "read")
+                    {
+                        action
+                            .contract
+                            .tags
+                            .push(tilo_actions::DOCUMENT_READ_TAG.into());
+                    }
+                }
+                page
+            })
+        })
     }
 
     fn here(&self, _caller: &Caller) -> Option<Vec<tilo_actions::remote::Here>> {
@@ -1081,7 +1150,13 @@ impl ActionProvider for Notes {
     }
 
     fn resource_search(&self) -> Option<std::sync::Arc<dyn tilo_actions::remote::ResourceSearch>> {
-        Some(std::sync::Arc::new(self.clone()))
+        let search: Arc<dyn tilo_actions::remote::ResourceSearch> = Arc::new(self.clone());
+        self.searches.then_some(search)
+    }
+
+    fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
+        let reads: Arc<dyn tilo_actions::remote::ResourceReads> = self.kept.clone()?;
+        Some(reads)
     }
 
     fn invoke(
@@ -1119,6 +1194,10 @@ impl ActionProvider for Notes {
         .receipt()))
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "what each of the test app's actions answers, in one match"
+    )]
     fn observe(
         &self,
         _caller: &Caller,
@@ -1226,7 +1305,8 @@ impl ActionProvider for Notes {
             }))),
             _ => succeeded(None),
         };
-        Some(InvocationState::new(*id, self.or_asked(id, update)))
+        let state = InvocationState::new(*id, self.or_asked(id, update));
+        Some(state.with_untrusted(self.outside == Outside::Everything))
     }
 
     fn cancel(
@@ -2781,7 +2861,7 @@ tilo_test_env::scenario! {
             );
             // A host with no search of its own is told so, never given a second
             // ranking's answers.
-            let no_search = NoSearch::new(&host);
+            let no_search = host.clone().without_search();
             let (text, failed) = tool(
                 &agent(&no_search),
                 "tilo_find",
@@ -2958,7 +3038,6 @@ impl crate::TaskHosts for CatalogueHost {
 mod tilolang_fixture;
 use tilolang_fixture::{tilolang_kind, tilolang_notes_catalogue};
 
-use no_search::NoSearch;
 pub(super) use typed_calls::answer;
 use typed_calls::typed;
 
@@ -2974,8 +3053,6 @@ mod listed;
 mod naming;
 #[path = "mcp_agent_narrowed_tests.rs"]
 mod narrowed;
-#[path = "mcp_agent_no_search_tests.rs"]
-mod no_search;
 #[path = "mcp_agent_open_tests.rs"]
 mod opening;
 #[path = "mcp_agent_outside_tests.rs"]

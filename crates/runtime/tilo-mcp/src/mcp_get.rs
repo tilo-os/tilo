@@ -8,10 +8,10 @@ use tilo_actions::remote::{ActionCallError, CONTENT_GETS_UNAVAILABLE, ContentGet
 use super::{ActionProvider, Deserialize, McpServer, Value, json, parse};
 
 /// The get tool's name.
-const GET: &str = "tilo_get";
+pub(super) const GET: &str = "tilo_get";
 
 /// The most raw bytes one call answers with.
-const MAX_GET_CALL_BYTES: u64 = 512 * 1024;
+pub(super) const MAX_GET_CALL_BYTES: u64 = 512 * 1024;
 
 pub(super) fn is_get_tool(name: &str) -> bool {
     name == GET
@@ -138,7 +138,3 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         Ok((answer.clone(), format!("{answer} {hint}")))
     }
 }
-
-#[cfg(test)]
-#[path = "mcp_get_tests.rs"]
-mod tests;
