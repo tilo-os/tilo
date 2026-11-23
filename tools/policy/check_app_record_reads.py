@@ -58,8 +58,8 @@ READS = re.compile(r"\bread_content(?:_in_doc)?\b")
 # says so.
 UNREADABLE = re.compile(r"\bread\s*=\s*false\b")
 ADVICE = ("name the read the record answers, `read_content = "
-          "<Type>::read_document` (tilo_resource::read::fields is the body for "
-          "a record whose fields are all it holds), or declare `read = false` "
+          "tilo_resource::read::fields` (for a record whose fields are all "
+          "it holds) or a custom read function, or declare `read = false` "
           "where what it holds must not be read by anyone holding its path")
 
 

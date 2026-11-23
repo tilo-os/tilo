@@ -214,16 +214,15 @@ pub fn page(
 
 /// What a record holds, as the record's own model's JSON
 /// ([`Model::to_json`]): every field it keeps, in the shape its own type
-/// gives them. This is the body of the `read_content` of a record whose
-/// fields are all it holds, so a caller with no window open — an agent, a
-/// script, the SDK — reads it through the framework's `read`, as it reads
-/// any app's record:
+/// gives them. Name it directly as `read_content` on a record whose fields are
+/// all it holds, so a caller with no window open — an agent, a script, the
+/// SDK — reads it through the framework's `read`, as it reads any app's
+/// record:
 ///
 /// ```ignore
+/// #[resource(kind = "calculator.document", read_content = tilo_resource::read::fields)]
 /// impl Calculator {
-///     pub fn read_document(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
-///         tilo_resource::read::fields(self, item)
-///     }
+///     // ...
 /// }
 /// ```
 ///

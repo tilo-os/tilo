@@ -23,6 +23,23 @@ READS = '''
 impl Notebook {}
 '''
 
+READS_DIRECT_HELPER = '''
+#[resource(
+    kind = "calculator.document",
+    label = "Calculator",
+    read_content = tilo_resource::read::fields
+)]
+impl Calculator {}
+'''
+
+READS_UI_HELPER = '''
+#[resource(
+    kind = "model-providers.root",
+    read_content = ui::tilo_resource::read::fields
+)]
+impl Providers {}
+'''
+
 READS_IN_DOCUMENT = '''
 #[resource(kind = "code_editor.project", label = "Project", read_content_in_doc = Project::content)]
 impl Project {}
@@ -54,6 +71,13 @@ class RecordReadsTests(unittest.TestCase):
         root = self.fixture({"apps/settings/src/notebook.rs": READS})
         self.assertEqual(record_reads.check(root), [])
 
+    def test_a_record_that_names_the_direct_helper_is_fine(self):
+        root = self.fixture({
+            "apps/calculator/src/resource.rs": READS_DIRECT_HELPER,
+            "crates/sdk/provider-settings-ui/src/app.rs": READS_UI_HELPER,
+        })
+        self.assertEqual(record_reads.check(root), [])
+
     def test_a_read_that_looks_at_the_document_counts(self):
         root = self.fixture({"apps/code-editor/src/project.rs": READS_IN_DOCUMENT})
         self.assertEqual(record_reads.check(root), [])
@@ -64,6 +88,7 @@ class RecordReadsTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn("apps/calculator/src/resource.rs:2", errors[0])
         self.assertIn("calculator.document", errors[0])
+        self.assertIn("read_content = tilo_resource::read::fields", errors[0])
         self.assertIn("read = false", errors[0])
 
     def test_a_record_that_declares_it_answers_no_read_is_fine(self):
