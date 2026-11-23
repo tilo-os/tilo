@@ -1157,6 +1157,13 @@ impl From<WireActionCallError> for ActionCallError {
 /// session's actions do), and a wait on a worker stops the task that carries it: with enough
 /// callers inside that wait at once, nothing is left to deliver any of their answers, and each
 /// waits out the provider's own deadline.
+#[cfg_attr(
+    target_arch = "wasm32",
+    expect(
+        clippy::unused_async,
+        reason = "a page has no worker to leave, so nothing waits"
+    )
+)]
 pub async fn observed_off_the_worker<P>(
     provider: P,
     caller: Caller,
