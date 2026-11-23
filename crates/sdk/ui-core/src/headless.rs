@@ -2500,6 +2500,10 @@ impl FrameHarness {
         }
     }
     /// Use a different palette for subsequent frames.
+    #[allow(
+        clippy::expect_used,
+        reason = "a capture profile is owned by the harness and must store the theme it draws in"
+    )]
     pub fn set_theme(&mut self, theme: Theme) {
         self.invalidate_local();
         self.pump_component_wakes();
