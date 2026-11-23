@@ -20,8 +20,8 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 use tilo_actions::remote::InvokeRequest;
-use tilo_agent_session::model::PlanTurns;
 use tilo_agent_session::AppCatalogue;
+use tilo_agent_session::model::PlanTurns;
 use tilo_model_gateway::host_backend::protocol::{
     Content, Message, ModelError, ModelRequest, ModelResponse, Role, StopReason, Usage,
 };
@@ -159,16 +159,18 @@ async fn a_turn_of_a_persons_own_agent_is_answered_on_their_device() {
     // The person writes to it in their direct conversation with it, and the agent's trigger
     // invokes its answer with that change.
     let wrote = message_written(&workspace, &person, "what is planned?");
-    let provider = Arc::new(tilo_actions::remote::TestProvider::new().completing(|request| {
-        tilo_actions::ActionOutput {
-            value: None,
-            resources: if request.target.address.action == "send" {
-                vec!["tl:so.tilo.chat:reply-1".to_owned()]
-            } else {
-                Vec::new()
-            },
-        }
-    }));
+    let provider = Arc::new(
+        tilo_actions::remote::TestProvider::new().completing(|request| {
+            tilo_actions::ActionOutput {
+                value: None,
+                resources: if request.target.address.action == "send" {
+                    vec!["tl:so.tilo.chat:reply-1".to_owned()]
+                } else {
+                    Vec::new()
+                },
+            }
+        }),
+    );
     let asked = Arc::new(Mutex::new(Vec::new()));
     let model: Model = {
         let asked = Arc::clone(&asked);
@@ -227,7 +229,10 @@ async fn a_turn_of_a_persons_own_agent_is_answered_on_their_device() {
         .iter()
         .find(|request| request.target.address.action == "send")
         .unwrap_or_else(|| panic!("the reply is sent: {invoked:?}"));
-    assert_eq!(argument(sent, "turn"), Value::String(invocation.to_string()));
+    assert_eq!(
+        argument(sent, "turn"),
+        Value::String(invocation.to_string())
+    );
     assert_eq!(
         argument(sent, "reply_to"),
         Value::String("tl:so.tilo.chat:asked-1".to_owned())
@@ -241,7 +246,10 @@ async fn a_turn_of_a_persons_own_agent_is_answered_on_their_device() {
                     .as_str()
                     .is_some_and(|said| said.contains("The plan is ready"))
         });
-    assert!(answered, "the answer is written into the reply: {invoked:?}");
+    assert!(
+        answered,
+        "the answer is written into the reply: {invoked:?}"
+    );
     assert!(
         provider
             .callers()
@@ -253,7 +261,11 @@ async fn a_turn_of_a_persons_own_agent_is_answered_on_their_device() {
 
 /// What the trigger hands on when `person` wrote `text` to the agent in their direct
 /// conversation with it in `workspace`.
-fn message_written(workspace: &str, person: &str, text: &str) -> tilo_automation::dispatch::DocumentEvent {
+fn message_written(
+    workspace: &str,
+    person: &str,
+    text: &str,
+) -> tilo_automation::dispatch::DocumentEvent {
     tilo_automation::dispatch::DocumentEvent {
         workspace: workspace.to_owned(),
         record: "asked-1".to_owned(),
