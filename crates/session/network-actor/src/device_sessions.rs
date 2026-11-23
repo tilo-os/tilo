@@ -45,6 +45,7 @@ const DEVICE_DIAL: Duration = Duration::from_secs(10);
 const HELLO_WAIT: Duration = Duration::from_secs(10);
 /// The largest frame of the session: a workspace list with room to spare.
 const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
+const FRAMING: wire_frame::Framing = wire_frame::Framing::little_endian(MAX_FRAME_BYTES);
 /// Frames waiting to be written to one device. Beyond it the device is not
 /// keeping up; what it missed it gets again with the next change.
 const FRAMES: usize = 64;
@@ -65,7 +66,7 @@ pub struct Hello {
 }
 
 /// One frame of the session's stream.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum Frame {
     Hello(Hello),
     Msg(NeighbourMsg),
@@ -125,7 +126,7 @@ impl Sibling {
         let Ok(bytes) = postcard::to_allocvec(frame) else {
             return;
         };
-        if bytes.len() > MAX_FRAME_BYTES {
+        if bytes.len() > FRAMING.max_len() {
             tracing::warn!(
                 bytes = bytes.len(),
                 "a frame for a device of the person is too large"
@@ -566,30 +567,22 @@ async fn read_frames(
     }
 }
 
-async fn write_frame(send: &mut SendStream, bytes: &[u8]) -> Result<(), String> {
-    let len = u32::try_from(bytes.len()).map_err(|_| "frame too large".to_string())?;
-    send.write_all(&len.to_le_bytes())
-        .await
-        .map_err(|error| error.to_string())?;
-    send.write_all(bytes)
+async fn write_frame(
+    send: &mut (impl tokio::io::AsyncWrite + Unpin),
+    bytes: &[u8],
+) -> Result<(), String> {
+    FRAMING
+        .write_async(send, bytes)
         .await
         .map_err(|error| error.to_string())
 }
 
-async fn read_frame(recv: &mut RecvStream) -> Result<Frame, String> {
-    let mut len = [0_u8; 4];
-    recv.read_exact(&mut len)
+async fn read_frame(recv: &mut (impl tokio::io::AsyncRead + Unpin)) -> Result<Frame, String> {
+    let bytes = FRAMING
+        .read_async(recv)
         .await
-        .map_err(|error| error.to_string())?;
-    let len =
-        usize::try_from(u32::from_le_bytes(len)).map_err(|_| "frame too large".to_string())?;
-    if len > MAX_FRAME_BYTES {
-        return Err("frame too large".into());
-    }
-    let mut bytes = vec![0_u8; len];
-    recv.read_exact(&mut bytes)
-        .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| wire_frame::FrameError::Closed.to_string())?;
     Frame::decode(&bytes).map_err(|error| error.to_string())
 }
 
@@ -609,4 +602,210 @@ fn dials(own: EndpointId, other: EndpointId) -> bool {
 fn dialled_by_the_lower(connection: &Connection, own: EndpointId) -> bool {
     let dialled_here = connection.side() == iroh::endpoint::Side::Client;
     dialled_here == dials(own, connection.remote_id())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ed25519_dalek::Signer as _;
+    use tilo_user_identity::{
+        DeviceCapabilities, RevocationReason, revocation_signing_digest, sign_device_cert,
+    };
+
+    #[derive(Clone, Debug)]
+    struct AcceptOne(
+        std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<Connection>>>>,
+    );
+
+    impl ProtocolHandler for AcceptOne {
+        async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+            let tx = self.0.lock().unwrap().take();
+            if let Some(tx) = tx {
+                let _ = tx.send(connection);
+            }
+            Ok(())
+        }
+    }
+
+    async fn connected_pair() -> (
+        iroh::Endpoint,
+        iroh::Endpoint,
+        iroh::protocol::Router,
+        Connection,
+        Connection,
+    ) {
+        let (a, _) = crate::loopback_endpoint(None).await;
+        let (b, _) = crate::loopback_endpoint(None).await;
+        let alpn: &[u8] = b"tilo-test-device-sessions-frame";
+        let (accept_tx, accept_rx) = tokio::sync::oneshot::channel();
+        let router = iroh::protocol::Router::builder(b.clone())
+            .accept(
+                alpn,
+                AcceptOne(std::sync::Arc::new(std::sync::Mutex::new(Some(accept_tx)))),
+            )
+            .spawn();
+        let client_conn = a.connect(b.addr(), alpn).await.unwrap();
+        let server_conn = accept_rx.await.unwrap();
+        (a, b, router, client_conn, server_conn)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wire_bytes_match_frozen_fixtures() {
+        // Literal bytes captured from main before migrating device_sessions.rs to wire-frame.
+        const HELLO_HEX: &str = concat!(
+            "1d010000003f018a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3",
+            "748801b40f6f5c8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25d",
+            "f60f5b8fc9b3940b776f726b73746174696f6e010100006401c801401142b6a8",
+            "d77956a62c28f72a92b225c604043f459eec5336736fe4790e17e2bfb903194c",
+            "8ae79c04fa46af83e7f71c3a90b0ae88fe03fe13f6910dc2ba40f907018a88e3",
+            "dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5ced4928",
+            "c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1960100",
+            "4015e925ade27c013ecd1da027d828811e10d4c1187676d3af813cd8934e9484",
+            "6c1a1c3a68d50e4757848b0d655e60b07abf2957c892f95087ea89adab1b69e3",
+            "0b",
+        );
+        const WANTED_MSG_HEX: &str = "28000000011a2430303030303030302d303030302d343030302d383030302d30303030303030303030303107";
+        const MEDIA_CAPABILITIES_HEX: &str =
+            "1a0000000110cdd702010361763101046832363401036176310103767039";
+
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let device = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
+        let revoked_device = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "workstation".into(),
+            capabilities: DeviceCapabilities::primary(),
+            issued_at_ns: 100,
+            expires_at_ns: Some(200),
+            signature: [0; 64],
+            issuer: None,
+        };
+        sign_device_cert(&mut cert, &root).unwrap();
+        let mut revocation = RevocationEntry {
+            user_public_key: root.verifying_key().to_bytes(),
+            revoked_device_public_key: revoked_device.verifying_key().to_bytes(),
+            revoked_at_ns: 150,
+            reason: RevocationReason::Lost,
+            signature: [0; 64],
+        };
+        revocation.signature = root
+            .sign(&revocation_signing_digest(&revocation).unwrap())
+            .to_bytes();
+
+        let cases = [
+            (
+                Frame::Hello(Hello {
+                    protocol: 63,
+                    certs: vec![cert],
+                    revocations: vec![revocation],
+                }),
+                HELLO_HEX,
+            ),
+            (
+                Frame::Msg(NeighbourMsg::MlsGovernanceWanted {
+                    workspace: "00000000-0000-4000-8000-000000000001".into(),
+                    from_epoch: 7,
+                }),
+                WANTED_MSG_HEX,
+            ),
+            (
+                Frame::Msg(NeighbourMsg::MediaCapabilities {
+                    peer: 0xABCD,
+                    hardware_decode: vec!["av1".into()],
+                    software_decode: vec!["h264".into()],
+                    hardware_encode: vec!["av1".into()],
+                    software_encode: vec!["vp9".into()],
+                }),
+                MEDIA_CAPABILITIES_HEX,
+            ),
+        ];
+
+        let (a, _b, router, client_conn, server_conn) = connected_pair().await;
+        for (frame, expected_hex) in cases {
+            let expected = hex::decode(expected_hex).unwrap();
+            let body = postcard::to_allocvec(&frame).unwrap();
+
+            // Write over a real QUIC SendStream and compare the literal wire bytes.
+            let reader_conn = server_conn.clone();
+            let reader = tokio::spawn(async move {
+                let (_, mut recv) = reader_conn.accept_bi().await.unwrap();
+                recv.read_to_end(usize::MAX).await.unwrap()
+            });
+            let (mut send, _) = client_conn.open_bi().await.unwrap();
+            write_frame(&mut send, &body).await.unwrap();
+            send.finish().unwrap();
+            assert_eq!(reader.await.unwrap(), expected);
+
+            // Decode directly from the frozen bytes via read_frame (raw read + Frame::decode).
+            let mut slice = expected.as_slice();
+            let decoded = read_frame(&mut slice).await.unwrap();
+            assert_eq!(decoded, frame);
+            assert!(slice.is_empty());
+        }
+        a.close().await;
+        let _ = router.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn framing_enforces_max_size_on_every_send_including_hello_and_uses_frame_decode() {
+        // Direct write_frame refuses payloads over MAX_FRAME_BYTES without writing anything.
+        let mut wire = Vec::new();
+        let oversized = vec![0_u8; MAX_FRAME_BYTES + 1];
+        assert!(write_frame(&mut wire, &oversized).await.is_err());
+        assert!(wire.is_empty());
+
+        // `open()` sends its Hello through `write_frame`, so an oversized Hello is
+        // refused before anything hits the QUIC stream.
+        let (a, _b, router, client_conn, server_conn) = connected_pair().await;
+        let oversized_hello = Hello {
+            protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
+            certs: vec![DeviceCert {
+                user_public_key: [1; 32],
+                device_public_key: [2; 32],
+                device_label: "x".repeat(MAX_FRAME_BYTES),
+                capabilities: DeviceCapabilities::primary(),
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+                issuer: None,
+            }],
+            revocations: Vec::new(),
+        };
+        let (tx, mut rx) = mpsc::channel(4);
+        let peer_id = client_conn.remote_id();
+        open(client_conn, oversized_hello, tx).await;
+        assert!(matches!(
+            rx.recv().await,
+            Some(InternalEvent::SiblingFailed(peer)) if peer == peer_id
+        ));
+        // The server saw no oversized frame: the connection closed cleanly.
+        assert!(server_conn.accept_bi().await.is_err());
+        a.close().await;
+        let _ = router.shutdown().await;
+
+        // Incoming oversized length prefix is refused before allocating the payload.
+        let too_big = u32::try_from(MAX_FRAME_BYTES + 1).unwrap().to_le_bytes();
+        let mut slice = too_big.as_slice();
+        assert!(read_frame(&mut slice).await.is_err());
+
+        // Clean EOF and truncation are errors.
+        let mut empty: &[u8] = &[];
+        assert!(read_frame(&mut empty).await.is_err());
+        let mut cut: &[u8] = &[4, 0, 0, 0, 1, 2];
+        assert!(read_frame(&mut cut).await.is_err());
+
+        // Trailing bytes on Frame::Msg are rejected, confirming Frame::decode
+        // routes through NeighbourMsg::decode rather than plain postcard::from_bytes.
+        let mut msg_body = postcard::to_allocvec(&Frame::Msg(NeighbourMsg::MlsGovernanceWanted {
+            workspace: "00000000-0000-4000-8000-000000000001".into(),
+            from_epoch: 1,
+        }))
+        .unwrap();
+        msg_body.push(0xFF);
+        let mut framed = Vec::new();
+        write_frame(&mut framed, &msg_body).await.unwrap();
+        let mut slice = framed.as_slice();
+        assert!(read_frame(&mut slice).await.is_err());
+    }
 }
