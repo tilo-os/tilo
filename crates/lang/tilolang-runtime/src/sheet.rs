@@ -193,7 +193,11 @@ fn records_of(
         .get("records")
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| "give `records`: the rows to write, each by its column header".to_owned())?;
-    if let Some(matching) = request.get("match").and_then(serde_json::Value::as_object) {
+    let matching = request
+        .get("matching")
+        .or_else(|| request.get("match"))
+        .and_then(serde_json::Value::as_object);
+    if let Some(matching) = matching {
         let value = request
             .get("value")
             .and_then(serde_json::Value::as_object)
@@ -228,12 +232,23 @@ fn records_of(
     tilo_sheet::set_records(sheet, &request)
 }
 
-/// What a record request wrote, as the app reads it: each cell's new input (`null` leaves it),
-/// and each format's.
+/// What a record request wrote, as the app reads it: each cell's new input and each format, by
+/// reference. A cell the write leaves holds no entry, so the app reads a map of the cells that
+/// changed.
 fn writes_json(writes: &tilo_sheet::Writes) -> Result<String, serde_json::Error> {
+    let held = |entries: &[(String, Option<String>)]| {
+        entries
+            .iter()
+            .filter_map(|(reference, input)| {
+                input
+                    .as_ref()
+                    .map(|input| (reference.clone(), serde_json::json!(input)))
+            })
+            .collect::<serde_json::Map<_, _>>()
+    };
     serde_json::to_string(&serde_json::json!({
-        "cells": writes.cells,
-        "formats": writes.formats,
+        "cells": held(&writes.cells),
+        "formats": held(&writes.formats),
     }))
 }
 
@@ -245,4 +260,68 @@ fn read(blobs: &dyn BlobHost, file: &FileValue) -> Result<Vec<u8>, String> {
     blobs
         .read(&file.hash)
         .ok_or_else(|| format!("the content of `{}` is not on this device", file.name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sheet() -> tilo_sheet::Sheet {
+        let mut sheet = tilo_sheet::Sheet {
+            name: "Sheet1".to_owned(),
+            ..tilo_sheet::Sheet::default()
+        };
+        sheet.cells.insert("A1".to_owned(), "Name".to_owned());
+        sheet.cells.insert("B1".to_owned(), "Done".to_owned());
+        sheet
+    }
+
+    /// A write leaves no entry for a cell it leaves, so the app reads only what changed.
+    #[test]
+    fn a_records_write_names_only_the_cells_it_changed() {
+        let writes = tilo_sheet::Writes {
+            cells: vec![
+                ("A2".to_owned(), Some("Ada".to_owned())),
+                ("B2".to_owned(), None),
+            ],
+            formats: vec![
+                ("A2".to_owned(), Some("text".to_owned())),
+                ("B2".to_owned(), None),
+            ],
+        };
+        let text = writes_json(&writes).expect("the writes are JSON");
+        let json: serde_json::Value = serde_json::from_str(&text).expect("JSON text");
+        assert_eq!(json["cells"]["A2"], "Ada");
+        assert!(json["cells"].get("B2").is_none(), "a cell left holds none");
+        assert_eq!(json["formats"]["A2"], "text");
+    }
+
+    /// The row an update identifies with `matching` is found, and one nothing matches is made.
+    #[test]
+    fn an_update_finds_its_row_by_the_values_it_names() {
+        let sheet = sheet();
+        let made = records_of(
+            &sheet,
+            &serde_json::json!({
+                "records": [],
+                "matching": {"Name": "Ada"},
+                "value": {"Done": "yes"},
+            }),
+        )
+        .expect("a new row under the headers");
+        assert!(
+            made.cells
+                .iter()
+                .any(|(reference, input)| reference == "A2" && input.as_deref() == Some("Ada")),
+            "the row carries the value that identifies it: {:?}",
+            made.cells
+        );
+        assert!(
+            made.cells
+                .iter()
+                .any(|(reference, input)| reference == "B2" && input.as_deref() == Some("yes")),
+            "and the cells it takes: {:?}",
+            made.cells
+        );
+    }
 }

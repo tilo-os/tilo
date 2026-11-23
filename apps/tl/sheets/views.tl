@@ -125,6 +125,9 @@ template view file_menu(w: Workbook, s: Sheet, settings_open: State<Bool>) {
         ui.MenuItem("Export the workbook…", icon: .download) {
             on choose: file.save(export_workbook(w), name: export_name(w, "xlsx"))
         }
+        ui.MenuItem("Export as OpenDocument…", icon: .download) {
+            on choose: file.save(export_ods(w), name: export_name(w, "ods"))
+        }
         ui.MenuItem("Export this sheet as a table…", icon: .download) {
             on choose: file.save(export_table(w, s), name: export_name(w, "csv"))
         }

@@ -134,6 +134,28 @@ type BookInput {
     currency: Text
 }
 
+/// The records a write into a sheet brings: each by its column headers, where they start, and
+/// the header that identifies a record's row.
+type RecordsRequest {
+    records: List<Map<Text>>
+    row: Option<Int>
+    columns: Option<List<Text>>
+    key: Option<Text>
+}
+
+/// The record an update writes: the cells that identify its row, and the cells the row takes.
+type UpsertRequest {
+    records: List<Map<Text>>
+    matching: Map<Text>
+    value: Map<Text>
+}
+
+/// What a records write leaves: each cell's new input and each cell's format, by A1 reference.
+type RecordWrites {
+    cells: Map<Text>
+    formats: Map<Text>
+}
+
 root workbook: Workbook
 
 default view workbook for Workbook
@@ -495,6 +517,71 @@ action set_cells(w: Workbook, s: Sheet, start: Text, rows: List<List<Text>>, see
     require seen == "" or seen == w.structure.to_text() "Rows, columns or sheets moved since this write was made from; read the sheet again and write against what it answers now"
     let written = rows_json(rows)
     apply_edit(w, "\{\"op\": \"set-cells\", \"sheet\": \{quoted(s.name)}, \"start\": \{quoted(start)}, \"rows\": \{written}}")
+}
+
+/// Writes records into a sheet by column header: each record an object keyed by the sheet's
+/// headers, so a value a record leaves out leaves its cell instead of shifting the row after it.
+/// `row` is the first data row (the row under the headers when left out), `columns` the headers a
+/// sheet that has none starts with, and `key` the header that identifies a record's row rather
+/// than writing a new one.
+action set_records(
+    w: Workbook,
+    s: Sheet,
+    records: List<Map<Text>>,
+    row: Option<Int> = .none,
+    columns: Option<List<Text>> = .none,
+    key: Option<Text> = .none,
+) (icon: .table, label: "Write records", did: "wrote records") {
+    require not records.is_empty() "Give at least one record to write"
+    let request = json.encode(RecordsRequest(records: records, row: row, columns: columns, key: key))
+    match json.encode(sheet_input(s)).sheet_records(request) {
+        .ok(text) => {
+            match json.decode<RecordWrites>(text) {
+                .ok(writes) => {
+                    for k in writes.cells.keys() {
+                        s.cells.put(k, writes.cells.get(k) ?? "")
+                    }
+                    for k in writes.formats.keys() {
+                        s.formats.put(k, writes.formats.get(k) ?? "")
+                    }
+                }
+                .err(_) => {}
+            }
+        }
+        .err(why) => {
+            require false why
+        }
+    }
+}
+
+/// Writes a record into a sheet by the values that identify its row: `matching` names the headers
+/// and values that find the row, and `value` the cells it takes. A row nothing matches is made
+/// under the headers.
+action upsert_item(w: Workbook, s: Sheet, matching: Map<Text>, value: Map<Text>) (
+    icon: .pencil,
+    label: "Update the record",
+    did: "updated a record",
+) {
+    require not matching.keys().is_empty() "Name the values that identify the record"
+    let request = json.encode(UpsertRequest(records: [], matching: matching, value: value))
+    match json.encode(sheet_input(s)).sheet_records(request) {
+        .ok(text) => {
+            match json.decode<RecordWrites>(text) {
+                .ok(writes) => {
+                    for k in writes.cells.keys() {
+                        s.cells.put(k, writes.cells.get(k) ?? "")
+                    }
+                    for k in writes.formats.keys() {
+                        s.formats.put(k, writes.formats.get(k) ?? "")
+                    }
+                }
+                .err(_) => {}
+            }
+        }
+        .err(why) => {
+            require false why
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -932,10 +1019,35 @@ fn export_name(w: Workbook, ending: Text) -> Text {
     "{stem}.{ending}"
 }
 
+/// What a spreadsheet file holds, as the sheets the app keeps: each sheet's name, whether its tab
+/// is hidden, and its cells as typed by their A1 reference. An agent reads a table without the
+/// window.
+action read_file(file: File) -> Text (icon: .hash, label: "Read a table file") {
+    match file.sheets() {
+        .ok(sheets) => sheets,
+        .err(why) => {
+            require false why
+            ""
+        }
+    }
+}
+
+/// The workbook as the engine reads it, as text: its sheets, its cells as typed and the currency
+/// its bare money format shows in. An agent reads a sheet's content without the window.
+action read_content(w: Workbook) -> Text (icon: .hash, label: "Read the workbook") {
+    book_of(w.sheets.map(x -> sheet_input(x)), currency_code(w.currency))
+}
+
 /// The workbook as an Excel file.
 action export_workbook(w: Workbook) (icon: .download, label: "Export the workbook") -> File {
     let book = book_of(w.sheets.map(x -> sheet_input(x)), currency_code(w.currency))
     File.of_sheets(export_name(w, "xlsx"), book, "xlsx")
+}
+
+/// The workbook as an OpenDocument spreadsheet.
+action export_ods(w: Workbook) (icon: .download, label: "Export as OpenDocument") -> File {
+    let book = book_of(w.sheets.map(x -> sheet_input(x)), currency_code(w.currency))
+    File.of_sheets(export_name(w, "ods"), book, "ods")
 }
 
 /// One sheet as a table file.

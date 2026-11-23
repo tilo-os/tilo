@@ -398,7 +398,7 @@ pub fn upsert(
 ) -> Result<Writes, String> {
     if matching.is_empty() {
         return Err(
-            "give `match`: the header values that identify the row, e.g. {\"Name\": \"Ana\"}"
+            "give `matching`: the header values that identify the row, e.g. {\"Name\": \"Ana\"}"
                 .into(),
         );
     }
