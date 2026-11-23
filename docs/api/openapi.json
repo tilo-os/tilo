@@ -32593,6 +32593,47 @@
         ],
         "description": "Enter's work on a query: the first app the text finds opens, so typing \"no\" and pressing Enter\nopens Notes; a query that names no app is what search everywhere answers, as Enter has always\ndone for what the shell's own rows do not hold."
       },
+      "tl.so.tilo.shell.toggle_vpn.Arguments": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.device.Vpn",
+            "type": "object"
+          }
+        },
+        "required": [
+          "v"
+        ],
+        "description": "Turn the VPN on through its first profile, or off through the one connected: the tile's one\npress, whichever way it flips."
+      },
       "tl.so.tilo.shell.a_style_settings.Arguments": {
         "type": "object",
         "properties": {
@@ -41903,6 +41944,12 @@
       "resource": "tl.so.tilo.shell",
       "action": "open_first",
       "arguments": "#/components/schemas/tl.so.tilo.shell.open_first.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell",
+      "action": "toggle_vpn",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.toggle_vpn.Arguments"
     },
     {
       "app": "so.tilo.shell",
