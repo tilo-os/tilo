@@ -410,44 +410,39 @@ fn what_an_events_firings_did_is_read_from_their_done_rows() {
     assert_eq!(paused.by, MemberId::person(PERSON));
 }
 
-/// An event on mail waits on the mail the workspace's mailbox takes in: a message from outside,
-/// addressed to the account the line names and from the sender it names. What the account sent
-/// itself, what someone here wrote, and another sender's mail start nothing; a field mail is not
-/// narrowed by is refused when the event is set up.
+/// An event on mail waits on mail arriving in its person's own accounts, which need not be the
+/// workspace's mailbox: its trigger stays one on that source, kept to the account the line names
+/// and narrowed by the sender it names. A field mail is not narrowed by is refused when the event
+/// is set up.
 #[test]
-fn an_event_on_mail_waits_on_what_the_mailbox_takes_in() {
+fn an_event_on_mail_waits_on_its_persons_own_accounts() {
     let kept = kept(Definition {
         when: r#"when something new is in "tilo.accounts.mail" at "ada@example.com" where from is "bo@example.com""#.into(),
         ..reminder()
     });
     let shortcut = event_shortcut(&kept).unwrap_or_else(|error| panic!("{error}"));
-    let [TriggerSpec::ResourceChanged { kind, filter, .. }] = shortcut.triggers.as_slice() else {
-        panic!("one trigger on a change: {:?}", shortcut.triggers);
+    let [
+        TriggerSpec::SourceChanged {
+            kind, at, filter, ..
+        },
+    ] = shortcut.triggers.as_slice()
+    else {
+        panic!("one trigger on a source: {:?}", shortcut.triggers);
     };
-    assert_eq!(kind, crate::agents::triggered::MAIL_MESSAGE);
-    let message = |incoming: bool, mailbox: &str, from: &str| {
-        json!({
-            "by": "app:so.tilo.mail",
-            "incoming_message": incoming,
-            "item": {
-                "from": from,
-                "to": "Ada <ada@example.com>, cy@example.com",
-                "mailbox": mailbox,
-                "subject": "Lunch?",
-            },
-        })
+    assert_eq!(kind, tilo_automation::source_change::PERSON_MAIL);
+    assert_eq!(at, "ada@example.com");
+    let facts = |from: &str| {
+        let Value::Object(facts) = json!({"from": from, "subject": "Lunch?"}) else {
+            unreachable!()
+        };
+        facts
     };
-    assert!(filter.holds(&message(true, "INBOX", "bo@example.com")));
+    assert!(tilo_automation::resource_time::matches(
+        filter,
+        &facts("bo@example.com")
+    ));
     assert!(
-        !filter.holds(&message(true, "sent", "bo@example.com")),
-        "its own copy of a send"
-    );
-    assert!(
-        !filter.holds(&message(false, "INBOX", "bo@example.com")),
-        "written here"
-    );
-    assert!(
-        !filter.holds(&message(true, "INBOX", "cy@example.com")),
+        !tilo_automation::resource_time::matches(filter, &facts("cy@example.com")),
         "another sender"
     );
 

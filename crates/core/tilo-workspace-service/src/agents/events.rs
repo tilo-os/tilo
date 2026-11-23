@@ -245,11 +245,13 @@ impl Definition {
                 )),
                 None => Ok(trigger),
             },
-            // Mail is heard as the workspace's mailbox takes it in, by the trigger an agent's
-            // mail comes with: an event that waits on it waits on that.
-            TriggerSpec::SourceChanged {
-                kind, at, filter, ..
-            } if kind == tilo_automation::source_change::PERSON_MAIL => mail_arrives(at, filter),
+            // Mail is heard as it arrives in its person's own accounts, which need not be the
+            // workspace's mailbox.
+            TriggerSpec::SourceChanged { kind, filter, .. }
+                if kind == tilo_automation::source_change::PERSON_MAIL =>
+            {
+                mail_refusal(filter).map_or(Ok(trigger.clone()), Err)
+            }
             TriggerSpec::SourceChanged {
                 kind,
                 at,
@@ -291,55 +293,25 @@ impl Definition {
     }
 }
 
-/// The mail fields an event on mail narrows by, as its line names them, and the field of a
-/// message of Mail each is.
-const MAIL_FIELDS: [(&str, &str); 5] = [
-    ("from", "from"),
-    ("fromName", "from_name"),
-    ("to", "to"),
-    ("cc", "cc"),
-    ("subject", "subject"),
-];
+/// The facts of an arrived message an event on mail narrows by
+/// ([`tilo_actions::remote::person_accounts::MailArrival::facts`]).
+const MAIL_FIELDS: [&str; 5] = ["from", "fromName", "to", "cc", "subject"];
 
-/// The trigger an event on mail that arrives at `at` (any account, empty) and whose fields hold
-/// what `filter` names waits on: a message of the workspace's mailbox that Mail's outside origin
-/// wrote, not the account's own copy of what it sent ([`super::triggered::triggers`]).
-///
-/// # Errors
-/// `filter` names a field a message cannot be narrowed by, or one that holds no text.
-fn mail_arrives(at: &str, filter: &Map<String, Value>) -> Result<TriggerSpec, String> {
-    use tilo_automation::shortcut::Test;
-    use tilo_automation::{ActorFilter, ChangeFilter};
-    let mut tests = vec![
-        ("incoming_message".to_owned(), Test::Is(json!(true))),
-        ("item.mailbox".to_owned(), Test::IsNot(json!("sent"))),
-    ];
-    // Mail that arrives at an account is addressed to it.
-    if !at.is_empty() {
-        tests.push(("item.to".to_owned(), Test::Has(json!(at))));
-    }
-    for (named, wanted) in filter {
-        let Some((_, field)) = MAIL_FIELDS.iter().find(|(name, _)| name == named) else {
-            return Err(format!(
+/// Why an event on mail cannot narrow by what `filter` names, when it cannot: each field is one
+/// of [`MAIL_FIELDS`], and holds text.
+fn mail_refusal(filter: &Map<String, Value>) -> Option<String> {
+    filter.iter().find_map(|(named, wanted)| {
+        if !MAIL_FIELDS.contains(&named.as_str()) {
+            return Some(format!(
                 "mail is narrowed by {}; `{named}` is none of them",
                 MAIL_FIELDS
                     .iter()
-                    .map(|(name, _)| format!("`{name}`"))
+                    .map(|name| format!("`{name}`"))
                     .collect::<Vec<_>>()
                     .join(", ")
             ));
-        };
-        let Value::String(wanted) = wanted else {
-            return Err(format!("`{named}` of mail holds text"));
-        };
-        tests.push((format!("item.{field}"), Test::Has(json!(wanted))));
-    }
-    Ok(TriggerSpec::ResourceChanged {
-        kind: super::triggered::MAIL_MESSAGE.to_owned(),
-        actions: Vec::new(),
-        fields: Vec::new(),
-        by: ActorFilter::Anyone,
-        filter: ChangeFilter::of(tests),
+        }
+        (!wanted.is_string()).then(|| format!("`{named}` of mail holds text"))
     })
 }
 
@@ -1221,9 +1193,11 @@ fn described(setting_up: bool) -> Vec<ActionParam> {
              title, link, date and summary, as data), `when something new is in \
              \"tilo.web.page\" at \"https://example.org/prices\"` (the text a person reads on a \
              public page changed; you are told the new lines, as data), `when something new is \
-             in \"tilo.accounts.mail\"` (mail arrived in the workspace's mailbox; `at \"ADDRESS\"` \
-             after the kind keeps it to mail addressed there, and each `where` names `from`, \
-             `fromName`, `to`, `cc` or `subject` and the text it holds), or a change in the \
+             in \"tilo.accounts.mail\"` (a message arrived in one of your person's own mail \
+             accounts; `at \"ACCOUNT\"` after the kind keeps it to that account, and each \
+             `where` names `from`, `fromName`, `to`, `cc` or `subject` and the text it holds; \
+             you are told who wrote and what about, and read the message itself from the \
+             account), or a change in the \
              workspace as a Shortcut writes it. A feed or a page is looked at every hour, \
              with no model, and starts you only when something is new; `looked at every 900 \
              seconds` after the address sets how often, 300 at the least. A page behind a \
