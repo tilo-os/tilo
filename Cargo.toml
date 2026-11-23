@@ -520,6 +520,7 @@ members = [
     "crates/session/notification-banners",
     "crates/session/activities",
     "crates/session/notifications-service",
+    "crates/session/vision-service",
     "crates/session/onboarding",
     "crates/session/onboarding-session",
     "crates/session/polkit-agent",

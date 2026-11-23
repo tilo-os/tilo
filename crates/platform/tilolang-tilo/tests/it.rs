@@ -71,4 +71,5 @@ mod triggers;
 mod tube;
 mod unions;
 mod upgrade;
+mod vision;
 mod words;

@@ -374,7 +374,12 @@ pub fn request(request: Request) -> Result<Response, ClientError> {
 /// [`request`], on this thread's turn of the channel.
 #[cfg(unix)]
 fn exchange(request: Request) -> Result<Response, ClientError> {
-    let mut stream = service_stream()?;
+    exchange_on(service_stream()?, request)
+}
+
+/// `request` on the connection `stream`, written as one frame and answered.
+#[cfg(unix)]
+fn exchange_on(mut stream: UnixStream, request: Request) -> Result<Response, ClientError> {
     write_frame(
         &mut stream,
         &Frame {
@@ -384,6 +389,72 @@ fn exchange(request: Request) -> Result<Response, ClientError> {
     )?;
     let response: Response = read_frame(&mut stream)?;
     response.into_result()
+}
+
+/// A duplicate of `descriptor` this side owns, for one exchange: the launcher
+/// handed the caller the service connection, and every RPC takes a duplicate
+/// so concurrent exchanges never interleave their frames.
+///
+/// # Errors
+/// [`ClientError::Unavailable`] when the descriptor cannot be duplicated.
+#[cfg(unix)]
+fn duplicate(descriptor: std::os::fd::BorrowedFd<'_>) -> Result<UnixStream, ClientError> {
+    let owned = descriptor
+        .try_clone_to_owned()
+        .map_err(|_| ClientError::Unavailable)?;
+    Ok(UnixStream::from(owned))
+}
+
+/// [`analyze_image`] on the connection `descriptor`, for a host that holds the
+/// model gateway's descriptor itself rather than through the launcher's
+/// environment (the session's own services).
+///
+/// # Errors
+/// [`ClientError::Unavailable`] when the descriptor cannot be used, else why
+/// the gateway did not answer.
+#[cfg(unix)]
+pub fn analyze_image_on(
+    descriptor: std::os::fd::BorrowedFd<'_>,
+    profile_id: &str,
+    model_id: &str,
+    image: VisionImage,
+) -> Result<String, ClientError> {
+    let response = exchange_on(
+        duplicate(descriptor)?,
+        Request::AnalyzeImage {
+            profile_id: profile_id.to_string(),
+            model_id: model_id.to_string(),
+            image,
+        },
+    )?;
+    response
+        .output
+        .ok_or_else(|| ClientError::Protocol("gateway returned no image analysis".into()))
+}
+
+/// [`cluster_faces`] on the connection `descriptor`; see [`analyze_image_on`].
+///
+/// # Errors
+/// [`ClientError::Unavailable`] when the descriptor cannot be used, else why
+/// the gateway did not answer.
+#[cfg(unix)]
+pub fn cluster_faces_on(
+    descriptor: std::os::fd::BorrowedFd<'_>,
+    profile_id: &str,
+    model_id: &str,
+    images: Vec<FaceImage>,
+) -> Result<String, ClientError> {
+    let response = exchange_on(
+        duplicate(descriptor)?,
+        Request::ClusterFaces {
+            profile_id: profile_id.to_string(),
+            model_id: model_id.to_string(),
+            images,
+        },
+    )?;
+    response
+        .output
+        .ok_or_else(|| ClientError::Protocol("gateway returned no face clusters".into()))
 }
 
 /// The process's one exchange on the launcher channel.

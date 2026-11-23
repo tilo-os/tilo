@@ -91,6 +91,7 @@ tilo-desktop-surface = { path = "../desktop-surface" }
 # Settings' pages are every desktop's own, the page's included: its search offers them wherever
 # the session runs.
 tilo-desktop-search = { path = "../desktop-search", features = ["settings"] }
+tilo-vision-service = { path = "../vision-service" }
 settings-store = { path = "../../system/settings-store" }
 # Following the directories search's lists are read from.
 tilo-files = { path = "../../platform/tilo-files" }

@@ -80,6 +80,10 @@ use tilo_app_id::apps::CANVAS as CANVAS_APP;
 use tilo_app_id::apps::CHAT as CHAT_APP;
 use tilo_app_id::apps::PHOTOS as PHOTOS_APP;
 use tilo_app_id::apps::SETTINGS as SETTINGS_APP;
+/// The session's own image model service: a platform package, not an
+/// installed app, so it has no first-party app constant. It asks the fixed
+/// local image and face operations for every app, as Photos once did.
+const VISION_APP: &str = "so.tilo.vision";
 /// The desktop's report composer: its review asks a model which words of a
 /// report are personal, a completion without tools, as Chat's are.
 const FEEDBACK_APP: &str = "so.tilo.feedback-composer";
@@ -513,7 +517,8 @@ async fn read_handoff(stream: &mut tokio::net::UnixStream) -> Result<Handoff, St
             && handoff.app_id != FEEDBACK_APP
             && handoff.app_id != ACTIVITY_APP
             && handoff.app_id != PHOTOS_APP
-            && handoff.app_id != CANVAS_APP)
+            && handoff.app_id != CANVAS_APP
+            && handoff.app_id != VISION_APP)
     {
         return Err("launcher is not authorized for the model gateway".into());
     }
@@ -577,9 +582,11 @@ pub(super) async fn handle_streaming(
             profile_id,
             model_id,
             image,
-        } if app_id == PHOTOS_APP => analyze_image(http, profile_id, model_id, image)
-            .await
-            .map(output),
+        } if app_id == PHOTOS_APP || app_id == VISION_APP => {
+            analyze_image(http, profile_id, model_id, image)
+                .await
+                .map(output)
+        }
         Request::AnalyzeImage { .. } => {
             Err("only Photos may request fixed local image analysis".into())
         }
@@ -587,9 +594,11 @@ pub(super) async fn handle_streaming(
             profile_id,
             model_id,
             images,
-        } if app_id == PHOTOS_APP => cluster_faces(http, profile_id, model_id, images)
-            .await
-            .map(output),
+        } if app_id == PHOTOS_APP || app_id == VISION_APP => {
+            cluster_faces(http, profile_id, model_id, images)
+                .await
+                .map(output)
+        }
         Request::ClusterFaces { .. } => {
             Err("only Photos may request fixed local face clustering".into())
         }

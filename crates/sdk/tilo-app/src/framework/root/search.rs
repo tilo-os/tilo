@@ -399,6 +399,13 @@ pub(crate) fn index_entry(
         fields,
         secret: entry.secret,
         references: Vec::new(),
+        // A picture's bytes are named by the app that keeps it, in the entry it
+        // publishes for search, or in the text a picture's own record holds.
+        image: entry.picture.clone().or_else(|| {
+            std::iter::once(&entry.text)
+                .chain(entry.fields.iter().map(|(text, _)| text))
+                .find_map(|text| tilo_resource::search_index::picture_address(text))
+        }),
     })
 }
 

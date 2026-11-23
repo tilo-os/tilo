@@ -1,6 +1,7 @@
 //! The platform's apps a tilolang view reads but this runtime does not run: the device (its
-//! sound, network, Bluetooth, battery, power and displays), Settings (the person's
-//! appearance and notification settings) and Contacts (the workspace's contact directory).
+//! sound, network, Bluetooth, battery, power and displays), Settings (the person's appearance
+//! and notification settings), Contacts (the workspace's contact directory) and the image
+//! model (the device's vision actions and the library analysis run).
 //!
 //! Each is a package read from the surface it publishes ([`crate::catalogue::package_of`]):
 //! its types are what its resources read as and its actions are their published verbs. Its
@@ -20,6 +21,10 @@ use crate::catalogue::{package_of, parse_surfaces};
 pub const DEVICE_APP: &str = "so.tilo.device";
 /// Settings' app, whose sections the session keeps and publishes.
 pub use tilo_app_id::apps::SETTINGS as SETTINGS_APP;
+/// The session's image model app: the device's model as actions, and the
+/// library analysis run (`tilo_vision_service`). It is a platform package,
+/// not an installed app, so it has no first-party app id.
+pub const VISION_APP: &str = "so.tilo.vision";
 
 /// The device's surface as the session publishes it, which the session holds to its services.
 const DEVICE_SURFACE: &str = include_str!("../../../session/session/device-surface.json");
@@ -65,6 +70,9 @@ const CONTACTS_SURFACE: &str = include_str!("../../../../apps/contacts/surface.t
 /// rather than in it.
 const AGENT_MODELS_SURFACE: &str =
     include_str!("../../../session/settings-service/agent-models-surface.json");
+/// The image model service's resources, the surface its own test writes
+/// beside it (`surface.json`), as `agent-models-surface.json` is.
+const VISION_SURFACE: &str = include_str!("../../../session/vision-service/surface.json");
 
 /// Each published resource a view names, by package: the name a view reads it by
 /// (`device.sound`), its type there, and the resource the session publishes it as.
@@ -87,6 +95,10 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("styles", "Styles", "session:styles"),
     ("folders", "Folders", "session:folders"),
     ("overlays", "Overlays", "desktop:overlays"),
+];
+const VISION_ROOTS: &[(&str, &str, &str)] = &[
+    ("image_model", "ImageModel", "vision:vision.image-model"),
+    ("analysis", "Analysis", "vision:vision.analysis"),
 ];
 const SETTINGS_ROOTS: &[(&str, &str, &str)] = &[
     ("appearance", "Appearance", "settings:settings.appearance"),
@@ -132,6 +144,11 @@ pub fn platform_roots() -> Vec<(&'static str, String)> {
                 .iter()
                 .map(|(_, ty, published)| (*published, format!("{CONTACTS_APP}#{ty}"))),
         )
+        .chain(
+            VISION_ROOTS
+                .iter()
+                .map(|(_, ty, published)| (*published, format!("{VISION_APP}#{ty}"))),
+        )
         .collect()
 }
 
@@ -142,6 +159,18 @@ pub fn device_surfaces() -> Result<Vec<Surface>, String> {
         resources: Vec<Surface>,
     }
     serde_json::from_str::<File>(DEVICE_SURFACE)
+        .map(|file| file.resources)
+        .map_err(|error| error.to_string())
+}
+
+/// The image model service's resources, as its committed surface describes
+/// them.
+fn vision_surfaces() -> Result<Vec<Surface>, String> {
+    #[derive(Deserialize)]
+    struct File {
+        resources: Vec<Surface>,
+    }
+    serde_json::from_str::<File>(VISION_SURFACE)
         .map(|file| file.resources)
         .map_err(|error| error.to_string())
 }
@@ -222,10 +251,14 @@ fn read_packages() -> Result<Vec<PackageMeta>, String> {
         package_of(CONTACTS_APP, "Contacts", &contacts_surfaces()?),
         CONTACTS_ROOTS,
     )?;
+    let vision = named(
+        package_of(VISION_APP, "Vision", &vision_surfaces()?),
+        VISION_ROOTS,
+    )?;
     // The session's own resources are described here, as the runtime loads them
     // ([`session_package`]): its actions keep the ids its surface names them by, which is what
     // the code calling them compiles to. An app's directory of the same name
     // (`apps/tl/session`) names them by its app (`so.tilo.session#place`), which no call the
     // runtime loads makes; the description here stands first, so a build reads it.
-    Ok(vec![device, settings, contacts, session_package()?])
+    Ok(vec![device, settings, contacts, vision, session_package()?])
 }

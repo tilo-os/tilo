@@ -646,7 +646,15 @@ fn start(
     } else {
         tilo_session::Machine::Owned
     };
-    let (mut services, _following) = services(&wake, power.clone(), machine);
+    // This device's apps, as search and the surfaces that name an app read them, and the index
+    // apps publish what they hold into: the image analysis reads it and writes back into it.
+    let content = tilo_desktop_search::content_index::session();
+    let (mut services, _following) = services(
+        &wake,
+        power.clone(),
+        machine,
+        std::sync::Arc::clone(&content),
+    );
     let (capture, captures) =
         tilo_session::capture::channel_to(tilo_session::capture::directory(), wake.handle());
     // The portal's side of the desktop, which the session answers.
@@ -704,7 +712,7 @@ fn start(
         test_control,
         admin_control,
         hosted_browser,
-        ..device_options(machine, config)
+        ..device_options(machine, config, content)
     };
     // The person's files: the files daemon mounts them as the Files app's endpoint, so the
     // session records its process before the daemon's connections arrive.
@@ -1105,15 +1113,13 @@ fn desktop_services(
 fn device_options(
     machine: tilo_session::Machine,
     config: tilo_session::SessionConfig,
+    content: std::sync::Arc<tilo_desktop_search::content_index::AppContentIndex>,
 ) -> tilo_session::Options {
     use tilo_session::{
         AppSocket, Options, Vpn,
         displays::{Backlights, Screens},
     };
     let owned = machine.is_owned();
-    // This device's apps, as search and the surfaces that name an app read them, and the index
-    // apps publish what they hold into.
-    let content = tilo_desktop_search::content_index::session();
     Options {
         config,
         search: search_options(std::sync::Arc::clone(&content)),
@@ -1228,6 +1234,7 @@ fn services(
     wake: &tilo_service::LoopWake,
     power: Option<tilo_session_power::PowerLink>,
     machine: tilo_session::Machine,
+    content: std::sync::Arc<tilo_desktop_search::content_index::AppContentIndex>,
 ) -> (Vec<Box<dyn tilo_session::Service>>, Following) {
     use std::sync::Arc;
     use tilo_connectivity_service::{Connectivity, device::OsDevice};
@@ -1235,6 +1242,18 @@ fn services(
     let mut services: Vec<Box<dyn tilo_session::Service>> = Vec::new();
     let mut following: Following = Vec::new();
     services.push(Box::new(tilo_settings_service::SettingsService::new()));
+    // The device's image model, and the library analysis whose results search reads: the
+    // model gateway connection is this session's own, as Activity's is.
+    services.push(Box::new(tilo_vision_service::VisionService::new(
+        std::sync::Arc::new(tilo_vision_service::LocalVision::new(
+            tilo_vision_service::LocalVision::gateway(),
+        )),
+        std::sync::Arc::new(tilo_session::vision_index::VisionIndexSource(
+            std::sync::Arc::clone(&content),
+        )),
+        std::sync::Arc::new(tilo_session::vision_index::VisionIndexSink(content)),
+        wake.handle(),
+    )));
     // What this session ran into: the list as the resource's reading and each record's text as its
     // own, which Settings reads as an app does.
     services.push(Box::new(tilo_crash_reports::CrashReports::new()));

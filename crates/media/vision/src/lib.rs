@@ -227,21 +227,47 @@ pub fn prepare(image: &DecodedImage, original_bytes: &[u8]) -> Result<PreparedIm
     })
 }
 
-/// Ask the Photos-only local gateway and validate its bounded fixed schema.
+/// Ask the local gateway and validate its bounded fixed schema.
 pub fn analyze(
     capability: &LocalVisionCapability,
     image: PreparedImage,
 ) -> Result<Analysis, Error> {
-    let output = tilo_model_client::analyze_image(
+    let request = request_of(image);
+    let output =
+        tilo_model_client::analyze_image(&capability.profile_id, &capability.model_id, request)?;
+    parse_analysis(&output)
+}
+
+/// [`analyze`] on `descriptor`, the model gateway's connection held by the
+/// caller: a session's own service has no launcher environment to read it
+/// from.
+///
+/// # Errors
+/// [`Error::Gateway`] when the connection fails or the model is refused, and
+/// [`Error::InvalidResponse`] for an answer outside the fixed schema.
+#[cfg(unix)]
+pub fn analyze_on(
+    descriptor: std::os::fd::BorrowedFd<'_>,
+    capability: &LocalVisionCapability,
+    image: PreparedImage,
+) -> Result<Analysis, Error> {
+    let request = request_of(image);
+    let output = tilo_model_client::analyze_image_on(
+        descriptor,
         &capability.profile_id,
         &capability.model_id,
-        tilo_model_client::VisionImage {
-            media_type: image.media_type.to_string(),
-            data_base64: base64::engine::general_purpose::STANDARD.encode(image.jpeg),
-            source_content_hash: image.source_content_hash,
-        },
+        request,
     )?;
     parse_analysis(&output)
+}
+
+/// The gateway request one prepared image is sent as.
+fn request_of(image: PreparedImage) -> tilo_model_client::VisionImage {
+    tilo_model_client::VisionImage {
+        media_type: image.media_type.to_string(),
+        data_base64: base64::engine::general_purpose::STANDARD.encode(image.jpeg),
+        source_content_hash: image.source_content_hash,
+    }
 }
 
 /// Prepare and cluster one small, explicit face batch. The caller supplies
@@ -256,13 +282,53 @@ pub fn cluster_faces(
     capability: &LocalFaceCapability,
     images: Vec<(String, DecodedImage, Vec<u8>)>,
 ) -> Result<FaceClusterResponse, Error> {
+    let (ids, requests) = face_requests(images)?;
+    let output =
+        tilo_model_client::cluster_faces(&capability.profile_id, &capability.model_id, requests)?;
+    parse_face_clusters(&output, &ids)
+}
+
+/// [`cluster_faces`] on `descriptor`: the session's own service holds the
+/// model gateway's connection itself.
+///
+/// # Errors
+/// [`Error::EmptyImage`] for an empty or oversized batch or an unusable image,
+/// [`Error::InvalidResponse`] for a cluster outside the supplied ids, and
+/// [`Error::Gateway`] when the connection fails or the model is refused.
+#[cfg(unix)]
+pub fn cluster_faces_on(
+    descriptor: std::os::fd::BorrowedFd<'_>,
+    capability: &LocalFaceCapability,
+    images: Vec<(String, DecodedImage, Vec<u8>)>,
+) -> Result<FaceClusterResponse, Error> {
+    let (ids, requests) = face_requests(images)?;
+    let output = tilo_model_client::cluster_faces_on(
+        descriptor,
+        &capability.profile_id,
+        &capability.model_id,
+        requests,
+    )?;
+    parse_face_clusters(&output, &ids)
+}
+
+/// The bounded batch a face request is sent as: the ids it may answer about,
+/// and each image's preview.
+fn face_requests(
+    images: Vec<(String, DecodedImage, Vec<u8>)>,
+) -> Result<
+    (
+        std::collections::BTreeSet<String>,
+        Vec<tilo_model_client::FaceImage>,
+    ),
+    Error,
+> {
     if images.is_empty() || images.len() > MAX_FACE_BATCH {
         return Err(Error::EmptyImage);
     }
     let mut ids = std::collections::BTreeSet::new();
     let mut requests = Vec::with_capacity(images.len());
     for (photo_id, image, bytes) in images {
-        if !valid_photo_id(&photo_id) || !ids.insert(photo_id.clone()) {
+        if !valid_image_id(&photo_id) || !ids.insert(photo_id.clone()) {
             return Err(Error::InvalidResponse);
         }
         let preview = prepare_face_preview(&dynamic(&image)?, &bytes)?;
@@ -273,9 +339,7 @@ pub fn cluster_faces(
             source_content_hash: preview.source_content_hash,
         });
     }
-    let output =
-        tilo_model_client::cluster_faces(&capability.profile_id, &capability.model_id, requests)?;
-    parse_face_clusters(&output, &ids)
+    Ok((ids, requests))
 }
 
 /// Parse and bound a model response, so callers test their persistence
@@ -390,10 +454,11 @@ fn prepare_face_preview(
     Err(Error::EmptyImage)
 }
 
-fn valid_photo_id(value: &str) -> bool {
-    value.starts_with("photos.photo:")
-        && value.len() <= 4_096
-        && !value.chars().any(char::is_control)
+/// A caller's name for one image of a face batch: opaque to the model, so any
+/// stable address the caller can map back (an app resource id, a content
+/// address) up to a bound.
+fn valid_image_id(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 4_096 && !value.chars().any(char::is_control)
 }
 
 fn valid_cluster_id(value: &str) -> bool {

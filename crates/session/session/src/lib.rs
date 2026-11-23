@@ -431,6 +431,8 @@ mod unlock_history;
 #[cfg(target_os = "linux")]
 mod update_finish;
 #[cfg(target_os = "linux")]
+pub mod vision_index;
+#[cfg(target_os = "linux")]
 mod vpn;
 #[cfg(target_os = "linux")]
 mod wake;

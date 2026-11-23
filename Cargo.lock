@@ -22153,6 +22153,7 @@ dependencies = [
  "tilo-ui",
  "tilo-unlock-protocol",
  "tilo-user-identity",
+ "tilo-vision-service",
  "tilo-wallpapers",
  "tilo-webview",
  "tilo-window-share",
@@ -23110,6 +23111,30 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-image-codec",
  "tilo-model-client",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-vision-service"
+version = "0.1.0"
+dependencies = [
+ "agent-provider-config",
+ "launcher",
+ "runtime-portal",
+ "serde",
+ "serde_json",
+ "tilo-actions",
+ "tilo-content",
+ "tilo-content-device",
+ "tilo-image-codec",
+ "tilo-lock",
+ "tilo-model-client",
+ "tilo-ocr",
+ "tilo-resource",
+ "tilo-service",
+ "tilo-test-env",
+ "tilo-vision",
+ "tracing",
  "workspace-hack",
 ]
 
