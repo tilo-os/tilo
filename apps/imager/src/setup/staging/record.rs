@@ -880,14 +880,17 @@ mod tests {
             "bad stored hostname is dropped on load"
         );
         assert_eq!(loaded.profile["username"], "ada");
-        let media =
-            imager_backend::destination::media_profile::validate_object(&loaded.profile).unwrap();
-        assert!(media.hostname.is_none());
-        assert!(
-            media
-                .repairs
-                .contains(&imager_backend::destination::media_profile::MediaProfileField::Hostname)
-        );
+        // The live medium's own reading of the profile exists only where the destination is built.
+        #[cfg(all(feature = "destination", target_os = "linux"))]
+        {
+            let media =
+                imager_backend::destination::media_profile::validate_object(&loaded.profile)
+                    .unwrap();
+            assert!(media.hostname.is_none());
+            assert!(media.repairs.contains(
+                &imager_backend::destination::media_profile::MediaProfileField::Hostname
+            ));
+        }
         assert!(super::super::handoff::validate_profile(&loaded.profile).is_ok());
 
         let pending = pending_in(store.public_dir.as_ref().unwrap());
