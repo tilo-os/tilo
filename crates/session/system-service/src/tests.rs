@@ -9,6 +9,7 @@ use tilo_service::{Service, Services, Started, Wake};
 use tilo_system_resources::printers::{
     DiscoveredPrinter, JobState, PrintJob, PrinterQueue, Printers, QueueState,
 };
+use tilo_system_resources::disk_unlock::{DiskUnlock, Sealing, UnlockVolume};
 use tilo_system_resources::drives::{
     Drive, DriveMode, Drives, Placement, RememberOffer, RememberedDrive,
 };
@@ -17,13 +18,14 @@ use tilo_system_resources::update::Deployment;
 use tilo_system_resources::users::{LocalAccount, Users};
 
 use crate::device::{
-    Change, DriveChange, PowerProfiles, PrintChange, StorageChange, System, UserChange,
+    Change, DiskUnlockChange, DriveChange, PowerProfiles, PrintChange, StorageChange, System,
+    UserChange,
 };
 use crate::model::{KeyboardLight, Power, PowerMode, Time};
 use crate::update::Update;
 use crate::{
-    DRIVES, KEYBOARD_BACKLIGHT, POWER, PRINTERS, STORAGE, SYSTEM_UPDATE, SystemService, TIME_ZONE,
-    USERS,
+    DISK_UNLOCK, DRIVES, KEYBOARD_BACKLIGHT, POWER, PRINTERS, STORAGE, SYSTEM_UPDATE,
+    SystemService, TIME_ZONE, USERS,
 };
 
 /// A machine in memory, in Amsterdam unless told it is elsewhere.
@@ -51,6 +53,9 @@ struct Fake {
     storage: Mutex<Storage>,
     storage_changes: Mutex<Vec<StorageChange>>,
     storage_refusal: Mutex<Option<String>>,
+    disk_unlock: Mutex<DiskUnlock>,
+    disk_unlock_changes: Mutex<Vec<DiskUnlockChange>>,
+    disk_unlock_refusal: Mutex<Option<String>>,
 }
 
 impl Fake {
@@ -127,6 +132,9 @@ impl Fake {
             storage: Mutex::new(Storage::default()),
             storage_changes: Mutex::new(Vec::new()),
             storage_refusal: Mutex::new(None),
+            disk_unlock: Mutex::new(DiskUnlock::default()),
+            disk_unlock_changes: Mutex::new(Vec::new()),
+            disk_unlock_refusal: Mutex::new(None),
         })
     }
 
@@ -148,6 +156,10 @@ impl Fake {
 
     fn storage_changes(&self) -> Vec<StorageChange> {
         self.storage_changes.lock().unwrap().clone()
+    }
+
+    fn disk_unlock_changes(&self) -> Vec<DiskUnlockChange> {
+        self.disk_unlock_changes.lock().unwrap().clone()
     }
 
     fn power_reads(&self) -> usize {
@@ -382,6 +394,30 @@ impl System for Fake {
         }
         match change {
             StorageChange::ClearCache => self.storage.lock().unwrap().cache_bytes = 0,
+        }
+        Ok(())
+    }
+
+    fn disk_unlock(&self) -> DiskUnlock {
+        self.disk_unlock.lock().unwrap().clone()
+    }
+
+    fn scan_disk_unlock(&self) -> DiskUnlock {
+        self.disk_unlock.lock().unwrap().clone()
+    }
+
+    fn change_disk_unlock(&self, change: &DiskUnlockChange) -> Result<(), String> {
+        self.disk_unlock_changes.lock().unwrap().push(change.clone());
+        if let Some(reason) = self.disk_unlock_refusal.lock().unwrap().clone() {
+            return Err(reason);
+        }
+        let mut disk = self.disk_unlock.lock().unwrap();
+        match change {
+            DiskUnlockChange::SetNetworks { volume, networks } => {
+                if let Some(found) = disk.volumes.iter_mut().find(|v| v.volume == *volume) {
+                    found.networks = networks.clone();
+                }
+            }
         }
         Ok(())
     }
@@ -1686,4 +1722,107 @@ fn scanning_the_storage_again_lands_the_new_reading() {
     let storage = service.read(STORAGE).unwrap();
     assert_eq!(storage["largest"][0]["owner"], json!("calendar"));
     assert_eq!(storage["pending"], json!([]));
+}
+
+fn an_enrolled_volume() -> DiskUnlock {
+    DiskUnlock {
+        volumes: vec![UnlockVolume {
+            volume: "0f3a9c1e-1111-4222-8333-444455556666".into(),
+            device: "/dev/disk/by-uuid/0f3a9c1e-1111-4222-8333-444455556666".into(),
+            keyslot: 2,
+            sealing: Sealing::Tpm2,
+            networks: vec!["Home".into()],
+            siblings: vec!["Ada's laptop".into()],
+        }],
+        saved_networks: vec!["Home".into(), "Office 5G".into()],
+        scanned: true,
+        ..DiskUnlock::default()
+    }
+}
+
+#[test]
+fn the_disk_unlock_resource_reads_the_enrolment_and_chooses_its_networks() {
+    let fake = Fake::new();
+    *fake.disk_unlock.lock().unwrap() = an_enrolled_volume();
+    let mut service = service(&fake);
+    // Nothing is read until the resource is asked to.
+    assert_eq!(service.read(DISK_UNLOCK).unwrap()["scanned"], json!(false));
+
+    assert_eq!(
+        service.invoke(DISK_UNLOCK, "refresh", &Map::new()),
+        Ok(Started::Accepted)
+    );
+    service.settle();
+    let disk = service.read(DISK_UNLOCK).unwrap();
+    assert_eq!(disk["scanned"], json!(true));
+    assert_eq!(
+        disk["volumes"][0]["volume"],
+        json!("0f3a9c1e-1111-4222-8333-444455556666")
+    );
+    assert_eq!(disk["volumes"][0]["sealing"], json!("tpm2"));
+    assert_eq!(disk["volumes"][0]["networks"][0], json!("Home"));
+    assert_eq!(disk["saved_networks"][1], json!("Office 5G"));
+
+    let published = service
+        .resources()
+        .into_iter()
+        .find(|resource| resource.id.as_str() == DISK_UNLOCK)
+        .expect("the disk-unlock resource is published");
+    let actions: Vec<&str> = published
+        .actions
+        .iter()
+        .map(|action| action.id.as_str())
+        .collect();
+    assert!(actions.contains(&"refresh"), "{actions:?}");
+    assert!(actions.contains(&"set-networks"), "{actions:?}");
+
+    assert_eq!(
+        service.invoke(
+            DISK_UNLOCK,
+            "set-networks",
+            &arguments(json!({
+                "volume": "0f3a9c1e-1111-4222-8333-444455556666",
+                "networks": ["Home", "Office 5G"],
+            })),
+        ),
+        Ok(Started::Accepted)
+    );
+    service.settle();
+    assert_eq!(
+        fake.disk_unlock_changes(),
+        [DiskUnlockChange::SetNetworks {
+            volume: "0f3a9c1e-1111-4222-8333-444455556666".into(),
+            networks: vec!["Home".into(), "Office 5G".into()],
+        }]
+    );
+    let disk = service.read(DISK_UNLOCK).unwrap();
+    assert_eq!(disk["volumes"][0]["networks"][1], json!("Office 5G"));
+    assert_eq!(disk["pending"], json!([]));
+}
+
+#[test]
+fn changing_the_unlocking_without_the_grant_is_refused() {
+    let fake = Fake::new();
+    *fake.disk_unlock.lock().unwrap() = an_enrolled_volume();
+    let mut service = service(&fake);
+    *fake.disk_unlock_refusal.lock().unwrap() =
+        Some("Not authorised to change this computer's unlocking".into());
+    service
+        .invoke(
+            DISK_UNLOCK,
+            "set-networks",
+            &arguments(json!({
+                "volume": "0f3a9c1e-1111-4222-8333-444455556666",
+                "networks": ["Office 5G"],
+            })),
+        )
+        .unwrap();
+    service.settle();
+    let disk = service.read(DISK_UNLOCK).unwrap();
+    assert_eq!(
+        disk["problem"],
+        json!("Not authorised to change this computer's unlocking"),
+        "a person the grant does not cover is told why nothing changed"
+    );
+    assert_eq!(disk["pending"], json!([]));
 }

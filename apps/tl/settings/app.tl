@@ -103,6 +103,9 @@ view settings_window(s: Settings) {
                     }
                 }
                 ui.NavSection("System") {
+                    ui.NavItem("disk_unlock", "Disk unlock", icon: .lock) {
+                        on select: set(pane, "disk_unlock")
+                    }
                     ui.NavItem("storage", "Storage", icon: .database) {
                         on select: set(pane, "storage")
                     }
@@ -160,6 +163,8 @@ view settings_window(s: Settings) {
                         devices_pane()
                     } else if pane == "continuity" {
                         continuity_pane()
+                    } else if pane == "disk_unlock" {
+                        disk_unlock_pane()
                     } else if pane == "storage" {
                         storage_pane()
                     } else if pane == "updates" {
@@ -220,6 +225,8 @@ fn pane_title(pane: Text) -> Text {
         "Devices and access"
     } else if pane == "continuity" {
         "Continuity"
+    } else if pane == "disk_unlock" {
+        "Disk unlock"
     } else if pane == "storage" {
         "Storage"
     } else if pane == "updates" {

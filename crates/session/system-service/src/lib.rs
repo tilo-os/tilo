@@ -25,6 +25,7 @@
 //! reading's problem until the next.
 
 pub mod device;
+pub mod disk_unlock;
 pub mod drives;
 pub mod storage;
 pub use tilo_system_resources::effects;
@@ -46,8 +47,8 @@ use tilo_resource::Effect as _;
 use tilo_service::{Jobs, Service, Started, Wake, Worker, decode, offer, reading, unavailable};
 
 use device::{
-    Change, DriveChange, PowerProfiles, PrintChange, StorageChange, System, UserChange,
-    follow_once,
+    Change, DiskUnlockChange, DriveChange, PowerProfiles, PrintChange, StorageChange, System,
+    UserChange, follow_once,
 };
 use effects::{KeyboardLightAction, PowerAction, TimeAction, UpdateAction};
 use model::{KeyboardLight, Power, PowerMode, Time};
@@ -55,7 +56,8 @@ use update::Update;
 
 /// The resources' ids.
 pub use tilo_system_resources::{
-    DRIVES, KEYBOARD_BACKLIGHT, POWER, PRINTERS, STORAGE, SYSTEM_UPDATE, TIME_ZONE, USERS,
+    DISK_UNLOCK, DRIVES, KEYBOARD_BACKLIGHT, POWER, PRINTERS, STORAGE, SYSTEM_UPDATE, TIME_ZONE,
+    USERS,
 };
 
 /// How often a device whose zone follows it looks where it is again: often
@@ -73,6 +75,7 @@ enum Part {
     Users,
     Drives,
     Storage,
+    DiskUnlock,
 }
 
 /// What the machine reads now.
@@ -86,6 +89,7 @@ pub struct Readings {
     pub users: tilo_system_resources::users::Users,
     pub drives: tilo_system_resources::drives::Drives,
     pub storage: tilo_system_resources::storage::Storage,
+    pub disk_unlock: tilo_system_resources::disk_unlock::DiskUnlock,
 }
 
 fn read(system: &dyn System, live_profiles: bool) -> Readings {
@@ -106,6 +110,7 @@ fn read(system: &dyn System, live_profiles: bool) -> Readings {
         users: system.users(),
         drives: system.drives(),
         storage: system.storage(),
+        disk_unlock: system.disk_unlock(),
     }
 }
 
@@ -351,6 +356,10 @@ impl SystemService {
                 &mut readings.storage.pending,
                 &mut readings.storage.problem,
             ),
+            Part::DiskUnlock => (
+                &mut readings.disk_unlock.pending,
+                &mut readings.disk_unlock.problem,
+            ),
         }
     }
 
@@ -385,6 +394,15 @@ impl SystemService {
             readings.storage.cache_bytes = old.storage.cache_bytes;
             readings.storage.read_error = old.storage.read_error.take();
             readings.storage.scanned = old.storage.scanned;
+        }
+        readings.disk_unlock.pending = std::mem::take(&mut old.disk_unlock.pending);
+        readings.disk_unlock.problem = old.disk_unlock.problem.take();
+        if !readings.disk_unlock.scanned {
+            readings.disk_unlock.volumes = std::mem::take(&mut old.disk_unlock.volumes);
+            readings.disk_unlock.saved_networks =
+                std::mem::take(&mut old.disk_unlock.saved_networks);
+            readings.disk_unlock.read_error = old.disk_unlock.read_error.take();
+            readings.disk_unlock.scanned = old.disk_unlock.scanned;
         }
         // What a find turned up stays until the next one: a plain read of the queues and
         // jobs replaces neither.
@@ -526,6 +544,30 @@ impl SystemService {
             readings.storage = system.scan_storage();
             Landed::Changed {
                 part: Part::Storage,
+                action,
+                result,
+                readings: Box::new(readings),
+                live_power_mode: None,
+            }
+        });
+        Started::Accepted
+    }
+
+    /// Read the enrolled volumes again, or make `change` on them, landing the machine's answer
+    /// and the read that follows.
+    fn start_disk_unlock(&mut self, action: &str, change: Option<DiskUnlockChange>) -> Started {
+        self.readings.disk_unlock.pending.push(action.to_owned());
+        let action = action.to_owned();
+        let live_active = self.live_active_flag();
+        self.worker.run(move |system| {
+            let result = match change {
+                Some(change) => system.change_disk_unlock(&change),
+                None => Ok(()),
+            };
+            let mut readings = read(system, is_live(live_active.as_ref()));
+            readings.disk_unlock = system.scan_disk_unlock();
+            Landed::Changed {
+                part: Part::DiskUnlock,
                 action,
                 result,
                 readings: Box::new(readings),
@@ -746,6 +788,15 @@ pub fn printers_surface() -> tilo_resource::surface::Surface {
     >(PRINTERS, "Printers")
 }
 
+/// The `disk-unlock` resource's surface, as a shell reads it over `so.tilo.device`.
+#[must_use]
+pub fn disk_unlock_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<
+        tilo_system_resources::disk_unlock::DiskUnlock,
+        tilo_system_resources::disk_unlock::DiskUnlockAction,
+    >(DISK_UNLOCK, "Disk unlock")
+}
+
 /// The `storage` resource's surface, as a shell reads it over `so.tilo.device`.
 #[must_use]
 pub fn storage_surface() -> tilo_resource::surface::Surface {
@@ -929,6 +980,7 @@ impl Service for SystemService {
             users::resource(&self.readings.users),
             drives::resource(&self.readings.drives),
             storage::resource(&self.readings.storage),
+            disk_unlock::resource(&self.readings.disk_unlock),
         ]
     }
 
@@ -942,6 +994,7 @@ impl Service for SystemService {
             USERS => Some(reading(&self.readings.users)),
             DRIVES => Some(reading(&self.readings.drives)),
             STORAGE => Some(reading(&self.readings.storage)),
+            DISK_UNLOCK => Some(reading(&self.readings.disk_unlock)),
             _ => None,
         }
     }
@@ -1160,6 +1213,24 @@ impl Service for SystemService {
                     tilo_system_resources::storage::StorageAction::ClearCache => {
                         Ok(self.start_storage(id, Some(StorageChange::ClearCache)))
                     }
+                }
+            }
+            DISK_UNLOCK => {
+                let action = decode::<tilo_system_resources::disk_unlock::DiskUnlockAction>(
+                    &published, resource, action, arguments,
+                )?;
+                let id = action.id();
+                match action {
+                    tilo_system_resources::disk_unlock::DiskUnlockAction::Refresh => {
+                        Ok(self.start_disk_unlock(id, None))
+                    }
+                    tilo_system_resources::disk_unlock::DiskUnlockAction::SetNetworks {
+                        volume,
+                        networks,
+                    } => Ok(self.start_disk_unlock(
+                        id,
+                        Some(DiskUnlockChange::SetNetworks { volume, networks }),
+                    )),
                 }
             }
             _ => Err(ApiError::Unknown(tilo_actions::ActionAddress::new(

@@ -3,6 +3,7 @@
 //! Location portal, the keyboard's LED); a test lends one of its own.
 
 use settings_store::day_schedule::Location;
+use tilo_system_resources::disk_unlock::DiskUnlock;
 use tilo_system_resources::drives::Drives;
 use tilo_system_resources::storage::Storage;
 use tilo_system_resources::printers::{
@@ -43,6 +44,17 @@ pub enum DriveChange {
     Unmount { drive: String },
     Forget { grant: String },
     SetMode { grant: String, safely: bool },
+}
+
+/// A change to make on the disk unlock: what a person, an agent or a script asked of the
+/// `disk-unlock` resource.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DiskUnlockChange {
+    /// Choose the whole new list of Wi-Fi connections the volume may use at boot.
+    SetNetworks {
+        volume: String,
+        networks: Vec<String>,
+    },
 }
 
 /// A change to make on the storage: what a person, an agent or a script asked of the `storage`
@@ -220,6 +232,24 @@ pub trait System: Send + Sync {
     /// Why it did not happen.
     fn change_storage(&self, _change: &StorageChange) -> Result<(), String> {
         Err("this machine cannot scan its storage".to_owned())
+    }
+
+    /// The encrypted volumes enrolled for sibling unlock, as the last read found them.
+    fn disk_unlock(&self) -> DiskUnlock {
+        DiskUnlock::default()
+    }
+
+    /// Read the enrolled volumes now.
+    fn scan_disk_unlock(&self) -> DiskUnlock {
+        DiskUnlock::default()
+    }
+
+    /// Make `change` on the enrolment.
+    ///
+    /// # Errors
+    /// Why it did not happen.
+    fn change_disk_unlock(&self, _change: &DiskUnlockChange) -> Result<(), String> {
+        Err("this machine has no unlocking to change".to_owned())
     }
 }
 
@@ -454,6 +484,18 @@ impl System for OsSystem {
     fn change_storage(&self, change: &StorageChange) -> Result<(), String> {
         match change {
             StorageChange::ClearCache => crate::storage::clear_cache(),
+        }
+    }
+
+    fn scan_disk_unlock(&self) -> DiskUnlock {
+        crate::disk_unlock::scan()
+    }
+
+    fn change_disk_unlock(&self, change: &DiskUnlockChange) -> Result<(), String> {
+        match change {
+            DiskUnlockChange::SetNetworks { volume, networks } => {
+                crate::disk_unlock::set_networks(volume, networks)
+            }
         }
     }
 }

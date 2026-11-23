@@ -12,7 +12,7 @@ bounded-command = { path = "../../platform/bounded-command" }
 desktop-policy = { path = "../../system/desktop-policy" }
 os-actions = { path = "../../system/os-actions" }
 # The protocol the drive service speaks; the service itself is not the session's.
-ntfs-mount = { path = "../../os/ntfs-mount", default-features = false }
+tilo-ntfs-mount = { path = "../../os/ntfs-mount", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 settings-store = { path = "../../system/settings-store" }

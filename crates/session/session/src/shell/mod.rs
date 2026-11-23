@@ -73,6 +73,7 @@ pub fn device_surfaces() -> Vec<tilo_actions::surface::Surface> {
         tilo_system_service::users_surface(),
         tilo_system_service::drives_surface(),
         tilo_system_service::storage_surface(),
+        tilo_system_service::disk_unlock_surface(),
         tilo_system_service::update_surface(),
         tilo_system_service::time_zone_surface(),
         crate::displays::surface(),
