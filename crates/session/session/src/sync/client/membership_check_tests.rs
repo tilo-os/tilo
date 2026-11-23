@@ -16,7 +16,6 @@ use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
 use tilo_desktop_model::WorkspaceId;
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_user_identity::DeviceCapabilities;
 
 use super::{Client, Enrolling, Entering, Entry, OwnPresence};
@@ -152,7 +151,7 @@ fn receipt(
     device: &Device,
     workspace_id: WorkspaceId,
     invocation: uuid::Uuid,
-) -> OwnerCommitRequest {
+) -> (String, Vec<u8>) {
     let mut effect = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
         tilo_actions::InvocationId(invocation),
         &tilo_actions::MemberId::person(hex::encode(device.person())),
@@ -161,13 +160,10 @@ fn receipt(
         tilo_clock::unix_now_i64(),
     );
     effect.completed_at = 100;
-    OwnerCommitRequest {
-        workspace: workspace_id.to_string(),
-        operation: CommitOperation::EffectReceipt {
-            invocation,
-            redacted: serde_json::to_vec(&effect).expect("a redacted receipt"),
-        },
-    }
+    (
+        workspace_id.to_string(),
+        serde_json::to_vec(&effect).expect("a redacted receipt"),
+    )
 }
 
 /// Whether `device` 's copy of `workspace` holds the receipt of `invocation` .
@@ -185,9 +181,10 @@ fn holds_receipt(device: &Device, workspace_id: WorkspaceId, invocation: uuid::U
         .unwrap_or(false)
 }
 
-/// An effect an action had in a workspace this session keeps: the session's owner commits its
-/// receipt, and the owner's ownership leaves for the workspace's other session, which then has
-/// it too.
+/// An effect an app had in a workspace this session holds: the broker the
+/// session serves its apps from commits its receipt to the session's owner,
+/// and the owner's ownership leaves for the workspace's other session, which
+/// then holds it too.
 #[test]
 fn a_receipt_the_owner_commits_reaches_the_workspaces_other_session() {
     let host = test_server::Host::of(&SigningKey::from_bytes(&[0x71; 32]), "Notes");
@@ -196,32 +193,38 @@ fn a_receipt_the_owner_commits_reaches_the_workspaces_other_session() {
     let workspace = writer.join(&host, 0x01);
     assert_eq!(reader.join(&host, 0x02), workspace);
 
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .expect("the broker's runtime");
     let invocation = uuid::Uuid::new_v4();
-    write(&writer, workspace, invocation);
+    write(&runtime, &writer, workspace, invocation);
     wait_for(&reader, workspace, invocation);
 }
 
-/// Have `device` 's owner commit the receipt of `invocation` into `workspace` , as it records
-/// what an action did: the owner's ownership leaves for the workspace's host, which hands it to
-/// the workspace's other devices.
-fn write(device: &Device, workspace_id: WorkspaceId, invocation: uuid::Uuid) {
-    use tilo_broker_core::owner_service::OwnerService as _;
-    let ownership = &device.engine;
+/// Have `device` 's app write `invocation` into `workspace` , as the broker commits what an app
+/// did: the owner's ownership leaves for the workspace's host, which hands it to the workspace's
+/// other devices.
+fn write(
+    runtime: &tokio::runtime::Runtime,
+    device: &Device,
+    workspace_id: WorkspaceId,
+    invocation: uuid::Uuid,
+) {
+    let publisher = crate::app_wire::owner_publisher(
+        Some(std::sync::Arc::clone(&device.engine)),
+        tilo_workspace_service::service::ServiceSlot::default(),
+        None,
+    );
     assert!(
-        ownership.projects_workspace(workspace_id),
+        publisher.records_effects_for(&workspace_id.to_string()),
         "the workspace's effect receipts are the owner's to commit"
     );
-    let owner = ownership.resolve_owner().expect("the device's owner");
-    ownership
-        .check_ownership(&owner, workspace_id)
-        .expect("the device owns its slice of the workspace");
-    owner
-        .commit_effect_receipt(
-            &receipt(device, workspace_id, invocation),
-            tilo_clock::wall(),
-        )
-        .expect("the owner commits the receipt");
-    ownership.schedule_publication(workspace_id);
+    let (workspace, redacted) = receipt(device, workspace_id, invocation);
+    runtime
+        .block_on(publisher.record_effect(workspace, redacted))
+        .expect("the record takes the app's write");
     assert!(
         holds_receipt(device, workspace_id, invocation),
         "the write is the writing device's owner's"
@@ -254,8 +257,13 @@ fn a_person_s_further_device_enters_their_workspace_at_its_host() {
     let workspace = laptop.join(&host, 0x01);
 
     // What the laptop wrote before the desktop was up.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .expect("the broker's runtime");
     let earlier = uuid::Uuid::new_v4();
-    write(&laptop, workspace, earlier);
+    write(&runtime, &laptop, workspace, earlier);
 
     // The desktop enters the workspace at its host: no invitation, and the workspace's whole
     // history comes with the entry.
@@ -264,7 +272,7 @@ fn a_person_s_further_device_enters_their_workspace_at_its_host() {
 
     // And back: what the desktop writes reaches the laptop.
     let later = uuid::Uuid::new_v4();
-    write(&desktop, workspace, later);
+    write(&runtime, &desktop, workspace, later);
     wait_for(&laptop, workspace, later);
 }
 
@@ -299,7 +307,7 @@ struct Restore {
     restored: Device,
     /// The site's home, which a computer set up for a site joins on its own.
     lounge: WorkspaceId,
-    _runtime: tokio::runtime::Runtime,
+    runtime: tokio::runtime::Runtime,
     hosting: crate::hosted_workspaces::HostedWorkspaces,
     woken: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
@@ -336,7 +344,7 @@ impl Restore {
             laptop,
             restored,
             lounge,
-            _runtime: runtime,
+            runtime,
             hosting,
             woken,
         }
@@ -420,7 +428,7 @@ impl Restore {
 fn a_computer_restored_from_its_root_enters_the_workspaces_its_host_lists_for_the_person() {
     let restore = Restore::new(0x52);
     let earlier = uuid::Uuid::new_v4();
-    write(&restore.laptop, restore.notes, earlier);
+    write(&restore.runtime, &restore.laptop, restore.notes, earlier);
     assert!(
         !restore.restored.engine.holds(restore.notes),
         "nothing of the person's workspace is on the restored computer yet"

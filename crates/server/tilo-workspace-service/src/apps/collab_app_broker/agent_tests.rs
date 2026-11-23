@@ -7,9 +7,7 @@ use crate::apps::certificate_authority::CertificateAuthority;
 use crate::apps::policy_clock::{OwnerPolicyClock, PolicyOrigin};
 use crate::apps::services::{WorkspaceAuthority, WorkspaceMemberships};
 use ed25519_dalek::{Signer as _, SigningKey};
-use tilo_peer_state::owner_commit::{
-    CommitFuture, CommitOperation, OwnerCommitRequest, OwnerCommitService,
-};
+use tilo_broker_core::workspace_commits::{DocumentFuture, EffectFuture, WorkspaceCommits};
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 
 #[path = "agent_session_tests.rs"]
@@ -137,46 +135,76 @@ impl CertificateAuthority for Native {
             && device.is_none_or(|key| *key == self.certificate.device_public_key)
     }
 }
-impl OwnerCommitService for Native {
+impl WorkspaceCommits for Native {
+    fn projects_workspace(&self, requested: tilo_desktop_model::WorkspaceId) -> bool {
+        requested == workspace_id()
+    }
+
     fn health(&self) -> Result<(), String> {
         if self.opening.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err("the native owner is still opening; try again in a moment".into());
+            return Err("the native record is still opening; try again in a moment".into());
         }
         self.owner.health()
     }
-    fn commit(&self, request: OwnerCommitRequest) -> CommitFuture {
+
+    fn document(
+        &self,
+        workspace: String,
+        app: String,
+        document: String,
+        readers: Option<String>,
+        envelope: collab_types::SignedOp,
+        _resource_type: Option<String>,
+    ) -> DocumentFuture {
         let owner = self.owner.clone();
-        let key = self.key.clone();
+        Box::pin(async move {
+            // A real record commits asynchronously: let other requests run
+            // first, as they do while a commit is on its way.
+            tokio::task::yield_now().await;
+            let workspace = tilo_desktop_model::WorkspaceId::parse(&workspace)
+                .ok_or_else(|| "invalid workspace".to_owned())?;
+            let answered = envelope.clone();
+            owner
+                .admit_writes(
+                    workspace,
+                    vec![tilo_peer_state::owner::WorkspaceDocumentWrite {
+                        app,
+                        document,
+                        readers,
+                        envelope,
+                    }],
+                    std::time::SystemTime::now(),
+                )
+                .map_err(|refusal| refusal.to_string())?;
+            Ok(answered)
+        })
+    }
+
+    fn effect(&self, workspace: String, redacted: Vec<u8>) -> EffectFuture {
+        let owner = self.owner.clone();
+        let certificate = self.certificate.clone();
         let receipts_refused = self
             .receipts_refused
             .load(std::sync::atomic::Ordering::SeqCst);
         Box::pin(async move {
-            // A real owner commits asynchronously: let other requests run
-            // first, as they do while a commit is on its way.
             tokio::task::yield_now().await;
-            let receipt = match request.operation {
-                CommitOperation::EffectReceipt { .. } if receipts_refused => {
-                    Err("the workspace's governor records no receipt".into())
-                }
-                CommitOperation::EffectReceipt { .. } => {
-                    owner.commit_effect_receipt(&request, std::time::SystemTime::now())
-                }
-                CommitOperation::WorkspaceMembershipCommand { .. } => {
-                    owner
-                        .commit_workspace_membership_command(
-                            request.clone(),
-                            &key,
-                            std::time::SystemTime::now(),
-                        )
-                        .await
-                }
-                _ => Err("unsupported fixture owner operation".into()),
-            }?;
-            receipt.validate_for(&request)?;
-            Ok(receipt)
+            if receipts_refused {
+                return Err("the workspace's record records no receipt".into());
+            }
+            let workspace = tilo_desktop_model::WorkspaceId::parse(&workspace)
+                .ok_or_else(|| "invalid workspace".to_owned())?;
+            let receipt: tilo_desktop_model::WorkspaceEffectReceipt =
+                serde_json::from_slice(&redacted).map_err(|error| error.to_string())?;
+            owner.record_effect(
+                workspace,
+                &certificate,
+                &receipt,
+                std::time::SystemTime::now(),
+            )
         })
     }
 }
+
 impl crate::apps::services::WorkspaceGrants for Native {
     fn may_record(&self, _workspace: &str, _person: &str) -> bool {
         self.granted.lock().unwrap().is_some()
@@ -215,8 +243,29 @@ impl WorkspaceMemberships for Native {
     fn health(&self) -> Result<(), String> {
         self.owner.health()
     }
-    fn execute(&self, request: OwnerCommitRequest) -> CommitFuture {
-        self.commit(request)
+    fn execute(
+        &self,
+        workspace: String,
+        caller: tilo_user_identity::DeviceCert,
+        command: WorkspaceMembershipCommand,
+    ) -> crate::apps::services::WorkspaceMembershipFuture {
+        let owner = self.owner.clone();
+        let key = self.key.clone();
+        Box::pin(async move {
+            let workspace = tilo_desktop_model::WorkspaceId::parse(&workspace)
+                .ok_or_else(|| "invalid workspace".to_owned())?;
+            owner
+                .commit_membership(
+                    workspace,
+                    &caller,
+                    &command,
+                    &key,
+                    std::time::SystemTime::now(),
+                )
+                .await
+                .map(drop)
+                .map_err(|error| error.to_string())
+        })
     }
 }
 impl crate::apps::services::AgentSessions for Native {
@@ -336,29 +385,22 @@ impl Fixture {
             sessions: Mutex::new(Vec::new()),
             listed: Mutex::new(Vec::new()),
         });
-        let membership = OwnerCommitRequest {
-            workspace: workspace_id().to_string(),
-            operation: CommitOperation::WorkspaceMembershipCommand {
-                invocation: uuid::Uuid::new_v4(),
-                caller: native.certificate.clone(),
-                // Reading only, as a fresh session admits an agent: what
-                // its runs may do comes from their starter.
-                command: WorkspaceMembershipCommand::Grant {
-                    grant: tilo_action_policy::Grant::new(
-                        AGENT_GRANT,
-                        tilo_action_policy::Grantee::agent("scribe"),
-                        tilo_action_policy::TreePath::workspace(workspace_id().to_string()),
-                        tilo_action_policy::KindSet::READ,
-                        tilo_action_policy::Answer::Allow,
-                        tilo_action_policy::Grantee::person(hex::encode(
-                            native.certificate.user_public_key,
-                        )),
-                    ),
-                },
-            },
+        let command = WorkspaceMembershipCommand::Grant {
+            grant: tilo_action_policy::Grant::new(
+                AGENT_GRANT,
+                tilo_action_policy::Grantee::agent("scribe"),
+                tilo_action_policy::TreePath::workspace(workspace_id().to_string()),
+                tilo_action_policy::KindSet::READ,
+                tilo_action_policy::Answer::Allow,
+                tilo_action_policy::Grantee::person(hex::encode(
+                    native.certificate.user_public_key,
+                )),
+            ),
         };
-        futures::executor::block_on(native.owner.commit_workspace_membership_command(
-            membership,
+        futures::executor::block_on(native.owner.commit_membership(
+            workspace_id(),
+            &native.certificate,
+            &command,
             &native.key,
             std::time::SystemTime::now(),
         ))

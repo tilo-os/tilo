@@ -32,7 +32,6 @@ use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::owner::testing::{self, workspace::TestWorkspace};
 use tilo_peer_state::owner::{self, NativeWorkspaceOwner};
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
 use tilo_service::LoopWake;
 use tilo_session::{AppSocket, Launches, Options, Records, SearchOptions, Session};
@@ -169,15 +168,10 @@ fn commit(
     cert: &DeviceCert,
     settings: SettingsChange,
 ) {
-    let request = OwnerCommitRequest {
-        workspace: workspace.to_owned(),
-        operation: CommitOperation::WorkspaceMembershipCommand {
-            invocation: uuid::Uuid::new_v4(),
-            caller: cert.clone(),
-            command: WorkspaceMembershipCommand::Settings(settings),
-        },
-    };
-    pollster::block_on(owner.commit_workspace_membership_command(request, key, SystemTime::now()))
+    let command = WorkspaceMembershipCommand::Settings(settings);
+    let workspace = tilo_desktop_model::WorkspaceId::parse(workspace)
+        .expect("the fixture's workspace is a workspace id");
+    pollster::block_on(owner.commit_membership(workspace, cert, &command, key, SystemTime::now()))
         .expect("the workspace admits this device's save");
 }
 

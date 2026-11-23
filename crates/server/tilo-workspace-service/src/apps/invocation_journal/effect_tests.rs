@@ -1,14 +1,21 @@
 use super::{InvocationJournal, InvocationKey, InvocationOwner, InvocationUpdate, VERSION};
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+
+/// The terminal receipt a prepared effect carries: its workspace and bytes.
+type Receipt = (String, Vec<u8>);
+
+/// Prepare `receipt`'s terminal on `journal`, waiting for the write here.
+fn prepare(
+    journal: &mut InvocationJournal,
+    key: &InvocationKey,
+    update: InvocationUpdate,
+    receipt: &Receipt,
+) -> Result<super::PreparedEffect, String> {
+    journal.prepare_effect(key, update, &receipt.0, key.invocation.0, &receipt.1)
+}
 
 fn fixture(
     root: &std::path::Path,
-) -> (
-    InvocationJournal,
-    InvocationKey,
-    OwnerCommitRequest,
-    InvocationUpdate,
-) {
+) -> (InvocationJournal, InvocationKey, Receipt, InvocationUpdate) {
     let mut journal = InvocationJournal::open(root).unwrap();
     let key = InvocationKey {
         workspace: uuid::Uuid::new_v4().to_string(),
@@ -34,14 +41,8 @@ fn fixture(
         tilo_clock::unix_now_i64(),
     );
     receipt.completed_at = 100;
-    let request = OwnerCommitRequest {
-        workspace: key.workspace.clone(),
-        operation: CommitOperation::EffectReceipt {
-            invocation: key.invocation.0,
-            redacted: serde_json::to_vec(&receipt).unwrap(),
-        },
-    };
-    (journal, key, request, update)
+    let receipt = (key.workspace.clone(), serde_json::to_vec(&receipt).unwrap());
+    (journal, key, receipt, update)
 }
 
 tilo_test_env::scenario! {
@@ -51,11 +52,9 @@ tilo_test_env::scenario! {
     {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("journal");
-        let (mut journal, key, request, update) = fixture(&root);
+        let (mut journal, key, receipt, update) = fixture(&root);
         let intent = journal.lookup(&key).unwrap().unwrap().intent;
-        let prepared = journal
-            .prepare_effect(&key, update.clone(), &request)
-            .unwrap();
+        let prepared = prepare(&mut journal, &key, update.clone(), &receipt).unwrap();
         drop(journal);
         let mut journal = InvocationJournal::open(&root).unwrap();
         let record = journal.lookup(&key).unwrap().unwrap();
@@ -63,8 +62,8 @@ tilo_test_env::scenario! {
         assert!(matches!(record.update, InvocationUpdate::Accepted { .. }));
         assert_eq!(record.prepared_effect.as_ref(), Some(&prepared));
         assert_eq!(
-            prepared.request().binding().unwrap(),
-            request.binding().unwrap()
+            prepared.receipt(),
+            (receipt.0.as_str(), receipt.1.as_slice())
         );
         assert!(
             !journal.admit(key.clone(), intent, 2).unwrap(),
@@ -89,9 +88,9 @@ tilo_test_env::scenario! {
         ] {
             let dir = tempfile::tempdir().unwrap();
             let root = dir.path().join("journal");
-            let (mut journal, key, request, update) = fixture(&root);
+            let (mut journal, key, receipt, update) = fixture(&root);
             journal.fail_at = Some(failure);
-            assert!(journal.prepare_effect(&key, update, &request).is_err());
+            assert!(prepare(&mut journal, &key, update, &receipt).is_err());
             if failure == super::BarrierFailure::Directory {
                 // The rename may have made it durable, so nothing is read until
                 // recovery reads the store back.
@@ -118,13 +117,13 @@ tilo_test_env::scenario! {
         }
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("journal");
-        let (mut journal, key, request, update) = fixture(&root);
-        let prepared = journal.prepare_effect(&key, update, &request).unwrap();
+        let (mut journal, key, receipt, update) = fixture(&root);
+        let prepared = prepare(&mut journal, &key, update, &receipt).unwrap();
         let changed = InvocationUpdate::Cancelled {
             invocation: key.invocation,
             message: None,
         };
-        assert!(journal.prepare_effect(&key, changed, &request).is_err());
+        assert!(prepare(&mut journal, &key, changed, &receipt).is_err());
         journal.fail_at = Some(super::BarrierFailure::File);
         assert!(journal.finish_effect(&key, &prepared).is_err());
         drop(journal);
@@ -139,8 +138,8 @@ tilo_test_env::scenario! {
         for corruption in CORRUPTIONS {
             let dir = tempfile::tempdir().unwrap();
             let root = dir.path().join("journal");
-            let (mut journal, key, request, update) = fixture(&root);
-            journal.prepare_effect(&key, update, &request).unwrap();
+            let (mut journal, key, receipt, update) = fixture(&root);
+            prepare(&mut journal, &key, update, &receipt).unwrap();
             drop(journal);
             drop(InvocationJournal::open(&root).unwrap());
             let path = root.join("records.json");
@@ -159,8 +158,8 @@ tilo_test_env::scenario! {
         for corruption in CORRUPTIONS {
             let dir = tempfile::tempdir().unwrap();
             let root = dir.path().join("journal");
-            let (mut journal, key, request, update) = fixture(&root);
-            journal.prepare_effect(&key, update, &request).unwrap();
+            let (mut journal, key, receipt, update) = fixture(&root);
+            prepare(&mut journal, &key, update, &receipt).unwrap();
             drop(journal);
             let path = root.join("records.json");
             let bytes = std::fs::read(&path).unwrap();
@@ -249,9 +248,9 @@ tilo_test_env::scenario! {
     {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("journal");
-        let (mut journal, key, request, update) = fixture(&root);
+        let (mut journal, key, receipt, update) = fixture(&root);
         let agent = admit_agent(&mut journal, &key.workspace);
-        journal.prepare_effect(&key, update, &request).unwrap();
+        prepare(&mut journal, &key, update, &receipt).unwrap();
         drop(journal);
         assert_eq!(
             entry_versions(&root),

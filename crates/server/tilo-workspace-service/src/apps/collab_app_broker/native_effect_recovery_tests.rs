@@ -7,21 +7,38 @@ use std::{
     sync::{Arc, Mutex},
     time::SystemTime,
 };
-use tilo_peer_state::owner_commit::{CommitFuture, OwnerCommitRequest, OwnerCommitService};
+use tilo_broker_core::workspace_commits::{DocumentFuture, EffectFuture, WorkspaceCommits};
 
 struct NativeEffects {
     owner: Arc<tilo_peer_state::owner::NativeWorkspaceOwner>,
     held: Arc<tokio::sync::Semaphore>,
     submitted: Arc<tokio::sync::Notify>,
 }
-impl OwnerCommitService for NativeEffects {
+impl WorkspaceCommits for NativeEffects {
+    fn projects_workspace(&self, _: tilo_desktop_model::WorkspaceId) -> bool {
+        true
+    }
+
     fn health(&self) -> Result<(), String> {
         let workspace =
             tilo_desktop_model::WorkspaceId::parse(tilo_peer_state::owner::testing::WORKSPACE)
                 .unwrap();
         self.owner.with_current(workspace, |_| Ok(()))
     }
-    fn commit(&self, request: OwnerCommitRequest) -> CommitFuture {
+
+    fn document(
+        &self,
+        _: String,
+        _: String,
+        _: String,
+        _: Option<String>,
+        _: collab_types::SignedOp,
+        _: Option<String>,
+    ) -> DocumentFuture {
+        Box::pin(async { Err("this fixture records receipts alone".into()) })
+    }
+
+    fn effect(&self, workspace: String, redacted: Vec<u8>) -> EffectFuture {
         let owner = self.owner.clone();
         let held = self.held.clone();
         let submitted = self.submitted.clone();
@@ -30,10 +47,17 @@ impl OwnerCommitService for NativeEffects {
             let permit = held
                 .acquire()
                 .await
-                .map_err(|_| "native owner test retired")?;
-            let receipt = owner.commit_effect_receipt(&request, SystemTime::now());
+                .map_err(|_| "the record's test was retired")?;
+            let workspace = tilo_desktop_model::WorkspaceId::parse(&workspace)
+                .ok_or_else(|| "invalid workspace".to_owned())?;
+            let (device, receipt) = owner.with_current(workspace, |view| {
+                let receipt: tilo_desktop_model::WorkspaceEffectReceipt =
+                    serde_json::from_slice(&redacted).map_err(|error| error.to_string())?;
+                Ok((view.device().clone(), receipt))
+            })?;
+            let recorded = owner.record_effect(workspace, &device, &receipt, SystemTime::now());
             drop(permit);
-            receipt
+            recorded
         })
     }
 }
@@ -166,17 +190,13 @@ fn prepare(f: &Fixture) -> DurableInvocation {
         tilo_clock::unix_now_i64(),
     );
     receipt.completed_at = 100;
-    let request = OwnerCommitRequest {
-        workspace: key.workspace.clone(),
-        operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
-            invocation: key.invocation.0,
-            redacted: serde_json::to_vec(&receipt).unwrap(),
-        },
-    };
+    let redacted = serde_json::to_vec(&receipt).unwrap();
     let mut guard = f.state.journal.lock().unwrap();
     let journal = guard.as_mut().unwrap().as_mut().unwrap();
     journal.admit(key.clone(), intent, 1).unwrap();
-    journal.prepare_effect(&key, update, &request).unwrap();
+    journal
+        .prepare_effect(&key, update, &key.workspace, key.invocation.0, &redacted)
+        .unwrap();
     let record = journal.lookup(&key).unwrap().unwrap();
     drop(guard);
     record
@@ -205,10 +225,10 @@ async fn prepared_effect_native_owner_crash_gap_keeps_exact_history() {
     let f = fixture();
     let record = prepare(&f);
     let prepared = record.prepared_effect.as_ref().unwrap().clone();
-    let first = f
-        .state
+    let (receipt_workspace, receipt_bytes) = prepared.receipt();
+    f.state
         .publisher
-        .commit_owner(prepared.request(), None)
+        .record_effect(receipt_workspace.to_owned(), receipt_bytes.to_vec())
         .await
         .unwrap();
     let path = f.directory.path().join("native.json");
@@ -241,7 +261,6 @@ async fn prepared_effect_native_owner_crash_gap_keeps_exact_history() {
             );
             assert_eq!(effects.len(), 1);
             assert_eq!(effects[0].completed_at, 100);
-            assert_eq!(view.generation(), first.generation);
             Ok(())
         })
         .unwrap();

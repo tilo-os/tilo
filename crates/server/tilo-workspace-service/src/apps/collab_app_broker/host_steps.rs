@@ -378,7 +378,11 @@ pub(crate) mod signed_test_support {
         owner: Arc<tilo_peer_state::owner::NativeWorkspaceOwner>,
     }
 
-    impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerReceipts {
+    impl tilo_broker_core::workspace_commits::WorkspaceCommits for NativeOwnerReceipts {
+        fn projects_workspace(&self, _: tilo_desktop_model::WorkspaceId) -> bool {
+            true
+        }
+
         fn health(&self) -> Result<(), String> {
             let workspace =
                 tilo_desktop_model::WorkspaceId::parse(tilo_peer_state::owner::testing::WORKSPACE)
@@ -386,12 +390,34 @@ pub(crate) mod signed_test_support {
             self.owner.with_current(workspace, |_| Ok(()))
         }
 
-        fn commit(
+        fn document(
             &self,
-            request: tilo_peer_state::owner_commit::OwnerCommitRequest,
-        ) -> tilo_peer_state::owner_commit::CommitFuture {
+            _: String,
+            _: String,
+            _: String,
+            _: Option<String>,
+            _: collab_types::SignedOp,
+            _: Option<String>,
+        ) -> tilo_broker_core::workspace_commits::DocumentFuture {
+            Box::pin(async { Err("this fixture records receipts alone".into()) })
+        }
+
+        fn effect(
+            &self,
+            workspace: String,
+            redacted: Vec<u8>,
+        ) -> tilo_broker_core::workspace_commits::EffectFuture {
             let owner = self.owner.clone();
-            Box::pin(async move { owner.commit_effect_receipt(&request, tilo_clock::wall()) })
+            Box::pin(async move {
+                let workspace = tilo_desktop_model::WorkspaceId::parse(&workspace)
+                    .ok_or_else(|| "invalid workspace".to_owned())?;
+                let (device, receipt) = owner.with_current(workspace, |view| {
+                    let receipt: tilo_desktop_model::WorkspaceEffectReceipt =
+                        serde_json::from_slice(&redacted).map_err(|error| error.to_string())?;
+                    Ok((view.device().clone(), receipt))
+                })?;
+                owner.record_effect(workspace, &device, &receipt, tilo_clock::wall())
+            })
         }
     }
 

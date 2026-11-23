@@ -185,12 +185,25 @@ struct DropBrokerOnHealth {
 }
 
 #[cfg(test)]
-impl tilo_peer_state::owner_commit::OwnerCommitService for DropBrokerOnHealth {
-    fn commit(
+impl tilo_broker_core::workspace_commits::WorkspaceCommits for DropBrokerOnHealth {
+    fn projects_workspace(&self, _: tilo_desktop_model::WorkspaceId) -> bool {
+        false
+    }
+
+    fn document(
         &self,
-        _: tilo_peer_state::owner_commit::OwnerCommitRequest,
-    ) -> tilo_peer_state::owner_commit::CommitFuture {
-        Box::pin(async { Err("unused lifecycle commit".into()) })
+        _: String,
+        _: String,
+        _: String,
+        _: Option<String>,
+        _: collab_types::SignedOp,
+        _: Option<String>,
+    ) -> tilo_broker_core::workspace_commits::DocumentFuture {
+        Box::pin(async { Err("unused lifecycle write".into()) })
+    }
+
+    fn effect(&self, _: String, _: Vec<u8>) -> tilo_broker_core::workspace_commits::EffectFuture {
+        Box::pin(async { Err("unused lifecycle receipt".into()) })
     }
 
     fn health(&self) -> Result<(), String> {
@@ -213,12 +226,25 @@ struct DropOtherBrokerOnHealth {
 }
 
 #[cfg(test)]
-impl tilo_peer_state::owner_commit::OwnerCommitService for DropOtherBrokerOnHealth {
-    fn commit(
+impl tilo_broker_core::workspace_commits::WorkspaceCommits for DropOtherBrokerOnHealth {
+    fn projects_workspace(&self, _: tilo_desktop_model::WorkspaceId) -> bool {
+        false
+    }
+
+    fn document(
         &self,
-        _: tilo_peer_state::owner_commit::OwnerCommitRequest,
-    ) -> tilo_peer_state::owner_commit::CommitFuture {
-        Box::pin(async { Err("unused lifecycle commit".into()) })
+        _: String,
+        _: String,
+        _: String,
+        _: Option<String>,
+        _: collab_types::SignedOp,
+        _: Option<String>,
+    ) -> tilo_broker_core::workspace_commits::DocumentFuture {
+        Box::pin(async { Err("unused lifecycle write".into()) })
+    }
+
+    fn effect(&self, _: String, _: Vec<u8>) -> tilo_broker_core::workspace_commits::EffectFuture {
+        Box::pin(async { Err("unused lifecycle receipt".into()) })
     }
 
     fn health(&self) -> Result<(), String> {
