@@ -1822,13 +1822,22 @@ impl Task {
                 self.opened_routes.insert(route);
                 asked
             }
-            // Its mutation is held already ([`crate::Link`]): draft and publish what waits.
+            // Its mutation is held already ([`crate::Link`]): draft and publish what waits. A
+            // change needs the record it changes, so one this session holds none of is asked
+            // for as an opened route is: the write goes once the record lands.
             Command::Client(Cmd::Write(route)) => {
+                if let Ok(workspace_id) = route.workspace_id() {
+                    self.open_record_once(workspace_id, &route, client);
+                }
                 self.publish(&route);
                 true
             }
-            // Its holder signed it and this replica admitted it: ownership takes it as it is.
+            // Its holder signed it and this replica admitted it: ownership takes it as it is,
+            // and a record this session holds none of is asked for as a write's is.
             Command::Client(Cmd::PublishSigned(route, op)) => {
+                if let Ok(workspace_id) = route.workspace_id() {
+                    self.open_record_once(workspace_id, &route, client);
+                }
                 self.publish_signed(&route, *op);
                 true
             }
