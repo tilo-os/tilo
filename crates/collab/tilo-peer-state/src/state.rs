@@ -541,8 +541,6 @@ pub(crate) fn supersedes(held: &DeviceCert, incoming: &DeviceCert) -> bool {
 
 pub use governed_rows::RowError;
 pub(crate) use governed_rows::{GovernedIdentity, RedemptionReceipt};
-#[cfg(test)]
-pub(crate) use governed_rows::{WorkspaceDelegation, WorkspaceDelegationPermissions};
 pub(crate) use invitation_receipts::StoredReceipt;
 
 /// The map at `key` of a governed workspace document.

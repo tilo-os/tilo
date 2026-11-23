@@ -194,44 +194,6 @@ tilo_test_env::scenario! {
         );
         assert_eq!(basis(&doc, &[extra]), Err(MediaPolicyError::Revocation));
     }
-
-    phase media_basis_hashes_the_delegation_an_older_row_carries;
-    // A row a build before the owner-root layout wrote carries a workspace
-    // delegation. It is what the row's bytes held, and the media authorization
-    // basis computed over them is a digest a stored policy still names, so the
-    // projection hashes it in the place it always held: a workspace that held
-    // one opens.
-    {
-        use crate::state::WorkspaceDelegation;
-        let (mut doc, root, device) = fixture();
-        let identities = doc.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
-        let bytes = super::super::strict_bytes(&doc, &identities, &device).unwrap();
-        let mut row = crate::state::GovernedIdentity::decode(&bytes).unwrap();
-        row.workspace_delegations = vec![WorkspaceDelegation {
-            version: 1,
-            workspace: "0f0e0d0c-0b0a-4908-8706-050403020100".into(),
-            workspace_id: 7,
-            authority_device_public_key: row.device_cert.device_public_key,
-            delegate: row.device_cert.clone(),
-            permissions: crate::state::WorkspaceDelegationPermissions {
-                issue_invitations: true,
-                admit_invited_members: true,
-            },
-            nonce: [3; 16],
-            expires_at_ns: None,
-            signature: [0; 64],
-        }];
-        doc.put(
-            &identities,
-            &device,
-            ScalarValue::Bytes(row.encode().unwrap()),
-        )
-        .unwrap();
-        doc.commit();
-        let expected = historical_basis(&doc, &[]).unwrap();
-        assert_eq!(basis(&doc, &[]), Ok(expected));
-        let _ = root;
-    }
 }
 
 // Frozen original algorithm is the independent byte/error oracle.

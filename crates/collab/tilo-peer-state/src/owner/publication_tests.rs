@@ -4,23 +4,6 @@ fn workspace() -> WorkspaceId {
     WorkspaceId::parse("23fb5a50-60db-42bd-bb3b-f597bfab1377").unwrap()
 }
 
-/// What a store keeps beside an entry has the name stores wrote it with before the code
-/// called it anything else, and the name builds gave it for a while is the other one a
-/// store looks under.
-#[test]
-fn kept_writes_are_named_as_stores_have_kept_them() {
-    let hash = [0xab; 32];
-    let hex = "ab".repeat(32);
-    assert_eq!(
-        super::ownership_run_name(workspace(), hash),
-        format!("23fb5a50-60db-42bd-bb3b-f597bfab1377.custody.{hex}")
-    );
-    assert_eq!(
-        super::ownership_name_between(workspace(), hash),
-        format!("23fb5a50-60db-42bd-bb3b-f597bfab1377.ownership.{hex}")
-    );
-}
-
 /// One history that cannot fold yet rests a while, and every other history of the
 /// workspace — one that is full and refusing writes, say — is folded on the very next pass.
 #[test]

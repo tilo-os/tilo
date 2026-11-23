@@ -1075,7 +1075,7 @@ fn upgraded_write(
 
 /// A server of another person, named among the workspace's key-holding
 /// holders: its device key, its certificate.
-fn named_server(peer: &mut StatePeer, owner: &SigningKey) -> (SigningKey, DeviceCert) {
+pub(crate) fn named_server(peer: &mut StatePeer, owner: &SigningKey) -> (SigningKey, DeviceCert) {
     let key = SigningKey::from_bytes(&[92; 32]);
     let server = certificate(&SigningKey::from_bytes(&[91; 32]), &key, "Household server");
     let hint = crate::owner::testing::governor::holding_hint(
@@ -1193,7 +1193,10 @@ fn history_invoker(peer: &StatePeer, server: [u8; 32]) -> tilo_actions::ActionIn
 }
 
 /// What `write` changes on `peer`, as a receiver takes the changes in.
-fn workspace_changes(peer: &mut StatePeer, write: impl FnOnce(&mut StatePeer)) -> Vec<Vec<u8>> {
+pub(crate) fn workspace_changes(
+    peer: &mut StatePeer,
+    write: impl FnOnce(&mut StatePeer),
+) -> Vec<Vec<u8>> {
     let heads = peer.admitted_workspace().unwrap().clone().get_heads();
     write(peer);
     peer.admitted_workspace()
@@ -1654,7 +1657,7 @@ impl Withdrawn {
 
 /// Every change of `peer`'s workspace document: a base and what was written
 /// on it.
-fn whole_workspace(peer: &StatePeer) -> Vec<Vec<u8>> {
+pub(crate) fn whole_workspace(peer: &StatePeer) -> Vec<Vec<u8>> {
     peer.admitted_workspace()
         .unwrap()
         .clone()
@@ -1879,7 +1882,7 @@ fn work_given_again_follows_its_withdrawal() {
 }
 
 /// What `peer` holds of the workspace's document past what `other` holds.
-fn workspace_past(peer: &StatePeer, other: &StatePeer) -> Vec<Vec<u8>> {
+pub(crate) fn workspace_past(peer: &StatePeer, other: &StatePeer) -> Vec<Vec<u8>> {
     let heads = other.admitted_workspace().unwrap().clone().get_heads();
     peer.admitted_workspace()
         .unwrap()

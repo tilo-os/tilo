@@ -19,6 +19,7 @@ use crate::join::{
 };
 use crate::owner::testing::member_certificate as certificate;
 use crate::owner::testing::{now, receive};
+use crate::receipt_tests::{named_server, whole_workspace, workspace_changes, workspace_past};
 use crate::{
     DelegatedWork, NeighbourMsg, SeedDocument, SeedState, StatePeer, TransportOrigin,
     seed_workspace,
@@ -176,27 +177,6 @@ fn admitted(
     (key, member)
 }
 
-/// A server of another person, named among the workspace's key-holding
-/// holders: its device key, its certificate.
-fn named_server(peer: &mut StatePeer, owner: &SigningKey) -> (SigningKey, DeviceCert) {
-    let key = SigningKey::from_bytes(&[92; 32]);
-    let server = certificate(&SigningKey::from_bytes(&[91; 32]), &key, "Household server");
-    let hint = crate::owner::testing::governor::holding_hint(
-        &server,
-        &key,
-        tilo_server_protocol::WorkspaceId::parse(WORKSPACE).unwrap(),
-        iroh_base::EndpointAddr::new(
-            iroh_base::EndpointId::from_bytes(&server.device_public_key).unwrap(),
-        ),
-    );
-    assert!(
-        peer.governance_mut()
-            .author_keeping_device(&hint, owner, now())
-            .unwrap()
-    );
-    (key, server)
-}
-
 /// The member's delegation of the test app's undoable work to `server`,
 /// signed by their own device `key`.
 fn delegating(
@@ -232,43 +212,6 @@ fn delegating(
         (at.saturating_sub(1), at.saturating_add(10_000_000_000)),
     )
     .unwrap()
-}
-
-/// What `write` changes on `peer`, as a receiver takes the changes in.
-fn workspace_changes(peer: &mut StatePeer, write: impl FnOnce(&mut StatePeer)) -> Vec<Vec<u8>> {
-    let heads = peer.admitted_workspace().unwrap().clone().get_heads();
-    write(peer);
-    peer.admitted_workspace()
-        .unwrap()
-        .clone()
-        .get_changes(&heads)
-        .into_iter()
-        .map(|change| change.raw_bytes().to_vec())
-        .collect()
-}
-
-/// Every change of `peer`'s workspace document: a base and what was written
-/// on it.
-fn whole_workspace(peer: &StatePeer) -> Vec<Vec<u8>> {
-    peer.admitted_workspace()
-        .unwrap()
-        .clone()
-        .get_changes(&[])
-        .into_iter()
-        .map(|change| change.raw_bytes().to_vec())
-        .collect()
-}
-
-/// What `peer` holds of the workspace's document that `other` does not.
-fn workspace_past(peer: &StatePeer, other: &StatePeer) -> Vec<Vec<u8>> {
-    let heads = other.admitted_workspace().unwrap().clone().get_heads();
-    peer.admitted_workspace()
-        .unwrap()
-        .clone()
-        .get_changes(&heads)
-        .into_iter()
-        .map(|change| change.raw_bytes().to_vec())
-        .collect()
 }
 
 /// `changes` of the workspace's document arriving at `copy` from `device`.

@@ -102,14 +102,11 @@ fn project<'a>(
                 }
                 admissions.insert(encoded(proof)?);
             }
-            // A delegation a build before the owner-root layout wrote,
-            // hashed in the place it always held: the stored policy's
-            // authorization basis is a digest over this projection, and a
-            // workspace whose rows carry one still names it.
-            let mut delegations = BTreeSet::new();
-            for delegation in &row.workspace_delegations {
-                delegations.insert(encoded(delegation)?);
-            }
+            // The row's delegations held this place in the projection's
+            // shape, and a stored policy's authorization basis is a digest
+            // over that shape: an empty set keeps every current row's digest
+            // as it was.
+            let delegations: BTreeSet<Vec<u8>> = BTreeSet::new();
             for entry in &row.revocations {
                 if entry.user_public_key != row.device_cert.user_public_key {
                     return Err(MediaPolicyError::Revocation);

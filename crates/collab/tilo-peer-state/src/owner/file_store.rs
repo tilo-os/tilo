@@ -648,15 +648,8 @@ impl Store for FileStore {
         Ok(hash)
     }
     fn read_ownership(&self, workspace: WorkspaceId, hash: [u8; 32]) -> Result<Vec<u8>, String> {
-        let file = match std::fs::File::open(ownership_run_of(&self.parts, workspace, hash)) {
-            // Kept by a build that named it as the code does.
-            Err(error) if error.kind() == ErrorKind::NotFound => std::fs::File::open(
-                self.parts
-                    .join(crate::owner::ownership_name_between(workspace, hash)),
-            ),
-            opened => opened,
-        }
-        .map_err(|error| error.to_string())?;
+        let file = std::fs::File::open(ownership_run_of(&self.parts, workspace, hash))
+            .map_err(|error| error.to_string())?;
         let limit = crate::owner::publication::MAX_RUN_BYTES;
         let mut bytes = Vec::new();
         file.take((limit as u64).saturating_add(1))

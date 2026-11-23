@@ -56,7 +56,7 @@ pub use history_content::HistoryContent;
 pub use journaled::{JournalParts, Journaled};
 pub use publication::{
     DocumentWrites, HostAnswer, NativeOutgoing, NativeOutgoingEntry, SealedHistoryKeys,
-    outgoing_bytes, ownership_name_between, ownership_run_name, validate_file_layout,
+    outgoing_bytes, ownership_run_name, validate_file_layout,
 };
 pub use stored::{
     NativeAuthorityStorage, PendingEnrollmentId, PendingEnrollmentStatus, StoredPendingEnrollment,
