@@ -825,6 +825,29 @@ impl Avatar {
         self
     }
 
+    /// Take the picture's bytes once the window's pictures have them, through the same reader
+    /// `ui.Image` uses: a content address the host holds, or a picture a `data:` address carries.
+    fn follow_picture(&mut self) -> bool {
+        if self.image.is_some() {
+            return false;
+        }
+        let Picture::Lazy { store, url } = &self.picture else {
+            return false;
+        };
+        // The store the avatar was built with first (a person's own picture), then the window's
+        // pictures, which also read a `data:` address or a content address a record carries.
+        let image = store.get(url).or_else(|| {
+            let picture = crate::widget::PictureSource { src: url.clone() };
+            crate::pictures::Pictures::window().get(&picture)
+        });
+        let Some(image) = image else {
+            return false;
+        };
+        self.image = Some(image);
+        self.dirty = true;
+        true
+    }
+
     fn refresh_name(&mut self) -> bool {
         if let Some(binding) = &mut self.name_state
             && let Some(name) = binding.poll()
@@ -864,7 +887,15 @@ impl Avatar {
             store,
             url: url.into(),
         };
+        self.image = None;
         self
+    }
+
+    /// The picture at `url`, where the window's own pictures read it: a content address the
+    /// host holds, or a `data:` address a record carries. The initials show until it arrives.
+    #[must_use]
+    pub fn with_picture_url(self, url: impl Into<String>) -> Self {
+        self.with_image_url(crate::pictures::Pictures::window().store().clone(), url)
     }
 
     #[must_use]
@@ -968,13 +999,7 @@ impl Widget for Avatar {
 
     fn sync(&mut self, _state: &crate::widget::AppModel, _path: &crate::widget::ModelPath) {
         self.refresh_name();
-        if self.image.is_none()
-            && let Picture::Lazy { store, url } = &self.picture
-            && let Some(image) = store.get(url)
-        {
-            self.image = Some(image);
-            self.dirty = true;
-        }
+        self.follow_picture();
     }
 
     fn update(
@@ -982,7 +1007,9 @@ impl Widget for Avatar {
         _state: &crate::widget::AppModel,
         _path: &crate::widget::ModelPath,
     ) -> bool {
-        self.refresh_name()
+        let renamed = self.refresh_name();
+        let followed = self.follow_picture();
+        renamed || followed
     }
 
     fn build_layout(
@@ -1027,7 +1054,15 @@ impl Widget for Avatar {
         );
     }
 
-    crate::redraw_flag!();
+    fn needs_redraw(&self) -> bool {
+        // A picture whose bytes are on their way asks for the frames that read them in; a dirty
+        // avatar draws, as every widget's does.
+        self.dirty || (self.image.is_none() && matches!(self.picture, Picture::Lazy { .. }))
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+    }
 
     /// Keyed off the laid-out rect, never a draw-time cache: an avatar
     /// culled off-screen is never drawn, and must not report a pending
@@ -1105,6 +1140,29 @@ mod tests {
         };
         let described = Avatar::from_props("who", props);
         assert_eq!(drawn(&paint_face(described.face(), &theme)), mark);
+        // A described avatar that names a picture shows it instead of the initials, read through
+        // the window's pictures as `ui.Image` reads one: the same prop a contact's photo takes.
+        let props = AvatarProps {
+            name: Some("Ada".into()),
+            picture: Some(crate::headless::FIXTURE_PICTURE.into()),
+            ..AvatarProps::default()
+        };
+        let mut pictured = Avatar::from_props("name", props);
+        let initials = drawn(&paint_face(pictured.face(), &theme));
+        assert!(
+            pictured.image.is_none(),
+            "the picture's bytes are read as it syncs"
+        );
+        assert!(
+            pictured.follow_picture(),
+            "the picture in its address is read"
+        );
+        assert!(pictured.image.is_some(), "the picture's bytes are here");
+        assert_ne!(
+            drawn(&paint_face(pictured.face(), &theme)),
+            initials,
+            "a picture is not the initials of the same name"
+        );
         // A bot wears its own picture or initials on the rounded square.
         let bot = Person::new(tilo_actions::MemberId::bot("greeter"), "Greeter");
         assert!(AvatarFace::of(&bot).is_square());

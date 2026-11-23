@@ -155,6 +155,13 @@
           "name": "placeholder",
           "doc": "An empty avatar placeholder: a message that continues its author's run lines up under the first one's avatar without repeating it.",
           "type": "bool"
+        },
+        {
+          "name": "picture",
+          "doc": "Where the person's picture is: a content address (`tilo-blob://<hash>`) or a `data:` address a record carries, read as `ui.Image` reads one. The initials show until it is here.",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "semantics": {
@@ -5914,6 +5921,13 @@
           }
         },
         {
+          "name": "reveal",
+          "doc": "The row the view asks the list to show, by its key: a row below the fold scrolls into view at the list's motion, without taking the keyboard or the selection, as an address book does for the first card under a letter. It moves the list when the key it names changes; a key the list does not hold yet is shown as soon as it does, and one already in view stays where the person scrolled it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "motion",
           "doc": "The pace its rows arrive, leave and change places at, and the rows it builds move at when they say nothing themselves: the theme's unless it says otherwise.",
           "type": {
@@ -5951,6 +5965,11 @@
         }
       ],
       "events": [
+        {
+          "name": "revealed",
+          "doc": "The row the list brought up for `reveal`, once it moved to it: the view takes the ask back on it (`reveal: .none`), so the same row can be asked for again after a person scrolled away.",
+          "value": "resource"
+        },
         {
           "name": "select",
           "doc": "A row was selected: carries the item it shows.",

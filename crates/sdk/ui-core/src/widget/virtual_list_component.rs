@@ -269,6 +269,17 @@ pub struct VirtualListProps {
     /// the item as the person left it.
     #[component(state)]
     pub open: Option<ResourceId>,
+    /// The row the view asks the list to show, by its key: a row below the fold scrolls into
+    /// view at the list's motion, without taking the keyboard or the selection, as an address
+    /// book does for the first card under a letter. It moves the list when the key it names
+    /// changes; a key the list does not hold yet is shown as soon as it does, and one already
+    /// in view stays where the person scrolled it.
+    pub reveal: Option<String>,
+    /// The row the list brought up for `reveal`, once it moved to it: the view takes the ask back
+    /// on it (`reveal: .none`), so the same row can be asked for again after a person scrolled
+    /// away.
+    #[component(event(value = ResourceId))]
+    pub revealed: Event,
     /// The pace its rows arrive, leave and change places at, and the rows it builds move at
     /// when they say nothing themselves: the theme's unless it says otherwise.
     pub motion: Option<crate::motion::Feel>,
@@ -755,6 +766,9 @@ pub struct DescribedList {
     /// again, so a row reads it as it builds rather than as the list was made. `None` for a
     /// list whose rows draw no divider.
     unseen: Option<Rc<RefCell<Option<String>>>>,
+    /// The row the view last asked the list to show: the list moves when the key it names
+    /// changes, and never again for the same key, so a person's own scroll stays.
+    revealed: Option<String>,
 }
 
 /// The props of a described list that decide the widget, its items aside.
@@ -1490,12 +1504,14 @@ impl Described for DescribedList {
             chosen,
             scroll,
             open,
+            reveal,
             motion,
             select,
             activate,
             selected: selected_changed,
             opened: opened_changed,
             closed: closed_changed,
+            revealed: revealed_changed,
         } = props;
         rows.removed = removed.0;
         rows.ungrouped = ungrouped_title;
@@ -1522,6 +1538,15 @@ impl Described for DescribedList {
             let list = list
                 .unread_from(marked)
                 .with_menu_around(|rows, key| offers_menu(rows, key));
+            let mut list = list;
+            if let Some(key) = &reveal {
+                list = list.revealing(key.clone());
+            }
+            if !revealed_changed.is_none() {
+                let told = revealed_changed.clone();
+                let reading = Rc::clone(&reading);
+                list.set_on_revealed(move |key| told.fire(item_of(&reading.borrow(), &key)));
+            }
             let area = ContextMenuArea::over_content(Box::new(list), move |list, at| {
                 row_menu(list, at, &Event::None)
             })
@@ -1531,6 +1556,7 @@ impl Described for DescribedList {
                 face,
                 reading,
                 unseen: Some(unseen),
+                revealed: reveal,
             };
         }
         let marks = tree.then(|| Rc::new(TreeMarks::<String>::default()));
@@ -1618,6 +1644,14 @@ impl Described for DescribedList {
         // // The item the host holds open stands open where its row stands, unless the item is no // row
         // of the list (a place that does not hold it).
         list.hold_open(open.as_ref().map(|item| item.0.as_str()));
+        if let Some(key) = &reveal {
+            list = list.revealing(key.clone());
+        }
+        if !revealed_changed.is_none() {
+            let told = revealed_changed.clone();
+            let telling = Rc::clone(&reading);
+            list.set_on_revealed(move |key| told.fire(item_of(&telling.borrow(), &key)));
+        }
         if !opened_changed.is_none() || !closed_changed.is_none() {
             let (opened, closed) = (opened_changed, closed_changed);
             let opening = Rc::clone(&reading);
@@ -1640,6 +1674,7 @@ impl Described for DescribedList {
             face,
             reading,
             unseen: None,
+            revealed: reveal,
         }
     }
 
@@ -1668,6 +1703,8 @@ impl Described for DescribedList {
             selected: selected_changed,
             opened: opened_changed,
             closed: closed_changed,
+            reveal,
+            revealed: revealed_changed,
             ..
         } = props;
         let feel = motion.unwrap_or(crate::motion::Feel::Standard);
@@ -1681,6 +1718,15 @@ impl Described for DescribedList {
         let reading = rows.reader();
         let picked = picked_rows(chosen, &reading, self.chosen_rows());
         *self.reading.borrow_mut() = reading;
+        // The row the view asks to show moves the list when the key it names changes, and never
+        // for the same key again, so a person's own scroll stays. It is taken before the list is
+        // borrowed, since the ask is the component's.
+        let asking = if reveal == self.revealed {
+            None
+        } else {
+            reveal.clone()
+        };
+        self.revealed.clone_from(&reveal);
         let reading = Rc::clone(&self.reading);
         let Some(list) = self.list_mut() else {
             return false;
@@ -1694,6 +1740,14 @@ impl Described for DescribedList {
             list.update_model(move |model| *model = rows);
         }
         list.set_unread(unseen_from);
+        if let Some(key) = &asking {
+            list.scroll_reveal(key.as_str());
+        }
+        if !revealed_changed.is_none() {
+            let told = revealed_changed.clone();
+            let telling = Rc::clone(&reading);
+            list.set_on_revealed(move |key| told.fire(item_of(&telling.borrow(), &key)));
+        }
         // // The item the host holds open: its row grows into its document where it stands, and // an item
         // that left the list opens nothing. An item the rows cannot answer for yet // leaves the row the
         // person has open as it is, and opens as its row arrives.

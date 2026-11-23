@@ -353,6 +353,9 @@ pub struct VirtualRows {
     open_on_press: bool,
     on_fold: Option<FoldCallback<ListKey>>,
     on_opened: Option<KeyCallback<ListKey>>,
+    /// The row a view asked the list to show, once it has moved to it: the view takes back the
+    /// ask on it, so the same row can be asked for again after a person scrolled away.
+    on_revealed: Option<KeyCallback<ListKey>>,
     on_closed: Option<Box<dyn FnMut()>>,
     open: Option<ListKey>,
     rereading_open: Option<ListKey>,
@@ -465,6 +468,12 @@ pub struct VirtualRows {
     reveal_asked: Option<Box<dyn FnMut() -> Option<ListKey>>>,
     /// The row last asked for that the model does not hold yet: shown as soon as it does.
     reveal_pending: Option<ListKey>,
+    /// The item a view asked the list to show, by the id its model presents it as: resolved to a
+    /// row as the rows are there, so an ask made before they arrived is still shown.
+    reveal_item: Option<String>,
+    /// The next reveal scrolls the row into view without choosing it: what a view asks when it
+    /// shows the list a row of its own (the first card under a letter), not a row a press made.
+    reveal_without_choosing: bool,
 }
 
 impl VirtualRows {
@@ -523,6 +532,7 @@ impl VirtualRows {
             open_on_press: false,
             on_fold: None,
             on_opened: None,
+            on_revealed: None,
             on_closed: None,
             open: None,
             rereading_open: None,
@@ -601,6 +611,8 @@ impl VirtualRows {
             jump_focused: false,
             reveal_asked: None,
             reveal_pending: None,
+            reveal_item: None,
+            reveal_without_choosing: false,
             pill_height: 0.0,
             pill_widths: [0.0; crate::widget::conversation::JUMPS],
             names_item: std::cell::RefCell::new(None),
@@ -669,6 +681,18 @@ impl VirtualRows {
 
     /// Take the row the view asked to show, and show it; whether it did.
     fn take_reveal_asked(&mut self) -> bool {
+        // What a view asked for by id, resolved against the rows as they are now: a row whose
+        // page is still arriving is shown when it comes.
+        if let Some(item) = self.reveal_item.clone() {
+            match self.key_of_item(&item) {
+                Some(key) => {
+                    self.reveal_item = None;
+                    self.reveal_pending = Some(key);
+                }
+                None if self.model.len() > 0 && self.model.key_at(0).is_none() => return false,
+                None => self.reveal_item = None,
+            }
+        }
         if let Some(asked) = self.reveal_asked.as_mut()
             && let Some(key) = asked()
         {
@@ -681,8 +705,35 @@ impl VirtualRows {
             return false;
         }
         self.reveal_pending = None;
-        self.choose_quietly(key.clone());
-        self.scroll_to_key(&key)
+        let choosing = !std::mem::take(&mut self.reveal_without_choosing);
+        if choosing {
+            self.choose_quietly(key.clone());
+        }
+        let moved = self.scroll_to_key(&key);
+        if moved && let Some(told) = self.on_revealed.as_mut() {
+            told(key);
+        }
+        moved
+    }
+
+    /// The row of the item `item` names: as its model presents it, or as the list's own naming
+    /// does (a view's items, whose keys are their ids).
+    pub(super) fn key_of_item(&self, item: &str) -> Option<ListKey> {
+        self.model.key_presenting(item).or_else(|| {
+            self.names_item
+                .borrow()
+                .as_ref()
+                .and_then(|names| names(item))
+        })
+    }
+
+    /// Show the row of the item `item` names, as its model presents it: it scrolls into view at
+    /// the list's motion, without taking the keyboard or the selection. An item the model does
+    /// not hold yet is shown as soon as it does, so a row that arrives with its page is still
+    /// brought up.
+    pub fn scroll_reveal(&mut self, item: impl Into<String>) {
+        self.reveal_item = Some(item.into());
+        self.reveal_without_choosing = true;
     }
 
     fn follow_scroll_to(&mut self, now: Instant) {
@@ -878,6 +929,12 @@ impl VirtualRows {
         self.on_opened = Some(Box::new(callback));
     }
 
+    /// Tell the view the row it asked to show has been brought up: it takes the ask back on it,
+    /// so the same row can be asked for again after a person scrolled away.
+    pub fn set_on_revealed(&mut self, callback: impl FnMut(ListKey) + 'static) {
+        self.on_revealed = Some(Box::new(callback));
+    }
+
     #[must_use]
     pub fn on_closed(mut self, callback: impl FnMut() + 'static) -> Self {
         self.set_on_closed(callback);
@@ -954,10 +1011,14 @@ impl VirtualRows {
         &*self.model
     }
 
+    /// Give `key`'s row the keyboard, and bring it into view: a row focused by an action or
+    /// another window's step is one the person then types into, so it stands in the window
+    /// however far down the list it was.
     pub fn focus_row(&mut self, key: ListKey) {
         self.focused_group = None;
-        self.focused_key = Some(key);
+        self.focused_key = Some(key.clone());
         self.jump_focused = false;
+        self.scroll_to_key(&key);
     }
 
     fn focused_row_node(&self) -> Option<NodeId> {
