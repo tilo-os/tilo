@@ -1772,7 +1772,13 @@ impl ActionProvider for Account {
     }
 
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
-        if let Some(stopping) = self.handed_on(|invocations| invocations.cancel(caller, id)) {
+        // This API reads no grants of its own, so the resource an invocation was made from gives
+        // nobody here a say: only its caller, or the person its agent works for, stops it.
+        let no_origin_grants =
+            |_: &Caller, _: &tilo_actions::remote::workspace_invocations::Origin| false;
+        if let Some(stopping) =
+            self.handed_on(|invocations| invocations.cancel(caller, id, &no_origin_grants))
+        {
             return stopping;
         }
         if crate::lock(&self.0.running).by_id.contains_key(id) {
