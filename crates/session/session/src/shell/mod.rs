@@ -2062,17 +2062,17 @@ mod tests {
         }
     }
 
-    /// The tilolang shell draws what the desktop drew, so the session keeps its offer: a
-    /// window's controls named by its app are found here as in the Rust shell, and a press on one
-    /// reaches the app through the same route.
+    /// The tilolang shell draws what the desktop drew, so the session keeps its offer: every
+    /// app window's controls are found here as in the Rust shell, and a press on one reaches
+    /// the app through the same route — Files' and Shortcuts' alike, never one app's alone.
     #[test]
     #[cfg(target_os = "linux")]
-    fn the_shell_keeps_the_desktops_windows_controls() {
+    fn the_shell_keeps_every_app_windows_controls() {
         use tilo_compositor::policy::{LayoutPoint, LayoutRect};
         use tilo_compositor::{WindowInfo, WindowPolicy as _};
         use ui::window_targets::{TargetAction, WindowTarget};
 
-        // The window's arrival settles at once rather than over frames that now take no time.
+        // The windows' arrival settles at once rather than over frames that now take no time.
         let _settled = ui::motion::testing::settled();
         let (mut desktop, mut policy) = crate::platform::surfaces::desktop(7, 1.0);
         tilo_session_core::surface::ShellSurface::outputs_changed(
@@ -2083,60 +2083,75 @@ mod tests {
             }],
         );
         let output = LayoutRect::new(LayoutPoint::from((0, 0)), (1280, 800).into());
-        let window = WindowInfo {
-            id: 1,
-            app_id: Some("so.tilo.file-explorer".to_owned()),
-            pid: Some(4242),
-            ..WindowInfo::default()
+        let mut map = |id: u64, app: &str| {
+            let window = WindowInfo {
+                id,
+                app_id: Some(app.to_owned()),
+                pid: Some(u32::try_from(id).unwrap_or(4242)),
+                ..WindowInfo::default()
+            };
+            let _ = policy.initial_size(&window, &[output]);
+            let _ = policy.place(&window, (800, 600), &[output]);
+            window.id
         };
-        let _ = policy.initial_size(&window, &[output]);
-        let _ = policy.place(&window, (800, 600), &[output]);
+        let files = map(1, "so.tilo.file-explorer");
+        let shortcuts = map(2, "so.tilo.shortcuts");
         for _ in 0..8 {
             tilo_session_core::surface::ShellSurface::prepare_frame(&mut desktop);
         }
         let handle = desktop.with_policy(|policy| policy.handle().clone());
-        let tab = handle
-            .shown_tabs()
-            .first()
-            .map(|(tab, _)| *tab)
-            .expect("the window is drawn");
-        handle.declare_targets(
-            tab,
-            41,
-            vec![WindowTarget {
-                role: "Button".to_owned(),
-                name: "New folder".to_owned(),
-                identity: Some("so.tilo.file-explorer.NewFolder".to_owned()),
-                rect: [10.0, 20.0, 110.0, 40.0],
-                actions: vec![TargetAction::Activate],
-                level: None,
-                selected: false,
-            }],
-        );
+        for (window, connection, name, identity) in [
+            (files, 41, "New folder", "so.tilo.file-explorer.NewFolder"),
+            (
+                shortcuts,
+                42,
+                "New shortcut",
+                "so.tilo.shortcuts.NewShortcut",
+            ),
+        ] {
+            let tab = desktop.with_policy(|policy| policy.tab_of(window));
+            let tab = tab.expect("the window is given a tab");
+            handle.declare_targets(
+                tab,
+                connection,
+                vec![WindowTarget {
+                    role: "Button".to_owned(),
+                    name: name.to_owned(),
+                    identity: Some(identity.to_owned()),
+                    rect: [10.0, 20.0, 110.0, 40.0],
+                    actions: vec![TargetAction::Activate],
+                    level: None,
+                    selected: false,
+                }],
+            );
+        }
         tilo_session_core::surface::ShellSurface::prepare_frame(&mut desktop);
 
         let lists = super::lists_surface(true, desktop, shell_surfaces());
         let mut lists = lists.borrow_mut();
         let controls = lists.controls();
+        let mut names: Vec<(&str, Option<&str>)> = controls
+            .iter()
+            .map(|control| (control.name.as_str(), control.identity.as_deref()))
+            .collect();
+        names.sort_unstable();
         assert_eq!(
-            controls
-                .iter()
-                .map(|control| control.name.as_str())
-                .collect::<Vec<_>>(),
-            vec!["New folder"],
-            "the window's own control reaches the shell, and nothing the desktop draws itself"
+            names,
+            vec![
+                ("New folder", Some("so.tilo.file-explorer.NewFolder")),
+                ("New shortcut", Some("so.tilo.shortcuts.NewShortcut")),
+            ],
+            "each window's own control reaches the shell, and nothing the desktop draws itself"
         );
-        assert_eq!(
-            controls[0].identity.as_deref(),
-            Some("so.tilo.file-explorer.NewFolder")
-        );
-        lists
-            .press_action("New folder", TargetAction::Activate)
-            .expect("a press reaches the window the shell stands over");
+        for name in ["New folder", "New shortcut"] {
+            lists
+                .press_action(name, TargetAction::Activate)
+                .unwrap_or_else(|why| panic!("a press on {name} reaches its window: {why}"));
+        }
         assert_eq!(
             handle.take_target_presses().len(),
-            1,
-            "the app is told of the press, as a screen reader's activation is"
+            2,
+            "each app is told of the press, as a screen reader's activation is"
         );
     }
 
