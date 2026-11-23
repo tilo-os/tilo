@@ -132,9 +132,9 @@ fn keys_typed(prefix: char, count: usize) -> impl Iterator<Item = String> {
     (0..count).map(move |key| format!("{prefix}{key}"))
 }
 
-/// Changes a device alone writes: past this crate's bound of sealed writes
-/// per record four times over.
-const ALONE: usize = 4 * 256 + 100;
+/// Changes a device alone writes: past this crate's bound of sealed writes per
+/// record.
+const ALONE: usize = 300;
 
 #[tokio::test]
 async fn a_device_alone_takes_every_change_to_one_sealed_record_past_its_bound() {
