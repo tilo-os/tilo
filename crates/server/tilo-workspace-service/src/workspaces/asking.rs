@@ -13,21 +13,26 @@
 //! answer the record itself, or, where only they can type what it takes, none, and opening it
 //! shows the ask. Once the record is answered anywhere, the thing waits no more.
 
+
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 use tilo_action_policy::{ActionKind, Answer, Context, Grantee, TreePath, decide};
 use tilo_actions::remote::asked::{
-    self, AskedBy, AskedFacts, AskedList, AskedRecords, Named, RecordRef,
+    self, AskedBy, AskedDispatch, AskedFacts, AskedList, AskedRecords, AskedStore, Named,
+    RecordRef, Resolve,
 };
 use tilo_actions::remote::person_telling::{About, Kind, Offered, OfferedTarget, Tell, Teller};
-use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest, Pending};
+use tilo_actions::remote::{
+    ActionCallError, Caller, InvocationReceipt, InvokeArgument, InvokeRequest, Pending,
+};
 use tilo_lock::MutexRecover as _;
 use tilo_user_identity::DeviceCert;
 
 use super::person_settings::answer;
 use super::{ToTell, WeakWorkspaces, Workspaces};
+
 
 /// Who asks, as the system names `caller`: its agent by the name its key goes by, else the
 /// person's own device.
@@ -58,19 +63,11 @@ pub(crate) fn approved_or_asks(
     }
 }
 
-/// The provider of the `tilo.invocations` records, whose `resolve` answers one.
-const INVOCATIONS: &str = "tilo.invocations";
-/// The action that answers an asked record.
-const RESOLVE: &str = "resolve";
-
-/// The person `caller` asks for, as the request names them: the person an agent or app acts
-/// for, else the person calling. Never whoever admitted the connection the call came on.
+/// The person `caller` asks, as their key.
 fn asked_person(caller: &Caller) -> Option<[u8; 32]> {
-    let person = caller
-        .acting_for_person()
-        .or_else(|| caller.acting().person_id())?;
-    hex::decode(person).ok()?.try_into().ok()
+    hex::decode(asked::asked_person(caller)?).ok()?.try_into().ok()
 }
+
 
 /// The id the record `record` is told under in its person's log.
 fn told_id(record: &RecordRef) -> String {
@@ -100,10 +97,10 @@ fn telling(record: &RecordRef, facts: &AskedFacts) -> ToTell {
             label: label.to_owned(),
             main,
             target: OfferedTarget {
-                app: INVOCATIONS.to_owned(),
+                app: tilo_actions::remote::workspace_invocations::PROVIDER.to_owned(),
                 record: String::new(),
                 resource: record.record.clone(),
-                action: RESOLVE.to_owned(),
+                action: asked::RESOLVE.to_owned(),
             },
             arguments,
         }
@@ -130,7 +127,7 @@ fn telling(record: &RecordRef, facts: &AskedFacts) -> ToTell {
             words: told_words(facts),
             about: Some(About {
                 workspace: record.workspace.clone(),
-                app: INVOCATIONS.to_owned(),
+                app: tilo_actions::remote::workspace_invocations::PROVIDER.to_owned(),
                 record: String::new(),
                 resource: record.record.clone(),
             }),
@@ -212,19 +209,14 @@ impl AskedRecords for Told {
 }
 
 impl Workspaces {
-    /// Keep every call that waits for a person's yes as its asked record through `records`:
-    /// the workspaces' store, which the host hands this once. Each record written is told to
-    /// its person. What the host's other dispatches keep their asked calls through is
-    /// [`Self::asked_records`], the same store, telling the same way.
-    pub fn keep_asked_in(&self, records: Arc<dyn AskedRecords>) {
+    /// `records`, each one written told to the person it waits for and taken back from their
+    /// log once it is answered: what every dispatch of this host keeps its asked calls through.
+    pub fn told(&self, records: Arc<dyn AskedRecords>) -> Arc<dyn AskedRecords> {
         let told = Arc::new(Told {
             records,
             workspaces: self.downgrade(),
             waiting: Mutex::default(),
         });
-        if self.inner.asked_records.set(told.clone()).is_err() {
-            return;
-        }
         let follows = Arc::downgrade(&told);
         tokio::spawn(async move {
             loop {
@@ -241,10 +233,86 @@ impl Workspaces {
                 told.settle(&workspaces);
             }
         });
+        told
     }
 
-    /// Where calls that wait for a person's yes are kept, once the host named it: what every
-    /// dispatch of this host keeps its asked calls through.
+    /// Keep every call that waits for a person's yes as its asked record in `store`, which the
+    /// host hands this once and hands every dispatch of its own: a person's answer to one comes
+    /// back to the dispatch that keeps it.
+    pub fn keep_asked_in(&self, store: &Arc<AskedStore>) {
+        let _ = self.inner.asked_store.set(Arc::clone(store));
+        self.link_asked();
+    }
+
+    /// Hand a person's approve of a call this host's dispatch keeps back to `dispatch`.
+    pub(crate) fn answer_asked_with(&self, dispatch: Arc<dyn AskedDispatch>) {
+        let _ = self.inner.asked_dispatch.set(dispatch);
+        self.link_asked();
+    }
+
+    /// The records this host's dispatch writes through, once both the store and the dispatch
+    /// are named.
+    fn link_asked(&self) {
+        if let (Some(store), Some(dispatch)) = (
+            self.inner.asked_store.get(),
+            self.inner.asked_dispatch.get(),
+        ) {
+            let _ = self
+                .inner
+                .asked_records
+                .set(self.told(store.for_dispatch(Arc::downgrade(dispatch))));
+        }
+    }
+
+    /// The store asked records are kept in here, once the host named it.
+    pub(crate) fn asked_store(&self) -> Option<Arc<AskedStore>> {
+        self.inner.asked_store.get().cloned()
+    }
+
+    /// Answer `request`, a person's `<record>#resolve`, as `caller`: its receipt once the call
+    /// it answers is admitted again or ended.
+    pub(crate) fn resolve_asked(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let invocation = request.invocation;
+        let answer = match &request.argument {
+            InvokeArgument::Json(arguments) => {
+                serde_json::from_value::<Resolve>(Value::Object(arguments.clone()))
+            }
+            InvokeArgument::None | InvokeArgument::Text(_) => {
+                serde_json::from_value::<Resolve>(Value::Object(serde_json::Map::new()))
+            }
+        };
+        let answer = match answer {
+            Ok(answer) => answer,
+            Err(error) => {
+                return Pending::ready(Err(ActionCallError::InvalidRequest {
+                    reason: error.to_string(),
+                }));
+            }
+        };
+        let Some(store) = self.asked_store() else {
+            return Pending::ready(Err(ActionCallError::UnknownAction));
+        };
+        let Some(at) = store.record(&request.target.address.resource) else {
+            return Pending::ready(Err(ActionCallError::Refused {
+                reason: asked::NOTHING_ASKED.into(),
+            }));
+        };
+        store.resolve(&at, caller, &answer).map(move |resolved| {
+            resolved.map(|()| InvocationReceipt {
+                invocation,
+                status: tilo_actions::remote::ReceiptStatus::Completed {
+                    output: tilo_actions::ActionOutput::default(),
+                },
+            })
+        })
+    }
+
+    /// Where this host's own dispatch keeps the calls that wait for a person's yes, once the
+    /// host named the store, each told to its person.
     pub fn asked_records(&self) -> Option<Arc<dyn AskedRecords>> {
         self.inner.asked_records.get().cloned()
     }

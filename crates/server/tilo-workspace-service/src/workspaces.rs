@@ -1062,6 +1062,10 @@ struct WorkspacesInner {
     /// Where calls that wait for a person's yes are kept as their asked records
     /// ([`Workspaces::keep_asked_in`]).
     asked_records: std::sync::OnceLock<Arc<dyn tilo_actions::remote::asked::AskedRecords>>,
+    /// The store those records are kept in, which admits a person's answer to one.
+    asked_store: std::sync::OnceLock<Arc<tilo_actions::remote::asked::AskedStore>>,
+    /// This host's dispatch, as that store hands it back the calls it keeps.
+    asked_dispatch: std::sync::OnceLock<Arc<dyn tilo_actions::remote::asked::AskedDispatch>>,
     /// What runs the workspaces' Linux machines, as a branch takes its
     /// source's and a deletion takes the workspace's ([`Workspaces::machines`]).
     machines: std::sync::RwLock<Option<Arc<dyn WorkspaceMachines>>>,
@@ -1414,6 +1418,8 @@ impl Workspaces {
                 branches: tokio::sync::broadcast::channel(64).0,
                 branch_content: std::sync::RwLock::default(),
                 asked_records: std::sync::OnceLock::new(),
+                asked_store: std::sync::OnceLock::new(),
+                asked_dispatch: std::sync::OnceLock::new(),
                 machines: std::sync::RwLock::default(),
                 person_names: std::sync::RwLock::default(),
                 document_writes: tokio::sync::broadcast::channel(256).0,

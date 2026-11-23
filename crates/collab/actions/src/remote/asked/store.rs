@@ -139,7 +139,8 @@ impl AskedStore {
         let person = asked_person(caller).ok_or("the call acts for no person to ask")?;
         let at = RecordRef {
             workspace: workspace.to_owned(),
-            record: format!("invocations/{}", request.invocation.0),
+            // The invocation's own id: what the workspace's invocations publish it under.
+            record: request.invocation.0.to_string(),
         };
         let mut kept = self.kept.lock_recover();
         if let Some(record) = kept.find(&at) {

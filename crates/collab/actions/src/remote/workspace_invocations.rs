@@ -120,9 +120,58 @@ pub fn tree_rows(listed: &[Invocation]) -> Vec<super::CatalogueRow> {
                 label.push_str(": ");
                 label.push_str(title);
             }
-            row(RESOURCE, id, INVOCATION_TYPE, label)
+            let waits = invocation.status == InvocationStatus::Waiting && !id.is_empty();
+            let own = row(RESOURCE, id.clone(), INVOCATION_TYPE, label);
+            // One that waits for its person is answered by its own `resolve`.
+            let resolve = waits.then(|| super::CatalogueRow {
+                action: Some(resolve_action(&id)),
+                ..own.clone()
+            });
+            std::iter::once(own).chain(resolve)
         }))
         .collect()
+}
+
+/// [`super::asked::RESOLVE`] as an invocation that waits for its person publishes it: the
+/// person's answer to it.
+fn resolve_action(invocation: &str) -> crate::ActionDescriptor {
+    use crate::{ActionContract, ActionKind, ActionParam, ParamType};
+    crate::ActionDescriptor {
+        did: None,
+        state: crate::ActionState::default(),
+        semantic_identity: None,
+        address: ActionAddress::new(invocation, super::asked::RESOLVE),
+        resource_kind: INVOCATION_TYPE.to_owned(),
+        resource_label: "Invocation".to_owned(),
+        action_label: "Answer".to_owned(),
+        keywords: Vec::new(),
+        icon: None,
+        description: Some(
+            "Answer what this invocation asks you: approve it, approve it and let its asker do \
+             the same from now on, or decline it."
+                .to_owned(),
+        ),
+        locus: crate::ExecutionLocus::ServerPreferred,
+        kind: crate::OperationKind::Effect,
+        contract: ActionContract {
+            kind: ActionKind::Undoable,
+            ..ActionContract::default()
+        },
+        input: crate::InputSpec::None,
+        params: vec![
+            ActionParam::required(
+                "resolution",
+                ParamType::Text,
+                "`approve`, `approve_and_grant` or `decline`.",
+            ),
+            ActionParam::optional(
+                "choice",
+                ParamType::Integer,
+                "For a question with choices: the one picked, by its place.",
+            ),
+        ],
+        view: None,
+    }
 }
 
 /// [`LIST`] as the tree publishes it: a read of one page, by `limit` and `cursor`.

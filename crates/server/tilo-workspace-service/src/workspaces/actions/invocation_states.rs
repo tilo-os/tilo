@@ -4,6 +4,8 @@
 use tilo_actions::remote::{ActionCallError, InvocationReceipt, InvocationState, asked};
 use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
 
+use tilo_lock::MutexRecover as _;
+
 use super::ServiceWorkspaceActions as Actions;
 
 /// The state of an invocation that answered `value`.
@@ -43,6 +45,8 @@ pub(super) fn waits_asked(state: &InvocationState) -> bool {
 pub(super) struct Call {
     pub(super) workspaces: crate::workspaces::Workspaces,
     pub(super) workspace_id: Option<collab_types::WorkspaceId>,
+    /// The caller's device certificate, as the transport verified it.
+    pub(super) certificate: Option<tilo_user_identity::DeviceCert>,
     pub(super) caller: tilo_actions::remote::Caller,
     pub(super) request: tilo_actions::remote::InvokeRequest,
 }
@@ -73,6 +77,11 @@ pub(super) async fn ended(
                 .await
             {
                 Some(Ok(record)) => {
+                    actions
+                        .shared
+                        .asked_calls
+                        .lock_recover()
+                        .insert(invocation, (call.workspace_id, call.certificate.clone()));
                     let state = InvocationState::new(invocation, record.waiting(invocation));
                     let receipt = state.receipt();
                     actions.log().complete(&invocation, state);

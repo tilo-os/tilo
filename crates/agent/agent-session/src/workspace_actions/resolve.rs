@@ -10,7 +10,7 @@
 
 use std::sync::{Arc, Weak};
 
-use tilo_actions::remote::asked::{self, AskedDispatch, AskedStore, Resolve};
+use tilo_actions::remote::asked::{self, AskedDispatch, AskedRecords, AskedStore, Resolve};
 use tilo_actions::remote::{
     ActionCallError, Caller, InvocationReceipt, InvokeRequest, Pending, ReceiptStatus,
     RemoteActionMessage,
@@ -60,13 +60,18 @@ fn not_waiting() -> ActionCallError {
 
 impl WorkspaceActions {
     /// Keep every invocation that waits for a person's yes as its asked record in `store`,
-    /// which hands a person's answer to one back to this dispatch.
-    pub fn keep_asked_in(&self, store: &Arc<AskedStore>) {
+    /// which hands a person's answer to one back to this dispatch, writing each through
+    /// `told`: where the host tells its person of it.
+    pub fn keep_asked_in(
+        &self,
+        store: &Arc<AskedStore>,
+        told: impl FnOnce(Arc<dyn AskedRecords>) -> Arc<dyn AskedRecords>,
+    ) {
         let dispatch: Arc<dyn AskedDispatch> = Arc::new(Dispatch {
             shared: Arc::downgrade(&self.shared),
             catalogue: self.catalogue.clone(),
         });
-        let records = store.for_dispatch(Arc::downgrade(&dispatch));
+        let records = told(store.for_dispatch(Arc::downgrade(&dispatch)));
         if self.shared.asked_records.set(records).is_ok() {
             let _ = self.shared.asked_dispatch.set(dispatch);
             let _ = self.shared.asked_store.set(Arc::clone(store));

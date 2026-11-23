@@ -1863,6 +1863,21 @@ async fn start_app_server(
     });
     let web_entry = cfg.web_entry.clone();
     let server = Server::start_with_app_serving(cfg, identity, Some(action_server.clone())).await?;
+    // One store keeps every call here that waits for a person's yes, whichever dispatch keeps
+    // the call; a person's answer comes back to that dispatch.
+    let asked = Arc::new(tilo_actions::remote::asked::AskedStore::default());
+    // Each is told to the person it waits for, through the workspaces here.
+    let workspaces = server.workspaces();
+    if let Some(workspaces) = &workspaces {
+        asked.grants_through(workspaces.asked_grants(tokio::runtime::Handle::current()));
+        workspaces.keep_asked_in(&asked);
+    }
+    action_server
+        .actions
+        .keep_asked_in(&asked, |records| match &workspaces {
+            Some(workspaces) => workspaces.told(records),
+            None => records,
+        });
     attach_resources(
         &action_server.actions,
         &server,

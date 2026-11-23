@@ -101,6 +101,30 @@ pub(super) async fn handle_remote_action(
             "a browser environment's device answers page actions, it does not call actions".into(),
         ));
     }
+    // A person's approve of an asked record is set only by the dispatch their resolve hands the
+    // call back to: a device's frame carrying one nobody resolved is refused whole, whether it is
+    // for this host or for a device it reaches.
+    let asked_store = session
+        .admin
+        .and_then(crate::workspaces::Workspaces::asked_store);
+    match tilo_actions::remote::RemoteActionFrame::decode(&frame) {
+        Ok(tilo_actions::remote::RemoteActionFrame {
+            message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
+            ..
+        }) => {
+            if let Err(error) =
+                tilo_actions::remote::asked::admit_frame(asked_store.as_deref(), &request)
+            {
+                return refuse(Refusal::NotAllowed(error.to_string()));
+            }
+        }
+        Ok(_) => {}
+        Err(error) => {
+            return refuse(Refusal::Invalid(format!(
+                "undecodable action frame: {error}"
+            )));
+        }
+    }
     if to == *session.own_device_public_key {
         // What this host runs for someone it runs as the key that signed it.
         let invoker = match signed_invoker(peer, session, &mut wr, workspace_id, &frame) {

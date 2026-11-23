@@ -2173,8 +2173,7 @@ impl<T> InvocationLog<T> {
         };
         let again = request.approval().is_some()
             && caller.continues(&entry.caller)
-            && entry.request.target == request.target
-            && entry.request.argument == request.argument
+            && asked::same_call(&entry.request, request)
             && entry.handle.as_ref().is_some_and(waits);
         if again {
             entry.request = InvokeRequest {

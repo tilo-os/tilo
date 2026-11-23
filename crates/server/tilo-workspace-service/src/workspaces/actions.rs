@@ -2774,6 +2774,10 @@ pub(crate) struct Shared {
     /// The running asks of people's models, each with the signal that moves
     /// whenever it wrote more or ended.
     model_asks: Mutex<std::collections::HashMap<InvocationId, tokio::sync::watch::Receiver<u64>>>,
+    /// The calls that wait in their asked records, each with the workspace and the device
+    /// certificate it was asked under: what a person's approve admits it again with.
+    pub(super) asked_calls:
+        Mutex<std::collections::HashMap<InvocationId, (Option<WorkspaceId>, Option<DeviceCert>)>>,
 }
 
 impl ServiceWorkspaceActions {
@@ -2789,6 +2793,7 @@ impl ServiceWorkspaceActions {
                 mcp_follows: Mutex::default(),
                 account_follows: Mutex::default(),
                 model_asks: Mutex::default(),
+                asked_calls: Mutex::default(),
             }),
         }
     }
@@ -2797,6 +2802,7 @@ impl ServiceWorkspaceActions {
     /// ask this governance on the device action service too.
     pub(crate) fn attach(&self, workspaces: Workspaces) {
         workspaces.govern_device_actions_with(Arc::downgrade(&self.shared));
+        workspaces.answer_asked_with(Arc::new(HostAsked(Arc::downgrade(&self.shared))));
         let _ = self.shared.workspaces.set(workspaces);
     }
 
@@ -3146,19 +3152,32 @@ impl ActionProvider for InWorkspace {
         if model_asks::is_model_ask(&request) {
             return self.ask_model(workspaces, caller, request);
         }
+        // A person's approve is set only where their answer admits the call again
+        // ([`HostAsked::readmit`]): a frame carrying one no resolve handed back is refused whole.
+        if let Err(error) =
+            tilo_actions::remote::asked::admit_frame(workspaces.asked_store().as_deref(), &request)
+        {
+            return Pending::ready(Err(error));
+        }
+        // A person's answer to an asked record.
+        if tilo_actions::remote::asked::is_resolve(&request.target) {
+            return workspaces.resolve_asked(caller, &request);
+        }
+        let reservation = self.server.log().reserve(caller, &request);
+        self.run(workspaces, caller, request, reservation)
+    }
+}
+
+impl InWorkspace {
+    /// Run `request` for `caller` as `reservation` admitted it, answering its receipt.
+    fn run(
+        &self,
+        workspaces: Workspaces,
+        caller: &Caller,
+        request: InvokeRequest,
+        reservation: Result<tilo_actions::remote::Reservation, ActionCallError>,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let invocation = request.invocation;
-        // Approved where it waited for its person's yes: admitted again under its id, carrying
-        // their answer. The log's guard must not outlive the reservation: a retry reads it
-        // again below.
-        let readmitted =
-            self.server
-                .log()
-                .readmit(caller, &request, invocation_states::waits_asked);
-        let reservation = if readmitted {
-            Ok(tilo_actions::remote::Reservation::Reserved)
-        } else {
-            self.server.log().reserve(caller, &request)
-        };
         match reservation {
             Err(error) => return Pending::ready(Err(error)),
             Ok(tilo_actions::remote::Reservation::Admitted) => {
@@ -3175,6 +3194,7 @@ impl ActionProvider for InWorkspace {
         let call = invocation_states::Call {
             workspaces,
             workspace_id: self.workspace_id,
+            certificate: self.certificate.clone(),
             caller: caller.clone(),
             request,
         };
@@ -3580,3 +3600,90 @@ mod person_model_tests;
 mod share_tests;
 #[cfg(test)]
 mod tests;
+
+/// This host's dispatch, as an asked record's store hands it back the call it keeps.
+struct HostAsked(std::sync::Weak<Shared>);
+
+impl HostAsked {
+    fn server(&self) -> Result<ServiceWorkspaceActions, ActionCallError> {
+        self.0
+            .upgrade()
+            .map(|shared| ServiceWorkspaceActions { shared })
+            .ok_or_else(|| ActionCallError::Unavailable {
+                reason: "the host's actions are not running".into(),
+            })
+    }
+}
+
+/// What a call that no longer waits in its record is refused another answer with.
+fn not_waiting() -> ActionCallError {
+    ActionCallError::Refused {
+        reason: "The call no longer waits for this answer".into(),
+    }
+}
+
+impl tilo_actions::remote::asked::AskedDispatch for HostAsked {
+    fn readmit(&self, caller: &Caller, request: InvokeRequest) -> Result<(), ActionCallError> {
+        let server = self.server()?;
+        let workspaces = server
+            .shared
+            .workspaces
+            .get()
+            .cloned()
+            .ok_or_else(not_waiting)?;
+        let (workspace_id, certificate) = server
+            .shared
+            .asked_calls
+            .lock_recover()
+            .remove(&request.invocation)
+            .ok_or_else(not_waiting)?;
+        if !server
+            .log()
+            .readmit(caller, &request, invocation_states::waits_asked)
+        {
+            return Err(not_waiting());
+        }
+        let here = InWorkspace {
+            server,
+            workspace_id,
+            certificate,
+        };
+        // It runs for its caller, who follows it under its id: the receipt is theirs to read.
+        here.run(
+            workspaces,
+            caller,
+            request,
+            Ok(tilo_actions::remote::Reservation::Reserved),
+        )
+        .then(|_| {});
+        Ok(())
+    }
+
+    fn declined(&self, caller: &Caller, invocation: InvocationId) -> Result<(), ActionCallError> {
+        let server = self.server()?;
+        server
+            .shared
+            .asked_calls
+            .lock_recover()
+            .remove(&invocation)
+            .ok_or_else(not_waiting)?;
+        let mut log = server.log();
+        if !log
+            .get(caller, &invocation)
+            .is_some_and(invocation_states::waits_asked)
+        {
+            return Err(not_waiting());
+        }
+        log.complete(
+            &invocation,
+            InvocationState::new(
+                invocation,
+                tilo_actions::InvocationUpdate::Cancelled {
+                    invocation,
+                    message: Some(tilo_actions::remote::asked::DECLINED.to_owned()),
+                },
+            ),
+        );
+        Ok(())
+    }
+}
