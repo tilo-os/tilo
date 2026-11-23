@@ -2135,7 +2135,7 @@ impl WasmPeer {
             tilo_actions::remote::Caller::local_person(person.to_owned()).in_workspace(workspace);
         tilo_session_actions::ask(&api, &caller, message)
             .await
-            .map_err(|error| js_error(&error))
+            .map_err(js_error)
     }
 
     /// Moderate one of the workspace's calls as `person`: `arguments` is the JSON the
@@ -2159,7 +2159,7 @@ impl WasmPeer {
         };
         let number = workspace_id(workspace)?;
         let arguments: serde_json::Map<String, serde_json::Value> =
-            serde_json::from_str(arguments).map_err(|error| js_error(&error.to_string()))?;
+            serde_json::from_str(arguments).map_err(js_error)?;
         let api = crate::peer_sync::actions_of(self.id, number)
             .ok_or_else(|| js_error("this page holds no session with a host"))?;
         let caller =
@@ -2179,20 +2179,19 @@ impl WasmPeer {
             appearance: None,
             signed: None,
         });
-        let message =
-            serde_json::to_string(&message).map_err(|error| js_error(&error.to_string()))?;
+        let message = serde_json::to_string(&message).map_err(js_error)?;
         let answer = tilo_session_actions::ask(&api, &caller, &message)
             .await
-            .map_err(|error| js_error(&error))?;
+            .map_err(js_error)?;
         match serde_json::from_str(&answer) {
             Ok(RemoteActionMessage::Receipt(receipt)) => match receipt.status {
                 ReceiptStatus::Completed { output } => Ok(output
                     .value
                     .map(|value| value.to_string())
                     .unwrap_or_default()),
-                ReceiptStatus::Rejected { error } => Err(js_error(&error.to_string())),
+                ReceiptStatus::Rejected { error } => Err(js_error(error)),
                 ReceiptStatus::Failed { error } => Err(js_error(&error.message)),
-                status => Err(js_error(&format!("the call was not moderated: {status:?}"))),
+                status => Err(js_error(format!("the call was not moderated: {status:?}"))),
             },
             _ => Err(js_error("the host did not answer")),
         }
