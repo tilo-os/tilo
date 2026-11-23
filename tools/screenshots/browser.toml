@@ -22,11 +22,11 @@ name = "history"
 title = "History"
 
 [[situation.steps]]
-invoke = { resource = "browser.history", action = "show-history" }
+invoke = { resource = "browser.library", action = "show-history" }
 
 [[situation]]
 name = "downloads"
 title = "Downloads"
 
 [[situation.steps]]
-invoke = { resource = "browser.downloads", action = "show-downloads" }
+invoke = { resource = "browser.library", action = "show-downloads" }

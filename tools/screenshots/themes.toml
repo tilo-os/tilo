@@ -13,7 +13,7 @@ title = "Two custom themes beside the presets"
 invoke = { resource = "themes.studio", action = "new-theme", args = { id = "forest-night", base = "paper-dark" } }
 
 [[situation.steps]]
-invoke = { resource = "themes.studio", action = "new-theme", args = { id = "paper", base = "light" } }
+invoke = { resource = "themes.studio", action = "new-theme", args = { id = "linen", base = "light" } }
 
 [[situation]]
 name = "light-variant"

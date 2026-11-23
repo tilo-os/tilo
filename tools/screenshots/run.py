@@ -235,7 +235,7 @@ def profile_env(root: Path, lib_dirs: list[Path]) -> dict:
         for key, value in os.environ.items()
         if key in {"PATH", "LANG", "LC_ALL", "TZ", "RUST_BACKTRACE", "RUST_LOG",
                    "VK_DRIVER_FILES", "VK_ICD_FILENAMES", "WGPU_BACKEND",
-                   "WGPU_ADAPTER_NAME", "TILO_PDFIUM_LIB"}
+                   "WGPU_ADAPTER_NAME", "TILO_PDFIUM_LIB", "TILO_CHROMIUM_HOST"}
     }
     dirs = {
         "HOME": root / "home",
@@ -400,6 +400,14 @@ def main() -> int:
         "failures": sorted(failures, key=lambda o: (o["app"], o["situation"])),
     }
     (args.out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    for outcome in summary["failures"]:
+        print(f"FAIL {outcome['app']}/{outcome['situation']}: {outcome['title']}", flush=True)
+        if outcome["status"] != 0:
+            print(f"  exit status {outcome['status']}", flush=True)
+        if outcome["missing"]:
+            print(f"  missing pictures: {', '.join(outcome['missing'])}", flush=True)
+        for line in outcome["log_tail"].splitlines():
+            print(f"  | {line}", flush=True)
     print(
         f"{summary['shots']} screenshots of {summary['apps']} apps in {summary['seconds']}s; "
         f"{len(failures)} situation(s) failed (see {args.out / 'summary.json'})"

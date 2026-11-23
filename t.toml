@@ -3221,11 +3221,15 @@ size = ["320x568", "390x844", "1280x800"]
 
 [[check]]
 name = "app-screenshots"
-egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "bash tools/screenshots/build.sh \"$CARGO_TARGET_DIR/app-screenshots-build\"\nrm -rf /target/app-screenshots\nbash tools/test-env.sh python3 -I tools/screenshots/run.py --out /target/app-screenshots \\\n  --bin-dir \"$CARGO_TARGET_DIR/app-screenshots-build/bin\" --lib-dir \"$CARGO_TARGET_DIR/app-screenshots-build/lib\" \\\n  || echo \"app-screenshots: some situations failed (see summary.json)\"\n"
+# The pinned CEF archive (SHA-256 in scripts/browser/cef-lock.json), which builds the
+# Chromium engine Browser's pictures need, and the build scripts' pinned assets.
+egress = { to = ["code.tilo.so:443", "cef-builds.spotifycdn.com:443"], pinned = true }
+run = "bash tools/ci/ensure-browser-dependencies.sh\ncommand -v cmake >/dev/null || dnf install -y cmake\npython3 scripts/browser/build-host.py --jobs 8\nbash tools/screenshots/build.sh \"$CARGO_TARGET_DIR/app-screenshots-build\"\nrm -rf /target/app-screenshots\nTILO_CHROMIUM_HOST=\"$PWD/target/chromium/tilo-chromium-host\" \\\n  bash tools/test-env.sh python3 -I tools/screenshots/run.py --out /target/app-screenshots \\\n  --bin-dir \"$CARGO_TARGET_DIR/app-screenshots-build/bin\" --lib-dir \"$CARGO_TARGET_DIR/app-screenshots-build/lib\"\n"
 env = { TILO_TEST_NTFS_FIXTURES = "0", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=x86_64"]
 outputs = ["/target/app-screenshots/**"]
+# A failed situation's picture, log and summary are what says why it failed.
+evidence = ["/target/app-screenshots/**"]
 timeout_secs = 5400
 default = false
 

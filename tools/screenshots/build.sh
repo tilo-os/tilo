@@ -16,9 +16,21 @@ target=$(realpath -m "${CARGO_TARGET_DIR:-target}")
 export TILO_TEST_ASSET_CACHE=${TILO_TEST_ASSET_CACHE:-$target/test-assets}
 
 plan=$(python3 tools/apps/app_release.py --collection default)
+# A screenshot plan may name one of the app's own scenarios, through actions
+# over sample data the app keeps behind its dev-only `samples` feature (never
+# in a release): a capture build turns it on for the apps whose plan names one.
+samples=$(
+    jq -r '.catalog[] | select(.kind == "native") | [.name, .package] | @tsv' <<<"$plan" |
+    while IFS=$'\t' read -r name package; do
+        if grep -q '^scenario *=' "tools/screenshots/$name.toml" 2>/dev/null &&
+            grep -q '^samples *=' "apps/$name/Cargo.toml" 2>/dev/null; then
+            printf '%s/samples,' "$package"
+        fi
+    done
+)
 INCLUDE_PACKAGES=$(jq -r '.packages | join(" ")' <<<"$plan") \
     BUILD_PACKAGES="$(jq -r '.packages | join(" ")' <<<"$plan") tilolang-app" \
-    APP_FEATURES=$(jq -r '.features | join(",")' <<<"$plan") \
+    APP_FEATURES="$(jq -r '.features | join(",")' <<<"$plan")${samples:+,$samples}" \
     TARGET_DIR=$target \
     os/scripts/build-thin-apps.sh
 
