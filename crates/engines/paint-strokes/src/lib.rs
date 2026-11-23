@@ -171,6 +171,22 @@ impl Preset {
     }
 }
 
+impl Default for Dynamics {
+    fn default() -> Self {
+        Preset::Round.defaults()
+    }
+}
+
+impl Default for Brush {
+    fn default() -> Self {
+        Self {
+            preset: Preset::Round,
+            dynamics: Dynamics::default(),
+            angle: None,
+        }
+    }
+}
+
 impl Dynamics {
     pub fn of(preset: Preset, params: &BTreeMap<String, f64>) -> Self {
         let mut dynamics = preset.defaults();

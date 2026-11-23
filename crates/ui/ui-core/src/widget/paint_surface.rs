@@ -20,8 +20,6 @@ use vello::peniko::{Blob, Color, Fill, ImageBrush};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::pictures::Pictures;
-use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{PictureSource, TaffyTreeExt, Widget};
 
@@ -29,7 +27,6 @@ use crate::widget::{PictureSource, TaffyTreeExt, Widget};
 const MAX_SIZE: f64 = 512.0;
 
 /// The artwork as it stands and the stroke under the hand over it.
-#[derive(Default)]
 pub struct PaintSurface {
     pub(crate) width: f64,
     pub(crate) height: f64,
@@ -68,6 +65,38 @@ enum Drag {
     None,
     Paint,
     Pan,
+}
+
+impl Default for PaintSurface {
+    fn default() -> Self {
+        Self {
+            width: 1024.0,
+            height: 768.0,
+            brush: Brush::default(),
+            size: 6.0,
+            colour: Color::from_rgba8(29, 27, 25, 255),
+            zoom: 1.0,
+            pan: Point::ZERO,
+            label: None,
+            picture: None,
+            pictures: None,
+            rect: Rect::ZERO,
+            stroke: Vec::new(),
+            last: None,
+            last_cursor: Point::ZERO,
+            dragging: Drag::None,
+            live: Brush::default(),
+            dirty: false,
+            layout_dirty: false,
+            on_stroke_start: None,
+            on_stroke: None,
+            on_stroke_end: None,
+            on_hover: None,
+            on_wheel: None,
+            on_panned: None,
+            on_pinch: None,
+        }
+    }
 }
 
 impl PaintSurface {
@@ -232,11 +261,6 @@ fn flat(_: Point) -> f64 {
 }
 
 impl Widget for PaintSurface {
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("span");
-        cx.picture();
-    }
-
     crate::described!();
 
     fn build_layout(
@@ -256,15 +280,8 @@ impl Widget for PaintSurface {
 
     crate::rect_geometry!();
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-        self.paint(scene, transform, theme);
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        self.paint(ctx.scene, ctx.transform, ctx.theme);
     }
 
     fn needs_redraw(&self) -> bool {
@@ -308,11 +325,11 @@ impl Widget for PaintSurface {
                         *ctx.handled = true;
                     }
                     Drag::None => {
-                        if self.rect.contains(here)
-                            && let Some(hover) = self.on_hover.as_mut()
-                        {
+                        if self.rect.contains(here) {
                             let at = self.artwork_at(here);
-                            hover(vec![at.x, at.y]);
+                            if let Some(hover) = self.on_hover.as_mut() {
+                                hover(vec![at.x, at.y]);
+                            }
                         }
                     }
                 }
