@@ -514,7 +514,7 @@ impl Checker<'_> {
         }
         let wanted = [
             Ty::Text,
-            Ty::Time,
+            Ty::Text,
             Ty::Text,
             Ty::Set(Box::new(Ty::Text)),
             Ty::Date,

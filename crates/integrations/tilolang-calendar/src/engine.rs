@@ -41,6 +41,48 @@ const REPORTED: [tilo_dav::PropName; 2] = [props::GETETAG, props::CALENDAR_DATA]
 /// What an entry is sent as.
 const ENTRY_TYPE: &str = "text/calendar; charset=utf-8";
 
+/// What a property write is sent as.
+const XML_TYPE: &str = "application/xml; charset=utf-8";
+
+/// Apple's calendar property namespace: the one a calendar's colour is kept in.
+const APPLE_CALDAV: &str = "http://apple.com/ns/ical/";
+
+/// The colour a calendar says it is, as its server keeps it.
+fn calendar_color() -> tilo_dav::PropName {
+    tilo_dav::PropName {
+        namespace: APPLE_CALDAV,
+        name: "calendar-color",
+    }
+}
+
+/// The `PROPPATCH` body that sets a calendar's name and colour.
+fn property_update(name: &str, color: &str) -> String {
+    let escape = quick_xml_escape;
+    let mut props = String::new();
+    if !name.is_empty() {
+        props.push_str("<D:displayname>");
+        props.push_str(&escape(name));
+        props.push_str("</D:displayname>");
+    }
+    if !color.is_empty() {
+        props.push_str("<A:calendar-color>");
+        props.push_str(&escape(color));
+        props.push_str("</A:calendar-color>");
+    }
+    format!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?><D:propertyupdate xmlns:D=\"DAV:\" \
+         xmlns:A=\"{APPLE_CALDAV}\"><D:set><D:prop>{props}</D:prop></D:set></D:propertyupdate>"
+    )
+}
+
+/// `text` with the characters an XML text may not hold written as entities.
+fn quick_xml_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
 /// What a person is told where writing an entry would have its calendar server call the event
 /// off for the people it names (RFC 6638, 3.2.3.1).
 const WOULD_CALL_IT_OFF: &str = "the calendar server writes to the people this entry names, and \
@@ -89,6 +131,11 @@ pub enum Work {
     Remove {
         calendar: String,
         href: String,
+    },
+    Calendar {
+        calendar: String,
+        name: String,
+        color: String,
     },
     Answer {
         calendar: String,
@@ -308,6 +355,23 @@ impl CalDavConnector for DirectConnector {
         )
     }
 
+    fn set_calendar(
+        &mut self,
+        account: &str,
+        calendar: &str,
+        name: &str,
+        color: &str,
+    ) -> Result<Request, Unmade> {
+        self.asked(
+            account,
+            Work::Calendar {
+                calendar: calendar.to_owned(),
+                name: name.to_owned(),
+                color: color.to_owned(),
+            },
+        )
+    }
+
     fn answer(
         &mut self,
         account: &str,
@@ -387,6 +451,23 @@ impl CalDavConnector for EngineConnector {
             Work::Remove {
                 calendar: calendar.to_owned(),
                 href: href.to_owned(),
+            },
+        )
+    }
+
+    fn set_calendar(
+        &mut self,
+        account: &str,
+        calendar: &str,
+        name: &str,
+        color: &str,
+    ) -> Result<Request, Unmade> {
+        self.request(
+            account,
+            Work::Calendar {
+                calendar: calendar.to_owned(),
+                name: name.to_owned(),
+                color: color.to_owned(),
             },
         )
     }
@@ -531,6 +612,14 @@ impl Engine {
                 let written = self.remove(&signed, &calendar, &href);
                 Self::answer_write(id, written)
             }
+            Work::Calendar {
+                calendar,
+                name,
+                color,
+            } => {
+                let written = self.set_calendar(&signed, &calendar, &name, &color);
+                Self::answer_write(id, written)
+            }
             Work::Answer {
                 calendar,
                 href,
@@ -588,11 +677,15 @@ impl Engine {
             calendars,
             ..Sync::default()
         };
-        for calendar in &sync.calendars {
+        for index in 0..sync.calendars.len() {
+            let calendar = sync.calendars[index].clone();
             let collection = Url::parse(&calendar.key)
                 .map_err(|_| "a calendar's address is not an address".to_owned())?;
             if collection.origin() != server.origin() {
                 continue;
+            }
+            if let Some(color) = Self::calendar_color_of(&client, &collection) {
+                sync.calendars[index].color = color;
             }
             let token = held.tokens.get(&calendar.key).cloned().flatten();
             let (listing, whole, tells) = Self::list(&client, &collection, token.as_deref())?;
@@ -709,6 +802,22 @@ impl Engine {
         Ok((listing, whole, tells))
     }
 
+    /// The colour a calendar says it is, where its server keeps one.
+    fn calendar_color_of(client: &DavClient, collection: &Url) -> Option<String> {
+        let response = client
+            .propfind(collection.clone(), Depth::Zero, &[calendar_color()])
+            .ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        let listing = response.multistatus(&LIMITS).ok()?;
+        listing
+            .responses
+            .iter()
+            .find_map(|response| response.prop_text("calendar-color"))
+            .map(ToOwned::to_owned)
+    }
+
     /// The token a calendar's collection is at now, where its server gives one.
     fn token_of(client: &DavClient, collection: &Url) -> Result<Option<String>, String> {
         let response = client
@@ -738,7 +847,68 @@ impl Engine {
             uid_of(text),
             calendar,
             href,
+            text,
         ))
+    }
+
+    /// Write a calendar's own properties: its `name` and its `color`, as its server keeps them.
+    fn set_calendar(
+        &mut self,
+        signed: &CalendarAccount,
+        calendar: &str,
+        name: &str,
+        color: &str,
+    ) -> Result<Written, String> {
+        if signed.read_only {
+            return Err(READ_ONLY.to_owned());
+        }
+        let (client, server) = Self::client(signed)?;
+        let url = Url::parse(calendar)
+            .map_err(|_| "a calendar's address is not an address".to_owned())?;
+        if url.origin() != server.origin() {
+            return Err("a calendar is on its account's server".to_owned());
+        }
+        let response = client
+            .send(
+                "PROPPATCH",
+                url.as_str(),
+                &[("Content-Type", XML_TYPE)],
+                tilo_dav::Body::Bytes(property_update(name, color).into_bytes()),
+                Precondition::None,
+            )
+            .map_err(|error| {
+                if is_unreached(&error) {
+                    UNREACHED.to_owned()
+                } else {
+                    format!("the calendar server did not answer: {error}")
+                }
+            })?;
+        if response.status().as_u16() == 403 {
+            return Err("That calendar is read-only".to_owned());
+        }
+        if !response.status().is_success() {
+            return Err(format!(
+                "the calendar server answered {}",
+                response.status().as_u16()
+            ));
+        }
+        // A `207` says each property was written or not, one status a property.
+        if let Ok(listing) = response.multistatus(&LIMITS)
+            && let Some(status) = listing
+                .responses
+                .iter()
+                .flat_map(|response| response.propstats.iter())
+                .find_map(|propstat| propstat.status.filter(|status| *status >= 300))
+        {
+            return Err(format!("the calendar server answered {status}"));
+        }
+        if let Some(held) = self.held.get_mut(&signed.id)
+            && let Some(calendar) = held.calendars.iter_mut().find(|held| held.key == calendar)
+        {
+            name.clone_into(&mut calendar.name);
+            color.clone_into(&mut calendar.color);
+        }
+        Ok(Written::Stored(calendar.to_owned()))
     }
 
     /// Write `entry` to its server: over the entry at `href`, or as a new one.
@@ -1281,7 +1451,14 @@ fn split_parameters(parameters: &str) -> Vec<String> {
 }
 
 /// The event a server's entry is, as its calendar's record holds it.
-fn entry_of(event: &Event, notes: &str, uid: Option<String>, calendar: &str, href: &str) -> Entry {
+fn entry_of(
+    event: &Event,
+    notes: &str,
+    uid: Option<String>,
+    calendar: &str,
+    href: &str,
+    text: &str,
+) -> Entry {
     let zone = event.timezone.as_str();
     Entry {
         uid: uid.unwrap_or_else(|| event.id.to_string()),
@@ -1297,14 +1474,8 @@ fn entry_of(event: &Event, notes: &str, uid: Option<String>, calendar: &str, hre
             zone.to_owned()
         },
         location: event.location.clone(),
-        repeats: repeats_of(event.recurrence),
-        repeat_every: event.recurrence_interval.max(1),
-        repeat_until: event
-            .recurrence_until
-            .map(|date| date.to_string())
-            .unwrap_or_default(),
-        repeat_count: event.recurrence_count.unwrap_or(0),
-        repeat_exdates: event
+        recurrence: recurrence_text(event),
+        exdates: event
             .recurrence_exdates
             .iter()
             .map(ToString::to_string)
@@ -1343,34 +1514,121 @@ fn entry_of(event: &Event, notes: &str, uid: Option<String>, calendar: &str, hre
                 name: attendee.name.clone(),
                 email: attendee.email.clone(),
                 status: status_of(attendee.status),
+                role: "required".to_owned(),
             })
             .collect(),
         categories: event.categories.iter().cloned().collect(),
+        color: color_of(text),
         notes: notes.to_owned(),
     }
 }
 
-fn repeats_of(recurrence: Recurrence) -> String {
-    match recurrence {
-        Recurrence::None => "none",
-        Recurrence::Daily => "daily",
-        Recurrence::Weekdays => "weekdays",
-        Recurrence::Weekly => "weekly",
-        Recurrence::Monthly => "monthly",
-        Recurrence::Yearly => "yearly",
+/// The entry's repeat as its `RRULE`: `FREQ`, `INTERVAL`, `UNTIL` and `COUNT` as its fields say,
+/// empty for one occurrence.
+fn recurrence_text(event: &Event) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let base = event.recurrence.to_rrule();
+    if !base.is_empty() {
+        parts.push(base);
+        if event.recurrence_interval > 1 {
+            parts.push(format!("INTERVAL={}", event.recurrence_interval));
+        }
+        if let Some(until) = event.recurrence_until {
+            parts.push(format!("UNTIL={}", compact_date(until)));
+        }
+        if let Some(count) = event.recurrence_count {
+            parts.push(format!("COUNT={count}"));
+        }
     }
-    .to_owned()
+    parts.join(";")
 }
 
-fn recurrence_of(repeats: &str) -> Recurrence {
-    match repeats {
-        "daily" => Recurrence::Daily,
-        "weekdays" => Recurrence::Weekdays,
-        "weekly" => Recurrence::Weekly,
-        "monthly" => Recurrence::Monthly,
-        "yearly" => Recurrence::Yearly,
-        _ => Recurrence::None,
+/// The repeat an `RRULE` names: its frequency, interval, last day and count.
+fn recurrence_parts(rule: &str) -> (Recurrence, u32, Option<Date>, Option<u32>) {
+    let mut recurrence = Recurrence::None;
+    let mut interval = 1;
+    let mut until = None;
+    let mut count = None;
+    for part in rule.split(';') {
+        let Some((name, value)) = part.split_once('=') else {
+            continue;
+        };
+        match name.trim().to_ascii_uppercase().as_str() {
+            "FREQ" => {
+                recurrence = match value.trim().to_ascii_uppercase().as_str() {
+                    "DAILY" => Recurrence::Daily,
+                    "WEEKLY" => Recurrence::Weekly,
+                    "MONTHLY" => Recurrence::Monthly,
+                    "YEARLY" => Recurrence::Yearly,
+                    _ => Recurrence::None,
+                };
+            }
+            "BYDAY" if value.to_ascii_uppercase().contains("MO") => {
+                // Every weekday, as the app's own preset names it.
+                if recurrence == Recurrence::Weekly {
+                    recurrence = Recurrence::Weekdays;
+                }
+            }
+            "INTERVAL" => interval = value.trim().parse().unwrap_or(1),
+            "UNTIL" => until = date_of(value.trim()),
+            "COUNT" => count = value.trim().parse().ok(),
+            _ => {}
+        }
     }
+    (recurrence, interval.max(1), until, count)
+}
+
+/// The day a written `UNTIL` names, `YYYYMMDD` or `YYYYMMDDTHHMMSSZ`.
+fn date_of(value: &str) -> Option<Date> {
+    let digits: String = value.chars().filter(char::is_ascii_digit).collect();
+    if digits.len() < 8 {
+        return None;
+    }
+    let year = digits.get(0..4)?.parse().ok()?;
+    let month = digits.get(4..6)?.parse().ok()?;
+    let day = digits.get(6..8)?.parse().ok()?;
+    Date::new(year, month, day).ok()
+}
+
+fn compact_date(date: Date) -> String {
+    date.to_string().replace('-', "")
+}
+
+/// The colour the entry `text` says it is, its `COLOR`.
+fn color_of(text: &str) -> String {
+    text.replace("\r\n ", "")
+        .lines()
+        .find_map(|line| {
+            let (property, value) = line.split_once(':')?;
+            property
+                .split(';')
+                .next()
+                .is_some_and(|property| property.eq_ignore_ascii_case("COLOR"))
+                .then(|| value.trim().to_owned())
+        })
+        .unwrap_or_default()
+}
+
+/// The entry `text` with its `COLOR` set to `color` in every part of it, or none where it is
+/// empty.
+fn with_color(text: &str, color: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for line in text.split_inclusive("\r\n") {
+        let property = line.split([';', ':']).next().unwrap_or_default();
+        if property.eq_ignore_ascii_case("COLOR") {
+            continue;
+        }
+        if property.eq_ignore_ascii_case("END")
+            && line.trim().eq_ignore_ascii_case("END:VEVENT")
+            && !color.is_empty()
+        {
+            out.push_str("COLOR:");
+            out.push_str(color);
+            out.push_str("\r\n");
+        }
+        out.push_str(line);
+    }
+    out
 }
 
 fn status_of(status: InviteStatus) -> String {
@@ -1427,6 +1685,7 @@ fn text_of(entry: &Entry) -> String {
     let zone = entry.timezone.as_str();
     let start = wall_of(zone, &entry.start);
     let end = wall_of(zone, &entry.end);
+    let (recurrence, interval, until, count) = recurrence_parts(&entry.recurrence);
     let mut event = Event {
         id: Id::new_v4(),
         title: entry.title.clone(),
@@ -1434,10 +1693,10 @@ fn text_of(entry: &Entry) -> String {
         end,
         all_day: entry.all_day,
         location: entry.location.clone(),
-        recurrence: recurrence_of(&entry.repeats),
-        recurrence_interval: entry.repeat_every.max(1),
-        recurrence_until: entry.repeat_until.parse::<Date>().ok(),
-        recurrence_count: (entry.repeat_count > 0).then_some(entry.repeat_count),
+        recurrence,
+        recurrence_interval: interval,
+        recurrence_until: until,
+        recurrence_count: count,
         timezone: if zone.is_empty() {
             "floating".to_owned()
         } else {
@@ -1446,7 +1705,7 @@ fn text_of(entry: &Entry) -> String {
         ..Event::default()
     };
     event.recurrence_exdates = entry
-        .repeat_exdates
+        .exdates
         .iter()
         .filter_map(|date| date.parse::<Date>().ok())
         .collect();
@@ -1504,5 +1763,5 @@ fn text_of(entry: &Entry) -> String {
             tilo_document::RichText::from_markdown(entry.notes.clone()),
         );
     }
-    set_uid(&ics::export(&calendar), &entry.uid)
+    with_color(&set_uid(&ics::export(&calendar), &entry.uid), &entry.color)
 }

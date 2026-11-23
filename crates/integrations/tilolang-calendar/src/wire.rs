@@ -52,6 +52,13 @@ pub enum ToConnector {
         calendar: String,
         text: String,
     },
+    Calendar {
+        request: Request,
+        account: String,
+        calendar: String,
+        name: String,
+        color: String,
+    },
 }
 
 /// What the connector tells the origin.

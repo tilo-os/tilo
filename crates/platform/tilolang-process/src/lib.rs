@@ -899,15 +899,20 @@ impl TilolangProcess {
     }
 
     fn attach_origin(&self, opening: &mut Opening, hosted: &mut Hosted) -> Result<(), AdmitError> {
-        // Its types with a mail server as origin are kept in step through the app's connector,
-        // which holds the network and the credentials this process has none of.
+        // Its types with an outside service's resources as origin are kept in step through the
+        // app's connector, which holds the network and the credentials this process has none of.
+        // Which service is the package's own: a type names it (`origin: imap.message`).
         if let Some(origin) = opening.origin.take() {
-            if tilolang_tilo::origin::uses_origin(&hosted.bundle().meta, "imap") {
-                let origin = tilolang_mail::remote_origin(
+            let served = ["imap", "caldav"]
+                .into_iter()
+                .find(|name| tilolang_tilo::origin::uses_origin(&hosted.bundle().meta, name));
+            if let Some(name) = served {
+                let origin = tilolang_tilo::origin::remote(
+                    name,
                     std::os::unix::net::UnixStream::from(origin),
                     Arc::clone(&self.wake),
                 )
-                .map_err(|error| AdmitError::Join(format!("its mail connector: {error}")))?;
+                .map_err(|error| AdmitError::Join(format!("its {name} connector: {error}")))?;
                 hosted.add_origin(origin);
             } else {
                 tracing::warn!(

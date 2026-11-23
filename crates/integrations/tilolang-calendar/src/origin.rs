@@ -4,8 +4,8 @@
 //! `caldav.import`.
 //!
 //! - What a server holds is written into the package's records as changes of the origin: an
-//!   account's calendars and their entries, keyed by the ids the server gives them so nothing
-//!   appears twice.
+//!   account's calendars, their entries, the people each names and the occurrences that stand
+//!   apart, keyed by the ids the server gives them so nothing appears twice.
 //! - What people change in an entry's fields applies at once in the record and is handed to the
 //!   server; a refusal puts the fields back and says why on the account.
 //! - An entry whose calendar is the workspace's own (one no account holds) is an ordinary
@@ -28,7 +28,7 @@ use tilolang_tilo::runtime::origin::{OriginWrite, Unwritten};
 use tilolang_tilo::runtime::store::{FieldKey, Store as _};
 use tilolang_tilo::runtime::{Delivery, ResourceRef, Value};
 
-use super::connector::{CalDavConnector, CalendarRef, Entry, Event, Request, Sync, Unmade};
+use super::connector::{CalDavConnector, Entry, Event, Guest, Occurrence, Sync, Unmade};
 
 /// What every writing to a read-only account is refused with.
 pub const READ_ONLY: &str = "This calendar account is connected for reading only, so nothing is \
@@ -42,84 +42,106 @@ const PEOPLE: &[&str] = &[
     "all_day",
     "timezone",
     "location",
-    "repeats",
-    "repeat_every",
-    "repeat_until",
-    "repeat_count",
-    "repeat_exdates",
-    "overrides",
-    "organizer",
-    "attendees",
-    "categories",
     "notes",
+    "categories",
+    "recurrence",
+    "exdates",
     "calendar",
+    "color",
 ];
+
+/// The fields of a calendar people change.
+const CALENDAR_PEOPLE: &[&str] = &["name", "color"];
 
 #[derive(Clone)]
 struct Types {
-    /// The root's collection of accounts.
-    accounts_field: String,
     /// The root's collection of calendars.
     calendars_field: String,
     /// The root's collection of entries.
     events_field: String,
-    account: OriginType,
     calendar: OriginType,
     event: OriginType,
+    attendee: OriginType,
 }
 
-struct Acct {
-    record: ResourceRef,
-    /// The calendars of the account, by their key: the collection's address.
-    calendars: HashMap<String, ResourceRef>,
-    read_only: bool,
+#[derive(Clone)]
+struct Cal {
+    /// The address its server keeps it at.
+    key: String,
+    account: String,
+    /// What its server said of it when it was last read or written.
+    name: String,
+    color: String,
 }
 
 #[derive(Clone)]
 struct Ev {
     account: String,
+    /// The calendar's key.
     calendar: String,
     href: String,
     /// What the record said when it was last written: what the server holds, as far as it was
     /// told.
     confirmed: Entry,
+    /// The record of the repeating entry this is an occurrence of, where it is one.
+    master: Option<String>,
+    /// The moment this occurrence would have started, where it is one.
+    original_start: String,
 }
 
 struct State {
     types: Types,
     root: ResourceRef,
-    accounts: HashMap<String, Acct>,
-    /// The account each calendar of a server belongs to, by its key.
-    calendars: HashMap<String, String>,
-    /// Each entry the origin took in, by its record's id.
+    /// Whether each account is connected for reading only.
+    accounts: HashMap<String, bool>,
+    /// Each calendar of an account's server, by its record.
+    calendars: HashMap<String, Cal>,
+    /// The record of each calendar, by its account and the address its server keeps it at.
+    by_key: HashMap<(String, String), String>,
+    /// Each entry the origin took in, by its record.
     events: HashMap<String, Ev>,
-    /// The record of each entry of each account, by the account and its href.
+    /// The record of each entry of each account, by the account and the href of its entry.
     by_href: HashMap<(String, String), String>,
-    /// The record of each entry of each account, by the account and its `UID`.
+    /// The record of each repeating entry of each account, by the account and its `UID`.
     by_uid: HashMap<(String, String), String>,
+    /// The records naming the people of each entry, by its record and their address.
+    attendees: HashMap<String, HashMap<String, String>>,
 }
 
 impl State {
-    /// The record of the entry `uid` of `account`.
+    /// The record of the repeating entry `uid` of `account`.
     fn record_of(&self, account: &str, uid: &str) -> Option<String> {
         self.by_uid
             .get(&(account.to_owned(), uid.to_owned()))
             .cloned()
     }
 
+    /// The record of the calendar `account`'s server keeps at `key`.
+    fn calendar_record(&self, account: &str, key: &str) -> Option<String> {
+        self.by_key
+            .get(&(account.to_owned(), key.to_owned()))
+            .cloned()
+    }
+
     /// Whether `calendar` is an account's, and which.
     fn calendar_of(&self, calendar: &str) -> Option<&str> {
+        let cal = self.calendars.get(calendar)?;
+        (!cal.account.is_empty()).then_some(cal.account.as_str())
+    }
+
+    /// The account whose server keeps the calendar at `key`.
+    fn calendar_ptr(&self, key: &str) -> Option<&str> {
         self.calendars
-            .get(calendar)
-            .filter(|account| !account.is_empty())
-            .map(String::as_str)
+            .values()
+            .find(|cal| cal.key == key)
+            .map(|cal| cal.account.as_str())
     }
 
     fn forget(&mut self, record: &str) {
         if let Some(ev) = self.events.remove(record) {
-            self.by_href.remove(&(ev.account.clone(), ev.href.clone()));
-            self.by_uid.remove(&(ev.account, ev.confirmed.uid));
+            self.by_href.remove(&(ev.account, ev.href));
         }
+        self.attendees.remove(record);
     }
 }
 
@@ -129,8 +151,15 @@ enum Pending {
     Put { record: String, before: Entry },
     /// An entry taken out, by its record: it moves to the workspace's own calendar.
     Remove { record: String, before: Entry },
-    /// An effect of a capability, by the payload that asked for it.
-    Asked(String),
+    /// A calendar's own properties written.
+    Calendar { record: String },
+    /// An effect of a capability, by the payload that asked for it: the account to ask again
+    /// once it is taken, and the person whose answer the entry says now, where it is one.
+    Asked {
+        key: String,
+        account: String,
+        answer: Option<(String, String)>,
+    },
 }
 
 enum Sending {
@@ -203,14 +232,12 @@ pub struct CalDavOrigin {
     state: Option<State>,
     /// Whether the workspace must be read again before anything is taken into it.
     reload: bool,
-    /// Whether the settings name an account the workspace was not read as holding yet.
-    accounts_waiting: bool,
     /// What changed in the room since the last poll, as the store told it.
     changed: Rc<RefCell<Vec<FieldKey>>>,
     subscribed: bool,
     /// Set while the origin polls: what the store tells then is its own writing.
     polling: Rc<std::cell::Cell<bool>>,
-    pending: BTreeMap<Request, Pending>,
+    pending: BTreeMap<uuid::Uuid, Pending>,
     /// The outcome of each `caldav.answer` or `caldav.import`, by the payload that asked.
     sends: HashMap<String, Sending>,
     /// Why each account's server could not be reached, until it can.
@@ -219,7 +246,7 @@ pub struct CalDavOrigin {
     unsaved: HashMap<String, String>,
     /// When each account's calendars were last taken in: what the account says of itself.
     fetched: HashMap<String, String>,
-    /// Why the last write of each entry was refused, until the entry is written again.
+    /// Why the last write of each record was refused, until it is written again.
     refused: HashMap<String, String>,
     /// The steps the workspace could not take, oldest first.
     unwritten: Unwritten<Step>,
@@ -243,7 +270,6 @@ impl CalDavOrigin {
             woken,
             state: None,
             reload: false,
-            accounts_waiting: false,
             subscribed: false,
             changed: Rc::default(),
             polling: Rc::default(),
@@ -312,53 +338,105 @@ impl CalDavOrigin {
                 Event::Unreachable { account, reason } => {
                     self.trouble.insert(account, reason);
                 }
-                Event::Accepted { request, href } => match self.pending.remove(&request) {
-                    Some(Pending::Put { record, .. }) => {
-                        polled.wrote |= self.stored(host, now, &record, &href);
-                    }
-                    Some(Pending::Remove { record, .. }) => {
-                        polled.wrote |= self.taken_out(host, now, &record);
-                    }
-                    Some(Pending::Asked(key)) => {
-                        self.sends.insert(key, Sending::Gone);
-                        polled.settle = true;
-                    }
-                    None => {}
-                },
-                Event::Refused { request, reason } => match self.pending.remove(&request) {
-                    Some(Pending::Put { record, before } | Pending::Remove { record, before }) => {
-                        polled.wrote |= self.refused(host, now, &record, &before, &reason);
-                    }
-                    Some(Pending::Asked(key)) => {
-                        self.sends.insert(key, Sending::Refused(reason));
-                        polled.settle = true;
-                    }
-                    None => {}
-                },
-                Event::Unsent { request, reason } => {
+                Event::Accepted { request, href } => {
                     match self.pending.remove(&request) {
-                        Some(
-                            Pending::Put { record, before } | Pending::Remove { record, before },
-                        ) => {
-                            // It never reached its server: the record keeps its fields and its
-                            // place, and the account says why it could not go.
-                            polled.wrote |= self.refused(host, now, &record, &before, &reason);
+                        Some(Pending::Put { record, .. }) => {
+                            polled.wrote |= self.stored(host, now, &record, &href);
                         }
-                        Some(Pending::Asked(key)) => {
-                            self.sends.insert(key, Sending::Unsent(reason));
+                        Some(Pending::Remove { record, .. }) => {
+                            polled.wrote |= self.taken_out(host, now, &record);
+                        }
+                        Some(Pending::Calendar { record }) => {
+                            self.refused.remove(&record);
+                        }
+                        Some(Pending::Asked {
+                            key,
+                            account,
+                            answer,
+                        }) => {
+                            if let Some((record, status)) = answer {
+                                polled.wrote |= self.wrote_status(host, now, &record, &status);
+                            }
+                            // What the server took is taken in: the entry it holds now, or the
+                            // invitation it put in.
+                            self.asked.remove(&account);
+                            self.due.push(account);
+                            self.sends.insert(key, Sending::Gone);
                             polled.settle = true;
                         }
                         None => {}
                     }
+                }
+                Event::Refused { request, reason } => {
+                    polled.wrote |= self.answer_failed(host, now, request, &reason);
+                    polled.settle |= self.settled_ask(&request, Sending::Refused(reason));
+                }
+                Event::Unsent { request, reason } => {
+                    polled.wrote |= self.answer_failed(host, now, request, &reason);
+                    polled.settle |= self.settled_ask(&request, Sending::Unsent(reason));
                 }
             }
         }
         polled
     }
 
-    /// An entry the server took: its record says where it is now, and what was written is what
-    /// the server holds.
+    /// A write the server refused, or could not be reached for: what the record said goes back,
+    /// and the account says why.
+    fn answer_failed(&mut self, host: &Host, now: &str, request: uuid::Uuid, reason: &str) -> bool {
+        match self.pending.remove(&request) {
+            Some(Pending::Put { record, before } | Pending::Remove { record, before }) => {
+                self.refused(host, now, &record, &before, reason)
+            }
+            Some(Pending::Calendar { record }) => {
+                self.refused_calendar(host, now, &record, reason);
+                true
+            }
+            Some(Pending::Asked { .. }) | None => false,
+        }
+    }
+
+    /// The person's own answer, written into the record that names them.
+    fn wrote_status(&mut self, host: &Host, now: &str, record: &str, status: &str) -> bool {
+        eprintln!("wrote_status {record} {status}");
+        let Some(state) = self.state.as_ref() else {
+            return false;
+        };
+        let t = state.types.clone();
+        let Some(at) = ResourceRef::parse_id(record, &t.attendee.ty) else {
+            return false;
+        };
+        let mut fields = Vec::new();
+        put(&t.attendee, &mut fields, "status", text(status));
+        matches!(
+            host.runtime().apply_origin(
+                "caldav",
+                vec![OriginWrite::Set { target: at, fields }],
+                Some(now.to_owned()),
+            ),
+            Ok(_)
+        )
+    }
+
+    /// Whether the request was a capability's, and what became of it was kept for it.
+    fn settled_ask(&mut self, request: &uuid::Uuid, outcome: Sending) -> bool {
+        let Some(Pending::Asked { key, .. }) = self.pending.get(request) else {
+            return false;
+        };
+        let key = key.clone();
+        self.pending.remove(request);
+        self.sends.insert(key, outcome);
+        true
+    }
+
+    /// An entry the server took: its record says where it is now.
     fn stored(&mut self, host: &Host, now: &str, record: &str, href: &str) -> bool {
+        let Some(state) = self.state.as_ref() else {
+            return false;
+        };
+        let Some(uid) = state.events.get(record).map(|ev| ev.confirmed.uid.clone()) else {
+            return false;
+        };
+        let t = state.types.clone();
         let Some(state) = self.state.as_mut() else {
             return false;
         };
@@ -368,37 +446,33 @@ impl CalDavOrigin {
         let was = std::mem::replace(&mut ev.href, href.to_owned());
         href.clone_into(&mut ev.confirmed.href);
         let account = ev.account.clone();
-        let uid = ev.confirmed.uid.clone();
         state.by_href.remove(&(account.clone(), was));
         state
             .by_href
             .insert((account.clone(), href.to_owned()), record.to_owned());
         state
             .by_uid
-            .insert((ev.account.clone(), uid), record.to_owned());
+            .insert((account.clone(), uid.clone()), record.to_owned());
         self.refused.remove(record);
         self.settled(&account);
-        let Some(state) = self.state.as_ref() else {
-            return false;
-        };
-        let t = &state.types;
         let Some(at) = ResourceRef::parse_id(record, &t.event.ty) else {
             return false;
         };
         let mut fields = Vec::new();
+        put(&t.event, &mut fields, "key", text(&uid));
         put(&t.event, &mut fields, "href", text(href));
         matches!(
             host.runtime().apply_origin(
                 "caldav",
                 vec![OriginWrite::Set { target: at, fields }],
-                Some(now.to_owned())
+                Some(now.to_owned()),
             ),
             Ok(_)
         )
     }
 
     /// An entry the server took out: it is no longer on the server, and its record says so,
-    /// keeping every field the person gave it, for the calendar it is in now.
+    /// keeping every field the person gave it.
     fn taken_out(&mut self, host: &Host, now: &str, record: &str) -> bool {
         let Some(state) = self.state.as_mut() else {
             return false;
@@ -414,7 +488,7 @@ impl CalDavOrigin {
         let Some(state) = self.state.as_ref() else {
             return false;
         };
-        let t = &state.types;
+        let t = state.types.clone();
         let Some(at) = ResourceRef::parse_id(record, &t.event.ty) else {
             return false;
         };
@@ -424,7 +498,7 @@ impl CalDavOrigin {
             host.runtime().apply_origin(
                 "caldav",
                 vec![OriginWrite::Set { target: at, fields }],
-                Some(now.to_owned())
+                Some(now.to_owned()),
             ),
             Ok(_)
         )
@@ -455,17 +529,16 @@ impl CalDavOrigin {
         self.unsaved.insert(account.clone(), reason.to_owned());
         self.refused.insert(record.to_owned(), reason.to_owned());
         let t = state.types.clone();
+        let calendar = state.calendar_record(&account, &before.calendar);
         let Some(at) = ResourceRef::parse_id(record, &t.event.ty) else {
             return false;
         };
         let writes = vec![OriginWrite::Set {
             target: at,
-            fields: entry_fields(&t.event, before),
+            fields: entry_fields(&t.event, before, calendar.as_deref()),
         }];
-        let taken = self.put_step(host, now, &account.clone(), writes);
+        let taken = self.put_step(host, now, &account, writes);
         if !taken.done() {
-            // The workspace would not take what the server holds: it is written again by the
-            // next poll, before anything newer.
             self.unwritten.keep(Step::Restore {
                 account,
                 record: record.to_owned(),
@@ -473,6 +546,29 @@ impl CalDavOrigin {
             });
         }
         taken.wrote()
+    }
+
+    /// The server refused a calendar's own properties: its record says what the server holds.
+    fn refused_calendar(&mut self, host: &Host, now: &str, record: &str, reason: &str) {
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let Some(cal) = state.calendars.get(record) else {
+            return;
+        };
+        let account = cal.account.clone();
+        let fields = calendar_fields(&state.types.calendar, &cal.name, &cal.color);
+        let Some(at) = ResourceRef::parse_id(record, &state.types.calendar.ty) else {
+            return;
+        };
+        self.unsaved.insert(account.clone(), reason.to_owned());
+        self.refused.insert(record.to_owned(), reason.to_owned());
+        let _ = self.put_step(
+            host,
+            now,
+            &account,
+            vec![OriginWrite::Set { target: at, fields }],
+        );
     }
 
     /// A sync the workspace would not take is kept, and what a server said is not lost.
@@ -490,7 +586,11 @@ impl CalDavOrigin {
                 {
                     return Taken::Refused;
                 }
-                tracing::warn!(account = %sync.account, %error, "what a calendar server said could not be written");
+                tracing::warn!(
+                    account = %sync.account,
+                    %error,
+                    "what a calendar server said could not be written"
+                );
                 self.unsaved.insert(
                     sync.account.clone(),
                     format!("The calendars could not be saved: {error}"),
@@ -565,15 +665,20 @@ impl CalDavOrigin {
                         return false;
                     };
                     let t = state.types.clone();
+                    let calendar = state.calendar_record(account, &entry.calendar);
                     let Some(at) = ResourceRef::parse_id(record, &t.event.ty) else {
                         return false;
                     };
-                    let writes = vec![OriginWrite::Set {
-                        target: at,
-                        fields: entry_fields(&t.event, entry),
-                    }];
                     let account = account.clone();
-                    self.put_step(host, now, &account, writes)
+                    self.put_step(
+                        host,
+                        now,
+                        &account,
+                        vec![OriginWrite::Set {
+                            target: at,
+                            fields: entry_fields(&t.event, entry, calendar.as_deref()),
+                        }],
+                    )
                 }
             };
             wrote |= taken.wrote();
@@ -616,7 +721,8 @@ impl CalDavOrigin {
             return false;
         }
         let keys: Vec<FieldKey> = std::mem::take(&mut *self.changed.borrow_mut());
-        let mut touched: BTreeSet<String> = BTreeSet::new();
+        let mut events: BTreeSet<String> = BTreeSet::new();
+        let mut calendars: BTreeSet<String> = BTreeSet::new();
         {
             let Some(state) = self.state.as_ref() else {
                 return false;
@@ -624,21 +730,90 @@ impl CalDavOrigin {
             let t = &state.types;
             let people: BTreeSet<&str> = PEOPLE
                 .iter()
-                .copied()
-                .filter(|name| t.event.field(name).is_some())
+                .filter_map(|name| t.event.field(name))
+                .collect();
+            let named: BTreeSet<&str> = CALENDAR_PEOPLE
+                .iter()
+                .filter_map(|name| t.calendar.field(name))
                 .collect();
             for key in keys {
-                if !people.contains(key.field.as_str()) && key.field != "*" {
+                if key.field == "*" {
+                    events.insert(key.resource.clone());
+                    calendars.insert(key.resource);
                     continue;
                 }
-                touched.insert(key.resource);
+                if people.contains(key.field.as_str()) {
+                    events.insert(key.resource.clone());
+                }
+                if named.contains(key.field.as_str()) {
+                    calendars.insert(key.resource);
+                }
             }
         }
         let mut wrote = false;
-        for record in touched {
+        for record in events {
             wrote |= self.pushed(host, now, &record);
         }
+        for record in calendars {
+            wrote |= self.pushed_calendar(host, now, &record);
+        }
         wrote
+    }
+
+    /// What one calendar's record says now, handed to its server.
+    fn pushed_calendar(&mut self, host: &Host, now: &str, record: &str) -> bool {
+        let Some(state) = self.state.as_ref() else {
+            return false;
+        };
+        let Some(cal) = state.calendars.get(record) else {
+            return false;
+        };
+        if cal.account.is_empty() || state.accounts.get(&cal.account).copied() != Some(false) {
+            return false;
+        }
+        let t = state.types.clone();
+        let Some(at) = ResourceRef::parse_id(record, &t.calendar.ty) else {
+            return false;
+        };
+        let name = read_text(host, &at, &t.calendar, "name");
+        let color = read_text(host, &at, &t.calendar, "color");
+        eprintln!(
+            "pushed_calendar {record}: name {name:?} color {color:?} held {}/{}",
+            cal.name, cal.color
+        );
+        if name == cal.name && color == cal.color {
+            return false;
+        }
+        let account = cal.account.clone();
+        let key = cal.key.clone();
+        match self.connector.set_calendar(&account, &key, &name, &color) {
+            Ok(request) => {
+                self.pending.insert(
+                    request,
+                    Pending::Calendar {
+                        record: record.to_owned(),
+                    },
+                );
+                if let Some(state) = self.state.as_mut()
+                    && let Some(cal) = state.calendars.get_mut(record)
+                {
+                    cal.name = name;
+                    cal.color = color;
+                }
+                true
+            }
+            Err(Unmade::NoAccount) => {
+                let reason = "no calendar account on this device is that one";
+                self.unsaved.insert(account, reason.to_owned());
+                self.refused_calendar(host, now, record, reason);
+                true
+            }
+            Err(Unmade::EngineStopped) => {
+                self.unsaved
+                    .insert(account, "The calendar engine stopped".to_owned());
+                true
+            }
+        }
     }
 
     /// What one entry's record says now, handed to its server.
@@ -651,46 +826,51 @@ impl CalDavOrigin {
             return false;
         };
         let known = state.events.contains_key(record);
-        let calendar = match try_read_text(host, &at, &t.event, "calendar") {
-            Ok(calendar) => calendar,
-            // The record is gone: the entry goes from its server, where it is on one.
-            Err(_) => {
+        // An occurrence that stands apart is written with its series.
+        if let Some(master) = state.events.get(record).and_then(|ev| ev.master.clone()) {
+            return self.pushed(host, now, &master);
+        }
+        let calendar = match try_read_ref(host, &at, &t.event, "calendar") {
+            Ok(Some(calendar)) => calendar.id_string(),
+            // The record is gone, or so is its calendar: the entry goes from its server where
+            // it is on one.
+            _ => {
                 return known && self.remove_from_server(host, now, record);
             }
         };
-        let Ok(current) = try_entry(host, &at, &t.event) else {
+        let Ok(current) = read_entry(host, state, &at, &t.event) else {
             return known && self.remove_from_server(host, now, record);
-        };
-        let Some(state) = self.state.as_ref() else {
-            return false;
         };
         let held = state.events.get(record).cloned();
         let Some(target_account) = state.calendar_of(&calendar).map(str::to_owned) else {
-            // The workspace's own calendar: the origin never sends it. One that was on a
-            // server is taken out there, and its fields stay as the person left them.
+            // The workspace's own calendar: the origin never sends it. One that was on a server
+            // is taken out there, and its fields stay as the person left them.
             return known && self.remove_from_server(host, now, record);
         };
         let Some(held) = held else {
             // An entry the origin never took in: it was made here, in an account's calendar.
-            return self.write_to_server(host, now, record, &current, &target_account, None);
+            let series = self.series(host, record, current);
+            return self.write_to_server(host, now, record, &series, &target_account, None);
         };
-        let moved = held.calendar != calendar;
+        let calendar_key = state
+            .calendars
+            .get(&calendar)
+            .map(|cal| cal.key.clone())
+            .unwrap_or_default();
+        let moved = held.calendar != calendar_key;
         if moved && target_account != held.account {
-            // Another account's calendar: out of the first server first, then written to the
-            // other's once it went.
             if !self.remove_from_server(host, now, record) {
                 return false;
             }
             self.moving.push(record.to_owned());
             return true;
         }
-        if !moved && same_entry(&current, &held.confirmed) {
+        let series = self.series(host, record, current);
+        if !moved && same_entry(&series, &held.confirmed) {
             return false;
         }
-        // Another calendar of the same server: it goes from where it was and is written as a new
-        // entry in the calendar the person chose.
-        let from = moved.then_some(held.href.as_str());
-        if self.write_to_server(host, now, record, &current, &target_account, from) {
+        let from = moved.then(|| held.href.clone());
+        if self.write_to_server(host, now, record, &series, &target_account, from.as_deref()) {
             return true;
         }
         // Nothing was written: what the record says is put back where the server refused it, or
@@ -704,14 +884,55 @@ impl CalDavOrigin {
         let account = ev.account.clone();
         let before = ev.confirmed.clone();
         let t = state.types.clone();
+        let calendar = state.calendar_record(&account, &before.calendar);
         let Some(at) = ResourceRef::parse_id(record, &t.event.ty) else {
             return false;
         };
-        let writes = vec![OriginWrite::Set {
-            target: at,
-            fields: entry_fields(&t.event, &before),
-        }];
-        self.put_step(host, now, &account, writes).wrote()
+        self.put_step(
+            host,
+            now,
+            &account,
+            vec![OriginWrite::Set {
+                target: at,
+                fields: entry_fields(&t.event, &before, calendar.as_deref()),
+            }],
+        )
+        .wrote()
+    }
+
+    /// The entry `record` and the occurrences that stand apart from it, as its server holds one
+    /// entry of them all.
+    fn series(&self, host: &Host, record: &str, master: Entry) -> Entry {
+        let Some(state) = self.state.as_ref() else {
+            return master;
+        };
+        let mut entry = master;
+        let zone = entry.timezone.clone();
+        let mut overrides: Vec<Occurrence> = Vec::new();
+        for (other, ev) in &state.events {
+            if ev.master.as_deref() != Some(record) {
+                continue;
+            }
+            let t = state.types.clone();
+            let Some(at) = ResourceRef::parse_id(other, &t.event.ty) else {
+                continue;
+            };
+            let Ok(edit) = read_entry(host, state, &at, &t.event) else {
+                continue;
+            };
+            let (date, time) = wall_parts(&zone, &ev.original_start);
+            overrides.push(Occurrence {
+                date,
+                time,
+                cancelled: false,
+                start: edit.start,
+                end: edit.end,
+                title: edit.title,
+                location: edit.location,
+            });
+        }
+        entry.overrides = overrides;
+        entry
     }
 
     /// The entry `record` as its server should hold it: written where it is, or as a new entry,
@@ -728,10 +949,7 @@ impl CalDavOrigin {
         let Some(state) = self.state.as_ref() else {
             return false;
         };
-        let Some(acct) = state.accounts.get(account) else {
-            return false;
-        };
-        if acct.read_only {
+        if state.accounts.get(account).copied().unwrap_or(true) {
             // Never asked: a read-only account refuses before any server is.
             self.unsaved
                 .insert(account.to_owned(), READ_ONLY.to_owned());
@@ -739,60 +957,23 @@ impl CalDavOrigin {
             return false;
         }
         let t = state.types.clone();
-        let Some(ev) = state.events.get(record) else {
-            // A new entry: its record has no href yet.
-            let mut entry = entry.clone();
-            if entry.uid.is_empty() {
-                entry.uid = uuid::Uuid::new_v4().to_string();
-            }
-            let before = entry.clone();
-            let request = self
-                .connector
-                .put(account, entry.clone(), "", also_remove.unwrap_or(""));
-            let Ok(request) = request else {
-                self.unsaved
-                    .insert(account.to_owned(), "The calendar engine stopped".to_owned());
-                return false;
-            };
-            self.pending.insert(
-                request,
-                Pending::Put {
-                    record: record.to_owned(),
-                    before,
-                },
-            );
-            if let Some(state) = self.state.as_mut() {
-                state.events.insert(
-                    record.to_owned(),
-                    Ev {
-                        account: account.to_owned(),
-                        calendar: entry.calendar.clone(),
-                        href: String::new(),
-                        confirmed: entry.clone(),
-                    },
-                );
-            }
-            if let Some(at) = ResourceRef::parse_id(record, &t.event.ty) {
-                let mut fields = Vec::new();
-                put(&t.event, &mut fields, "key", text(&entry.uid));
-                let _ = host.runtime().apply_origin(
-                    "caldav",
-                    vec![OriginWrite::Set { target: at, fields }],
-                    Some(now.to_owned()),
-                );
-            }
-            return true;
+        let held = state.events.get(record).cloned();
+        let mut entry = entry.clone();
+        if entry.uid.is_empty() {
+            entry.uid = uuid::Uuid::new_v4().to_string();
+        }
+        let href = match &held {
+            Some(ev) if also_remove.is_none() => ev.href.clone(),
+            Some(_) | None => String::new(),
         };
-        let before = ev.confirmed.clone();
-        let href = if also_remove.is_some() {
-            ""
-        } else {
-            ev.href.as_str()
-        };
-        let request = self
+        let before = held
+            .as_ref()
+            .map(|ev| ev.confirmed.clone())
+            .unwrap_or_else(|| entry.clone());
+        let written = self
             .connector
-            .put(account, entry.clone(), href, also_remove.unwrap_or(""));
-        let Ok(request) = request else {
+            .put(account, entry.clone(), &href, also_remove.unwrap_or(""));
+        let Ok(request) = written else {
             self.unsaved
                 .insert(account.to_owned(), "The calendar engine stopped".to_owned());
             return false;
@@ -804,14 +985,30 @@ impl CalDavOrigin {
                 before,
             },
         );
-        if let Some(state) = self.state.as_mut()
-            && let Some(ev) = state.events.get_mut(record)
-        {
-            ev.calendar.clone_from(&entry.calendar);
-            ev.confirmed = entry.clone();
-            if also_remove.is_some() {
-                ev.href.clear();
-            }
+        if let Some(state) = self.state.as_mut() {
+            state.events.insert(
+                record.to_owned(),
+                Ev {
+                    account: account.to_owned(),
+                    calendar: entry.calendar.clone(),
+                    href,
+                    confirmed: entry.clone(),
+                    master: None,
+                    original_start: String::new(),
+                },
+            );
+            state
+                .by_uid
+                .insert((account.to_owned(), entry.uid.clone()), record.to_owned());
+        }
+        if let Some(at) = ResourceRef::parse_id(record, &t.event.ty) {
+            let mut fields = Vec::new();
+            put(&t.event, &mut fields, "key", text(&entry.uid));
+            let _ = host.runtime().apply_origin(
+                "caldav",
+                vec![OriginWrite::Set { target: at, fields }],
+                Some(now.to_owned()),
+            );
         }
         true
     }
@@ -833,11 +1030,7 @@ impl CalDavOrigin {
         let calendar = ev.calendar.clone();
         let href = ev.href.clone();
         let before = ev.confirmed.clone();
-        if state
-            .accounts
-            .get(&account)
-            .is_none_or(|acct| acct.read_only)
-        {
+        if state.accounts.get(&account).copied().unwrap_or(true) {
             self.unsaved.insert(account, READ_ONLY.to_owned());
             return false;
         }
@@ -880,196 +1073,159 @@ impl CalDavOrigin {
             let Some(at) = ResourceRef::parse_id(&record, &t.event.ty) else {
                 continue;
             };
-            let Ok(current) = try_entry(host, &at, &t.event) else {
+            let Ok(Some(calendar)) = try_read_ref(host, &at, &t.event, "calendar") else {
                 continue;
             };
-            let Some(account) = state.calendar_of(&current.calendar).map(str::to_owned) else {
+            let calendar = calendar.id_string();
+            let Some(account) = state.calendar_of(&calendar).map(str::to_owned) else {
                 continue;
             };
-            wrote |= self.write_to_server(host, now, &record, &current, &account, None);
+            let Ok(master) = read_entry(host, state, &at, &t.event) else {
+                continue;
+            };
+            let series = self.series(host, &record, master);
+            wrote |= self.write_to_server(host, now, &record, &series, &account, None);
         }
         wrote
     }
 
-    /// What each account says of itself is written, and whether it was.
-    fn write_account_state(&self, host: &Host, now: &str) -> bool {
-        let states = self.account_state(host);
-        if states.is_empty() {
-            return false;
-        }
-        match host
-            .runtime()
-            .apply_origin("caldav", states, Some(now.to_owned()))
-        {
-            Ok(_) => true,
-            Err(error) => {
-                tracing::warn!(%error, "what an account says of itself was not written");
-                false
-            }
-        }
-    }
-
-    /// Each account says whether its server answers, what is wrong with it, and when its
-    /// calendars were last taken in.
-    fn account_state(&self, host: &Host) -> Vec<OriginWrite> {
-        let Some(state) = self.state.as_ref() else {
-            return Vec::new();
-        };
-        let t = &state.types;
-        let mut writes = Vec::new();
-        for (id, acct) in &state.accounts {
-            let unreached = self.trouble.get(id).map_or("", String::as_str);
-            let trouble = if unreached.is_empty() {
-                self.unsaved.get(id).map_or("", String::as_str)
-            } else {
-                unreached
-            };
-            let fetched = self.fetched.get(id).map_or("", String::as_str);
-            if read_text(host, &acct.record, &t.account, "status") != trouble
-                || (!fetched.is_empty()
-                    && read_text(host, &acct.record, &t.account, "last_synced") != fetched)
-            {
-                let mut fields = Vec::new();
-                put(&t.account, &mut fields, "status", text(trouble));
-                if !fetched.is_empty() {
-                    put(&t.account, &mut fields, "last_synced", text(fetched));
-                }
-                writes.push(OriginWrite::Set {
-                    target: acct.record.clone(),
-                    fields,
-                });
-            }
-        }
-        writes
-    }
-
-    /// Each account of the connector has its record, and its server is asked what it holds.
-    fn add_accounts(&mut self, host: &Host, now: &str) -> bool {
+    /// Each account of the connector's is asked what it holds.
+    fn follow_accounts(&mut self) -> bool {
         let Some(state) = self.state.as_mut() else {
             return false;
         };
-        if !host.store().settled() {
-            self.accounts_waiting = true;
-            return false;
-        }
-        self.accounts_waiting = false;
-        let t = &state.types;
-        let mut writes = Vec::new();
-        let mut new_accounts = Vec::new();
-        let mut held: BTreeSet<String> = BTreeSet::new();
-        for (key, acct) in &state.accounts {
-            held.insert(identity(key));
-            held.insert(identity(&read_text(
-                host,
-                &acct.record,
-                &t.account,
-                "address",
-            )));
-        }
-        for a in self.connector.accounts() {
-            let ids = [identity(&a.id), identity(&a.address)];
-            if ids.iter().any(|id| held.contains(id)) {
+        let mut asked = false;
+        for account in self.connector.accounts() {
+            if state.accounts.contains_key(&account.id) {
                 continue;
             }
-            let mut fields = Vec::new();
-            put(&t.account, &mut fields, "key", text(&a.id));
-            put(&t.account, &mut fields, "address", text(&a.address));
-            put(&t.account, &mut fields, "server", text(&a.server));
-            put(
-                &t.account,
-                &mut fields,
-                "read_only",
-                Value::Bool(a.read_only),
-            );
-            put(&t.account, &mut fields, "status", text(""));
-            writes.push(OriginWrite::Insert {
-                owner: state.root.clone(),
-                field: t.accounts_field.clone(),
-                ty: t.account.ty.clone(),
-                fields,
-            });
-            held.extend(ids);
-            new_accounts.push(a.id);
+            state.accounts.insert(account.id.clone(), account.read_only);
+            self.asked.remove(&account.id);
+            self.due.push(account.id);
+            asked = true;
         }
-        if writes.is_empty() {
-            return false;
-        }
-        let made = match write_accounts(host, now, t, writes, new_accounts) {
-            Ok(made) => made,
-            Err(error) => {
-                tracing::warn!(%error, "the calendar accounts could not be written");
-                return false;
-            }
-        };
-        let mut made_it = false;
-        for (id, record, read_only) in made {
-            state.accounts.insert(
-                id.clone(),
-                Acct {
-                    record,
-                    calendars: HashMap::new(),
-                    read_only,
-                },
-            );
-            self.asked.remove(&id);
-            self.due.push(id);
-            made_it = true;
-        }
-        made_it
+        asked
     }
 }
 
-/// The events of the accounts whose changes were not asked for yet are asked for.
-fn due_syncs(state: &State, asked: &HashSet<String>) -> Vec<String> {
-    state
-        .accounts
-        .keys()
-        .filter(|id| !asked.contains(*id))
-        .cloned()
-        .collect()
+/// The instant a day and a time of day are in `zone`, as the record holds one.
+fn instant_of(zone: &str, date: &str, time: &str) -> String {
+    let Ok(date) = jiff::civil::Date::strptime("%Y-%m-%d", date) else {
+        return String::new();
+    };
+    let time = if time.is_empty() {
+        jiff::civil::Time::MIN
+    } else {
+        jiff::civil::Time::strptime("%H:%M:%S", time).unwrap_or(jiff::civil::Time::MIN)
+    };
+    let wall = date.to_datetime(time);
+    let zoned = if zone.is_empty() || zone == "floating" {
+        wall.to_zoned(jiff::tz::TimeZone::UTC)
+    } else {
+        jiff::tz::TimeZone::get(zone).and_then(|timezone| wall.to_zoned(timezone))
+    };
+    zoned
+        .map(|zoned| zoned.timestamp().to_string())
+        .unwrap_or_default()
 }
 
-/// The accounts' records and their read-only rule, written as one change of the origin.
-fn write_accounts(
-    host: &Host,
-    now: &str,
-    t: &Types,
-    writes: Vec<OriginWrite>,
-    new_accounts: Vec<String>,
-) -> Result<Vec<(String, ResourceRef, bool)>, RuntimeError> {
-    host.runtime()
-        .write_origin("caldav", Some(now.to_owned()), |change| {
-            let read_only: HashMap<String, bool> = writes
-                .iter()
-                .filter_map(|write| match write {
-                    OriginWrite::Insert { fields, .. } => {
-                        let key = fields
-                            .iter()
-                            .find(|(id, _)| t.account.field("key") == Some(id.as_str()));
-                        let rule = fields
-                            .iter()
-                            .find(|(id, _)| t.account.field("read_only") == Some(id.as_str()));
-                        Some((
-                            match key.map(|(_, value)| value) {
-                                Some(Value::Text(key)) => key.clone(),
-                                _ => String::new(),
-                            },
-                            matches!(rule.map(|(_, value)| value), Some(Value::Bool(true))),
-                        ))
-                    }
-                    OriginWrite::Set { .. } | OriginWrite::Remove { .. } => None,
-                })
-                .collect();
-            let records = change.write(writes)?;
-            let mut accounts = Vec::new();
-            for (id, record) in new_accounts.into_iter().zip(records) {
-                if let Some(record) = record {
-                    let rule = read_only.get(&id).copied().unwrap_or(false);
-                    accounts.push((id, record, rule));
-                }
-            }
-            Ok(accounts)
+/// What the record of one occurrence of `entry` says: the fields it changes, and the series it
+/// is one of.
+fn override_fields(
+    ty: &OriginType,
+    entry: &Entry,
+    occurrence: &Occurrence,
+    master: &ResourceRef,
+    calendar: Option<&str>,
+    original_start: &str,
+) -> Vec<(String, Value)> {
+    let mut fields = entry_fields(ty, entry, calendar);
+    fields.retain(|(id, _)| {
+        ty.fields.iter().any(|(name, field)| {
+            field == id && (name == "key" || name == "href" || name == "timezone")
         })
+    });
+    let zone = entry.timezone.clone();
+    let title = if occurrence.title.is_empty() {
+        entry.title.clone()
+    } else {
+        occurrence.title.clone()
+    };
+    let location = if occurrence.location.is_empty() {
+        entry.location.clone()
+    } else {
+        occurrence.location.clone()
+    };
+    let start = if occurrence.start.is_empty() {
+        entry.start.clone()
+    } else {
+        occurrence.start.clone()
+    };
+    let end = if occurrence.end.is_empty() {
+        entry.end.clone()
+    } else {
+        occurrence.end.clone()
+    };
+    put(ty, &mut fields, "title", text(&title));
+    put(ty, &mut fields, "start", text(&start));
+    put(ty, &mut fields, "end", text(&end));
+    put(ty, &mut fields, "all_day", Value::Bool(entry.all_day));
+    put(ty, &mut fields, "location", text(&location));
+    put(ty, &mut fields, "notes", text(&entry.notes));
+    put(ty, &mut fields, "color", text(&entry.color));
+    put(ty, &mut fields, "day", text(&day_of(&zone, &start)));
+    put(ty, &mut fields, "original_start", text(original_start));
+    put(
+        ty,
+        &mut fields,
+        "recurrence_of",
+        Value::Opt(Some(Box::new(Value::resource(master)))),
+    );
+    fields
+}
+
+/// The day and time of day the instant `instant` is in `zone`.
+fn wall_parts(zone: &str, instant: &str) -> (String, String) {
+    if instant.is_empty() {
+        return (String::new(), String::new());
+    }
+    let Ok(timestamp) = instant.parse::<jiff::Timestamp>() else {
+        return (String::new(), String::new());
+    };
+    let wall = if zone.is_empty() || zone == "floating" {
+        jiff::tz::TimeZone::UTC.to_datetime(timestamp)
+    } else {
+        jiff::tz::TimeZone::get(zone)
+            .map(|timezone| timezone.to_datetime(timestamp))
+            .unwrap_or_else(|_| jiff::tz::TimeZone::UTC.to_datetime(timestamp))
+    };
+    (wall.date().to_string(), wall.time().to_string())
+}
+
+/// The day the instant `instant` is in `zone`.
+fn day_of(zone: &str, instant: &str) -> String {
+    wall_parts(zone, instant).0
+}
+
+/// What one sync wrote, to be taken into the state once the workspace keeps it.
+struct Made {
+    /// Each new calendar: the address its server keeps it at, and its record.
+    calendars: Vec<(String, ResourceRef)>,
+    /// Each entry written, with its record, the people it names and the occurrences that stand
+    /// apart from it.
+    entries: Vec<Written>,
+    /// The records of occurrences no longer of any series.
+    forgotten: Vec<String>,
+}
+
+struct Written {
+    entry: Entry,
+    record: ResourceRef,
+    master: Option<String>,
+    people: Vec<(String, ResourceRef)>,
+    overrides: Vec<(Occurrence, ResourceRef)>,
+    gone_overrides: Vec<String>,
+    gone_people: Vec<String>,
 }
 
 /// What a server said changed in `account`, written as one change of the origin.
@@ -1077,38 +1233,33 @@ fn write_sync(
     host: &Host,
     now: &str,
     state: &mut State,
-    pending: &BTreeMap<Request, Pending>,
+    pending: &BTreeMap<uuid::Uuid, Pending>,
     sync: &Sync,
 ) -> Result<bool, RuntimeError> {
     let t = state.types.clone();
-    let Some(acct) = state.accounts.get(&sync.account) else {
+    if !state.accounts.contains_key(&sync.account) {
         return Err(RuntimeError::NotFound(format!(
             "no calendar account {} in the workspace as it was read",
             sync.account
         )));
-    };
-    let mut calendars = acct.calendars.clone();
+    }
     // Calendars the server no longer lists, and the entries of each: they go.
     let listed: HashSet<&str> = sync.calendars.iter().map(|cal| cal.key.as_str()).collect();
-    let gone_calendars: Vec<String> = calendars
-        .keys()
-        .filter(|key| !listed.contains(key.as_str()))
-        .cloned()
-        .collect();
-    let gone_events: Vec<String> = gone_calendars
+    let gone_calendars: Vec<String> = state
+        .calendars
         .iter()
-        .flat_map(|calendar| {
-            state
-                .events
-                .iter()
-                .filter(move |(_, ev)| &ev.calendar == calendar)
-                .map(|(record, _)| record.clone())
-                .collect::<Vec<_>>()
-        })
+        .filter(|(_, cal)| cal.account == sync.account && !listed.contains(cal.key.as_str()))
+        .map(|(record, _)| record.clone())
         .collect();
-    // What the entries of this pull are written as, and which of them are new.
-    let mut inserts: Vec<Entry> = Vec::new();
+    let gone_events: Vec<String> = state
+        .events
+        .iter()
+        .filter(|(_, ev)| ev.account == sync.account && !listed.contains(ev.calendar.as_str()))
+        .map(|(record, _)| record.clone())
+        .collect();
+    // What this pull writes: the entries new to the workspace, and the ones it brings up to date.
     let mut updates: Vec<(String, Entry)> = Vec::new();
+    let mut inserts: Vec<Entry> = Vec::new();
     let mut removed: Vec<String> = Vec::new();
     for entry in &sync.entries {
         if waiting(state, pending, &sync.account, &entry.uid) {
@@ -1136,187 +1287,364 @@ fn write_sync(
         }
     }
     let root = state.root.clone();
-    let (new_calendars, new_events) =
-        host.runtime()
-            .write_origin("caldav", Some(now.to_owned()), |change| {
-                let mut calendar_writes = Vec::new();
-                let mut kept: Vec<String> = Vec::new();
-                for cal in &sync.calendars {
-                    if calendars.contains_key(&cal.key) {
-                        continue;
+    let made = host
+        .runtime()
+        .write_origin("caldav", Some(now.to_owned()), |change| {
+            let mut made = Made {
+                calendars: Vec::new(),
+                entries: Vec::new(),
+                forgotten: Vec::new(),
+            };
+            // Calendars first: the entries name them.
+            let mut writes = Vec::new();
+            let mut new_calendars: Vec<(String, usize)> = Vec::new();
+            for cal in &sync.calendars {
+                if let Some(record) = state.calendar_record(&cal.account, &cal.key) {
+                    if let Some(at) = ResourceRef::parse_id(&record, &t.calendar.ty) {
+                        let fields = calendar_fields(&t.calendar, &cal.name, &cal.color);
+                        if fields_differ(host, &at, &t.calendar, &fields) {
+                            writes.push(OriginWrite::Set { target: at, fields });
+                        }
                     }
-                    let mut fields = calendar_fields(&t.calendar, cal);
-                    put(&t.calendar, &mut fields, "key", text(&cal.key));
-                    calendar_writes.push(OriginWrite::Insert {
-                        owner: root.clone(),
-                        field: t.calendars_field.clone(),
-                        ty: t.calendar.ty.clone(),
-                        fields,
-                    });
-                    kept.push(cal.key.clone());
+                    continue;
                 }
-                let made_calendars = change.write(calendar_writes)?;
+                let mut fields = calendar_fields(&t.calendar, &cal.name, &cal.color);
+                put(&t.calendar, &mut fields, "key", text(&cal.key));
+                put(&t.calendar, &mut fields, "account", text(&cal.account));
+                put(
+                    &t.calendar,
+                    &mut fields,
+                    "writable",
+                    Value::Bool(cal.writable),
+                );
+                new_calendars.push((cal.key.clone(), writes.len()));
+                writes.push(OriginWrite::Insert {
+                    owner: root.clone(),
+                    field: t.calendars_field.clone(),
+                    ty: t.calendar.ty.clone(),
+                    fields,
+                });
+            }
+            let results = change.write(writes)?;
+            for (key, slot) in new_calendars {
+                if let Some(Some(record)) = results.get(slot) {
+                    made.calendars.push((key, record.clone()));
+                }
+            }
+            // The calendars this pull made, by the address their server keeps them at: the
+            // entries of them name the records they are inserted as.
+            let made_calendars: HashMap<String, String> = made
+                .calendars
+                .iter()
+                .map(|(key, record)| (key.clone(), record.id_string()))
+                .collect();
+            let calendar_record = |key: &str| {
+                state
+                    .calendar_record(&sync.account, key)
+                    .or_else(|| made_calendars.get(key).cloned())
+            };
 
+            let mut writes = Vec::new();
+            for record in gone_calendars.iter().chain(&gone_events).chain(&removed) {
+                if let Some(record) = state.forgotten_by(record) {
+                    writes.push(record);
+                }
+            }
+            change.write(writes)?;
+
+            let mut updates_writes = Vec::new();
+            for (record, entry) in &updates {
+                let Some(at) = ResourceRef::parse_id(record, &t.event.ty) else {
+                    continue;
+                };
+                let fields =
+                    entry_fields(&t.event, entry, calendar_record(&entry.calendar).as_deref());
+                updates_writes.push(OriginWrite::Set {
+                    target: at.clone(),
+                    fields,
+                });
+                made.entries.push(Written {
+                    entry: entry.clone(),
+                    record: at,
+                    master: None,
+                    people: Vec::new(),
+                    overrides: Vec::new(),
+                    gone_overrides: Vec::new(),
+                    gone_people: Vec::new(),
+                });
+            }
+            let mut insert_writes = Vec::new();
+            let mut insert_slots: Vec<usize> = Vec::new();
+            for entry in &inserts {
+                insert_slots.push(updates_writes.len() + insert_writes.len());
+                insert_writes.push(OriginWrite::Insert {
+                    owner: root.clone(),
+                    field: t.events_field.clone(),
+                    ty: t.event.ty.clone(),
+                    fields: entry_fields(
+                        &t.event,
+                        entry,
+                        calendar_record(&entry.calendar).as_deref(),
+                    ),
+                });
+            }
+            let combined = std::mem::take(&mut updates_writes);
+            let update_results = change.write(combined)?;
+            let insert_results = change.write(insert_writes)?;
+            for (index, slot) in insert_slots.into_iter().enumerate() {
+                let _ = slot;
+                if let Some(Some(record)) = insert_results.get(index)
+                    && let Some(entry) = inserts.get(index)
+                {
+                    made.entries.push(Written {
+                        entry: entry.clone(),
+                        record: record.clone(),
+                        master: None,
+                        people: Vec::new(),
+                        overrides: Vec::new(),
+                        gone_overrides: Vec::new(),
+                        gone_people: Vec::new(),
+                    });
+                }
+            }
+            let _ = update_results;
+
+            // The people each entry names, and the occurrences that stand apart from it.
+            for written in &mut made.entries {
+                let entry = written.entry.clone();
+                let record = written.record.clone();
+                let existing: HashMap<String, String> = state
+                    .attendees
+                    .get(&record.id_string())
+                    .cloned()
+                    .unwrap_or_default();
+                let mut wants = Vec::new();
+                for guest in &entry.attendees {
+                    wants.push(guest.clone());
+                }
                 let mut writes = Vec::new();
-                for cal in &sync.calendars {
-                    if let Some(record) = calendars.get(&cal.key) {
-                        let fields = calendar_fields(&t.calendar, cal);
-                        if fields_differ(host, record, &t.calendar, &fields) {
-                            writes.push(OriginWrite::Set {
-                                target: record.clone(),
-                                fields,
+                for guest in &wants {
+                    if let Some(at) = existing
+                        .get(&guest.email)
+                        .and_then(|record| ResourceRef::parse_id(record, &t.attendee.ty))
+                    {
+                        let fields = guest_fields(&t.attendee, guest);
+                        if fields_differ(host, &at, &t.attendee, &fields) {
+                            writes.push(OriginWrite::Set { target: at, fields });
+                        }
+                    } else {
+                        writes.push(OriginWrite::Insert {
+                            owner: record.clone(),
+                            field: t.event.field("attendees").unwrap_or_default().to_owned(),
+                            ty: t.attendee.ty.clone(),
+                            fields: guest_fields(&t.attendee, guest),
+                        });
+                    }
+                }
+                for (email, at) in &existing {
+                    if !wants.iter().any(|guest| &guest.email == email) {
+                        if let Some(at) = ResourceRef::parse_id(at, &t.attendee.ty) {
+                            writes.push(OriginWrite::Remove {
+                                owner: record.clone(),
+                                field: t.event.field("attendees").unwrap_or_default().to_owned(),
+                                item: at,
                             });
+                        }
+                        written.gone_people.push(email.clone());
+                    }
+                }
+                for guest in &wants {
+                    for (email, at) in &existing {
+                        if email == &guest.email
+                            && !written.people.iter().any(|(held, _)| held == email)
+                            && let Some(at) = ResourceRef::parse_id(at, &t.attendee.ty)
+                        {
+                            written.people.push((email.clone(), at));
                         }
                     }
                 }
-                for calendar in &gone_calendars {
-                    if let Some(record) = calendars.get(calendar) {
-                        writes.push(OriginWrite::Remove {
-                            owner: root.clone(),
-                            field: t.calendars_field.clone(),
-                            item: record.clone(),
-                        });
+                let results = change.write(writes)?;
+                for (guest, result) in wants.iter().zip(results) {
+                    if let Some(record) = result {
+                        written.people.push((guest.email.clone(), record));
                     }
                 }
-                for record in &gone_events {
-                    if let Some(at) = ResourceRef::parse_id(record, &t.event.ty) {
-                        writes.push(OriginWrite::Remove {
-                            owner: root.clone(),
-                            field: t.events_field.clone(),
-                            item: at,
-                        });
-                    }
-                }
-                for (record, entry) in &updates {
-                    let Some(at) = ResourceRef::parse_id(record, &t.event.ty) else {
-                        continue;
-                    };
-                    writes.push(OriginWrite::Set {
-                        target: at,
-                        fields: entry_fields(&t.event, entry),
-                    });
-                }
-                for record in &removed {
-                    if let Some(at) = ResourceRef::parse_id(record, &t.event.ty) {
-                        writes.push(OriginWrite::Remove {
-                            owner: root.clone(),
-                            field: t.events_field.clone(),
-                            item: at,
-                        });
-                    }
-                }
-                change.write(writes)?;
+            }
 
-                let mut insert_writes = Vec::new();
-                for entry in &inserts {
-                    insert_writes.push(OriginWrite::Insert {
+            // The occurrences that stand apart from each entry: one record each, naming the
+            // series it is one of.
+            for written in &mut made.entries {
+                let entry = written.entry.clone();
+                let record = written.record.clone();
+                let master = record.id_string();
+                let existing: Vec<(String, String)> = state
+                    .events
+                    .iter()
+                    .filter(|(_, ev)| ev.master.as_deref() == Some(master.as_str()))
+                    .map(|(other, ev)| (other.clone(), ev.original_start.clone()))
+                    .collect();
+                let mut writes = Vec::new();
+                let mut inserts = Vec::new();
+                let mut wanted: Vec<String> = Vec::new();
+                for occurrence in entry
+                    .overrides
+                    .iter()
+                    .filter(|occurrence| !occurrence.cancelled)
+                {
+                    let original = instant_of(&entry.timezone, &occurrence.date, &occurrence.time);
+                    wanted.push(original.clone());
+                    let calendar_record = calendar_record(&entry.calendar);
+                    let fields = override_fields(
+                        &t.event,
+                        &entry,
+                        occurrence,
+                        &record,
+                        calendar_record.as_deref(),
+                        &original,
+                    );
+                    if let Some((other, _)) = existing.iter().find(|(_, start)| start == &original)
+                        && let Some(at) = ResourceRef::parse_id(other, &t.event.ty)
+                    {
+                        writes.push(OriginWrite::Set { target: at, fields });
+                        continue;
+                    }
+                    inserts.push(OriginWrite::Insert {
                         owner: root.clone(),
                         field: t.events_field.clone(),
                         ty: t.event.ty.clone(),
-                        fields: entry_fields(&t.event, entry),
+                        fields,
                     });
                 }
-                let made_events = change.write(insert_writes)?;
-                Ok((
-                    kept.into_iter().zip(made_calendars).collect::<Vec<_>>(),
-                    made_events,
-                ))
-            })?;
-    for (key, record) in new_calendars {
-        if let Some(record) = record {
-            calendars.insert(key, record);
+                for (other, _) in &existing {
+                    if !wanted.iter().any(|original| {
+                        state
+                            .events
+                            .get(other)
+                            .is_some_and(|ev| &ev.original_start == original)
+                    }) {
+                        if let Some(at) = ResourceRef::parse_id(other, &t.event.ty) {
+                            writes.push(OriginWrite::Remove {
+                                owner: root.clone(),
+                                field: t.events_field.clone(),
+                                item: at,
+                            });
+                        }
+                        written.gone_overrides.push(other.clone());
+                    }
+                }
+                change.write(writes)?;
+                let results = change.write(inserts)?;
+                let mut made_overrides: Vec<(Occurrence, ResourceRef)> = Vec::new();
+                let mut slot = 0;
+                for occurrence in entry
+                    .overrides
+                    .iter()
+                    .filter(|occurrence| !occurrence.cancelled)
+                {
+                    let original = instant_of(&entry.timezone, &occurrence.date, &occurrence.time);
+                    if existing.iter().any(|(_, start)| start == &original) {
+                        continue;
+                    }
+                    if let Some(Some(record)) = results.get(slot) {
+                        made_overrides.push((occurrence.clone(), record.clone()));
+                    }
+                    slot += 1;
+                }
+                written.overrides = made_overrides;
+            }
+            Ok(made)
+        })?;
+    // The state keeps what the workspace now holds.
+    for (key, record) in made.calendars {
+        let account = sync.account.clone();
+        state
+            .by_key
+            .insert((account.clone(), key.clone()), record.id_string());
+        state.calendars.insert(
+            record.id_string(),
+            Cal {
+                key,
+                account,
+                name: String::new(),
+                color: String::new(),
+            },
+        );
+    }
+    for cal in &sync.calendars {
+        if let Some(record) = state.calendar_record(&cal.account, &cal.key)
+            && let Some(held) = state.calendars.get_mut(&record)
+        {
+            cal.name.clone_into(&mut held.name);
+            cal.color.clone_into(&mut held.color);
         }
     }
-    if let Some(acct) = state.accounts.get_mut(&sync.account) {
-        acct.calendars = calendars;
-    }
-    for record in &gone_events {
+    for record in gone_events.iter().chain(&removed) {
         state.forget(record);
     }
-    for (record, entry) in &updates {
-        if let Some(ev) = state.events.get_mut(record) {
-            ev.calendar.clone_from(&entry.calendar);
-            ev.href.clone_from(&entry.href);
-            ev.confirmed = entry.clone();
-            state
-                .by_href
-                .insert((sync.account.clone(), entry.href.clone()), record.clone());
-            state
-                .by_uid
-                .insert((sync.account.clone(), entry.uid.clone()), record.clone());
-        } else {
-            let account = sync.account.clone();
-            state
-                .by_href
-                .insert((account.clone(), entry.href.clone()), record.clone());
-            state
-                .by_uid
-                .insert((account.clone(), entry.uid.clone()), record.clone());
+    for written in made.entries {
+        let record = written.record.id_string();
+        let account = sync.account.clone();
+        state.by_href.insert(
+            (account.clone(), written.entry.href.clone()),
+            record.clone(),
+        );
+        state
+            .by_uid
+            .insert((account.clone(), written.entry.uid.clone()), record.clone());
+        let people: HashMap<String, String> = written
+            .people
+            .into_iter()
+            .map(|(email, at)| (email, at.id_string()))
+            .collect();
+        state.attendees.insert(record.clone(), people);
+        for (occurrence, at) in written.overrides {
+            let original = instant_of(&written.entry.timezone, &occurrence.date, &occurrence.time);
             state.events.insert(
-                record.clone(),
+                at.id_string(),
                 Ev {
-                    account,
-                    calendar: entry.calendar.clone(),
-                    href: entry.href.clone(),
-                    confirmed: entry.clone(),
+                    account: sync.account.clone(),
+                    calendar: written.entry.calendar.clone(),
+                    href: written.entry.href.clone(),
+                    confirmed: Entry::default(),
+                    master: Some(record.clone()),
+                    original_start: original,
                 },
             );
         }
-    }
-    for (entry, record) in inserts.iter().zip(new_events) {
-        let Some(record) = record else { continue };
-        let record = record.id_string();
-        let account = sync.account.clone();
-        state
-            .by_href
-            .insert((account.clone(), entry.href.clone()), record.clone());
-        state
-            .by_uid
-            .insert((account.clone(), entry.uid.clone()), record.clone());
+        for other in written.gone_overrides {
+            state.forget(&other);
+        }
         state.events.insert(
             record,
             Ev {
                 account,
-                calendar: entry.calendar.clone(),
-                href: entry.href.clone(),
-                confirmed: entry.clone(),
+                calendar: written.entry.calendar.clone(),
+                href: written.entry.href.clone(),
+                confirmed: written.entry,
+                master: written.master,
+                original_start: String::new(),
             },
         );
     }
-    for record in &removed {
-        state.forget(record);
+    for record in made.forgotten {
+        state.forget(&record);
     }
     Ok(true)
 }
 
-/// Whether a write waits for the entry `uid` of `account`: what a server says of it was read
-/// before the change was told, so it is no news of it.
-fn waiting(state: &State, pending: &BTreeMap<Request, Pending>, account: &str, uid: &str) -> bool {
+/// Whether a write waits for the entry `uid` of `account`.
+fn waiting(
+    state: &State,
+    pending: &BTreeMap<uuid::Uuid, Pending>,
+    account: &str,
+    uid: &str,
+) -> bool {
     pending.values().any(|waiting| match waiting {
         Pending::Put { record, .. } | Pending::Remove { record, .. } => state
             .events
             .get(record)
             .is_some_and(|ev| ev.account == account && ev.confirmed.uid == uid),
-        Pending::Asked(_) => false,
-    })
-}
-
-fn fields_differ(
-    host: &Host,
-    at: &ResourceRef,
-    ty: &OriginType,
-    fields: &[(String, Value)],
-) -> bool {
-    fields.iter().any(|(id, value)| {
-        let name = ty
-            .fields
-            .iter()
-            .find(|(_, field)| field.as_str() == id.as_str())
-            .map(|(name, _)| name.as_str());
-        match name {
-            Some(name) => try_read(host, at, ty, name).ok().flatten().as_ref() != Some(value),
-            None => true,
-        }
+        Pending::Calendar { .. } | Pending::Asked { .. } => false,
     })
 }
 
@@ -1375,12 +1703,22 @@ fn try_read_bool(
     })
 }
 
-fn try_read_int(host: &Host, at: &ResourceRef, ty: &OriginType, name: &str) -> Result<i64, String> {
-    Ok(match try_read(host, at, ty, name)? {
-        Some(Value::Int(i)) => i,
-        Some(Value::Text(t)) => t.parse().unwrap_or_default(),
-        _ => 0,
-    })
+/// The resource the field `name` names, where it names one.
+fn try_read_ref(
+    host: &Host,
+    at: &ResourceRef,
+    ty: &OriginType,
+    name: &str,
+) -> Result<Option<ResourceRef>, String> {
+    let target = match try_read(host, at, ty, name)? {
+        Some(Value::Ref(r)) => r.target,
+        Some(Value::Opt(Some(held))) => match *held {
+            Value::Ref(r) => r.target,
+            _ => return Ok(None),
+        },
+        _ => return Ok(None),
+    };
+    Ok(Some((*target).clone()))
 }
 
 fn try_items(host: &Host, at: &ResourceRef, field: &str) -> Result<Vec<ResourceRef>, String> {
@@ -1420,95 +1758,77 @@ fn try_texts(
     })
 }
 
-/// What an account is identified by, without the case and spaces addresses are written with.
-fn identity(s: &str) -> String {
-    s.trim().to_lowercase()
-}
-
-/// The entry `at` says now.
-fn try_entry(host: &Host, at: &ResourceRef, ty: &OriginType) -> Result<Entry, String> {
+/// The entry `at` says now, its calendar's key aside its occurrences.
+fn read_entry(
+    host: &Host,
+    state: &State,
+    at: &ResourceRef,
+    ty: &OriginType,
+) -> Result<Entry, String> {
+    let calendar = try_read_ref(host, at, ty, "calendar")?
+        .map(|calendar| {
+            state
+                .calendars
+                .get(&calendar.id_string())
+                .map(|cal| cal.key.clone())
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
+    let mut attendees: Vec<Guest> = Vec::new();
+    if let Some(field) = ty.field("attendees") {
+        for guest in try_items(host, at, field)? {
+            attendees.push(Guest {
+                name: try_read_text(host, &guest, &state.types.attendee, "name")?,
+                email: try_read_text(host, &guest, &state.types.attendee, "email")?,
+                status: try_read_text(host, &guest, &state.types.attendee, "status")?,
+                role: try_read_text(host, &guest, &state.types.attendee, "role")?,
+            });
+        }
+    }
+    let organizer = attendees
+        .iter()
+        .find(|guest| guest.role == "chair")
+        .map(|guest| guest.email.clone())
+        .unwrap_or_default();
     Ok(Entry {
         uid: try_read_text(host, at, ty, "key")?,
         href: try_read_text(host, at, ty, "href")?,
-        calendar: try_read_text(host, at, ty, "calendar")?,
+        calendar,
         title: try_read_text(host, at, ty, "title")?,
         start: try_read_text(host, at, ty, "start")?,
         end: try_read_text(host, at, ty, "end")?,
         all_day: try_read_bool(host, at, ty, "all_day")?,
         timezone: try_read_text(host, at, ty, "timezone")?,
         location: try_read_text(host, at, ty, "location")?,
-        repeats: try_read_text(host, at, ty, "repeats")?,
-        repeat_every: u32::try_from(try_read_int(host, at, ty, "repeat_every")?).unwrap_or(1),
-        repeat_until: try_read_text(host, at, ty, "repeat_until")?,
-        repeat_count: u32::try_from(try_read_int(host, at, ty, "repeat_count")?).unwrap_or(0),
-        repeat_exdates: try_texts(host, at, ty, "repeat_exdates")?,
-        overrides: json_lines(&try_read_text(host, at, ty, "overrides")?),
-        organizer: try_read_text(host, at, ty, "organizer")?,
-        attendees: json_lines(&try_read_text(host, at, ty, "attendees")?),
+        recurrence: try_read_text(host, at, ty, "recurrence")?,
+        exdates: try_texts(host, at, ty, "exdates")?,
+        overrides: Vec::new(),
+        organizer,
+        attendees,
         categories: try_texts(host, at, ty, "categories")?,
+        color: try_read_text(host, at, ty, "color")?,
         notes: try_read_text(host, at, ty, "notes")?,
     })
 }
 
-fn json_lines<T: serde::de::DeserializeOwned + Default>(text: &str) -> Vec<T> {
-    text.lines()
-        .filter(|line| !line.trim().is_empty())
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .collect()
-}
-
-fn json_of<T: serde::Serialize>(items: &[T]) -> String {
-    items
-        .iter()
-        .filter_map(|item| serde_json::to_string(item).ok())
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// What the record of the entry `entry` says, every field of it.
-fn entry_fields(ty: &OriginType, entry: &Entry) -> Vec<(String, Value)> {
+/// What the record of the entry `entry` says, every field of it but where the server keeps it.
+fn entry_fields(ty: &OriginType, entry: &Entry, calendar: Option<&str>) -> Vec<(String, Value)> {
     let mut fields = Vec::new();
     put(ty, &mut fields, "key", text(&entry.uid));
     put(ty, &mut fields, "href", text(&entry.href));
-    put(ty, &mut fields, "calendar", text(&entry.calendar));
     put(ty, &mut fields, "title", text(&entry.title));
     put(ty, &mut fields, "start", text(&entry.start));
     put(ty, &mut fields, "end", text(&entry.end));
     put(ty, &mut fields, "all_day", Value::Bool(entry.all_day));
     put(ty, &mut fields, "timezone", text(&entry.timezone));
     put(ty, &mut fields, "location", text(&entry.location));
-    put(ty, &mut fields, "repeats", text(&entry.repeats));
+    put(ty, &mut fields, "notes", text(&entry.notes));
+    put(ty, &mut fields, "recurrence", text(&entry.recurrence));
     put(
         ty,
         &mut fields,
-        "repeat_every",
-        Value::Int(i64::from(entry.repeat_every)),
-    );
-    put(ty, &mut fields, "repeat_until", text(&entry.repeat_until));
-    put(
-        ty,
-        &mut fields,
-        "repeat_count",
-        Value::Int(i64::from(entry.repeat_count)),
-    );
-    put(
-        ty,
-        &mut fields,
-        "repeat_exdates",
-        Value::List(entry.repeat_exdates.iter().map(|date| text(date)).collect()),
-    );
-    put(
-        ty,
-        &mut fields,
-        "overrides",
-        text(&json_of(&entry.overrides)),
-    );
-    put(ty, &mut fields, "organizer", text(&entry.organizer));
-    put(
-        ty,
-        &mut fields,
-        "attendees",
-        text(&json_of(&entry.attendees)),
+        "exdates",
+        Value::List(entry.exdates.iter().map(|date| text(date)).collect()),
     );
     put(
         ty,
@@ -1516,17 +1836,60 @@ fn entry_fields(ty: &OriginType, entry: &Entry) -> Vec<(String, Value)> {
         "categories",
         Value::List(entry.categories.iter().map(|name| text(name)).collect()),
     );
-    put(ty, &mut fields, "notes", text(&entry.notes));
+    put(ty, &mut fields, "color", text(&entry.color));
+    put(
+        ty,
+        &mut fields,
+        "day",
+        text(&day_of(&entry.timezone, &entry.start)),
+    );
+    if let Some(calendar) = calendar
+        && let Some(at) = ResourceRef::parse_id(calendar, &ty.ty)
+    {
+        put(
+            ty,
+            &mut fields,
+            "calendar",
+            Value::Opt(Some(Box::new(Value::resource(&at)))),
+        );
+    }
     fields
 }
 
-fn calendar_fields(ty: &OriginType, cal: &CalendarRef) -> Vec<(String, Value)> {
+/// What the record of the person `guest` says.
+fn guest_fields(ty: &OriginType, guest: &Guest) -> Vec<(String, Value)> {
     let mut fields = Vec::new();
-    put(ty, &mut fields, "name", text(&cal.name));
-    put(ty, &mut fields, "account", text(&cal.account));
-    put(ty, &mut fields, "color", text(&cal.color));
-    put(ty, &mut fields, "writable", Value::Bool(cal.writable));
+    put(ty, &mut fields, "name", text(&guest.name));
+    put(ty, &mut fields, "email", text(&guest.email));
+    put(ty, &mut fields, "status", text(&guest.status));
+    put(ty, &mut fields, "role", text(&guest.role));
     fields
+}
+
+fn calendar_fields(ty: &OriginType, name: &str, color: &str) -> Vec<(String, Value)> {
+    let mut fields = Vec::new();
+    put(ty, &mut fields, "name", text(name));
+    put(ty, &mut fields, "color", text(color));
+    fields
+}
+
+fn fields_differ(
+    host: &Host,
+    at: &ResourceRef,
+    ty: &OriginType,
+    fields: &[(String, Value)],
+) -> bool {
+    fields.iter().any(|(id, value)| {
+        let name = ty
+            .fields
+            .iter()
+            .find(|(_, field)| field.as_str() == id.as_str())
+            .map(|(name, _)| name.as_str());
+        match name {
+            Some(name) => try_read(host, at, ty, name).ok().flatten().as_ref() != Some(value),
+            None => true,
+        }
+    })
 }
 
 /// Whether two entries differ in anything but where their server keeps them.
@@ -1542,9 +1905,9 @@ fn types_of(host: &Host, app: &str) -> Option<(Types, String)> {
     let package = host.package(app)?;
     let found = origin_types(&package.meta, "caldav");
     let kind = |k: &str| found.iter().find(|t| t.kind == k).cloned();
-    let account = kind("caldav.account")?;
     let calendar = kind("caldav.calendar")?;
     let event = kind("caldav.event")?;
+    let attendee = kind("caldav.attendee")?;
     let (_, root_ty) = package.main()?;
     let root = package.meta.types.iter().find(|t| t.id == root_ty)?;
     let name_of = |ty: &OriginType| {
@@ -1564,85 +1927,114 @@ fn types_of(host: &Host, app: &str) -> Option<(Types, String)> {
     };
     Some((
         Types {
-            accounts_field: collection(&account)?,
             calendars_field: collection(&calendar)?,
             events_field: collection(&event)?,
-            account,
             calendar,
             event,
+            attendee,
         },
         root_ty,
     ))
 }
 
+impl State {
+    /// The write that takes the record `record` out of the root's events, where it is one of
+    /// them.
+    fn forgotten_by(&self, record: &str) -> Option<OriginWrite> {
+        ResourceRef::parse_id(record, &self.types.event.ty).map(|at| OriginWrite::Remove {
+            owner: self.root.clone(),
+            field: self.types.events_field.clone(),
+            item: at,
+        })
+    }
+}
+
 impl CalDavOrigin {
     /// The workspace's records read once: what was taken in before stays as it is.
-    fn load(
-        host: &Host,
-        types: Types,
-        root: ResourceRef,
-        known: BTreeMap<String, ResourceRef>,
-    ) -> Result<State, String> {
-        let mut records = known;
+    fn load(host: &Host, types: Types, root: ResourceRef) -> Result<State, String> {
         let mut state = State {
             types,
             root,
             accounts: HashMap::new(),
             calendars: HashMap::new(),
+            by_key: HashMap::new(),
             events: HashMap::new(),
             by_href: HashMap::new(),
             by_uid: HashMap::new(),
+            attendees: HashMap::new(),
         };
         let t = state.types.clone();
-        for record in try_items(host, &state.root, &t.accounts_field)? {
-            let key = try_read_text(host, &record, &t.account, "key")?;
-            records.insert(key, record);
-        }
-        for (key, record) in records {
-            let read_only = try_read_bool(host, &record, &t.account, "read_only")?;
-            let mut acct = Acct {
+        for at in try_items(host, &state.root, &t.calendars_field)? {
+            let key = try_read_text(host, &at, &t.calendar, "key")?;
+            let account = try_read_text(host, &at, &t.calendar, "account")?;
+            if account.is_empty() {
+                // A calendar of the workspace's own: no server is ever asked about it.
+                continue;
+            }
+            let record = at.id_string();
+            state
+                .by_key
+                .insert((account.clone(), key.clone()), record.clone());
+            state.calendars.insert(
                 record,
-                calendars: HashMap::new(),
-                read_only,
-            };
-            if let Some(field) = t.account.field("calendars") {
-                for calendar in try_items(host, &acct.record, field)? {
-                    let ckey = try_read_text(host, &calendar, &t.calendar, "key")?;
-                    acct.calendars.insert(ckey, calendar);
-                }
-            }
-            state.accounts.insert(key, acct);
-        }
-        for calendar in try_items(host, &state.root, &t.calendars_field)? {
-            let key = try_read_text(host, &calendar, &t.calendar, "key")?;
-            let account = try_read_text(host, &calendar, &t.calendar, "account")?;
-            if !account.is_empty() {
-                state.calendars.insert(key, account);
-            }
+                Cal {
+                    key,
+                    account,
+                    name: try_read_text(host, &at, &t.calendar, "name")?,
+                    color: try_read_text(host, &at, &t.calendar, "color")?,
+                },
+            );
         }
         for at in try_items(host, &state.root, &t.events_field)? {
-            let entry = try_entry(host, &at, &t.event)?;
-            if entry.href.is_empty() {
+            let record = at.id_string();
+            let href = try_read_text(host, &at, &t.event, "href")?;
+            let master = try_read_ref(host, &at, &t.event, "recurrence_of")?
+                .map(|master| master.id_string());
+            let original_start = try_read_text(host, &at, &t.event, "original_start")?;
+            let Some(calendar) = try_read_ref(host, &at, &t.event, "calendar")? else {
+                continue;
+            };
+            let Some(cal) = state.calendars.get(&calendar.id_string()).cloned() else {
+                continue;
+            };
+            if href.is_empty() && master.is_none() {
                 // An entry the origin has not written to a server: the workspace's own.
                 continue;
             }
-            let Some(account) = state.calendar_of(&entry.calendar).map(str::to_owned) else {
-                continue;
-            };
-            let record = at.id_string();
-            state
-                .by_href
-                .insert((account.clone(), entry.href.clone()), record.clone());
-            state
-                .by_uid
-                .insert((account.clone(), entry.uid.clone()), record.clone());
+            if let Some(master) = &master {
+                state
+                    .by_href
+                    .entry((cal.account.clone(), href.clone()))
+                    .or_insert_with(|| master.clone());
+            } else {
+                state
+                    .by_href
+                    .insert((cal.account.clone(), href.clone()), record.clone());
+            }
+            let uid = try_read_text(host, &at, &t.event, "key")?;
+            let confirmed = read_entry(host, &state, &at, &t.event).unwrap_or_default();
+            if master.is_none() {
+                state
+                    .by_uid
+                    .insert((cal.account.clone(), uid), record.clone());
+            }
+            if let Some(field) = t.event.field("attendees") {
+                let mut people = HashMap::new();
+                for guest in try_items(host, &at, field)? {
+                    let email = try_read_text(host, &guest, &t.attendee, "email")?;
+                    people.insert(email, guest.id_string());
+                }
+                state.attendees.insert(record.clone(), people);
+            }
             state.events.insert(
                 record,
                 Ev {
-                    account,
-                    calendar: entry.calendar.clone(),
-                    href: entry.href.clone(),
-                    confirmed: entry,
+                    account: cal.account.clone(),
+                    calendar: cal.key.clone(),
+                    href,
+                    confirmed,
+                    master,
+                    original_start,
                 },
             );
         }
@@ -1664,7 +2056,6 @@ impl Origin for CalDavOrigin {
 
     fn due(&self) -> bool {
         self.state.is_none()
-            || self.accounts_waiting
             || self.woken.load(Ordering::Acquire)
             || self.reconnected.load(Ordering::Acquire)
             || !self.due.is_empty()
@@ -1682,20 +2073,10 @@ impl Origin for CalDavOrigin {
             let Ok(root) = cx.host.root_of(cx.app) else {
                 return polled;
             };
-            let known = self.state.as_ref().map_or_else(BTreeMap::new, |state| {
-                state
-                    .accounts
-                    .iter()
-                    .map(|(key, acct)| (key.clone(), acct.record.clone()))
-                    .collect()
-            });
-            let state = match Self::load(cx.host, types, root.clone(), known) {
+            let state = match Self::load(cx.host, types, root.clone()) {
                 Ok(state) => state,
                 Err(error) => {
-                    tracing::warn!(%error, "the calendar accounts could not be read");
-                    if self.state.is_some() {
-                        polled.wrote |= self.write_account_state(cx.host, &cx.now);
-                    }
+                    tracing::warn!(%error, "the calendars could not be read");
                     return polled;
                 }
             };
@@ -1716,23 +2097,17 @@ impl Origin for CalDavOrigin {
             self.state = Some(state);
             self.reload = false;
         }
+        polled.wrote |= self.follow_accounts();
         polled.wrote |= self.push(cx.host, &cx.now);
         polled.wrote |= self.take_again(cx.host, &cx.now);
         let events = self.take_events(cx.host, &cx.now);
         polled.wrote |= events.wrote;
         polled.settle |= events.settle;
         polled.wrote |= self.moved(cx.host, &cx.now);
-        polled.wrote |= self.add_accounts(cx.host, &cx.now);
         if self.reload {
-            polled.wrote |= self.write_account_state(cx.host, &cx.now);
             return polled;
         }
         polled.settle |= self.reconnect(cx.host);
-        if let Some(state) = self.state.as_ref() {
-            for account in due_syncs(state, &self.asked) {
-                self.due.push(account);
-            }
-        }
         for account in std::mem::take(&mut self.due) {
             if self.asked.insert(account.clone()) && self.connector.sync(&account).is_none() {
                 tracing::warn!(
@@ -1741,7 +2116,6 @@ impl Origin for CalDavOrigin {
                 );
             }
         }
-        polled.wrote |= self.write_account_state(cx.host, &cx.now);
         polled
     }
 
@@ -1787,32 +2161,48 @@ impl Origin for CalDavOrigin {
             .state
             .as_ref()
             .and_then(|state| state.accounts.get(&account))
-            .is_some_and(|acct| acct.read_only)
+            .copied()
+            .unwrap_or(true)
         {
             return Delivery::Rejected(READ_ONLY.to_owned());
         }
+        // The person whose answer it is, as their own record.
+        let mut answer = None;
         let asked = match capability {
             "caldav.answer" => {
                 let uid = field(1);
+                let attendee = field(2);
+                let given = field(3);
                 let Some(held) = self
                     .state
                     .as_ref()
                     .and_then(|state| state.record_of(&account, &uid))
-                    .and_then(|record| self.state.as_ref()?.events.get(&record).cloned())
+                    .and_then(|record| {
+                        let state = self.state.as_ref()?;
+                        let status = state.attendees.get(&record)?.get(&attendee).cloned();
+                        let event = state.events.get(&record).cloned();
+                        Some((status, event))
+                    })
                 else {
                     return Delivery::Rejected(
                         "the calendar holds no event of that account under that name".to_owned(),
                     );
                 };
+                let (Some(status), Some(event)) = held else {
+                    return Delivery::Rejected(format!(
+                        "the calendar names nobody at {attendee} in that event"
+                    ));
+                };
+                answer = Some((status, given.clone()));
                 self.connector
-                    .answer(&account, &held.calendar, &held.href, &field(2), &field(3))
+                    .answer(&account, &event.calendar, &event.href, &attendee, &given)
             }
             "caldav.import" => {
                 let calendar = field(1);
                 let owned = self
                     .state
                     .as_ref()
-                    .and_then(|state| state.calendar_of(&calendar).map(str::to_owned));
+                    .and_then(|state| state.calendar_ptr(&calendar).map(str::to_owned));
                 if owned.as_deref() != Some(account.as_str()) {
                     return Delivery::Rejected(
                         "That calendar is not one of the account's".to_owned(),
@@ -1828,7 +2218,14 @@ impl Origin for CalDavOrigin {
         };
         match asked {
             Ok(request) => {
-                self.pending.insert(request, Pending::Asked(key.clone()));
+                self.pending.insert(
+                    request,
+                    Pending::Asked {
+                        key: key.clone(),
+                        account,
+                        answer,
+                    },
+                );
                 self.sends.insert(key, Sending::Going);
                 Delivery::Pending
             }

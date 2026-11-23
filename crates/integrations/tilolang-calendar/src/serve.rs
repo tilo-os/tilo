@@ -220,6 +220,22 @@ impl Connector {
                     None
                 }
             },
+            ToConnector::Calendar {
+                request,
+                account,
+                calendar,
+                name,
+                color,
+            } => match attached
+                .connector
+                .set_calendar(&account, &calendar, &name, &color)
+            {
+                Ok(request) => Some(request),
+                Err(unmade) => {
+                    refused = Some((request, unmade.reason()));
+                    None
+                }
+            },
             ToConnector::Answer {
                 request,
                 account,

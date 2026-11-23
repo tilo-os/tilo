@@ -91,6 +91,8 @@ tilolang-mail = { path = "../../crates/platform/tilolang-mail" }
 # YouTube as an outside origin: a live window of an app whose types hold YouTube's resources
 # keeps them in step with it, in native code with the network.
 tilolang-youtube = { path = "../../crates/platform/tilolang-youtube" }
+# The calendar origin: the connector process the system runs for a hosted Calendar.
+tilolang-calendar = { path = "../../crates/integrations/tilolang-calendar" }
 
 [target.'cfg(windows)'.dependencies]
 # An origin reaches its connector over a socket the session handed both; a Windows host has

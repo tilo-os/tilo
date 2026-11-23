@@ -50,7 +50,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use test_http::{Reply, Request, Responder};
 
 const XML: &str = "application/xml; charset=utf-8";
-const NAMESPACES: &str = "xmlns:d=\"DAV:\" xmlns:c=\"urn:ietf:params:xml:ns:caldav\"";
+const NAMESPACES: &str = "xmlns:d=\"DAV:\" xmlns:c=\"urn:ietf:params:xml:ns:caldav\" xmlns:a=\"http://apple.com/ns/ical/\"";
 
 /// One entry a calendar holds, and the version the server gave it.
 struct Kept {
@@ -61,6 +61,8 @@ struct Kept {
 #[derive(Default)]
 struct Calendar {
     name: String,
+    /// The colour it is shown in, as Apple's `calendar-color` says it.
+    color: String,
     read_only: bool,
     entries: BTreeMap<String, Kept>,
     /// Each change the calendar took: the token it led to, and the entry.
@@ -95,6 +97,25 @@ fn escaped(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+}
+
+/// The text an element of `body` holds, by its name alone (its namespace ignored).
+fn element(body: &str, name: &str) -> Option<String> {
+    for prefix in ["d:", "a:", "D:", "A:", ""] {
+        let open = format!("<{prefix}{name}>");
+        let close = format!("</{prefix}{name}>");
+        if let Some((_, rest)) = body.split_once(&open)
+            && let Some((text, _)) = rest.split_once(&close)
+        {
+            return Some(
+                text.replace("&amp;", "&")
+                    .replace("&lt;", "<")
+                    .replace("&gt;", ">")
+                    .replace("&quot;", "\""),
+            );
+        }
+    }
+    None
 }
 
 fn sync_token(token: u64) -> String {
@@ -486,11 +507,33 @@ impl State {
         format!(
             "<d:resourcetype><d:collection/><c:calendar/></d:resourcetype>\
              <d:displayname>{}</d:displayname>\
+             <a:calendar-color>{}</a:calendar-color>\
              <d:current-user-privilege-set><d:privilege><d:read/></d:privilege>{write}\
              </d:current-user-privilege-set><d:sync-token>{}</d:sync-token>",
             escaped(&calendar.name),
+            escaped(&calendar.color),
             sync_token(self.token)
         )
+    }
+
+    /// A calendar's own properties, as a `PROPPATCH` sets them: its name and its colour.
+    fn proppatch(&mut self, path: &str, body: &str) -> Reply {
+        let Some((slug, _entry)) = self.place(path).filter(|(_, entry)| entry.is_empty()) else {
+            return Reply::status(404);
+        };
+        let Some(calendar) = self.calendars.get_mut(&slug) else {
+            return Reply::status(404);
+        };
+        if calendar.read_only {
+            return Reply::status(403);
+        }
+        if let Some(name) = element(body, "displayname") {
+            calendar.name = name;
+        }
+        if let Some(color) = element(body, "calendar-color") {
+            calendar.color = color;
+        }
+        multistatus(&found(path, "<d:displayname/><a:calendar-color/>"), None)
     }
 
     fn propfind(&self, path: &str, deep: bool) -> Reply {
@@ -723,6 +766,7 @@ impl State {
             "GET" => self.get(path),
             "PUT" => self.put(path, request),
             "DELETE" => self.delete(path, request),
+            "PROPPATCH" => self.proppatch(path, &request.body_text()),
             _ => Reply::status(405),
         }
     }
@@ -796,6 +840,26 @@ impl Server {
         if let Some(calendar) = lock(&self.state).calendars.get_mut(slug) {
             calendar.read_only = true;
         }
+    }
+
+    /// The colour the calendar `slug` is shown in.
+    #[must_use]
+    pub fn color(&self, slug: &str) -> String {
+        lock(&self.state)
+            .calendars
+            .get(slug)
+            .map(|calendar| calendar.color.clone())
+            .unwrap_or_default()
+    }
+
+    /// What the calendar `slug` is called.
+    #[must_use]
+    pub fn name(&self, slug: &str) -> String {
+        lock(&self.state)
+            .calendars
+            .get(slug)
+            .map(|calendar| calendar.name.clone())
+            .unwrap_or_default()
     }
 
     /// Answer `sync-collection` with 501 from now on, as a server that
