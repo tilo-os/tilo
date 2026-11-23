@@ -331,8 +331,25 @@ pub fn invitation_admission(
     joiner: [u8; 32],
     at_ns: u64,
 ) -> Result<Admitted, MembershipRefusal> {
+    admission_of(policy, workspace, signed, joiner, at_ns, true)
+}
+
+/// [`invitation_admission`], its invitation's expiry enforced only when `expires` says so.
+fn admission_of(
+    policy: &tilo_action_policy::WorkspacePolicy,
+    workspace: &str,
+    signed: &[u8],
+    joiner: [u8; 32],
+    at_ns: u64,
+    expires: bool,
+) -> Result<Admitted, MembershipRefusal> {
     let refused = |error: String| MembershipRefusal::Refused(format!("invitation: {error}"));
-    let join = crate::join::decode_and_verify_invitation(
+    let verify = if expires {
+        crate::join::decode_and_verify_invitation
+    } else {
+        crate::join::decode_and_verify_invitation_past_expiry
+    };
+    let join = verify(
         signed,
         Some(joiner),
         &tilo_user_identity::RevocationList::new(),
@@ -443,8 +460,10 @@ fn redemptions(
             // The workspace's owner holds it from its beginning, so a device
             // of theirs that redeems an invitation (a host's page joining the
             // workspace it handed them) comes in on its certificate: the
-            // invitation still has to admit them when the change was written,
-            // and gives them no role.
+            // invitation still has to be one an inviter of the workspace signed,
+            // and gives them no role. Its expiry does not bind them: the
+            // certificate admits them, however long after the invitation was
+            // issued the change that records it was written.
             let owner = held.is_owner(&person) && wanted.is_owner(&person);
             let at_ns = if owner {
                 written_ns
@@ -459,8 +478,15 @@ fn redemptions(
                     "{person} is admitted in the future"
                 )));
             }
-            let grant =
-                invitation_admits(held, workspace, &signed, receipt.user_public_key, at_ns)?;
+            let grant = admission_of(
+                held,
+                workspace,
+                &signed,
+                receipt.user_public_key,
+                at_ns,
+                !owner,
+            )?
+            .grant;
             let role: Role = grant.role;
             if !owner && (grant.role != receipt.role || wanted.role_of(&person) != Some(role)) {
                 return Err(MembershipRefusal::Refused(format!(

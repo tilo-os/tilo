@@ -764,6 +764,44 @@ pub fn decode_and_verify_invitation(
     revocations: &RevocationList,
     now_ns: u64,
 ) -> Result<VerifiedJoin, String> {
+    decode_and_verify(
+        signed_invitation,
+        recipient_user_public_key,
+        revocations,
+        now_ns,
+        true,
+    )
+}
+
+/// [`decode_and_verify_invitation`] for an invitation whose expiry does not bind its redeemer:
+/// a device of the workspace's owner comes in on its certificate, and the invitation it
+/// redeemed gives it no role. Its signature, workspace, issuer and certificates are checked
+/// as of `now_ns` all the same.
+///
+/// # Errors
+/// As [`decode_and_verify_invitation`], but never for having expired.
+pub fn decode_and_verify_invitation_past_expiry(
+    signed_invitation: &[u8],
+    recipient_user_public_key: Option<[u8; 32]>,
+    revocations: &RevocationList,
+    now_ns: u64,
+) -> Result<VerifiedJoin, String> {
+    decode_and_verify(
+        signed_invitation,
+        recipient_user_public_key,
+        revocations,
+        now_ns,
+        false,
+    )
+}
+
+fn decode_and_verify(
+    signed_invitation: &[u8],
+    recipient_user_public_key: Option<[u8; 32]>,
+    revocations: &RevocationList,
+    now_ns: u64,
+    enforce_expiry: bool,
+) -> Result<VerifiedJoin, String> {
     let (version, _) = postcard::take_from_bytes::<u32>(signed_invitation)
         .map_err(|_| "invalid signed invitation".to_string())?;
     // The version names the layout the issuer signed: each is read and its
@@ -780,6 +818,7 @@ pub fn decode_and_verify_invitation(
         recipient_user_public_key,
         revocations,
         now_ns,
+        enforce_expiry,
     )?;
     Ok(VerifiedJoin {
         invite_id: *blake3::hash(signed_invitation).as_bytes(),
@@ -896,8 +935,9 @@ fn validate_decoded(
     recipient_user_public_key: Option<[u8; 32]>,
     revocations: &RevocationList,
     now_ns: u64,
+    enforce_expiry: bool,
 ) -> Result<(), String> {
-    validate_grant(grant, now_ns, true)?;
+    validate_grant(grant, now_ns, enforce_expiry)?;
     validate_certificate(&grant.issuer, revocations, now_ns)?;
     for hint in &grant.transport {
         verify_transport_hint_at(hint, revocations, now_ns)?;
