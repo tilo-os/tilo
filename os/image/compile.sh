@@ -464,6 +464,7 @@ case "$TILO_RUST_LTO" in \
           $target/release/tilo-session-report \
           $target/release/tilo-pdf-helper \
           $target/release/fs \
+          $target/release/tilo-device-step \
           $target/release/tilo-server \
           $target/release/tilo-server-admin \
           $target/release/tilo-home-peer-control \
