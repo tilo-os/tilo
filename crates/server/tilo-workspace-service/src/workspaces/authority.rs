@@ -233,7 +233,9 @@ impl Workspaces {
                 "workspace administration requires a person's device, not an agent's",
             ));
         }
-        if self.revocations().refuses(device) {
+        if self.revocations().refuses(device)
+            || self.blocked_keys().revokes(&device.device_public_key)
+        {
             return Err(CollaborationError::new("device revoked"));
         }
         tilo_user_identity::verify_device_cert_at(device, now)

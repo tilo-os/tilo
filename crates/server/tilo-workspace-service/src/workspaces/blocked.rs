@@ -20,14 +20,20 @@
 //! re-checks the live links and sessions. A blocked device's links and sessions
 //! end on that check, as a revoked device's do, and it is refused when it dials
 //! again until the operator unblocks it.
+//!
+//! A device the person took back is refused the same way: the record of their
+//! devices ([`DEVICES`]) marks it revoked, and every host that holds that
+//! record reads the mark with the blocked keys and refuses the key as revoked
+//! once the change arrives, on every protocol, until its certificate ends.
 
 use std::collections::BTreeSet;
 
 use tilo_lock::RwLockRecover as _;
 use tilo_resource::{Collection, Id, Model, Refusal, resource};
 
-use super::person_workspace;
 use super::Workspaces;
+use super::person_workspace;
+use super::person_workspace::devices::{DEVICES, Devices};
 
 /// The record of the operator's blocked keys in their own workspace.
 pub const BLOCKED: (&str, &str) = ("so.tilo.host", "blocked");
@@ -97,11 +103,13 @@ fn key_id(text: &str) -> Result<Id, Refusal> {
         .ok_or_else(|| Refusal::new("a key is 32 bytes in lowercase hex"))
 }
 
-/// The keys this host refuses now, as a record says them.
+/// The keys this host refuses now, as the records say them: those the operator
+/// blocks, and the devices of theirs the record of their devices marks revoked.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BlockedKeys {
     devices: BTreeSet<[u8; 32]>,
     users: BTreeSet<[u8; 32]>,
+    revoked: BTreeSet<[u8; 32]>,
 }
 
 impl BlockedKeys {
@@ -118,6 +126,23 @@ impl BlockedKeys {
         Self {
             devices: keys(&state.devices),
             users: keys(&state.users),
+            revoked: BTreeSet::new(),
+        }
+    }
+
+    /// The devices of `person`'s that `record` marks revoked, and nothing
+    /// blocked: each by the key its root certified, so an entry another root
+    /// signed revokes nothing.
+    #[must_use]
+    pub(crate) fn revoking(record: &Devices, person: &[u8; 32]) -> Self {
+        Self {
+            revoked: record
+                .listed(person)
+                .into_iter()
+                .filter(|listed| listed.device.revoked)
+                .map(|listed| listed.cert.device_public_key)
+                .collect(),
+            ..Self::default()
         }
     }
 
@@ -125,6 +150,12 @@ impl BlockedKeys {
     #[must_use]
     pub(crate) fn blocks(&self, device: &[u8; 32], user: &[u8; 32]) -> bool {
         self.devices.contains(device) || self.users.contains(user)
+    }
+
+    /// Whether the record of the person's devices marks `device` revoked.
+    #[must_use]
+    pub(crate) fn revokes(&self, device: &[u8; 32]) -> bool {
+        self.revoked.contains(device)
     }
 }
 
@@ -163,14 +194,22 @@ impl Workspaces {
         Ok(())
     }
 
-    /// Read the blocked-keys record again and keep what it says. A host that
-    /// does not hold its operator's workspace keeps the keys it had: nothing
-    /// says they were lifted.
+    /// Read the blocked-keys record and the record of the operator's devices
+    /// again, and keep what they say. A record this host holds no copy of
+    /// leaves the keys it had: nothing says they were lifted.
     pub(crate) async fn refresh_blocked(&self) {
-        let Ok(state) = person_workspace::read::<Blocked>(self, BLOCKED).await else {
-            return;
-        };
-        self.keep_blocked(BlockedKeys::of(&state));
+        let blocked = person_workspace::read::<Blocked>(self, BLOCKED).await;
+        let devices = person_workspace::read::<Devices>(self, DEVICES).await;
+        let mut next = self.blocked_keys();
+        if let Ok(state) = blocked {
+            let of = BlockedKeys::of(&state);
+            (next.devices, next.users) = (of.devices, of.users);
+        }
+        if let Ok(record) = devices {
+            next.revoked =
+                BlockedKeys::revoking(&record, &self.serving_certificate().user_public_key).revoked;
+        }
+        self.keep_blocked(next);
     }
 
     /// Keep `next` as the keys this host refuses, announcing the narrowing that
@@ -190,9 +229,9 @@ impl Workspaces {
         }
     }
 
-    /// Follow the blocked-keys record: read it once as the host opens, then
-    /// again whenever this host takes a write of it and whenever the operator's
-    /// workspace settles.
+    /// Follow the blocked-keys record and the record of the operator's devices:
+    /// read them once as the host opens, then again whenever this host takes a
+    /// write of either and whenever the operator's workspace settles.
     pub(super) fn follow_blocked(&self) {
         let workspaces = self.downgrade();
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
@@ -210,9 +249,12 @@ impl Workspaces {
                 drop(workspaces);
                 tokio::select! {
                     write = writes.recv() => match write {
-                        // The record names the keys; a change to any other says
+                        // The records name the keys; a change to any other says
                         // nothing about them.
-                        Ok(write) if write.workspace == admin && write.app == BLOCKED.0 && write.record == BLOCKED.1 => {}
+                        Ok(write) if write.workspace == admin
+                            && [BLOCKED, DEVICES].iter().any(|(app, record)| {
+                                write.app == *app && write.record == *record
+                            }) => {}
                         Ok(_) => {}
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => return,

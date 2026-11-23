@@ -109,15 +109,16 @@ pub trait Issuer: Send + Sync + 'static {
         Vec::new()
     }
 
-    /// The keys of the person's devices this device hears present now, as presence says: what
-    /// a list of their devices shows online beside this one. None by default.
+    /// The keys of the person's devices this device hears present now, as its own presence says
+    /// beyond the live sessions its workspace service holds ([`Self::servers`]), which a list
+    /// counts as well: none by default.
     fn present(&self) -> Vec<[u8; 32]> {
         Vec::new()
     }
 
     /// Keep `entry`, a revocation the person's root just signed here, where this device keeps
-    /// what its root signed, and tell the hosts it reaches, which refuse the key from then on:
-    /// nowhere by default.
+    /// what its root signed: nowhere by default. The hosts refuse the key by the record of the
+    /// person's devices, which the revocation marks.
     fn keep_revocation(&self, _entry: &tilo_user_identity::RevocationEntry) {}
 
     /// Take the certified computer `cert` in as `role`: by default through [`Self::servers`].

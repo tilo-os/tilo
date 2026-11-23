@@ -3,13 +3,14 @@
 //! its desktop. Their devices are the record of the person's own workspace
 //! ([`person_workspace::devices`]), which this device holds and every device of theirs reads and
 //! writes; whether one is online comes from presence, never from the record. A revocation is
-//! signed by the person's root on the device that holds it.
+//! signed by the person's root on the device that holds it and marked in the record, and the
+//! marked record is what every host refuses the device by.
 //!
 //! [`LIST`]: tilo_actions::remote::device_tickets::LIST
 //! [`RENAME`]: tilo_actions::remote::device_tickets::RENAME
 //! [`REVOKE`]: tilo_actions::remote::device_tickets::REVOKE
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value, json};
 use tilo_actions::remote::device_tickets::{FleetDevice, KeyKind};
@@ -22,28 +23,35 @@ use crate::workspaces::{Workspaces, person_workspace};
 impl TicketServer {
     /// The person's devices, as their own workspace's record lists them: `{"devices":
     /// [FleetDevice]}`, this one marked current. This device and the keys it knows itself
-    /// ([`Issuer::known`]) are listed whether or not the record has them yet.
+    /// ([`Issuer::known`]) are listed whether or not the record has them yet. A device is online
+    /// when it is this one, presence here says so ([`Issuer::present`]), or it holds a live
+    /// session with this device's workspace service.
     ///
     /// # Errors
     /// This device has no identity yet.
     ///
     /// [`Issuer::known`]: super::Issuer::known
+    /// [`Issuer::present`]: super::Issuer::present
     pub async fn list(&self) -> Result<Value, String> {
         let (cert, _) = self.0.issuer.device()?;
         let person = cert.user_public_key;
         let this = cert.device_public_key;
+        let mut present: BTreeSet<[u8; 32]> = self.0.issuer.present().into_iter().collect();
         let (mut devices, browsers, names): (Vec<Listed>, BTreeMap<_, _>, BTreeMap<_, _>) =
             match self.0.issuer.servers() {
-                Some(workspaces) => (
-                    workspaces.devices_of(&person).await.listed(&person),
-                    workspaces.tab_groups(&person).await,
-                    workspaces
-                        .list()
-                        .await
-                        .into_iter()
-                        .map(|held| (held.workspace, held.name))
-                        .collect(),
-                ),
+                Some(workspaces) => {
+                    present.extend(workspaces.present_devices().await);
+                    (
+                        workspaces.devices_of(&person).await.listed(&person),
+                        workspaces.tab_groups(&person).await,
+                        workspaces
+                            .list()
+                            .await
+                            .into_iter()
+                            .map(|held| (held.workspace, held.name))
+                            .collect(),
+                    )
+                }
                 None => (Vec::new(), BTreeMap::new(), BTreeMap::new()),
             };
         for known in self.0.issuer.known().into_iter().chain([cert]) {
@@ -56,7 +64,6 @@ impl TicketServer {
                 });
             }
         }
-        let present = self.0.issuer.present();
         let online = |key: &[u8; 32]| *key == this || present.contains(key);
         Ok(json!({ "devices": listed(&devices, &browsers, &names, this, online) }))
     }
@@ -87,8 +94,8 @@ impl TicketServer {
     }
 
     /// End the login of the device `args` names, signed by the person's root here: the record of
-    /// their own workspace marks it taken back, and this device tells the hosts it reaches, so
-    /// every device of theirs refuses it.
+    /// their own workspace marks it taken back, and every host that holds the record refuses it
+    /// as the change arrives, ending its links there.
     ///
     /// # Errors
     /// The device is this one, this device does not hold the person's root, or the record
@@ -110,8 +117,26 @@ impl TicketServer {
                     .into(),
             );
         }
+        let person = cert.user_public_key;
+        let key = hex::encode(device);
+        let workspaces = self.record()?;
+        // A key this device's root certified that the record does not hold yet is taken in
+        // first, so the record has the device to mark.
+        if held(&workspaces, &person, &key).await.is_none()
+            && let Some(known) = self
+                .0
+                .issuer
+                .known()
+                .into_iter()
+                .find(|known| known.device_public_key == device)
+        {
+            person_workspace::apply(&workspaces, DEVICES, Devices::keeping(&known)?).await?;
+        }
+        let listed = held(&workspaces, &person, &key)
+            .await
+            .ok_or_else(|| format!("{key} is no device of yours: `devices#list` lists them"))?;
         let mut entry = RevocationEntry {
-            user_public_key: cert.user_public_key,
+            user_public_key: person,
             revoked_device_public_key: device,
             revoked_at_ns: tilo_clock::unix_now_ns(),
             reason,
@@ -120,26 +145,22 @@ impl TicketServer {
         tilo_user_identity::sign_revocation_entry(&mut entry, &*root)
             .map_err(|error| error.to_string())?;
         self.0.issuer.keep_revocation(&entry);
-        let revocation = serde_json::to_string(&entry).map_err(|error| error.to_string())?;
-        let key = hex::encode(device);
-        let mut answer = json!({
+        if !listed.device.revoked {
+            person_workspace::apply(
+                &workspaces,
+                DEVICES,
+                Devices::REVOKE_DEVICE.with(key.clone()),
+            )
+            .await?;
+        }
+        // This device refuses the key at once; every other host as the record's change reaches it.
+        workspaces.refresh_blocked().await;
+        Ok(json!({
             "device": key,
             "revoked": true,
-            "revocation": revocation,
-        });
-        // Where this device holds no record of the person's devices, the kept revocation still
-        // reaches the hosts, which mark the record they hold.
-        if let Some(workspaces) = self.0.issuer.servers() {
-            let person = cert.user_public_key;
-            if let Some(listed) = held(&workspaces, &person, &key).await {
-                answer["label"] = listed.device.called(&listed.cert).into();
-                if !listed.device.revoked {
-                    person_workspace::apply(&workspaces, DEVICES, Devices::REVOKE_DEVICE.with(key))
-                        .await?;
-                }
-            }
-        }
-        Ok(answer)
+            "revocation": serde_json::to_string(&entry).map_err(|error| error.to_string())?,
+            "label": listed.device.called(&listed.cert),
+        }))
     }
 
     /// The workspace service holding the record of the person's devices: why not, with none.

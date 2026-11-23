@@ -585,6 +585,25 @@ impl Workspaces {
             .unwrap_or_default()
     }
 
+    /// The devices present here now: each holds a live session with a
+    /// workspace this host serves, as presence counts a device here.
+    pub(crate) async fn present_devices(&self) -> std::collections::BTreeSet<[u8; 32]> {
+        let held: Vec<crate::workspace::SharedWorkspace> = self
+            .inner
+            .host
+            .workspaces
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect();
+        let mut present = std::collections::BTreeSet::new();
+        for workspace in held {
+            present.extend(workspace.lock().await.subscribed_devices().copied());
+        }
+        present
+    }
+
     /// Each tab key's browser, by key, as the person's own workspace holds it.
     pub(crate) async fn tab_groups(&self, person: &[u8; 32]) -> BTreeMap<String, String> {
         let workspace = person_workspace_id(person);

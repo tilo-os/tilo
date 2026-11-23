@@ -809,3 +809,58 @@ fn a_blocked_device_or_person_is_refused_though_membership_admits_it() {
         )
     );
 }
+
+/// A device the record of its person's devices marks revoked is refused as
+/// revoked, as the mark arrives and with no signed entry on the list: the
+/// record is what a host refuses it by. A mark on an entry another root
+/// certified revokes nothing.
+#[test]
+fn a_device_the_persons_record_marks_revoked_is_refused() {
+    use crate::workspaces::blocked::BlockedKeys;
+    use crate::workspaces::person_workspace::devices::Devices;
+
+    let server = Server::new();
+    let root = SigningKey::from_bytes(&[0x51; 32]);
+    let laptop = signed_member(&root, &SigningKey::from_bytes(&[0x52; 32]), 1_000);
+    let stranger = signed_member(
+        &SigningKey::from_bytes(&[0x53; 32]),
+        &SigningKey::from_bytes(&[0x54; 32]),
+        1_000,
+    );
+    let person = laptop.user_public_key;
+    let mut record = Devices::default();
+    for cert in [&laptop, &stranger] {
+        let key = hex::encode(cert.device_public_key);
+        record
+            .keep_device(
+                key.clone(),
+                hex::encode(postcard::to_allocvec(cert).unwrap()),
+            )
+            .expect("the record keeps the device");
+        record
+            .revoke_device(key)
+            .expect("the record marks the device");
+    }
+    let on = |cert: &DeviceCert| peer(cert.user_public_key, cert.device_public_key, true, None);
+    assert_ne!(
+        server.trust().cert(&on(&laptop), NOW),
+        Err(DenyReason::Revoked),
+        "nothing refuses the laptop before the mark arrives"
+    );
+
+    *server.blocked.write().unwrap() = BlockedKeys::revoking(&record, &person);
+    assert_eq!(
+        server.trust().cert(&on(&laptop), NOW),
+        Err(DenyReason::Revoked),
+        "the marked laptop is refused as revoked"
+    );
+    assert!(
+        server.revocations.read().unwrap().is_empty(),
+        "no signed entry told this host"
+    );
+    assert_ne!(
+        server.trust().cert(&on(&stranger), NOW),
+        Err(DenyReason::Revoked),
+        "a mark on a key another root certified revokes nothing"
+    );
+}

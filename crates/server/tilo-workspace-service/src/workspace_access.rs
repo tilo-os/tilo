@@ -319,10 +319,17 @@ impl ServerTrust<'_> {
         ) {
             return Err(DenyReason::EnvironmentStopped);
         }
+        // A device is revoked by its root's signed entry, or by the mark the
+        // record of its person's devices carries, which reaches every host that
+        // holds the record as the change does. A poisoned list refuses.
         if !self
             .revocations
             .read()
             .is_ok_and(|list| !list.refuses(&peer.cert))
+            || !self
+                .blocked
+                .read()
+                .is_ok_and(|keys| !keys.revokes(&peer.device_public_key))
         {
             return Err(DenyReason::Revoked);
         }

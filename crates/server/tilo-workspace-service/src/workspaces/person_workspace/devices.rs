@@ -220,8 +220,9 @@ impl Devices {
         Ok(())
     }
 
-    /// Mark `device` taken back: the person's root revoked it.
-    #[action(housekeeping)]
+    /// Mark `device` taken back: the person's root revoked it, and every host
+    /// that holds this record refuses it from the moment the mark arrives.
+    #[action]
     pub fn revoke_device(&mut self, device: String) -> Result<(), Refusal> {
         let kept = self
             .devices

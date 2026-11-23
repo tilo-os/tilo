@@ -357,33 +357,6 @@ impl HostedWorkspaces {
             }),
         })
     }
-
-    /// Tell every host of a workspace `engine` holds that the person's root revoked `entry`: the
-    /// host keeps it and refuses the key from then on, and answers it as refused in the person's
-    /// record, which is how every device of theirs comes to list the key as taken back.
-    pub(crate) fn announce_revocation(
-        &self,
-        engine: &Engine,
-        entry: &tilo_user_identity::RevocationEntry,
-    ) {
-        for on in hosts_of(engine) {
-            let Some(placed) = self.placed(&on.workspace) else {
-                continue;
-            };
-            let host = self.host(&placed);
-            if host
-                .device
-                .session()
-                .send(Cmd::Revoke(entry.clone()))
-                .is_err()
-            {
-                tracing::info!(
-                    host = host.device.label(),
-                    "a host did not hear that the person took a device back"
-                );
-            }
-        }
-    }
 }
 
 /// One read of the person's list on one host's session: what the host lists now, each workspace
