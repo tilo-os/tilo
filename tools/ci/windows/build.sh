@@ -97,7 +97,7 @@ print(paths[0])' "${TMPDIR:-/tmp}/imager-tests.json")"
     ;;
   runtime)
     sdk="${3:?SDK archive}" out="${4:?output directory}"
-    windows_platform_tests="tilo-socket tilo-identity runtime-portal tilo-fs-client"
+    windows_platform_tests="tilo-socket runtime-portal tilo-fs-client tilo-identity"
     use_windows_sdk "$arch" "$sdk"
     # The unit tests of the platform layer the daemon stands on, for Wine to run:
     # one executable per crate, named by it. First, so a layer that stops compiling
