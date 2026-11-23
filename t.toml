@@ -5220,6 +5220,24 @@ on = ["dispatch"]
 [check.matrix]
 arch = ["x86_64", "aarch64"]
 
+# A release signs the medium it ships, in a keyring that exists only for the check: the payload
+# and its digest are copied into the directory the release gathers a tag's media from, and the
+# signature is made over those exact bytes. The public key and its fingerprint are the package
+# sign step's, on x86_64, so a person verifies the medium with the same release key.
+[[check]]
+name = "sign/medium-{arch}"
+run = "bash tools/ci/linux-imager/sign-medium.sh {arch} /target/imager-medium/{arch} /target/imager-medium-signed/{arch}"
+needs = ["medium/imager-{arch}"]
+image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
+requires = ["arch={arch}"]
+outputs = ["/target/imager-medium-signed/{arch}/*"]
+cache = false
+timeout_secs = 1800
+on = ["tag:imager-v*"]
+secrets = ["TILO_LINUX_SIGNING_KEY_ASC", "TILO_LINUX_EXPECTED_FINGERPRINT"]
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
 # The complete graphical installation cycle on that medium: erase, prepared-alongside and
 # guided-alongside (tools/ci/installer-release-cycle.sh). Each mode drives the live installer
 # only through the actions its console publishes, unlocks the encrypted target after a cold
