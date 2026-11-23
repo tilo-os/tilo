@@ -2305,6 +2305,7 @@ impl Checker<'_> {
                 vec![zone, text],
                 Ty::Option(Box::new(Ty::Time)),
             );
+        }
         if ty == Ty::Bytes {
             return self.bytes_type_method(name, args, span);
         }
@@ -2443,7 +2444,11 @@ impl Checker<'_> {
             "outline" => (Imp::PdfOutline, result(Ty::Text), "the file it reads"),
             "fields" => (Imp::PdfFields, result(Ty::Text), "the file it reads"),
             "markup" => (Imp::PdfMarkup, result(Ty::Text), "the file it reads"),
-            "import" => (Imp::PdfImport, result(Ty::Text), "the file it takes pages from"),
+            "import" => (
+                Imp::PdfImport,
+                result(Ty::Text),
+                "the file it takes pages from",
+            ),
             "text" => (
                 Imp::PdfText,
                 result(Ty::Text),
@@ -2742,7 +2747,9 @@ impl Checker<'_> {
             "list" => "`File.list(path)`: a folder's entries, within what the app was granted",
             "stat" => "`File.stat(path)`: one entry, or none when nothing is there",
             "read" => "`File.read(path)`: the bytes a path holds",
-            "watch" => "`File.watch(path, run)`: one of this package's actions, run when the folder changes",
+            "watch" => {
+                "`File.watch(path, run)`: one of this package's actions, run when the folder changes"
+            }
             "open" => {
                 "`File.open(path)` or `File.open(file)`: the file at a path, or one an action \
                  holds, in the app that opens its kind"
@@ -2965,7 +2972,11 @@ impl Checker<'_> {
             // formulas the change moves rewritten.
             (Ty::Text, "sheet_edit") => {
                 let [change] = args else {
-                    self.err("E022", span, "`sheet_edit` takes the change, as text: `book.sheet_edit(change)`");
+                    self.err(
+                        "E022",
+                        span,
+                        "`sheet_edit` takes the change, as text: `book.sheet_edit(change)`",
+                    );
                     for a in args {
                         let _ = self.expr(&a.value, None);
                     }
@@ -3017,7 +3028,11 @@ impl Checker<'_> {
             // `upsert-item` by the values that identify its row.
             (Ty::Text, "sheet_records") => {
                 let [request] = args else {
-                    self.err("E022", span, "`sheet_records` takes the records as text: `sheet.sheet_records(records)`");
+                    self.err(
+                        "E022",
+                        span,
+                        "`sheet_records` takes the records as text: `sheet.sheet_records(records)`",
+                    );
                     for a in args {
                         let _ = self.expr(&a.value, None);
                     }
