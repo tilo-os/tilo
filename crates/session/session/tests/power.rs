@@ -1118,20 +1118,28 @@ impl SilentSetPowerProfiles {
     }
 }
 
-/// Fake `net.hadess.PowerProfiles` whose `Profiles` property fails on its first
-/// read while `ActiveProfile` succeeds, then answers normally on the retry.
-struct FailOnceProfilesDaemon {
+/// Fake `net.hadess.PowerProfiles` whose `Profiles` and `ActiveProfile` getters
+/// fail while their switches are held, then answer normally once released.
+struct GatedProfilesDaemon {
     active: String,
     profiles: Vec<String>,
-    fail_profiles_once: std::sync::atomic::AtomicBool,
+    fail_profiles: Arc<std::sync::atomic::AtomicBool>,
+    fail_active: Arc<std::sync::atomic::AtomicBool>,
+    profiles_attempts: Arc<std::sync::atomic::AtomicUsize>,
+    active_attempts: Arc<std::sync::atomic::AtomicUsize>,
     set_calls: Arc<Mutex<Vec<String>>>,
 }
 
 #[zbus::interface(name = "net.hadess.PowerProfiles")]
-impl FailOnceProfilesDaemon {
+impl GatedProfilesDaemon {
     #[zbus(property(emits_changed_signal = "false"))]
-    fn active_profile(&self) -> String {
-        self.active.clone()
+    fn active_profile(&self) -> zbus::fdo::Result<String> {
+        self.active_attempts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.fail_active.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(zbus::fdo::Error::Failed("active profile busy".into()));
+        }
+        Ok(self.active.clone())
     }
 
     #[zbus(property)]
@@ -1151,10 +1159,9 @@ impl FailOnceProfilesDaemon {
     fn profiles(
         &self,
     ) -> zbus::fdo::Result<Vec<std::collections::HashMap<String, zbus::zvariant::OwnedValue>>> {
-        if self
-            .fail_profiles_once
-            .swap(false, std::sync::atomic::Ordering::SeqCst)
-        {
+        self.profiles_attempts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.fail_profiles.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(zbus::fdo::Error::Failed("profiles busy".into()));
         }
         Ok(self
@@ -1314,26 +1321,17 @@ fn spawn_profiles_daemon(
     (conn, set_calls)
 }
 
-fn wait_power_within(
+#[track_caller]
+fn wait_power(
     session: &mut Session,
-    timeout: Duration,
     label: &str,
     pred: impl Fn(&serde_json::Value) -> bool,
 ) -> serde_json::Value {
-    let deadline = Instant::now().checked_add(timeout).expect("deadline");
-    while Instant::now() < deadline {
-        session.step(Duration::from_millis(1)).expect("a frame");
-        if let Some(power) = session.read(tilo_system_service::POWER)
-            && pred(&power)
-        {
-            return power;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    panic!(
-        "timed out waiting for {label}; last reading: {:?}",
-        session.read(tilo_system_service::POWER)
-    );
+    crate::common::wait_for(session, label, |session| {
+        session
+            .read(tilo_system_service::POWER)
+            .filter(|power| pred(power))
+    })
 }
 
 fn session_on_bus(
@@ -1414,15 +1412,10 @@ fn a_power_profiles_daemon_leaving_and_returning_resets_and_re_reads_power() {
         tilo_system_service::model::Power::default(),
     );
 
-    wait_power_within(
-        &mut session,
-        Duration::from_secs(5),
-        "initial saver reading",
-        |power| {
-            power["mode"] == serde_json::json!("saver")
-                && power["modes"] == serde_json::json!(["balanced", "saver"])
-        },
-    );
+    wait_power(&mut session, "initial saver reading", |power| {
+        power["mode"] == serde_json::json!("saver")
+            && power["modes"] == serde_json::json!(["balanced", "saver"])
+    });
     let reads_once_live = fake_system.power_reads.load(Ordering::SeqCst);
     assert!(reads_once_live <= 1, "at most one startup read before live");
 
@@ -1430,12 +1423,9 @@ fn a_power_profiles_daemon_leaving_and_returning_resets_and_re_reads_power() {
     runtime
         .block_on(daemon1.close())
         .expect("close first daemon");
-    wait_power_within(
-        &mut session,
-        Duration::from_secs(3),
-        "cleared reading after daemon exit",
-        |power| power["mode"].is_null() && power["modes"] == serde_json::json!([]),
-    );
+    wait_power(&mut session, "cleared reading after daemon exit", |power| {
+        power["mode"].is_null() && power["modes"] == serde_json::json!([])
+    });
 
     // A replacement daemon claims the name at `balanced`, sending no PropertiesChanged signal.
     let (_daemon2, daemon2_calls) = spawn_profiles_daemon(
@@ -1444,36 +1434,25 @@ fn a_power_profiles_daemon_leaving_and_returning_resets_and_re_reads_power() {
         "balanced",
         &["performance", "balanced", "power-saver"],
     );
-    wait_power_within(
-        &mut session,
-        Duration::from_secs(3),
-        "returned balanced reading",
-        |power| {
-            power["mode"] == serde_json::json!("balanced")
-                && power["modes"] == serde_json::json!(["performance", "balanced", "saver"])
-        },
-    );
+    wait_power(&mut session, "returned balanced reading", |power| {
+        power["mode"] == serde_json::json!("balanced")
+            && power["modes"] == serde_json::json!(["performance", "balanced", "saver"])
+    });
 
     // Choosing `balanced` succeeds and stays `balanced` even though the daemon emits no signal.
     set_power_mode_ok(&mut session, "balanced");
-    let reading = wait_power_within(
-        &mut session,
-        Duration::from_secs(3),
-        "settled balanced",
-        |power| power["pending"] == serde_json::json!([]),
-    );
+    let reading = wait_power(&mut session, "settled balanced", |power| {
+        power["pending"] == serde_json::json!([])
+    });
     assert_eq!(reading["mode"], serde_json::json!("balanced"));
     assert_eq!(reading["problem"], serde_json::Value::Null);
 
     // Choosing `performance` (daemon emits no signal) already carries `performance` in the
     // first reading where `pending` clears.
     set_power_mode_ok(&mut session, "performance");
-    let reading = wait_power_within(
-        &mut session,
-        Duration::from_secs(3),
-        "settled performance",
-        |power| power["pending"] == serde_json::json!([]),
-    );
+    let reading = wait_power(&mut session, "settled performance", |power| {
+        power["pending"] == serde_json::json!([])
+    });
     assert_eq!(reading["mode"], serde_json::json!("performance"));
     assert_eq!(reading["problem"], serde_json::Value::Null);
     assert_eq!(
@@ -1487,35 +1466,57 @@ fn a_power_profiles_daemon_leaving_and_returning_resets_and_re_reads_power() {
     );
 }
 
-fn spawn_fail_once_profiles_daemon(
+struct GatedProfilesHandle {
+    _conn: Connection,
+    fail_profiles: Arc<std::sync::atomic::AtomicBool>,
+    fail_active: Arc<std::sync::atomic::AtomicBool>,
+    profiles_attempts: Arc<std::sync::atomic::AtomicUsize>,
+    active_attempts: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+fn spawn_gated_profiles_daemon(
     runtime: &tokio::runtime::Runtime,
     address: &str,
     active: &str,
     profiles: &[&str],
-) -> Connection {
-    use std::sync::atomic::AtomicBool;
+    fail_profiles: bool,
+    fail_active: bool,
+) -> GatedProfilesHandle {
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
     let address = address.to_owned();
     let active = active.to_owned();
     let profiles: Vec<String> = profiles.iter().map(|&name| name.to_owned()).collect();
-    runtime.block_on(async move {
+    let fail_profiles = Arc::new(AtomicBool::new(fail_profiles));
+    let fail_active = Arc::new(AtomicBool::new(fail_active));
+    let profiles_attempts = Arc::new(AtomicUsize::new(0));
+    let active_attempts = Arc::new(AtomicUsize::new(0));
+    let daemon = GatedProfilesDaemon {
+        active,
+        profiles,
+        fail_profiles: Arc::clone(&fail_profiles),
+        fail_active: Arc::clone(&fail_active),
+        profiles_attempts: Arc::clone(&profiles_attempts),
+        active_attempts: Arc::clone(&active_attempts),
+        set_calls: Arc::new(Mutex::new(Vec::new())),
+    };
+    let conn = runtime.block_on(async move {
         Builder::address(address.as_str())
             .expect("bus address")
-            .serve_at(
-                PROFILES_PATH,
-                FailOnceProfilesDaemon {
-                    active,
-                    profiles,
-                    fail_profiles_once: AtomicBool::new(true),
-                    set_calls: Arc::new(Mutex::new(Vec::new())),
-                },
-            )
-            .expect("serve fail-once profiles")
+            .serve_at(PROFILES_PATH, daemon)
+            .expect("serve gated profiles")
             .name("net.hadess.PowerProfiles")
             .expect("profiles bus name")
             .build()
             .await
-            .expect("fail-once daemon conn")
-    })
+            .expect("gated daemon conn")
+    });
+    GatedProfilesHandle {
+        _conn: conn,
+        fail_profiles,
+        fail_active,
+        profiles_attempts,
+        active_attempts,
+    }
 }
 
 fn set_power_mode_ok(session: &mut Session, mode: &str) {
@@ -1529,10 +1530,11 @@ fn set_power_mode_ok(session: &mut Session, mode: &str) {
     );
 }
 
-/// When the daemon's `Profiles` read fails once while `ActiveProfile` succeeds,
-/// `PowerBridge` records the active profile for policy without flipping the
-/// switch: `SystemService` keeps polling `System::power()` (and `set-power-mode`
-/// stays available), then switches to live with the full list once the retry runs.
+/// While the daemon's `Profiles` read is held failing and `ActiveProfile`
+/// succeeds, `PowerBridge` records the active profile for policy without
+/// announcing a half state: `SystemService` keeps polling `System::power()`
+/// (and `set-power-mode` stays available), then switches to live with the full
+/// list once `Profiles` is released and the retry succeeds.
 #[test]
 fn a_failed_profiles_read_keeps_polling_until_retry_succeeds() {
     use std::sync::atomic::Ordering;
@@ -1542,17 +1544,19 @@ fn a_failed_profiles_read_keeps_polling_until_retry_succeeds() {
     let bus = tilo_test_env::PrivateBus::start();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
-        .thread_name("tilo-ppd-half-answer-test")
+        .thread_name("tilo-ppd-gated-profiles-test")
         .enable_all()
         .build()
         .expect("runtime");
 
     let _base_daemons = spawn_base_daemons_on_bus(&runtime, bus.address());
-    let _daemon = spawn_fail_once_profiles_daemon(
+    let daemon = spawn_gated_profiles_daemon(
         &runtime,
         bus.address(),
         "power-saver",
         &["performance", "balanced", "power-saver"],
+        true,
+        false,
     );
     let polled = Power {
         modes: vec![PowerMode::Saver, PowerMode::Balanced],
@@ -1561,28 +1565,16 @@ fn a_failed_profiles_read_keeps_polling_until_retry_succeeds() {
     };
     let (link, fake_system, mut session) = session_on_bus(&runtime, bus.address(), polled);
 
-    // Wait until PowerService has finished its initial half-answer prime.
-    let deadline = Instant::now()
-        .checked_add(Duration::from_secs(3))
-        .expect("deadline");
-    while Instant::now() < deadline {
-        session.step(Duration::from_millis(1)).expect("a frame");
-        if link.bridge().active_profile().as_deref() == Some("power-saver") {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    assert_eq!(
-        link.bridge().active_profile().as_deref(),
-        Some("power-saver")
-    );
+    // Wait for the initial half-answer prime while `Profiles` stays held failing.
+    until(&mut session, |_| {
+        daemon.profiles_attempts.load(Ordering::SeqCst) >= 1
+            && link.bridge().active_profile().as_deref() == Some("power-saver")
+    });
     assert_eq!(link.bridge().profiles_moved(), 0);
 
-    // Bridge is not fed yet, so SystemService keeps polling System::power().
-    wait_power_within(
+    wait_power(
         &mut session,
-        Duration::from_secs(3),
-        "polled reading while Profiles failed",
+        "polled reading while Profiles fails",
         |power| {
             power["modes"] == serde_json::json!(["saver", "balanced"])
                 && power["mode"] == serde_json::json!("balanced")
@@ -1592,22 +1584,17 @@ fn a_failed_profiles_read_keeps_polling_until_retry_succeeds() {
     assert!(reads_before_action >= 1);
 
     set_power_mode_ok(&mut session, "saver");
-    wait_power_within(
-        &mut session,
-        Duration::from_secs(3),
-        "settled saver on polling path",
-        |power| {
-            power["pending"] == serde_json::json!([]) && power["mode"] == serde_json::json!("saver")
-        },
-    );
+    wait_power(&mut session, "settled saver on polling path", |power| {
+        power["pending"] == serde_json::json!([]) && power["mode"] == serde_json::json!("saver")
+    });
     assert!(fake_system.power_reads.load(Ordering::SeqCst) > reads_before_action);
+    assert_eq!(link.bridge().profiles_moved(), 0);
 
-    // Once the retry deadline fires (~5s), priming succeeds and SystemService
-    // goes live with the daemon's full three-mode list.
-    wait_power_within(
+    // Release `Profiles`: the next retry completes and SystemService goes live.
+    daemon.fail_profiles.store(false, Ordering::SeqCst);
+    wait_power(
         &mut session,
-        Duration::from_secs(10),
-        "live full list after prime retry",
+        "live full list after Profiles is released",
         |power| {
             power["modes"] == serde_json::json!(["performance", "balanced", "saver"])
                 && power["mode"] == serde_json::json!("saver")
@@ -1616,15 +1603,93 @@ fn a_failed_profiles_read_keeps_polling_until_retry_succeeds() {
     let reads_once_live = fake_system.power_reads.load(Ordering::SeqCst);
 
     set_power_mode_ok(&mut session, "performance");
-    wait_power_within(
+    wait_power(&mut session, "settled performance on live path", |power| {
+        power["pending"] == serde_json::json!([])
+            && power["mode"] == serde_json::json!("performance")
+    });
+    assert_eq!(
+        fake_system.power_reads.load(Ordering::SeqCst),
+        reads_once_live
+    );
+}
+
+/// While `ActiveProfile` is held failing and `Profiles` succeeds,
+/// `PowerBridge` does not announce the partial list, so `SystemService` keeps
+/// its polled mode until `ActiveProfile` is released and the retry completes.
+#[test]
+fn a_failed_active_profile_read_keeps_polling_until_retry_succeeds() {
+    use std::sync::atomic::Ordering;
+    use tilo_system_service::model::{Power, PowerMode};
+
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let bus = tilo_test_env::PrivateBus::start();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .thread_name("tilo-ppd-gated-active-test")
+        .enable_all()
+        .build()
+        .expect("runtime");
+
+    let _base_daemons = spawn_base_daemons_on_bus(&runtime, bus.address());
+    let daemon = spawn_gated_profiles_daemon(
+        &runtime,
+        bus.address(),
+        "power-saver",
+        &["performance", "balanced", "power-saver"],
+        false,
+        true,
+    );
+    let polled = Power {
+        modes: vec![PowerMode::Saver, PowerMode::Balanced],
+        mode: Some(PowerMode::Balanced),
+        ..Power::default()
+    };
+    let (link, fake_system, mut session) = session_on_bus(&runtime, bus.address(), polled);
+
+    // Waiting for the second attempt proves the first partial prime finished
+    // and scheduled a retry while `ActiveProfile` remained held failing.
+    until(&mut session, |_| {
+        daemon.active_attempts.load(Ordering::SeqCst) >= 2
+            && daemon.profiles_attempts.load(Ordering::SeqCst) >= 2
+    });
+    assert_eq!(link.bridge().profiles_moved(), 0);
+    assert_eq!(link.bridge().active_profile(), None);
+
+    wait_power(
         &mut session,
-        Duration::from_secs(3),
-        "settled performance on live path",
+        "polled mode stays intact while ActiveProfile fails",
         |power| {
-            power["pending"] == serde_json::json!([])
-                && power["mode"] == serde_json::json!("performance")
+            power["modes"] == serde_json::json!(["saver", "balanced"])
+                && power["mode"] == serde_json::json!("balanced")
         },
     );
+    let reads_before_action = fake_system.power_reads.load(Ordering::SeqCst);
+    assert!(reads_before_action >= 1);
+
+    set_power_mode_ok(&mut session, "saver");
+    wait_power(&mut session, "settled saver on polling path", |power| {
+        power["pending"] == serde_json::json!([]) && power["mode"] == serde_json::json!("saver")
+    });
+    assert!(fake_system.power_reads.load(Ordering::SeqCst) > reads_before_action);
+    assert_eq!(link.bridge().profiles_moved(), 0);
+
+    // Release `ActiveProfile`: the next retry completes and SystemService goes live.
+    daemon.fail_active.store(false, Ordering::SeqCst);
+    wait_power(
+        &mut session,
+        "live full list after ActiveProfile is released",
+        |power| {
+            power["modes"] == serde_json::json!(["performance", "balanced", "saver"])
+                && power["mode"] == serde_json::json!("saver")
+        },
+    );
+    let reads_once_live = fake_system.power_reads.load(Ordering::SeqCst);
+
+    set_power_mode_ok(&mut session, "performance");
+    wait_power(&mut session, "settled performance on live path", |power| {
+        power["pending"] == serde_json::json!([])
+            && power["mode"] == serde_json::json!("performance")
+    });
     assert_eq!(
         fake_system.power_reads.load(Ordering::SeqCst),
         reads_once_live
