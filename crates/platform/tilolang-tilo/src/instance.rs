@@ -185,6 +185,7 @@ mod platform;
 
 pub use platform::{
     GlobalLocale, Locale, Platform, PlatformBlobs, PlatformClipboard, PlatformWeb, PlatformWords,
+    SharedPdf,
     Zoned, sentence_at, shown_at, wall_moment, wall_now,
 };
 #[cfg(all(not(target_family = "wasm"), feature = "test-support"))]
@@ -932,6 +933,9 @@ impl Instance {
             .set_blobs(PlatformBlobs(Rc::clone(&self.platform)));
         host.runtime()
             .set_clipboard(PlatformClipboard(Rc::clone(&self.platform)));
+        if let Some(pdf) = self.platform.pdf() {
+            host.runtime().set_pdf(SharedPdf(pdf));
+        }
         let platform = Rc::clone(&self.platform);
         host.set_zone(move || platform.zone());
         let platform = Rc::clone(&self.platform);

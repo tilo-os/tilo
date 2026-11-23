@@ -20959,6 +20959,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-pdf-reader"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-image-codec",
+ "tilo-pdf",
+ "tilo-test-env",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-peer-facts"
 version = "0.1.0"
 dependencies = [
@@ -23827,6 +23839,7 @@ dependencies = [
  "tilo-history",
  "tilo-net",
  "tilo-paths",
+ "tilo-pdf-reader",
  "tilo-recurrence",
  "tilo-render-protocol",
  "tilo-resource",

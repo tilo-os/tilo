@@ -371,6 +371,13 @@ pub trait Platform {
     /// What wakes the instance when work it waits for is ready (an index read off the frame).
     fn waker(&self) -> Waker;
 
+    /// The device's PDF engine (`Runtime::set_pdf`), when it can read PDFs: what a package's
+    /// `pdf.*` asks. A platform with none leaves the runtime's own answer, which says this
+    /// device reads no PDFs.
+    fn pdf(&self) -> Option<std::rc::Rc<dyn crate::runtime::pdf::PdfHost>> {
+        None
+    }
+
     /// Publish what `host` holds until the returned hold is dropped.
     fn publish(&self, host: &Host) -> Option<Box<dyn Publication>> {
         let _ = host;
@@ -449,5 +456,47 @@ impl Words for PlatformWords {
 
     fn revision(&self) -> u64 {
         self.0.words_revision()
+    }
+}
+
+/// The device's PDF engine, as the platform handed it over: one `Rc` per instance, so every
+/// `pdf.*` call of the instance reaches the same engine.
+pub struct SharedPdf(pub(super) Rc<dyn tilolang_runtime::pdf::PdfHost>);
+
+impl tilolang_runtime::pdf::PdfHost for SharedPdf {
+    fn pages(&self, bytes: &[u8]) -> Result<String, String> {
+        self.0.pages(bytes)
+    }
+
+    fn outline(&self, bytes: &[u8]) -> Result<String, String> {
+        self.0.outline(bytes)
+    }
+
+    fn text(&self, bytes: &[u8], page: i64) -> Result<String, String> {
+        self.0.text(bytes, page)
+    }
+
+    fn links(&self, bytes: &[u8], page: i64) -> Result<String, String> {
+        self.0.links(bytes, page)
+    }
+
+    fn fields(&self, bytes: &[u8]) -> Result<String, String> {
+        self.0.fields(bytes)
+    }
+
+    fn markup(&self, bytes: &[u8]) -> Result<String, String> {
+        self.0.markup(bytes)
+    }
+
+    fn picture(&self, bytes: &[u8], page: i64, width: i64) -> Result<Vec<u8>, String> {
+        self.0.picture(bytes, page, width)
+    }
+
+    fn import(&self, bytes: &[u8]) -> Result<String, String> {
+        self.0.import(bytes)
+    }
+
+    fn save(&self, sources: &[&[u8]], request: &str) -> Result<Vec<u8>, String> {
+        self.0.save(sources, request)
     }
 }

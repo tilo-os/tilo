@@ -37,7 +37,8 @@ use Imp::{
     ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI, MadeFrom,
     MapGetH, MapGetValue, MapKeys, MapKeysValue, MapNew, MapPut, MapPutValue, MapRemove,
     MapRemoveValue, MapSetAdd, MapSetRemove, MatchGroup, MayRead, Me, Members, Mentions, MetaOf,
-    MissingV, ModelCall, NoneV, Notify, Now, OfType, Outside, OutsideAt, PersonNamed, Phrase,
+    MissingV, ModelCall, NoneV, Notify, Now, OfType, Outside, OutsideAt, PdfFields, PdfImport,
+    PdfLinks, PdfMarkup, PdfOutline, PdfPages, PdfPicture, PdfSave, PdfText, PersonNamed, Phrase,
     Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice, RandomFloat, RandomId,
     RandomInt, RandomShuffle, ReadText, ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId,
     RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI,
@@ -154,6 +155,9 @@ pub struct Core {
     /// The person's clipboard (`Runtime::set_clipboard`): what a copy offers and what a paste
     /// reads. Until the host sets one, nothing copies and nothing pastes.
     pub clipboard: RefCell<Option<Box<dyn crate::clipboard::ClipboardHost>>>,
+    /// The device's PDF engine (`Runtime::set_pdf`): what a reader asks of a PDF's bytes. Until
+    /// the host sets one, every `pdf.*` call says this device reads no PDFs.
+    pub pdf: RefCell<Box<dyn crate::pdf::PdfHost>>,
     /// What names actors; the id itself until the host says.
     pub names: RefCell<Option<Box<dyn NameHost>>>,
     /// How a day or a time of day reads in a sentence; its stored text until the host says
@@ -347,6 +351,7 @@ impl Core {
             web: RefCell::new(None),
             blobs: RefCell::new(None),
             clipboard: RefCell::new(None),
+            pdf: RefCell::new(Box::new(crate::pdf::NoPdf)),
             names: RefCell::new(None),
             shown: RefCell::new(None),
             shown_by: RefCell::new(None),
@@ -551,6 +556,8 @@ impl Core {
             ClipboardCopyText | ClipboardCopyImage | ClipboardPasteText | ClipboardPasteImage => {
                 self.clipboard_import(imp, a)
             }
+            PdfPages | PdfOutline | PdfText | PdfLinks | PdfFields | PdfMarkup | PdfImport
+            | PdfPicture | PdfSave => self.pdf_import(imp, a),
             JsonParse | JsonDecode | JsonEncode | StageReading => self.json_import(imp, a),
             UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiOn
             | UiAnchor | SpaceI | SpaceF | RowOpen | UiBindState | StateGet | StateAt | ArgAt

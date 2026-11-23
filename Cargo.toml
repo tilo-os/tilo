@@ -425,6 +425,7 @@ members = [
     "crates/platform/tilo-notify",
     "crates/platform/tilo-paths",
     "crates/platform/tilo-pdf",
+    "crates/engines/pdf",
     "crates/platform/tilo-process",
     "crates/platform/tilo-presentation",
     "crates/platform/tilo-system-info",

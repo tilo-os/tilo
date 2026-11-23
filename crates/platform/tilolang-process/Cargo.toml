@@ -42,6 +42,9 @@ tilo-history = { version = "0.1.0", path = "../../sdk/tilo-history" }
 # for the package's one-time conversion of its records.
 durable-store = { version = "0.1.0", path = "../../system/durable-store" }
 tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
+# A PDF as a reader works with it: the pages, text, links, forms, markup and pictures an app
+# reads through `pdf.*`, over the one PDF engine.
+tilo-pdf-reader = { path = "../../engines/pdf" }
 # The device's clock, which is the person's: the same clock their window's dates and days read
 # by, so what an instance writes as today is the day their window shows it under.
 tilo-clock = { version = "0.1.0", path = "../tilo-clock" }

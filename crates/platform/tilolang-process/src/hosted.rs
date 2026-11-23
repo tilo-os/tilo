@@ -593,6 +593,10 @@ impl Platform for HostPlatform {
         crate::web::fetch(request)
     }
 
+    fn pdf(&self) -> Option<Rc<dyn tilolang_tilo::runtime::pdf::PdfHost>> {
+        Some(crate::pdf::Engine::host())
+    }
+
     fn read_content(&self, hash: &str) -> Option<Vec<u8>> {
         crate::files::read(self.content.as_ref()?, hash)
     }
