@@ -21,7 +21,6 @@
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::fs;
-use std::io::Read as _;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -657,26 +656,20 @@ pub fn read_bounded(path: &Path) -> Result<Vec<u8>> {
         OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::empty(),
     )?;
-    let mut file = fs::File::from(descriptor);
+    let file = fs::File::from(descriptor);
     if !file.metadata()?.file_type().is_file() {
         return refuse(format!("{} is not a regular file", path.display()));
     }
-    let mut data = Vec::new();
-    let mut chunk = vec![0u8; 65536];
-    loop {
-        let count = file.read(&mut chunk)?;
-        if count == 0 {
-            break;
-        }
-        data.extend_from_slice(chunk.get(..count).unwrap_or_default());
-        if data.len() > HANDOFF_MAX_BYTES {
-            return refuse(format!(
+    tilo_files::read_from(file, HANDOFF_MAX_BYTES).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::FileTooLarge {
+            Fail::Refusal(format!(
                 "{} is larger than {HANDOFF_MAX_BYTES} bytes",
                 path.display()
-            ));
+            ))
+        } else {
+            error.into()
         }
-    }
-    Ok(data)
+    })
 }
 
 fn load_handoff_file(path: &Path) -> Result<Handoff> {

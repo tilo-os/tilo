@@ -23,6 +23,7 @@ regex.workspace = true
 serde_json.workspace = true
 # The private 0700 directory holding the copied pull credentials.
 tempfile.workspace = true
+tilo-files = { path = "../../platform/tilo-files" }
 tilo-pycompat = { path = "../tilo-pycompat" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

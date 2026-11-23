@@ -407,12 +407,13 @@ fn read_plan_at(
     {
         return refuse("migration metadata is not a bounded private owner-controlled file");
     }
-    let mut bytes = Vec::new();
-    file.take((HANDOFF_MAX_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > HANDOFF_MAX_BYTES {
-        return refuse("migration metadata exceeds its size bound");
-    }
+    let bytes = tilo_files::read_from(file, HANDOFF_MAX_BYTES).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::FileTooLarge {
+            Fail::Refusal("migration metadata exceeds its size bound".into())
+        } else {
+            error.into()
+        }
+    })?;
     let Strict(value) = serde_json::from_slice(&bytes)
         .map_err(|_| Fail::Refusal("migration metadata is not valid JSON".into()))?;
     validate_migration(&value).map(Some)

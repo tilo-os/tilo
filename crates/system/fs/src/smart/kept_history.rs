@@ -452,24 +452,15 @@ fn spawn_keeper(
 
 /// Read `path` if it exists and is no larger than a valid file can be.
 fn read_bounded(path: &Path) -> io::Result<Option<Vec<u8>>> {
-    use std::io::Read;
-    let file = match std::fs::File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
-    };
-    let limit = u64::try_from(MAX_FILE_BYTES)
-        .unwrap_or(u64::MAX)
-        .saturating_add(1);
-    let mut bytes = Vec::new();
-    file.take(limit).read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_FILE_BYTES {
-        return Err(io::Error::new(
+    match tilo_files::native::bounded::read(path, MAX_FILE_BYTES) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::FileTooLarge => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "larger than any valid prefetch history",
-        ));
+        )),
+        Err(error) => Err(error),
     }
-    Ok(Some(bytes))
 }
 
 /// Delete every kept history beside `path` but `path` itself: one cache
@@ -576,6 +567,24 @@ mod tests {
             forget_other_workspaces(&path_for(root.path(), served));
             assert!(path_for(root.path(), served).exists());
             assert!(!path_for(root.path(), removed).exists());
+        }
+
+        phase read_bounded_handles_missing_exact_and_oversized_files;
+        {
+            let root = tempfile::tempdir().unwrap();
+            assert_eq!(read_bounded(&root.path().join("missing")).unwrap(), None);
+
+            let exact = root.path().join("exact");
+            let payload = vec![b'h'; MAX_FILE_BYTES];
+            std::fs::write(&exact, &payload).unwrap();
+            assert_eq!(read_bounded(&exact).unwrap(), Some(payload));
+
+            let over = root.path().join("over");
+            std::fs::write(&over, vec![b'h'; MAX_FILE_BYTES + 1]).unwrap();
+            assert_eq!(
+                read_bounded(&over).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
         }
     }
 
