@@ -52,6 +52,9 @@ view settings_window(s: Settings) {
                     ui.NavItem("printers", "Printers", icon: .printer) {
                         on select: set(pane, "printers")
                     }
+                    ui.NavItem("drives", "Drives", icon: .hard_drive) {
+                        on select: set(pane, "drives")
+                    }
                     ui.NavItem("input", "Keyboard and pointing", icon: .keyboard) {
                         on select: set(pane, "input")
                     }
@@ -128,6 +131,8 @@ view settings_window(s: Settings) {
                         power_pane()
                     } else if pane == "printers" {
                         printers_pane()
+                    } else if pane == "drives" {
+                        drives_pane()
                     } else if pane == "input" {
                         input_pane()
                     } else if pane == "accessibility" {
@@ -184,6 +189,8 @@ fn pane_title(pane: Text) -> Text {
         "Power"
     } else if pane == "printers" {
         "Printers"
+    } else if pane == "drives" {
+        "Drives"
     } else if pane == "input" {
         "Keyboard and pointing"
     } else if pane == "accessibility" {

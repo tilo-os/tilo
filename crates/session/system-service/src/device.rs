@@ -3,6 +3,7 @@
 //! Location portal, the keyboard's LED); a test lends one of its own.
 
 use settings_store::day_schedule::Location;
+use tilo_system_resources::drives::Drives;
 use tilo_system_resources::printers::{
     DiscoveredPrinter, JobState as PrintJobState, PrintJob as PrintJobReading, PrinterQueue,
     PrinterSupply, Printers, QueueState as PrintQueueState,
@@ -24,6 +25,21 @@ pub enum PrintChange {
     SetPaused(String, bool),
     CancelJob(String),
     RetryJob(String),
+}
+
+/// A change to make on the drives: what a person, an agent or a script asked of the `drives`
+/// resource.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DriveChange {
+    /// Open the drive, in the mode chosen, remembering the choice when asked to.
+    Mount {
+        drive: String,
+        safely: bool,
+        remember: bool,
+    },
+    Unmount { drive: String },
+    Forget { grant: String },
+    SetMode { grant: String, safely: bool },
 }
 
 /// A change to make on the accounts: what a person, an agent or a script asked of the `users`
@@ -161,6 +177,20 @@ pub trait System: Send + Sync {
     /// Why it did not happen.
     fn change_user(&self, _change: &UserChange) -> Result<(), String> {
         Err("this machine cannot change its accounts".to_owned())
+    }
+
+    /// The NTFS volumes this computer sees and the drives the person chose to remember. A
+    /// machine with no drive service answers with `serving: false`.
+    fn drives(&self) -> Drives {
+        Drives::default()
+    }
+
+    /// Make `change` on the drives.
+    ///
+    /// # Errors
+    /// Why it did not happen.
+    fn change_drive(&self, _change: &DriveChange) -> Result<(), String> {
+        Err("this machine has no drive service".to_owned())
     }
 }
 
@@ -375,6 +405,14 @@ impl System for OsSystem {
                 os_actions::users::delete_user(user, uid, !keep_files)
             }
         }
+    }
+
+    fn drives(&self) -> Drives {
+        crate::drives::reading()
+    }
+
+    fn change_drive(&self, change: &DriveChange) -> Result<(), String> {
+        crate::drives::change(change)
     }
 }
 

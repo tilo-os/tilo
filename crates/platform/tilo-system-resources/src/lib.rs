@@ -9,10 +9,12 @@
 
 pub mod effects;
 pub mod model;
+pub mod drives;
 pub mod printers;
 pub mod update;
 pub mod users;
 
+pub use drives::DRIVES;
 pub use printers::PRINTERS;
 pub use users::USERS;
 

@@ -99,6 +99,7 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("speakers", "Speakers", "session:speakers"),
     ("printers", "Printers", "printers"),
     ("users", "Users", "users"),
+    ("drives", "Drives", "drives"),
     ("modem", "Modem", "modem"),
     ("tethering", "Tethering", "tethering"),
     // What the machine booted, what update waits, and the zone its clock keeps.

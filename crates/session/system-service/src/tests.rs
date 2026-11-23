@@ -9,14 +9,17 @@ use tilo_service::{Service, Services, Started, Wake};
 use tilo_system_resources::printers::{
     DiscoveredPrinter, JobState, PrintJob, PrinterQueue, Printers, QueueState,
 };
+use tilo_system_resources::drives::{
+    Drive, DriveMode, Drives, Placement, RememberOffer, RememberedDrive,
+};
 use tilo_system_resources::update::Deployment;
 use tilo_system_resources::users::{LocalAccount, Users};
 
-use crate::device::{Change, PowerProfiles, PrintChange, System, UserChange};
+use crate::device::{Change, DriveChange, PowerProfiles, PrintChange, System, UserChange};
 use crate::model::{KeyboardLight, Power, PowerMode, Time};
 use crate::update::Update;
 use crate::{
-    KEYBOARD_BACKLIGHT, POWER, PRINTERS, SYSTEM_UPDATE, SystemService, TIME_ZONE, USERS,
+    DRIVES, KEYBOARD_BACKLIGHT, POWER, PRINTERS, SYSTEM_UPDATE, SystemService, TIME_ZONE, USERS,
 };
 
 /// A machine in memory, in Amsterdam unless told it is elsewhere.
@@ -38,6 +41,9 @@ struct Fake {
     user_changes: Mutex<Vec<UserChange>>,
     user_refusal: Mutex<Option<String>>,
     rollback_refusal: Mutex<Option<String>>,
+    drives: Mutex<Drives>,
+    drive_changes: Mutex<Vec<DriveChange>>,
+    drive_refusal: Mutex<Option<String>>,
 }
 
 impl Fake {
@@ -106,6 +112,9 @@ impl Fake {
             user_changes: Mutex::new(Vec::new()),
             user_refusal: Mutex::new(None),
             rollback_refusal: Mutex::new(None),
+            drives: Mutex::new(Drives::default()),
+            drive_changes: Mutex::new(Vec::new()),
+            drive_refusal: Mutex::new(None),
         })
     }
 
@@ -119,6 +128,10 @@ impl Fake {
 
     fn user_changes(&self) -> Vec<UserChange> {
         self.user_changes.lock().unwrap().clone()
+    }
+
+    fn drive_changes(&self) -> Vec<DriveChange> {
+        self.drive_changes.lock().unwrap().clone()
     }
 
     fn power_reads(&self) -> usize {
@@ -285,6 +298,47 @@ impl System for Fake {
             }
             UserChange::Remove { user, .. } => {
                 users.accounts.retain(|account| account.username != *user);
+            }
+        }
+        Ok(())
+    }
+
+    fn drives(&self) -> Drives {
+        self.drives.lock().unwrap().clone()
+    }
+
+    fn change_drive(&self, change: &DriveChange) -> Result<(), String> {
+        self.drive_changes.lock().unwrap().push(change.clone());
+        if let Some(reason) = self.drive_refusal.lock().unwrap().clone() {
+            return Err(reason);
+        }
+        let mut drives = self.drives.lock().unwrap();
+        match change {
+            DriveChange::Mount { drive, .. } => {
+                if let Some(found) = drives.drives.iter_mut().find(|d| d.id == *drive) {
+                    found.mounted = Some(tilo_system_resources::drives::Mounted {
+                        path: "/run/media/ada/Windows".into(),
+                        mode: DriveMode::OpenSafely,
+                        read_only: None,
+                    });
+                }
+            }
+            DriveChange::Unmount { drive } => {
+                if let Some(found) = drives.drives.iter_mut().find(|d| d.id == *drive) {
+                    found.mounted = None;
+                }
+            }
+            DriveChange::Forget { grant } => {
+                drives.remembered.retain(|d| d.grant != *grant);
+            }
+            DriveChange::SetMode { grant, safely } => {
+                if let Some(found) = drives.remembered.iter_mut().find(|d| d.grant == *grant) {
+                    found.mode = if *safely {
+                        DriveMode::OpenSafely
+                    } else {
+                        DriveMode::Open
+                    };
+                }
             }
         }
         Ok(())
@@ -1346,6 +1400,125 @@ fn a_machine_with_nothing_to_go_back_to_offers_no_rollback() {
     );
     assert!(matches!(
         service.invoke(SYSTEM_UPDATE, "rollback", &Map::new()),
+        Err(ApiError::Unavailable { .. })
+    ));
+}
+
+fn a_windows_drive() -> Drives {
+    Drives {
+        serving: true,
+        drives: vec![Drive {
+            id: "sdb1:7".into(),
+            label: "Windows".into(),
+            size_bytes: 64 * 1024 * 1024 * 1024,
+            placement: Placement::External,
+            hot_added: true,
+            remembered: None,
+            needs_consent: true,
+            preselect: DriveMode::OpenSafely,
+            can_remember: RememberOffer::AnyMode,
+            mounted: None,
+        }],
+        remembered: vec![RememberedDrive {
+            grant: "sdb1-7".into(),
+            label: "Windows".into(),
+            placement: Placement::External,
+            mode: DriveMode::OpenSafely,
+            mounted: None,
+        }],
+        ..Drives::default()
+    }
+}
+
+#[test]
+fn the_drives_resource_reads_the_volumes_and_opens_them() {
+    let fake = Fake::new();
+    *fake.drives.lock().unwrap() = a_windows_drive();
+    let mut service = service(&fake);
+    let drives = service.read(DRIVES).unwrap();
+    assert_eq!(drives["serving"], json!(true));
+    assert_eq!(drives["drives"][0]["label"], json!("Windows"));
+    assert_eq!(drives["drives"][0]["placement"], json!("external"));
+    assert_eq!(drives["drives"][0]["needs_consent"], json!(true));
+    assert_eq!(drives["remembered"][0]["grant"], json!("sdb1-7"));
+
+    let published = service
+        .resources()
+        .into_iter()
+        .find(|resource| resource.id.as_str() == DRIVES)
+        .expect("the drives resource is published");
+    let actions: Vec<&str> = published
+        .actions
+        .iter()
+        .map(|action| action.id.as_str())
+        .collect();
+    for action in ["refresh", "mount", "unmount", "forget", "set-mode"] {
+        assert!(actions.contains(&action), "{action} is published: {actions:?}");
+    }
+
+    assert_eq!(
+        service.invoke(
+            DRIVES,
+            "mount",
+            &arguments(json!({"drive": "sdb1:7", "safely": true, "remember": true})),
+        ),
+        Ok(Started::Accepted)
+    );
+    assert_eq!(
+        service.read(DRIVES).unwrap()["pending"],
+        json!(["mount"])
+    );
+    service.settle();
+    assert_eq!(
+        fake.drive_changes(),
+        [DriveChange::Mount {
+            drive: "sdb1:7".into(),
+            safely: true,
+            remember: true,
+        }]
+    );
+    let drives = service.read(DRIVES).unwrap();
+    assert_eq!(drives["pending"], json!([]));
+    assert_eq!(drives["drives"][0]["mounted"]["path"], json!("/run/media/ada/Windows"));
+
+    // The service refuses a drive it does not know, and the reading says why.
+    *fake.drive_refusal.lock().unwrap() = Some("This drive needs checking first".into());
+    service
+        .invoke(
+            DRIVES,
+            "unmount",
+            &arguments(json!({"drive": "sdb1:7"})),
+        )
+        .unwrap();
+    service.settle();
+    let drives = service.read(DRIVES).unwrap();
+    assert_eq!(drives["problem"], json!("This drive needs checking first"));
+    assert_eq!(drives["pending"], json!([]));
+}
+
+#[test]
+fn a_machine_with_no_drive_service_offers_no_drive_actions() {
+    let fake = Fake::new();
+    let mut service = service(&fake);
+    let published = service
+        .resources()
+        .into_iter()
+        .find(|resource| resource.id.as_str() == DRIVES)
+        .expect("the drives resource is published");
+    let mount = published
+        .actions
+        .iter()
+        .find(|action| action.id.as_str() == "mount")
+        .expect("the mount action is published, marked unavailable");
+    assert_eq!(
+        mount.contract.availability,
+        tilo_actions::Availability::Unavailable {
+            code: "no_drive_service".into(),
+            reason: "This computer has no drive service".into(),
+        }
+    );
+    assert!(matches!(
+        service.invoke(DRIVES, "mount", &Map::new()),
         Err(ApiError::Unavailable { .. })
     ));
 }

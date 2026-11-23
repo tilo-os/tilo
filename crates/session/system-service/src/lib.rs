@@ -25,6 +25,7 @@
 //! reading's problem until the next.
 
 pub mod device;
+pub mod drives;
 pub use tilo_system_resources::effects;
 tilo_resource::declared_names!();
 
@@ -43,14 +44,14 @@ use tilo_actions::{ApiError, ResourceSpec};
 use tilo_resource::Effect as _;
 use tilo_service::{Jobs, Service, Started, Wake, Worker, decode, offer, reading, unavailable};
 
-use device::{Change, PowerProfiles, PrintChange, System, UserChange, follow_once};
+use device::{Change, DriveChange, PowerProfiles, PrintChange, System, UserChange, follow_once};
 use effects::{KeyboardLightAction, PowerAction, TimeAction, UpdateAction};
 use model::{KeyboardLight, Power, PowerMode, Time};
 use update::Update;
 
 /// The resources' ids.
 pub use tilo_system_resources::{
-    KEYBOARD_BACKLIGHT, POWER, PRINTERS, SYSTEM_UPDATE, TIME_ZONE, USERS,
+    DRIVES, KEYBOARD_BACKLIGHT, POWER, PRINTERS, SYSTEM_UPDATE, TIME_ZONE, USERS,
 };
 
 /// How often a device whose zone follows it looks where it is again: often
@@ -66,6 +67,7 @@ enum Part {
     KeyboardLight,
     Printers,
     Users,
+    Drives,
 }
 
 /// What the machine reads now.
@@ -77,6 +79,7 @@ pub struct Readings {
     pub keyboard_light: KeyboardLight,
     pub printers: tilo_system_resources::printers::Printers,
     pub users: tilo_system_resources::users::Users,
+    pub drives: tilo_system_resources::drives::Drives,
 }
 
 fn read(system: &dyn System, live_profiles: bool) -> Readings {
@@ -95,6 +98,7 @@ fn read(system: &dyn System, live_profiles: bool) -> Readings {
         keyboard_light: system.keyboard_light(),
         printers: system.printers(),
         users: system.users(),
+        drives: system.drives(),
     }
 }
 
@@ -332,6 +336,7 @@ impl SystemService {
                 &mut readings.printers.problem,
             ),
             Part::Users => (&mut readings.users.pending, &mut readings.users.problem),
+            Part::Drives => (&mut readings.drives.pending, &mut readings.drives.problem),
         }
     }
 
@@ -353,6 +358,8 @@ impl SystemService {
         readings.printers.problem = old.printers.problem.take();
         readings.users.pending = std::mem::take(&mut old.users.pending);
         readings.users.problem = old.users.problem.take();
+        readings.drives.pending = std::mem::take(&mut old.drives.pending);
+        readings.drives.problem = old.drives.problem.take();
         // What a find turned up stays until the next one: a plain read of the queues and
         // jobs replaces neither.
         if readings.printers.nearby.is_empty() {
@@ -454,6 +461,39 @@ impl SystemService {
             let result = system.change_print(&change);
             Landed::Changed {
                 part: Part::Printers,
+                action,
+                result,
+                readings: Box::new(read(system, is_live(live_active.as_ref()))),
+                live_power_mode: None,
+            }
+        });
+        Started::Accepted
+    }
+
+    /// Read one part of the machine again, landing its pending action and a fresh reading.
+    fn start_reread(&mut self, part: Part, action: &str) -> Started {
+        self.status(part).0.push(action.to_owned());
+        let action = action.to_owned();
+        let live_active = self.live_active_flag();
+        self.worker.run(move |system| Landed::Changed {
+            part,
+            action,
+            result: Ok(()),
+            readings: Box::new(read(system, is_live(live_active.as_ref()))),
+            live_power_mode: None,
+        });
+        Started::Accepted
+    }
+
+    /// Make `change` on the drives, landing the machine's answer and a fresh reading.
+    fn start_drive(&mut self, action: &str, change: DriveChange) -> Started {
+        self.readings.drives.pending.push(action.to_owned());
+        let action = action.to_owned();
+        let live_active = self.live_active_flag();
+        self.worker.run(move |system| {
+            let result = system.change_drive(&change);
+            Landed::Changed {
+                part: Part::Drives,
                 action,
                 result,
                 readings: Box::new(read(system, is_live(live_active.as_ref()))),
@@ -656,6 +696,15 @@ pub fn printers_surface() -> tilo_resource::surface::Surface {
     >(PRINTERS, "Printers")
 }
 
+/// The `drives` resource's surface, as a shell reads it over `so.tilo.device`.
+#[must_use]
+pub fn drives_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<
+        tilo_system_resources::drives::Drives,
+        tilo_system_resources::drives::DrivesAction,
+    >(DRIVES, "Drives")
+}
+
 /// The `users` resource's surface, as a shell reads it over `so.tilo.device`.
 #[must_use]
 pub fn users_surface() -> tilo_resource::surface::Surface {
@@ -819,6 +868,7 @@ impl Service for SystemService {
             keyboard_light_resource(&self.readings.keyboard_light),
             printers::resource(&self.readings.printers),
             users::resource(&self.readings.users),
+            drives::resource(&self.readings.drives),
         ]
     }
 
@@ -830,6 +880,7 @@ impl Service for SystemService {
             KEYBOARD_BACKLIGHT => Some(reading(&self.readings.keyboard_light)),
             PRINTERS => Some(reading(&self.readings.printers)),
             USERS => Some(reading(&self.readings.users)),
+            DRIVES => Some(reading(&self.readings.drives)),
             _ => None,
         }
     }
@@ -992,6 +1043,44 @@ impl Service for SystemService {
                     }
                     tilo_system_resources::users::UsersAction::Remove { user, keep_files } => Ok(
                         self.start_user(id, UserChange::Remove { user, keep_files }),
+                    ),
+                }
+            }
+            DRIVES => {
+                if !self.readings.drives.serving {
+                    return Err(ApiError::Unavailable {
+                        code: "no_drive_service".into(),
+                        reason: "This computer has no drive service".into(),
+                    });
+                }
+                let action = decode::<tilo_system_resources::drives::DrivesAction>(
+                    &published, resource, action, arguments,
+                )?;
+                let id = action.id();
+                match action {
+                    tilo_system_resources::drives::DrivesAction::Refresh => {
+                        Ok(self.start_reread(Part::Drives, id))
+                    }
+                    tilo_system_resources::drives::DrivesAction::Mount {
+                        drive,
+                        safely,
+                        remember,
+                    } => Ok(self.start_drive(
+                        id,
+                        DriveChange::Mount {
+                            drive,
+                            safely,
+                            remember,
+                        },
+                    )),
+                    tilo_system_resources::drives::DrivesAction::Unmount { drive } => {
+                        Ok(self.start_drive(id, DriveChange::Unmount { drive }))
+                    }
+                    tilo_system_resources::drives::DrivesAction::Forget { grant } => {
+                        Ok(self.start_drive(id, DriveChange::Forget { grant }))
+                    }
+                    tilo_system_resources::drives::DrivesAction::SetMode { grant, safely } => Ok(
+                        self.start_drive(id, DriveChange::SetMode { grant, safely }),
                     ),
                 }
             }
