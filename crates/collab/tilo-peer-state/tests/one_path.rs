@@ -578,6 +578,7 @@ fn sealed_change(
     device: &SigningKey,
     document: &mut AutoCommit,
     key: &str,
+    value: &str,
 ) -> Vec<u8> {
     let invoker = owner
         .with_current(workspace, |view| {
@@ -588,7 +589,7 @@ fn sealed_change(
         })
         .unwrap();
     let before = document.get_heads();
-    document.put(automerge::ROOT, key, key).unwrap();
+    document.put(automerge::ROOT, key, value).unwrap();
     document.commit_edit_as("fixture", "topic", invoker);
     document.save_after(&before)
 }
@@ -668,15 +669,18 @@ fn read(
     (typed, history)
 }
 
-/// Two devices hold one sealed record: one compacts past its bound while offline
-/// and the other writes meanwhile; on reconnecting both hold every write and the
-/// range the compaction folded is retired on both.
+/// Two devices hold one sealed record: one compacts past its bound (in bytes,
+/// which a few large writes cross) while offline and the other writes meanwhile;
+/// on reconnecting both hold every write and the range the compaction folded is
+/// retired on both.
 #[tokio::test]
 async fn two_devices_converge_on_a_sealed_record_one_compacted_offline() {
-    // Past this build's bound of sealed writes per record: a test build keeps
-    // 256 and a device compacts at three quarters of them, a build 4096 (and
-    // compacts at 3072), so a device's own history crosses its bound only here.
-    const OFFLINE: usize = 3100;
+    // A build's bound is 4096 writes or 16 MiB of sealed history, and a device
+    // compacts at three quarters of either; large writes cross the bytes bound
+    // in a few seconds, where the write bound would take minutes and run past
+    // the freshness an op is admitted within.
+    const OFFLINE_WRITES: usize = 8;
+    const BIG: usize = 2 * 1024 * 1024;
     let directory = tempfile::tempdir().unwrap();
     let (owner_a, fixture, a_key, b_key) = held(directory.path());
     let workspace = fixture.workspace_id();
@@ -711,13 +715,21 @@ async fn two_devices_converge_on_a_sealed_record_one_compacted_offline() {
     );
     // Offline, A writes past the bound and compacts what it wrote.
     let mut away = opened(&owner_a, workspace, &content);
-    for step in 0..OFFLINE {
-        let changes = sealed_change(&owner_a, workspace, &a_key, &mut away, &format!("a{step}"));
+    let big = "x".repeat(BIG);
+    for step in 0..OFFLINE_WRITES {
+        let changes = sealed_change(
+            &owner_a,
+            workspace,
+            &a_key,
+            &mut away,
+            &format!("a{step}"),
+            &big,
+        );
         sealed_write(&owner_a, workspace, &a_key, &content, &changes, false).await;
     }
     // Meanwhile B writes on the history it holds.
     let mut here = opened(&owner_b, workspace, &content);
-    let b_change = sealed_change(&owner_b, workspace, &b_key, &mut here, "b0");
+    let b_change = sealed_change(&owner_b, workspace, &b_key, &mut here, "b0", "b0");
     sealed_write(&owner_b, workspace, &b_key, &content, &b_change, false).await;
     // A compacted what it wrote while away.
     let kinds: Vec<collab_types::OpKind> = owner_a
@@ -746,7 +758,7 @@ async fn two_devices_converge_on_a_sealed_record_one_compacted_offline() {
         b_key.verifying_key().to_bytes(),
     );
     // Each writes once more, which compacts its own copy of the history it took in.
-    let late = sealed_change(&owner_a, workspace, &a_key, &mut away, "a-late");
+    let late = sealed_change(&owner_a, workspace, &a_key, &mut away, "a-late", "a-late");
     sealed_write(&owner_a, workspace, &a_key, &content, &late, false).await;
     carry(
         &owner_a,
@@ -754,7 +766,7 @@ async fn two_devices_converge_on_a_sealed_record_one_compacted_offline() {
         workspace,
         a_key.verifying_key().to_bytes(),
     );
-    let b_late = sealed_change(&owner_b, workspace, &b_key, &mut here, "b-late");
+    let b_late = sealed_change(&owner_b, workspace, &b_key, &mut here, "b-late", "b-late");
     sealed_write(&owner_b, workspace, &b_key, &content, &b_late, false).await;
     carry(
         &owner_b,
@@ -764,7 +776,7 @@ async fn two_devices_converge_on_a_sealed_record_one_compacted_offline() {
     );
     // Both read every write, and the range the compaction folded is retired on both.
     let mut every: std::collections::BTreeSet<String> =
-        (0..OFFLINE).map(|step| format!("a{step}")).collect();
+        (0..OFFLINE_WRITES).map(|step| format!("a{step}")).collect();
     every.insert("b0".to_owned());
     every.insert("a-late".to_owned());
     every.insert("b-late".to_owned());
@@ -777,7 +789,7 @@ async fn two_devices_converge_on_a_sealed_record_one_compacted_offline() {
             );
         }
         assert!(
-            history < OFFLINE,
+            history < OFFLINE_WRITES,
             "the compacted range is retired on both: {history}"
         );
     }
