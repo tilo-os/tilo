@@ -27,9 +27,8 @@ use tilo_server_session::workspaces::{
     CREATE_OWN_WORKSPACE, CREATE_WORKSPACE, CaughtUpWorkspace, CreatedWorkspace, DELETE_WORKSPACE,
     ENTER_WORKSPACE, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACE,
     HOST_WORKSPACES_RESOURCE, HostedWorkspace, KEEP_PERSONAL, LIST_PERSONAL, LIST_REVOCATIONS,
-    LIST_WORKSPACES, PERSONAL_DEVICE_NAME, PersonalList, StandingPage, UNHOST_WORKSPACE,
-    WorkspaceLabels, WorkspaceListing, administered_answer, administered_request, check_labels,
-    labelled,
+    LIST_WORKSPACES, PersonalList, StandingPage, UNHOST_WORKSPACE, WorkspaceLabels,
+    WorkspaceListing, administered_answer, administered_request, check_labels, labelled,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -63,7 +62,7 @@ const OWNER_ROLE: &str = "owner";
 
 /// The host's operations in catalogue order, each with the
 /// [`ServiceOperation`] it is.
-pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 25] = [
+pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 24] = [
     (
         Verb {
             id: CREATE_WORKSPACE,
@@ -133,16 +132,6 @@ pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 25] = [
             params: keep_personal_params,
         },
         ServiceOperation::KeepPersonalList,
-    ),
-    (
-        Verb {
-            id: PERSONAL_DEVICE_NAME,
-            label: "Name one of your devices",
-            check: PERSONAL_DEVICE_NAME,
-            kind: roles::GOVERNANCE_KIND,
-            params: name_personal_params,
-        },
-        ServiceOperation::NamePersonalDevice,
     ),
     (
         Verb {
@@ -550,21 +539,6 @@ fn keep_personal_params() -> Vec<ActionParam> {
     )]
 }
 
-fn name_personal_params() -> Vec<ActionParam> {
-    vec![
-        ActionParam::required(
-            "device",
-            ParamType::Text,
-            "The device's key, 64 lowercase hex characters.",
-        ),
-        ActionParam::required(
-            "name",
-            ParamType::Text,
-            "The name you want it to read by, such as “Claude Code on laptop 2”.",
-        ),
-    ]
-}
-
 fn host_workspace_params() -> Vec<ActionParam> {
     vec![
         workspace_params().remove(0),
@@ -856,9 +830,7 @@ impl Workspaces {
                     .map_err(|error| ActionCallError::refused(error.to_string()))?;
                 self.branch_own_invoke(device, &args, request_id, now).await
             }
-            ServiceOperation::ReadPersonalList
-            | ServiceOperation::KeepPersonalList
-            | ServiceOperation::NamePersonalDevice => {
+            ServiceOperation::ReadPersonalList | ServiceOperation::KeepPersonalList => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| ActionCallError::refused(error.to_string()))?;
                 self.personal_invoke(device, operation, &args).await
@@ -1128,14 +1100,6 @@ impl Workspaces {
                 self.sign_own_addresses(&mut list).await;
             }
             return answer(&list);
-        }
-        if operation == ServiceOperation::NamePersonalDevice {
-            let key = args.required_text("device")?;
-            let name = args.required_text("name")?;
-            self.name_device(device, key, name)
-                .await
-                .map_err(ActionCallError::refused)?;
-            return Ok(serde_json::json!({ "named": key }));
         }
         let list: PersonalList = args
             .object("list")?

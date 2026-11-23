@@ -266,8 +266,7 @@ where
         presence: Some(&presence),
     };
 
-    // The person's record says this key of theirs is here now, and when it
-    // was last: a device of theirs reading their devices sees it online.
+    // The person's record says when this key of theirs was here last.
     if let Some(admin) = &admin {
         admin.session_opened(&peer.cert).await;
     }

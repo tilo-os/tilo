@@ -2487,10 +2487,7 @@ impl Task {
                 enter_at: None,
             })
             .collect();
-        Some(PersonalList {
-            workspaces,
-            devices: Vec::new(),
-        })
+        Some(PersonalList { workspaces })
     }
 
     /// Tell this session's readers the person's list of their workspaces, as their own

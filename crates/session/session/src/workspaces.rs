@@ -1050,10 +1050,7 @@ impl Personal {
                 }
             })
             .collect();
-        tilo_server_protocol::workspaces::PersonalList {
-            workspaces,
-            devices: Vec::new(),
-        }
+        tilo_server_protocol::workspaces::PersonalList { workspaces }
     }
 
     fn persist(&mut self) {
@@ -1824,29 +1821,9 @@ impl crate::Shared {
             .as_ref()
             .map(|engine| engine.host_hints().into_iter().collect())
             .unwrap_or_default();
-        let mut list = personal.readable(&hints, &roles);
+        let list = personal.readable(&hints, &roles);
         personal.kept_roles = roles;
-        // The keys the person's root certified on this device go with the
-        // list, so the record every device of theirs reads holds them.
-        if let Some(engine) = &self.engine {
-            list.devices = crate::identity_admin::root_certificates(
-                &engine.identity().device_cert.user_public_key,
-            )
-            .into_iter()
-            .map(|cert| tilo_server_protocol::workspaces::PersonalDevice {
-                cert,
-                // The person names their devices where the record is kept.
-                name: None,
-                revoked: false,
-                browser: None,
-                // What the keys' sessions on a host said of them is that
-                // host's to keep, not this list's.
-                agent: None,
-                last_active_ms: None,
-                online: false,
-            })
-            .collect();
-        }
+        self.keep_root_certificates();
         if personal.kept.as_ref() == Some(&list) && (personal.kept_on_hosts || hosted.is_none()) {
             return;
         }
@@ -1855,6 +1832,37 @@ impl crate::Shared {
         }
         personal.kept_on_hosts = hosted.is_some();
         personal.kept = Some(list);
+    }
+
+    /// Keep the keys the person's root certified on this device in the record of their devices in
+    /// their own workspace, each once: every device of theirs reads their devices there.
+    fn keep_root_certificates(&self) {
+        use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Devices};
+        let (Some(engine), Some(store)) = (
+            &self.engine,
+            self.sync.as_ref().and_then(|sync| sync.person_resources()),
+        ) else {
+            return;
+        };
+        let person = engine.identity().device_cert.user_public_key;
+        let held = store.read::<Devices>(DEVICES).unwrap_or_default();
+        for cert in crate::identity_admin::root_certificates(&person) {
+            let key = hex::encode(cert.device_public_key);
+            if held
+                .devices
+                .get(&tilo_resource::Id::from_raw(key.clone()))
+                .is_some()
+            {
+                continue;
+            }
+            let Ok(certificate) = postcard::to_allocvec(&cert) else {
+                continue;
+            };
+            let certificate = hex::encode(certificate);
+            store.apply(DEVICES, move || {
+                Devices::KEEP_DEVICE.with((key.clone(), certificate.clone()))
+            });
+        }
     }
 
     /// Take one of the person's workspaces in that this device does not hold: the list says which

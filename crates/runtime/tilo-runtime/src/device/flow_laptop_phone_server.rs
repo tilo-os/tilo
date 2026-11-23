@@ -19,8 +19,8 @@ use std::sync::{Arc, Mutex};
 use ed25519_dalek::SigningKey;
 use serde_json::json;
 use tilo_device_identity::login::{LIST, RENAME, UPDATE};
-use tilo_server_session::workspaces::{PersonalDevice, PersonalList};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
+use tilo_workspace_service::workspaces::person_workspace::{self, devices};
 
 use super::ticket::{OnThisDevice, Tickets};
 use super::ticket_tests::{ask_device, enrol, serve};
@@ -104,18 +104,6 @@ async fn daemon(
     }
 }
 
-fn listed(cert: &DeviceCert, name: &str) -> PersonalDevice {
-    PersonalDevice {
-        cert: cert.clone(),
-        name: Some(name.into()),
-        revoked: false,
-        browser: None,
-        agent: None,
-        last_active_ms: None,
-        online: true,
-    }
-}
-
 /// Every device manages every other: from the phone, the laptop and the server are listed,
 /// renamed and updated, and the laptop carries out its own update.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -141,8 +129,8 @@ async fn flow_every_device_manages_every_other() {
         .workspaces()
         .expect("the server has workspaces")
         .clone();
-    let workspace = hosted.create("Work").await.unwrap().workspace;
-    // The person's own workspace, where the server keeps their list.
+    // The person's own workspace, which every device of theirs holds: the record of their
+    // devices is there.
     let person =
         tilo_server_protocol::servers::person_workspace_id(&root.verifying_key().to_bytes());
     if hosted.summary(&person).await.is_err() {
@@ -152,25 +140,23 @@ async fn flow_every_device_manages_every_other() {
             .unwrap();
     }
     for cert in [&laptop_cert, &phone_cert] {
-        for workspace in [&workspace, &person] {
-            hosted
-                .enter(workspace, cert)
-                .await
-                .expect("a device of the person enters the workspace");
-        }
+        hosted
+            .enter(&person, cert)
+            .await
+            .expect("a device of the person enters their own workspace");
     }
     let laptop = daemon(
         &state.path().join("laptop"),
         (&laptop_key, &laptop_cert),
         (&server, &server_cert),
-        &workspace,
+        &person,
     )
     .await;
     let phone = daemon(
         &state.path().join("phone"),
         (&phone_key, &phone_cert),
         (&server, &server_cert),
-        &workspace,
+        &person,
     )
     .await;
     let updates = Arc::new(Mutex::new(0_u32));
@@ -185,21 +171,17 @@ async fn flow_every_device_manages_every_other() {
         .tickets
         .reach_at(laptop_cert.device_public_key, laptop.own.endpoint().addr());
 
-    // The person's list, as their devices keep it. A device certified by the person's root acts
-    // as the person on the host: nobody is asked to allow their own device's change to it.
-    let list = PersonalList {
-        workspaces: Vec::new(),
-        devices: vec![
-            listed(&laptop_cert, "Laptop"),
-            listed(&phone_cert, "Phone"),
-            listed(&server_cert, "The server"),
-        ],
-    };
-    phone
-        .entered
-        .keep_personal(&list)
+    // The record of the person's devices, as the devices their root certified keep themselves in
+    // it: nobody is asked to allow their own device's change to it.
+    for cert in [&laptop_cert, &phone_cert, &server_cert] {
+        person_workspace::apply(
+            phone.own.copies(),
+            devices::DEVICES,
+            devices::Devices::keeping(cert).unwrap(),
+        )
         .await
-        .expect("the phone keeps the person's list, unasked");
+        .expect("the phone keeps the person's device in their record, unasked");
+    }
 
     // The phone lists the laptop and the server and renames them.
     let laptop_key = hex::encode(laptop_cert.device_public_key);

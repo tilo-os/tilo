@@ -22,11 +22,11 @@ use tilo_actions::remote::{person_models, person_vault};
 use tilo_server_protocol::WorkspaceId as ServerWorkspaceId;
 use tilo_server_protocol::servers::person_workspace_id;
 use tilo_server_protocol::workspaces::{
-    CREATE_WORKSPACE, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, PersonalDevice,
-    PersonalList, PersonalWorkspace, WorkspaceLabels,
+    CREATE_WORKSPACE, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, PersonalList,
+    PersonalWorkspace, WorkspaceLabels,
 };
 use tilo_session_client::Link;
-use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, UserIdentity};
+use tilo_user_identity::{AgentScope, DeviceCapabilities, UserIdentity};
 
 use crate::support::flow;
 use crate::support::{Device, TestHost, enrol, start_workspace_host_relaying};
@@ -130,7 +130,7 @@ async fn four_devices() -> Four {
     }
 }
 
-/// The list the desktop keeps for the person: their workspaces and their four devices.
+/// The list the desktop keeps for the person: their workspaces.
 fn personal(f: &Four) -> PersonalList {
     let workspace = |id: &str, name: &str| PersonalWorkspace {
         workspace: id.to_owned(),
@@ -142,24 +142,23 @@ fn personal(f: &Four) -> PersonalList {
         unattended: false,
         enter_at: None,
     };
-    let device = |cert: &DeviceCert, name: &str| PersonalDevice {
-        cert: cert.clone(),
-        name: Some(name.to_owned()),
-        revoked: false,
-        browser: None,
-        agent: None,
-        last_active_ms: None,
-        online: true,
-    };
     PersonalList {
         workspaces: vec![workspace(&f.work, "Work"), workspace(&f.home, "Home")],
-        devices: vec![
-            device(&f.desktop.cert, "Fedora desktop"),
-            device(&f.pi.cert, "Orange Pi"),
-            device(&f.laptop.cert, "Laptop"),
-            device(&f.server_device.cert, "tilo.sh"),
-        ],
     }
+}
+
+/// The keys of the person's devices, as the record of their own workspace holds them on the
+/// server, which every device of theirs holds too.
+async fn recorded(f: &Four) -> Vec<String> {
+    use tilo_workspace_service::workspaces::person_workspace::{self, devices};
+    let workspaces = f.host.server.workspaces().unwrap();
+    person_workspace::read::<devices::Devices>(workspaces, devices::DEVICES)
+        .await
+        .expect("the record of the person's devices reads")
+        .listed(&f.person)
+        .into_iter()
+        .map(|listed| listed.key)
+        .collect()
 }
 
 /// All four devices use the person's identity and have all their workspaces, apps and
@@ -176,14 +175,25 @@ async fn flow_all_four_devices_see_every_workspace_app_and_file() {
         "the always-on server governs every workspace of the person"
     );
 
-    // The desktop's device says which workspaces and devices are the person's.
+    // The desktop's device says which workspaces are the person's, and each device their root
+    // certified is in the record of their devices.
     let desktop = f.client(&f.desktop_session, &f.desktop, "fedora-desktop");
     desktop
         .keep_personal(&personal(&f))
         .await
         .expect("a device of the person's keeps their list on the host");
+    for certified in [&f.desktop, &f.pi, &f.laptop, &f.server_device] {
+        workspaces.keep_issued_device(&certified.cert, "").await;
+    }
+    let devices = recorded(&f).await;
+    for certified in [&f.desktop, &f.pi, &f.laptop, &f.server_device] {
+        assert!(
+            devices.contains(&flow::key_of(&certified.cert)),
+            "the person's record holds every device of theirs: {devices:?}"
+        );
+    }
 
-    // Every other device reads the same list: both workspaces and all four devices.
+    // Every other device reads the same list: both workspaces.
     for (label, session, device) in [
         ("the Orange Pi", &f.pi_session, &f.pi),
         ("the laptop", &f.laptop_session, &f.laptop),
@@ -202,17 +212,6 @@ async fn flow_all_four_devices_see_every_workspace_app_and_file() {
             ids.contains(&f.work.as_str()) && ids.contains(&f.home.as_str()),
             "{label} sees every workspace of the person: {ids:?}"
         );
-        let devices: Vec<String> = listed
-            .devices
-            .iter()
-            .map(|listed| flow::key_of(&listed.cert))
-            .collect();
-        for certified in [&f.desktop, &f.pi, &f.laptop, &f.server_device] {
-            assert!(
-                devices.contains(&flow::key_of(&certified.cert)),
-                "{label} sees every device of the person: {devices:?}"
-            );
-        }
     }
 
     // A file the desktop writes into the workspace's folder is the file every other device
@@ -284,16 +283,7 @@ async fn flow_all_four_devices_see_every_workspace_app_and_file() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_always_on_server_is_one_of_the_persons_devices() {
     let f = four_devices().await;
-    let laptop = f.client(&f.laptop_session, &f.laptop, "snapdragon-laptop");
-    let listed = laptop
-        .personal_list_in(f.work_id(), &WorkspaceLabels::new(), None)
-        .await
-        .expect("the server answers the person's list");
-    let devices: Vec<String> = listed
-        .devices
-        .iter()
-        .map(|listed| flow::key_of(&listed.cert))
-        .collect();
+    let devices = recorded(&f).await;
     let server = flow::key_of(&f.server_device.cert);
     assert!(
         devices.contains(&server),

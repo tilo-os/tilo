@@ -13,16 +13,16 @@
 //! which host.
 //!
 //! The devices the person's root certified are another resource of their own
-//! workspace ([`super::person_workspace::devices`]). Each key is kept under
-//! its own entry, with its certificate, and what the person or the key said of
-//! it that lasts as facts there: the name the person gave it, and when a
-//! session of it was last here. A device is never taken out; its root's
-//! revocation, which this host keeps with every other, marks it.
+//! workspace ([`super::person_workspace::devices`]), which every device of
+//! theirs reads their devices from. This host writes there what it learns: a
+//! key their root certified through it, when a session of a key was last here,
+//! the agent a key's session said it runs, and a revocation it took in. A
+//! device is never taken out; its root's revocation marks it.
 //!
 //! A browser keeps one key per open tab, since a key has one writer; a page
 //! asking for the record names its browser's tab keys, which are kept together
-//! in `so.tilo.shell`'s `tab-groups` of the person's own workspace, so the list
-//! says which keys are one browser's.
+//! in `so.tilo.shell`'s `tab-groups` of the person's own workspace, so a list
+//! of their devices says which keys are one browser's.
 //!
 //! [`ServiceOperation::KeepPersonalList`]: crate::service_authority::ServiceOperation::KeepPersonalList
 //! [`ServiceOperation::ReadPersonalList`]: crate::service_authority::ServiceOperation::ReadPersonalList
@@ -35,11 +35,12 @@ use automerge::{AutoCommit, ROOT, ReadDoc as _};
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::servers::person_workspace_id;
 use tilo_server_session::workspaces::{
-    KeepingDeviceAddress, MAX_BROWSER_DEVICES, MAX_PERSONAL_DEVICES, PersonalBrowser,
-    PersonalDevice, PersonalList, PersonalWorkspace,
+    KeepingDeviceAddress, MAX_BROWSER_DEVICES, MAX_PERSONAL_DEVICES, PersonalBrowser, PersonalList,
+    PersonalWorkspace,
 };
-use tilo_user_identity::certification::MAX_CERTIFICATION_LABEL_BYTES;
-use tilo_user_identity::{DeviceCert, WorkspaceDirectory, WorkspaceMeta, verify_device_cert};
+use tilo_user_identity::{
+    DeviceCert, RevocationEntry, WorkspaceDirectory, WorkspaceMeta, verify_device_cert,
+};
 
 use super::Workspaces;
 
@@ -56,12 +57,6 @@ const WORKSPACES: (&str, &str) = ("so.tilo.identity", "identity.workspaces");
 /// The resource of the person's own workspace each browser's tab keys are
 /// kept in: a page naming its tabs says which keys are one browser's.
 const TAB_GROUPS: (&str, &str) = ("so.tilo.shell", "tab-groups");
-
-/// The fact under which a device's entry keeps the name the person gave it.
-const NAME_FACT: &str = "name";
-/// The fact under which a device's entry keeps when a session of it was last
-/// here, ms since the epoch.
-const SEEN_FACT: &str = "seen";
 
 /// How often a session opening writes when a key was last here: a host serves
 /// many sessions, and the record is read back rather than streamed.
@@ -321,83 +316,9 @@ impl Workspaces {
             Ok(())
         })
         .await?;
-        // Every key the list carried that is theirs goes among their devices:
-        // the person's root signed it, and another person's key is another
-        // person's.
-        for carried in list.devices {
-            if carried.cert.user_public_key == device.user_public_key {
-                self.keep_issued_device(&carried.cert, "").await;
-            }
-        }
         // Every other device of theirs reads the list it kept.
         self.personal_changed();
         Ok(count)
-    }
-
-    /// Name `key`, one of `device`'s person's devices, `name`: what their
-    /// lists read it by from now on, instead of the name it enrolled with.
-    pub(super) async fn name_device(
-        &self,
-        device: &DeviceCert,
-        key: &str,
-        name: &str,
-    ) -> Result<(), String> {
-        if device.capabilities.agent.is_some() || device.capabilities.stand_in {
-            return Err("only a device of the person's own names their devices".to_owned());
-        }
-        let name = name.trim();
-        if name.is_empty()
-            || name.len() > MAX_CERTIFICATION_LABEL_BYTES
-            || name.chars().any(char::is_control)
-        {
-            return Err(format!(
-                "a device's name is 1 to {MAX_CERTIFICATION_LABEL_BYTES} characters, without control characters"
-            ));
-        }
-        let person = device.user_public_key;
-        let revocations = self.revocations();
-        let devices = self.devices_of(&person).await;
-        let Some(known) = devices
-            .devices
-            .get(&tilo_resource::Id::from_raw(key.to_owned()))
-        else {
-            return Err("that key is not a device of this person's".to_owned());
-        };
-        if !stored_cert(known)
-            .is_some_and(|cert| cert.user_public_key == person && verify_device_cert(&cert).is_ok())
-        {
-            return Err("that key is not a device of this person's".to_owned());
-        }
-        let taken = devices
-            .devices
-            .iter()
-            .filter(|(id, _)| id.as_str() != key)
-            .filter(|(_, known)| stored_cert(known).is_some_and(|cert| !revocations.refuses(&cert)))
-            .any(|(_, known)| match name_of(known) {
-                Some(named) => named == name,
-                None => stored_cert(known).is_some_and(|cert| cert.device_label == name),
-            });
-        if taken {
-            return Err(format!(
-                "another of this person's devices is already called “{name}”"
-            ));
-        }
-        if name_of(known).as_deref() == Some(name) {
-            return Ok(());
-        }
-        self.keep_fact(&person, key, NAME_FACT, &hex::encode(name.as_bytes()))
-            .await?;
-        if let Some(known) = self
-            .inner
-            .device_names
-            .lock_recover()
-            .get_mut(&person)
-            .and_then(|known| known.get_mut(key))
-        {
-            name.clone_into(&mut known.0);
-        }
-        self.personal_changed();
-        Ok(())
     }
 
     /// Whether another device of `person`'s reads by `label`: one their record
@@ -512,43 +433,7 @@ impl Workspaces {
             }
         }
         workspaces.extend(local);
-        // The person's own keys read their devices; an agent's grant reads
-        // the workspaces it may enter, and nothing of the person's devices.
-        let devices = if device.capabilities.agent.is_some() {
-            Vec::new()
-        } else {
-            let revocations = self.revocations();
-            let state = self.devices_of(&person).await;
-            let tab_groups = self.tab_groups(&person).await;
-            let online = self.inner.online.lock_recover();
-            let devices: Vec<PersonalDevice> = state
-                .devices
-                .iter()
-                .filter_map(|(id, known)| {
-                    let cert = stored_cert(known)?;
-                    if cert.user_public_key != person || verify_device_cert(&cert).is_err() {
-                        return None;
-                    }
-                    let key = id.as_str().to_owned();
-                    Some(PersonalDevice {
-                        name: name_of(known),
-                        revoked: revocations.refuses(&cert),
-                        browser: tab_groups.get(&key).cloned(),
-                        agent: None,
-                        last_active_ms: seen_of(known),
-                        online: online.get(&cert.device_public_key).copied().unwrap_or(0) > 0,
-                        cert,
-                    })
-                })
-                .collect();
-            drop(online);
-            self.remember_names(&person, &devices);
-            devices
-        };
-        PersonalList {
-            workspaces,
-            devices,
-        }
+        PersonalList { workspaces }
     }
 
     /// Add `device`, one of its person's own devices that asked for their
@@ -560,6 +445,29 @@ impl Workspaces {
             return;
         }
         self.keep_issued_device(device, "").await;
+    }
+
+    /// Mark the device `entry` names taken back in its person's record, where
+    /// this host holds it and the record holds that device of theirs: every
+    /// list of their devices shows it revoked.
+    pub(super) async fn mark_revoked(&self, entry: &RevocationEntry) {
+        let person = entry.user_public_key;
+        let key = hex::encode(entry.revoked_device_public_key);
+        let devices = self.devices_of(&person).await;
+        let held = devices
+            .listed(&person)
+            .into_iter()
+            .any(|listed| listed.key == key && !listed.device.revoked);
+        if !held {
+            return;
+        }
+        if let Err(error) = self
+            .apply_devices(&person, Devices::REVOKE_DEVICE.with(key))
+            .await
+        {
+            tracing::warn!(%error, "a revoked device is not marked in its person's record");
+        }
+        self.refresh_names(&person).await;
     }
 
     /// Keep `browser`, the tab keys a page of `device`'s person names as it
@@ -681,6 +589,7 @@ impl Workspaces {
         {
             None
         } else {
+            self.refresh_names(&person).await;
             Some(self.free_name(&person, &key, label))
         };
         self.inner
@@ -702,16 +611,15 @@ impl Workspaces {
         }
         if let Some(name) = name
             && let Err(error) = self
-                .keep_fact(&person, &key, NAME_FACT, &hex::encode(name.as_bytes()))
+                .apply_devices(&person, Devices::NAME_DEVICE.with((key, name)))
                 .await
         {
             tracing::warn!(%error, "a device the host named is not named in the person's record");
         }
-        self.personal_changed();
     }
 
-    /// A session of `cert`'s device opened here: their record says the key is
-    /// here now, and when it was last.
+    /// A session of `cert`'s device opened here: their record says when the
+    /// key was here last.
     pub(crate) async fn session_opened(&self, cert: &DeviceCert) {
         self.session_opened_at(cert, now_ms()).await;
     }
@@ -724,29 +632,17 @@ impl Workspaces {
 
     /// [`Self::session_opened`] at `at_ms`, for tests that say when.
     pub(crate) async fn session_opened_at(&self, cert: &DeviceCert, at_ms: i64) {
-        {
-            let mut online = self.inner.online.lock_recover();
-            let count = online.entry(cert.device_public_key).or_default();
-            *count = count.saturating_add(1);
-            drop(online);
-        }
         self.note_seen(cert, at_ms, true).await;
     }
 
     /// [`Self::session_ended`] at `at_ms`, for tests that say when.
     pub(crate) async fn session_ended_at(&self, cert: &DeviceCert, at_ms: i64) {
-        {
-            let mut online = self.inner.online.lock_recover();
-            if let Some(count) = online.get_mut(&cert.device_public_key) {
-                *count = count.saturating_sub(1);
-            }
-        }
         self.note_seen(cert, at_ms, false).await;
     }
 
-    /// Say that `cert`, a key of its person's, runs the agent `name`: the
-    /// host's own person's MCP server lists the run. The agent resource's
-    /// `runs_on` names the device it runs on, so nothing is kept per key here.
+    /// Say that `cert`, a key of its person's, runs the agent `name`: their
+    /// record says so of the key, and the host's own person's MCP server lists
+    /// the run.
     pub(crate) fn note_agent(
         &self,
         cert: &DeviceCert,
@@ -757,6 +653,31 @@ impl Workspaces {
             && cert.device_public_key != self.inner.host.cert.device_public_key
         {
             self.inner.mcp_server.note(cert, name, stop);
+        }
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let (workspaces, cert, name) = (self.clone(), cert.clone(), name.to_owned());
+            runtime.spawn(async move { workspaces.keep_agent(&cert, &name).await });
+        }
+    }
+
+    /// Keep `name` as the agent `cert`'s key runs in its person's record,
+    /// where the record holds the key and says otherwise.
+    async fn keep_agent(&self, cert: &DeviceCert, name: &str) {
+        let person = cert.user_public_key;
+        let key = hex::encode(cert.device_public_key);
+        let devices = self.devices_of(&person).await;
+        let Some(known) = devices
+            .devices
+            .get(&tilo_resource::Id::from_raw(key.clone()))
+        else {
+            return;
+        };
+        if known.agent.as_deref() == Some(name.trim()) {
+            return;
+        }
+        let action = Devices::KEEP_AGENT.with((key, name.to_owned()));
+        if let Err(error) = self.apply_devices(&person, action).await {
+            tracing::debug!(%error, "the agent a key runs is not in its person's record");
         }
     }
 
@@ -789,7 +710,7 @@ impl Workspaces {
 
     /// The devices resource of the person's own workspace: empty while this
     /// host does not hold it.
-    async fn devices_of(&self, person: &[u8; 32]) -> Devices {
+    pub(crate) async fn devices_of(&self, person: &[u8; 32]) -> Devices {
         let workspace = person_workspace_id(person);
         person_workspace::read_on::<Devices>(self, &workspace, devices::DEVICES)
             .await
@@ -797,7 +718,7 @@ impl Workspaces {
     }
 
     /// Each tab key's browser, by key, as the person's own workspace holds it.
-    async fn tab_groups(&self, person: &[u8; 32]) -> BTreeMap<String, String> {
+    pub(crate) async fn tab_groups(&self, person: &[u8; 32]) -> BTreeMap<String, String> {
         let workspace = person_workspace_id(person);
         let Ok(Some(bytes)) = person_workspace::document_on(self, &workspace, TAB_GROUPS).await
         else {
@@ -821,7 +742,7 @@ impl Workspaces {
     }
 
     /// Apply `action` to the person's devices resource.
-    async fn apply_devices(
+    pub(crate) async fn apply_devices(
         &self,
         person: &[u8; 32],
         action: tilo_resource::Invoke<Devices>,
@@ -870,21 +791,26 @@ impl Workspaces {
             return;
         };
         if opening
-            && seen_of(known)
+            && known
+                .seen_ms()
                 .is_some_and(|seen| at_ms.saturating_sub(seen) < SEEN_WRITE_INTERVAL_MS)
         {
             return;
         }
-        if seen_of(known) == Some(at_ms) {
+        if known.seen_ms() == Some(at_ms) {
             return;
         }
         if let Err(error) = self
-            .keep_fact(&person, &key, SEEN_FACT, &hex::encode(at_ms.to_le_bytes()))
+            .keep_fact(
+                &person,
+                &key,
+                devices::SEEN_FACT,
+                &hex::encode(at_ms.to_le_bytes()),
+            )
             .await
         {
             tracing::debug!(%error, "a key's session is not in the person's record");
         }
-        self.personal_changed();
     }
 
     /// A free name for the device `key`, one of `person`'s devices enrolled
@@ -909,22 +835,19 @@ impl Workspaces {
             .unwrap_or_else(|| base.to_owned())
     }
 
-    /// Keep the names the host answers a pairing from current with `devices`,
-    /// the person's devices as their own workspace lists them.
-    fn remember_names(&self, person: &[u8; 32], devices: &[PersonalDevice]) {
-        let known: BTreeMap<String, (String, bool)> = devices
-            .iter()
-            .map(|device| {
-                (
-                    hex::encode(device.cert.device_public_key),
-                    (
-                        device
-                            .name
-                            .clone()
-                            .unwrap_or_else(|| device.cert.device_label.clone()),
-                        device.revoked,
-                    ),
-                )
+    /// Bring the names the host answers a pairing from up to date with
+    /// `person`'s devices as their own workspace lists them, each marked
+    /// where it was taken back.
+    async fn refresh_names(&self, person: &[u8; 32]) {
+        let revocations = self.revocations();
+        let known: DeviceNames = self
+            .devices_of(person)
+            .await
+            .listed(person)
+            .into_iter()
+            .map(|listed| {
+                let refused = listed.device.revoked || revocations.refuses(&listed.cert);
+                (listed.key, (listed.device.called(&listed.cert), refused))
             })
             .collect();
         self.inner
@@ -944,27 +867,4 @@ fn ordered(directory: &WorkspaceDirectory) -> Vec<WorkspaceMeta> {
             .then_with(|| left.id.cmp(&right.id))
     });
     out
-}
-
-/// The certificate a device's entry holds, when it reads.
-fn stored_cert(known: &devices::Device) -> Option<DeviceCert> {
-    tilo_failure::ignored!(
-        "a device's certificate is the person's root's to sign",
-        postcard::from_bytes(&hex::decode(&known.certificate).ok()?).ok()
-    )
-}
-
-/// The name the person gave a device, when they named it.
-fn name_of(known: &devices::Device) -> Option<String> {
-    let value = known.facts.get(NAME_FACT)?;
-    let bytes = hex::decode(value).ok()?;
-    Some(String::from_utf8_lossy(&bytes).into_owned())
-}
-
-/// When a session of a device was last here, when the record says.
-fn seen_of(known: &devices::Device) -> Option<i64> {
-    let value = known.facts.get(SEEN_FACT)?;
-    let bytes = hex::decode(value).ok()?;
-    let bytes: [u8; 8] = bytes.try_into().ok()?;
-    Some(i64::from_le_bytes(bytes))
 }

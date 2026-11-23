@@ -249,7 +249,6 @@ impl Workspaces {
                     | ServiceOperation::BranchOwnWorkspace
                     | ServiceOperation::KeepPersonalList
                     | ServiceOperation::ReadPersonalList
-                    | ServiceOperation::NamePersonalDevice
             ) && device.user_public_key != host;
             if anyones && self.own().is_none() {
                 return Err(CollaborationError::new(

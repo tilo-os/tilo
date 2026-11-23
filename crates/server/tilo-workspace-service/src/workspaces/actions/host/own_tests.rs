@@ -197,7 +197,6 @@ async fn a_person_let_in_gets_a_workspace_of_their_own_and_administers_it() {
             tilo_server_session::workspaces::LIST_WORKSPACES,
             tilo_server_session::workspaces::LIST_PERSONAL,
             tilo_server_session::workspaces::KEEP_PERSONAL,
-            tilo_server_session::workspaces::PERSONAL_DEVICE_NAME,
         ],
         "a stranger makes, branches, deletes and lists the workspaces of their own, keeps and \
          reads their list, and nothing else"

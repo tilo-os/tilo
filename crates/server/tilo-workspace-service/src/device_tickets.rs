@@ -21,8 +21,9 @@
 //! another device of the person's reads the entry and leaves it.
 //!
 //! What is the embedder's own (its endpoint and action service, how it signs, where its root and
-//! its workspaces are, where a computer it adds enters, its sessions with the person's hosts) it
-//! supplies as an [`Issuer`]. The same server lists, names and revokes the person's devices.
+//! its workspaces are, where a computer it adds enters, which of the person's devices it hears
+//! present) it supplies as an [`Issuer`]. The same server lists, names and revokes the person's
+//! devices, from the record of their own workspace, and keeps there each computer it adds.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, Weak};
@@ -101,20 +102,22 @@ pub trait Issuer: Send + Sync + 'static {
     /// plans and their tickets are.
     fn servers(&self) -> Option<Workspaces>;
 
-    /// The person's hosts as this device reaches them, which keep their list of devices: none
-    /// by default.
-    fn hosts(&self) -> Vec<Arc<dyn PersonHost>> {
-        Vec::new()
-    }
-
-    /// The person's devices this device knows itself, beside the list their hosts keep: the keys
-    /// its root certified here, which a list shows before a host has them. None by default.
+    /// The person's devices this device knows itself, beside the record of their own workspace:
+    /// the keys its root certified here, which a list shows before the record has them. None by
+    /// default.
     fn known(&self) -> Vec<DeviceCert> {
         Vec::new()
     }
 
+    /// The keys of the person's devices this device hears present now, as presence says: what
+    /// a list of their devices shows online beside this one. None by default.
+    fn present(&self) -> Vec<[u8; 32]> {
+        Vec::new()
+    }
+
     /// Keep `entry`, a revocation the person's root just signed here, where this device keeps
-    /// what its root signed: nowhere by default.
+    /// what its root signed, and tell the hosts it reaches, which refuse the key from then on:
+    /// nowhere by default.
     fn keep_revocation(&self, _entry: &tilo_user_identity::RevocationEntry) {}
 
     /// Take the certified computer `cert` in as `role`: by default through [`Self::servers`].
@@ -125,27 +128,6 @@ pub trait Issuer: Send + Sync + 'static {
     ) -> BoxFuture<'a, Result<(), String>> {
         Box::pin(admit_in(self.servers(), role, cert))
     }
-}
-
-/// One of the person's hosts, which keeps their list of devices beside their workspaces, as the
-/// device a [`TicketServer`] runs on reaches it.
-pub trait PersonHost: Send + Sync {
-    /// The host's own action `action` (`workspace.personal`, `workspace.personal.keep`,
-    /// `workspace.personal.name`) with `arguments`, asked as this device: its answer.
-    fn ask(
-        &self,
-        action: &str,
-        arguments: serde_json::Map<String, serde_json::Value>,
-    ) -> BoxFuture<'_, Result<serde_json::Value, String>>;
-
-    /// Tell the host the person's root revoked `entry`: it refuses the key from then on.
-    ///
-    /// # Errors
-    /// The session with the host ended.
-    fn revoked(&self, entry: &tilo_user_identity::RevocationEntry) -> Result<(), String>;
-
-    /// The host, as a log names it.
-    fn label(&self) -> String;
 }
 
 /// Take the certified computer `cert` in as `role` in the person's Servers workspace `workspaces`
@@ -463,7 +445,7 @@ impl Approver for RootApprover {
             // A computer that did not take its entry would join as nobody's server: it is told
             // so, and its install stops with that reason.
             if let Some(role) = &role {
-                let tickets = tickets.ok_or_else(|| {
+                let tickets = tickets.as_ref().ok_or_else(|| {
                     Declined("the device that served the ticket stopped".to_owned())
                 })?;
                 tickets.0.issuer.admit(role, &cert).await.map_err(|error| {
@@ -472,6 +454,10 @@ impl Approver for RootApprover {
                 if let Role::Plan(plan) = role {
                     tickets.taken(plan).await;
                 }
+            }
+            // Every device of the person's lists the computer from now on.
+            if let Some(tickets) = &tickets {
+                tickets.keep_in_record(&cert).await;
             }
             let signature = device
                 .sign(asked.digest.to_vec())
@@ -483,6 +469,27 @@ impl Approver for RootApprover {
                 signature,
             })
         })
+    }
+}
+
+impl TicketServer {
+    /// Keep `cert`, a computer the person's root just certified here, in the record of their own
+    /// workspace, where every device of theirs reads their devices. A device that holds no copy
+    /// of that workspace leaves it to the host the computer enters, which keeps it there.
+    async fn keep_in_record(&self, cert: &DeviceCert) {
+        let Some(workspaces) = self.0.issuer.servers() else {
+            return;
+        };
+        let kept = match person_workspace::devices::Devices::keeping(cert) {
+            Ok(action) => {
+                person_workspace::apply(&workspaces, person_workspace::devices::DEVICES, action)
+                    .await
+            }
+            Err(error) => Err(error),
+        };
+        if let Err(error) = kept {
+            tracing::warn!(%error, "the added computer is listed once it enters");
+        }
     }
 }
 

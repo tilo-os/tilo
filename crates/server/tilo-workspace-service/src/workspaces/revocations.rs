@@ -65,6 +65,11 @@ impl Workspaces {
             return Ok(());
         }
         self.record(&entries)?;
+        // Every list of the person's devices reads the device taken back from
+        // their own workspace's record.
+        for entry in &entries {
+            self.mark_revoked(entry).await;
+        }
         let mut refused = Ok(());
         for workspace in workspaces {
             let mut workspace = workspace.lock().await;
@@ -152,10 +157,6 @@ impl Workspaces {
         if changed {
             crate::authority_epoch::bump();
         }
-        // What lists a person's devices marks what was taken back from here
-        // on: every session of theirs is sent that list, so whatever shows
-        // it shows the device gone without asking again.
-        self.personal_changed();
         Ok(())
     }
 

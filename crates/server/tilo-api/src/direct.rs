@@ -771,11 +771,8 @@ mod tests {
                             .iter()
                             .map(|(id, name)| row(id, name, "owner")),
                     );
-                    serde_json::to_value(ws::PersonalList {
-                        workspaces,
-                        devices: Vec::new(),
-                    })
-                    .map_err(|error| error.to_string())
+                    serde_json::to_value(ws::PersonalList { workspaces })
+                        .map_err(|error| error.to_string())
                 }
                 _ => Err(format!("{action} is not this server's")),
             };

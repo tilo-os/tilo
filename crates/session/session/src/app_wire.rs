@@ -1145,7 +1145,6 @@ fn broker_services(
         hosted_endpoint,
         hosted_device_actions,
         service.clone(),
-        hosting.clone(),
     );
     device_tickets.restore_once_open();
     // The session decides who may administer a workspace's identity.

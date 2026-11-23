@@ -917,22 +917,16 @@ pub const CATCH_UP_STANDING: &str = "workspace.catch-up.standing";
 /// wherever it is hosted (one of their desktops, a paired device, a server),
 /// with that host's signed address. Only a device of the person's own keeps
 /// it, never an agent's grant or a stand-in; each keep replaces the last.
-/// The devices the list carries are added to the person's devices kept
-/// here, never taken away: a device leaves only by its root's revocation.
 /// Answers `{"kept": count}`.
 pub const KEEP_PERSONAL: &str = "workspace.personal.keep";
-/// The action that names one of the person's devices ([`PersonalDevice::name`]):
-/// what their lists show for it from then on, instead of the name it enrolled
-/// with (`{device, name}`, the device by its key in hex).
-pub const PERSONAL_DEVICE_NAME: &str = "workspace.personal.name";
 /// The caller's person's workspace list ([`PersonalList`]): the one their
 /// devices kept here, with the workspaces this host keeps for them, each
 /// naming its host and how to reach it. Any certified key of the person's
 /// reads it; an agent's grant reads only what its scope reaches. A page
 /// asking it may name its browser's tab devices (argument `browser`, a
-/// [`PersonalBrowser`]): they join the person's devices, and the list marks
-/// them as that browser's. Asked for one workspace (argument `workspace`),
-/// the host names its own signed address for it
+/// [`PersonalBrowser`]): they join the person's devices in their own
+/// workspace, kept there as that browser's. Asked for one workspace
+/// (argument `workspace`), the host names its own signed address for it
 /// ([`PersonalWorkspace::enter_at`]): where a device of the person's that
 /// does not hold it yet asks to be taken in.
 pub const LIST_PERSONAL: &str = "workspace.personal";
@@ -946,49 +940,6 @@ pub const MAX_PERSONAL_DEVICES: usize = 1024;
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersonalList {
     pub workspaces: Vec<PersonalWorkspace>,
-    /// The person's devices and the other keys their root certified (an
-    /// agent's grant, a script's key): each as its certificate says, one per
-    /// key. A device that signs a certificate adds it here (a desktop holding
-    /// the root with its list, the host that carried a pairing the page's
-    /// root answered), so every device of theirs reads one list. What a
-    /// host answers marks the ones a revocation it keeps refuses.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub devices: Vec<PersonalDevice>,
-}
-
-/// One key of the person's, as their record keeps it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PersonalDevice {
-    /// Its certificate, signed by the person's root.
-    pub cert: tilo_user_identity::DeviceCert,
-    /// The name the person gave it ([`PERSONAL_DEVICE_NAME`]), where they
-    /// named it: what their lists show instead of the name the certificate
-    /// carries, so two computers enrolled under one name read apart.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    /// A revocation the answering host keeps refuses it. What a device keeps
-    /// says nothing here: the host answers it from its own revocations.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub revoked: bool,
-    /// The browser profile the key is a tab of (its id, 32 lowercase hex
-    /// characters), when a page of that browser said so
-    /// ([`PersonalBrowser`]). Each tab of a browser is its own device, since
-    /// one key has one writer, so a browser shows as all of its tabs' keys
-    /// together: one entry, taken back as one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub browser: Option<String>,
-    /// The agent this key runs, as the sessions it opened on this host named
-    /// it ("Claude Code"): a computer set up with `tilo login` is a device of
-    /// the person's that an agent works on, and says so when it starts one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent: Option<String>,
-    /// When a session of this key with this host last opened or ended, ms
-    /// since the epoch.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_active_ms: Option<i64>,
-    /// A session of this key is open with this host now.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub online: bool,
 }
 
 /// The most tab keys one browser profile names ([`PersonalBrowser`]).
@@ -1140,11 +1091,6 @@ impl PersonalList {
         if self.workspaces.len() > MAX_PERSONAL_WORKSPACES {
             return Err(format!(
                 "a list names at most {MAX_PERSONAL_WORKSPACES} workspaces"
-            ));
-        }
-        if self.devices.len() > MAX_PERSONAL_DEVICES {
-            return Err(format!(
-                "a list names at most {MAX_PERSONAL_DEVICES} devices"
             ));
         }
         for entry in &self.workspaces {

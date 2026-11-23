@@ -37,9 +37,8 @@ use tilo_actions::remote::{
 };
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_desktop_model::WorkspaceId;
-use tilo_identity::device_admin;
 use tilo_lock::MutexRecover as _;
-use tilo_server_protocol::workspaces::{PersonalList, WorkspaceLabels};
+use tilo_server_protocol::workspaces::WorkspaceLabels;
 use tilo_session_client::device::{Device, DeviceActions};
 use tilo_session_client::{Cmd, Outbox as _};
 use tilo_session_client::{PeerConfig, PersonalWorkspaces};
@@ -357,69 +356,6 @@ impl HostedWorkspaces {
                 runtime: self.0.runtime.clone(),
             }),
         })
-    }
-
-    /// The person's devices as the record on each host of a workspace `engine` holds lists them:
-    /// every key `workspace.personal` answers there, once, each saying whether that host refuses it,
-    /// the browser it is a tab of, the agent it runs and when it was last there. A key their root
-    /// certified on another of their devices — a browser in its own tab, a device paired there —
-    /// is in that record and in no fleet of this one's, so this is what lists the person's
-    /// devices and not the devices this machine happens to know. The workspaces the hosts name
-    /// come with it, so a grant's one workspace is listed by name.
-    ///
-    /// Empty when no workspace of theirs is placed on a host.
-    pub(crate) fn record_devices(&self, engine: &Engine) -> Pending<device_admin::Record> {
-        let asks: Vec<_> = hosts_of(engine)
-            .into_iter()
-            .filter_map(|on| {
-                let actions = self.actions_of(&on.workspace)?;
-                Some(actions.invoke(
-                    &Caller::local_person("tilo"),
-                    record_request(
-                        tilo_server_protocol::workspaces::LIST_PERSONAL,
-                        serde_json::Map::new(),
-                    ),
-                ))
-            })
-            .collect();
-        if asks.is_empty() {
-            return Pending::ready(device_admin::Record::default());
-        }
-        let (answer, answered) = pending();
-        self.0.runtime.spawn(async move {
-            let mut record = device_admin::Record::default();
-            for ask in asks {
-                let Some(Ok(receipt)) = ask.await else {
-                    continue;
-                };
-                let tilo_actions::remote::ReceiptStatus::Completed { output } = receipt.status
-                else {
-                    continue;
-                };
-                let Ok(list) = serde_json::from_value::<PersonalList>(
-                    output.value.unwrap_or(serde_json::Value::Null),
-                ) else {
-                    continue;
-                };
-                record.workspaces.extend(
-                    list.workspaces
-                        .into_iter()
-                        .map(|workspace| (workspace.workspace, workspace.name)),
-                );
-                for device in list.devices {
-                    record.add(device_admin::RecordDevice {
-                        cert: device.cert,
-                        refused: device.revoked,
-                        browser: device.browser,
-                        agent: device.agent,
-                        last_active_ms: device.last_active_ms,
-                        online: device.online,
-                    });
-                }
-            }
-            answer.complete(record);
-        });
-        answered
     }
 
     /// Tell every host of a workspace `engine` holds that the person's root revoked `entry`: the

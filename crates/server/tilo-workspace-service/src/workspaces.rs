@@ -1169,10 +1169,6 @@ struct WorkspacesInner {
     /// the name each reads by and whether a revocation here refuses it. Kept
     /// beside the resource so the host answers a pairing synchronously.
     device_names: std::sync::Mutex<HashMap<[u8; 32], personal::DeviceNames>>,
-    /// How many sessions of each device key are open here now, by key: every
-    /// session of every person's, so a record says which of their keys is
-    /// here ([`personal`]).
-    online: std::sync::Mutex<HashMap<[u8; 32], usize>>,
     /// The devices the host's own person runs an agent on, and their open
     /// sessions ([`mcp_server`]).
     mcp_server: mcp_server::McpServer,
@@ -1483,7 +1479,6 @@ impl Workspaces {
                 owner_invitations: host_invitations::OwnerInvitations::open(&dir),
                 personal_pushes: personal::PersonalPushes::default(),
                 device_names: std::sync::Mutex::default(),
-                online: std::sync::Mutex::default(),
                 mcp_server: mcp_server::McpServer::default(),
                 own_address: std::sync::OnceLock::new(),
             }),

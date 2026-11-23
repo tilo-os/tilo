@@ -24,8 +24,8 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_protocol::WorkspaceId as ServerWorkspaceId;
 use tilo_server_protocol::servers::person_workspace_id;
 use tilo_server_protocol::workspaces::{
-    CREATE_WORKSPACE, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, PERSONAL_DEVICE_NAME,
-    PersonalDevice, PersonalList, PersonalWorkspace, WorkspaceLabels,
+    CREATE_WORKSPACE, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, PersonalList,
+    PersonalWorkspace, WorkspaceLabels,
 };
 use tilo_session_client::Link;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
@@ -150,35 +150,6 @@ fn personal(f: &Rig) -> PersonalList {
     };
     PersonalList {
         workspaces: vec![workspace(&f.work, "Work"), workspace(&f.second, "Home")],
-        devices: vec![
-            PersonalDevice {
-                cert: f.laptop.cert.clone(),
-                name: Some("Laptop".into()),
-                revoked: false,
-                browser: None,
-                agent: None,
-                last_active_ms: None,
-                online: true,
-            },
-            PersonalDevice {
-                cert: f.phone.cert.clone(),
-                name: Some("Phone".into()),
-                revoked: false,
-                browser: None,
-                agent: None,
-                last_active_ms: None,
-                online: true,
-            },
-            PersonalDevice {
-                cert: f.server_device.cert.clone(),
-                name: Some("The server".into()),
-                revoked: false,
-                browser: None,
-                agent: None,
-                last_active_ms: None,
-                online: true,
-            },
-        ],
     }
 }
 
@@ -615,11 +586,12 @@ async fn flow_every_device_manages_every_other() {
     let phone = f.client(&f.phone_session, &f.phone, "android-phone");
     let laptop_key = flow::key_of(&f.laptop.cert);
 
-    // The phone lists the laptop and the server and renames them.
-    phone
-        .keep_personal(&personal(&f))
-        .await
-        .expect("the phone keeps the person's list");
+    // The person's devices are a record of their own workspace, which the server keeps with them.
+    let workspaces = f.host.server.workspaces().unwrap();
+    for device in [&f.laptop, &f.phone, &f.server_device] {
+        workspaces.keep_issued_device(&device.cert, "").await;
+    }
+    // The phone renames the laptop and the server there, as any record's action.
     for (key, name) in [
         (laptop_key.as_str(), "Ada's laptop"),
         (
@@ -629,24 +601,28 @@ async fn flow_every_device_manages_every_other() {
     ] {
         flow::ask(
             &phone,
-            f.work_id(),
-            HOST_ACTIONS_PROVIDER,
-            HOST_WORKSPACES_RESOURCE,
-            PERSONAL_DEVICE_NAME,
+            f.person_id(),
+            "so.tilo.devices",
+            "devices",
+            "name-device",
             json!({"device": key, "name": name}),
         )
         .await
         .unwrap_or_else(|error| panic!("the phone names the device {key}: {error:?}"));
     }
-    let listed = phone
-        .personal_list_in(f.work_id(), &WorkspaceLabels::new(), None)
-        .await
-        .expect("the list answers");
-    let named = listed
+    let record = tilo_workspace_service::workspaces::person_workspace::read::<
+        tilo_workspace_service::workspaces::person_workspace::devices::Devices,
+    >(
+        workspaces,
+        tilo_workspace_service::workspaces::person_workspace::devices::DEVICES,
+    )
+    .await
+    .expect("the record of the person's devices reads");
+    let named = record
         .devices
         .iter()
-        .find(|listed| flow::key_of(&listed.cert) == laptop_key)
-        .and_then(|listed| listed.name.clone());
+        .find(|(key, _)| key.as_str() == laptop_key)
+        .and_then(|(_, device)| device.name.clone());
     assert_eq!(
         named.as_deref(),
         Some("Ada's laptop"),

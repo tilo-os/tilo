@@ -4,9 +4,9 @@
 //! ([`tilo_workspace_service::device_tickets`]).
 //!
 //! The desktop supplies what is its own: the endpoint and device action service its network
-//! binds, its identity, the person's root from its fleet store, the workspace service that holds
-//! the person's Servers workspace, where a planned machine's plan and ticket are kept, and its
-//! sessions with the person's hosts, which keep their list of devices.
+//! binds, its identity, the person's root from its fleet store, and the workspace service that
+//! holds the person's Servers workspace, where their devices' record and a planned machine's plan
+//! and ticket are kept.
 //!
 //! The issue answers at once and the certification happens over the network, so a caller never
 //! waits on the new computer.
@@ -27,13 +27,12 @@ use tilo_actions::{
 use tilo_device_identity::login::{Entry, Reached};
 use tilo_peer_state::actions::ActionService;
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::device_tickets::{Issuer, PersonHost, Role, Root, TicketServer};
+use tilo_workspace_service::device_tickets::{Issuer, Role, Root, TicketServer};
 use tilo_workspace_service::service::ServiceSlot;
 use tilo_workspace_service::workspaces::Workspaces;
 use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 
 use crate::device_actions::DeviceActions;
-use crate::hosted_workspaces::HostedWorkspaces;
 
 /// The application whose window adds a device here.
 const APP_ID: &str = "so.tilo.settings";
@@ -51,14 +50,12 @@ impl DeviceTickets {
         endpoint: Option<Arc<OnceLock<iroh::Endpoint>>>,
         actions: Option<Arc<OnceLock<DeviceActions>>>,
         service: ServiceSlot,
-        hosting: Option<HostedWorkspaces>,
     ) -> Self {
         Self {
             tickets: TicketServer::new(Arc::new(Desktop {
                 endpoint,
                 actions,
                 service: service.clone(),
-                hosting,
             })),
             service,
         }
@@ -93,8 +90,6 @@ struct Desktop {
     actions: Option<Arc<OnceLock<DeviceActions>>>,
     /// The workspace service this device holds its workspaces in.
     service: ServiceSlot,
-    /// The person's hosts this desktop is with, which keep their list of devices.
-    hosting: Option<HostedWorkspaces>,
 }
 
 impl Desktop {
@@ -178,15 +173,8 @@ impl Issuer for Desktop {
             .map(|service| service.workspaces().clone())
     }
 
-    fn hosts(&self) -> Vec<Arc<dyn PersonHost>> {
-        self.hosting
-            .as_ref()
-            .map(HostedWorkspaces::person_hosts)
-            .unwrap_or_default()
-    }
-
-    /// The keys this desktop's root certified here, which go to the person's hosts with their
-    /// workspace list.
+    /// The keys this desktop's root certified here, which the record of the person's devices
+    /// takes in as the desktop holds it.
     fn known(&self) -> Vec<DeviceCert> {
         self.device()
             .map(|(cert, _)| crate::identity_admin::root_certificates(&cert.user_public_key))
@@ -441,7 +429,6 @@ mod tests {
             None,
             None,
             tilo_workspace_service::service::ServiceSlot::default(),
-            None,
         );
         // The ticket is issued on a worker, as the broker's own runtime does it: the test
         // thread only waits for the answer.

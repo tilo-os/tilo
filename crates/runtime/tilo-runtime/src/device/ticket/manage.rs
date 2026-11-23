@@ -28,9 +28,8 @@ use ed25519_dalek::SigningKey;
 use futures_util::future::BoxFuture;
 use iroh::Endpoint;
 use tilo_device_identity::login::{Entry, Reached};
-use tilo_session_client::device::Device as Entered;
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::device_tickets::{Issuer, PersonHost, Root};
+use tilo_workspace_service::device_tickets::{Issuer, Root};
 use tilo_workspace_service::workspaces::Workspaces;
 
 use super::super::workspaces::ServiceWorkspaces;
@@ -314,44 +313,26 @@ impl Issuer for Fleet {
             .map(|service| service.copies().clone())
     }
 
-    /// The host this daemon entered its workspace on, once it has.
-    fn hosts(&self) -> Vec<Arc<dyn PersonHost>> {
-        self.workspaces
+    /// A revocation this daemon's root signed goes to the host it entered its workspace on, once
+    /// it has: the host refuses the key from then on, and marks it in the person's record.
+    fn keep_revocation(&self, entry: &tilo_user_identity::RevocationEntry) {
+        use tilo_session_client::Outbox as _;
+        let Some(session) = self
+            .workspaces
             .as_ref()
             .and_then(|workspaces| workspaces.session())
-            .map(|session| Arc::new(EnteredHost(session.clone())) as Arc<dyn PersonHost>)
-            .into_iter()
-            .collect()
-    }
-}
-
-/// The host a daemon entered its workspace on, through the session it entered with.
-struct EnteredHost(Entered);
-
-impl PersonHost for EnteredHost {
-    fn ask(
-        &self,
-        action: &str,
-        arguments: Map<String, Value>,
-    ) -> BoxFuture<'_, Result<Value, String>> {
-        let action = action.to_owned();
-        Box::pin(async move {
-            self.0
-                .host_action(&action, arguments)
-                .await
-                .map_err(|refusal| refusal.to_string())
-        })
-    }
-
-    fn revoked(&self, entry: &tilo_user_identity::RevocationEntry) -> Result<(), String> {
-        use tilo_session_client::Outbox as _;
-        self.0
+        else {
+            return;
+        };
+        if session
             .session()
             .send(tilo_session_client::Cmd::Revoke(entry.clone()))
-            .map_err(|_| "the session with the host ended".to_owned())
-    }
-
-    fn label(&self) -> String {
-        self.0.label().to_owned()
+            .is_err()
+        {
+            tracing::info!(
+                host = session.label(),
+                "a host did not hear that the person took a device back"
+            );
+        }
     }
 }

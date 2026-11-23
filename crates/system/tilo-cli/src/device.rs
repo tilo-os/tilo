@@ -1,6 +1,10 @@
 //! `tilo device add`, `tilo device ls` and `tilo device revoke`: the person's devices, from a
 //! computer that is logged in and holds their root.
 //!
+//! `ls` and `revoke` ask this computer's daemon, which reads the person's devices from the record
+//! of their own workspace and whether each is online from presence, and whose root marks a
+//! revoked device there.
+//!
 //! `add` has this computer's daemon serve a ticket ([`tilo_device_identity::login`]) on the
 //! endpoint it already runs, while the ticket lasts. A computer that runs `tilo login` with it
 //! reaches this one directly and calls the certify action there; the person's root here certifies
@@ -9,60 +13,15 @@
 //! one that does through another approver.
 
 use std::process::ExitCode;
-use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
+use tilo_actions::remote::device_tickets::FleetDevice;
 use tilo_device_identity::login::Ticket;
-use tilo_server_protocol::workspaces::{PersonalDevice, WorkspaceLabels};
-use tilo_session_client::device::Device as Entered;
-use tilo_user_identity::{DeviceCert, RevocationReason};
+use tilo_user_identity::DeviceCert;
 
 use crate::api::{Client, Reach};
 use crate::login::{self, Device};
-
-/// How long a revocation is waited for to show in the person's list.
-const REVOKED_WAIT: Duration = Duration::from_secs(20);
-
-/// Keep `cert` in the person's list of devices, named for the agent it runs: what every device
-/// of theirs reads back.
-async fn keep_in_list(entered: &Entered, cert: &DeviceCert) -> Result<()> {
-    let mut list = entered
-        .personal_list(&WorkspaceLabels::new(), None)
-        .await
-        .map_err(|refusal| anyhow!("{refusal}"))?;
-    list.devices
-        .retain(|kept| kept.cert.device_public_key != cert.device_public_key);
-    list.devices.push(PersonalDevice {
-        cert: cert.clone(),
-        name: None,
-        revoked: false,
-        browser: None,
-        agent: None,
-        last_active_ms: None,
-        online: false,
-    });
-    entered
-        .keep_personal(&list)
-        .await
-        .map_err(|refusal| anyhow!("{refusal}"))
-}
-
-/// This computer's login and the person whose root it holds, checked to be one person.
-fn person_here() -> Result<(SigningKey, Device, crate::identity::Person)> {
-    let (key, here) = login::here()?.ok_or_else(|| anyhow!(login::NOT_LOGGED_IN))?;
-    let person = crate::identity::held()?.ok_or_else(|| {
-        anyhow!(
-            "This computer does not hold your identity, so it cannot add a device: run \
-             `tilo device add` on the one that does."
-        )
-    })?;
-    if person.public_key() != here.cert.user_public_key {
-        bail!("This computer is logged in as another person than the one whose identity it holds.");
-    }
-    Ok((key, here, person))
-}
 
 /// `tilo device add`: print a ticket, wait for a computer to log in with it, and say which one
 /// it was. With `no_wait`, print only the ticket: this computer's daemon keeps serving it while
@@ -148,25 +107,9 @@ pub fn add(
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow!("this computer's daemon answered no certificate"))?;
         let bytes = hex::decode(encoded).map_err(|error| anyhow!("the certificate: {error}"))?;
+        // The daemon that certified it kept it in the record of the person's devices.
         let cert: DeviceCert = tilo_user_identity::canonical::from_canonical_bytes(&bytes)
             .map_err(|error| anyhow!("the certificate: {error}"))?;
-        // The person's other devices list it as soon as the host keeps it there. A computer with
-        // no login has no session of its own to enter with: the host lists it as it enters.
-        // The daemon calls are done, so this process may read the private key now.
-        if here.is_some()
-            && let Some((key, here)) = login::here()?
-        {
-            match login::connect(&key, &here, None).await {
-                Ok(entered) => {
-                    let kept = keep_in_list(&entered, &cert).await;
-                    entered.close();
-                    if let Err(error) = kept {
-                        eprintln!("Your other devices list it once it enters: {error}");
-                    }
-                }
-                Err(error) => eprintln!("Your other devices list it once it enters: {error}"),
-            }
-        }
         Ok::<Option<DeviceCert>, anyhow::Error>(Some(cert))
     })?;
     let Some(cert) = cert else {
@@ -307,27 +250,49 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// The person's devices as the host this computer's login reaches lists them.
-async fn devices(key: &SigningKey, here: &Device) -> Result<Vec<PersonalDevice>> {
-    let entered = login::connect(key, here, None)
-        .await
-        .map_err(|error| anyhow!(login::enter_said(&error)))?;
-    let listed = entered
-        .personal_list(&WorkspaceLabels::new(), None)
-        .await
-        .map_err(|refusal| anyhow!("{refusal}"));
-    entered.close();
-    Ok(listed?.devices)
+/// The workspace this computer's daemon serves, where its `devices` actions are asked: the one
+/// its login names, else the one it founded.
+async fn served(client: &Client) -> Result<String> {
+    match login::home().filter(Device::reaches_a_server) {
+        Some(device) => Ok(device.workspace),
+        None => client.founded_workspace().await,
+    }
+}
+
+/// The person's devices as this computer's daemon lists them.
+async fn devices(client: &Client) -> Result<Vec<FleetDevice>> {
+    let workspace = served(client).await?;
+    let answer = client
+        .act(
+            &workspace,
+            "devices",
+            tilo_device_identity::login::LIST,
+            &json!({}),
+            "Your devices",
+        )
+        .await?;
+    let listed = answer
+        .get("result")
+        .and_then(|result| result.get("devices"))
+        .cloned()
+        .ok_or_else(|| anyhow!("this computer's daemon answered no list of your devices"))?;
+    serde_json::from_value(listed).map_err(|error| {
+        anyhow!("this computer's daemon answered no list of your devices: {error}")
+    })
+}
+
+/// This computer's daemon, as `ls` and `revoke` ask it.
+fn daemon() -> Result<Client> {
+    Client::open(Reach {
+        api: None,
+        key_file: None,
+        json: false,
+    })
 }
 
 /// The start of a device's key, as lists show it.
 fn short(cert: &DeviceCert) -> String {
     hex::encode(cert.device_public_key.get(..6).unwrap_or_default())
-}
-
-/// How a device is named in a list.
-fn named(device: &PersonalDevice) -> &str {
-    device.name.as_deref().unwrap_or(&device.cert.device_label)
 }
 
 /// `tilo device key`: this computer's device key, its person and its label, from its login; with
@@ -364,24 +329,21 @@ pub fn key() -> Result<ExitCode> {
 /// `tilo device ls`: the person's devices.
 ///
 /// # Errors
-/// This computer is not logged in, or its host did not answer.
+/// This computer's daemon does not run, or answered no list.
 pub fn list(json: bool) -> Result<ExitCode> {
-    login::trust_test_certificates()?;
-    let (key, here) = login::here()?.ok_or_else(|| anyhow!(login::NOT_LOGGED_IN))?;
-    let runtime = login::runtime()?;
-    let devices = runtime.block_on(devices(&key, &here))?;
-    let this = here.cert.device_public_key;
+    login::ensure_daemon()?;
+    let devices = login::runtime()?.block_on(async { devices(&daemon()?).await })?;
     if json {
         let listed: Vec<_> = devices
             .iter()
             .map(|device| {
                 json!({
-                    "device": hex::encode(device.cert.device_public_key),
-                    "label": named(device),
+                    "device": device.key_hex,
+                    "label": device.label,
                     "agent": device.agent,
                     "online": device.online,
                     "revoked": device.revoked,
-                    "this": device.cert.device_public_key == this,
+                    "this": device.current,
                 })
             })
             .collect();
@@ -390,7 +352,7 @@ pub fn list(json: bool) -> Result<ExitCode> {
     }
     for device in &devices {
         let mut notes = Vec::new();
-        if device.cert.device_public_key == this {
+        if device.current {
             notes.push("this computer");
         }
         if device.online {
@@ -404,7 +366,8 @@ pub fn list(json: bool) -> Result<ExitCode> {
         } else {
             format!("  ({})", notes.join(", "))
         };
-        println!("{}  {}{notes}", short(&device.cert), named(device));
+        let short = device.key_hex.get(..12).unwrap_or(&device.key_hex);
+        println!("{short}  {}{notes}", device.label);
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -422,31 +385,32 @@ pub enum Why {
     Compromised,
 }
 
-impl From<Why> for RevocationReason {
-    fn from(why: Why) -> Self {
-        match why {
-            Why::Retired => Self::Retired,
-            Why::Lost => Self::Lost,
-            Why::Stolen => Self::Stolen,
-            Why::Compromised => Self::Compromised,
+impl Why {
+    /// The reason as the `devices#revoke` action takes it.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Retired => "retired",
+            Self::Lost => "lost",
+            Self::Stolen => "stolen",
+            Self::Compromised => "compromised",
         }
     }
 }
 
 /// The one device of `devices` that `which` names: by a prefix of its key, or by its name.
-fn pick<'a>(devices: &'a [PersonalDevice], which: &str) -> Result<&'a PersonalDevice> {
+fn pick<'a>(devices: &'a [FleetDevice], which: &str) -> Result<&'a FleetDevice> {
     let wanted = which.trim().to_ascii_lowercase();
     if wanted.is_empty() {
         bail!("Name the device by its key or its name, as `tilo device ls` lists it.");
     }
     let by_key: Vec<_> = devices
         .iter()
-        .filter(|device| hex::encode(device.cert.device_public_key).starts_with(&wanted))
+        .filter(|device| device.key_hex.starts_with(&wanted))
         .collect();
     let found = if by_key.is_empty() {
         devices
             .iter()
-            .filter(|device| named(device).eq_ignore_ascii_case(which.trim()))
+            .filter(|device| device.label.eq_ignore_ascii_case(which.trim()))
             .collect()
     } else {
         by_key
@@ -458,67 +422,39 @@ fn pick<'a>(devices: &'a [PersonalDevice], which: &str) -> Result<&'a PersonalDe
     }
 }
 
-/// `tilo device revoke DEVICE`: end that device's login, as the person's root here says, on
-/// every host and device this computer's session reaches.
+/// `tilo device revoke DEVICE`: end that device's login, as the person's root this computer's
+/// daemon holds says: the record of their devices marks it, and every host and device of theirs
+/// refuses it.
 ///
 /// # Errors
 /// This computer cannot revoke, the device is none or several of the person's, it is this
 /// computer, or the person did not confirm with `--yes`.
 pub fn revoke(which: &str, why: Why, yes: bool) -> Result<ExitCode> {
-    login::trust_test_certificates()?;
-    let (key, here, person) = person_here()?;
-    let runtime = login::runtime()?;
-    runtime.block_on(async {
-        let devices = devices(&key, &here).await?;
+    login::ensure_daemon()?;
+    login::runtime()?.block_on(async {
+        let client = daemon()?;
+        let devices = devices(&client).await?;
         let target = pick(&devices, which)?;
-        let device = target.cert.device_public_key;
-        if device == here.cert.device_public_key || device == person.cert.device_public_key {
+        if target.current {
             bail!("That is this computer: revoke it from another of your devices.");
         }
         if !yes {
             bail!(
                 "Revoking {} cannot be undone: pass --yes to revoke it.",
-                named(target)
+                target.label
             );
         }
-        let entry = tilo_server_client::revoke_device(
-            &person.root,
-            device,
-            tilo_clock::unix_now_ns(),
-            why.into(),
-        )
-        .await
-        .map_err(|error| anyhow!("{error}"))?;
-        let entered = login::connect(&key, &here, None)
-            .await
-            .map_err(|error| anyhow!(login::enter_said(&error)))?;
-        let revoked = async {
-            login::announce_revocation(&entered, entry)?;
-            // The host answers the list from the revocations it keeps: once it lists the device
-            // as revoked, every device it serves refuses it.
-            let started = std::time::Instant::now();
-            loop {
-                let listed = entered
-                    .personal_list(&WorkspaceLabels::new(), None)
-                    .await
-                    .map_err(|refusal| anyhow!("{refusal}"))?;
-                if listed
-                    .devices
-                    .iter()
-                    .any(|kept| kept.cert.device_public_key == device && kept.revoked)
-                {
-                    return Ok(());
-                }
-                if started.elapsed() > REVOKED_WAIT {
-                    bail!("The host did not take the revocation: run it again.");
-                }
-                tokio::time::sleep(Duration::from_millis(250)).await;
-            }
-        }
-        .await;
-        entered.close();
-        revoked?;
-        println!("Revoked {}.", named(target));
+        let workspace = served(&client).await?;
+        client
+            .act(
+                &workspace,
+                "devices",
+                tilo_device_identity::login::REVOKE,
+                &json!({ "device": target.key_hex, "reason": why.as_str() }),
+                "Revoke a device",
+            )
+            .await?;
+        println!("Revoked {}.", target.label);
         Ok(ExitCode::SUCCESS)
     })
 }
