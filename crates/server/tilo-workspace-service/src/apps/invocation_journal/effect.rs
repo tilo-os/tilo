@@ -47,6 +47,7 @@ impl PreparedEffect {
     }
 
     /// The workspace the receipt is recorded in, and its exact bytes.
+    #[cfg(test)]
     pub(crate) fn receipt(&self) -> (&str, &[u8]) {
         (&self.workspace, &self.redacted)
     }

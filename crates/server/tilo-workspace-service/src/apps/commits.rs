@@ -18,7 +18,6 @@ use tilo_peer_state::owner::WriteRefusal;
 pub struct ServiceCommits {
     /// Where documents and receipts are committed: this device's workspace service.
     service: crate::service::ServiceSlot,
-    writes: OwnerWrites,
     /// What hears of a record committed here: search reads it again.
     changes: Option<Arc<dyn crate::apps::services::DocumentIndexChanges>>,
 }
@@ -30,35 +29,7 @@ impl ServiceCommits {
         service: crate::service::ServiceSlot,
         changes: Option<Arc<dyn crate::apps::services::DocumentIndexChanges>>,
     ) -> Self {
-        Self {
-            service,
-            writes: OwnerWrites::default(),
-            changes,
-        }
-    }
-}
-
-/// Where a commit runs. A commit waits for the disk (the state file's data and directory syncs),
-/// which on a loaded disk takes seconds, and its future is awaited on the broker's single-threaded
-/// loop, which answers every peer action, catalogue and liveness probe. So a commit runs on a
-/// blocking thread instead, and the loop goes on answering while it waits. Commits still run one at
-/// a time, in the order they were asked for.
-#[derive(Clone, Default)]
-struct OwnerWrites(Arc<tokio::sync::Mutex<()>>);
-
-impl OwnerWrites {
-    async fn run<T: Send + 'static>(
-        self,
-        write: impl FnOnce() -> Result<T, String> + Send + 'static,
-    ) -> Result<T, String> {
-        let turn = self.0.lock_owned().await;
-        tokio::task::spawn_blocking(move || {
-            let written = write();
-            drop(turn);
-            written
-        })
-        .await
-        .map_err(|_| "a workspace write ended without an outcome".to_string())?
+        Self { service, changes }
     }
 }
 
