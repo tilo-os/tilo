@@ -907,6 +907,16 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   schema or wrapper.
 - Every call shows: an action an agent invokes attaches its view, so the
   person sees what was done and by whom.
+- **One invocation record.** A call that runs somewhere is one published
+  `tilo.invocations` record: id, status, who called it, target, changes and
+  output, with `get`, `cancel`, `undo` and `output` on it. Every projection
+  and view reads that record, and the toolkit checks its revision.
+  The admission journal (guarded digests, prepared outside effects,
+  idempotency and crash recovery) is the running device's own log in the
+  one store, under the same id. It never syncs and is read only by
+  admission and recovery. No other record of a call exists: the call's
+  certificates are the signed call itself, and who holds the work comes
+  from `work::takes_turn`, not from a lease beside it.
 
 ### What goes
 
