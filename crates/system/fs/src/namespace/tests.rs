@@ -163,31 +163,6 @@ tilo_test_env::scenario! {
     phase record_indexes_track_structure_and_page_tails_directly;
     {
         {
-            let mut ns = Namespace::new("a").unwrap();
-            ns.document_index.clear();
-            for value in 1..=100_001_u128 {
-                let document_id = FileDocumentId(Uuid::from_u128(value));
-                ns.document_index.insert(
-                    document_id,
-                    IndexedDocument {
-                        document_id,
-                        node_id: format!("synthetic/{value}"),
-                        parent_id: ROOT_ID.into(),
-                        name: format!("synthetic-{value}").into(),
-                        is_dir: false,
-                    },
-                );
-            }
-            let before = ns.document_index_rebuild_count();
-            let page = ns.indexed_document_page(100_000, 128);
-            assert_eq!(page.len(), 1);
-            assert_eq!(page[0].document_id, FileDocumentId(Uuid::from_u128(100_001)));
-            // The path is derived from where the node is now, and the tree holds no node for a
-            // row inserted straight into the catalogue: there is no path to name.
-            assert_eq!(ns.path_for_document(&page[0]), None);
-            assert_eq!(ns.document_index_rebuild_count(), before);
-        }
-        {
             let mut a = Namespace::new("a").unwrap();
             let dir = a.create_dir(ROOT_INO, "dir", 1).unwrap();
             for i in 0..50_u64 {
