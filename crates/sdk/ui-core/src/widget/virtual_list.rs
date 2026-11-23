@@ -82,6 +82,12 @@ const DEFAULT_VIEWPORT_HEIGHT: f64 = 320.0;
 /// one of thousands of rows mounted.
 const NATURAL_MOST: f64 = crate::tokens::Layout::BASE.natural_most as f64;
 const END_SLACK: f64 = 0.5;
+/// How much of the last screen counts as the end of a list, in viewport heights: the person is
+/// read to its end while a page that would follow it is still worth asking for.
+const END_REACH_SCREENS: f64 = 1.0;
+/// How far from the end the person reads away before the list says the end again, in viewport
+/// heights: more than the reach that told it, so a step around the boundary tells once.
+const END_REARM_SCREENS: f64 = 2.0;
 
 /// What a list as tall as its rows shows of them, in its own coordinates.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -357,6 +363,12 @@ pub struct VirtualRows {
     /// ask on it, so the same row can be asked for again after a person scrolled away.
     on_revealed: Option<KeyCallback<ListKey>>,
     on_closed: Option<Box<dyn FnMut()>>,
+    /// The person read the list to its end: told once each time they arrive there, and not
+    /// again until they read away and come back, so a list that shows one page of a longer
+    /// thing asks for the next page once per arrival.
+    on_end_reached: Option<Box<dyn FnMut()>>,
+    /// The end was told and the person has not read away from it since.
+    end_told: bool,
     open: Option<ListKey>,
     rereading_open: Option<ListKey>,
     held_open: Option<String>,
@@ -534,6 +546,8 @@ impl VirtualRows {
             on_opened: None,
             on_revealed: None,
             on_closed: None,
+            on_end_reached: None,
+            end_told: false,
             open: None,
             rereading_open: None,
             held_open: None,
@@ -945,6 +959,13 @@ impl VirtualRows {
         self.on_closed = Some(Box::new(callback));
     }
 
+    /// Tell the view the person read the list to its end: the last rows of a list that shows one
+    /// page of a longer thing came into view, and the page after them is the view's to ask for.
+    /// It is told once per arrival, not again while the person stays at the end.
+    pub fn set_on_end_reached(&mut self, callback: Option<Box<dyn FnMut()>>) {
+        self.on_end_reached = callback;
+    }
+
     #[must_use]
     pub fn on_fold(mut self, callback: impl FnMut(&ListKey, bool) + 'static) -> Self {
         self.on_fold = Some(Box::new(callback));
@@ -1034,6 +1055,29 @@ impl VirtualRows {
         }
     }
 
+    /// Tell the view the person read to the end of the list, once per arrival: the last screen
+    /// of rows is where a page after them is asked for, and staying there tells nothing more
+    /// until they read away by more than that screen and come back. A list that asks for a page
+    /// as its end comes into view therefore asks for one page per reading, never once a frame.
+    fn note_end_reached(&mut self) {
+        if self.on_end_reached.is_none() || self.model.is_empty() {
+            return;
+        }
+        let screen = self.viewport.viewport().max(0.0);
+        let remaining = (self.viewport.max_offset() - self.viewport.offset()).max(0.0);
+        if remaining > screen * END_REARM_SCREENS {
+            self.end_told = false;
+            return;
+        }
+        if self.end_told || remaining > screen * END_REACH_SCREENS {
+            return;
+        }
+        self.end_told = true;
+        if let Some(told) = self.on_end_reached.as_mut() {
+            told();
+        }
+    }
+
     fn keep_end(&mut self) -> bool {
         if !(self.follow_end && self.at_end) {
             return false;
@@ -1051,6 +1095,7 @@ impl VirtualRows {
             .scroll_to_index(index, ScrollAlignment::Nearest);
         self.note_scrolled();
         self.visible_window_changed();
+        self.note_end_reached();
     }
 
     #[must_use]
@@ -1123,6 +1168,7 @@ impl VirtualRows {
         self.note_scrolled();
         self.scroll_dirty = true;
         self.refresh_anchor();
+        self.note_end_reached();
     }
 
     fn chrome_fingerprint(&self) -> u64 {

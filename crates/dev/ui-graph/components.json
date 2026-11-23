@@ -6279,6 +6279,10 @@
         {
           "name": "closed",
           "doc": "The row held open closed: pressed again, Escape, a press beside it, or its item left the list."
+        },
+        {
+          "name": "end",
+          "doc": "The person read the list to its end: the last screen of its rows came into view. It fires once each time they arrive at the end and not while they stay there, so a list that shows one page of a longer thing asks for the page after it once per reading ([`VirtualList::set_on_end_reached`])."
         }
       ],
       "state": [

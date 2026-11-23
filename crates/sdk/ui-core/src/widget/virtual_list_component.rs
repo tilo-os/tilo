@@ -301,6 +301,12 @@ pub struct VirtualListProps {
     /// left the list.
     #[component(event)]
     pub closed: Event,
+    /// The person read the list to its end: the last screen of its rows came into view. It fires
+    /// once each time they arrive at the end and not while they stay there, so a list that shows
+    /// one page of a longer thing asks for the page after it once per reading
+    /// ([`VirtualList::set_on_end_reached`]).
+    #[component(event)]
+    pub end: Event,
 }
 
 /// The items of a described list: read from a host that renders them as they are shown, or
@@ -1512,6 +1518,7 @@ impl Described for DescribedList {
             opened: opened_changed,
             closed: closed_changed,
             revealed: revealed_changed,
+            end: end_reached,
         } = props;
         rows.removed = removed.0;
         rows.ungrouped = ungrouped_title;
@@ -1547,6 +1554,7 @@ impl Described for DescribedList {
                 let reading = Rc::clone(&reading);
                 list.set_on_revealed(move |key| told.fire(item_of(&reading.borrow(), &key)));
             }
+            list.set_on_end_reached(end_reached.handler());
             let area = ContextMenuArea::over_content(Box::new(list), move |list, at| {
                 row_menu(list, at, &Event::None)
             })
@@ -1661,6 +1669,7 @@ impl Described for DescribedList {
                 })
                 .on_closed(move || closed.fire(None));
         }
+        list.set_on_end_reached(end_reached.handler());
         if let Some(offset) = scroll {
             list.set_scroll_offset(offset);
         }
@@ -1705,6 +1714,7 @@ impl Described for DescribedList {
             closed: closed_changed,
             reveal,
             revealed: revealed_changed,
+            end: end_reached,
             ..
         } = props;
         let feel = motion.unwrap_or(crate::motion::Feel::Standard);
@@ -1793,6 +1803,7 @@ impl Described for DescribedList {
         if !closed_changed.is_none() {
             list.set_on_closed(move || closed_changed.fire(None));
         }
+        list.set_on_end_reached(end_reached.handler());
         true
     }
 }

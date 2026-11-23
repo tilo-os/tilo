@@ -2674,3 +2674,64 @@ fn a_closed_rows_checkbox_is_one_control_under_one_row() {
         .expect("the box is operated");
     assert_eq!(toggled.get(), Some(true), "the tick reaches the row's box");
 }
+
+/// Reading a list to its end tells its view once, and staying there tells nothing more: the
+/// page such a list asks for at its end is asked for once per arrival there, never once a
+/// frame and never by the frames a long list lays out while the person reads its last row.
+#[test]
+fn a_list_read_to_its_end_tells_once_until_the_person_reads_away_and_back() {
+    let told = Rc::new(Cell::new(0_u32));
+    let counting = Rc::clone(&told);
+    let mut list = plain_rows(10_000);
+    list.set_on_end_reached(Some(Box::new(move || {
+        counting.set(counting.get().saturating_add(1));
+    })));
+    let _ = lay_out(&mut list, 300.0);
+    assert_eq!(told.get(), 0, "a list nobody scrolled tells nothing");
+    let end = list.max_scroll_offset();
+    assert!(end > 0.0, "ten thousand rows scroll");
+
+    // The person reads to the last row: the view is told once.
+    list.set_scroll_offset(end);
+    assert_eq!(told.get(), 1, "the end is told as it is read");
+
+    // Still at the end: steps of the wheel, frames of the list and its rows settling tell
+    // nothing more. A page per frame would be a page a moment, not a page a reading.
+    for _ in 0..5 {
+        list.set_scroll_offset(end);
+        let _ = lay_out(&mut list, 300.0);
+        assert_eq!(told.get(), 1, "a list at its end tells once");
+    }
+
+    // A step around the boundary is still the one reading: the list is silent until the person
+    // is more than the reach it told them from away from the end.
+    list.set_scroll_offset(end - 150.0);
+    list.set_scroll_offset(end);
+    assert_eq!(told.get(), 1, "no second page for a step around the end");
+
+    // A page arrives below the rows (older mail, one page more): the end moves on by more than
+    // the person can read without going to it, and reading to that end is a new arrival.
+    list.update_model_changes(
+        &[ListModelChange::RowsInserted {
+            index: 10_000,
+            count: 100,
+        }],
+        |model| {
+            for index in 10_000..10_100_u32 {
+                model.push(index, index).unwrap();
+            }
+        },
+    );
+    let _ = lay_out(&mut list, 300.0);
+    let next = list.max_scroll_offset();
+    assert!(next > end, "the page stands after the rows");
+    list.set_scroll_offset(end + 300.0);
+    list.set_scroll_offset(next);
+    assert_eq!(told.get(), 2, "the page after it is asked for once more");
+
+    // Away from the end and back is the next reading of the same end.
+    list.set_scroll_offset(next - 2_000.0);
+    let _ = lay_out(&mut list, 300.0);
+    list.set_scroll_offset(next);
+    assert_eq!(told.get(), 3, "the next arrival at the end is told");
+}

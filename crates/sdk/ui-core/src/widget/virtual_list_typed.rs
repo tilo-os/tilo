@@ -507,6 +507,11 @@ impl<M: ListModel + 'static> VirtualList<M> {
             .set_on_revealed(move |key: ListKey| callback(key.typed()));
     }
 
+    /// Tell the view the person read the list to its end: once per arrival there.
+    pub fn set_on_end_reached(&mut self, callback: Option<Box<dyn FnMut()>>) {
+        self.rows.set_on_end_reached(callback);
+    }
+
     pub fn set_on_opened(&mut self, mut callback: impl FnMut(M::Key) + 'static) {
         self.rows
             .set_on_opened(move |key: ListKey| callback(key.typed()));
