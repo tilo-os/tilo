@@ -1025,7 +1025,32 @@ impl DeviceLists {
                     .trim()
                     .parse()
                     .map_err(|_| refused("that is no window".into()))?;
-                let group = self
+                let strips = self
+                    .handle
+                    .read(|tree| {
+                        tree.workspaces
+                            .iter()
+                            .find(|workspace| workspace.id() == tree.active)
+                            .filter(|workspace| {
+                                workspace
+                                    .strips
+                                    .iter()
+                                    .flat_map(|strip| &strip.window_groups)
+                                    .any(|group| group.tabs.iter().any(|held| held.id == tab))
+                            })
+                            .map(|workspace| {
+                                workspace
+                                    .strips
+                                    .iter()
+                                    .map(|strip| strip.id.0)
+                                    .collect::<Vec<u64>>()
+                            })
+                    })
+                    .ok_or_else(|| refused("the window is not in the workspace in front".into()))?;
+                self.handle
+                    .dispatch(ChromeEffect::NewStrip { name: None })
+                    .map_err(refused)?;
+                let made = self
                     .handle
                     .read(|tree| {
                         tree.workspaces
@@ -1035,24 +1060,18 @@ impl DeviceLists {
                                 workspace
                                     .strips
                                     .iter()
-                                    .flat_map(|strip| &strip.window_groups)
-                                    .find(|group| group.tabs.iter().any(|held| held.id == tab))
+                                    .map(|strip| strip.id.0)
+                                    .find(|id| !strips.contains(id))
                             })
-                            .map(|group| group.id)
                     })
-                    .ok_or_else(|| refused("the window is not in the workspace in front".into()))?;
-                let made = self
-                    .handle
-                    .apply_command(&DesktopCommand::CreateStrip {
-                        name: String::new(),
-                    })
-                    .map_err(refused)?
                     .ok_or_else(|| refused("no strip was made".into()))?;
                 self.handle
-                    .apply_command(&DesktopCommand::MoveGroup {
-                        group,
-                        strip: made.0,
-                        before: None,
+                    .dispatch(ChromeEffect::MoveTab {
+                        tab: tab.to_string(),
+                        to: Destination {
+                            strip: Some(made.to_string()),
+                            ..Destination::default()
+                        },
                     })
                     .map_err(refused)?;
             }
@@ -1061,7 +1080,7 @@ impl DeviceLists {
                     .trim()
                     .parse()
                     .map_err(|_| refused("that is no strip".into()))?;
-                let (target, groups) = self
+                let (target, tabs) = self
                     .handle
                     .read(|tree| {
                         let workspace = tree
@@ -1084,26 +1103,28 @@ impl DeviceLists {
                             })?
                             .id
                             .0;
-                        let groups: Vec<u64> = workspace
+                        let tabs: Vec<u64> = workspace
                             .strips
                             .get(at)?
                             .window_groups
                             .iter()
-                            .map(|group| group.id)
+                            .filter_map(|group| group.tabs.first().map(|tab| tab.id))
                             .collect();
-                        Some((target, groups))
+                        Some((target, tabs))
                     })
                     .ok_or_else(|| {
                         refused(
                             "that strip is not in the workspace in front, or is its last".into(),
                         )
                     })?;
-                for group in groups {
+                for tab in tabs {
                     self.handle
-                        .apply_command(&DesktopCommand::MoveGroup {
-                            group,
-                            strip: target,
-                            before: None,
+                        .dispatch(ChromeEffect::MoveTab {
+                            tab: tab.to_string(),
+                            to: Destination {
+                                strip: Some(target.to_string()),
+                                ..Destination::default()
+                            },
                         })
                         .map_err(refused)?;
                 }

@@ -298,7 +298,7 @@ fn a_copied_style_is_offered_and_drawn_with_no_shell_in_the_store() {
                 .run_shell_action("show_style", vec![serde_json::Value::from(copy.clone())])
                 .expect("the shell shows the copy");
             crate::common::until(&mut session, "the copy draws the shell", |session| {
-                crate::common::on_screen(session, "No window here yet").is_some()
+                crate::common::on_screen(session, "Start something").is_some()
             });
             assert_eq!(
                 session.shell_setting("style"),
