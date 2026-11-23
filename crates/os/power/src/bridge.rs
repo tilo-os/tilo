@@ -159,14 +159,19 @@ impl PowerBridge {
     /// Record power-profiles-daemon's active profile, read over D-Bus by the
     /// service, so the compositor resolves the profile's idle-suspend timeout on a
     /// settings reload without asking the daemon from its frame thread.
+    ///
+    /// Recording an active profile alone does not mark the bridge as fed with the
+    /// daemon's offered profile list: `profiles_moved` stays `0` until
+    /// [`Self::note_profiles`] or [`Self::note_profile_state`] delivers `Profiles`.
     pub fn note_active_profile(&self, profile: &str) {
         let mut inner = self.lock();
-        let first = self.profiles_moved.load(Ordering::Relaxed) == 0;
-        if first || inner.active_profile.as_deref() != Some(profile) {
+        if inner.active_profile.as_deref() != Some(profile) {
             inner.active_profile = Some(profile.to_owned());
-            self.profiles_moved.fetch_add(1, Ordering::Release);
-            drop(inner);
-            self.wake_profiles();
+            if self.profiles_moved.load(Ordering::Relaxed) > 0 {
+                self.profiles_moved.fetch_add(1, Ordering::Release);
+                drop(inner);
+                self.wake_profiles();
+            }
         }
     }
 
@@ -209,7 +214,7 @@ impl PowerBridge {
         let had_any = !inner.profiles.is_empty() || inner.active_profile.is_some();
         inner.profiles.clear();
         inner.active_profile = None;
-        if had_any {
+        if had_any && self.profiles_moved.load(Ordering::Relaxed) > 0 {
             self.profiles_moved.fetch_add(1, Ordering::Release);
             drop(inner);
             self.wake_profiles();
@@ -217,7 +222,7 @@ impl PowerBridge {
     }
 
     /// How often the offered power profiles or the active profile moved (`0` before
-    /// the service has ever recorded a daemon answer).
+    /// the service has ever recorded a daemon `Profiles` list).
     pub fn profiles_moved(&self) -> u64 {
         self.profiles_moved.load(Ordering::Acquire)
     }
@@ -479,6 +484,16 @@ mod tests {
             4,
             "clearing already-empty profiles is a no-op"
         );
+
+        // An active profile without a Profiles list updates active_profile() for
+        // PowerService policy without flipping profiles_moved() away from 0.
+        let half = PowerBridge::new();
+        half.note_active_profile("power-saver");
+        assert_eq!(half.active_profile().as_deref(), Some("power-saver"));
+        assert_eq!(half.profiles_moved(), 0);
+        half.clear_profiles();
+        assert_eq!(half.active_profile(), None);
+        assert_eq!(half.profiles_moved(), 0);
 
         // Even an empty initial profile list marks the bridge as having received a daemon answer.
         let fresh = PowerBridge::new();

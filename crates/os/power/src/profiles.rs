@@ -61,6 +61,22 @@ impl PowerProfilesMonitor {
     ) -> zbus::Result<zbus::proxy::OwnerChangedStream<'static>> {
         self.proxy.receive_owner_changed().await
     }
+
+    /// Whether the underlying D-Bus connection talks to a message bus daemon
+    /// (as opposed to a direct peer-to-peer socket in tests).
+    pub(crate) fn is_bus(&self) -> bool {
+        self.proxy.connection().is_bus()
+    }
+
+    /// Whether `net.hadess.PowerProfiles` currently has an owner on the bus.
+    pub async fn has_owner(&self) -> zbus::Result<bool> {
+        let dbus = zbus::fdo::DBusProxy::builder(self.proxy.connection())
+            .cache_properties(zbus::proxy::CacheProperties::No)
+            .build()
+            .await?;
+        let name = zbus::names::BusName::try_from(DEST)?;
+        dbus.name_has_owner(name).await.map_err(Into::into)
+    }
 }
 
 /// Extract profile names from the daemon's `Profiles` property entries, preserving order.
