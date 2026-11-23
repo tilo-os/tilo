@@ -2210,7 +2210,6 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_observations() {
         let target = fixture.target(1, "follow-up");
         let resources = fixture.app.publication_resources();
         let actor = tilo_actions::Actor::Member(fixture.app.collaboration.local_author.clone());
-        let evidence = serde_json::json!({"token": "controlled-confirmation"});
         let mut requests = Vec::new();
         // This boundary captures submission only; no broker acceptance is simulated.
         fixture
@@ -2218,8 +2217,7 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_observations() {
             .invoke_bound_target_with_broker(
                 &target,
                 &ResourceInvocation::new(&target.address.address, &actor)
-                    .approval(Some(&crate::app_core::TEST_APPROVAL))
-                    .evidence(Some(&evidence)),
+                    .approval(Some(&crate::app_core::TEST_APPROVAL)),
                 Some(&mut |request| requests.push(request)),
             )
             .unwrap();
@@ -2248,8 +2246,8 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_observations() {
             tilo_actions::remote::InvokeArgument::Json(serde_json::Map::new())
         );
         assert_eq!(
-            request.confirmation,
-            App::broker_confirmation(Some(&evidence))
+            request.confirmation, None,
+            "an asked call comes back with the person's approve, never a confirmation"
         );
         let resource = request.target.address.resource;
         let action = request.target.address.action;
@@ -2326,7 +2324,6 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_observations() {
                 &target.address.address,
                 None,
                 None,
-                None,
                 |_, _| sent = true
             )
             .is_err()
@@ -2355,7 +2352,7 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_observations() {
                             argument: None,
                             arguments: None,
                             actor: &actor,
-                            confirmed: true,
+                            approval: Some(&crate::app_core::TEST_APPROVAL),
                             broker_admitted: false,
                             invocation: tilo_actions::InvocationId::new(),
                             source_invocation: None,
@@ -3202,7 +3199,6 @@ fn broker_text_slot_keeps_the_advertised_primary_parameter_through_model_resolut
             &address,
             arguments,
             arguments.is_none().then_some("replacement"),
-            None,
             |_, sent| request = Some(sent),
         )
         .unwrap();
@@ -3226,7 +3222,6 @@ fn broker_text_slot_keeps_the_advertised_primary_parameter_through_model_resolut
             &address,
             slot.as_deref(),
             None,
-            true,
         )
         .unwrap();
         let encoded = crate::bound_dispatch::encode_resource_action(

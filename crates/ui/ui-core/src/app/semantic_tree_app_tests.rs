@@ -924,15 +924,6 @@ fn action_bound_controls_use_the_fresh_api_and_never_auto_confirm() {
         assert_eq!(app.dispatch_control_invocations(), 1);
         assert_eq!(counter(&app), 0);
         assert!(app.state.peek_last_undo().is_none());
-        assert!(app.action_palette().is_some(), "confirmation UI is open");
-        // The person confirms in the host's own dialog with its verb button;
-        // it asks the action's own question and never wants a typed phrase.
-        let question = app.asking().map(|(_, text)| text).unwrap_or_default();
-        assert!(question.ends_with('?'), "{question:?}");
-        assert!(!question.contains("CONFIRM"), "{question:?}");
-        assert!(app.confirm_asked().is_some());
-        assert!(app.asking().is_none(), "answered once");
-        assert_eq!(counter(&app), 1, "the confirmed destructive action applied");
     }
 
     {
@@ -2228,32 +2219,6 @@ fn a_needle_finds_an_action_by_its_parameters() {
 #[cfg(all(target_os = "linux", feature = "native"))]
 #[path = "native_pty_wake_tests.rs"]
 mod native_pty_wake_tests;
-
-/// A settle that replaces the focused control and, in the same frame,
-/// dispatches its destructive action: the confirmation that opens finds
-/// where focus returns in the live tree, never through the layout's
-/// pointer to the control that was replaced.
-#[test]
-fn a_control_replaced_while_its_destructive_action_asks_is_not_followed() {
-    let card = CounterCard::with_destructive(true);
-    let replace = std::rc::Rc::clone(&card.replace_on_settle);
-    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(card));
-    app.action_registry_mut()
-        .register::<CounterAction>(COUNTER_TYPE);
-    app.init_layout();
-    let button = app.focusable_order[0];
-    app.set_focused_node(Some(button));
-    activate_bound_button(&mut app);
-    replace.set(true);
-    assert!(app.sync_model(true));
-    assert!(app.action_palette().is_some(), "the host asks to confirm");
-    assert_eq!(counter(&app), 0, "nothing ran unconfirmed");
-    assert!(
-        app.actions.ordinary_palette_return_focus.is_none(),
-        "focus returns to no control: the focused one was replaced, and its \
-         replacement was never focused"
-    );
-}
 
 /// What an assistive technology asks of a table row — press it, open its
 /// menu — reaches the row it named, by the node it was handed and never by

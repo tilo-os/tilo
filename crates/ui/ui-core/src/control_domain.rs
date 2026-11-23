@@ -1094,12 +1094,12 @@ mod lifecycle_tests {
             let id = pending.review()[0].id;
             let token = pending.token(id).unwrap();
             assert!(
-                pending.prepare(&token, false).is_none(),
+                pending.prepare(&token).is_none(),
                 "outer covering lease blocks saved Continue too"
             );
             drop(outer);
             assert!(
-                pending.prepare(&token, false).is_some(),
+                pending.prepare(&token).is_some(),
                 "blocked token was not consumed"
             );
         }
