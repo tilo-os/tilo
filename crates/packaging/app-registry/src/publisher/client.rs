@@ -331,27 +331,37 @@ mod tests {
             "307 to public plain http must be refused by redirect policy: {chain}"
         );
 
-        // A 307 to another safe local address on the same host is followed.
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let server = std::thread::spawn(move || {
-            let (mut first, _) = listener.accept().unwrap();
-            let mut buf = [0_u8; 4096];
-            let _ = first.read(&mut buf);
-            let redirect = format!(
-                "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{addr}/entries/so.tilo.ok\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-            );
-            first.write_all(redirect.as_bytes()).unwrap();
-            let (mut second, _) = listener.accept().unwrap();
-            let _ = second.read(&mut buf);
-            second
-                .write_all(
-                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                )
-                .unwrap();
-        });
-        let client = RegistryClient::new(&format!("http://{addr}")).unwrap();
-        assert!(client.entry("so.tilo.ok").unwrap().is_none());
-        server.join().unwrap();
+        // A 307 to another safe local address is followed, whether on the same
+        // port or another port on this machine.
+        for same_port in [true, false] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let other = if same_port {
+                None
+            } else {
+                Some(TcpListener::bind("127.0.0.1:0").unwrap())
+            };
+            let target = other.as_ref().map_or(addr, |l| l.local_addr().unwrap());
+            assert_eq!(same_port, addr.port() == target.port());
+            let server = std::thread::spawn(move || {
+                let (mut first, _) = listener.accept().unwrap();
+                let mut buf = [0_u8; 4096];
+                let _ = first.read(&mut buf);
+                let redirect = format!(
+                    "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{target}/entries/so.tilo.ok\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                first.write_all(redirect.as_bytes()).unwrap();
+                let (mut second, _) = other.unwrap_or(listener).accept().unwrap();
+                let _ = second.read(&mut buf);
+                second
+                    .write_all(
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .unwrap();
+            });
+            let client = RegistryClient::new(&format!("http://{addr}")).unwrap();
+            assert!(client.entry("so.tilo.ok").unwrap().is_none());
+            server.join().unwrap();
+        }
     }
 }
