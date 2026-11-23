@@ -261,11 +261,11 @@ pub fn current_device_stamp(workspace: &str) -> Option<CurrentDeviceStamp> {
 /// selected in `workspace`, only while that certificate is valid, enrolled
 /// and not revoked. Served from memory while every file it is derived from is
 /// unchanged (see the module documentation); otherwise derived and signed
-/// again through [`crate::broker::trusted_current_device`].
+/// again through [`crate::trusted_device::current`].
 ///
 /// # Errors
 ///
-/// As [`crate::broker::trusted_current_device`].
+/// As [`crate::trusted_device::current`].
 pub fn trusted_current_join_proof(workspace: &str) -> io::Result<CurrentDeviceJoinProof> {
     let files = Files::from_env()?;
     let key = files.key(workspace);
@@ -284,7 +284,7 @@ pub fn trusted_current_join_proof(workspace: &str) -> io::Result<CurrentDeviceJo
     }
     let selected = Files::selected(workspace)?;
     let before = registry.and_then(|registry| files.stamp(registry, selected.as_ref()));
-    let (device, certificate) = crate::broker::trusted_current_device(workspace)?;
+    let (device, certificate) = crate::trusted_device::current(workspace)?;
     #[cfg(test)]
     MINTS.with(|mints| mints.set(mints.get().saturating_add(1)));
     let digest = tilo_identity_client::collaboration_join_digest(workspace)
@@ -533,7 +533,7 @@ pub(crate) mod tests {
             let started = std::time::Instant::now();
             for _ in 0..ROUNDS {
                 let (key, _) =
-                    crate::broker::trusted_current_device(&fixture.workspace).expect("trusted device");
+                    crate::trusted_device::current(&fixture.workspace).expect("trusted device");
                 fixture.store().load(&fixture.identity_id).expect("fleet");
                 let proof = key
                     .sign_digest(

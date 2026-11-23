@@ -3,12 +3,12 @@
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::net::Shutdown;
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+use tilo_files::native::socket::Stream;
 
 #[cfg(test)]
 use collab_types::DocumentMutation;
@@ -80,7 +80,7 @@ pub struct IdentityBrokerHandle {
     path: PathBuf,
     stop: Arc<AtomicBool>,
     listener: Option<thread::JoinHandle<()>>,
-    clients: Arc<Mutex<HashMap<u64, UnixStream>>>,
+    clients: Arc<Mutex<HashMap<u64, Stream>>>,
 }
 
 impl Drop for IdentityBrokerHandle {
@@ -100,14 +100,14 @@ impl Drop for IdentityBrokerHandle {
 
 struct ClientConnection {
     id: u64,
-    clients: Arc<Mutex<HashMap<u64, UnixStream>>>,
+    clients: Arc<Mutex<HashMap<u64, Stream>>>,
 }
 impl Drop for ClientConnection {
     fn drop(&mut self) {
         self.clients.lock_recover().remove(&self.id);
     }
 }
-fn close_clients(clients: &Mutex<HashMap<u64, UnixStream>>) {
+fn close_clients(clients: &Mutex<HashMap<u64, Stream>>) {
     for stream in clients.lock_recover().values() {
         let _ = stream.shutdown(Shutdown::Both);
     }
@@ -185,13 +185,15 @@ pub fn spawn(
 }
 
 fn serve(
-    mut stream: UnixStream,
+    mut stream: Stream,
     tree: &dyn WorkspaceMembership,
     groups: &dyn GroupKeySource,
     person: &dyn PersonResourceTypes,
 ) {
     // Darwin inherits the listener's nonblocking flag on accept. This worker
     // uses blocking framed I/O; an empty receive is not the end of a session.
+    // A pipe is always blocking.
+    #[cfg(unix)]
     if let Err(error) = stream.set_nonblocking(false) {
         tracing::warn!(%error, "cannot configure blocking service connection");
         return;
@@ -295,7 +297,7 @@ fn metadata_response(
     if record.group_public_key != profile.user_public_key {
         return Response::Denied("identity record no longer matches the selected actor".into());
     }
-    let (device, cert) = match require_trusted_current_device(&profile) {
+    let (device, cert) = match crate::trusted_device::of_profile(&profile) {
         Ok(material) => material,
         Err(error) => return Response::Denied(error.to_string()),
     };
@@ -393,7 +395,7 @@ fn sign_collaboration_join(
     if foreign(&profile) {
         return Response::Denied("collaboration join requested for a different workspace".into());
     }
-    match require_trusted_current_device(&profile) {
+    match crate::trusted_device::of_profile(&profile) {
         Ok((device, _)) => match tilo_identity_client::collaboration_join_digest(workspace_id) {
             Ok(digest) => {
                 match tilo_user_identity::StatementSigner::sign_digest(&device, &digest) {
@@ -502,7 +504,7 @@ fn sign_collaboration_op(
             "collaboration operation requested for a different launch route".into(),
         );
     }
-    let (device, _) = match require_trusted_current_device(&profile) {
+    let (device, _) = match crate::trusted_device::of_profile(&profile) {
         Ok(material) => material,
         Err(error) => return Response::Denied(error.to_string()),
     };
@@ -667,112 +669,34 @@ fn group_keys(
     }
 }
 
-/// This machine's device key and its certificate for the identity this device
-/// presents in `workspace`, while that certificate is valid, enrolled and not
-/// revoked.
-/// For the host that governs the workspace with the device key; apps never get
-/// it.
-pub fn trusted_current_device(
-    workspace: &str,
-) -> io::Result<(ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert)> {
-    let profile = crate::store::identity_for_workspace(workspace)?
-        .ok_or_else(|| io::Error::other("this device has no identity to sign in with"))?;
-    require_trusted_current_device(&profile)
-}
-
-/// Sign an externally approved moderation operation as the workspace's
-/// selected, trusted device. This is a privileged host API, not an app socket
-/// request: callers must authorize the complete typed operation before calling.
-/// The protocol separates moderation credentials from other device signatures.
-pub fn sign_external_moderation(
-    workspace: &str,
-    operation: &registry_types::ExternalModerationOperation,
-) -> io::Result<registry_types::SignedModerationMutation> {
-    let (device, _) = trusted_current_device(workspace)?;
-    registry_types::sign_external_moderation(operation, &device)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))
-}
-
-/// Root-key operations are available only while this machine is covered by
-/// a valid, non-revoked `identity -> device` certificate. Apps never receive
-/// either key; this check makes revocation effective at the local broker too.
-fn require_trusted_current_device(
-    profile: &crate::store::IdentityProfile,
-) -> io::Result<(ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert)> {
-    let paths = crate::provisioning::collaboration_identity_paths();
-    let device = tilo_device_identity::persist::load_device_key(&paths)
-        .map_err(|error| io::Error::other(error.to_string()))?;
-    let device_key = device.verifying_key().to_bytes();
-    let cert_path = paths.device_cert_for_user(&profile.user_public_key);
-    let cert = tilo_device_identity::persist::read_device_cert(&cert_path)
-        .map_err(|error| io::Error::other(error.to_string()))?;
-    tilo_user_identity::verify_device_cert(&cert)
-        .map_err(|error| io::Error::other(error.to_string()))?;
-    if cert.user_public_key != profile.user_public_key || cert.device_public_key != device_key {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "this device certificate does not belong to the selected identity and device",
-        ));
-    }
-    // Served from memory only while the fleet files are unchanged, so a
-    // revocation — of the device or of the stand-in that issued it — is seen by
-    // the very next call.
-    let fleet = crate::device_fleet::DeviceFleetStore::from_env()?.load_cached(&profile.id)?;
-    if !crate::certificates::admitted(&profile.user_public_key, &fleet, &cert) {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "this device has been revoked for the selected identity",
-        ));
-    }
-    if !fleet
-        .certificates
-        .iter()
-        .any(|known| known.device_public_key == device_key)
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "this device is not enrolled for the selected identity",
-        ));
-    }
-    Ok((device, cert))
-}
-
-/// The public half of the identity and certified device this machine
-/// presents in one workspace.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LocalDeviceIdentity {
-    pub profile_id: String,
-    pub actor_key: String,
-    pub user_root_public_key: [u8; 32],
-    pub device_public_key: [u8; 32],
-}
-
-fn read_frame<T: serde::de::DeserializeOwned>(stream: &mut UnixStream) -> io::Result<T> {
+fn read_frame<T: serde::de::DeserializeOwned>(stream: &mut Stream) -> io::Result<T> {
     let bytes = HANDSHAKE_FRAMING.read(stream)?.ok_or(FrameError::Closed)?;
     serde_json::from_slice(&bytes)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
 #[cfg(test)]
-fn write_frame<T: serde::Serialize>(stream: &mut UnixStream, value: &T) -> io::Result<()> {
+fn write_frame<T: serde::Serialize>(stream: &mut Stream, value: &T) -> io::Result<()> {
     let bytes = serde_json::to_vec(value)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     HANDSHAKE_FRAMING.write(stream, &bytes)?;
     stream.flush()
 }
 
-fn read_action_frame<T: serde::de::DeserializeOwned>(stream: &mut UnixStream) -> io::Result<T> {
+fn read_action_frame<T: serde::de::DeserializeOwned>(stream: &mut Stream) -> io::Result<T> {
     Ok(FRAMING.read_value(stream)?.ok_or(FrameError::Closed)?)
 }
 
-fn write_action_frame<T: serde::Serialize>(stream: &mut UnixStream, value: &T) -> io::Result<()> {
+fn write_action_frame<T: serde::Serialize>(stream: &mut Stream, value: &T) -> io::Result<()> {
     FRAMING.write_value(stream, value)?;
     stream.flush()
 }
 
 #[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
+    use std::os::unix::net::UnixStream;
     use tilo_identity_client::wire::Handshake;
 
     /// What the client's launch binds it to, for an app that keeps none of
@@ -896,65 +820,6 @@ mod tests {
     #[test]
     fn identity_service_wire_is_pinned() {
         assert_identity_service_wire_bytes_are_pinned();
-    }
-
-    #[test]
-    fn privileged_moderation_signing_requires_the_selected_trusted_device() {
-        let temp = tempfile::tempdir().expect("temp");
-        let xdg = temp.path().join("config");
-        let system_root = temp.path().join("system");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_CONFIG_HOME", &xdg)
-            .set("TILO_IDENTITY_ROOT", &system_root)
-            .set(crate::provisioning::FILE_SECRETS_ENV, "1");
-        let identity_dir = xdg.join("tilo/identity");
-        let paths = tilo_device_identity::IdentityPaths::under(&system_root);
-        let workspace = WorkspaceId::new().to_string();
-        let operation = registry_types::ExternalModerationOperation {
-            destination: registry_types::ModerationDestination {
-                base_url: "https://registry.example".into(),
-                owner_pubkey_hex: hex::encode([7; 32]),
-            },
-            request_id: "report-1".into(),
-            issued_at_unix: 100,
-            expires_at_unix: 200,
-            mutation: registry_types::ModerationMutation::FileReport {
-                package_id: "so.example.app".into(),
-                category: "security".into(),
-                summary: "Unexpected access to private files".into(),
-                evidence_digest_hex: hex::encode([8; 32]),
-            },
-        };
-        assert!(sign_external_moderation(&workspace, &operation).is_err());
-        ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
-        let signed = sign_external_moderation(&workspace, &operation).expect("host signs");
-        registry_types::verify_moderation_mutation(&signed).expect("valid signature");
-        assert_eq!(signed.destination.as_ref(), Some(&operation.destination));
-        assert_eq!(signed.mutation, operation.mutation);
-        assert_eq!(signed.request_id, operation.request_id);
-        assert_eq!(signed.issued_at_unix, operation.issued_at_unix);
-        assert_eq!(signed.expires_at_unix, operation.expires_at_unix);
-        let (device, _) = trusted_current_device(&workspace).expect("trusted device");
-        assert_eq!(
-            signed.actor_pubkey_hex,
-            hex::encode(device.verifying_key().to_bytes())
-        );
-        let mut invalid = operation.clone();
-        invalid.expires_at_unix = invalid.issued_at_unix;
-        assert!(sign_external_moderation(&workspace, &invalid).is_err());
-        let profile = crate::store::identity_for_workspace(&workspace)
-            .expect("registry")
-            .expect("profile");
-        crate::device_fleet::DeviceFleetStore::at(&identity_dir, paths)
-            .revoke(
-                &profile.id,
-                device.verifying_key().to_bytes(),
-                tilo_user_identity::RevocationReason::Compromised,
-                1,
-            )
-            .expect("revoke device");
-        let error = sign_external_moderation(&workspace, &operation).expect_err("revoked");
-        assert!(error.to_string().contains("revoked"));
     }
 
     tilo_test_env::scenario! {
@@ -1845,7 +1710,7 @@ params = []
                 "the fleet is read at most once"
             );
 
-            let device = trusted_current_device(&fixture.workspace)
+            let device = crate::trusted_device::current(&fixture.workspace)
                 .expect("trusted device")
                 .0
                 .verifying_key()

@@ -179,7 +179,7 @@ impl Outbox {
             .skip(1)
             .filter(|p| !p.as_os_str().is_empty())
         {
-            tilo_files::native::private::sync_directory(parent)?;
+            tilo_files::native::atomic::sync_directory(parent)?;
         }
         let outbox = Self {
             dir: Some(dir.to_path_buf()),
@@ -294,7 +294,7 @@ impl Outbox {
         }
         drop(state);
         if let Some(dir) = &self.dir
-            && tilo_files::native::private::sync_directory(dir).is_err()
+            && tilo_files::native::atomic::sync_directory(dir).is_err()
         {
             eprintln!(
                 "the entry: cancellation files could not be flushed; eligibility remains authoritative"
@@ -665,7 +665,7 @@ impl Outbox {
         discard_file(&item);
         if item.path.is_some()
             && let Some(dir) = &self.dir
-            && let Err(error) = tilo_files::native::private::sync_directory(dir)
+            && let Err(error) = tilo_files::native::atomic::sync_directory(dir)
         {
             eprintln!(
                 "the entry: could not flush the mail outbox: {}",

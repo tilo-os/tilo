@@ -384,7 +384,7 @@ impl OriginalWorkspace {
         let root = SigningKey::from_bytes(&[83; 32]);
         let key = SigningKey::from_bytes(&[84; 32]);
         let (key, cert, start) = if current_native {
-            let (key, cert) = tilo_identity::broker::trusted_current_device(
+            let (key, cert) = tilo_identity::trusted_device::current(
                 &tilo_desktop_model::WorkspaceId::new().to_string(),
             )
             .expect("enrolled native device");

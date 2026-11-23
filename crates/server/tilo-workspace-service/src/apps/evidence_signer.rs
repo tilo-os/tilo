@@ -95,8 +95,8 @@ impl SignerCache {
         {
             self.loads = self.loads.saturating_add(1);
         }
-        let (key, certificate) = tilo_identity::broker::trusted_current_device(workspace)
-            .map_err(|error| error.to_string())?;
+        let (key, certificate) =
+            tilo_identity::trusted_device::current(workspace).map_err(|error| error.to_string())?;
         let signed = sign_entry(&key, &certificate, bytes, now)?;
         let after = current_device_stamp(workspace);
         if before != after {
@@ -364,7 +364,7 @@ mod tests {
         {
             let fixture = Fixture::new();
             let (key, mut cert) =
-                tilo_identity::broker::trusted_current_device(&fixture.workspace).expect("device");
+                tilo_identity::trusted_device::current(&fixture.workspace).expect("device");
             drop(key);
             let expiry = cert.issued_at_ns.saturating_add(60_000_000_000);
             cert.expires_at_ns = Some(expiry);

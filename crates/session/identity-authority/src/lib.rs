@@ -43,8 +43,8 @@ pub fn device_certificate(
     // workspace admitted. The device owner's system-facing certificate is
     // issued separately for the same key, so a session's admission never
     // matches it.
-    let (_, certificate) = tilo_identity::broker::trusted_current_device(workspace)
-        .map_err(|error| error.to_string())?;
+    let (_, certificate) =
+        tilo_identity::trusted_device::current(workspace).map_err(|error| error.to_string())?;
     if tilo_workspace_service::apps::collab_app_broker::person_id_for_root(
         certificate.user_public_key,
     ) != person

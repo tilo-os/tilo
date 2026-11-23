@@ -62,7 +62,7 @@ fn store_disclosure(
 ) -> Result<crate::apps::app_actions::ModerationConsentPreview, ActionCallError> {
     let signing_key = match caller.user_public_key() {
         Some(key) => *key,
-        None => tilo_identity::broker::trusted_current_device(workspace)
+        None => tilo_identity::trusted_device::current(workspace)
             .map(|(_, certificate)| certificate.user_public_key)
             .map_err(|error| ActionCallError::Unavailable {
                 reason: format!("no identity to sign the Store disclosure with: {error}"),

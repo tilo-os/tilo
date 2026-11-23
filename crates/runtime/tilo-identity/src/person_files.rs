@@ -56,9 +56,20 @@ pub fn as_person<T>(
         let _person = FilesystemIdentity::assume(uid, gid)?;
         write()
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(all(unix, not(target_os = "linux")))]
     {
         let _ = (person, identity_dir);
+        write()
+    }
+    // No process on Windows writes for another account: the daemon runs as
+    // the person, and only Unix names another account (`for_person`).
+    #[cfg(windows)]
+    {
+        assert!(
+            person.is_none(),
+            "a Windows process writes only as its own account"
+        );
+        tilo_files::native::private::directory(identity_dir)?;
         write()
     }
 }

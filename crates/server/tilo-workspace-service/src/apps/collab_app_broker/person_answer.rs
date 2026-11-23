@@ -23,7 +23,7 @@ pub(super) fn taken(token: &str, binding: &ApprovalBinding) -> bool {
         );
         return false;
     };
-    let Ok((_, cert)) = tilo_identity::broker::trusted_current_device(&binding.workspace) else {
+    let Ok((_, cert)) = tilo_identity::trusted_device::current(&binding.workspace) else {
         tracing::warn!(
             action = %binding.action,
             workspace = %binding.workspace,

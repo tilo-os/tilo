@@ -909,14 +909,14 @@ fn a_logins_device_is_what_this_computers_apps_sign_as() {
     tilo_device_identity::persist::adopt_device_key(place.keys(), &key.to_bytes()).unwrap();
     tilo_device_identity::login::file_certificate(&place, &cert).unwrap();
     assert!(
-        tilo_identity::broker::trusted_current_device("").is_err(),
+        tilo_identity::trusted_device::current("").is_err(),
         "nothing signs before the login makes the certificate this computer's identity"
     );
     tilo_api::daemon::enter::adopt(&place, &cert).unwrap();
 
     let identity = Identity::here().unwrap();
     assert_eq!(identity.cert, cert);
-    let (signer, signed_for) = tilo_identity::broker::trusted_current_device("").unwrap();
+    let (signer, signed_for) = tilo_identity::trusted_device::current("").unwrap();
     assert_eq!(signed_for, cert, "apps sign as the login's device");
     assert_eq!(signer.verifying_key(), key.verifying_key());
     // A second start finds it enrolled and changes nothing.

@@ -15,7 +15,8 @@ use windows_sys::Win32::{
         ACCESS_ALLOWED_ACE, ACE_HEADER,
         Authorization::{GetSecurityInfo, SE_FILE_OBJECT, SetSecurityInfo},
         DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetSecurityDescriptorDacl, IsValidSid,
-        OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+        IsWellKnownSid, OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+        WinLocalSystemSid,
     },
     Storage::FileSystem::{
         CREATE_NEW, CreateDirectoryW, CreateFileW, FILE_ATTRIBUTE_REPARSE_POINT,
@@ -119,7 +120,11 @@ fn validate(file: &File, user: &Account, directory: bool, check_acl: bool) -> io
                 return Err(denied());
             }
             let sid = sid_bytes.cast();
-            if IsValidSid(sid) == 0 || EqualSid(sid, user.sid()) == 0 {
+            // The operating system itself may hold an entry: it can take any file regardless,
+            // so its entry grants nobody anything (Wine writes one on every file it describes).
+            if IsValidSid(sid) == 0
+                || (EqualSid(sid, user.sid()) == 0 && IsWellKnownSid(sid, WinLocalSystemSid) == 0)
+            {
                 return Err(denied());
             }
         }

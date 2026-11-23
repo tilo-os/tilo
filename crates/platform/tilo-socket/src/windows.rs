@@ -26,8 +26,9 @@ use std::time::Duration;
 use windows_sys::Win32::{
     Foundation::{
         ERROR_ACCESS_DENIED, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, ERROR_OPERATION_ABORTED,
-        ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_SEM_TIMEOUT, GENERIC_READ, GENERIC_WRITE,
-        GetLastError, INVALID_HANDLE_VALUE, WAIT_TIMEOUT,
+        ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED, ERROR_SEM_TIMEOUT,
+        GENERIC_READ, GENERIC_WRITE, GetLastError, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
+        WAIT_TIMEOUT,
     },
     Storage::FileSystem::{
         CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, OPEN_EXISTING,
@@ -40,7 +41,9 @@ use windows_sys::Win32::{
             GetNamedPipeServerProcessId, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
             PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, WaitNamedPipeW,
         },
-        Threading::{CreateEventW, INFINITE, WaitForSingleObject},
+        Threading::{
+            CreateEventW, INFINITE, SetEvent, WaitForMultipleObjects, WaitForSingleObject,
+        },
     },
 };
 
@@ -161,7 +164,7 @@ impl Listener {
                 None => instance(&self.name, &self.descriptor, false)?,
             };
             // SAFETY: a live pipe handle and the OVERLAPPED the call is waited on with.
-            match overlapped(&pipe, INFINITE, |at| unsafe {
+            match overlapped(&pipe, INFINITE, None, |at| unsafe {
                 ConnectNamedPipe(pipe.as_raw_handle(), at)
             }) {
                 Ok(_) => {}
@@ -172,7 +175,7 @@ impl Listener {
             // The next client finds an instance waiting while this one is served.
             *next = Some(instance(&self.name, &self.descriptor, false)?);
             if peer_is(pipe.as_raw_handle(), true, &self.account)? {
-                return Ok((Stream::new(pipe), SocketAddr));
+                return Ok((Stream::new(pipe, true)?, SocketAddr));
             }
             // SAFETY: a connected pipe handle.
             unsafe { DisconnectNamedPipe(pipe.as_raw_handle()) };
@@ -196,12 +199,15 @@ impl Listener {
     }
 }
 
-/// A read or write bound in milliseconds, `u64::MAX` for none. Every handle
-/// to one connection shares it, as a socket's options are shared.
+/// What every handle to one connection shares, as a socket's options and
+/// state are shared: its read and write bounds in milliseconds (`u64::MAX`
+/// for none), and the event [`Stream::shutdown`] sets.
 #[derive(Debug)]
-struct Timeouts {
+struct Connection {
     read: AtomicU64,
     write: AtomicU64,
+    shut: OwnedHandle,
+    server_end: bool,
 }
 
 const NO_TIMEOUT: u64 = u64::MAX;
@@ -210,24 +216,31 @@ const NO_TIMEOUT: u64 = u64::MAX;
 #[derive(Debug)]
 pub struct Stream {
     pipe: OwnedHandle,
-    timeouts: Arc<Timeouts>,
+    connection: Arc<Connection>,
 }
 
-/// Run one overlapped call on `pipe` and wait at most `wait_ms` for it; a
-/// call still pending then is cancelled and answers `TimedOut`, unless it
-/// moved bytes before the cancel took.
-fn overlapped(
-    pipe: &OwnedHandle,
-    wait_ms: u32,
-    start: impl FnOnce(*mut OVERLAPPED) -> windows_sys::core::BOOL,
-) -> io::Result<usize> {
-    // SAFETY: an unnamed, manual-reset, unsignalled event.
+/// An unnamed, manual-reset, unsignalled event.
+fn event() -> io::Result<OwnedHandle> {
+    // SAFETY: no attributes and no name.
     let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
     if event.is_null() {
         return Err(io::Error::last_os_error());
     }
     // SAFETY: an event CreateEventW just returned, owned from here.
-    let event = unsafe { OwnedHandle::from_raw_handle(event) };
+    Ok(unsafe { OwnedHandle::from_raw_handle(event) })
+}
+
+/// Run one overlapped call on `pipe` and wait at most `wait_ms` for it, or
+/// until `shut` is set; a call still pending then is cancelled and answers
+/// `TimedOut`, or `NotConnected` once shut, unless it moved bytes before the
+/// cancel took.
+fn overlapped(
+    pipe: &OwnedHandle,
+    wait_ms: u32,
+    shut: Option<&OwnedHandle>,
+    start: impl FnOnce(*mut OVERLAPPED) -> windows_sys::core::BOOL,
+) -> io::Result<usize> {
+    let event = event()?;
     // SAFETY: OVERLAPPED is plain data, valid zeroed.
     let mut call: OVERLAPPED = unsafe { std::mem::zeroed() };
     call.hEvent = event.as_raw_handle();
@@ -238,8 +251,16 @@ fn overlapped(
     // SAFETY: the event this call signals; then the call's own handle and OVERLAPPED,
     // which outlive it: GetOverlappedResult waits for a cancelled call to end.
     unsafe {
-        let timed_out = WaitForSingleObject(event.as_raw_handle(), wait_ms) == WAIT_TIMEOUT;
-        if timed_out {
+        let waited = match shut {
+            Some(shut) => {
+                let events = [event.as_raw_handle(), shut.as_raw_handle()];
+                WaitForMultipleObjects(2, events.as_ptr(), 0, wait_ms)
+            }
+            None => WaitForSingleObject(event.as_raw_handle(), wait_ms),
+        };
+        let timed_out = waited == WAIT_TIMEOUT;
+        let shut_down = waited == WAIT_OBJECT_0 + 1;
+        if timed_out || shut_down {
             CancelIoEx(pipe.as_raw_handle(), &raw const call);
         }
         let mut moved = 0;
@@ -247,6 +268,9 @@ fn overlapped(
             || moved > 0
         {
             return Ok(moved as usize);
+        }
+        if shut_down && GetLastError() == ERROR_OPERATION_ABORTED {
+            return Err(io::Error::from(io::ErrorKind::NotConnected));
         }
         if timed_out && GetLastError() == ERROR_OPERATION_ABORTED {
             return Err(io::Error::new(
@@ -273,24 +297,27 @@ fn milliseconds(timeout: Option<Duration>) -> io::Result<u64> {
 }
 
 impl Stream {
-    fn new(pipe: OwnedHandle) -> Self {
-        Self {
+    fn new(pipe: OwnedHandle, server_end: bool) -> io::Result<Self> {
+        Ok(Self {
             pipe,
-            timeouts: Arc::new(Timeouts {
+            connection: Arc::new(Connection {
                 read: AtomicU64::new(NO_TIMEOUT),
                 write: AtomicU64::new(NO_TIMEOUT),
+                shut: event()?,
+                server_end,
             }),
-        }
+        })
     }
 
-    /// Another handle to the same connection, sharing its timeouts.
+    /// Another handle to the same connection, sharing its timeouts and its
+    /// shutdown.
     ///
     /// # Errors
     /// The handle could not be duplicated.
     pub fn try_clone(&self) -> io::Result<Self> {
         Ok(Self {
             pipe: self.pipe.try_clone()?,
-            timeouts: Arc::clone(&self.timeouts),
+            connection: Arc::clone(&self.connection),
         })
     }
 
@@ -300,7 +327,7 @@ impl Stream {
     /// # Errors
     /// A zero duration, as a socket refuses it.
     pub fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
-        self.timeouts
+        self.connection
             .read
             .store(milliseconds(timeout)?, Ordering::Relaxed);
         Ok(())
@@ -311,10 +338,42 @@ impl Stream {
     /// # Errors
     /// A zero duration, as a socket refuses it.
     pub fn set_write_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
-        self.timeouts
+        self.connection
             .write
             .store(milliseconds(timeout)?, Ordering::Relaxed);
         Ok(())
+    }
+
+    /// End the connection for every handle to it, as a socket's
+    /// `shutdown(Both)` does: a read waiting on it, or made after, reads the
+    /// end of the stream, and a write fails. The server end also disconnects
+    /// its client, which then reads the end; a client's server learns of it
+    /// when the client closes. A pipe has no half-close.
+    ///
+    /// # Errors
+    /// `Unsupported` for `Read` or `Write` alone, or the shutdown could not
+    /// be signalled.
+    pub fn shutdown(&self, how: std::net::Shutdown) -> io::Result<()> {
+        if how != std::net::Shutdown::Both {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "a pipe shuts down both ways at once",
+            ));
+        }
+        // SAFETY: the connection's own event.
+        if unsafe { SetEvent(self.connection.shut.as_raw_handle()) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if self.connection.server_end {
+            // SAFETY: a live server-end handle; a client already gone is no error here.
+            unsafe { DisconnectNamedPipe(self.pipe.as_raw_handle()) };
+        }
+        Ok(())
+    }
+
+    fn is_shut(&self) -> bool {
+        // SAFETY: the connection's own event, polled without waiting.
+        unsafe { WaitForSingleObject(self.connection.shut.as_raw_handle(), 0) == WAIT_OBJECT_0 }
     }
 
     fn wait(bound: &AtomicU64) -> u32 {
@@ -322,10 +381,15 @@ impl Stream {
     }
 
     fn read_into(&self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.is_shut() {
+            return Ok(0);
+        }
         let length = u32::try_from(buf.len()).unwrap_or(u32::MAX);
+        let shut = Some(&self.connection.shut);
+        let wait = Self::wait(&self.connection.read);
         // SAFETY: a live pipe handle, and a buffer that outlives the call:
         // `overlapped` returns only once the call has ended.
-        let read = overlapped(&self.pipe, Self::wait(&self.timeouts.read), |at| unsafe {
+        let read = overlapped(&self.pipe, wait, shut, |at| unsafe {
             ReadFile(
                 self.pipe.as_raw_handle(),
                 buf.as_mut_ptr(),
@@ -335,16 +399,29 @@ impl Stream {
             )
         });
         match read {
-            // The peer closed its end: the end of the stream, as a socket reads it.
-            Err(error) if error.raw_os_error() == Some(ERROR_BROKEN_PIPE as i32) => Ok(0),
+            // The peer closed or disconnected its end, or this connection was
+            // shut down: the end of the stream, as a socket reads it.
+            Err(error)
+                if error.kind() == io::ErrorKind::NotConnected
+                    || [ERROR_BROKEN_PIPE, ERROR_PIPE_NOT_CONNECTED]
+                        .iter()
+                        .any(|code| error.raw_os_error() == Some(*code as i32)) =>
+            {
+                Ok(0)
+            }
             read => read,
         }
     }
 
     fn write_from(&self, buf: &[u8]) -> io::Result<usize> {
+        if self.is_shut() {
+            return Err(io::Error::from(io::ErrorKind::BrokenPipe));
+        }
         let length = u32::try_from(buf.len()).unwrap_or(u32::MAX);
+        let shut = Some(&self.connection.shut);
+        let wait = Self::wait(&self.connection.write);
         // SAFETY: as `read_into`.
-        overlapped(&self.pipe, Self::wait(&self.timeouts.write), |at| unsafe {
+        overlapped(&self.pipe, wait, shut, |at| unsafe {
             WriteFile(
                 self.pipe.as_raw_handle(),
                 buf.as_ptr(),
@@ -443,7 +520,7 @@ pub(crate) fn connect(path: &Path) -> io::Result<Stream> {
             format!("{}: the pipe is served by another account", path.display()),
         ));
     }
-    Ok(Stream::new(pipe))
+    Stream::new(pipe, false)
 }
 
 pub(crate) fn is_bound(path: &Path) -> bool {
@@ -533,6 +610,41 @@ mod tests {
         assert_eq!(byte, [7]);
         drop(served);
         assert_eq!(client.read(&mut byte).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_shutdown_ends_a_waiting_read_on_both_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = crate::bind(&path(&dir)).unwrap();
+        let at = path(&dir);
+        let client = std::thread::spawn(move || crate::connect(&at).unwrap());
+        let (served, _) = listener.accept().unwrap();
+        let mut client = client.join().unwrap();
+        let waiting = served.try_clone().unwrap();
+        let reader = std::thread::spawn(move || {
+            let mut byte = [0];
+            (&waiting).read(&mut byte).unwrap()
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        served.shutdown(std::net::Shutdown::Both).unwrap();
+        assert_eq!(reader.join().unwrap(), 0, "the waiting read reads the end");
+        assert_eq!(
+            (&served).write(&[1]).unwrap_err().kind(),
+            io::ErrorKind::BrokenPipe
+        );
+        let mut byte = [0];
+        assert_eq!(
+            client.read(&mut byte).unwrap(),
+            0,
+            "the client reads the end"
+        );
+        assert_eq!(
+            served
+                .shutdown(std::net::Shutdown::Write)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::Unsupported
+        );
     }
 
     /// Wine lets a second process create a pipe's first instance again: this

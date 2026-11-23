@@ -1061,7 +1061,7 @@ fn claim_device_owner(path: &Path, root_public: &[u8; 32]) -> io::Result<bool> {
             // `hard_link` made the complete, synced file visible.  Sync its
             // parent before treating the election as successful, so the
             // winner's directory entry survives a sudden power loss.
-            fs::File::open(parent)?.sync_all()?;
+            tilo_files::native::atomic::sync_directory(parent)?;
             // Validate our own published winner too: a filesystem anomaly or
             // future refactor must fail closed instead of issuing a legacy
             // certificate against an unverified owner record.

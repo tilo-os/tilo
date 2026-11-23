@@ -72,6 +72,7 @@ impl DeviceFleetStore {
     /// The store of another account's identity directory, written by a root
     /// process acting for that account (uid): every write runs as them and
     /// only into a directory they own ([`crate::person_files::as_person`]).
+    #[cfg(unix)]
     #[must_use]
     pub const fn for_person(mut self, uid: u32) -> Self {
         self.person = Some(uid);

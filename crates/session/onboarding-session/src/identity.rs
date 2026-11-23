@@ -444,11 +444,9 @@ pub fn canonical_native_identity_ready(minted: &MintedIdentity) -> bool {
         return false;
     };
     let room = collab_types::person_workspace(&person);
-    tilo_identity::broker::trusted_current_device(&room.to_string()).is_ok_and(
-        |(_, certificate)| {
-            certificate.user_public_key == person && !certificate.capabilities.foreign
-        },
-    )
+    tilo_identity::trusted_device::current(&room.to_string()).is_ok_and(|(_, certificate)| {
+        certificate.user_public_key == person && !certificate.capabilities.foreign
+    })
 }
 
 /// Whether the record at `path` carries no secret of the identity: neither a

@@ -19666,7 +19666,6 @@ dependencies = [
  "libc",
  "postcard",
  "rand_core 0.10.0",
- "registry-types",
  "rustix 1.1.6",
  "serde",
  "serde_bytes",

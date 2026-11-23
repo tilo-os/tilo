@@ -513,8 +513,7 @@ mod https_completion {
                 config.set("TILO_STORE_CONFIG_DIR", files.path());
                 let original = signed_worker::OriginalWorkspace::current_native();
                 let (device, _) =
-                    tilo_identity::broker::trusted_current_device(&original.route.cluster_id)
-                        .unwrap();
+                    tilo_identity::trusted_device::current(&original.route.cluster_id).unwrap();
                 let server = HttpsRegistry::new(&device).await;
                 let owner = Arc::new(StoreOwner(files.path().join("store.automerge")));
                 owner.commit("The description is misleading");
@@ -645,8 +644,7 @@ mod https_completion {
                 config.set("TILO_STORE_CONFIG_DIR", files.path());
                 let original = signed_worker::OriginalWorkspace::current_native();
                 let (device, cert) =
-                    tilo_identity::broker::trusted_current_device(&original.route.cluster_id)
-                        .unwrap();
+                    tilo_identity::trusted_device::current(&original.route.cluster_id).unwrap();
                 assert_eq!(cert, original.cert);
                 let server = HttpsRegistry::new(&device).await;
                 std::fs::write(

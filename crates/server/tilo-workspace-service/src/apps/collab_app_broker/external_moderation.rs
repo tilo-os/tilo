@@ -137,7 +137,7 @@ impl Context {
         // The identity is loaded afresh for every operation. Revocation, identity
         // selection and device removal invalidate ownership; no signing key is cached.
         let (device, certificate) =
-            tilo_identity::broker::trusted_current_device(&self.original.route().cluster_id)
+            tilo_identity::trusted_device::current(&self.original.route().cluster_id)
                 .map_err(|error| error.to_string())?;
         if certificate.user_public_key != self.original.certificate()?.user_public_key {
             return Err("external moderation cannot use another person's signing identity".into());
@@ -149,7 +149,7 @@ impl Context {
         self.recheck()?;
         // Re-read enrollment immediately before disclosure as well as signing.
         let (_, current) =
-            tilo_identity::broker::trusted_current_device(&self.original.route().cluster_id)
+            tilo_identity::trusted_device::current(&self.original.route().cluster_id)
                 .map_err(|error| error.to_string())?;
         if certificate != current {
             return Err("external moderation signing identity changed".into());

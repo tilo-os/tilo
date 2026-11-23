@@ -82,8 +82,10 @@ const LOCK_FILE: &str = ".identity.lock";
 const MAX_RECORD_BYTES: u64 = 1024 * 1024;
 
 pub fn identity_dir_from_env() -> io::Result<PathBuf> {
-    if let Some(config) = tilo_paths::xdg::config_home().filter(|dir| dir.is_absolute()) {
-        return Ok(config.join("tilo").join("identity"));
+    // The person's identity sits in their Tilo profile, wherever this host
+    // keeps it: `$XDG_CONFIG_HOME/tilo/identity` on Linux and macOS.
+    if let Some(profile) = tilo_paths::profile_root().filter(|dir| dir.is_absolute()) {
+        return Ok(profile.join("identity"));
     }
     Err(io::Error::new(
         io::ErrorKind::NotFound,

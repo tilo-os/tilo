@@ -590,7 +590,9 @@ mod tests {
             "tilo-identity-registry-{label}-{}-{nonce}",
             std::process::id()
         ));
-        fs::create_dir_all(&path).expect("temp dir");
+        // As the identity directory always is: private, which on Windows is what makes the
+        // records written in it private too.
+        tilo_files::native::private::directory(&path).expect("temp dir");
         path
     }
 

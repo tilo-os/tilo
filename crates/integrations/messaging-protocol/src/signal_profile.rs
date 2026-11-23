@@ -277,7 +277,7 @@ impl EncryptedSignalProfile {
         tilo_files::native::private::write_atomic(&self.root.join("profile.enc"), &sealed)
             .map_err(storage)?;
         std::fs::remove_file(self.root.join("active.enc")).map_err(storage)?;
-        tilo_files::native::private::sync_directory(&self.root).map_err(storage)?;
+        tilo_files::native::atomic::sync_directory(&self.root).map_err(storage)?;
         self.contents = Some(image.contents);
         self.usable = true;
         Ok(())

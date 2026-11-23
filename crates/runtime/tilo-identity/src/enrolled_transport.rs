@@ -28,6 +28,7 @@ pub use types::{CurrentDeviceDeclaration, TransportReceipt};
 mod current_device;
 #[cfg(unix)]
 mod fs;
+pub use crate::device_declaration::{CurrentDeviceDeclaration, TransportReceipt};
 #[cfg(target_os = "linux")]
 pub use current_device::RootObservedCurrentDevice;
 #[cfg(unix)]

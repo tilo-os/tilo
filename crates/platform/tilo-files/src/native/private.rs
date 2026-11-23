@@ -255,17 +255,6 @@ pub fn rewrite(path: &Path) -> io::Result<File> {
     file.set_len(0)?;
     Ok(file)
 }
-/// Flushes a directory after publishing a private file.
-pub fn sync_directory(path: &Path) -> io::Result<()> {
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        options.write(true).custom_flags(0x0200_0000 | 0x0020_0000);
-    }
-    options.open(path)?.sync_all()
-}
 
 /// Uses a private, exclusively created sibling; an existing destination must pass the same checks as
 /// [`read`].
@@ -426,7 +415,7 @@ mod tests {
             file.write_all(b"private identity").unwrap();
             file.sync_all().unwrap();
             drop(file);
-            sync_directory(&root).unwrap();
+            crate::native::atomic::sync_directory(&root).unwrap();
             assert_eq!(
                 create_new(&path).unwrap_err().kind(),
                 io::ErrorKind::AlreadyExists

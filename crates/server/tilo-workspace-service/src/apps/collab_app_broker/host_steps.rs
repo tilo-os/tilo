@@ -503,8 +503,7 @@ pub(crate) mod signed_test_support {
                 "Host actions",
             );
             let workspace_id = workspace.id().to_string();
-            let (key, certificate) =
-                tilo_identity::broker::trusted_current_device(&workspace_id).unwrap();
+            let (key, certificate) = tilo_identity::trusted_device::current(&workspace_id).unwrap();
             let owner = Arc::new(
                 tilo_peer_state::owner::open_file(&directory.path().join("native.json")).unwrap(),
             );
@@ -585,7 +584,7 @@ pub(crate) mod signed_test_support {
         fn certified(services: ProcessServices, foreign: bool) -> Self {
             let mut fixture = Self::new(services);
             let (key, certificate) =
-                tilo_identity::broker::trusted_current_device(&fixture.workspace).unwrap();
+                tilo_identity::trusted_device::current(&fixture.workspace).unwrap();
             let presentation = runtime_collab::CertifiedJoinIdentity {
                 workspace_id: fixture.workspace.clone(),
                 device_certificate: serde_json::to_vec(&certificate).unwrap(),

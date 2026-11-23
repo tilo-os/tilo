@@ -438,8 +438,7 @@ mod tests {
             .unwrap();
             let mut workspace = Workspace::new(WorkspaceId::from_u128(9), "Signed opens");
             let workspace_id = workspace.id().to_string();
-            let (_, certificate) =
-                tilo_identity::broker::trusted_current_device(&workspace_id).unwrap();
+            let (_, certificate) = tilo_identity::trusted_device::current(&workspace_id).unwrap();
             let person = hex::encode(certificate.user_public_key);
             workspace.set_owner(person.clone());
             let mut tree = WorkspaceTree::default();

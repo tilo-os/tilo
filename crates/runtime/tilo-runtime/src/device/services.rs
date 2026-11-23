@@ -142,7 +142,7 @@ impl Identity {
     fn here() -> io::Result<Self> {
         let place = tilo_device_identity::login::Place::here(tilo_api::client::device_keys())
             .map_err(io::Error::other)?;
-        let (key, cert) = tilo_identity::broker::trusted_current_device("").map_err(|error| {
+        let (key, cert) = tilo_identity::trusted_device::current("").map_err(|error| {
             io::Error::new(io::ErrorKind::NotFound, format!("{SET_UP_FIRST} ({error})"))
         })?;
         Ok(Self { key, cert, place })
