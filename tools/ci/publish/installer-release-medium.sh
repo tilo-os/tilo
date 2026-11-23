@@ -44,10 +44,14 @@ case $arch in x86_64|aarch64) ;; *) die "unknown architecture: $arch" ;; esac
 source_digest=$(tr -d '[:space:]' < "$in/digest")
 [[ $source_digest =~ ^sha256:[0-9a-f]{64}$ ]] || die "$in/digest does not name an image: $source_digest"
 
-release_tag=${TILO_INSTALLER_RELEASE_TAG:-rehearsal-$T_COMMIT}
+if [ -n "${TILO_INSTALLER_RELEASE_TAG:-}" ]; then
+  release_tag=$TILO_INSTALLER_RELEASE_TAG
+else
+  [[ ${T_COMMIT:-} =~ ^[0-9a-f]{40}$ ]] || die "T_COMMIT is not a full commit: ${T_COMMIT:-unset}"
+  release_tag=rehearsal-$T_COMMIT
+fi
 version=${TILO_INSTALLER_VERSION:-0.0.0}
 channel=${TILO_INSTALLER_CHANNEL:-rehearsal}
-[[ $T_COMMIT =~ ^[0-9a-f]{40}$ ]] || die "T_COMMIT is not a full commit: ${T_COMMIT:-unset}"
 [[ $release_tag =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || die "release tag is not a release identity: $release_tag"
 
 rm -rf "$out"
