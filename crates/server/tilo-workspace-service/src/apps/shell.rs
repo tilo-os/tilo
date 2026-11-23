@@ -12,6 +12,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use runtime_collab::wire::shell::Vouch;
 use tilo_actions::remote::InvokeRequest;
 use tilo_peer_state::workspace_documents::{DeviceDocuments, DeviceWrites};
 
@@ -28,30 +29,49 @@ pub struct ShellCaller {
 }
 
 /// The shell links the daemon made and no shell took yet: each a one-use secret the daemon
-/// sends on a connection it opens itself, then hands to the shell it starts.
+/// sends on a connection it opens itself, then hands to the shell it starts. And the connections
+/// an admitted shell vouched for, one for each app it launched, that did not open yet.
 #[derive(Default)]
-pub struct ShellLinks(std::sync::Mutex<std::collections::HashMap<[u8; 32], ShellCaller>>);
+pub struct ShellLinks {
+    shells: std::sync::Mutex<std::collections::HashMap<[u8; 32], ShellCaller>>,
+    vouched: std::sync::Mutex<std::collections::HashMap<[u8; 32], Vouch>>,
+}
 
 impl ShellLinks {
     /// A new link's secret, admitting one connection as `caller`'s shell.
     #[must_use]
     pub fn make(&self, caller: ShellCaller) -> [u8; 32] {
         let secret: [u8; 32] = rand::random();
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(secret, caller);
+        lock(&self.shells).insert(secret, caller);
         secret
     }
 
     /// Who the link with `secret` was made for, once: a secret is taken by its first connection.
     #[must_use]
     pub fn take(&self, secret: &[u8; 32]) -> Option<ShellCaller> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(secret)
+        lock(&self.shells).remove(secret)
     }
+
+    /// A secret admitting one connection as the app `vouch` names: what an admitted shell is
+    /// answered when it vouches for an app it launched.
+    #[must_use]
+    pub fn vouch(&self, vouch: Vouch) -> [u8; 32] {
+        let secret: [u8; 32] = rand::random();
+        lock(&self.vouched).insert(secret, vouch);
+        secret
+    }
+
+    /// The app the vouch with `secret` named, once.
+    #[must_use]
+    pub fn take_vouched(&self, secret: &[u8; 32]) -> Option<Vouch> {
+        lock(&self.vouched).remove(secret)
+    }
+}
+
+fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// An action a shell invoked, once it settled: the value it answered, or why it failed.
@@ -74,6 +94,8 @@ pub type DocumentWrites = tokio::sync::broadcast::Receiver<crate::workspaces::Re
 pub struct ShellServices {
     /// The links of the shells the daemon starts: a connection is a shell's only with one.
     pub links: Arc<ShellLinks>,
+    /// The socket this dispatch answers on: where a connection a shell vouched for opens.
+    pub socket: std::path::PathBuf,
     /// The device's documents, read for the device itself.
     pub documents: Arc<dyn DeviceDocuments>,
     /// The device's documents, written as the device: signed and sealed with its key.

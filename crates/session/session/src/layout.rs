@@ -1168,14 +1168,13 @@ impl Layouts {
         }
     }
 
-    /// Read a layout or a view again whenever the service `service` installs takes a write to it,
-    /// rather than only when the session looks.
-    pub(crate) fn follow_writes(&self, service: tilo_workspace_service::service::ServiceSlot) {
-        *self.notices.borrow_mut() = Some(Box::new(move || {
-            service
-                .service()
-                .map(|service| service.workspaces().document_writes())
-        }));
+    /// Read a layout or a view again whenever the device's daemon takes a write to it, rather
+    /// than only when the session looks.
+    pub(crate) fn follow_writes(
+        &self,
+        writes: tilo_session_client::daemon_documents::DaemonWritesFeed,
+    ) {
+        *self.notices.borrow_mut() = Some(Box::new(move || Some(writes.follow())));
     }
 
     /// Read every layout and view followed again, and wait up to `patience` for the answers.

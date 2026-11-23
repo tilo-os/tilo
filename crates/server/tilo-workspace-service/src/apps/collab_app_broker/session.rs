@@ -876,15 +876,23 @@ pub(super) async fn drive_connection(
         peer_id,
     };
     let mut stream = stream;
-    // A person's shell, where this dispatch answers one, opens with its own marker.
-    if worker.is_none()
-        && let Some(shell) = state.services.shell.clone()
-        && super::socket::has_shell_marker(&stream).await?
-    {
-        return super::shell::serve(stream, shell).await;
-    }
     let local_media = if worker.is_none() {
-        match authenticate_launcher_handoff(&mut stream, &state.services).await {
+        // A person's shell, where this host answers one, opens with its own marker, and so does
+        // a connection it opens for one of its apps; any other is an app the launcher started.
+        let mut vouching = false;
+        if let Some(shell) = state.services.shell.clone() {
+            let marker = super::socket::peeked_marker(&stream).await?;
+            if marker == *runtime_collab::wire::shell::SHELL_MAGIC {
+                return super::shell::serve(stream, shell).await;
+            }
+            vouching = marker == *runtime_collab::wire::shell::VOUCH_MAGIC;
+        }
+        let admitted = if vouching {
+            super::shell::vouched(&mut stream, &state.services).await
+        } else {
+            authenticate_launcher_handoff(&mut stream, &state.services).await
+        };
+        match admitted {
             Ok(AuthenticatedHandoff {
                 local_media,
                 launch,
@@ -922,6 +930,7 @@ pub(super) async fn drive_connection(
     let handed_descriptors = local_media
         .as_ref()
         .and_then(|local| local.descriptors.clone());
+    let daemon = super::router::daemon_for(&state.services, local_media.as_deref()).await;
     let app_worker = local_media
         .as_ref()
         .map(|app| (uuid::Uuid::new_v4(), app.app_id.clone()));
@@ -942,6 +951,16 @@ pub(super) async fn drive_connection(
     // Files hands over the objects it selects on its own connection; the
     // broker keeps them for the request naming them. Every other peer's
     // descriptors are closed on receipt.
+    if let Some(daemon) = daemon {
+        return super::router::serve_routed(
+            connection,
+            outgoing,
+            stream,
+            handed_descriptors,
+            daemon,
+        )
+        .await;
+    }
     let served = if let Some(received) = handed_descriptors {
         let (reader, writer) = tokio::io::split(
             runtime_portal::descriptors::DescriptorStream::receiving(stream, received),

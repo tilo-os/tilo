@@ -1933,16 +1933,39 @@ impl ShellClient {
     /// Open the shell's connection over `link`, the shell link the daemon made and handed this
     /// process ([`Self::inherited`]), and what resolves once it ended. Its frames are carried by a
     /// task spawned on the current runtime.
+    #[must_use]
+    pub fn open(link: tokio::net::UnixStream) -> (Self, ConnectionEnd) {
+        let (client, end) = CollabClient::connected(link);
+        (Self { client }, end)
+    }
+
+    /// A connection the daemon admits as the app `vouch` names, one this shell launched: asked for
+    /// on the shell's own link, then opened on the daemon's socket with the secret it answered.
     ///
     /// # Errors
-    /// Never yet: the daemon admitted the link when it made it.
-    #[allow(
-        clippy::unused_async,
-        reason = "a connection's start is awaited, as every other client's is"
-    )]
-    pub async fn open(link: tokio::net::UnixStream) -> Result<(Self, ConnectionEnd), NotAvailable> {
-        let (client, end) = CollabClient::connected(link);
-        Ok((Self { client }, end))
+    /// The daemon refused the vouch, or its socket does not answer.
+    pub async fn vouched(
+        &self,
+        vouch: crate::wire::shell::Vouch,
+    ) -> Result<tokio::net::UnixStream, NotAvailable> {
+        use tokio::io::AsyncWriteExt as _;
+        let (socket, secret) = match self
+            .call(crate::wire::shell::ShellCall::Vouch(vouch))
+            .await?
+        {
+            crate::wire::shell::ShellReply::Vouched { socket, secret } => (socket, secret),
+            other => {
+                return Err(NotAvailable::Refused(format!(
+                    "the daemon answered a vouch with {other:?}"
+                )));
+            }
+        };
+        let mut stream = tokio::net::UnixStream::connect(&socket).await?;
+        let mut opening = crate::wire::shell::VOUCH_MAGIC.to_vec();
+        opening.extend_from_slice(&secret);
+        stream.write_all(&opening).await?;
+        stream.flush().await?;
+        Ok(stream)
     }
 
     /// The shell link the daemon handed this process when it started it

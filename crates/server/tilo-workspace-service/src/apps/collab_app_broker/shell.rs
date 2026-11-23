@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use runtime_collab::wire::Reply;
 use runtime_collab::wire::shell::{
-    DocumentWritten, SHELL_MAGIC, ShellCall, ShellRead, ShellReply, ShellWrite,
+    DocumentWritten, SHELL_MAGIC, ShellCall, ShellRead, ShellReply, ShellWrite, VOUCH_MAGIC,
 };
 use tilo_peer_state::workspace_documents::{DocumentRead, DocumentWriting};
 
@@ -54,6 +54,64 @@ pub(super) async fn serve(
     super::wire::serve(connection, outgoing, reader, writer)
         .await
         .map_err(|error| crate::apps::BrokerError::failed(error.to_string()))
+}
+
+/// Admit `stream`, which opened with [`VOUCH_MAGIC`], as the app an admitted shell vouched for
+/// on its own link ([`ShellCall::Vouch`]): the secret that follows the marker is the one the
+/// daemon answered that vouch with, taken by this connection alone. A connection with any other
+/// secret, an app's own above all, is refused before its first call. The connection is then the
+/// app's, as a launch the daemon started would be.
+pub(super) async fn vouched(
+    stream: &mut tokio::net::UnixStream,
+    services: &crate::apps::services::ProcessServices,
+) -> Result<super::socket::AuthenticatedHandoff, super::socket::LaunchRefusal> {
+    use runtime_collab::wire::shell::SHELL_SECRET_BYTES;
+    use tokio::io::AsyncReadExt as _;
+    let peer = super::launcher_handoff::credentialed_peer(stream);
+    let refused = |error: String, answerable: bool| super::socket::LaunchRefusal {
+        error: crate::apps::BrokerError::failed(error),
+        peer: peer.clone(),
+        answerable,
+    };
+    let shell = services
+        .shell
+        .as_ref()
+        .ok_or_else(|| refused("this host answers no shell".to_owned(), false))?;
+    let unread =
+        |error: std::io::Error| refused(format!("a vouch's opening does not read: {error}"), false);
+    let mut marker = [0_u8; VOUCH_MAGIC.len()];
+    stream.read_exact(&mut marker).await.map_err(unread)?;
+    let mut secret = [0_u8; SHELL_SECRET_BYTES];
+    stream.read_exact(&mut secret).await.map_err(unread)?;
+    let vouch = shell.links.take_vouched(&secret).ok_or_else(|| {
+        refused(
+            "only the person's shell vouches for an app, on its own link".to_owned(),
+            true,
+        )
+    })?;
+    // The shell's process stands for the app here: the connection lasts while it does.
+    let process = super::native_media::PeerProcess::from_socket(stream).ok_or_else(|| {
+        refused(
+            "the vouching process cannot be pinned on this system".to_owned(),
+            true,
+        )
+    })?;
+    let launch = crate::apps::services::AuthenticatedApplicationLaunch {
+        continuation_instance: vouch.window,
+        launch_ticket: None,
+        windowless: vouch.windowless,
+    };
+    let local_media = super::native_media::LocalAppConnection::attested_keeping(
+        vouch.app,
+        vouch.workspace,
+        process,
+        launch,
+    )
+    .ok_or_else(|| refused("the vouching process ended".to_owned(), false))?;
+    Ok(super::socket::AuthenticatedHandoff {
+        local_media: Some(local_media),
+        launch: None,
+    })
 }
 
 /// Answer `call` for `shell`; a connection that is no shell is refused.
@@ -148,6 +206,7 @@ pub(super) async fn answer(shell: Option<Shell>, call: ShellCall) -> Result<Repl
         call @ (ShellCall::Resources { .. } | ShellCall::Vault(_)) => {
             kept(&services.workspaces, call).await
         }
+        ShellCall::Vouch(vouch) => vouch_for(&services, vouch)?,
         ShellCall::Invoke { request } => {
             let request = serde_json::from_str(&request)
                 .map_err(|error| format!("the invocation does not read: {error}"))?;
@@ -156,6 +215,21 @@ pub(super) async fn answer(shell: Option<Shell>, call: ShellCall) -> Result<Repl
         }
     };
     Ok(Reply::Shell(reply))
+}
+
+/// Where and with which secret a connection opens to be admitted as the app `vouch` names, which
+/// the shell launched.
+fn vouch_for(
+    services: &ShellServices,
+    vouch: runtime_collab::wire::shell::Vouch,
+) -> Result<ShellReply, String> {
+    if vouch.app.trim().is_empty() || vouch.workspace.trim().is_empty() {
+        return Err("a vouch names an empty app or workspace".to_owned());
+    }
+    Ok(ShellReply::Vouched {
+        socket: services.socket.clone(),
+        secret: services.links.vouch(vouch),
+    })
 }
 
 /// The writes `writes` took since it was last asked, waiting for the first; `None` once it missed

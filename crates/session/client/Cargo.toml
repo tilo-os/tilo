@@ -83,7 +83,7 @@ uuid.workspace = true
 tilo-identity = { path = "../../runtime/tilo-identity" }
 # The endpoint every device dials: presence names a publisher and where it is reached with it.
 iroh-base.workspace = true
-tokio = { workspace = true, features = ["sync", "macros"] }
+tokio = { workspace = true, features = ["sync", "macros", "time"] }
 serde.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 hex.workspace = true
@@ -100,7 +100,7 @@ toolkit = []
 [dev-dependencies]
 # The page holder a test reads a peer's workspace through: the workspace service's document
 # core over the replica the peer's session admits into, as a page reads it.
-tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["device-keys", "session-pages"] }
+tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["device-keys", "session-pages", "test-support"] }
 # An invitation read as a device that follows its link reads it: the server it names, from it alone.
 tilo-workspace-join = { path = "../../collab/workspace-join" }
 # A synced folder's tree written through a session, as a computer's folder writes it.
@@ -161,6 +161,9 @@ tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-ide
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 iroh.workspace = true
+# The shell's connection to the device's daemon, which keeps the person's workspaces.
+runtime-collab = { path = "../../runtime/runtime-collab" }
+runtime-portal = { path = "../../runtime/runtime-portal" }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 

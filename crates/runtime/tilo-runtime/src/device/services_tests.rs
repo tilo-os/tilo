@@ -1022,7 +1022,7 @@ fn the_shell_the_daemon_starts_reaches_its_workspaces_and_no_other_process_of_th
     runtime().block_on(async {
         link.set_nonblocking(true).unwrap();
         let link = tokio::net::UnixStream::from_std(link).unwrap();
-        let (shell, _) = runtime_collab::ShellClient::open(link).await.unwrap();
+        let (shell, _) = runtime_collab::ShellClient::open(link);
         // The person's workspaces, as the device holds them and as their standing reads.
         let ShellReply::Workspaces(held) = shell_asks(&shell, ShellCall::Workspaces).await else {
             panic!("the daemon lists the workspaces it holds");
@@ -1209,9 +1209,7 @@ async fn shell_helper(role: &str) {
             .expect("the daemon handed its shell a link")
             .unwrap();
         let (shell, _) =
-            runtime_collab::ShellClient::open(tokio::net::UnixStream::from_std(link).unwrap())
-                .await
-                .unwrap();
+            runtime_collab::ShellClient::open(tokio::net::UnixStream::from_std(link).unwrap());
         let answer = shell.call(ShellCall::Workspaces).await;
         assert!(
             matches!(&answer, Ok(ShellReply::Workspaces(held)) if !held.is_empty()),
@@ -1261,7 +1259,7 @@ async fn shell_helper(role: &str) {
         let mut stream = tokio::net::UnixStream::connect(socket).await.unwrap();
         stream.write_all(SHELL_MAGIC).await.unwrap();
         stream.write_all(&[7; SHELL_SECRET_BYTES]).await.unwrap();
-        let (shell, _) = runtime_collab::ShellClient::open(stream).await.unwrap();
+        let (shell, _) = runtime_collab::ShellClient::open(stream);
         let answer = shell.call(ask.clone()).await;
         assert!(
             answer.is_err(),

@@ -154,60 +154,24 @@ broker_services! {
     hosted_workspaces: Arc<dyn tilo_workspace_service::apps::services::HostedWorkspaces>,
     resources: Arc<dyn tilo_workspace_service::apps::services::ResourceServices>,
     shell: Arc<tilo_workspace_service::apps::shell::ShellServices>,
+    device_daemon: tilo_workspace_service::apps::services::DeviceDaemon,
 }
 
-/// The resources of the workspaces this device's own workspace service holds, as the broker reads
-/// them.
-pub(crate) type HeldDocuments =
-    BrokerService<Arc<dyn tilo_workspace_service::apps::services::NativeDocumentReads>>;
-
-/// The one store of the workspaces this device's own workspace service holds, as apps write and
-/// read their resources in it.
-pub(crate) type HeldResources =
-    BrokerService<Arc<dyn tilo_workspace_service::apps::services::ResourceServices>>;
-
-/// The resources this session reads outside their apps: the workspaces this device's own service
-/// holds, the ones it governs and the ones it joined at a device serving them alike.
-pub(crate) fn document_reads(
-    service: tilo_workspace_service::service::ServiceSlot,
-) -> HeldDocuments {
-    BrokerService::served(Arc::new(
-        tilo_workspace_service::apps::service_reads::ServiceReads::on(service),
-    )
-        as Arc<dyn tilo_workspace_service::apps::services::NativeDocumentReads>)
-}
-
-/// Where this device's own workspace service is installed, and what the session's own roles read
-/// the workspaces it holds from.
-/// The reads of this device's own workspace service on `service`, which other parts of the
-/// session hold too: what they read of a workspace is what its roles read here.
-pub(crate) fn session_documents_on(
-    service: tilo_workspace_service::service::ServiceSlot,
+/// What the session's own roles read and write of the person's workspaces: the device's daemon
+/// keeps them, and answers on the shell `link` it handed this session; and each write the daemon
+/// takes, which the desktop reads its layouts again by.
+pub(crate) fn session_documents(
+    link: tilo_workspace_service::apps::services::DeviceDaemon,
+    runtime: tokio::runtime::Handle,
 ) -> (
-    tilo_workspace_service::service::ServiceSlot,
     Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
+    Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>,
+    tilo_session_client::daemon_documents::DaemonWritesFeed,
 ) {
-    let reads = Arc::new(
-        tilo_workspace_service::apps::service_reads::ServiceDocuments::on(service.clone()),
-    ) as Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>;
-    (service, reads)
-}
-
-/// What the session's own roles write into the documents of the workspaces this device's service
-/// holds: the same workspaces its reads answer from.
-pub(crate) fn session_writes(
-    service: tilo_workspace_service::service::ServiceSlot,
-) -> Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites> {
-    Arc::new(tilo_workspace_service::apps::service_writes::ServiceWrites::on(service))
-}
-
-/// The one store of the workspaces this device's service holds, as apps write and read their
-/// resources in it: no app keeps a store of its own, and none is kept beside the service's.
-pub(crate) fn resources(service: tilo_workspace_service::service::ServiceSlot) -> HeldResources {
-    BrokerService::served(Arc::new(
-        tilo_workspace_service::apps::service_resources::ServiceResources::on(service),
-    )
-        as Arc<dyn tilo_workspace_service::apps::services::ResourceServices>)
+    let (documents, writes, shell) =
+        tilo_session_client::daemon_documents::on_daemon(link, runtime);
+    let feed = tilo_session_client::daemon_documents::DaemonWritesFeed::start(&shell);
+    (documents, writes, feed)
 }
 
 /// What each installed app declared it may do on the action API, read from the lists search keeps:

@@ -669,12 +669,20 @@ impl Session {
         let intents = Rc::new(RefCell::new(Vec::new()));
         // Where this device's own workspace service is installed, and what its roles read from:
         // every role here reads what its workspaces hold through it.
-        let (workspace_service, document_reads) = crate::broker_services::session_documents_on(
-            tilo_workspace_service::service::ServiceSlot::default(),
+        let workspace_service = tilo_workspace_service::service::ServiceSlot::default();
+        // The shell link the device's daemon handed this session when it started it: the
+        // session's own reads and writes go there, and its apps are vouched for on it.
+        let daemon_link =
+            tilo_session_client::daemon_documents::inherited_link(tilo_rt::app().handle());
+        if let Err(reason) = &daemon_link {
+            tracing::error!(%reason, "this session reads and writes no workspace");
+        }
+        let (document_reads, writes, daemon_writes) = crate::broker_services::session_documents(
+            daemon_link.clone(),
+            tilo_rt::app().handle().clone(),
         );
-        let writes = crate::broker_services::session_writes(workspace_service.clone());
-        // A write the service takes to a layout or a view has it read again off the loop.
-        desktops.follow_writes(workspace_service.clone());
+        // A write the daemon takes to a layout or a view has it read again off the loop.
+        desktops.follow_writes(daemon_writes);
         let engine = activity.open_engine(&options, &handle, document_reads.clone(), &writes);
         // This device's channels of its workspaces' sealed records: its keys,
         // and the devices each one admits, which its window streams carry
@@ -736,7 +744,7 @@ impl Session {
             resource_changes.clone(),
             engine.as_ref().map(|engine| engine.arrivals()),
         );
-        let (sync, documents, resources) = start_collaboration(
+        let sync = start_collaboration(
             &options,
             continuity.clone(),
             engine.clone(),
@@ -1279,8 +1287,7 @@ impl Session {
             crate::services::app_wire::Collaboration {
                 revocations: std::sync::Arc::clone(&revocations),
                 sync: sync.as_deref(),
-                documents,
-                resources,
+                daemon: daemon_link,
                 service: workspace_service.clone(),
                 engine: engine.as_ref().map(std::sync::Arc::clone),
                 sealed: crate::app_wire::Sealed {
@@ -1431,10 +1438,6 @@ impl Session {
                 launches: std::sync::Arc::clone(&options.launches),
                 policy: std::sync::Arc::clone(&notification_policy),
                 revocations,
-                workspaces: (
-                    workspace_service.clone(),
-                    automation_runtime.handle().clone(),
-                ),
             },
         );
 

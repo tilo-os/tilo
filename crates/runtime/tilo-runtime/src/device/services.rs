@@ -848,7 +848,26 @@ fn broker_services(
         // The service the identity service answers key requests from:
         // endpoints ask again when it says a channel changed.
         group_keys: Some(parts.keys.clone()),
+        // An app's Open of a record, and its resource commands, are answered from the
+        // workspaces this device keeps: the shell's apps are joined here for them.
+        committed_documents: Some(parts.workspaces.service().document_reads()),
+        resources: Some(Arc::new(
+            tilo_workspace_service::apps::service_resources::ServiceResources::of(
+                parts.workspaces.service(),
+            ),
+        )),
         action_offload,
+        // The person's desktop session: their workspaces' documents, key access, membership and standing,
+        // reached through this device alone.
+        #[cfg(unix)]
+        shell: Some(Arc::new(super::shell::services(
+            parts.workspaces,
+            parts.shell_links,
+            parts.sockets.join(COLLAB_SOCKET),
+        ))),
+        // What this device's embedder registered ([`Daemon::provide`]): a call made here reaches
+        // it through the same registry and admission as another device's call.
+        providers: Some(parts.workspaces.copies().providers()),
         ..ProcessServices::default()
     })
 }

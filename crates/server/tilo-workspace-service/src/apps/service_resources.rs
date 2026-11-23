@@ -8,27 +8,24 @@
 use tilo_resource_store::wire::Command;
 
 use super::services::{ResourceAnswer, ResourcePages, ResourceRequestContext, ResourceServices};
-use crate::service::ServiceSlot;
 use crate::workspaces::Workspaces;
 
 /// The store of the workspaces this device's service holds, as apps write and read in it.
 #[derive(Clone)]
-pub struct ServiceResources(ServiceSlot);
+pub struct ServiceResources {
+    workspaces: Workspaces,
+    /// The runtime the service makes its writes on.
+    runtime: Option<tokio::runtime::Handle>,
+}
 
 impl ServiceResources {
-    /// The store of the workspaces held by the service whose embedder holds `service`, from the
-    /// moment it is: a session's apps reach it without waiting for the service to open.
+    /// The store of the workspaces `service` keeps.
     #[must_use]
-    pub const fn on(service: ServiceSlot) -> Self {
-        Self(service)
-    }
-
-    /// The workspaces to answer from, once a service holds any, and the runtime the service makes
-    /// its writes on.
-    fn workspaces(&self) -> (Option<Workspaces>, Option<tokio::runtime::Handle>) {
-        self.0.service().map_or((None, None), |service| {
-            (Some(service.workspaces().clone()), service.writes_runtime())
-        })
+    pub fn of(service: &crate::service::WorkspaceService) -> Self {
+        Self {
+            workspaces: service.workspaces().clone(),
+            runtime: service.writes_runtime(),
+        }
     }
 }
 
@@ -51,10 +48,8 @@ pub(super) async fn on_the_service<T: Send + 'static>(
 impl ResourceServices for ServiceResources {
     fn command(&self, context: &ResourceRequestContext, command: Command) -> ResourceAnswer {
         let context = context.clone();
-        let (workspaces, runtime) = self.workspaces();
-        Box::pin(on_the_service(runtime, async move {
-            let workspaces =
-                workspaces.ok_or("this device's workspace service holds no workspaces")?;
+        let workspaces = self.workspaces.clone();
+        Box::pin(on_the_service(self.runtime.clone(), async move {
             workspaces.resource_command(&context, command).await
         }))
     }
@@ -65,10 +60,8 @@ impl ResourceServices for ServiceResources {
         query: tilo_resource_store::Query,
     ) -> ResourcePages {
         let context = context.clone();
-        let (workspaces, runtime) = self.workspaces();
-        Box::pin(on_the_service(runtime, async move {
-            let workspaces =
-                workspaces.ok_or("this device's workspace service holds no workspaces")?;
+        let workspaces = self.workspaces.clone();
+        Box::pin(on_the_service(self.runtime.clone(), async move {
             workspaces.open_resources(&context, query).await
         }))
     }

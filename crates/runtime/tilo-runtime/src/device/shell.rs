@@ -37,12 +37,14 @@ use super::workspaces::ServiceWorkspaces;
 pub(crate) fn services(
     workspaces: &Arc<ServiceWorkspaces>,
     links: &Arc<ShellLinks>,
+    socket: std::path::PathBuf,
 ) -> ShellServices {
     let standing = Standing::new(Arc::clone(workspaces));
     standing.follow();
     let copies = workspaces.copies().clone();
     ShellServices {
         links: Arc::clone(links),
+        socket,
         documents: Arc::new(ServiceDocuments::of(copies.clone())),
         writes: Arc::new(ServiceWrites::of(copies.clone())),
         document_writes: Arc::new({

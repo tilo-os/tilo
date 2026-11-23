@@ -22140,6 +22140,8 @@ dependencies = [
  "postcard",
  "rand 0.10.3",
  "rand_core 0.10.0",
+ "runtime-collab",
+ "runtime-portal",
  "rustls",
  "serde",
  "serde_json",

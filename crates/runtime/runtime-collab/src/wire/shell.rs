@@ -30,6 +30,24 @@ pub const SHELL_SECRET_BYTES: usize = 32;
 /// Names the descriptor of the shell link the daemon handed the shell it started.
 pub const SHELL_FD_ENV: &str = "TILO_SHELL_FD";
 
+/// What a connection the shell opens for one of the apps it launched begins with, followed by the
+/// one-use secret the daemon answered the shell's [`ShellCall::Vouch`] with: the daemon admits the
+/// connection as the app that vouch named. As long as [`SHELL_MAGIC`].
+pub const VOUCH_MAGIC: &[u8; 4] = b"QSV1";
+
+/// The app a shell vouches for ([`ShellCall::Vouch`]): one the shell launched and admitted on its
+/// own connection, in the workspace that launch named. The connection the vouch admits then
+/// carries that app's calls on its documents.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Vouch {
+    pub app: String,
+    pub workspace: String,
+    /// The window the app runs in, as the shell's launch named it.
+    pub window: Option<u64>,
+    /// The app runs with no window: it takes its actions on its records, never an open.
+    pub windowless: bool,
+}
+
 /// What a shell asks of the device's documents and actions.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ShellCall {
@@ -94,6 +112,9 @@ pub enum ShellCall {
     },
     /// Keep or release an account's sign-in in a workspace's vault, or forget the account.
     Vault(VaultCall),
+    /// Admit one connection as the app `Vouch` names, which the shell launched: answered with the
+    /// one-use secret that connection opens with after [`VOUCH_MAGIC`].
+    Vouch(Vouch),
 }
 
 /// A shell's ask of a workspace's vault and accounts. The vault opens on this device alone, so the
@@ -196,6 +217,12 @@ pub enum ShellReply {
     Resources(Result<String, String>),
     /// A [`ShellCall::Vault`]: what the call is answered with, or why it was refused.
     Vault(Result<VaultAnswer, String>),
+    /// A [`ShellCall::Vouch`]: the daemon's socket the vouched connection opens on, and the secret
+    /// it opens with.
+    Vouched {
+        socket: std::path::PathBuf,
+        secret: [u8; SHELL_SECRET_BYTES],
+    },
 }
 
 /// What the device holds of one document, as `tilo_peer_state::workspace_documents::DocumentRead`.

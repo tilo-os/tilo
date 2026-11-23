@@ -737,6 +737,10 @@ pub trait DisplayControlServices: Send + Sync {
     fn command(&self, context: &DisplayControlContext, command: &[u8]) -> Result<Vec<u8>, String>;
 }
 
+/// The shell's link to the device's daemon ([`ProcessServices::device_daemon`]), or why it has
+/// none.
+pub type DeviceDaemon = Result<runtime_collab::ShellClient, String>;
+
 #[derive(Clone, Default)]
 pub struct ProcessServices {
     /// Fixed project-host registrations, unavailable unless actual enforcement is configured.
@@ -832,9 +836,15 @@ pub struct ProcessServices {
     /// The device's one store, which apps write and read their resources in; without it those
     /// commands are refused.
     pub resources: Option<Arc<dyn ResourceServices>>,
-    /// What the person's shell is answered with, on a connection admitted as that shell by its
-    /// account ([`crate::apps::shell`]); without it no connection is the shell.
+    /// What the person's shell is answered with, on a connection admitted as that shell by the
+    /// link the daemon handed it ([`crate::apps::shell`]); without it no connection is the shell.
     pub shell: Option<Arc<crate::apps::shell::ShellServices>>,
+    /// The person's shell's link to the device's daemon, which keeps the person's workspaces, or
+    /// why this shell has none: each app this host admits by its launch is joined at the daemon
+    /// too, on a connection the shell vouches for on that link, and its calls on its documents go
+    /// there; this host answers the rest. Where the shell has no link, an app's join is refused
+    /// saying why. Without it (the daemon's own dispatch) this host answers every call itself.
+    pub device_daemon: Option<DeviceDaemon>,
 }
 
 impl ProcessServices {
@@ -887,5 +897,6 @@ impl ProcessServices {
         "hosted_workspaces",
         "resources",
         "shell",
+        "device_daemon",
     ];
 }
