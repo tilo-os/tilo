@@ -120,6 +120,16 @@ class Case:
             return [v.path for v in module.audit(repository.root, staged)]
         if self.check == "check_too_many_arguments":
             return [entry.split(":", 1)[0] for entry in module.audit(repository.root, staged)]
+        if self.check == "check_catalogue_coverage":
+            if staged:
+                return [
+                    entry.split(":", 1)[0]
+                    for entry in module.staged_drift(repository.root)
+                ]
+            return [
+                f"{unit}/locales/{module.SOURCE_LOCALE}.ftl"
+                for unit, _, _, _, _ in module.untranslated(repository.root)
+            ]
         raise AssertionError(f"no verdict for {self.check}")
 
 
@@ -220,6 +230,14 @@ CASES = (
                 "pub fn at() -> std::time::SystemTime { std::time::SystemTime::now() }\n"
             ),
         },
+    ),
+    Case(
+        check="check_catalogue_coverage",
+        files={
+            "app/locales/en-US.ftl": "a = Title\n",
+            "app/locales/de-DE.ftl": "a = Titel\n",
+        },
+        violation={"app/locales/en-US.ftl": "a = Title\n\nb = Settings\n"},
     ),
 )
 
@@ -392,6 +410,7 @@ class HookWiringTests(unittest.TestCase):
         "check_swallowed_failures",
         "check_module_reachability",
         "check_too_many_arguments",
+        "check_catalogue_coverage",
     )
 
     def test_the_hook_judges_the_commit_it_is_committing(self):

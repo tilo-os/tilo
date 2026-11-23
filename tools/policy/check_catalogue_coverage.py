@@ -26,16 +26,19 @@ the app it is pointed at, so every generated registry is compared here too.
 
   check_catalogue_coverage.py            fail on every drifted or repeated key
   check_catalogue_coverage.py --list     print the drift, `unit locale key`, and pass
+  check_catalogue_coverage.py --staged   fail on the drift this commit's catalogues add
 """
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from check_copy_language import messages  # noqa: E402
+from judged import STAGED_FLAG, git, judged  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE_LOCALE = "en-US"
@@ -71,9 +74,14 @@ def unit_of(root: Path, catalogue: Path) -> str:
     return catalogue.parents[1].relative_to(root).as_posix()
 
 
+def keys_in(text: str) -> dict[str, int]:
+    """The message and attribute keys `text` defines, each by its line."""
+    return {message.key: message.line for message in messages(text)}
+
+
 def keys_of(catalogue: Path) -> dict[str, int]:
     """The message and attribute keys `catalogue` defines, each by its line."""
-    return {message.key: message.line for message in messages(catalogue.read_text())}
+    return keys_in(catalogue.read_text())
 
 
 def duplicated(root: Path) -> list[tuple[Path, str, int, int]]:
@@ -169,14 +177,125 @@ def stale_registries(root: Path) -> list[tuple[str, Path, str, str]]:
     return found
 
 
+def head_texts(root: Path, relatives: list[Path]) -> dict[Path, str]:
+    """The text each of `relatives` holds in HEAD, the tree before this commit.
+
+    One `git cat-file` for the lot, as `judged` reads a commit's own blobs, so
+    a commit of many catalogues costs one process."""
+    wanted = [relative for relative in relatives if "\n" not in relative.as_posix()]
+    if not wanted:
+        return {}
+    query = b"".join(b"HEAD:" + os.fsencode(relative.as_posix()) + b"\n" for relative in wanted)
+    output = git(root, "cat-file", "--batch", input=query)
+    texts: dict[Path, str] = {}
+    offset = 0
+    for relative in wanted:
+        end = output.index(b"\n", offset)
+        header = output[offset:end].split()
+        offset = end + 1
+        if len(header) != 3:
+            continue
+        _oid, kind, size = header
+        if kind != b"blob":
+            continue
+        length = int(size)
+        texts[relative] = output[offset : offset + length].decode("utf-8", "replace")
+        offset += length + 1
+    return texts
+
+
+def staged_drift(root: Path) -> list[str]:
+    """The drift a commit introduces in the catalogues it stages, in path order.
+
+    Only the units whose `locales/*.ftl` files the commit stages are judged,
+    and each is judged as the commit leaves it: its index blob where it is
+    staged, HEAD where it is not. What the commit leaves alone was already
+    judged by CI. Two shapes are drift here: a key the commit adds to a source
+    catalogue with no line in a translation, and a key it adds to a translation
+    with no source original. A key a staged catalogue defines twice is not a
+    word to translate but a broken file, so it fails here as it does in the
+    whole tree.
+    """
+    staged = judged(root, staged=True)
+    touched = [
+        relative
+        for relative in staged.files(Path("."), suffixes=(".ftl",))
+        if relative.parent.name == "locales"
+    ]
+    if not touched:
+        return []
+    units = sorted({relative.parents[1] for relative in touched})
+    catalogues = sorted({
+        catalogue.relative_to(root)
+        for unit in units
+        for catalogue in (root / unit / "locales").glob("*.ftl")
+    })
+    after: dict[Path, str] = {
+        catalogue: staged.read(catalogue)
+        for catalogue in catalogues
+        if staged.is_staged(catalogue)
+    }
+    after.update(head_texts(root, [c for c in catalogues if c not in after]))
+    before = head_texts(root, catalogues)
+
+    problems: list[str] = []
+    for relative in touched:
+        first: dict[str, int] = {}
+        for message in messages(after.get(relative, "")):
+            if message.key in first:
+                problems.append(
+                    f"{relative.as_posix()}:{message.line}: {message.key} is defined again; "
+                    f"line {first[message.key]} already defines it"
+                )
+            else:
+                first[message.key] = message.line
+
+    for unit in units:
+        files = [catalogue for catalogue in catalogues if catalogue.parents[1] == unit]
+        now = {catalogue.stem: keys_in(after.get(catalogue, "")) for catalogue in files}
+        was = {catalogue.stem: keys_in(before.get(catalogue, "")) for catalogue in files}
+        source = now.get(SOURCE_LOCALE)
+        if source is None:
+            continue
+        source_name = f"{unit.as_posix()}/locales/{SOURCE_LOCALE}.ftl"
+        for key, line in sorted(source.items(), key=lambda item: item[1]):
+            if key in was.get(SOURCE_LOCALE, {}):
+                continue
+            for locale, keys in sorted(now.items()):
+                if locale != SOURCE_LOCALE and key not in keys:
+                    problems.append(f"{source_name}:{line}: {key} has no {locale} text")
+        for locale, keys in sorted(now.items()):
+            if locale == SOURCE_LOCALE:
+                continue
+            allowed = LOCALE_ONLY.get((unit.as_posix(), locale), set())
+            name = f"{unit.as_posix()}/locales/{locale}.ftl"
+            for key, line in sorted(keys.items(), key=lambda item: item[1]):
+                if key in was.get(locale, {}):
+                    continue
+                if key not in source and key not in allowed:
+                    problems.append(f"{name}:{line}: {key} has no {SOURCE_LOCALE} text")
+    return problems
+
+
 def named(root: Path, path: Path) -> str:
     return path.relative_to(root).as_posix()
 
 
 def main(argv: list[str]) -> int:
-    if argv[1:] not in ([], ["--list"]):
+    if argv[1:] not in ([], ["--list"], [STAGED_FLAG]):
         print(__doc__.split("\n\n")[-1].strip(), file=sys.stderr)
         return 2
+    if argv[1:] == [STAGED_FLAG]:
+        problems = staged_drift(ROOT)
+        for problem in problems:
+            print(problem)
+        if problems:
+            print(f"{len(problems)} keys this commit adds are untranslated or unnamed; a "
+                  "catalogue is translated whole or it reads in two languages at once",
+                  file=sys.stderr)
+            return 1
+        print("catalogue coverage: this commit adds no key a translation lacks", file=sys.stderr)
+        return 0
     missing = untranslated(ROOT)
     extra = unnamed(ROOT)
     twice = duplicated(ROOT)

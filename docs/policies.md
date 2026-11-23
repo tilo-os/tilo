@@ -31,10 +31,12 @@ refuses on a development machine, where they would take the machine they are on.
 The pre-commit hook judges the commit, not the repository: each check applies
 only to the files the commit stages, read from the index, so a commit's cost
 follows the size of the change. A rule whose verdict compares files across the
-tree — catalogue coverage, app copy resolution, the session loop's blocking
-rules, wire attributes, interface versions — judges the whole tree in the policy
-suite instead, which CI applies to every pushed head. Nothing is checked only by
-the hook: the suite names every rule below that the hook also applies.
+tree — app copy resolution, the session loop's blocking rules, wire attributes,
+interface versions — judges the whole tree in the policy suite instead, which CI
+applies to every pushed head; catalogue coverage judges the units a commit
+stages as the commit leaves them, and the whole tree in the suite. Nothing is
+checked only by the hook: the suite names every rule below that the hook also
+applies.
 
 ## Exceptions
 

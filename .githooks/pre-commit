@@ -91,16 +91,20 @@ python3 "$root/tools/policy/check_too_many_arguments.py" --staged || fail=1
 # A commit may not add a name core.md's table rejects. Judged on what the
 # commit adds, so names already on main do not block it.
 python3 "$root/tools/policy/check_words_that_go.py" --staged || fail=1
+# A commit may not add a word its translation lacks: the catalogue a lane edits
+# is judged whole, its source key beside every line the commit leaves in each
+# translation of the same unit.
+python3 "$root/tools/policy/check_catalogue_coverage.py" --staged || fail=1
 # A wire enum keeps every variant it had, in its place: bytes already written
 # keep meaning what they meant (docs/policies.md). Judged against HEAD, so a
 # merge is charged only with what its resolution changed.
 python3 "$root/tools/policy/check_wire_enums.py" staged || fail=1
-# Checks whose verdict compares files across the tree are not here. Catalogue
-# coverage, app copy resolution, the session loop's blocking rules, wire
-# attributes and interface versions each read many files to answer, so they
-# judge the whole tree in the policy suite, which t applies as its
-# `policy/{step}` checks on every new head of main. They are as strict there as they were
-# here; a commit no longer reads the tree to learn what it already knows.
+# Checks whose verdict compares files across the tree are not here. App copy
+# resolution, the session loop's blocking rules, wire attributes and interface
+# versions each read many files to answer, so they judge the whole tree in the
+# policy suite, which t applies as its `policy/{step}` checks on every new head
+# of main. They are as strict there as they were here; a commit no longer reads
+# the tree to learn what it already knows.
 # The suite manifest (`tools/ci/suites.py check`) is one of them: it holds every
 # test-shaped file and every cross-package reader in the tree against
 # tools/ci/suites.toml, so it is applied with them.
