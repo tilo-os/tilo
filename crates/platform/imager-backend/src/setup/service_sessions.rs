@@ -3,10 +3,8 @@
 #[cfg(target_os = "linux")]
 pub mod source;
 use super::account_transfer::{Connector, PasswordSealedAccounts};
-#[cfg(target_os = "linux")]
-use accounts::Account;
 use accounts::person::PersonAccounts;
-use accounts::{AccountId, SecretVault};
+use accounts::{Account, AccountId, SecretVault};
 #[cfg(all(target_os = "linux", feature = "installation"))]
 use browser_continuity::sessions::OriginStorage;
 use browser_continuity::sessions::Service;
