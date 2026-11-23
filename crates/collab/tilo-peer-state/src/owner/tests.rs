@@ -707,3 +707,58 @@ tilo_test_env::scenario! {
         assert_eq!(document_on_disk(&path), before);
     }
 }
+
+/// A shortcut with a step is committed through the workspace's membership write
+/// and read back the same: its step keeps the kind it carries flattened.
+#[tokio::test]
+async fn a_shortcut_with_a_step_is_committed_and_read_back() {
+    use crate::workspace_membership::SettingsChange;
+    use tilo_automation::ShortcutChange;
+
+    let joined = enrolled();
+    let (owner, workspace, now) = (&joined.owner, joined.workspace, joined.now);
+    let certificate = owner
+        .with_current(workspace, |view| Ok(view.device().clone()))
+        .unwrap();
+    let key = crate::owner::testing::member_key();
+    let mut shortcut: tilo_automation::Shortcut = serde_json::from_value(serde_json::json!({
+        "id": "tidy",
+        "name": "Tidy",
+        "steps": [{
+            "id": "list",
+            "step": "invoke",
+            "action": {"app": "so.tilo.notes", "kind": "notes.folder", "action": "list"},
+            "resource": {"fixed": "notes.folder:inbox"},
+        }],
+    }))
+    .expect("a shortcut with a step");
+    crate::workspace::sign_saved_shortcut(
+        &workspace.to_string(),
+        &mut shortcut,
+        &certificate,
+        &key,
+    )
+    .unwrap();
+    let command = crate::workspace_membership::WorkspaceMembershipCommand::Settings(
+        SettingsChange::Shortcuts(ShortcutChange::Save(Box::new(shortcut.clone()))),
+    );
+    assert!(
+        owner
+            .commit_membership(workspace, &certificate, &command, &key, now)
+            .await
+            .unwrap(),
+        "the workspace takes the shortcut"
+    );
+    let held = owner
+        .with_current(workspace, |view| {
+            Ok(tilo_desktop_model::projection::workspace_shortcuts_of(
+                view.peer().admitted_workspace().expect("the workspace"),
+            ))
+        })
+        .unwrap();
+    assert_eq!(
+        tilo_automation::decode_saved(&held),
+        vec![shortcut],
+        "the workspace holds the step the person saved"
+    );
+}

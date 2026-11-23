@@ -674,6 +674,10 @@ fn read(
 /// on reconnecting both hold every write and the range the compaction folded is
 /// retired on both.
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario: the offline compaction, the other device's write and their exchange"
+)]
 async fn two_devices_converge_on_a_sealed_record_one_compacted_offline() {
     // A build's bound is 4096 writes or 16 MiB of sealed history, and a device
     // compacts at three quarters of either; large writes cross the bytes bound

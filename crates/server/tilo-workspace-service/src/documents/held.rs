@@ -418,7 +418,7 @@ mod tests {
             .replica()
             .read(|peer| peer.document(DESKTOP_APP, DESKTOP_DOCUMENT))
             .expect("the holder keeps the record");
-        let person = hex::encode(holder.replica().read(|peer| peer.owner()));
+        let person = hex::encode(holder.replica().read(tilo_peer_state::StatePeer::owner));
         let (change, _) = write_front(&current, &other_key, "Elsewhere", &person);
         let (message, from) = write_message(&other_key, &change, 1, now);
         let outcome = holder
@@ -445,7 +445,7 @@ mod tests {
             .replica()
             .read(|peer| peer.document(DESKTOP_APP, DESKTOP_DOCUMENT))
             .expect("the holder keeps the record");
-        let person = hex::encode(holder.replica().read(|peer| peer.owner()));
+        let person = hex::encode(holder.replica().read(tilo_peer_state::StatePeer::owner));
         let (change, _) = write_front(&current, &SigningKey::from_bytes(&[2; 32]), "Mine", &person);
         let written = futures::executor::block_on(holder.write(
             WORKSPACE,
