@@ -49,7 +49,6 @@ import argparse
 import contextlib
 import json
 import os
-import select
 import shutil
 import signal
 import subprocess
@@ -1176,20 +1175,31 @@ class Walk:
         proc = subprocess.Popen([str(path), *args], stdout=subprocess.PIPE, stderr=log,
                                 start_new_session=True)
         self.services.append((proc, log))
+        # Read the pipe itself, never a buffered reader around it: the reader would take
+        # every line the program wrote into its own buffer, and a `select` on the pipe would
+        # then wait for lines already in hand.
+        fd = proc.stdout.fileno()
+        os.set_blocking(fd, False)
         said: list[str] = []
+        written = b""
         deadline = time.monotonic() + 20
         while len(said) < lines and time.monotonic() < deadline:
-            ready, _w, _x = select.select([proc.stdout], [], [], 0.2)
-            if not ready:
-                if proc.poll() is not None:
-                    break
-                continue
-            line = proc.stdout.readline().decode().strip()
-            if line:
-                said.append(line)
-        log.write(("\n".join(said) + "\n").encode())
+            try:
+                chunk = os.read(fd, 65536)
+            except BlockingIOError:
+                chunk = b""
+            if chunk:
+                written += chunk
+                said = [line for line in written.decode(errors="replace").splitlines() if line]
+            elif proc.poll() is not None:
+                break
+            else:
+                time.sleep(0.05)
+        said = said[:lines]
+        log.write((written.decode(errors="replace")).encode())
         if len(said) < lines:
             raise Failed(f"{binary} said {said} and no more (see {log_path})")
+        proc.stdout.close()
         return "\n".join(said)
 
     def stop_services(self) -> None:
