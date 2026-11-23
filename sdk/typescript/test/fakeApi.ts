@@ -422,6 +422,9 @@ export class FakeApi {
   }
 
   private read(path: string): Response {
+    if (path === "record:tilo.invocations:") {
+      return this.json({ path, fields: this.recordOfInvocations() });
+    }
     if (!(path in this.fields)) {
       return this.refuse("not_found", 404, `no resource ${path}`);
     }
@@ -452,9 +455,6 @@ export class FakeApi {
       );
     }
     const args = JSON.parse(call.body || "{}") as Answer;
-    if (path === "invocations" && action === "list") {
-      return this.listInvocations(args);
-    }
     const invocation = `inv-${this.calls.length}`;
     const whole = `${path}#${action}`;
     if (whole === "search#find") {
@@ -593,23 +593,14 @@ export class FakeApi {
     }
   }
 
-  /** A page of the invocations, newest first; the cursor is where it ends. */
-  private listInvocations(args: Answer): Response {
+  /** `record:tilo.invocations:`: the workspace's runs, newest first, as the record read answers them. */
+  private recordOfInvocations(): Record<string, unknown> {
     const newest = [...this.invocations].reverse();
-    const limit = Math.min(Number(args.limit ?? 50), 200);
-    const start = Number(args.cursor ?? 0);
-    const page = newest.slice(start, start + limit);
-    return this.json({
-      status: "ok",
-      path: "invocations#list",
-      result: {
-        items: page,
-        total: newest.length,
-        waiting: newest.filter((invocation) => invocation.status === "waiting").length,
-        pending: false,
-        ...(start + limit < newest.length ? { next_cursor: String(start + limit) } : {}),
-      },
-    });
+    return {
+      items: newest,
+      total: newest.length,
+      waiting: newest.filter((invocation) => invocation.status === "waiting").length,
+    };
   }
 
   private invocation(tail: string[], method: string, call: Recorded): Response {

@@ -417,6 +417,15 @@ class InvocationInfo:
     undo_blocked: str | None = None
     recorded: bool = False
     remembered: bool = False
+    origin: Mapping[str, Any] | None = None
+    """The resource the call was made from (`chat.workspace.channels:c1` with its
+    kind), when it named one: whoever may write it may stop the run or run it
+    again."""
+    retries: str | None = None
+    """The invocation this one runs again, when it is a retry."""
+    spend: Mapping[str, Any] | None = None
+    """What a model call it made cost: `provider`, `model`, `input_tokens`,
+    `output_tokens` and `cost_micros`."""
     raw: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -444,6 +453,9 @@ class InvocationInfo:
             undo_blocked=_text(raw.get("undo_blocked")),
             recorded=bool(raw.get("recorded")),
             remembered=bool(raw.get("remembered")),
+            origin=raw.get("origin") if isinstance(raw.get("origin"), Mapping) else None,
+            retries=_text(raw.get("retries")),
+            spend=raw.get("spend") if isinstance(raw.get("spend"), Mapping) else None,
             raw=raw,
         )
 

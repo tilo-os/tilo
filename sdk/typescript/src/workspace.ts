@@ -338,21 +338,30 @@ export class Workspace {
   async invocations(
     options: { limit?: number | null; cursor?: string | null } = {},
   ): Promise<InvocationList> {
-    const endpoint = await this.endpoint();
     const page = async (cursor: string | null): Promise<InvocationList> => {
-      // The workspace's invocations are a resource of its own: `invocations#list` answers a page.
-      const args: Record<string, unknown> = {};
-      if (options.limit !== undefined && options.limit !== null) {
-        args.limit = options.limit;
+      // The workspace's invocations are a record, read whole through the record API; the page
+      // is cut from it here, by where the cursor left off.
+      const read = await this.readRaw("record:tilo.invocations:");
+      const fields = read.fields;
+      if (typeof fields !== "object" || fields === null) {
+        throw new ProtocolError("the workspace answered no record of its invocations");
       }
-      if (cursor !== null) {
-        args.cursor = cursor;
+      const listed = fields as Record<string, unknown>;
+      const items = Array.isArray(listed.items) ? listed.items : [];
+      const offset = cursor !== null && /^\d+$/.test(cursor) ? Number(cursor) : 0;
+      const size = Math.max(1, Math.min(options.limit ?? 50, 200));
+      const shown = items.slice(offset, offset + size);
+      const end = offset + shown.length;
+      const answer: Record<string, unknown> = {
+        ...listed,
+        items: shown,
+      };
+      if (end < items.length) {
+        answer.next_cursor = String(end);
+      } else {
+        delete answer.next_cursor;
       }
-      const answer = await endpoint.action("invocations#list", args);
-      if (typeof answer !== "object" || answer === null) {
-        throw new ProtocolError("the workspace answered no page of its invocations");
-      }
-      return new InvocationList(answer as Record<string, unknown>, (next) => page(next));
+      return new InvocationList(answer, (next) => page(next));
     };
     return page(options.cursor ?? null);
   }

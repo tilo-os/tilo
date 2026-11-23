@@ -325,19 +325,26 @@ class Workspace:
     async def _invocations(
         self, limit: int | None, cursor: str | None = None
     ) -> InvocationList:
-        endpoint = await self._endpoint()
-        # The workspace's invocations are a resource of its own: `invocations#list`
-        # answers a page.
-        args = {
-            name: value
-            for name, value in (("limit", limit), ("cursor", cursor))
-            if value is not None
+        # The workspace's invocations are a record, read whole through the record API;
+        # the page is cut from it here, by where the cursor left off.
+        read = await self._read("record:tilo.invocations:")
+        fields = read.get("fields") if isinstance(read, Mapping) else None
+        if not isinstance(fields, Mapping):
+            raise ProtocolError("the workspace answered no record of its invocations")
+        items = [item for item in fields.get("items") or () if isinstance(item, Mapping)]
+        offset = int(cursor) if cursor and str(cursor).isdigit() else 0
+        page = max(1, min(int(limit or 50), 200))
+        shown = items[offset : offset + page]
+        end = offset + len(shown)
+        listed = {
+            "items": shown,
+            "total": fields.get("total") or 0,
+            "waiting": fields.get("waiting") or 0,
         }
-        answer = await endpoint.act("invocations#list", args)
-        if not isinstance(answer, Mapping):
-            raise ProtocolError("the workspace answered no page of its invocations")
+        if end < len(items):
+            listed["next_cursor"] = str(end)
         return InvocationList.of(
-            answer, self.client, lambda next_cursor: self._invocations(limit, next_cursor)
+            listed, self.client, lambda next_cursor: self._invocations(limit, next_cursor)
         )
 
     def program(

@@ -197,14 +197,12 @@ async def test_the_workspaces_runs_list_newest_first_and_read_on_page_by_page(wo
         "Visa backend",
         "agent",
     )
-    assert json.loads(api.asked("POST", f"/v1/workspaces/{WORKSPACE_ID}/resources/invocations/actions/list")[-1]["body"]) == {"limit": 1}
+    assert api.asked("POST", "invocations/actions/list") == []
+    assert api.asked("GET", "record:tilo.invocations:")
     every = [listed async for listed in first]
     assert [listed.status for listed in every] == ["undone", "ended"]
     assert every[1].changes == 1 and every[1].undoable
-    assert json.loads(api.asked("POST", f"/v1/workspaces/{WORKSPACE_ID}/resources/invocations/actions/list")[-1]["body"]) == {
-        "limit": 1,
-        "cursor": "1",
-    }
+    assert api.asked("GET", "record:tilo.invocations:")
 
 
 async def test_a_run_output_follows_its_events(workspace, api):

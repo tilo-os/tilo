@@ -376,6 +376,14 @@ export interface InvocationInfo {
   recorded: boolean;
   /** The host remembers its calls: `id` reads, stops and takes it back. */
   remembered: boolean;
+  /** The resource the call was made from (`kind`, `id`), when it named one: whoever may write
+   * it may stop the run or run it again. */
+  origin: Record<string, unknown> | null;
+  /** The invocation this one runs again, when it is a retry. */
+  retries: string | null;
+  /** What a model call it made cost: `provider`, `model`, `input_tokens`, `output_tokens` and
+   * `cost_micros`. */
+  spend: Record<string, unknown> | null;
   raw: Record<string, unknown>;
 }
 
@@ -401,6 +409,9 @@ export function invocationInfoOf(raw: Record<string, unknown>): InvocationInfo {
     undoBlocked: textOf(raw.undo_blocked),
     recorded: raw.recorded === true,
     remembered: raw.remembered === true,
+    origin: raw.origin !== null && typeof raw.origin === "object" ? (raw.origin as Record<string, unknown>) : null,
+    retries: textOf(raw.retries),
+    spend: raw.spend !== null && typeof raw.spend === "object" ? (raw.spend as Record<string, unknown>) : null,
     raw,
   };
 }

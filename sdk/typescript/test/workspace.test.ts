@@ -228,8 +228,8 @@ describe("a invocation", () => {
       "Visa backend",
       "agent",
     ]);
-    expect(api.last()?.path).toBe(`/v1/workspaces/${WORKSPACE_ID}/resources/invocations/actions/list`);
-    expect(JSON.parse(api.last()?.body ?? "")).toEqual({ limit: 1 });
+    expect(api.last()?.path).toBe(`/v1/workspaces/${WORKSPACE_ID}/resources/record:tilo.invocations:`);
+    expect(api.last()?.method).toBe("GET");
 
     const every: InvocationInfo[] = [];
     for await (const listed of first) {
@@ -238,7 +238,7 @@ describe("a invocation", () => {
     expect(every.map((listed) => listed.status)).toEqual(["undone", "ended"]);
     expect(every[1]?.changes).toBe(1);
     expect(every[1]?.undoable).toBe(true);
-    expect(JSON.parse(api.last()?.body ?? "")).toEqual({ limit: 1, cursor: "1" });
+    expect(api.last()?.path).toBe(`/v1/workspaces/${WORKSPACE_ID}/resources/record:tilo.invocations:`);
   });
 
   it("answers its events as a stream, ending when it ends", async () => {
