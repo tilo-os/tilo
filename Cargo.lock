@@ -20483,6 +20483,7 @@ name = "tilo-page-engine"
 version = "0.1.0"
 dependencies = [
  "tilo-webview",
+ "workspace-hack",
 ]
 
 [[package]]

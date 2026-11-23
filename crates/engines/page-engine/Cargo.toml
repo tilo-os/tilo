@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 # The engine client: the page protocol's requests and answers, and the engine's events.
 tilo-webview = { version = "0.1.0", path = "../tilo-webview" }
+workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true
