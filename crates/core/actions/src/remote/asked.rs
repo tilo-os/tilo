@@ -118,7 +118,7 @@ pub enum AskedBy {
     /// A device of the person's, or the server that keeps their workspaces.
     Device(Named),
     /// A program outside Tilo on the device (a Linux program reaching the session through the
-    /// desktop portal, polkit or NetworkManager), by its name and the app id it gives, if any.
+    /// desktop portal, polkit or `NetworkManager`), by its name and the app id it gives, if any.
     Program {
         name: String,
         #[serde(default)]
