@@ -519,6 +519,45 @@ impl ResourceService {
             .map_err(|error| error.to_string())
     }
 
+    /// The link into an app that opens links, asked at `address`: this service runs the app's own
+    /// `open_link` with it, as the host of an app's window does, and what it names is opened where
+    /// the window shows it, `beside` the place the asking turn is in.
+    fn open_link_asked(
+        &mut self,
+        payload: &[u8],
+        address: &ActionAddress,
+        invoker: &tilo_actions::ActionInvoker,
+        beside: String,
+    ) -> Result<Started, ApiError> {
+        let arguments: Json = tilo_actions::decode_json(payload)
+            .map_err(|error| ApiError::InvalidArguments(error.to_string()))?;
+        let link = arguments
+            .get(tilo_actions::remote::OPEN_LINK_PARAM)
+            .and_then(Json::as_str)
+            .ok_or_else(|| {
+                ApiError::InvalidArguments("open-link needs the link to open".to_owned())
+            })?
+            .to_owned();
+        let app = crate::publish::app_of(&address.resource)
+            .ok_or_else(|| ApiError::Unknown(address.clone()))?
+            .to_owned();
+        let made = self
+            .run_open_link(&app, &link, &invoker.acting.by)
+            .map_err(ApiError::Failed)?;
+        if let Some(published) = &made {
+            let open = tilo_service::Open {
+                resource: published.clone(),
+                view: String::new(),
+                beside,
+            };
+            self.opens.push((invoker.clone(), open));
+        }
+        Ok(Started::Done(ActionOutput {
+            value: None,
+            resources: made.into_iter().collect(),
+        }))
+    }
+
     /// Run the published `action` of `resource` with `arguments` as `invoker`'s step: the one
     /// path [`Service::invoke`] and [`Service::invoke_as`] share.
     ///
@@ -574,36 +613,7 @@ impl ResourceService {
                 return Ok(Started::Done(output));
             }
             if encoded.type_id == tilo_actions::remote::APPLICATION_OPEN_LINK_TYPE {
-                // The link into an app that opens links: this service runs the app's own
-                // `open_link` with it, as the host of an app's window does, and what it names is
-                // opened where the window shows it.
-                let arguments: Json = tilo_actions::decode_json(&encoded.payload)
-                    .map_err(|error| ApiError::InvalidArguments(error.to_string()))?;
-                let link = arguments
-                    .get(tilo_actions::remote::OPEN_LINK_PARAM)
-                    .and_then(Json::as_str)
-                    .ok_or_else(|| {
-                        ApiError::InvalidArguments("open-link needs the link to open".to_owned())
-                    })?
-                    .to_owned();
-                let app = crate::publish::app_of(resource)
-                    .ok_or_else(|| ApiError::Unknown(address.clone()))?
-                    .to_owned();
-                let made = self
-                    .run_open_link(&app, &link, by)
-                    .map_err(ApiError::Failed)?;
-                if let Some(published) = &made {
-                    let open = tilo_service::Open {
-                        resource: published.clone(),
-                        view: String::new(),
-                        beside,
-                    };
-                    self.opens.push((invoker.clone(), open));
-                }
-                return Ok(Started::Done(ActionOutput {
-                    value: None,
-                    resources: made.into_iter().collect(),
-                }));
+                return self.open_link_asked(&encoded.payload, &address, invoker, beside);
             }
             if encoded.type_id == EDIT_TYPE {
                 let edit: HistoryEdit = serde_json::from_slice(&encoded.payload)
