@@ -1228,6 +1228,17 @@ impl ShellChrome {
                     .toggle(tilo_desktop::overlays::Overlay::QuickSettings.name());
                 true
             }
+            // The About sheet is the shell's own view where the shell draws the screen: this
+            // computer's name, which Tilo it runs, and where to read more.
+            "about" => {
+                let open = opens(address, arguments, self.surfaces.about_open())?;
+                if open {
+                    self.surfaces.open(crate::device_lists::ABOUT);
+                } else {
+                    self.surfaces.close(crate::device_lists::ABOUT);
+                }
+                true
+            }
             // The workspaces are the shell's one workspace surface: the shell's menu, the workspaces
             // a person switches between and the actions on them.
             "workspace-menu" => {
@@ -1918,32 +1929,35 @@ mod tests {
                 );
             }
         }
+    }
 
-        phase the_device_surface_file_is_what_the_session_publishes;
-        // The device's surface the shell compiles against is the one the session publishes.
-        {
-            let published = super::device_surfaces();
-            let committed = tilolang_tilo::platform_apps::device_surfaces()
-                .unwrap_or_else(|why| panic!("device-surface.json does not read: {why}"));
-            if committed == published {
-                return;
-            }
-            let text = serde_json::to_string_pretty(&serde_json::json!({ "resources": published }))
-                .expect("a surface writes as JSON");
-            // `UPDATE_SNAPSHOTS=1` writes the file the session publishes, as the session package's
-            // own snapshot test does: a resource whose verbs changed is regenerated in place rather
-            // than pasted from a failing run.
-            if std::env::var_os("UPDATE_SNAPSHOTS").is_some_and(|v| v == "1") {
-                let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("device-surface.json");
-                std::fs::write(&path, &text).expect("device-surface.json is written");
-                return;
-            }
-            panic!(
-                "crates/session/session/device-surface.json is not what the session publishes; \
-             regenerate it with UPDATE_SNAPSHOTS=1 cargo nextest run -p tilo-session --lib \
-             device_surface, or write what it publishes:\n{text}"
-            );
+    /// The device's surface the shell compiles against is the one the session publishes. Its own
+    /// test, so `UPDATE_SNAPSHOTS=1` can write the file without first compiling the shell package
+    /// that reads it.
+    #[test]
+    fn the_device_surface_file_is_what_the_session_publishes() {
+        let published = super::device_surfaces();
+        let committed = tilolang_tilo::platform_apps::device_surfaces()
+            .unwrap_or_else(|why| panic!("device-surface.json does not read: {why}"));
+        if committed == published {
+            return;
         }
+        let text = serde_json::to_string_pretty(&serde_json::json!({ "resources": published }))
+            .expect("a surface writes as JSON");
+        // `UPDATE_SNAPSHOTS=1` writes the file the session publishes, as the session package's own
+        // snapshot test does: a resource whose verbs changed is regenerated in place rather than
+        // pasted from a failing run.
+        if std::env::var_os("UPDATE_SNAPSHOTS").is_some_and(|v| v == "1") {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("device-surface.json");
+            std::fs::write(&path, &text).expect("device-surface.json is written");
+            return;
+        }
+        panic!(
+            "crates/session/session/device-surface.json is not what the session publishes; \
+             regenerate it with UPDATE_SNAPSHOTS=1 cargo nextest run -p tilo-session --lib \
+             the_device_surface_file_is_what_the_session_publishes, or write what it \
+             publishes:\n{text}"
+        );
     }
 
     /// A host that counts what is asked of it, to show what the aside never asks.

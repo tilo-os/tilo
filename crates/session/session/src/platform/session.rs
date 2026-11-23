@@ -653,6 +653,8 @@ impl Session {
             notices: notices.clone(),
             overview: overview.open_flag(),
             handle: handle.clone(),
+            emoji: Rc::new(std::cell::Cell::new(false)),
+            about: Rc::new(std::cell::Cell::new(false)),
         };
         // The same handle, for the pass that keeps one surface up at a time.
         let one_surface = surfaces.clone();
@@ -1520,6 +1522,8 @@ impl Session {
             &handle,
             shell_surfaces,
             Rc::clone(&shortcuts),
+            super_peek.clone(),
+            emoji.link(),
         );
         services
             .borrow_mut()

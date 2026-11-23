@@ -38,3 +38,31 @@ view hung_window(w: device.Window) {
         }
     }
 }
+
+/// The card a window's own place shows while its app stopped answering: the same words as the
+/// card in the overview and the switcher, standing over the window it is about so the person
+/// answers it where they are working, not only where they look over their windows.
+view hung_card(w: device.Window) {
+    row(fill, align: .center, distribute: .center, padding: .group) {
+        ui.Card {
+            hung_window(w)
+        }
+    }
+}
+
+/// A window that runs on another device, while nothing of it stands here: which app's window it
+/// is, the device it runs on, and that it opens there. The workspace's layout lists it on every
+/// shell as its device's, so this shell says where it is rather than showing an empty well with
+/// nothing to say why.
+view window_elsewhere(w: device.Window) {
+    ui.EmptyState(
+        if w.device_name != "" {
+            "{w.origin_app} on {w.device_name}"
+        } else {
+            "{w.origin_app} on another device"
+        },
+        message: "This window runs on that device. Open it there to see it.",
+        icon: .monitor,
+        inline: true,
+    )
+}

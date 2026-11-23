@@ -180,3 +180,51 @@ fn a_window_whose_app_stopped_answering_says_so_and_the_person_can_wait_or_quit_
         "the window it quit is gone from the shell"
     );
 }
+
+/// The tilolang shell says a stopped app in the window's own place, with the same two ways out,
+/// and Wait — the window's published action — clears it: the cards the Rust shell drew on the
+/// window, moved into the shell package's place view.
+#[test]
+fn the_shell_draws_the_hung_card_in_the_windows_own_place() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = shell_session();
+    crate::common::until(&mut session, "the shell's bar", |session| {
+        crate::common::on_screen(session, "Notifications").is_some()
+    });
+    let mut other = mapped(&mut session, OTHER);
+    let stuck = mapped(&mut session, STUCK);
+    let (_, stuck_rect) = window(session.compositor(), STUCK).expect("its window");
+
+    // The person presses the app: it is asked to answer and does not.
+    click(&mut session, stuck_rect);
+    assert!(session.compositor().advance_app_liveness_at(later(6_000)));
+    until_answered(
+        &mut session,
+        &mut other,
+        "the shell says a window stopped answering",
+        |session| !session.handle().unresponsive_tabs().is_empty(),
+    );
+
+    crate::common::until(&mut session, "the hung card", |session| {
+        crate::common::on_screen(session, "Wait").is_some()
+            && crate::common::on_screen(session, "Force quit").is_some()
+    });
+    assert!(
+        session.shell_says("Not responding"),
+        "the card says what is wrong: {:?}",
+        session.accessible_labels()
+    );
+
+    // Wait gives the app another period and takes the card away, as the Rust shell's card did.
+    crate::common::press_control(&mut session, "Wait");
+    until_answered(
+        &mut session,
+        &mut other,
+        "waiting clears the card",
+        |session| session.handle().unresponsive_tabs().is_empty(),
+    );
+    crate::common::until(&mut session, "the card gone", |session| {
+        crate::common::on_screen(session, "Wait").is_none()
+    });
+    let _ = stuck;
+}

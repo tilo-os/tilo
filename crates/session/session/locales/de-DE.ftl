@@ -541,6 +541,8 @@ so-tilo-desktop-overlays-show-surface = Bereich ein- oder ausblenden
 so-tilo-desktop-overlays-walk-switcher = Fenster wechseln
 so-tilo-desktop-overlays-select-switcher = Fenster im Umschalter wählen
 so-tilo-desktop-overlays-commit-switcher = Zum gewählten Fenster wechseln
+so-tilo-desktop-overlays-pick-emoji = Das gewählte Emoji in das Feld schreiben, in das die Person tippt, und die Auswahl schließen.
+so-tilo-desktop-overlays-close-emoji = Die Emoji-Auswahl schließen, ohne etwas zu schreiben
 
 ## Actions
 

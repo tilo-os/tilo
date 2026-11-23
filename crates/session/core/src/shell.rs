@@ -14,6 +14,10 @@ pub use tilo_desktop_search::CHROME_RESOURCE;
 
 /// What stands over the windows, and in what order, in the session's catalogue: the surface stack.
 pub const OVERLAYS: &str = "desktop:overlays";
+/// The surface the shell says it shows while the keys a held Super reaches stand over the windows.
+/// It is a picture, not a surface: it stands over the windows but takes no key and no pointer, so
+/// every chord still runs while it shows.
+pub const PEEK_SURFACE: &str = "peek";
 /// The resource the session publishes of its displays.
 pub const DISPLAYS_RESOURCE: &str = "session:displays";
 

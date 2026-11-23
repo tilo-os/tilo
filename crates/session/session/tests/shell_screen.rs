@@ -16,8 +16,10 @@
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
+use std::time::Duration;
+
 use serde_json::{Map, Value, json};
-use tilo_compositor::OutputConfig;
+use tilo_compositor::{InputEvent, OutputConfig};
 use tilo_session::{Options, Session};
 use tilolang_tilo::resource_service::ResourceService;
 
@@ -1304,4 +1306,199 @@ fn a_german_shell_reads_its_own_words_in_german() {
         .set(None)
         .expect("the language is the system's again");
     ui::i18n::I18nManager::set_locale("en-US");
+}
+
+/// The left Super key and the period, as the keyboard sends them: the emoji picker's chord.
+const KEY_LEFT_META: u32 = 125;
+const KEY_DOT: u32 = 52;
+
+/// Press (`pressed`) the key `keycode` and let the session take a turn, as the person's keyboard
+/// does.
+fn press_key(session: &mut Session, keycode: u32, pressed: bool) {
+    session
+        .compositor()
+        .input(InputEvent::Key { keycode, pressed })
+        .expect("the key");
+    session.step(Duration::from_millis(1)).expect("a turn");
+}
+
+/// The emoji chord shows the toolkit's one picker over the windows, with its search and groups, and
+/// a pick made there closes it: the shell's own view of the card, driven by the chord a person
+/// presses and the action the pick runs.
+#[test]
+fn the_emoji_chord_shows_the_picker_and_a_pick_closes_it() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, _) = session();
+    until(&mut session, "the strips", |session| {
+        on_screen(session, NO_WINDOW).is_some()
+    });
+    assert_eq!(here(&session), "none", "the shell is at rest");
+
+    // Super and the period, as the table binds the picker.
+    press_key(&mut session, KEY_LEFT_META, true);
+    press_key(&mut session, KEY_DOT, true);
+    press_key(&mut session, KEY_DOT, false);
+    press_key(&mut session, KEY_LEFT_META, false);
+
+    until(&mut session, "the emoji picker", |session| {
+        here(session) == "emoji" && session.shell_says("Search emoji")
+    });
+
+    // The pick the person makes is written through the picker's published action, which closes
+    // the card as the picker's own button does.
+    session
+        .invoke(
+            "desktop:overlays",
+            "pick-emoji",
+            json!({ "text": "🙂" }).as_object().expect("an object"),
+        )
+        .expect("the pick is taken");
+    until(&mut session, "the picker closed", |session| {
+        here(session) == "none" && !session.shell_says("Search emoji")
+    });
+}
+
+/// Holding Super shows the keys it reaches over the windows, and letting go takes them away: the
+/// session says the groups and the shell draws them, taking no key or pointer.
+#[test]
+fn holding_super_shows_the_keys_on_the_shells_screen() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, _) = session();
+    until(&mut session, "the strips", |session| {
+        on_screen(session, NO_WINDOW).is_some()
+    });
+
+    press_key(&mut session, KEY_LEFT_META, true);
+    until(&mut session, "the keys a held Super reaches", |session| {
+        session.super_peek().is_up()
+    });
+    let label = session
+        .super_peek()
+        .groups()
+        .expect("the keys while up")
+        .into_iter()
+        .flat_map(|(_, hints)| hints)
+        .map(|hint| hint.label)
+        .find(|label| !label.is_empty())
+        .expect("a key says what it does");
+    until(&mut session, "the key card", |session| {
+        session.shell_says(&label)
+    });
+
+    press_key(&mut session, KEY_LEFT_META, false);
+    until(&mut session, "the card gone", |session| {
+        !session.super_peek().is_up() && !session.shell_says(&label)
+    });
+}
+
+/// The About sheet opens from the chrome's `about` verb over the person's work and closes from the
+/// same verb, as the person's menu asks it.
+#[test]
+fn the_about_sheet_opens_from_the_chromes_verb() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, _) = session();
+    until(&mut session, "the strips", |session| {
+        on_screen(session, NO_WINDOW).is_some()
+    });
+
+    session
+        .invoke(CHROME, "about", &Map::new())
+        .expect("the About sheet opens");
+    until(&mut session, "the About sheet", |session| {
+        here(session) == "about" && session.shell_says("About Tilo")
+    });
+
+    session
+        .invoke(
+            CHROME,
+            "about",
+            json!({ "open": false }).as_object().expect("an object"),
+        )
+        .expect("the About sheet closes");
+    until(&mut session, "the sheet gone", |session| {
+        here(session) == "none" && !session.shell_says("About Tilo")
+    });
+}
+
+/// A window whose tab runs on another device says which app it is, the device it runs on, and that
+/// it opens there, in the place the workspace lists it in.
+#[test]
+fn a_window_on_another_device_says_where_it_runs_in_its_place() {
+    let _settled = ui::motion::testing::settled();
+    use tilo_desktop_model::{
+        Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+    };
+    let tab = Tab {
+        id: 40,
+        title: "Launch checklist".into(),
+        tile: TileContent::HostedWindow {
+            app_id: "so.tilo.notes".into(),
+            label: "Launch checklist".into(),
+            host: "ab".repeat(32),
+            host_label: "Mia's laptop".into(),
+        },
+        app_title: None,
+        view: String::new(),
+        pinned: false,
+    };
+    let group = WindowGroup {
+        id: 41,
+        active_tab: tab.id,
+        tabs: vec![tab],
+        width: WindowWidth::Normal,
+        maximized: false,
+        focus_history: Vec::new(),
+    };
+    let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Studio");
+    workspace.strips = vec![Strip {
+        id: StripId(42),
+        name: "Main".into(),
+        window_groups: vec![group],
+    }];
+    let layout = Layout {
+        active: workspace.id(),
+        workspaces: vec![workspace],
+        ..Layout::default()
+    };
+
+    let (mut session, _) = session();
+    session.handle().replace_tree(layout);
+    until(&mut session, "the window elsewhere", |session| {
+        session.shell_says("Notes on Mia's laptop")
+    });
+    assert!(
+        session.shell_says("This window runs on that device. Open it there to see it."),
+        "the place says why nothing of it stands here: {:?}",
+        session.accessible_labels()
+    );
+}
+
+/// The workspace menu's history opens the system's history view on the workspace in front, as the
+/// chrome's `activity` action does: the Activity app's window stands on the shell.
+#[test]
+fn the_workspace_history_opens_the_systems_history_view() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, _) = session();
+    until(&mut session, "the strips", |session| {
+        on_screen(session, NO_WINDOW).is_some()
+    });
+    let workspace = session.handle().read(|tree| {
+        tree.active_workspace()
+            .map(|workspace| workspace.id().to_string())
+            .expect("a workspace in front")
+    });
+    session
+        .invoke(
+            CHROME,
+            "activity",
+            json!({ "workspace": workspace, "view": "explore" })
+                .as_object()
+                .expect("an object"),
+        )
+        .expect("the history opens");
+    until(&mut session, "the history's window", |session| {
+        crate::common::places(session)
+            .iter()
+            .any(|place| place.shows == "so.tilo.activity")
+    });
 }

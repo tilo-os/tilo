@@ -536,6 +536,8 @@ so-tilo-desktop-overlays-show-surface = Show or hide a panel
 so-tilo-desktop-overlays-walk-switcher = Switch windows
 so-tilo-desktop-overlays-select-switcher = Choose window in switcher
 so-tilo-desktop-overlays-commit-switcher = Go to chosen window
+so-tilo-desktop-overlays-pick-emoji = Write the picked emoji into the field the person types in, and close the picker.
+so-tilo-desktop-overlays-close-emoji = Close the emoji picker without writing anything
 
 ## Actions
 

@@ -894,13 +894,21 @@ impl Shared {
             // here; a report points at what is wrong first and goes to the one place reports go.
             // The shell names that window on its next pass, and a shell with none in front leaves the
             // chord to Chat, which a send with nothing to be about has always opened.
+            // A shell that draws the screen draws the picker too: it is the shell's view, and its
+            // card takes the keys, so the chord opens and closes it there.
+            ShortcutAction::EmojiPicker =>
+            {
+                #[cfg(target_os = "linux")]
+                if self.surfaces.shell {
+                    self.surfaces.toggle(crate::device_lists::EMOJI);
+                }
+            }
             ShortcutAction::AskAgent => self.box_ask.set(Some(BoxAsk::Agent)),
             ShortcutAction::SaySomething => self.box_ask.set(Some(BoxAsk::People)),
             ShortcutAction::ReportProblem => self.box_ask.set(Some(BoxAsk::Report)),
             // The shell answers these on its own windows, strips and places before handing anything
             // on: one arriving here is one it had nothing to act on.
             ShortcutAction::WorkspaceOverview
-            | ShortcutAction::EmojiPicker
             | ShortcutAction::FocusPreviousWindow
             | ShortcutAction::FocusNextWindow
             | ShortcutAction::PreviousTab

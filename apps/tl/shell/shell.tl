@@ -51,6 +51,21 @@ template view shell_around(front: Option<Layout>, traditional: Bool, content: Vi
                 }
             } else if device.overlays.here == "switcher" {
                 surface(fill)
+            } else if device.overlays.here == "emoji" {
+                // The picker stands over the windows: this layer draws nothing of the style, so
+                // the windows stay live behind its card, which is the only thing that takes the
+                // keys and the pointer while it is up.
+                layers(fill) {
+                    emoji_card()
+                }
+            } else if device.overlays.here == "about" {
+                // The About sheet stands over the windows, a question the person asked.
+                about_sheet()
+            } else if device.overlays.here == "peek" {
+                // The keys a held Super reaches stand over the windows. The shell's own work
+                // stays behind them, so nothing of the style is drawn here; the card itself
+                // stands over everything in `shell_around`.
+                at_rest()
             } else {
                 scroll(fill) {
                     surface()
@@ -87,6 +102,11 @@ template view shell_around(front: Option<Layout>, traditional: Bool, content: Vi
         // The hardware keys' answer stands over all of it, at the foot of the screen, for the
         // moment after the last key.
         osd_readout()
+        // The keys a held Super reaches, said over everything and in the way of nothing: a
+        // picture, so the chord the person is reaching for still runs.
+        if let p = device.overlays.peek {
+            peek_card(p)
+        }
     }
 }
 
