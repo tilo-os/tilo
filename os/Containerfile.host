@@ -262,13 +262,6 @@ COPY docs/recovery.md docs/app-model/environments.md /usr/share/doc/tilo/
 # paths — treats this one as a release image.
 RUN install -d -m 0755 /usr/lib/tilo && echo server > /usr/lib/tilo/image-flavour
 
-# The enrollment methods this image offers, in the one place an image declares
-# them. A server has no one at it to confirm a device it found, so it enrolls
-# with the token made for it or with the code it shows for a device of the
-# person's to approve; local-network pairing is a desktop's way in.
-RUN printf '# Tilo Server: the token made for this machine, or the short code it\n# shows for a device of yours to approve.\ntoken\ncode\n' \
-        > /usr/lib/tilo/enrollment-methods
-
 # The first-boot script logs this machine in with the ticket provisioned on its volume: `tilo login`
 # with the ticket in /etc/tilo/ticket, which the installer writes. A machine with no ticket says
 # how to make one and stops.

@@ -3283,12 +3283,6 @@ COPY --chmod=0755 os/tests/luks_enrolment.sh /usr/libexec/tilo/luks-enrolment-te
 # a caller forgets the argument, and an image that silently ships generation 0 is
 # one whose rollback floor can never move — the failure would appear months later
 # as a machine that will not unseal.
-#
-# The same step writes the enrollment methods this image offers, in the one file
-# every image declares them in: the token made for this machine, the code it
-# shows for a device of the person's to approve, and a device of theirs finding
-# it on the local network. A desktop has someone at it to confirm the pairing;
-# the server image declares only the first two.
 ARG TILO_GENERATION
 RUN case "${TILO_GENERATION}" in \
       ''|*[!0-9]*) \
@@ -3300,8 +3294,6 @@ RUN case "${TILO_GENERATION}" in \
     esac \
  && install -d -m 0755 /usr/lib/tilo \
  && printf '%s\n' "${TILO_GENERATION}" > /usr/lib/tilo/generation \
- && printf '# Tilo OS: every way to enroll. `token` is the single-use token made\n# for this machine, `code` the short code it shows for a device of yours to\n# approve, `local-network` a device of yours finding it on the network.\ntoken\ncode\nlocal-network\n' \
-      > /usr/lib/tilo/enrollment-methods \
  && printf '# Written by the image build from the TILO_GENERATION build argument.\nkargs = ["tilo.generation=%s"]\n' \
       "${TILO_GENERATION}" > /usr/lib/bootc/kargs.d/02-generation.toml \
  && echo "generation ${TILO_GENERATION}: sealed via kargs.d, readable at /usr/lib/tilo/generation"

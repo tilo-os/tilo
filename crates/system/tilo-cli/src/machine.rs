@@ -3,19 +3,18 @@
 //!
 //! `tilo machine add` makes an install plan ([`install_profile_model::plan`])
 //! through [`install_plan::Choices`], the same structure the installer's own
-//! window fills in, and mints the single-use, expiring enrollment token it
-//! goes with. The plan is the machine's entry in the person's Servers
-//! workspace, written through the running session's action API
-//! (`machine.plan`), so every one of their devices reads it there and the
-//! installer's window shows the same list; this computer keeps only the token,
-//! in a file whose path, never the token, the installer commands name. Every
-//! choice given here is made; every one left out is open, and the machine asks
-//! one of the person's devices to answer it against the machine's real
-//! hardware.
+//! window fills in, and has the single-use, expiring ticket it goes with
+//! served. The plan is the machine's entry in the person's Servers workspace,
+//! written through the running session's action API (`machine.plan`), so every
+//! one of their devices reads it there and the installer's window shows the
+//! same list; this computer keeps only the ticket, in a file whose path, never
+//! the ticket, the installer commands name. Every choice given here is made;
+//! every one left out is open, and the machine asks one of the person's
+//! devices to answer it against the machine's real hardware.
 //!
-//! The plan is secret-free: it names the token by its nonce and expiry, so the
+//! The plan is secret-free: it names the ticket by its nonce and expiry, so the
 //! document can travel through the person's devices, a log or an action's
-//! answer without exposing the token.
+//! answer without exposing the ticket.
 
 use std::path::PathBuf;
 
@@ -34,8 +33,8 @@ const INSTALLER_URL: &str = install_plan::INSTALLER_URL;
 
 #[derive(Subcommand)]
 pub enum MachineCmd {
-    /// Plan a machine, mint its single-use token and print how the plan
-    /// reaches it.
+    /// Plan a machine, have its single-use ticket served, and print how the
+    /// plan reaches it.
     Add(Box<AddArgs>),
     /// The machines you planned and have not seen install yet.
     List,

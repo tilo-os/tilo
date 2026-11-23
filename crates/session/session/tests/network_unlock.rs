@@ -91,22 +91,13 @@ fn person() -> Person {
         .expect("this device's person is known");
     let store = DeviceFleetStore::from_env().expect("the device fleet");
     let now = tilo_clock::unix_now_ns();
-    let token = store
-        .mint_enrollment(
-            &profile.id,
-            DeviceCapabilities::member(),
-            now,
-            now.saturating_add(3_600_000_000_000),
-            &[],
-        )
-        .expect("this device may enroll another of the person's");
     let phone_key = test_server::signing_key(0x52);
     let phone_cert = store
-        .complete_enrollment(
+        .certify_device(
             &profile.id,
-            &token,
             phone_key.verifying_key().to_bytes(),
             "The phone",
+            DeviceCapabilities::member(),
             now,
         )
         .expect("the second device is enrolled");

@@ -565,7 +565,7 @@ impl LinuxPlatform {
         if let Err(error) = mounted {
             let _ = std::fs::remove_dir(&dir);
             return Err(format!(
-                "the staged root cannot be mounted to place its enrollment token: {error}"
+                "the staged root cannot be mounted to place its ticket: {error}"
             ));
         }
         let outcome = body(&dir);
@@ -796,7 +796,7 @@ impl Platform for LinuxPlatform {
             let file_path = dir.join(&relative);
             match std::fs::read(&file_path) {
                 Ok(bytes) if bytes.len() <= 64 * 1024 => Ok(Some(bytes)),
-                Ok(_) => Err("the staged root's enrollment token is unexpectedly large".into()),
+                Ok(_) => Err("the staged root's ticket is unexpectedly large".into()),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
                 Err(error) => Err(format!("{}: {error}", file_path.display())),
             }

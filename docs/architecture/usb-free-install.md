@@ -210,15 +210,15 @@ under resume.
 
 The request may carry `install_plan` (the machine's plan document, the same one
 the person's devices hold) and `token_file` (where the caller keeps the
-single-use enrollment token). Both are given together or neither is. The plan
+single-use ticket). Both are given together or neither is. The plan
 must be complete and a `tilo-server` destination, and its disk rule must name
 the staging disk (by serial or WWN); a rule that names no drive is refused,
 because the staged install writes the disk the plan names and the staging was
 made on, and nothing else. The staging request and the installer each check
 this for themselves.
 
-The handoff carries the plan, which is secret-free like every plan. The token
-is not in it: the elevated helper copies the token to
+The handoff carries the plan, which is secret-free like every plan. The
+ticket is not in it: the elevated helper copies the ticket to
 `/etc/tilo/enrollment-token.txt` on the staging root, mode 0600, as part of the
 handoff step (a resumed staging verifies it). The live installer spends it
 there, before it closes the disk; it never appears in the handoff, the staging

@@ -1,7 +1,7 @@
 //! Canonical byte-encoding of everything that gets signed.
 //!
 //! All signed types in this crate — `DeviceCert`, `RevocationEntry`,
-//! `EnrollmentToken`, and every workspace-directory delta — encode
+//! and every workspace-directory delta — encode
 //! their signing preimage through the same three-step pipeline:
 //!
 //! 1. Build a view of the struct that omits its `signature` field.

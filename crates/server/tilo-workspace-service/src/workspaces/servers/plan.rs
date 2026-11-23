@@ -44,10 +44,10 @@ pub struct Pending {
     pub status: String,
     /// The plan's id, as the person's devices and the medium name it.
     pub plan: String,
-    /// The enrollment token's nonce, lowercase hex: single-use, and how the
-    /// machine is recognised until it enrolls.
+    /// The ticket's nonce, lowercase hex: single-use, and how the machine is
+    /// recognised until it signs in.
     pub nonce: String,
-    /// Nanoseconds since the epoch after which its token is invalid.
+    /// Nanoseconds since the epoch after which its ticket is invalid.
     pub expires_at_ns: u64,
     /// The OS it installs (`tilo-os` or `tilo-server`).
     pub destination: String,

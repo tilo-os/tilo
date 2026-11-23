@@ -189,13 +189,13 @@ destination OS, network, disk rule, data, unlock method, which updates it follow
 a server which workspaces it holds and how.
 
 The installation medium carries no choices and no credentials, only a
-single-use enrollment token that expires and names the plan. The plan can
-change after the medium is made, and a lost medium exposes one short-lived
-token. The same plan reaches the machine as a USB medium, a command for a
-rescue or netboot system, or an installation alongside the OS already on it.
+single-use ticket that expires and names the plan. The plan can change after
+the medium is made, and a lost medium exposes one short-lived ticket. The same
+plan reaches the machine as a USB medium, a command for a rescue or netboot
+system, or an installation alongside the OS already on it.
 
 On the destination, the installer gets a network connection, dials the
-person's devices with the token and fetches the plan:
+person's devices with the ticket and fetches the plan:
 
 - **Every choice made:** it installs without asking. This is unattended
   installation, the same flow with nothing left open.
@@ -204,7 +204,7 @@ person's devices with the token and fetches the plan:
   destination's real hardware (drives with model, serial, size and current
   contents; network; hardware protection). A machine with a screen may answer
   them locally instead.
-- **No token or no connection:** the destination shows a short code and a QR
+- **No ticket or no connection:** the destination shows a short code and a QR
   code on its screen or console; approving it on one of the person's devices
   continues as above. Only network settings, when automatic configuration
   fails, are ever asked on a headless machine itself.
@@ -218,7 +218,7 @@ show on the person's devices; the machine then restarts, protects its disk,
 unlocks by the chosen method, passes its first health check and joins as one of
 the person's devices.
 
-Protect the token in transit and at rest; never place it in public media
+Protect the ticket in transit and at rest; never place it in public media
 metadata, logs, action responses or command arguments. The absence of suitable
 hardware protection needs an explicit secure alternative, not a silently
 weakened plan. If destination facts differ from the plan, refuse the
@@ -245,9 +245,8 @@ drives, review), through an install plan, with these differences:
   OS as the fallback start, and starts the new installation once.
 - **No login password and no local desktop.** It is managed from the person's
   other devices through its entry in their Servers workspace.
-- **Enrollment** is the one enrollment every Tilo device uses, with methods
-  switched on per image: the server image uses the token and code approval,
-  not local-network pairing.
+- **Adding the device** uses the one way every Tilo device is added: the
+  server is given a ticket its approver's root signs the certificate for.
 - **Hosting choices:** which workspaces it holds, and for each whether it
   keeps encrypted copies only or holds the keys and takes work.
 

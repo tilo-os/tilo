@@ -22987,8 +22987,6 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "collab-types",
- "data-encoding",
- "data-encoding-macro",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
  "hex",

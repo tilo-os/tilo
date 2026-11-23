@@ -118,22 +118,13 @@ fn fixture(keyring: Keyring) -> Fixture {
     let profile = tilo_identity::store::identity_for_workspace(WORKSPACE)
         .expect("the identity registry")
         .expect("the workspace is answered by this device's person");
-    let token = fleet
-        .mint_enrollment(
-            &profile.id,
-            tilo_user_identity::DeviceCapabilities::member(),
-            now,
-            now.saturating_add(3_600_000_000_000),
-            &[],
-        )
-        .expect("this device may enroll another of the person's");
     let phone = ed25519_dalek::SigningKey::from_bytes(&[0x52; 32]);
     let phone_cert = fleet
-        .complete_enrollment(
+        .certify_device(
             &profile.id,
-            &token,
             phone.verifying_key().to_bytes(),
             "The phone",
+            tilo_user_identity::DeviceCapabilities::member(),
             now,
         )
         .expect("the second device is enrolled");

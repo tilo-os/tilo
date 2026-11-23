@@ -83,21 +83,12 @@ fn person() -> Person {
     let now = tilo_clock::unix_now_ns();
     let host_key = ed25519_dalek::SigningKey::from_bytes(&[0x52; 32]);
     // The person's own root signs the device, through the store whose copy the fleet names.
-    let token = store
-        .mint_enrollment(
-            &profile.id,
-            DeviceCapabilities::member(),
-            now,
-            now.saturating_add(3_600_000_000_000),
-            &[],
-        )
-        .expect("this device may enroll another of the person's");
     let server_cert = store
-        .complete_enrollment(
+        .certify_device(
             &profile.id,
-            &token,
             host_key.verifying_key().to_bytes(),
             "The home server",
+            DeviceCapabilities::member(),
             now,
         )
         .expect("the second device is enrolled");

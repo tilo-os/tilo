@@ -710,4 +710,118 @@ mod tests {
             "too many wrong secrets spend the ticket"
         );
     }
+
+    /// A person's root, one of their live devices it certified, and the question a
+    /// computer brings: everything an approving device answers, before it is altered.
+    #[test]
+    fn an_approval_is_the_persons_live_device_signing_over_exactly_what_was_asked() {
+        use ed25519_dalek::{Signer as _, SigningKey};
+        use tilo_user_identity::{
+            AgentScope, DeviceCapabilities, DeviceCert, RevocationEntry, RevocationList,
+            RevocationReason, sign_device_cert, sign_revocation_entry,
+        };
+
+        const NOW: u64 = 1_000_000_000_000;
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let user = root.verifying_key().to_bytes();
+        let approver_key = SigningKey::from_bytes(&[2; 32]);
+        let certified = |key: &SigningKey| {
+            let mut cert = DeviceCert {
+                user_public_key: user,
+                device_public_key: key.verifying_key().to_bytes(),
+                device_label: "The laptop".into(),
+                capabilities: DeviceCapabilities::primary(),
+                issued_at_ns: NOW - 60_000_000_000,
+                expires_at_ns: None,
+                signature: [0; 64],
+                issuer: None,
+            };
+            sign_device_cert(&mut cert, &root).unwrap();
+            cert
+        };
+        let approver = certified(&approver_key);
+        let asked = asked(
+            user,
+            [9; 32],
+            "The phone",
+            "",
+            DeviceCapabilities::member(),
+            &[3; 32],
+            NOW,
+        )
+        .unwrap();
+        let signed = |mut cert: DeviceCert| {
+            sign_device_cert(&mut cert, &root).unwrap();
+            cert
+        };
+        let answered = |cert: DeviceCert, approver: DeviceCert| Approved {
+            signature: approver_key.sign(&asked.digest).to_bytes(),
+            cert,
+            approver,
+        };
+        let cert = signed(asked.cert.clone());
+        let answer = answered(cert.clone(), approver.clone());
+        let live = RevocationList::new();
+
+        // The approving device is the person's live, root-signed device, it signed the
+        // question, and the certificate is the root's over exactly what was asked.
+        assert_eq!(
+            check_approval(&asked, &answer, &live, NOW),
+            Ok(cert.clone())
+        );
+
+        // Revoked: the same signature admits nothing once the person revoked the approver.
+        let mut revocation = RevocationEntry {
+            user_public_key: user,
+            revoked_device_public_key: approver.device_public_key,
+            revoked_at_ns: NOW,
+            reason: RevocationReason::Retired,
+            signature: [0; 64],
+        };
+        sign_revocation_entry(&mut revocation, &root).unwrap();
+        let mut revocations = RevocationList::new();
+        revocations.insert(revocation).unwrap();
+        assert_eq!(
+            check_approval(&asked, &answer, &revocations, NOW),
+            Err(NotApproved::Revoked)
+        );
+
+        // Another person's device, and an agent's key this person's root issued: neither
+        // is one of the person's own devices.
+        let stranger = SigningKey::from_bytes(&[4; 32]);
+        let mut other_users = certified(&approver_key);
+        let other_root = SigningKey::from_bytes(&[5; 32]);
+        other_users.user_public_key = other_root.verifying_key().to_bytes();
+        sign_device_cert(&mut other_users, &other_root).unwrap();
+        assert_eq!(
+            check_approval(&asked, &answered(cert.clone(), other_users), &live, NOW),
+            Err(NotApproved::Approver)
+        );
+        let mut agent = certified(&stranger);
+        agent.capabilities = DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces);
+        agent.expires_at_ns = Some(NOW + 60 * 60 * 1_000_000_000);
+        sign_device_cert(&mut agent, &root).unwrap();
+        assert_eq!(
+            check_approval(&asked, &answered(cert, agent), &live, NOW),
+            Err(NotApproved::Approver)
+        );
+
+        // A signature by a key that is not the approver's.
+        let mut forged = answer;
+        forged.signature = stranger.sign(&asked.digest).to_bytes();
+        assert_eq!(
+            check_approval(&asked, &forged, &live, NOW),
+            Err(NotApproved::Signature)
+        );
+
+        // The root's certificate over another device than the one asked for.
+        let altered = signed(DeviceCert {
+            device_label: "The impostor".into(),
+            ..asked.cert.clone()
+        });
+        assert_eq!(
+            check_approval(&asked, &answered(altered, approver), &live, NOW),
+            Err(NotApproved::Certificate)
+        );
+    }
 }

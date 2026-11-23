@@ -347,9 +347,9 @@ pub struct DeviceCapabilities {
     /// workspaces already assigned to it.
     pub can_own_workspaces: bool,
 
-    /// May mint enrollment tokens for new devices. Typically only
-    /// the user's primary device — a phone should not be able to
-    /// admit another phone into the fleet.
+    /// May add a device to the person's fleet by approving the ticket it
+    /// brings. Typically only the user's primary device — a phone should not
+    /// be able to admit another phone into the fleet.
     pub can_admit_devices: bool,
 
     /// The device runs a Tilo runtime on an operating system Tilo does not

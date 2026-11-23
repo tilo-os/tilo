@@ -102,17 +102,15 @@ certificate it shows is admitted. Another person's device is never admitted
 through pairing; it comes in through an invitation to a workspace, as that
 person's device.
 
-**One enrollment serves every device.** A machine arrives with a single-use,
-expiring token the person made for it, shows a short code and its address for
-one of their devices to dial and approve, or is found and paired by one of
-their devices on the local network. The token is signed by the person's device
-and names, under that signature, where their devices are reached over iroh —
-endpoint ids and the packet relay that gets past a network address
-translation — so a machine in a data centre enrolls as one at home does. Every image uses the same enrollment; what an image allows is declared
-once in it, one method per line in `/usr/lib/tilo/enrollment-methods`. Tilo
-Server offers the token and the code, because nobody is at it to confirm a
-device it found; Tilo OS and a board offer all three. A method an image does
-not declare is refused.
+**One way to add a device serves every device.** A machine is added with a
+single-use, expiring ticket the person made for it. The ticket is signed by
+the device that issued it and names, under that signature, where that device
+is reached over iroh — its endpoint id and the packet relay that gets past a
+network address translation — so a machine in a data centre is added as one at
+home is. The new machine dials the issuing device, which asks the person to
+approve; the approving device's root certifies the new machine's key over
+exactly that key, and the answer carries the certificate the machine keeps.
+Every image adds a device the same way.
 
 **Each device has a role in each workspace it holds:**
 

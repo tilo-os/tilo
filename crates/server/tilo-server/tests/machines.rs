@@ -1,7 +1,7 @@
 //! Machines the person planned to install, from making the plan through the
 //! session's own action API to the machine finishing its installation: the
 //! device that made a person's root founds their workspace and plans a machine
-//! in it, the token names an enrollment endpoint of theirs, the machine is taken into
+//! in it, the plan names the ticket's nonce, the machine is taken into
 //! its entry, reads its plan, asks about its disk, another device answers, and
 //! it finishes.
 
@@ -17,7 +17,7 @@ use tilo_actions::{ActionAddress, InvocationId};
 use tilo_server::ServerClient;
 use tilo_server::servers::{self, Servers, person_workspace_id};
 use tilo_server_protocol::{WorkSetting, WorkspaceId};
-use tilo_user_identity::{DeviceCapabilities, Dial, RevocationList};
+use tilo_user_identity::{DeviceCapabilities, RevocationList};
 use tilo_workspace_service::workspaces::MemberDevice;
 
 use crate::common::{Hosted, TestDevice, TestUser, device_endpoint, serve_in};
@@ -158,27 +158,10 @@ async fn a_person_with_no_server_plans_a_machine_and_walks_it_through_its_instal
     // that holds none plans nothing: it waits to be taken in.
     // The machine's own key, as the image hands it one before it is certified.
     let machine_key = hex::encode([0x33_u8; 32]);
-    // The token names an enrollment endpoint of theirs: the one derived from
-    // the device that made it, where its session answers machines.
-    let dial = Dial {
-        endpoint: tilo_user_identity::enrollment_endpoint(&laptop.device_pubkey()),
-        relay_url: String::new(),
-    };
-    let token = tilo_identity::enrollment::mint_token(
-        alice.user_pk,
-        DeviceCapabilities::member(),
-        tilo_clock::unix_now_ns(),
-        tilo_clock::unix_now_ns() + 600 * 1_000_000_000,
-        std::slice::from_ref(&dial),
-        &laptop.sk,
-    )
-    .unwrap();
-    let decoded = tilo_user_identity::decode_enrollment_token(&token).unwrap();
-    let token_nonce = decoded.nonce;
-    assert!(decoded.dial.iter().any(|dial| {
-        dial.endpoint == tilo_user_identity::enrollment_endpoint(&laptop.device_pubkey())
-    }));
-
+    // The plan names the ticket's nonce and expiry only; the ticket itself is
+    // the issuing device's to serve.
+    let token = install_plan::token().unwrap();
+    let token_nonce = token.nonce.clone();
     let token_file = tempfile::tempdir().unwrap().path().join("cupboard.token");
     let plan = install_plan::Choices {
         destination: "tilo-server".to_owned(),
@@ -195,13 +178,7 @@ async fn a_person_with_no_server_plans_a_machine_and_walks_it_through_its_instal
         updates: Some("stable".to_owned()),
         hosting: Some(Vec::new()),
     }
-    .plan(
-        "0123456789abcdef0123456789abcdef",
-        install_profile_model::plan::Token {
-            nonce: hex::encode(token_nonce),
-            expires_at_ns: decoded.expires_at_ns,
-        },
-    )
+    .plan("0123456789abcdef0123456789abcdef", token)
     .unwrap();
     let arguments = serde_json::json!({
         "plan": serde_json::to_string(&plan).unwrap(),
@@ -255,7 +232,7 @@ async fn a_person_with_no_server_plans_a_machine_and_walks_it_through_its_instal
     let _: serde_json::Value = host_action(
         &session,
         ADMIT_MACHINE,
-        serde_json::json!({ "device": machine_key, "nonce": hex::encode(token_nonce) }),
+        serde_json::json!({ "device": machine_key, "nonce": token_nonce.clone() }),
     )
     .await;
     let admitted = servers::read(laptop_host.host.workspaces()).await.unwrap();
@@ -322,12 +299,7 @@ async fn a_person_with_no_server_plans_a_machine_and_walks_it_through_its_instal
     );
     servers::apply(
         laptop_host.host.workspaces(),
-        Servers::BEGIN_INSTALL.with((
-            machine_key.clone(),
-            hex::encode(token_nonce),
-            report.drives,
-            report.ask,
-        )),
+        Servers::BEGIN_INSTALL.with((machine_key.clone(), token_nonce, report.drives, report.ask)),
     )
     .await
     .unwrap();

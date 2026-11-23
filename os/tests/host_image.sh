@@ -74,15 +74,6 @@ if said=$(inside /usr/libexec/tilo/tilolang-process 2>&1); then
 fi
 grep -q 'tilolang-process: exiting: no api' <<<"$said" \
   || die "tilolang-process on the server image's base said: $said"
-# A server declares the two ways in it has: the token made for it, and the code
-# it shows. Nobody is at it to confirm a device it found on the network.
-methods=$root/usr/lib/tilo/enrollment-methods
-[[ -f $methods ]] || die 'the image declares no enrollment methods'
-grep -qx token "$methods" || die 'the server image offers no enrollment token'
-grep -qx code "$methods" || die 'the server image offers no enrollment code'
-if grep -qx local-network "$methods"; then
-  die 'the server image offers local-network pairing'
-fi
 # Scripts call these bare; the esp writer answers to the UKI editor's name too.
 [[ -x $root/usr/bin/tilo-image-trust ]] || die 'tilo-image-trust is not on PATH for the boot tools'
 [[ $(readlink "$root/usr/libexec/tilo-uki-cmdline") == tilo-esp-write ]] \

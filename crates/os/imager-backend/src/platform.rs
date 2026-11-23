@@ -116,11 +116,11 @@ pub trait Platform {
     ) -> IoResult<()>;
     fn sync_disk(&mut self, disk: &Disk) -> IoResult<()>;
     /// Place a root-only file at `path` inside the filesystem the given staged
-    /// partition holds: the single-use enrollment token a plan's machine
-    /// spends must never travel in the ESP handoff the firmware can read.
+    /// partition holds: the single-use ticket a plan's machine spends must
+    /// never travel in the ESP handoff the firmware can read.
     ///
     /// Unsupported on a platform that cannot mount the staged filesystem; the
-    /// helper then refuses rather than staging a plan without its token.
+    /// helper then refuses rather than staging a plan without its ticket.
     fn write_staging_file(
         &mut self,
         disk: &Disk,
