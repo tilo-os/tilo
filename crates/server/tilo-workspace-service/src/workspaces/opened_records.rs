@@ -260,6 +260,26 @@ impl Workspaces {
             );
             return;
         }
+        // The workspace's own governance, as the host's link carries it: every session of
+        // the workspace takes it into the replica its bootstrap installed, as a linked
+        // device does.
+        if let neighbour_wire::NeighbourMsg::SyncResp {
+            workspace: named, ..
+        } = message
+        {
+            if *named != workspace.to_string() {
+                return;
+            }
+            let Some(envelope) = crate::peer::records::delta_of(workspace, author, message) else {
+                return;
+            };
+            self.inner.opened_records.deliver_to_all(
+                workspace,
+                |device| device != author,
+                &envelope,
+            );
+            return;
+        }
         let neighbour_wire::NeighbourMsg::AppDocument {
             app_id,
             document_id,

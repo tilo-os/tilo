@@ -2047,6 +2047,49 @@ impl Workspaces {
             .ok_or_else(|| CollaborationError::new("this server does not hold that workspace"))
     }
 
+    /// The membership answer a page builds its replica of `workspace_id` from
+    /// as it subscribes ([`crate::transport::Envelope::WorkspaceBootstrap`]): the
+    /// workspace's roster, its revocations and its governance as one message,
+    /// answered for `device`, the session's certified device. What follows such
+    /// an answer is admitted like any governance
+    /// ([`tilo_peer_state::owner::NativeWorkspaceOwner::install_vouched`]). Built
+    /// only for a device a subscription is answered with: it is as large as the
+    /// workspace.
+    pub(crate) async fn subscriber_bootstrap(
+        &self,
+        workspace_id: WorkspaceId,
+        device: &DeviceCert,
+    ) -> Option<Vec<u8>> {
+        use tilo_peer_state::join::{JoinBootstrap, JoinTransportResponse};
+        use tilo_peer_state::join_log::GovernanceMessages as _;
+        let workspace = self.workspace(&workspace_id.to_string()).await.ok()?;
+        let governed = workspace.lock().await;
+        let peer = governed.peer();
+        let now = tilo_clock::wall();
+        let role = peer.role(&device.device_public_key, now).ok()?;
+        let host = self.inner.host.cert.clone();
+        // The roster names what the device holds before the governance it is sent with,
+        // or could not take from it: every other member device's certificate arrives
+        // with the governance.
+        let certified_roster =
+            peer.roster_beside_governance(&[device.device_public_key, host.device_public_key], now);
+        let governance = peer.governance_messages().ok()?;
+        postcard::to_stdvec(&JoinTransportResponse::MembershipComplete(JoinBootstrap {
+            version: 1,
+            invite_id: [0; 32],
+            device_cert: device.clone(),
+            role,
+            workspace_id: governed.workspace_id(),
+            host,
+            certified_roster,
+            revocations: peer.revocations(),
+            records: Vec::new(),
+            governance_messages: governance,
+            generation: governed.record.generation,
+        }))
+        .ok()
+    }
+
     /// Hold the workspace, admitting only the members its governance names,
     /// and follow its members' writes: create the records they start and keep the
     /// governor's copy of the others current, as calls bind to chat records.

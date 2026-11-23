@@ -37,6 +37,22 @@ pub(super) async fn handle_subscribe(
         );
     }
     drop(wr);
+    // A page builds its replica of the workspace from the membership answer its
+    // host sends as it subscribes: the roster and the governance every record it
+    // reads or writes is decided against. Sent before `Ready`, so what the session
+    // asks for as soon as it is admitted is decided on a workspace it holds.
+    if let Some(admin) = session.admin
+        && let Some(bootstrap) = admin.subscriber_bootstrap(workspace_id, &peer.cert).await
+    {
+        session
+            .outbound
+            .send(Envelope::WorkspaceBootstrap {
+                workspace_id,
+                bootstrap,
+            })
+            .await
+            .map_err(|_| PeerError::Protocol("the session's writer ended".into()))?;
+    }
     // A channel's governance reaches this session from its start, whether or not
     // it opened a record, as a link hands it to the devices linked to it: sent
     // before `Ready`, so a page that writes its first sealed record now has the
