@@ -92,8 +92,18 @@ pub(super) enum Admitted {
     Entered(JoinReply),
     /// The device that answered the challenge is in: the workspace as the admission committed it.
     Joined(JoinBootstrap),
-    /// Refused, and why.
-    Refused(String),
+    /// Refused: why, and the code the join exchange answers it with
+    /// ([`CollaborationError::code`]).
+    Refused { reason: String, code: u16 },
+}
+
+impl From<&CollaborationError> for Admitted {
+    fn from(error: &CollaborationError) -> Self {
+        Self::Refused {
+            reason: error.to_string(),
+            code: error.code(),
+        }
+    }
 }
 
 /// One admission checked, waiting for the change that admits it.
@@ -286,10 +296,12 @@ impl Workspaces {
             return Err(ActionCallError::UnknownAction);
         }
         let issuer = invited.map(|invited| invited.issuer);
+        let asked = admissions.len();
+        // Each admission is answered with what became of it, a refusal with its code.
         let admitted = self
             .admit_all(workspace_id, (issuer, device), admissions)
             .await
-            .map_err(|error| ActionCallError::refused(error.to_string()))?;
+            .unwrap_or_else(|error| vec![Admitted::from(&error); asked]);
         serde_json::to_value(admitted).map_err(|error| ActionCallError::refused(error.to_string()))
     }
 
@@ -323,7 +335,7 @@ impl Workspaces {
             ) {
                 Ok(Ok(admitting)) => checked.push(admitting),
                 Ok(Err(answered)) => answer(&mut answers, index, answered),
-                Err(error) => answer(&mut answers, index, Admitted::Refused(error.to_string())),
+                Err(error) => answer(&mut answers, index, Admitted::from(&error)),
             }
         }
         let joins: Vec<Redeeming<'_>> = checked
@@ -366,18 +378,13 @@ impl Workspaces {
                             },
                         ));
                     }
-                    let admitted =
-                        answer.unwrap_or_else(|error| Admitted::Refused(error.to_string()));
+                    let admitted = answer.unwrap_or_else(|error| Admitted::from(&error));
                     self::answer(&mut answers, checked.index, admitted);
                 }
             }
             Err(error) => {
                 for checked in checked {
-                    answer(
-                        &mut answers,
-                        checked.index,
-                        Admitted::Refused(error.to_string()),
-                    );
+                    answer(&mut answers, checked.index, Admitted::from(&error));
                 }
             }
         }
@@ -386,12 +393,14 @@ impl Workspaces {
         {
             let error = CollaborationError::from(error);
             for index in pre_admitted {
-                answer(&mut answers, index, Admitted::Refused(error.to_string()));
+                answer(&mut answers, index, Admitted::from(&error));
             }
         }
         Ok(answers
             .into_iter()
-            .map(|answer| answer.unwrap_or_else(|| Admitted::Refused("not answered".to_owned())))
+            .map(|answer| {
+                answer.unwrap_or_else(|| Admitted::from(&CollaborationError::new("not answered")))
+            })
             .collect())
     }
 
@@ -499,8 +508,8 @@ impl Workspaces {
         }
         if !matches!(way, Way::PreAdmitted { .. }) {
             // An invitation is the approval of whoever made it: a device that holds one is let
-            // in by its issuer's own grant, decided now, and never waits for someone in the
-            // workspace to answer for it.
+            // in by its issuer's own grant on letting people in (`member.add`), decided now, and
+            // never waits for someone in the workspace to answer for it.
             let grant = redemption.join().grant();
             if issuer != Some(grant.issuer.device_public_key) {
                 return Err(CollaborationError::new(
@@ -510,7 +519,7 @@ impl Workspaces {
             self.authorize(
                 &grant.issuer,
                 Some(workspace),
-                WorkspaceOp::Invite(grant.role),
+                WorkspaceOp::Admit(grant.role),
                 now,
             )?;
         }
@@ -783,7 +792,9 @@ impl Workspaces {
             .pop()
         {
             Some(Admitted::Joined(bootstrap)) => Ok(bootstrap),
-            Some(Admitted::Refused(why)) => Err(CollaborationError::new(why)),
+            Some(Admitted::Refused { reason, code }) => {
+                Err(CollaborationError::coded(reason, code))
+            }
             _ => Err(CollaborationError::new("join bootstrap was not built")),
         }
     }
@@ -794,7 +805,7 @@ impl Admitted {
     pub(super) fn entered(self) -> JoinReply {
         match self {
             Self::Entered(reply) => reply,
-            Self::Refused(why) => JoinReply::Refused(why),
+            Self::Refused { reason, .. } => JoinReply::Refused(reason),
             Self::Joined(_) => JoinReply::Refused("the join was answered another way".to_owned()),
         }
     }

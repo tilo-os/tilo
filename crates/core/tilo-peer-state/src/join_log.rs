@@ -82,6 +82,14 @@ impl JoinError {
         }
     }
 
+    /// A refusal carrying `code`, as another answered it ([`Self::code`]).
+    pub fn coded(message: impl Into<String>, code: u16) -> Self {
+        Self {
+            message: message.into(),
+            code,
+        }
+    }
+
     /// A Complete whose proof this host never admitted and no longer can:
     /// it holds neither the challenge it answers nor a completion of its
     /// request.

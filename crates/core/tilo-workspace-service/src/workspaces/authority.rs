@@ -59,6 +59,9 @@ pub(super) enum WorkspaceOp<'a> {
     /// Issue an invitation carrying `Role`: the invite action, and never a
     /// role above the inviter's own.
     Invite(Role),
+    /// Let the holder of an invitation in at `Role`, as its issuer: `member.add`, decided by the
+    /// issuer's grants when the invitation is redeemed.
+    Admit(Role),
     /// Issue an invitation that also makes its holder an administrator: for
     /// someone who may make administrators themselves.
     InviteAdministrator,
@@ -97,7 +100,7 @@ impl WorkspaceOp<'_> {
             Self::MakeAdministrator => "make-administrator",
             Self::MakeOwner => "make-owner",
             Self::Change(change) => change.action(),
-            Self::Place(..) => roles::governance::ADD_MEMBER,
+            Self::Place(..) | Self::Admit(_) => roles::governance::ADD_MEMBER,
             Self::Role(..) => roles::governance::SET_ROLE,
         }
     }
@@ -172,50 +175,12 @@ impl Workspaces {
         self.decide(device, workspace, op, now).is_ok()
     }
 
-    /// Whether `device` may make the change `op` in `workspace` now, signed on that device
-    /// itself and relayed by this host: what its person may do there, whether or not this host
-    /// could sign it for them.
-    ///
-    /// # Errors
-    ///
-    /// Why the device may not.
-    pub(super) async fn check_signed_now(
-        &self,
-        device: &DeviceCert,
-        workspace: &str,
-        op: WorkspaceOp<'_>,
-    ) -> Result<(), CollaborationError> {
-        let governed = self.workspace(workspace).await?;
-        let governed = governed.lock().await;
-        self.decide_signed(
-            device,
-            Some(&governed),
-            op,
-            tilo_clock::unix_now_ns(),
-            false,
-        )
-        .map(drop)
-    }
-
     fn decide(
         &self,
         device: &DeviceCert,
         workspace: Option<&GovernedWorkspace>,
         op: WorkspaceOp<'_>,
         now: u64,
-    ) -> Result<String, CollaborationError> {
-        self.decide_signed(device, workspace, op, now, true)
-    }
-
-    /// [`Self::decide`], for a change this host signs when `host_signs`, and otherwise for one
-    /// the device signs itself.
-    fn decide_signed(
-        &self,
-        device: &DeviceCert,
-        workspace: Option<&GovernedWorkspace>,
-        op: WorkspaceOp<'_>,
-        now: u64,
-        host_signs: bool,
     ) -> Result<String, CollaborationError> {
         let host = self.inner.host.cert.user_public_key;
         // An agent is a device of its person too, but it administers nothing:
@@ -233,9 +198,7 @@ impl Workspaces {
                 "workspace administration requires a person's device, not an agent's",
             ));
         }
-        if self.revocations().refuses(device)
-            || self.blocked_keys().revokes(device)
-        {
+        if self.revocations().refuses(device) || self.blocked_keys().revokes(device) {
             return Err(CollaborationError::new("device revoked"));
         }
         tilo_user_identity::verify_device_cert_at(device, now)
@@ -296,7 +259,7 @@ impl Workspaces {
             }
             _ => {}
         }
-        decide_by_governance(workspace, device, op, now, host_signs.then_some(host))
+        decide_by_governance(workspace, device, op, now, Some(host))
     }
 }
 
@@ -384,6 +347,7 @@ fn decide_by_governance(
         }
         WorkspaceOp::Govern(action) => member.policy.check_action(&authority, action, &cx, false),
         WorkspaceOp::Invite(role) => member.policy.check_invite(&authority, role, &cx, false),
+        WorkspaceOp::Admit(role) => member.policy.check_admission(&authority, role, &cx, false),
         WorkspaceOp::InviteAdministrator => member
             .policy
             .check_administrator_invite(person, &authority, &cx, false),

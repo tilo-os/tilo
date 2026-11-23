@@ -825,6 +825,23 @@ impl WorkspacePolicy {
         self.grants.len() != before
     }
 
+    /// Whether `actor` may let someone in at `role` themselves (`add-member`), as redeeming the
+    /// invitation they issued does: never at more than they hold
+    /// ([`Self::check_role_handout`]), whoever the person is.
+    ///
+    /// # Errors
+    /// The action is not granted, or the role is above what `actor` hands out.
+    pub fn check_admission(
+        &self,
+        actor: &Authority<'_>,
+        role: Role,
+        cx: &Context<'_>,
+        approved: bool,
+    ) -> Result<(), Refusal> {
+        self.check_action(actor, governance::ADD_MEMBER, cx, approved)?;
+        self.check_role_handout(actor, role, cx)
+    }
+
     /// Whether `actor` may invite someone with `role`. An invite never
     /// carries more than the inviter holds ([`Self::check_role_handout`]).
     pub fn check_invite(

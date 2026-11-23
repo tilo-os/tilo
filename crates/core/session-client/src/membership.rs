@@ -11,7 +11,6 @@ use crate::engine::Engine;
 use tilo_action_policy::{Change, Grant, Role, WorkspacePolicy};
 use tilo_desktop_model::grants::PolicyEdit;
 use tilo_desktop_model::{UserId, Workspace, WorkspaceId};
-pub use tilo_peer_state::workspace_membership::MemberPlace;
 use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
 
 /// The workspaces a member shows, as a workspace's governance writes into them: the ones it
@@ -233,30 +232,6 @@ impl<'a> Membership<'a> {
     pub async fn commit(&self, change: &Change) -> Result<(), String> {
         self.command(WorkspaceMembershipCommand::Member {
             change: change.clone(),
-        })
-        .await
-    }
-
-    /// Hold the person `person` (their user root) in the workspace at `place`, as this device:
-    /// a role, one of its administrators, or its owner, whom this device's person hands the
-    /// workspace to. Someone no device of theirs has brought in yet is held all the same, and
-    /// `name` is how the workspace names them until they name themselves. Moving an
-    /// administrator to a role takes their grants back, which, like handing the workspace on,
-    /// is its owner's alone: the change is this device's own, so the workspace's owner makes it
-    /// here and its host relays it as it relays every member's change.
-    ///
-    /// # Errors
-    /// The workspace refused it, saying why, or this device could not publish it.
-    pub async fn place(
-        &self,
-        person: [u8; 32],
-        place: MemberPlace,
-        name: Option<&str>,
-    ) -> Result<(), String> {
-        self.command(WorkspaceMembershipCommand::Place {
-            person,
-            place,
-            name: name.map(str::to_owned),
         })
         .await
     }

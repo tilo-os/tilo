@@ -54,10 +54,9 @@ use tilo_actions::remote::{
     CatalogueResource, CatalogueRow, InvocationLog, InvocationReceipt, InvocationState,
     InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, WORKSPACE_APPS,
     WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_GRANT_REVOKE,
-    WORKSPACE_INVITATIONS, WORKSPACE_MEMBER_ADMIT, WORKSPACE_MEMBER_ADMITTED,
-    WORKSPACE_MEMBER_PLACED, WORKSPACE_MEMBER_REMOVED, WORKSPACE_MEMBERS, WORKSPACE_REGISTRIES,
-    WORKSPACE_SERVERS, WORKSPACE_TRUST, WORKSPACE_WAITING, asked, formats, mcp_server,
-    person_accounts, person_connections, person_models, person_telling, person_vault,
+    WORKSPACE_INVITATIONS, WORKSPACE_MEMBER_PLACED, WORKSPACE_MEMBER_REMOVED, WORKSPACE_MEMBERS,
+    WORKSPACE_REGISTRIES, WORKSPACE_SERVERS, WORKSPACE_TRUST, WORKSPACE_WAITING, asked, formats,
+    mcp_server, person_accounts, person_connections, person_models, person_telling, person_vault,
     server_account, workspace_app, workspace_app_named, workspace_governance_address,
     workspace_governance_child, workspace_governance_operation, workspace_governance_resource,
     workspace_member, workspace_person,
@@ -1179,25 +1178,6 @@ fn governance_request(request: &InvokeRequest, workspace: &str, operation: &str)
     asked
 }
 
-/// The operation `change` is granted by, and the action the tree publishes it at, for a device
-/// asking whether it is its to make: `admit` and `role` are the `member.add` operation, and a
-/// removal is `remove-member`.
-fn admitted_change(change: &str) -> Option<(&'static str, &'static str)> {
-    let published = [
-        WORKSPACE_MEMBER_ADMITTED,
-        WORKSPACE_MEMBER_PLACED,
-        WORKSPACE_MEMBER_REMOVED,
-    ]
-    .into_iter()
-    .find(|action| *action == change)?;
-    let action = if published == WORKSPACE_MEMBER_REMOVED {
-        governance::REMOVE_MEMBER
-    } else {
-        ADD_MEMBER
-    };
-    Some((action, published))
-}
-
 /// The governance action `action` depends on, for one this provider names.
 fn check_of(action: &str) -> Option<&'static str> {
     VERBS
@@ -2154,19 +2134,7 @@ impl Workspaces {
                 .await;
         }
         let args = Args::of(&request.argument)?;
-        // A device of a person's asks whether a change to who is in the workspace is its to make
-        // before it signs the change itself: decided here as the change would be, and nothing
-        // done. This round trip is temporary: the device will admit the call itself, through
-        // `admit_invocation` over its synced grants, asking the person through the Confirm
-        // frame, and that replaces this.
-        let admitting = address.action == WORKSPACE_MEMBER_ADMIT;
-        let (action, published) = if admitting {
-            let (action, published) = admitted_change(args.required_text("change")?)
-                .ok_or(ActionCallError::UnknownAction)?;
-            (action, published)
-        } else {
-            (address.action.as_str(), published)
-        };
+        let action = address.action.as_str();
         let check = server::check_of(action).ok_or(ActionCallError::UnknownAction)?;
         // A key's own record is read by the key itself, whatever its grant may
         // govern: the workspace lists the grants of its person's, and only the
@@ -2230,7 +2198,7 @@ impl Workspaces {
         // is decided by its grants here, and by its person's own checks, before
         // its person is asked: last, so their yes is never refused after.
         if !listed_key && let Some(verb) = VERBS.iter().find(|verb| verb.id == action) {
-            self.check_governance(&device, &workspace, verb.id, &args, admitting, published)
+            self.check_governance(&device, &workspace, verb.id, &args, published)
                 .await?;
             self.admit_operation(
                 Some(workspace_id),
@@ -2240,9 +2208,6 @@ impl Workspaces {
                 (&arguments_of(request), request.approval().is_some()),
             )
             .await?;
-        }
-        if admitting {
-            return Ok(json!({}));
         }
         let call = GovernanceCall {
             workspace: &workspace,
@@ -2255,15 +2220,13 @@ impl Workspaces {
 
     /// The person's own checks of the governance action `action` with `args`
     /// by `device`, beyond the action itself, as carrying it out makes them: the place
-    /// a person is given or invited to, and whom a removal or a ban reaches. A change the device
-    /// `signs` itself is checked as its own, which this host only relays.
+    /// a person is given or invited to, and whom a removal or a ban reaches.
     async fn check_governance(
         &self,
         device: &DeviceCert,
         workspace: &str,
         action: &str,
         args: &Args,
-        signs: bool,
         published: &str,
     ) -> Result<(), ActionCallError> {
         let change;
@@ -2294,12 +2257,6 @@ impl Workspaces {
             }
             _ => return Ok(()),
         };
-        if signs {
-            return self
-                .check_signed_now(device, workspace, op)
-                .await
-                .map_err(|error| ActionCallError::refused(error.to_string()));
-        }
         self.check_now(device, Some(workspace), op)
             .await
             .map_err(|error| ActionCallError::refused(error.to_string()))
@@ -3372,8 +3329,14 @@ impl ServiceWorkspaceActions {
     pub(crate) fn attach(&self, workspaces: Workspaces) {
         workspaces.govern_device_actions_with(Arc::downgrade(&self.shared));
         workspaces.answer_asked_with(Arc::new(HostAsked(Arc::downgrade(&self.shared))));
-        // The workspaces' governance is a provider of this device's one dispatch, as every
-        // other provider is: a call made here reaches it there, admission among them.
+        self.serve(workspaces);
+    }
+
+    /// Answer the governance of `workspaces` on this device's one dispatch, as every other
+    /// provider is answered: a call made here reaches it there, admission among them. Every
+    /// service that holds workspaces does, whether it founded them or holds them for a device
+    /// that joined them ([`Self::attach`] for one that founds).
+    pub(crate) fn serve(&self, workspaces: Workspaces) {
         workspaces.providers().provide(
             WORKSPACE_GOVERNANCE_PROVIDER,
             WORKSPACE_GOVERNANCE_PROVIDER,

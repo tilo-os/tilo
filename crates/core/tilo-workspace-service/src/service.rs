@@ -279,6 +279,11 @@ impl ServiceSessions {
         ))
         .await
         .map_err(ServiceError::Workspaces)?;
+        // The workspaces held here admit through their governance on this device's dispatch,
+        // founded here or not.
+        if governance.is_none() {
+            crate::workspaces::ServiceWorkspaceActions::new().serve(workspaces.clone());
+        }
         if let Some(governance) = governance {
             governance.attach(workspaces.clone());
             // Sessions ask its workspaces what a device may do; the lock is set

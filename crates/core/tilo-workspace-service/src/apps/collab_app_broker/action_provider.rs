@@ -1877,8 +1877,13 @@ impl AppBrokerState {
             );
         }
         // A provider registered on this device: the host's own steps, and what its embedder
-        // registered, which another device's call reaches through the same registry.
-        if let Some(registered) = self.registered(&request.target.provider) {
+        // registered, which another device's call reaches through the same registry. A
+        // workspace's governance is the one exception: its call goes where the workspace's
+        // governance is published ([`Self::start_governance_action`]), on whichever device holds
+        // it, as the registration here answers only the workspaces this device holds.
+        if request.target.provider != tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
+            && let Some(registered) = self.registered(&request.target.provider)
+        {
             return Pending::ready(self.invoke_registered(caller, origin, &registered, request));
         }
         if request.target.provider == tilo_actions::remote::own_device::PROVIDER {

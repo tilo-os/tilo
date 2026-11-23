@@ -238,12 +238,6 @@ pub const WORKSPACE_MEMBERS: &str = "members";
 /// One person among a workspace's people (`workspace/members/<person>`, their user public key
 /// in hex): what changes their role and removes them is published on them.
 pub const WORKSPACE_MEMBER: &str = "members/*";
-/// The question a device of a person's asks the workspace's host before it signs a change to
-/// who is in the workspace: `{change, ...the change's arguments}`, where `change` is the action
-/// the tree publishes the change at ([`WORKSPACE_MEMBER_ADMITTED`],
-/// [`WORKSPACE_MEMBER_PLACED`] or [`WORKSPACE_MEMBER_REMOVED`]). Answered `{}` when the change
-/// is the device's to make, and refused when it is not.
-pub const WORKSPACE_MEMBER_ADMIT: &str = "member.admit";
 /// The action `workspace/members#admit` publishes: admit a person to the workspace at a place,
 /// whether or not they held one, as [`WORKSPACE_MEMBER_PLACED`] would a member's. The change that
 /// admits them keeps their membership record with it.
