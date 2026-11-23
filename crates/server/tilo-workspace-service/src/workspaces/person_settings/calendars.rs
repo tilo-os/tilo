@@ -688,6 +688,52 @@ fn add(
     named: Option<ItemRef>,
     mail_account: Option<&str>,
 ) -> Result<AccountView, String> {
+    let stored = prepared(reach, adding, named, mail_account)?;
+    let id = stored.id.to_string();
+    reach
+        .runtime
+        .block_on(reach.vault.at().keep_account(&stored))?;
+    let account = reach
+        .calendar_accounts()?
+        .into_iter()
+        .find(|account| account.id == id)
+        .ok_or_else(|| "the account was kept but did not read back".to_owned())?;
+    // What it holds now; a server that is slow to answer is asked again
+    // by the first read.
+    let _ = sync(root, reach, &account);
+    Ok(view(root, &account))
+}
+
+/// The calendar account `service` names, its sign-in kept in the workspace's vault and no
+/// record kept yet: what a mail account added for a provider that offers calendars keeps
+/// beside itself, in the same change as its own record.
+pub(super) fn prepare_service(
+    reach: &Asking,
+    service: Service,
+) -> Result<accounts::Account, String> {
+    prepared(
+        reach,
+        Add {
+            server_url: service.server_url,
+            username: service.username,
+            password: service.password,
+            name: Some(service.name),
+            read_only: false,
+        },
+        None,
+        Some(&service.mail_account),
+    )
+}
+
+/// The record of the calendar account `adding` names, its sign-in kept in the workspace's
+/// vault ([`keep_sign_in`]): what [`add`] keeps in the accounts, and what a mail account
+/// keeps in the same change as its own record.
+fn prepared(
+    reach: &Asking,
+    adding: Add,
+    named: Option<ItemRef>,
+    mail_account: Option<&str>,
+) -> Result<accounts::Account, String> {
     let username = adding.username.trim().to_owned();
     if username.is_empty() || adding.password.is_empty() {
         return Err("A calendar account has a user name and a password".into());
@@ -724,7 +770,7 @@ fn add(
         .map(|name| name.trim().to_owned())
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| username.clone());
-    let mut stored = accounts::Account::new(accounts::AccountId::from(id.clone()), TYPE_ID);
+    let mut stored = accounts::Account::new(accounts::AccountId::from(id), TYPE_ID);
     stored.display_name.clone_from(&display_name);
     stored.config = serde_json::json!({
         "display_name": display_name,
@@ -747,16 +793,7 @@ fn add(
         Some(named) => SignIn::Named(named),
         None => SignIn::Own(zeroize::Zeroizing::new(adding.password)),
     };
-    keep_account(reach, stored, sign_in)?;
-    let account = reach
-        .calendar_accounts()?
-        .into_iter()
-        .find(|account| account.id == id)
-        .ok_or_else(|| "the account was kept but did not read back".to_owned())?;
-    // What it holds now; a server that is slow to answer is asked again
-    // by the first read.
-    let _ = sync(root, reach, &account);
-    Ok(view(root, &account))
+    keep_sign_in(reach, stored, sign_in)
 }
 
 /// The sign-in an account added here names.
@@ -767,22 +804,23 @@ enum SignIn {
     Own(zeroize::Zeroizing<String>),
 }
 
-/// Keep `stored` in the workspace's accounts, naming `sign_in`: a member's entry, or
-/// a password kept as the account's own entry at its server's origin, in place of the one it
-/// kept before. An entry of its own it named before and names no more goes.
-fn keep_account(
+/// Keep `sign_in` for `stored` in the workspace's vault, naming it in the record it answers:
+/// a member's entry, or a password kept as the account's own entry at its server's origin, in
+/// place of the one it kept before. The record itself is the caller's to keep, so one change
+/// holds every account an action makes.
+fn keep_sign_in(
     reach: &Asking,
     mut stored: accounts::Account,
     sign_in: SignIn,
-) -> Result<(), String> {
+) -> Result<accounts::Account, String> {
     let vault = reach.vault.at();
     let owner = stored.id.to_string();
     let before = reach
         .accounts()?
         .account(stored.id.as_str())
         .and_then(|kept| sign_in_of(&kept.config));
-    let (reference, own) = match sign_in {
-        SignIn::Named(named) => (named, false),
+    let reference = match sign_in {
+        SignIn::Named(named) => named,
         SignIn::Own(password) => {
             let places = places_of(&stored)?;
             let username = stored
@@ -791,31 +829,22 @@ fn keep_account(
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
-            let kept = reach.runtime.block_on(vault.keep_sign_in(
+            reach.runtime.block_on(vault.keep_sign_in(
                 &owner,
                 (accounts::vault_items::ItemKind::Login, places),
                 &username,
                 password,
                 before.as_ref(),
-            ))?;
-            (kept, true)
+            ))?
         }
     };
     accounts::email::set_password_item(&mut stored.config, Some(&reference.to_string()));
-    if let Err(error) = reach.runtime.block_on(vault.keep_account(&stored)) {
-        if own && before.as_ref() != Some(&reference) {
-            let _ = reach
-                .runtime
-                .block_on(vault.forget_sign_in(&owner, &reference));
-        }
-        return Err(error);
-    }
     if let Some(before) = before.filter(|before| *before != reference) {
         reach
             .runtime
             .block_on(vault.forget_sign_in(&owner, &before))?;
     }
-    Ok(())
+    Ok(stored)
 }
 
 /// The place a calendar account's sign-in belongs to: its server's own
@@ -920,27 +949,23 @@ pub(super) struct Service {
     pub mail_account: String,
 }
 
-/// Keep the calendar account of `service`, answering its id: what a mail
-/// account added for a provider that offers calendars keeps with its sign-in,
-/// so one connect feeds Mail and Calendar alike.
-pub(super) async fn add_service(
-    (vault, root): (VaultAt<'_>, &Path),
+/// The calendar account `service` names, its sign-in kept, prepared where its server is
+/// asked: what a mail account added for a provider that offers calendars keeps beside its
+/// own record, in the same change, so one connect feeds Mail and Calendar alike.
+pub(super) async fn prepare_service_in(
+    (vault, _root): (VaultAt<'_>, &Path),
     reach: Reach,
     by: &str,
     service: Service,
-) -> Result<String, String> {
+) -> Result<accounts::Account, String> {
     let asking = Asking::of(vault, by, reach);
-    let adding = Add {
-        server_url: service.server_url,
-        username: service.username,
-        password: service.password,
-        name: Some(service.name),
-        read_only: false,
-    };
-    let mail_account = service.mail_account;
-    let root = root.to_path_buf();
-    let added = off_thread(move || add(&root, &asking, adding, None, Some(&mail_account))).await?;
-    Ok(added.id)
+    off_thread(move || prepare_service(&asking, service)).await
+}
+
+/// Forget what was kept on this device of the calendar account `id`, when its
+/// account goes: its copy of what its server held.
+pub(super) fn forget_kept(root: &Path, id: &str) {
+    let _ = std::fs::remove_file(kept_at(root, id));
 }
 
 /// The calendar account kept as the mail account `mail`'s service: the one it

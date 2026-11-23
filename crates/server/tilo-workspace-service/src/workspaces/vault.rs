@@ -591,23 +591,39 @@ impl VaultAt<'_> {
         }
     }
 
-    /// Remove the account `id` from the workspace's accounts. Whether it was there.
+    /// Keep `keep` and remove `remove` in the workspace's accounts, in one change: what an
+    /// action does to accounts that belong together.
     ///
     /// # Errors
-    /// As [`Workspaces::remove_workspace_account`].
-    pub(crate) async fn remove_account(&self, id: &str) -> Result<bool, String> {
+    /// As [`Workspaces::keep_workspace_accounts`].
+    pub(crate) async fn keep_and_remove_accounts(
+        &self,
+        keep: &[accounts::Account],
+        remove: &[&str],
+    ) -> Result<(), String> {
         match self {
             Self::Workspace(workspaces, workspace) => {
-                workspaces.remove_workspace_account(workspace, id).await
+                workspaces
+                    .keep_workspace_accounts(workspace, keep, remove)
+                    .await
             }
             #[cfg(test)]
-            Self::Held(held) => Ok(held
-                .accounts
-                .lock()
-                .map_err(|_| "the accounts are poisoned".to_owned())?
-                .accounts
-                .remove(&tilo_resource::Id::from_raw(id.to_owned()))
-                .is_some()),
+            Self::Held(held) => {
+                let mut accounts = held
+                    .accounts
+                    .lock()
+                    .map_err(|_| "the accounts are poisoned".to_owned())?;
+                for id in remove {
+                    accounts.remove(&accounts::AccountId::from((*id).to_owned()));
+                }
+                for account in keep {
+                    accounts
+                        .keep(account)
+                        .map_err(|refusal| refusal.to_string())?;
+                }
+                drop(accounts);
+                Ok(())
+            }
         }
     }
 }

@@ -300,6 +300,10 @@ async fn the_listing_answers_older_accounts_and_ones_that_feed_no_mail() {
 /// feeds Mail and Calendar alike, and turning calendars off takes the
 /// calendar account with it.
 #[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one journey: add with calendars, turn them off, on again and remove the account"
+)]
 async fn an_icloud_account_asked_for_calendars_keeps_them_beside_its_mail() {
     use crate::workspaces::person_settings::calendars::{self as held, fake_caldav};
 
@@ -307,6 +311,7 @@ async fn an_icloud_account_asked_for_calendars_keeps_them_beside_its_mail() {
     let address = "ada@icloud.example";
     let password = "app-password";
     let calendar = fake_caldav::Server::start(address, password);
+    calendar.add_calendar("personal", "Personal");
     setup.workspaces.keep_icloud_calendars_at(&calendar.url());
     setup
         .workspaces
@@ -385,5 +390,59 @@ async fn an_icloud_account_asked_for_calendars_keeps_them_beside_its_mail() {
                 .iter()
                 .any(|account| account["id"] == json!(linked))),
         "the calendar account went with its service: {kept_calendars}"
+    );
+
+    // Turning them on again keeps them with the sign-in the vault holds, and
+    // removing the account takes them with it.
+    setup
+        .ask(
+            person_accounts::RESOURCE,
+            person_accounts::SET_SERVICES,
+            json!({"account": address, "services": {"mail": true, "calendar": true}}),
+        )
+        .await
+        .expect("its member says what it feeds");
+    let kept_calendars = setup
+        .ask(held::RESOURCE, held::LIST, Value::Null)
+        .await
+        .expect("Calendar lists the calendars again");
+    assert!(
+        kept_calendars["accounts"]
+            .as_array()
+            .is_some_and(|accounts| accounts
+                .iter()
+                .any(|account| account["id"] == json!(linked))),
+        "Calendar lists the calendar account again: {kept_calendars}"
+    );
+    setup
+        .ask(
+            person_accounts::RESOURCE,
+            person_accounts::REMOVE,
+            json!({"account": address}),
+        )
+        .await
+        .expect("the account goes");
+    let kept_calendars = setup
+        .ask(held::RESOURCE, held::LIST, Value::Null)
+        .await
+        .expect("Calendar lists nothing now");
+    assert!(
+        !kept_calendars["accounts"]
+            .as_array()
+            .is_some_and(|accounts| accounts
+                .iter()
+                .any(|account| account["id"] == json!(linked))),
+        "the calendar account went with the account: {kept_calendars}"
+    );
+    assert!(
+        setup
+            .ask(
+                person_accounts::RESOURCE,
+                person_accounts::LIST,
+                Value::Null,
+            )
+            .await
+            .is_ok(),
+        "Mail lists its accounts after the removal"
     );
 }

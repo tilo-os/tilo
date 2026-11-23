@@ -388,6 +388,38 @@ impl Workspaces {
         .await
     }
 
+    /// Keep `keep` in `workspace`'s accounts (each added, or in place of the one with its
+    /// id) and remove `remove`, all in one change: what one action makes of several accounts
+    /// together, as one sign-in lights up a mail account and its calendars.
+    ///
+    /// # Errors
+    /// The record does not take the write on this device.
+    pub async fn keep_workspace_accounts(
+        &self,
+        workspace: &str,
+        keep: &[accounts::Account],
+        remove: &[&str],
+    ) -> Result<(), String> {
+        self.change_workspace_accounts(workspace, |held| {
+            let mut edits: Vec<tilo_resource::Invoke<AccountList>> = Vec::new();
+            for id in remove {
+                if held.account(id).is_some() {
+                    edits.push(
+                        AccountList::REMOVE_ACCOUNT
+                            .with(tilo_resource::Id::from_raw((*id).to_owned())),
+                    );
+                }
+            }
+            for account in keep {
+                if held.account(account.id.as_str()).as_ref() != Some(account) {
+                    edits.push(AccountList::saving(account));
+                }
+            }
+            Ok((edits, ()))
+        })
+        .await
+    }
+
     /// Remove the account `id` from `workspace`'s accounts. Whether it was there.
     ///
     /// # Errors
@@ -431,7 +463,10 @@ impl Workspaces {
                 }
                 None => Replica::from_doc(founding_accounts(workspace)?),
             }
-            .in_app(accounts::person::ACCOUNTS_OWNER, "Settings");
+            .in_app(accounts::person::ACCOUNTS_OWNER, "Settings")
+            // Every change names the person this device signs in as: a change signed by
+            // the device that names nobody is refused, and a keeper's write is theirs.
+            .as_invoker(&hex::encode(self.inner.host.cert.user_public_key));
             let state = replica.state().map_err(|error| error.to_string())?;
             let (edits, answer) = change(&state)?;
             if edits.is_empty() {

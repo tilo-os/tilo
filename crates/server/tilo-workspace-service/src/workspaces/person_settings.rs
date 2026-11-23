@@ -587,6 +587,7 @@ pub(super) async fn add_mail_with(
     adding: AddMailAccount,
     kept: Option<tilo_actions::remote::person_vault::ItemRef>,
     provider: person_accounts::Provider,
+    linked: Option<(accounts::Account, String)>,
 ) -> Result<MailAccount, String> {
     let config = accounts::email::AccountConfig {
         display_name: adding.display_name.trim().to_owned(),
@@ -633,6 +634,12 @@ pub(super) async fn add_mail_with(
             serde_json::to_value(adding.services.within(provider))
                 .map_err(|error| error.to_string())?,
         );
+        // The calendar account kept as its service: what reads the link back
+        // when the account's services, or the account itself, go.
+        if let Some((calendar, server)) = &linked {
+            settings.insert("calendar_account".into(), calendar.id.as_str().into());
+            settings.insert("server".into(), server.clone().into());
+        }
     }
     account.config = settings;
 
@@ -674,7 +681,16 @@ pub(super) async fn add_mail_with(
         // Kept again without a password, it keeps the sign-in it had.
         accounts::email::set_password_item(&mut account.config, Some(&before.to_string()));
     }
-    vault.keep_account(&account).await?;
+    // One change keeps every account this action makes: the mail account and,
+    // where its provider keeps calendars, the calendar account beside it.
+    match linked {
+        Some((calendar, _)) => {
+            vault
+                .keep_and_remove_accounts(&[account.clone(), calendar], &[])
+                .await?;
+        }
+        None => vault.keep_account(&account).await?,
+    }
     kept_mail(&vault.accounts().await?, root, account.id.as_str())
 }
 
@@ -686,8 +702,12 @@ async fn remove_mail(
 ) -> Result<MailAccounts, String> {
     let held = vault.accounts().await?;
     let kept = held.account(account);
+    if kept.is_none() {
+        return Err("That account is not kept here".into());
+    }
     let sign_in = kept.as_ref().and_then(|kept| sign_in_of(&kept.config));
-    // The calendars kept as its service go with it.
+    // The calendars kept as its service go with it, in one change to the
+    // accounts record.
     #[cfg(feature = "agents")]
     let linked = kept.as_ref().and_then(|kept| {
         calendars::linked_to(
@@ -696,22 +716,30 @@ async fn remove_mail(
             account,
         )
     });
-    if !vault.remove_account(account).await? {
-        return Err("That account is not kept here".into());
+    #[cfg(feature = "agents")]
+    let linked_sign_in = linked
+        .as_ref()
+        .and_then(|id| held.account(id))
+        .and_then(|kept| sign_in_of(&kept.config));
+    #[allow(
+        unused_mut,
+        reason = "a build without the calendar module removes the mail account alone"
+    )]
+    let mut remove = vec![account];
+    #[cfg(feature = "agents")]
+    if let Some(calendar) = &linked {
+        remove.push(calendar.as_str());
     }
+    vault.keep_and_remove_accounts(&[], &remove).await?;
     if let Some(sign_in) = &sign_in {
         vault.forget_sign_in(account, sign_in).await?;
     }
     #[cfg(feature = "agents")]
-    if let Some(calendar) = &linked
-        && let Err(why) = Box::pin(calendars::remove_account((vault, root), calendar)).await
-    {
-        tracing::warn!(
-            calendar = %calendar,
-            account,
-            %why,
-            "mail: a removed account's calendar account could not be removed"
-        );
+    if let Some(calendar) = &linked {
+        if let Some(sign_in) = &linked_sign_in {
+            vault.forget_sign_in(calendar, sign_in).await?;
+        }
+        calendars::forget_kept(root, calendar);
     }
     Ok(mail_accounts(&vault.accounts().await?, root))
 }
@@ -2432,6 +2460,7 @@ mod mail_session_tests {
                 },
                 None,
                 person_accounts::Provider::Other,
+                None,
             ))
             .unwrap();
         assert!(kept.has_secret);
@@ -2505,6 +2534,7 @@ mod mail_session_tests {
                 },
                 None,
                 person_accounts::Provider::Other,
+                None,
             ))
             .unwrap();
         assert!(!kept.has_secret);

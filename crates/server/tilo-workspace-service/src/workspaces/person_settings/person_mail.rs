@@ -15,7 +15,7 @@ use tilo_actions::remote::person_accounts::{
 };
 use tilo_actions::remote::{ActionCallError, InvokeRequest};
 
-use super::kept_sign_ins::{Signing, has_sign_in};
+use super::kept_sign_ins::{Signing, has_sign_in, sign_in_of};
 use super::{add_mail_with, answer, argument, remove_mail};
 use crate::workspaces::Workspaces;
 use crate::workspaces::vault::VaultAt;
@@ -80,48 +80,67 @@ impl Workspaces {
         // whose provider keeps calendars does not keep them because the
         // servers of its mail were typed.
         adding.services = adding.services.within(provider);
+        // An iCloud account's calendars are kept with its app password, where
+        // its person asked for them: the calendar account is made first (its
+        // server is asked, its sign-in kept), so one change below keeps both
+        // records. A calendar server that does not take them leaves the mail
+        // account as it is, feeding mail alone.
         #[cfg(feature = "agents")]
-        let password = adding.password.clone();
-        #[allow(
-            unused_mut,
-            reason = "a build without the calendar module keeps mail alone"
-        )]
-        let mut kept = Box::pin(add_mail_with(
+        let mut linked: Option<(accounts::Account, String)> = None;
+        #[cfg(feature = "agents")]
+        if provider == Provider::Icloud && adding.services.calendar && !adding.password.is_empty() {
+            let server = self.icloud_calendar_server();
+            let service = super::calendars::Service {
+                server_url: server.clone(),
+                username: adding.address.clone(),
+                password: adding.password.clone(),
+                name: adding.display_name.clone(),
+                mail_account: adding.address.clone(),
+            };
+            match super::calendars::prepare_service_in(
+                (signing.vault, signing.root),
+                self.inner.models.mail_reach(),
+                signing.by,
+                service,
+            )
+            .await
+            {
+                Ok(calendar) => linked = Some((calendar, server)),
+                Err(why) => {
+                    tracing::warn!(
+                        address = %adding.address,
+                        %why,
+                        "mail: an iCloud account's calendars were not kept, so it feeds mail alone"
+                    );
+                    adding.services.calendar = false;
+                }
+            }
+        }
+        #[cfg(not(feature = "agents"))]
+        let linked: Option<(accounts::Account, String)> = None;
+        let kept = Box::pin(add_mail_with(
             self.account_tester(),
             (signing.vault, signing.root),
             adding,
             None,
             provider,
+            linked.clone(),
         ))
-        .await?;
-        // An iCloud account's calendars are kept with its app password, where
-        // its person asked for them. A calendar server that does not take
-        // them leaves the mail account as it is, feeding mail alone.
+        .await;
+        // A mail account refused after its calendars were prepared leaves no
+        // sign-in of theirs in the vault.
         #[cfg(feature = "agents")]
-        if provider == Provider::Icloud && kept.services.calendar {
-            match self.keep_added_calendars(signing, &kept, &password).await {
-                Ok(calendar) => {
-                    link_calendar(
-                        signing.vault,
-                        &kept.id,
-                        &calendar,
-                        &self.icloud_calendar_server(),
-                    )
-                    .await?;
-                    kept = kept_mail(&signing.vault.accounts().await?, signing.root, &kept.id)?;
-                }
-                Err(why) => {
-                    tracing::warn!(
-                        account = %kept.id,
-                        %why,
-                        "mail: an iCloud account's calendars were not kept, so it feeds mail alone"
-                    );
-                    kept.services.calendar = false;
-                    set_services_in_config(signing.vault, &kept.id, kept.services).await?;
-                }
-            }
+        if kept.is_err()
+            && let Some((calendar, _)) = &linked
+            && let Some(reference) = accounts::email::password_item(&calendar.config)
+                .and_then(tilo_actions::remote::person_vault::ItemRef::from_id)
+        {
+            let _ = signing
+                .vault
+                .forget_sign_in(calendar.id.as_str(), &reference)
+                .await;
         }
-        Ok(kept)
+        kept
     }
 
     /// Say which of an account's services its person uses (`SET_SERVICES`).
@@ -154,20 +173,23 @@ impl Workspaces {
         };
         // An iCloud account's calendars go with its sign-in: kept where they
         // are turned on, removed with what was kept of them where they are
-        // turned off.
+        // turned off, each in one change with the mail account's own settings.
         #[cfg(feature = "agents")]
         if provider == Provider::Icloud {
-            let linked = linked_calendar(signing, &account).await;
+            let linked = linked_calendar(&held, &account);
             if services.calendar && linked.is_none() {
                 match self.keep_service_calendar(signing, &saying.account).await {
                     Ok(calendar) => {
-                        link_calendar(
-                            signing.vault,
-                            &saying.account,
-                            &calendar,
-                            &self.icloud_calendar_server(),
-                        )
-                        .await?;
+                        let server = self.icloud_calendar_server();
+                        let mail = with_link(&account, services, Some((&calendar, &server)));
+                        signing
+                            .vault
+                            .keep_and_remove_accounts(&[mail, calendar], &[])
+                            .await?;
+                        return Ok(mail_accounts(
+                            &signing.vault.accounts().await?,
+                            signing.root,
+                        ));
                     }
                     Err(why) => {
                         tracing::warn!(
@@ -181,8 +203,22 @@ impl Workspaces {
             } else if !services.calendar
                 && let Some(calendar) = &linked
             {
-                super::calendars::remove_account((signing.vault, signing.root), calendar).await?;
-                unlink_calendar(signing.vault, &saying.account).await?;
+                let mail = with_link(&account, services, None);
+                signing
+                    .vault
+                    .keep_and_remove_accounts(&[mail], &[calendar.as_str()])
+                    .await?;
+                if let Some(sign_in) = held
+                    .account(calendar)
+                    .and_then(|kept| sign_in_of(&kept.config))
+                {
+                    signing.vault.forget_sign_in(calendar, &sign_in).await?;
+                }
+                super::calendars::forget_kept(signing.root, calendar);
+                return Ok(mail_accounts(
+                    &signing.vault.accounts().await?,
+                    signing.root,
+                ));
             }
         }
         set_services_in_config(signing.vault, &saying.account, services).await?;
@@ -192,48 +228,34 @@ impl Workspaces {
         ))
     }
 
-    /// Keep the calendars of an added iCloud account with its sign-in,
-    /// answering the calendar account's id.
+    /// The calendar account kept as a kept iCloud account's service, with the
+    /// sign-in the workspace's vault holds for it.
     #[cfg(feature = "agents")]
-    async fn keep_added_calendars(
+    async fn keep_service_calendar(
         &self,
         signing: Signing<'_>,
-        account: &MailAccount,
-        password: &str,
-    ) -> Result<String, String> {
+        account: &str,
+    ) -> Result<accounts::Account, String> {
+        let (kept, secret) = super::account_with_secret(signing, account).await?;
+        let address = field(&kept, "email");
         let service = super::calendars::Service {
             server_url: self.icloud_calendar_server(),
-            username: account.address.clone(),
-            password: password.to_owned(),
-            name: account.display_name.clone(),
-            mail_account: account.id.clone(),
+            username: if address.is_empty() {
+                kept.id.to_string()
+            } else {
+                address
+            },
+            password: secret.password,
+            name: kept.display_name.clone(),
+            mail_account: kept.id.to_string(),
         };
-        super::calendars::add_service(
+        super::calendars::prepare_service_in(
             (signing.vault, signing.root),
             self.inner.models.mail_reach(),
             signing.by,
             service,
         )
         .await
-    }
-
-    /// Keep the calendars of a kept iCloud account with the sign-in the
-    /// workspace's vault holds for it, answering the calendar account's id.
-    #[cfg(feature = "agents")]
-    async fn keep_service_calendar(
-        &self,
-        signing: Signing<'_>,
-        account: &str,
-    ) -> Result<String, String> {
-        let (kept, secret) = super::account_with_secret(signing, account).await?;
-        let mail = MailAccount {
-            id: kept.id.to_string(),
-            address: field(&kept, "email"),
-            display_name: kept.display_name.clone(),
-            ..MailAccount::default()
-        };
-        self.keep_added_calendars(signing, &mail, &secret.password)
-            .await
     }
 
     /// Where an iCloud account's calendars are kept: iCloud's own server, or
@@ -436,51 +458,42 @@ fn provider_of_servers(incoming: &str, outgoing: &str) -> Provider {
 #[cfg(feature = "agents")]
 const ICLOUD_CALENDARS: &str = "https://caldav.icloud.com";
 
-/// Keep `calendar` as the calendar account of the mail account `id`, and
-/// `server` as where that account's calendars are.
+/// `account` with its services as `services` says and, where `calendar` names the calendar
+/// account kept as one, the link to it: what one change keeps beside the calendar account.
 #[cfg(feature = "agents")]
-async fn link_calendar(
-    vault: VaultAt<'_>,
-    id: &str,
-    calendar: &str,
-    server: &str,
-) -> Result<(), String> {
-    change_config(vault, id, |settings| {
-        settings.insert(
-            "calendar_account".into(),
-            Value::String(calendar.to_owned()),
-        );
-        settings.insert("server".into(), Value::String(server.to_owned()));
-        Ok(())
-    })
-    .await
-    .map(drop)
-}
-
-/// Forget the calendar account of `id`: what its settings say of one goes
-/// with the calendar account itself.
-#[cfg(feature = "agents")]
-async fn unlink_calendar(vault: VaultAt<'_>, id: &str) -> Result<(), String> {
-    change_config(vault, id, |settings| {
+fn with_link(
+    account: &accounts::Account,
+    services: Services,
+    calendar: Option<(&accounts::Account, &str)>,
+) -> accounts::Account {
+    let mut account = account.clone();
+    if let Some(settings) = account.config.as_object_mut() {
+        if let Ok(services) = serde_json::to_value(services) {
+            settings.insert("services".into(), services);
+        }
         settings.remove("calendar_account");
         settings.remove("server");
-        Ok(())
-    })
-    .await
-    .map(drop)
+        if let Some((calendar, server)) = calendar {
+            settings.insert("calendar_account".into(), calendar.id.as_str().into());
+            settings.insert("server".into(), server.into());
+        }
+    }
+    account
 }
 
 /// The calendar account kept as `account`'s service: the one its settings
 /// name, else the one kept for it.
 #[cfg(feature = "agents")]
-async fn linked_calendar(signing: Signing<'_>, account: &accounts::Account) -> Option<String> {
+fn linked_calendar(
+    held: &accounts::person::AccountList,
+    account: &accounts::Account,
+) -> Option<String> {
     let named = account
         .config
         .get("calendar_account")
         .and_then(Value::as_str)
         .filter(|id| !id.is_empty());
-    let held = signing.vault.accounts().await.ok()?;
-    super::calendars::linked_to(&held, named, account.id.as_str())
+    super::calendars::linked_to(held, named, account.id.as_str())
 }
 
 /// The services `account` feeds: the ones its settings name, else mail alone
