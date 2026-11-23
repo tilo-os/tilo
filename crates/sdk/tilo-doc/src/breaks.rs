@@ -20,11 +20,15 @@ pub fn line_break_opportunities(text: &str) -> std::vec::IntoIter<(usize, LineBr
     use icu_segmenter::{LineSegmenter, LineSegmenterBorrowed};
     // The auto model adds dictionary/LSTM boundaries for Khmer, Lao, Myanmar, and Thai.
     #[cfg(not(target_arch = "wasm32"))]
-    static SEGMENTER: LazyLock<LineSegmenterBorrowed<'static>> =
-        LazyLock::new(|| LineSegmenter::new_auto(icu_segmenter::LineBreakOptions::default()));
+    static SEGMENTER: LazyLock<LineSegmenterBorrowed<'static>> = LazyLock::new(|| {
+        LineSegmenter::new_auto(icu_segmenter::options::LineBreakOptions::default())
+    });
     #[cfg(target_arch = "wasm32")]
-    static SEGMENTER: LazyLock<LineSegmenterBorrowed<'static>> =
-        LazyLock::new(|| LineSegmenter::new_for_non_complex_scripts(icu_segmenter::LineBreakOptions::default()));
+    static SEGMENTER: LazyLock<LineSegmenterBorrowed<'static>> = LazyLock::new(|| {
+        LineSegmenter::new_for_non_complex_scripts(
+            icu_segmenter::options::LineBreakOptions::default(),
+        )
+    });
 
     let mut breaks = BTreeMap::new();
     for (byte, kind) in unicode_linebreak::linebreaks(text) {
@@ -83,11 +87,15 @@ pub fn hyphenate(word: &str, lang: hypher::Lang, out: &mut dyn FnMut(usize)) {
 pub fn unicode_word_ranges(text: &str) -> std::vec::IntoIter<std::ops::Range<usize>> {
     use icu_segmenter::{WordSegmenter, WordSegmenterBorrowed};
     #[cfg(not(target_arch = "wasm32"))]
-    static SEGMENTER: LazyLock<WordSegmenterBorrowed<'static>> =
-        LazyLock::new(|| WordSegmenter::new_auto(icu_segmenter::WordBreakInvariantOptions::default()));
+    static SEGMENTER: LazyLock<WordSegmenterBorrowed<'static>> = LazyLock::new(|| {
+        WordSegmenter::new_auto(icu_segmenter::options::WordBreakInvariantOptions::default())
+    });
     #[cfg(target_arch = "wasm32")]
-    static SEGMENTER: LazyLock<WordSegmenterBorrowed<'static>> =
-        LazyLock::new(|| WordSegmenter::new_for_non_complex_scripts(icu_segmenter::WordBreakInvariantOptions::default()));
+    static SEGMENTER: LazyLock<WordSegmenterBorrowed<'static>> = LazyLock::new(|| {
+        WordSegmenter::new_for_non_complex_scripts(
+            icu_segmenter::options::WordBreakInvariantOptions::default(),
+        )
+    });
     let boundaries: Vec<_> = SEGMENTER.segment_str(text).iter_with_word_type().collect();
     boundaries
         .windows(2)
