@@ -108,6 +108,8 @@ enum Plan {
     Agree,
     /// What was typed into the sheet is the answer, agreeing with it.
     Entry,
+    /// A fingerprint typed into the sheet, which must be this certificate digest's.
+    Fingerprint(String),
     /// A password, for the identity the question asked it for.
     Password { identity: usize },
     /// The secrets typed into the sheet, and whether to keep them.
@@ -791,6 +793,16 @@ impl Shown {
                     ..Answer::default()
                 })
             }
+            Plan::Fingerprint(certificate) => {
+                let typed = state.text(Field::Answer);
+                if !typed.trim().eq_ignore_ascii_case(certificate) {
+                    return Err(crate::i18n::t("airdrop-error-verification"));
+                }
+                Ok(Answer {
+                    values: vec![zeroize::Zeroizing::new(certificate.clone())],
+                    ..Answer::default()
+                })
+            }
             Plan::Rows { names } => {
                 let Body::Devices(devices) = &dialog.body else {
                     return Err(word("portal-no-such-field"));
@@ -908,6 +920,10 @@ fn compose(question: &Question) -> Option<Composed> {
         crate::network::DEVICE_UNLOCK => device_unlock(&question.handle, details)?,
         crate::network::DEVICE_ENROL => device_enrol(&question.handle, details)?,
         crate::network_reach::KIND => reach(&question.handle, &who, details)?,
+        #[cfg(target_os = "linux")]
+        tilo_workspace_service::apps::nearby_send::VERIFY_QUESTION => {
+            receiver(&question.handle, details)?
+        }
         _ => return None,
     };
     Some(Composed {
@@ -1079,6 +1095,38 @@ fn app_question_title(kind: ActionKind, app: &str, target: &str) -> String {
         ActionKind::Undoable | ActionKind::Outside => "app-question-title-change",
     };
     words(title, &[("app", app), ("target", target)])
+}
+
+/// A file handed to a receiver that is not one of the person's devices: the sheet names the file,
+/// its size and the endpoint, and the person types the fingerprint of the receiver's certificate as
+/// 64 hexadecimal digits, read off its console or another channel that did not carry the file. A
+/// fingerprint that is not the receiver's is refused on the sheet; declining sends nothing.
+#[cfg(target_os = "linux")]
+fn receiver(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
+    use ui::i18n::ArgValue;
+    let asked: tilo_workspace_service::apps::nearby_send::VerifyQuestion =
+        serde_json::from_value(details).ok()?;
+    let dialog = Dialog {
+        handle: handle.to_owned(),
+        title: crate::i18n::t("airdrop-verify-title"),
+        detail: crate::i18n::t_args(
+            "airdrop-verify-detail",
+            &[
+                ("name", ArgValue::Text(asked.name)),
+                ("bytes", ArgValue::Text(asked.bytes.to_string())),
+                ("endpoint", ArgValue::Text(asked.endpoint)),
+            ],
+        ),
+        body: Body::Entry {
+            masked: false,
+            required: true,
+            choices: Vec::new(),
+        },
+        confirm_label: crate::i18n::t("airdrop-verify-send-once"),
+        cancel_label: crate::i18n::t("airdrop-verify-cancel"),
+        ..Dialog::default()
+    };
+    Some((dialog, Plan::Fingerprint(asked.certificate)))
 }
 
 /// What an agent's run asks before a step its grants leave to the person, or an app before it takes
@@ -1824,6 +1872,42 @@ mod tests {
             details,
         })
         .expect("the session composes this question")
+    }
+
+    /// A receiver that is not one of the person's devices is verified on the sheet: a fingerprint
+    /// that is not its certificate's is refused there and the question stays up; its own, typed in
+    /// either case, answers it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_fingerprint_that_is_not_the_receivers_is_refused_on_the_sheet() {
+        let certificate = "ab".repeat(32);
+        let composed = sheet(
+            tilo_workspace_service::apps::nearby_send::VERIFY_QUESTION,
+            json!({
+                "name": "contract.txt",
+                "bytes": 40_000,
+                "endpoint": "AirDrop · 127.0.0.1:443",
+                "certificate": certificate,
+            }),
+        );
+        assert!(matches!(composed.dialog.body, Body::Entry { .. }));
+        let shown = Shown {
+            handle: Some("asked".into()),
+            details: Value::Null,
+            sheet: Sheet::Portal,
+            dialog: composed.dialog,
+            plan: composed.plan,
+            remember: false,
+            grant: None,
+        };
+        let state = PortalState::default();
+        state.set_text(Field::Answer, &"00".repeat(32));
+        assert!(matches!(shown.decide(&state, None), Step::Refused(_)));
+        state.set_text(Field::Answer, &format!(" {} ", certificate.to_uppercase()));
+        let Step::Decide(Decision::Answer(answer)) = shown.decide(&state, None) else {
+            panic!("the receiver's own fingerprint answers the question");
+        };
+        assert_eq!(answer.values[0].as_str(), certificate);
     }
 
     tilo_test_env::scenario! {

@@ -1333,6 +1333,11 @@ impl Session {
             options.questions.clone(),
             options.desktop.as_ref().map(|desktop| desktop.questions()),
         );
+        // A file handed to a receiver that is not one of the person's devices waits on the same
+        // sheets for them to verify that receiver.
+        if let (Some(questions), Some(nearby)) = (&questions, &nearby) {
+            nearby.air_drop().ask_with(questions.clone());
+        }
         // What an agent's run asks its person before a step its grants leave to them is put on
         // the same sheets ([`crate::step_questions`]).
         if let (Some(questions), Some(broker)) = (
@@ -1799,8 +1804,6 @@ impl Session {
             file_picker,
             lock,
             keyboard,
-            nearby: nearby.as_ref().map(std::sync::Arc::clone),
-            air_drop_consent: crate::nearby_airdrop::Consent::default(),
             owner_session: crate::owner_session::SessionFollow::default(),
             display_confirm,
             notices: notices.clone(),

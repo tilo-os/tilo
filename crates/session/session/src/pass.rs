@@ -802,11 +802,6 @@ impl Session {
             self.displays.awaiting_confirmation().is_some(),
             &self.shared.invocations,
         );
-        // The verification of an AirDrop receiver, before the sheets are placed: one that just
-        // opened stands on this pass's display.
-        self.shared
-            .air_drop_consent
-            .follow(self.shared.nearby.as_ref(), self.shared.portal.as_ref());
         self.place_sheets();
         // What the async work this session started answered since the last pass.
         self.shared.landings.land();

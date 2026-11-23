@@ -511,10 +511,6 @@ tilo-device-vpn = { path = "../../os/device-vpn", default-features = false, feat
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability", features = ["test-support"] }
 # A server host on this machine's loopback, which is what a test's devices relay through.
 test-server = { path = "../../../tools/test-server", features = ["questions"] }
-# The AirDrop test's receiver: a TLS listener with a certificate of its own, which the sender's
-# helper pins to before it sends anything.
-rustls.workspace = true
-rcgen.workspace = true
 futures-util.workspace = true
 tilo-copy-lint = { path = "../../../tools/copy-lint" }
 tilo-audio-service = { path = "../audio-service" }

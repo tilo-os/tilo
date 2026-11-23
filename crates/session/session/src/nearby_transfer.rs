@@ -20,28 +20,17 @@
 //! disk.
 //!
 //! A receiver that is not one of the person's devices is reached the `AirDrop`
-//! way: a literal endpoint and the receiver's leaf certificate, approved by
-//! the person for one attempt on staged bytes (`answer_air_drop`).
-//! That attempt runs on a thread of its own, since its helper may wait on a
-//! receiver for a minute, and appears in Files' list beside a device send. It is
-//! offered only to a development session that asked for it.
+//! way, through Nearby Send's resource ([`AirDrops`]): Files' send to one is
+//! handed there, and its attempts appear in Files' list beside a device send.
 
 use collab_types::caps::{Access, CapDecision, ResourceRef, Scope};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::hash::{Hash as _, Hasher as _};
-use std::io::Read as _;
-use std::os::fd::{AsRawFd as _, FromRawFd as _};
 use std::os::unix::ffi::OsStrExt as _;
-use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
-use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-
-use sha2::{Digest as _, Sha256};
 
 use crate::platform::fabric::{DeviceId, PersonalFabricAction};
 use crate::platform::fabric::{FabricLink as _, NearbySpoolOffer, SharedLink};
@@ -64,6 +53,7 @@ use tilo_network_actor::{
     PersonalTransferStatus,
 };
 use tilo_service::Wake;
+use tilo_workspace_service::apps::nearby_send::{AirDrops, Host};
 use tilo_workspace_service::apps::services::{
     NearbyTransferChange, NearbyTransferRequestContext, NearbyTransferServices,
 };
@@ -91,23 +81,6 @@ const MAX_HISTORY: usize = 32;
 const NOT_YOURS: &str = "this Nearby Send handle belongs to another connection";
 const NO_DESTINATION: &str = "that folder is not one of this workspace's files";
 const NO_WORKER: &str = "the nearby transfer worker stopped";
-
-/// The program that speaks `AirDrop`'s wire: an independent, bounded helper the session runs with
-/// only the descriptors it needs.
-const AIRDROP_HELPER: &str = "/usr/bin/python3";
-const AIRDROP_SENDER: &str = include_str!("../../../../tools/protocols/airdrop_sender.py");
-/// The size the `AirDrop` adapter carries, as the receiver's own protocol limits it.
-const AIRDROP_MAX_BYTES: u64 = 16 * 1024 * 1024;
-/// The most a helper may say back: one small JSON object.
-const AIRDROP_REPLY_BYTES: u64 = 1024;
-/// How long one helper process may run, interpreter start included.
-const AIRDROP_TIMEOUT: Duration = Duration::from_secs(65);
-/// How long the receiver's verification waits for the person before the attempt is withdrawn.
-const AIRDROP_CONSENT_TIMEOUT: Duration = Duration::from_secs(120);
-/// How long an attempt that ended stays in Files' list.
-const AIRDROP_FORGET: Duration = Duration::from_secs(120);
-/// One attempt runs at a time; Files' list keeps the ones that ended, up to this many.
-const MAX_AIRDROP_JOBS: usize = 32;
 
 /// Where the spool this session stages into lives: beside what the rest of the session keeps,
 /// private to the person.
@@ -195,79 +168,6 @@ struct Stream {
     status: PersonalTransferStatus,
 }
 
-/// One attempt at a receiver that is not one of the person's devices: a file handed over the
-/// `AirDrop` wire, pinned to the leaf certificate the receiver showed and approved by the person on
-/// the bytes staged here.
-#[derive(Clone)]
-struct AirDrop {
-    peer_id: u64,
-    workspace: String,
-    address: String,
-    port: u16,
-    /// The file Files named, as raw bytes: the attempt reopens it only beneath the workspace's own
-    /// Files grant, and each helper run is admitted against the descriptor it was staged from.
-    source_path: Vec<u8>,
-    name: String,
-    /// What Files calls the receiver, as the transfer's device label.
-    endpoint: String,
-    bytes: u64,
-    phase: NearbyTransferPhase,
-    created: Instant,
-    /// Set to stop the attempt at its next check, whoever stops it.
-    cancel: Arc<AtomicBool>,
-    /// The receiver's leaf certificate digest, once the helper observed it: what the person is
-    /// asked to verify.
-    certificate: Option<[u8; 32]>,
-    /// The person's answer, once they gave one.
-    answer: Option<AirDropAnswer>,
-}
-
-/// What the person did with a receiver's verification.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum AirDropAnswer {
-    /// Send once, to the receiver whose leaf certificate's SHA-256 digest is `pin`.
-    Confirm { pin: String },
-    /// Nothing leaves this device.
-    Decline,
-}
-
-/// What the portal sheet shows of an attempt that waits for the person.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct AirDropAsk {
-    pub(crate) id: [u8; 16],
-    pub(crate) name: String,
-    pub(crate) bytes: u64,
-    pub(crate) endpoint: String,
-}
-
-/// The one attempt that may run, held for as long as it does.
-struct ActiveAirDrop(Arc<AtomicBool>);
-
-impl ActiveAirDrop {
-    fn reserve(active: &Arc<AtomicBool>) -> Result<Self, String> {
-        active
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .map_err(|_| crate::i18n::t("airdrop-error-busy"))?;
-        Ok(Self(Arc::clone(active)))
-    }
-}
-
-impl Drop for ActiveAirDrop {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
-    }
-}
-
-/// Whether an attempt is over, as Files' list reads its phase.
-fn over(phase: NearbyTransferPhase) -> bool {
-    matches!(
-        phase,
-        NearbyTransferPhase::Completed
-            | NearbyTransferPhase::Failed
-            | NearbyTransferPhase::Cancelled
-    )
-}
-
 /// The spool's two queues, as its worker last left them.
 #[derive(Clone, Default)]
 struct Queues {
@@ -318,8 +218,6 @@ struct State {
     installing: BTreeMap<[u8; 16], SecureNearbyDestination>,
     progress: BTreeMap<[u8; 16], Stream>,
     history: VecDeque<Settled>,
-    /// Attempts to a receiver that is not one of the person's devices, by transfer.
-    airdrops: BTreeMap<[u8; 16], AirDrop>,
     last_offer: BTreeMap<[u8; 16], Instant>,
     /// The folder each connection chose to remember for this session.
     remembered: BTreeMap<String, PathBuf>,
@@ -353,9 +251,6 @@ impl State {
         self.transfers.retain(|_, binding| binding.expires_at > now);
         self.destinations
             .retain(|_, binding| binding.expires_at > now);
-        self.airdrops.retain(|_, job| {
-            !over(job.phase) || now.saturating_duration_since(job.created) < AIRDROP_FORGET
-        });
     }
 
     fn bind_target(
@@ -485,11 +380,9 @@ struct Inner {
     state: Mutex<State>,
     /// The revision Files' waits follow.
     changes: tokio::sync::watch::Sender<u64>,
-    /// Whether this session offers the `AirDrop` path at all: a development build that asked for it,
-    /// on a machine with its helper.
-    air_drop: bool,
-    /// Whether an attempt is running now.
-    air_drop_active: Arc<AtomicBool>,
+    /// The files handed to receivers that are not the person's devices, which Nearby Send's
+    /// resource runs.
+    air_drop: AirDrops,
 }
 
 /// One piece of work for the thread that owns the spool.
@@ -572,29 +465,7 @@ impl NearbyTransfer {
         continuity: Continuity,
         wake: Wake,
     ) -> Result<Arc<Self>, String> {
-        Self::open_with(link, spool, continuity, wake, air_drop_lab())
-    }
-
-    /// An engine whose `AirDrop` path is offered or not, whatever this host's own switch says: a
-    /// test's own choice, so it never depends on what another test set.
-    #[cfg(test)]
-    fn open_with_air_drop(
-        link: Option<SharedLink>,
-        spool: Option<PathBuf>,
-        continuity: Continuity,
-        wake: Wake,
-        air_drop: bool,
-    ) -> Result<Arc<Self>, String> {
-        Self::open_with(link, spool, continuity, wake, air_drop)
-    }
-
-    fn open_with(
-        link: Option<SharedLink>,
-        spool: Option<PathBuf>,
-        continuity: Continuity,
-        wake: Wake,
-        air_drop: bool,
-    ) -> Result<Arc<Self>, String> {
+        let air_drop = tilo_workspace_service::apps::nearby_send::lab();
         tracing::info!(
             fabric = link.is_some(),
             staging = spool.is_some(),
@@ -602,7 +473,7 @@ impl NearbyTransfer {
             "Nearby Send runs on this session"
         );
         let (jobs, mailbox) = channel();
-        let inner = Arc::new(Inner {
+        let inner = Arc::new_cyclic(|engine| Inner {
             link,
             continuity,
             spool,
@@ -611,8 +482,7 @@ impl NearbyTransfer {
             authority: Mutex::new(None),
             state: Mutex::new(State::default()),
             changes: tokio::sync::watch::Sender::new(1),
-            air_drop,
-            air_drop_active: Arc::default(),
+            air_drop: receivers(engine, air_drop),
         });
         let working = Arc::clone(&inner);
         std::thread::Builder::new()
@@ -817,7 +687,7 @@ impl NearbyTransfer {
     }
 
     /// One pass of the session's loop: withdraw offers nobody decided, offer again what no device
-    /// acknowledged, forget the `AirDrop` attempts that ended, and say what moved.
+    /// acknowledged, and say what moved.
     pub(crate) fn pump(&self) {
         if self.inner.continuity.file_transfer_permitted() {
             self.inner.expire_offers();
@@ -825,76 +695,6 @@ impl NearbyTransfer {
         }
         self.inner.state.lock_recover().prune(Instant::now());
         self.inner.observe();
-    }
-
-    /// The attempt that waits for this person now, if one does: what the portal sheet asks them to
-    /// verify.
-    pub(crate) fn air_drop_ask(&self) -> Option<AirDropAsk> {
-        let state = self.inner.state.lock_recover();
-        state
-            .airdrops
-            .iter()
-            .filter(|(_, job)| {
-                job.phase == NearbyTransferPhase::AwaitingConsent
-                    && job.certificate.is_some()
-                    && job.answer.is_none()
-            })
-            .map(|(id, job)| air_drop_ask(*id, job))
-            .next()
-    }
-
-    /// The attempt `id` as it asks its person now, once it is ready to.
-    pub(crate) fn air_drop_ask_of(&self, id: [u8; 16]) -> Option<AirDropAsk> {
-        let state = self.inner.state.lock_recover();
-        state
-            .airdrops
-            .get(&id)
-            .filter(|job| {
-                job.phase == NearbyTransferPhase::AwaitingConsent && job.certificate.is_some()
-            })
-            .map(|job| air_drop_ask(id, job))
-    }
-
-    /// Answer the attempt `id` with what the person did. A confirmation whose fingerprint differs
-    /// from the receiver's is refused, and the attempt waits for them to try again.
-    ///
-    /// # Errors
-    ///
-    /// Nothing of the attempt is waiting for an answer, or the fingerprint is not the receiver's.
-    pub(crate) fn answer_air_drop(
-        &self,
-        id: [u8; 16],
-        answer: AirDropAnswer,
-    ) -> Result<(), String> {
-        let mut state = self.inner.state.lock_recover();
-        let Some(job) = state.airdrops.get_mut(&id) else {
-            return Err(crate::i18n::t("airdrop-error-fresh-consent"));
-        };
-        if job.phase != NearbyTransferPhase::AwaitingConsent {
-            return Err(crate::i18n::t("airdrop-error-fresh-consent"));
-        }
-        let Some(certificate) = job.certificate else {
-            return Err(crate::i18n::t("airdrop-error-unavailable"));
-        };
-        if let AirDropAnswer::Confirm { pin } = &answer
-            && pin_bytes(pin) != Some(certificate)
-        {
-            return Err(crate::i18n::t("airdrop-error-verification"));
-        }
-        // The question is answered: it never stands again for this attempt, whichever way it
-        // goes, and the attempt's thread takes the answer from what it finds here.
-        job.phase = match answer {
-            AirDropAnswer::Confirm { .. } => NearbyTransferPhase::Transferring,
-            AirDropAnswer::Decline => {
-                job.cancel.store(true, Ordering::Release);
-                NearbyTransferPhase::Cancelled
-            }
-        };
-        job.answer = Some(answer);
-        drop(state);
-        self.inner.changed();
-        (self.inner.wake)();
-        Ok(())
     }
 
     /// The files under `workspace` that Files may write into, widest grant first: where a received
@@ -957,7 +757,7 @@ impl NearbyTransfer {
                 remembered_for_session,
             });
         }
-        for row in rows(&state) {
+        for row in rows(&state, self.air_drop()) {
             if snapshot.transfers.len() >= MAX_NEARBY_TRANSFER_STATUSES {
                 break;
             }
@@ -1024,9 +824,13 @@ impl NearbyTransfer {
         Ok(NearbyTransferReply::Queued { handle })
     }
 
+    /// The files handed to receivers that are not the person's devices, which Nearby Send runs.
+    pub(crate) fn air_drop(&self) -> &AirDrops {
+        &self.inner.air_drop
+    }
+
     /// Hand the file `path` names to the receiver at `address`:`port`, a device that is not one of
-    /// the person's: the bytes are staged here, the receiver's leaf certificate is shown to the
-    /// person for them to verify ([`Self::answer_air_drop`]), and only their answer sends anything.
+    /// the person's, through Nearby Send's resource: Files' list shows the attempt by this handle.
     fn send_air_drop(
         &self,
         context: &NearbyTransferRequestContext,
@@ -1034,70 +838,17 @@ impl NearbyTransfer {
         address: &str,
         port: u16,
     ) -> Result<NearbyTransferReply, String> {
-        if !self.inner.air_drop_available() {
-            return Err(crate::i18n::t("airdrop-error-unavailable"));
-        }
-        let requested = PathBuf::from(std::ffi::OsStr::from_bytes(path));
-        let source =
-            source_from_grants(&requested, &self.inner.files_grants(context.workspace_id()))?;
-        let metadata = source.metadata()?;
-        if !metadata.is_file() || metadata.len() > AIRDROP_MAX_BYTES {
-            return Err(crate::i18n::t("airdrop-error-source"));
-        }
-        let permit = ActiveAirDrop::reserve(&self.inner.air_drop_active)?;
-        let id = crate::platform::fabric::nonzero::<16>();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let name = source.name().to_owned();
-        let job = AirDrop {
-            peer_id: context.peer_id(),
-            workspace: context.workspace_id().to_owned(),
-            address: address.to_owned(),
+        let id = self.air_drop().start(
+            Some(context.peer_id()),
+            context.workspace_id(),
+            path,
+            address,
             port,
-            source_path: path.to_vec(),
-            name,
-            endpoint: format!("AirDrop · {address}:{port}"),
-            bytes: metadata.len(),
-            phase: NearbyTransferPhase::AwaitingConsent,
-            created: Instant::now(),
-            cancel: Arc::clone(&cancel),
-            certificate: None,
-            answer: None,
-        };
-        {
-            let mut state = self.inner.state.lock_recover();
-            state.prune(Instant::now());
-            if state
-                .airdrops
-                .values()
-                .filter(|job| !over(job.phase))
-                .count()
-                >= MAX_AIRDROP_JOBS
-            {
-                return Err(crate::i18n::t("airdrop-error-busy"));
-            }
-            state.airdrops.insert(id, job);
-        }
+        )?;
         let handle = self
             .inner
             .issue_transfer(context.peer_id(), context.channel(), id);
         self.inner.changed();
-        (self.inner.wake)();
-        let inner = Arc::clone(&self.inner);
-        let running = std::thread::Builder::new()
-            .name("tilo-airdrop".into())
-            .spawn(move || {
-                let _permit = permit;
-                let outcome = air_drop(&inner, id, source);
-                if let Err(reason) = &outcome {
-                    tracing::warn!(%reason, "an AirDrop attempt is not sent");
-                }
-                inner.air_drop_finished(id, &cancel, outcome.is_ok());
-            });
-        if let Err(error) = running {
-            tracing::warn!(%error, "no thread takes an AirDrop attempt");
-            self.inner.state.lock_recover().airdrops.remove(&id);
-            return Err(crate::i18n::t("airdrop-error-unavailable"));
-        }
         Ok(NearbyTransferReply::Queued { handle })
     }
 
@@ -1166,22 +917,17 @@ impl NearbyTransfer {
         handle: NearbyTransferHandle,
     ) -> Result<NearbyTransferReply, String> {
         let transfer_id = self.bindable(context, handle)?;
-        let (receiving, air_drop) = {
+        let receiving = {
             let state = self.inner.state.lock_recover();
-            (
-                state.offers.contains_key(&transfer_id)
-                    || state
-                        .queues
-                        .inbox
-                        .iter()
-                        .any(|entry| entry.id == transfer_id),
-                state.airdrops.get(&transfer_id).cloned(),
-            )
+            state.offers.contains_key(&transfer_id)
+                || state
+                    .queues
+                    .inbox
+                    .iter()
+                    .any(|entry| entry.id == transfer_id)
         };
-        if let Some(job) = air_drop {
+        if self.air_drop().cancel(transfer_id) {
             // The attempt's own thread hears of it at its next check, and Files' list says so.
-            job.cancel.store(true, Ordering::Release);
-            (self.inner.wake)();
         } else if receiving {
             self.inner.send(Job::CancelIncoming { transfer_id });
         } else {
@@ -1263,7 +1009,7 @@ impl NearbyTransferServices for NearbyTransfer {
             NearbyTransferCommand::Retry { handle } => self.retry(context, handle),
             NearbyTransferCommand::AirDropAvailability => {
                 Ok(NearbyTransferReply::AirDropAvailability {
-                    available: self.inner.air_drop_available(),
+                    available: self.air_drop().available(),
                 })
             }
             NearbyTransferCommand::SendAirDrop {
@@ -1285,10 +1031,8 @@ impl NearbyTransferServices for NearbyTransfer {
         state
             .destinations
             .retain(|_, binding| binding.peer_id != peer_id);
-        for job in state.airdrops.values().filter(|job| job.peer_id == peer_id) {
-            job.cancel.store(true, Ordering::Release);
-        }
-        state.airdrops.retain(|_, job| job.peer_id != peer_id);
+        drop(state);
+        self.air_drop().disconnect(peer_id);
     }
 
     fn changed(
@@ -1325,7 +1069,7 @@ struct Row {
     total_bytes: u64,
 }
 
-fn rows(state: &State) -> Vec<Row> {
+fn rows(state: &State, air_drop: &AirDrops) -> Vec<Row> {
     let mut rows: Vec<Row> = Vec::new();
     for (transfer_id, offer) in &state.offers {
         rows.push(Row {
@@ -1379,16 +1123,22 @@ fn rows(state: &State) -> Vec<Row> {
             total_bytes: entry.total_bytes,
         });
     }
-    for (transfer_id, job) in &state.airdrops {
+    for attempt in air_drop.attempts() {
+        let over = matches!(
+            attempt.phase,
+            NearbyTransferPhase::Completed
+                | NearbyTransferPhase::Failed
+                | NearbyTransferPhase::Cancelled
+        );
         rows.push(Row {
-            transfer_id: *transfer_id,
+            transfer_id: attempt.id,
             peer: None,
-            label: Some(job.endpoint.clone()),
-            name: job.name.clone(),
+            label: Some(attempt.endpoint),
+            name: attempt.name,
             direction: NearbyTransferDirection::Sending,
-            phase: job.phase,
-            transferred_bytes: if over(job.phase) { job.bytes } else { 0 },
-            total_bytes: job.bytes,
+            phase: attempt.phase,
+            transferred_bytes: if over { attempt.bytes } else { 0 },
+            total_bytes: attempt.bytes,
         });
     }
     for entry in &state.history {
@@ -2285,61 +2035,6 @@ impl Inner {
         grants
     }
 
-    /// Whether this session hands a file to a receiver that is not one of the person's: the host
-    /// offers the path and the person allowed file transfer.
-    fn air_drop_available(&self) -> bool {
-        self.air_drop && self.continuity.file_transfer_permitted()
-    }
-
-    /// Whether the attempt `id` may still run: nobody stopped it, the host still offers the path
-    /// and the person allows it, and the file Files named is still the one it named, inside the
-    /// workspace's own Files grant.
-    fn air_drop_admitted(&self, id: [u8; 16], identity: &std::fs::Metadata) -> bool {
-        if !self.air_drop_available() {
-            return false;
-        }
-        let job = self.state.lock_recover().airdrops.get(&id).cloned();
-        let Some(job) = job else {
-            return false;
-        };
-        if job.cancel.load(Ordering::Acquire) {
-            return false;
-        }
-        let requested = PathBuf::from(std::ffi::OsStr::from_bytes(&job.source_path));
-        source_from_grants(&requested, &self.files_grants(&job.workspace))
-            .and_then(|source| source.metadata())
-            .is_ok_and(|current| current.dev() == identity.dev() && current.ino() == identity.ino())
-    }
-
-    /// Say which way the attempt `id` stands, and turn the session's loop: Files asks for a new
-    /// snapshot once a frame.
-    fn air_drop_phase(&self, id: [u8; 16], phase: NearbyTransferPhase) {
-        if let Some(job) = self.state.lock_recover().airdrops.get_mut(&id) {
-            job.phase = phase;
-        }
-        self.changed();
-        (self.wake)();
-    }
-
-    /// Withdraw the attempt `id` before anything is sent: Files' list says it was cancelled.
-    fn air_drop_abandon(&self, id: [u8; 16]) {
-        if let Some(job) = self.state.lock_recover().airdrops.get_mut(&id) {
-            job.cancel.store(true, Ordering::Release);
-        }
-    }
-
-    /// The attempt `id` is over: Files' list keeps it, with how it ended, for a while.
-    fn air_drop_finished(&self, id: [u8; 16], cancel: &AtomicBool, sent: bool) {
-        let phase = if cancel.load(Ordering::Acquire) {
-            NearbyTransferPhase::Cancelled
-        } else if sent {
-            NearbyTransferPhase::Completed
-        } else {
-            NearbyTransferPhase::Failed
-        };
-        self.air_drop_phase(id, phase);
-    }
-
     /// The offer this device received, once its sending device says so.
     fn offered(
         &self,
@@ -2535,348 +2230,43 @@ impl Inner {
         for (channel, grant) in &state.remembered {
             (channel, grant).hash(&mut hasher);
         }
-        0xff_u8.hash(&mut hasher);
-        for (transfer_id, job) in &state.airdrops {
-            (transfer_id, &job.name, &job.endpoint, job.bytes).hash(&mut hasher);
-            std::mem::discriminant(&job.phase).hash(&mut hasher);
-            job.certificate.is_some().hash(&mut hasher);
-        }
         drop(state);
+        for attempt in self.air_drop.attempts() {
+            (attempt.id, &attempt.name, &attempt.endpoint, attempt.bytes).hash(&mut hasher);
+            std::mem::discriminant(&attempt.phase).hash(&mut hasher);
+        }
         hasher.finish()
     }
 }
 
-/// Whether this host offers the `AirDrop` path: a development build that asked for it, on a machine
-/// where the wire helper is installed. A release session hands files to the person's own devices
-/// only.
-fn air_drop_lab() -> bool {
-    cfg!(debug_assertions)
-        && std::env::var("TILO_AIRDROP_LAB").as_deref() == Ok("1")
-        && Path::new(AIRDROP_HELPER).is_file()
-}
-
-/// What the portal sheet shows of the attempt `job` waits for its person.
-fn air_drop_ask(id: [u8; 16], job: &AirDrop) -> AirDropAsk {
-    AirDropAsk {
-        id,
-        name: job.name.clone(),
-        bytes: job.bytes,
-        endpoint: job.endpoint.clone(),
-    }
-}
-
-/// The 32 bytes a 64-digit hexadecimal fingerprint stands for, once it is one.
-fn pin_bytes(value: &str) -> Option<[u8; 32]> {
-    let value = value.trim();
-    if value.len() != 64 {
-        return None;
-    }
-    let mut bytes = [0_u8; 32];
-    hex::decode_to_slice(value, &mut bytes).ok()?;
-    Some(bytes)
-}
-
-/// One attempt at a receiver that is not one of the person's devices: stage the approved file,
-/// observe the receiver's leaf certificate, put the verification to the person and wait for their
-/// answer, then hand the staged bytes over once and check what the receiver says it took.
-fn air_drop(inner: &Arc<Inner>, id: [u8; 16], source: SecureNearbySource) -> Result<(), String> {
-    let Some((address, port)) = inner
-        .state
-        .lock_recover()
-        .airdrops
-        .get(&id)
-        .map(|job| (job.address.clone(), job.port))
-    else {
-        return Err(crate::i18n::t("airdrop-error-unavailable"));
-    };
-    let identity = source.metadata()?;
-    let admitted = || inner.air_drop_admitted(id, &identity);
-    let staged = StagedFile::staged(source, &admitted, AIRDROP_TIMEOUT)?;
-    if !admitted() {
-        return Err(crate::i18n::t("airdrop-error-unavailable"));
-    }
-    let observed = air_drop_helper(&address, port, None, None, &admitted)?
-        .get("certificate_sha256")
-        .and_then(serde_json::Value::as_str)
-        .and_then(pin_bytes)
-        .ok_or_else(|| crate::i18n::t("airdrop-error-failed"))?;
-    if let Some(job) = inner.state.lock_recover().airdrops.get_mut(&id) {
-        job.certificate = Some(observed);
-    }
-    inner.changed();
-    (inner.wake)();
-    let answer = air_drop_wait(inner, id, &admitted)?;
-    match answer {
-        AirDropAnswer::Decline => return Err(crate::i18n::t("airdrop-error-declined")),
-        AirDropAnswer::Confirm { pin } => {
-            if pin_bytes(&pin) != Some(observed) {
-                return Err(crate::i18n::t("airdrop-error-verification"));
+/// The files handed to receivers that are not the person's devices, run by Nearby Send's resource
+/// on what this engine lends it: Files' grants of a workspace, the person's file-transfer switch,
+/// and the wait Files follows.
+fn receivers(engine: &std::sync::Weak<Inner>, enabled: bool) -> AirDrops {
+    let opening = engine.clone();
+    let permitting = engine.clone();
+    let changing = engine.clone();
+    AirDrops::new(Host {
+        enabled,
+        open: Box::new(move |workspace, requested| {
+            let inner = opening.upgrade().ok_or_else(|| NO_WORKER.to_owned())?;
+            let source = source_from_grants(requested, &inner.files_grants(workspace))?;
+            let name = source.name().to_owned();
+            Ok((source.into_file(), name))
+        }),
+        permitted: Box::new(move || {
+            permitting
+                .upgrade()
+                .is_some_and(|inner| inner.continuity.file_transfer_permitted())
+        }),
+        changed: Box::new(move || {
+            if let Some(inner) = changing.upgrade() {
+                inner.changed();
+                (inner.wake)();
             }
-        }
-    }
-    if !admitted() {
-        return Err(crate::i18n::t("airdrop-error-unavailable"));
-    }
-    inner.air_drop_phase(id, NearbyTransferPhase::Transferring);
-    let reply = air_drop_helper(
-        &address,
-        port,
-        Some(&staged),
-        Some(&hex::encode(observed)),
-        &admitted,
-    )?;
-    if reply.get("bytes").and_then(serde_json::Value::as_u64) != Some(staged.bytes)
-        || reply
-            .get("content_hash")
-            .and_then(serde_json::Value::as_str)
-            != Some(staged.hash.as_str())
-    {
-        return Err(crate::i18n::t("airdrop-error-failed"));
-    }
-    Ok(())
-}
-
-/// Wait for the person's answer on the verification of the attempt `id`, for at most
-/// [`AIRDROP_CONSENT_TIMEOUT`], while the attempt stays admitted. An attempt that ends before it
-/// is answered is withdrawn, not failed: nothing was sent.
-fn air_drop_wait(
-    inner: &Inner,
-    id: [u8; 16],
-    admitted: &impl Fn() -> bool,
-) -> Result<AirDropAnswer, String> {
-    let started = Instant::now();
-    loop {
-        if !admitted() {
-            inner.air_drop_abandon(id);
-            return Err(crate::i18n::t("airdrop-error-unavailable"));
-        }
-        if started.elapsed() >= AIRDROP_CONSENT_TIMEOUT {
-            inner.air_drop_abandon(id);
-            return Err(crate::i18n::t("airdrop-error-declined"));
-        }
-        let answer = inner
-            .state
-            .lock_recover()
-            .airdrops
-            .get_mut(&id)
-            .and_then(|job| job.answer.take());
-        if let Some(answer) = answer {
-            return Ok(answer);
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
-/// One helper run against `address`:`port` : the observation the person verifies, or the one send
-/// of the staged bytes that they approved.
-fn air_drop_helper(
-    address: &str,
-    port: u16,
-    source: Option<&StagedFile>,
-    certificate: Option<&str>,
-    admitted: &impl Fn() -> bool,
-) -> Result<serde_json::Value, String> {
-    let mut command = air_drop_command(AIRDROP_SENDER);
-    command.args([address, &port.to_string()]);
-    if let (Some(certificate), Some(source)) = (certificate, source) {
-        command
-            .args([
-                "send",
-                "--certificate-sha256",
-                certificate,
-                "--source-fd",
-                "9",
-            ])
-            .arg(format!("--name={}", source.name));
-        inherit_descriptors(&mut command, Some(source.file.as_raw_fd()), None);
-    } else {
-        command.arg("inspect");
-        inherit_descriptors(&mut command, None, None);
-    }
-    air_drop_supervise(command, admitted, AIRDROP_TIMEOUT)
-}
-
-fn air_drop_command(script: &str) -> Command {
-    let mut command = Command::new(AIRDROP_HELPER);
-    command
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin")
-        .args(["-I", "-c", script])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    command
-}
-
-/// Give the helper only the descriptors it needs, each duplicated to the number the script named.
-fn inherit_descriptors(command: &mut Command, source: Option<i32>, staging: Option<i32>) {
-    // SAFETY: only async-signal-safe syscalls run between fork and exec. All
-    // inherited descriptors become CLOEXEC. The fixed helper receives only
-    // a read-only source and (during staging only) its anonymous staging fd.
-    unsafe {
-        command.pre_exec(move || {
-            if libc::syscall(
-                libc::SYS_close_range,
-                3_u32,
-                u32::MAX,
-                libc::CLOSE_RANGE_CLOEXEC,
-            ) != 0
-            {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    let handed = [(source, 9), (staging, 10)]
-        .into_iter()
-        .filter_map(|(fd, target)| Some((fd?, target)))
-        .collect();
-    launcher::inherit::hand_down(command, handed, false);
-}
-
-/// Run `command` while `admitted` holds, for at most `limit`, and read back its one JSON answer.
-fn air_drop_supervise(
-    mut command: Command,
-    admitted: &impl Fn() -> bool,
-    limit: Duration,
-) -> Result<serde_json::Value, String> {
-    if !admitted() {
-        return Err(crate::i18n::t("airdrop-error-unavailable"));
-    }
-    let mut child = command
-        .spawn()
-        .map_err(|_| crate::i18n::t("airdrop-error-failed"))?;
-    let started = Instant::now();
-    loop {
-        let withdrawn = !admitted();
-        if withdrawn || started.elapsed() >= limit {
-            let _ = child.kill();
-            let _ = child.wait();
-            // A helper that ran out of time failed; only a withdrawn
-            // admission is the session, permission or Files access.
-            return Err(crate::i18n::t(if withdrawn {
-                "airdrop-error-unavailable"
-            } else {
-                "airdrop-error-failed"
-            }));
-        }
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if !status.success() {
-                    return Err(crate::i18n::t("airdrop-error-failed"));
-                }
-                break;
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
-            Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(crate::i18n::t("airdrop-error-failed"));
-            }
-        }
-    }
-    let mut output = Vec::new();
-    child
-        .stdout
-        .take()
-        .ok_or_else(|| crate::i18n::t("airdrop-error-failed"))?
-        .take(AIRDROP_REPLY_BYTES + 1)
-        .read_to_end(&mut output)
-        .map_err(|_| crate::i18n::t("airdrop-error-failed"))?;
-    if u64::try_from(output.len()).unwrap_or(u64::MAX) > AIRDROP_REPLY_BYTES {
-        return Err(crate::i18n::t("airdrop-error-failed"));
-    }
-    serde_json::from_slice(&output).map_err(|_| crate::i18n::t("airdrop-error-failed"))
-}
-
-/// One approved file, staged into a sealed anonymous object: what the person verified is what the
-/// receiver is handed, whatever happens to the file they named meanwhile.
-struct StagedFile {
-    file: std::fs::File,
-    // Keep the approved inode alive for every admission check. Closing it
-    // after staging could let an unlink/recreate reuse its inode number.
-    _source: std::fs::File,
-    name: String,
-    bytes: u64,
-    hash: String,
-}
-
-impl StagedFile {
-    fn staged(
-        source: SecureNearbySource,
-        admitted: &impl Fn() -> bool,
-        limit: Duration,
-    ) -> Result<Self, String> {
-        let before = source.metadata()?;
-        let name = source.name().to_owned();
-        if !before.is_file() || before.len() > AIRDROP_MAX_BYTES {
-            return Err(crate::i18n::t("airdrop-error-source"));
-        }
-        let input = source.into_file();
-        // SAFETY: constant terminated name and flags create a new owned fd.
-        let fd = unsafe {
-            libc::memfd_create(
-                c"tilo-airdrop".as_ptr(),
-                libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
-            )
-        };
-        if fd < 0 {
-            return Err(crate::i18n::t("airdrop-error-source"));
-        }
-        // SAFETY: memfd_create returned a descriptor exclusively owned here.
-        let writable = unsafe { std::fs::File::from_raw_fd(fd) };
-        let mut command = air_drop_command(AIRDROP_SENDER);
-        command
-            .args([
-                "127.0.0.1",
-                "1",
-                "stage",
-                "--source-fd",
-                "9",
-                "--staged-fd",
-                "10",
-            ])
-            .arg(format!("--name={name}"));
-        inherit_descriptors(
-            &mut command,
-            Some(input.as_raw_fd()),
-            Some(writable.as_raw_fd()),
-        );
-        let reply = air_drop_supervise(command, admitted, limit)?;
-        let seals =
-            libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
-        // SAFETY: fcntl operates only on our anonymous staging descriptor.
-        if unsafe { libc::fcntl(writable.as_raw_fd(), libc::F_ADD_SEALS, seals) } != 0 {
-            return Err(crate::i18n::t("airdrop-error-source"));
-        }
-        let mut file = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_CLOEXEC)
-            .open(format!("/proc/self/fd/{}", writable.as_raw_fd()))
-            .map_err(|_| crate::i18n::t("airdrop-error-source"))?;
-        let mut bytes = Vec::new();
-        std::io::Read::by_ref(&mut file)
-            .take(AIRDROP_MAX_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|_| crate::i18n::t("airdrop-error-source"))?;
-        let hash = hex::encode(Sha256::digest(&bytes));
-        if u64::try_from(bytes.len()).ok() != Some(before.len())
-            || reply.get("bytes").and_then(serde_json::Value::as_u64) != Some(before.len())
-            || reply
-                .get("content_hash")
-                .and_then(serde_json::Value::as_str)
-                != Some(hash.as_str())
-        {
-            return Err(crate::i18n::t("airdrop-error-source"));
-        }
-        Ok(Self {
-            file,
-            _source: input,
-            name,
-            bytes: before.len(),
-            hash,
-        })
-    }
+        }),
+        language: Box::new(|| Some(ui::i18n::window_language(&["en-US", "de-DE"]))),
+    })
 }
 
 #[cfg(test)]
@@ -3005,7 +2395,7 @@ mod transfers_between_devices {
     }
 
     /// The person's continuity switches with nothing turned off, as their settings say.
-    pub(super) fn permitted() -> Continuity {
+    fn permitted() -> Continuity {
         let continuity = Continuity::default();
         let document: serde_json::Map<String, serde_json::Value> = serde_json::from_value(
             serde_json::json!({"continuity": {"enabled": true, "file_transfer": true}}),
@@ -3028,7 +2418,7 @@ mod transfers_between_devices {
     }
 
     /// The session of a device whose Files may read and write `folder` .
-    pub(super) fn session(folder: &Path) -> Session {
+    fn session(folder: &Path) -> Session {
         let workspace_id = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
         let mut workspace = Workspace::new(workspace_id, "Session");
         workspace.grant_sandbox(
@@ -3250,534 +2640,5 @@ mod transfers_between_devices {
             sent && received
         });
         assert!(done, "both devices' Files list the transfer as done");
-    }
-}
-
-/// A receiver that is not one of the person's devices, on this machine's loopback behind a
-/// certificate of its own: the real sender helper runs the `AirDrop` wire against it, and what it
-/// takes is exactly what the person approved.
-#[cfg(all(test, target_os = "linux"))]
-mod a_receiver_that_is_not_one_of_yours {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        clippy::indexing_slicing,
-        clippy::arithmetic_side_effects,
-        clippy::too_many_lines,
-        reason = "a test fixture: a failed step is the assertion"
-    )]
-
-    use std::io::{BufRead, BufReader, Read as _, Write as _};
-    use std::net::{TcpListener, TcpStream};
-    use std::os::unix::ffi::OsStrExt as _;
-    use std::path::Path;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::time::{Duration, Instant};
-
-    use runtime_collab::{NearbyTransferCommand, NearbyTransferPhase, NearbyTransferReply};
-    use sha2::{Digest as _, Sha256};
-    use tilo_sheets::portal::{Body, Field, PortalEffect, PortalState};
-    use tilo_test_env::SpawnUnderEnvLock as _;
-    use tilo_workspace_service::apps::services::{
-        NearbyTransferRequestContext, NearbyTransferServices as _,
-    };
-
-    use super::transfers_between_devices::{permitted, session};
-    use super::{FILES_APP_ID, NearbyTransfer};
-    use crate::nearby_airdrop::Consent;
-
-    /// The workspace Files shows.
-    const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
-    /// What the file is called on both ends.
-    const NAME: &str = "contract.txt";
-    const DEADLINE: Duration = Duration::from_secs(60);
-    const PASS: Duration = Duration::from_millis(10);
-
-    /// Whether the receiver takes what it is offered or refuses it.
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    enum Answer {
-        Accept,
-        Refuse,
-    }
-
-    /// An `AirDrop` receiver of another person, in this process: an HTTPS endpoint that answers
-    /// discovery, takes or refuses the ask, and records what it is posted.
-    struct Receiver {
-        port: u16,
-        /// The leaf certificate digest it serves, as its trusted console would print it.
-        pin: String,
-        requests: Arc<std::sync::Mutex<Vec<String>>>,
-        uploads: Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
-        stop: Arc<AtomicBool>,
-        worker: Option<std::thread::JoinHandle<()>>,
-    }
-
-    impl Receiver {
-        fn start(answer: Answer) -> Self {
-            let material =
-                rcgen::generate_simple_self_signed(vec!["airdrop-fixture.invalid".to_owned()])
-                    .unwrap();
-            let cert = material.cert.der().clone();
-            let pin = hex::encode(Sha256::digest(&cert));
-            let key =
-                rustls::pki_types::PrivatePkcs8KeyDer::from(material.signing_key.serialize_der());
-            let config = Arc::new(
-                rustls::ServerConfig::builder_with_provider(Arc::new(
-                    rustls::crypto::ring::default_provider(),
-                ))
-                .with_safe_default_protocol_versions()
-                .unwrap()
-                .with_no_client_auth()
-                .with_single_cert(vec![cert], key.into())
-                .unwrap(),
-            );
-            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-            listener.set_nonblocking(true).unwrap();
-            let port = listener.local_addr().unwrap().port();
-            let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
-            let uploads = Arc::new(std::sync::Mutex::new(Vec::new()));
-            let stop = Arc::new(AtomicBool::new(false));
-            let state = (
-                Arc::clone(&requests),
-                Arc::clone(&uploads),
-                Arc::clone(&stop),
-            );
-            let worker = std::thread::spawn(move || {
-                while !state.2.load(Ordering::Acquire) {
-                    match listener.accept() {
-                        Ok((socket, _)) => receive(socket, &config, &state.0, &state.1, answer),
-                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                            std::thread::sleep(Duration::from_millis(5));
-                        }
-                        Err(error) => panic!("fixture listener: {error}"),
-                    }
-                }
-            });
-            Self {
-                port,
-                pin,
-                requests,
-                uploads,
-                stop,
-                worker: Some(worker),
-            }
-        }
-
-        fn paths(&self) -> Vec<String> {
-            self.requests.lock().unwrap().clone()
-        }
-
-        fn uploads(&self) -> Vec<Vec<u8>> {
-            self.uploads.lock().unwrap().clone()
-        }
-    }
-
-    impl Drop for Receiver {
-        fn drop(&mut self) {
-            self.stop.store(true, Ordering::Release);
-            if let Some(worker) = self.worker.take() {
-                worker.join().unwrap();
-            }
-        }
-    }
-
-    fn receive(
-        socket: TcpStream,
-        config: &rustls::ServerConfig,
-        requests: &std::sync::Mutex<Vec<String>>,
-        uploads: &std::sync::Mutex<Vec<Vec<u8>>>,
-        answer: Answer,
-    ) {
-        let _ = socket.set_read_timeout(Some(Duration::from_secs(2)));
-        let _ = socket.set_write_timeout(Some(Duration::from_secs(2)));
-        let connection = rustls::ServerConnection::new(Arc::new(config.clone())).unwrap();
-        let mut stream = BufReader::new(rustls::StreamOwned::new(connection, socket));
-        loop {
-            let mut line = String::new();
-            match stream.read_line(&mut line) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {}
-            }
-            let path = line.split_whitespace().nth(1).unwrap().to_owned();
-            requests.lock().unwrap().push(path.clone());
-            let mut length = 0;
-            let mut chunked = false;
-            loop {
-                line.clear();
-                stream.read_line(&mut line).unwrap();
-                if line == "\r\n" {
-                    break;
-                }
-                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                    length = value.trim().parse::<usize>().unwrap();
-                }
-                if line
-                    .to_ascii_lowercase()
-                    .contains("transfer-encoding: chunked")
-                {
-                    chunked = true;
-                }
-            }
-            let body = if chunked {
-                chunks(&mut stream)
-            } else {
-                let mut body = vec![0; length];
-                stream.read_exact(&mut body).unwrap();
-                body
-            };
-            let (status, reason, reply): (u16, &str, &[u8]) = match path.as_str() {
-                "/Ask" if answer == Answer::Refuse => (403, "Forbidden", b""),
-                "/Upload" => {
-                    uploads.lock().unwrap().push(body);
-                    (200, "OK", b"")
-                }
-                "/Discover" => (
-                    200,
-                    "OK",
-                    b"<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>ReceiverComputerName</key><string>Somebody else</string></dict></plist>",
-                ),
-                _ => (200, "OK", b""),
-            };
-            let response = format!(
-                "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",
-                reply.len()
-            );
-            stream.get_mut().write_all(response.as_bytes()).unwrap();
-            stream.get_mut().write_all(reply).unwrap();
-            stream.get_mut().flush().unwrap();
-        }
-    }
-
-    fn chunks(stream: &mut impl BufRead) -> Vec<u8> {
-        let mut body = Vec::new();
-        loop {
-            let mut line = String::new();
-            stream.read_line(&mut line).unwrap();
-            let length = usize::from_str_radix(line.trim(), 16).unwrap();
-            if length == 0 {
-                stream.read_line(&mut String::new()).unwrap();
-                return body;
-            }
-            let mut chunk = vec![0; length];
-            stream.read_exact(&mut chunk).unwrap();
-            body.extend(chunk);
-            let mut ending = [0; 2];
-            stream.read_exact(&mut ending).unwrap();
-            assert_eq!(&ending, b"\r\n");
-        }
-    }
-
-    /// A port nothing serves: the receiver the person named is not there.
-    fn a_port_nobody_serves() -> u16 {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        listener.local_addr().unwrap().port()
-    }
-
-    /// One engine under a Files grant over `folder` , and the connection Files asks through.
-    fn engine(folder: &Path, spool: &Path) -> (Arc<NearbyTransfer>, NearbyTransferRequestContext) {
-        let nearby = NearbyTransfer::open_with_air_drop(
-            None,
-            Some(spool.to_path_buf()),
-            permitted(),
-            Arc::new(|| {}),
-            true,
-        )
-        .expect("a transfer engine");
-        nearby.attach_authority(Arc::new(session(folder)));
-        let app =
-            NearbyTransferRequestContext::for_test(41, FILES_APP_ID, WORKSPACE, "files-41", "Ada");
-        (nearby, app)
-    }
-
-    /// Run `done` until it holds, or the deadline passes: whether it held.
-    fn until(mut done: impl FnMut() -> bool) -> bool {
-        let deadline = Instant::now() + DEADLINE;
-        loop {
-            if done() {
-                return true;
-            }
-            if Instant::now() >= deadline {
-                return false;
-            }
-            std::thread::sleep(PASS);
-        }
-    }
-
-    /// The transfer `name` as Files' snapshot lists it.
-    fn listed(
-        nearby: &Arc<NearbyTransfer>,
-        app: &NearbyTransferRequestContext,
-        name: &str,
-    ) -> Option<runtime_collab::NearbyTransferStatus> {
-        let NearbyTransferReply::Snapshot { snapshot } = nearby
-            .command(app, NearbyTransferCommand::Snapshot)
-            .unwrap()
-        else {
-            panic!("Files asks for a snapshot");
-        };
-        snapshot
-            .transfers
-            .into_iter()
-            .find(|status| status.name == name)
-    }
-
-    /// Put the receiver's verification up on the sheet, as the session's pass does, and answer it
-    /// with `pin` typed into its field.
-    fn verify_with(
-        nearby: &Arc<NearbyTransfer>,
-        consent: &mut Consent,
-        portal: &PortalState,
-        pin: &str,
-    ) {
-        let asked = until(|| {
-            consent.follow(Some(nearby), Some(portal));
-            portal.dialog().is_some()
-        });
-        assert!(asked, "the receiver's verification is asked");
-        let dialog = portal.dialog().expect("the verification is up");
-        assert_eq!(
-            dialog.body,
-            Body::Entry {
-                masked: false,
-                required: true,
-                choices: Vec::new(),
-            },
-            "the sheet asks for the fingerprint the person types"
-        );
-        assert!(
-            dialog.detail.contains(NAME) && dialog.detail.contains("127.0.0.1"),
-            "the sheet names the file and the receiver it goes to"
-        );
-        portal.set_text(Field::Answer, pin);
-        portal.press(PortalEffect::Confirm {
-            handle: dialog.handle,
-        });
-        consent.follow(Some(nearby), Some(portal));
-    }
-
-    /// What the receiver was posted, decoded as the one file the sender archived.
-    fn extracted(upload: &[u8]) -> (String, Vec<u8>) {
-        let mut child = std::process::Command::new("/usr/bin/python3")
-            .args([
-                "-I",
-                "-c",
-                "import gzip,sys;sys.stdout.buffer.write(gzip.decompress(sys.stdin.buffer.read()))",
-            ])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn_locked()
-            .unwrap();
-        child.stdin.take().unwrap().write_all(upload).unwrap();
-        let output = child.wait_with_output().unwrap();
-        assert!(output.status.success(), "the upload is one gzip archive");
-        let bytes = output.stdout;
-        assert_eq!(&bytes[..6], b"070701", "a newc cpio archive");
-        let size = usize::from_str_radix(std::str::from_utf8(&bytes[54..62]).unwrap(), 16).unwrap();
-        let name_size =
-            usize::from_str_radix(std::str::from_utf8(&bytes[94..102]).unwrap(), 16).unwrap();
-        let name_end = 110_usize.checked_add(name_size).unwrap();
-        assert_eq!(&bytes[name_end - 1], &0, "the name ends its field");
-        // The archive names its one entry by the path it lands at, which the sender roots at "./".
-        let name = String::from_utf8(bytes[110..name_end - 1].to_vec()).unwrap();
-        let name = name.strip_prefix("./").unwrap_or(&name).to_owned();
-        let payload = name_end.checked_add(3).unwrap() & !3;
-        (
-            name,
-            bytes[payload..payload.checked_add(size).unwrap()].to_vec(),
-        )
-    }
-
-    /// The bytes both tests send, and the file holding them under the Files grant.
-    fn the_file(folder: &Path) -> (std::path::PathBuf, Vec<u8>) {
-        let bytes: Vec<u8> = (0..40_000_u32).map(|index| (index % 251) as u8).collect();
-        let file = folder.join(NAME);
-        std::fs::write(&file, &bytes).expect("the file Files sends");
-        (file, bytes)
-    }
-
-    #[test]
-    fn a_file_reaches_the_receiver_who_took_it_and_only_after_its_fingerprint() {
-        assert!(
-            Path::new("/usr/bin/python3").is_file(),
-            "the AirDrop wire helper needs the system's own interpreter"
-        );
-        let folder = tempfile::tempdir().expect("the person's files");
-        let spool = tempfile::tempdir().expect("the person's spool");
-        let (file, bytes) = the_file(folder.path());
-        let (nearby, app) = engine(folder.path(), spool.path());
-        let portal = PortalState::default();
-        let mut consent = Consent::default();
-        let receiver = Receiver::start(Answer::Accept);
-
-        assert_eq!(
-            nearby
-                .command(&app, NearbyTransferCommand::AirDropAvailability)
-                .expect("Files asks whether it may offer the receiver"),
-            NearbyTransferReply::AirDropAvailability { available: true },
-            "the session offers the AirDrop path to Files"
-        );
-        let NearbyTransferReply::Queued { handle } = nearby
-            .command(
-                &app,
-                NearbyTransferCommand::SendAirDrop {
-                    source_path: file.as_os_str().as_bytes().to_vec(),
-                    address: "127.0.0.1".into(),
-                    port: receiver.port,
-                },
-            )
-            .expect("Files hands the file over")
-        else {
-            panic!("an AirDrop send is queued");
-        };
-        assert!(handle.valid());
-        let waiting = until(|| {
-            listed(&nearby, &app, NAME)
-                .is_some_and(|status| status.phase == NearbyTransferPhase::AwaitingConsent)
-        });
-        assert!(
-            waiting,
-            "Files lists the attempt while the receiver is verified"
-        );
-        assert_eq!(
-            listed(&nearby, &app, NAME).unwrap().device_label,
-            format!("AirDrop · 127.0.0.1:{}", receiver.port),
-            "Files names the receiver by its endpoint"
-        );
-
-        // A fingerprint that is not the receiver's sends nothing, and the question stays up.
-        verify_with(&nearby, &mut consent, &portal, &"00".repeat(32));
-        assert!(
-            portal.dialog().is_some_and(|dialog| dialog.error.is_some()),
-            "the sheet says the fingerprint differs"
-        );
-        assert!(
-            listed(&nearby, &app, NAME)
-                .is_some_and(|status| status.phase == NearbyTransferPhase::AwaitingConsent),
-            "the attempt still waits"
-        );
-        assert!(receiver.paths().is_empty(), "nothing was sent");
-
-        // The fingerprint its console printed sends the staged bytes once.
-        verify_with(&nearby, &mut consent, &portal, &receiver.pin);
-        assert!(
-            portal.dialog().is_none(),
-            "the question is answered and taken down"
-        );
-        assert!(
-            until(|| listed(&nearby, &app, NAME)
-                .is_some_and(|status| status.phase == NearbyTransferPhase::Completed)),
-            "Files lists the attempt as done"
-        );
-        assert_eq!(receiver.paths(), ["/Discover", "/Ask", "/Upload"]);
-        let uploads = receiver.uploads();
-        assert_eq!(uploads.len(), 1, "one upload");
-        assert_eq!(
-            extracted(&uploads[0]),
-            (NAME.to_owned(), bytes),
-            "the receiver holds exactly the bytes the person approved"
-        );
-    }
-
-    #[test]
-    fn a_receiver_who_declines_the_ask_gets_no_bytes_and_files_says_so() {
-        let folder = tempfile::tempdir().expect("the person's files");
-        let spool = tempfile::tempdir().expect("the person's spool");
-        let (file, _bytes) = the_file(folder.path());
-        let (nearby, app) = engine(folder.path(), spool.path());
-        let portal = PortalState::default();
-        let mut consent = Consent::default();
-        let receiver = Receiver::start(Answer::Refuse);
-
-        nearby
-            .command(
-                &app,
-                NearbyTransferCommand::SendAirDrop {
-                    source_path: file.as_os_str().as_bytes().to_vec(),
-                    address: "127.0.0.1".into(),
-                    port: receiver.port,
-                },
-            )
-            .expect("Files hands the file over");
-        verify_with(&nearby, &mut consent, &portal, &receiver.pin);
-        assert!(
-            until(|| listed(&nearby, &app, NAME)
-                .is_some_and(|status| status.phase == NearbyTransferPhase::Failed)),
-            "Files lists the attempt as failed"
-        );
-        assert_eq!(receiver.paths(), ["/Discover", "/Ask"]);
-        assert!(receiver.uploads().is_empty(), "the receiver took nothing");
-    }
-
-    #[test]
-    fn a_person_who_declines_the_verification_sends_nothing() {
-        let folder = tempfile::tempdir().expect("the person's files");
-        let spool = tempfile::tempdir().expect("the person's spool");
-        let (file, _bytes) = the_file(folder.path());
-        let (nearby, app) = engine(folder.path(), spool.path());
-        let portal = PortalState::default();
-        let mut consent = Consent::default();
-        let receiver = Receiver::start(Answer::Accept);
-
-        nearby
-            .command(
-                &app,
-                NearbyTransferCommand::SendAirDrop {
-                    source_path: file.as_os_str().as_bytes().to_vec(),
-                    address: "127.0.0.1".into(),
-                    port: receiver.port,
-                },
-            )
-            .expect("Files hands the file over");
-        assert!(
-            until(|| {
-                consent.follow(Some(&nearby), Some(&portal));
-                portal.dialog().is_some()
-            }),
-            "the receiver's verification is asked"
-        );
-        let dialog = portal.dialog().expect("the verification is up");
-        portal.press(PortalEffect::Cancel {
-            handle: dialog.handle,
-        });
-        consent.follow(Some(&nearby), Some(&portal));
-        assert!(
-            until(|| listed(&nearby, &app, NAME)
-                .is_some_and(|status| status.phase == NearbyTransferPhase::Cancelled)),
-            "Files lists the attempt as cancelled"
-        );
-        assert!(receiver.paths().is_empty(), "nothing was sent");
-    }
-
-    #[test]
-    fn a_receiver_that_is_not_there_fails_before_any_question() {
-        let folder = tempfile::tempdir().expect("the person's files");
-        let spool = tempfile::tempdir().expect("the person's spool");
-        let (file, _bytes) = the_file(folder.path());
-        let (nearby, app) = engine(folder.path(), spool.path());
-        let portal = PortalState::default();
-        let mut consent = Consent::default();
-
-        nearby
-            .command(
-                &app,
-                NearbyTransferCommand::SendAirDrop {
-                    source_path: file.as_os_str().as_bytes().to_vec(),
-                    address: "127.0.0.1".into(),
-                    port: a_port_nobody_serves(),
-                },
-            )
-            .expect("Files hands the file over");
-        assert!(
-            until(|| listed(&nearby, &app, NAME)
-                .is_some_and(|status| status.phase == NearbyTransferPhase::Failed)),
-            "Files lists the attempt as failed"
-        );
-        consent.follow(Some(&nearby), Some(&portal));
-        assert!(
-            portal.dialog().is_none(),
-            "nothing is asked about a receiver that never answered"
-        );
     }
 }

@@ -185,6 +185,9 @@ tilo-net = { path = "../../platform/tilo-net", features = ["http", "proxy-host",
 # What the agents on this server learned about a person: the type the list
 # is kept as, and the verbs that change it.
 tilo-resource = { path = "../../sdk/tilo-resource" }
+# The questions a session's sheets put to the person: whether a receiver that is not one of their
+# devices is the one they mean, before Nearby Send hands it a file.
+tilo-service = { path = "../../session/service" }
 tilo-workspace-agent = { path = "../../sdk/tilo-workspace-agent" }
 # A person's region and formats, kept as the `locale` settings section reads them.
 tilo-formats = { path = "../../ui/tilo-formats" }

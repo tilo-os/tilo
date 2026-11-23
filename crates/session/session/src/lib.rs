@@ -286,8 +286,6 @@ pub mod mentions;
 #[cfg(target_os = "linux")]
 mod model_steps;
 #[cfg(target_os = "linux")]
-mod nearby_airdrop;
-#[cfg(target_os = "linux")]
 mod nearby_send;
 #[cfg(target_os = "linux")]
 pub mod nearby_transfer;

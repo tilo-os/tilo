@@ -30,6 +30,29 @@ use runtime_collab::{
 
 use super::services::{NearbyTransferRequestContext, NearbyTransferServices};
 
+#[cfg(target_os = "linux")]
+mod airdrop;
+#[cfg(target_os = "linux")]
+pub use airdrop::{AirDrops, Attempt, Host, lab};
+
+/// The question a file handed to a receiver that is not one of the person's devices waits on: the
+/// person types the fingerprint of the certificate that receiver showed.
+pub const VERIFY_QUESTION: &str = "nearby-send.verify-receiver";
+
+/// What [`VERIFY_QUESTION`] puts to the person.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerifyQuestion {
+    /// The file's name.
+    pub name: String,
+    /// Its size, in bytes.
+    pub bytes: u64,
+    /// The receiver, by its endpoint.
+    pub endpoint: String,
+    /// The SHA-256 digest of the certificate the receiver showed, 64 hexadecimal digits: what the
+    /// person's typing is held to.
+    pub certificate: String,
+}
+
 /// The resource the shell reads it as.
 pub const RESOURCE: &str = "session:nearby-send";
 

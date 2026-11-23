@@ -517,3 +517,447 @@ fn a_device_no_reading_listed_is_refused() {
         .expect_err("a device that was never in reach takes nothing");
     assert!(matches!(refused, ApiError::Refused { .. }), "{refused:?}");
 }
+
+/// A file handed to a receiver that is not one of the person's devices, verified through the
+/// question it puts to the person: a real helper run against a receiver in this process.
+#[cfg(target_os = "linux")]
+mod a_receiver_that_is_not_one_of_yours {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        reason = "a test fixture: a failed step is the assertion"
+    )]
+
+    use std::io::{BufRead, BufReader, Read as _, Write as _};
+    use std::net::{TcpListener, TcpStream};
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+
+    use sha2::{Digest as _, Sha256};
+    use tilo_service::{Question, Questions};
+    use tilo_test_env::SpawnUnderEnvLock as _;
+
+    use super::*;
+
+    /// What the file is called on both ends.
+    const NAME: &str = "contract.txt";
+    const DEADLINE: Duration = Duration::from_secs(60);
+    const PASS: Duration = Duration::from_millis(10);
+
+    /// Whether the receiver takes what it is offered or refuses it.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Answer {
+        Accept,
+        Refuse,
+    }
+
+    /// An `AirDrop` receiver of another person, in this process: an HTTPS endpoint that answers
+    /// discovery, takes or refuses the ask, and records what it is posted.
+    struct Receiver {
+        port: u16,
+        /// The leaf certificate digest it serves, as its trusted console would print it.
+        pin: String,
+        requests: Arc<Mutex<Vec<String>>>,
+        uploads: Arc<Mutex<Vec<Vec<u8>>>>,
+        stop: Arc<AtomicBool>,
+        worker: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Receiver {
+        fn start(answer: Answer) -> Self {
+            let material =
+                rcgen::generate_simple_self_signed(vec!["airdrop-fixture.invalid".to_owned()])
+                    .unwrap();
+            let cert = material.cert.der().clone();
+            let pin = hex::encode(Sha256::digest(&cert));
+            let key =
+                rustls::pki_types::PrivatePkcs8KeyDer::from(material.signing_key.serialize_der());
+            let config = Arc::new(
+                rustls::ServerConfig::builder_with_provider(Arc::new(
+                    rustls::crypto::ring::default_provider(),
+                ))
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_no_client_auth()
+                .with_single_cert(vec![cert], key.into())
+                .unwrap(),
+            );
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let uploads = Arc::new(Mutex::new(Vec::new()));
+            let stop = Arc::new(AtomicBool::new(false));
+            let state = (
+                Arc::clone(&requests),
+                Arc::clone(&uploads),
+                Arc::clone(&stop),
+            );
+            let worker = std::thread::spawn(move || {
+                while !state.2.load(Ordering::Acquire) {
+                    match listener.accept() {
+                        Ok((socket, _)) => receive(socket, &config, &state.0, &state.1, answer),
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("fixture listener: {error}"),
+                    }
+                }
+            });
+            Self {
+                port,
+                pin,
+                requests,
+                uploads,
+                stop,
+                worker: Some(worker),
+            }
+        }
+
+        fn paths(&self) -> Vec<String> {
+            self.requests.lock_recover().clone()
+        }
+
+        fn uploads(&self) -> Vec<Vec<u8>> {
+            self.uploads.lock_recover().clone()
+        }
+    }
+
+    impl Drop for Receiver {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            if let Some(worker) = self.worker.take() {
+                worker.join().unwrap();
+            }
+        }
+    }
+
+    fn receive(
+        socket: TcpStream,
+        config: &rustls::ServerConfig,
+        requests: &Mutex<Vec<String>>,
+        uploads: &Mutex<Vec<Vec<u8>>>,
+        answer: Answer,
+    ) {
+        let _ = socket.set_read_timeout(Some(Duration::from_secs(2)));
+        let _ = socket.set_write_timeout(Some(Duration::from_secs(2)));
+        let connection = rustls::ServerConnection::new(Arc::new(config.clone())).unwrap();
+        let mut stream = BufReader::new(rustls::StreamOwned::new(connection, socket));
+        loop {
+            let mut line = String::new();
+            match stream.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+            let path = line.split_whitespace().nth(1).unwrap().to_owned();
+            requests.lock_recover().push(path.clone());
+            let mut length = 0;
+            let mut chunked = false;
+            loop {
+                line.clear();
+                stream.read_line(&mut line).unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse::<usize>().unwrap();
+                }
+                if line
+                    .to_ascii_lowercase()
+                    .contains("transfer-encoding: chunked")
+                {
+                    chunked = true;
+                }
+            }
+            let body = if chunked {
+                chunks(&mut stream)
+            } else {
+                let mut body = vec![0; length];
+                stream.read_exact(&mut body).unwrap();
+                body
+            };
+            let (status, reason, reply): (u16, &str, &[u8]) = match path.as_str() {
+                "/Ask" if answer == Answer::Refuse => (403, "Forbidden", b""),
+                "/Upload" => {
+                    uploads.lock_recover().push(body);
+                    (200, "OK", b"")
+                }
+                "/Discover" => (
+                    200,
+                    "OK",
+                    b"<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>ReceiverComputerName</key><string>Somebody else</string></dict></plist>",
+                ),
+                _ => (200, "OK", b""),
+            };
+            let response = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",
+                reply.len()
+            );
+            stream.get_mut().write_all(response.as_bytes()).unwrap();
+            stream.get_mut().write_all(reply).unwrap();
+            stream.get_mut().flush().unwrap();
+        }
+    }
+
+    fn chunks(stream: &mut impl BufRead) -> Vec<u8> {
+        let mut body = Vec::new();
+        loop {
+            let mut line = String::new();
+            stream.read_line(&mut line).unwrap();
+            let length = usize::from_str_radix(line.trim(), 16).unwrap();
+            if length == 0 {
+                stream.read_line(&mut String::new()).unwrap();
+                return body;
+            }
+            let mut chunk = vec![0; length];
+            stream.read_exact(&mut chunk).unwrap();
+            body.extend(chunk);
+            let mut ending = [0; 2];
+            stream.read_exact(&mut ending).unwrap();
+            assert_eq!(&ending, b"\r\n");
+        }
+    }
+
+    /// A port nothing serves: the receiver the person named is not there.
+    fn a_port_nobody_serves() -> u16 {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        listener.local_addr().unwrap().port()
+    }
+
+    /// The receivers, under a Files grant over `folder`, asking through the questions returned.
+    fn receivers(folder: &Path) -> (AirDrops, Questions) {
+        let grant = folder.to_path_buf();
+        let air_drop = AirDrops::new(Host {
+            enabled: true,
+            open: Box::new(move |_workspace, path| {
+                if !path.starts_with(&grant) {
+                    return Err("not beneath the Files grant".to_owned());
+                }
+                let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+                let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                Ok((file, name))
+            }),
+            permitted: Box::new(|| true),
+            changed: Box::new(|| {}),
+            language: Box::new(|| None),
+        });
+        let questions = Questions::new();
+        air_drop.ask_with(questions.clone());
+        (air_drop, questions)
+    }
+
+    /// Run `done` until it holds, or the deadline passes: whether it held.
+    fn until(mut done: impl FnMut() -> bool) -> bool {
+        let deadline = Instant::now() + DEADLINE;
+        loop {
+            if done() {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(PASS);
+        }
+    }
+
+    /// How the attempt stands, as the transfer list shows it.
+    fn phase(air_drop: &AirDrops) -> Option<NearbyTransferPhase> {
+        air_drop
+            .attempts()
+            .into_iter()
+            .find(|attempt| attempt.name == NAME)
+            .map(|attempt| attempt.phase)
+    }
+
+    /// The receiver's verification, once its certificate is in.
+    fn asked(questions: &Questions) -> (Question, VerifyQuestion) {
+        let mut asked = None;
+        assert!(
+            until(|| {
+                asked = questions.pending().into_iter().next();
+                asked.is_some()
+            }),
+            "the receiver's verification is asked"
+        );
+        let asked = asked.unwrap();
+        assert_eq!(asked.kind, VERIFY_QUESTION);
+        let details = serde_json::from_value(asked.details.clone()).unwrap();
+        (asked, details)
+    }
+
+    /// Hand `file` to the receiver on `port`.
+    fn send(air_drop: &AirDrops, file: &Path, port: u16) {
+        air_drop
+            .start(
+                None,
+                "workspace-a",
+                file.as_os_str().as_encoded_bytes(),
+                "127.0.0.1",
+                port,
+            )
+            .expect("the file is handed over");
+    }
+
+    /// Answer `asked` with the fingerprint the person typed.
+    fn verify(questions: &Questions, asked: &Question, fingerprint: &str) {
+        let answer = tilo_service::Answer {
+            values: vec![zeroize::Zeroizing::new(fingerprint.to_owned())],
+            ..tilo_service::Answer::default()
+        };
+        assert!(
+            questions.answer(&asked.handle, answer),
+            "the question was up"
+        );
+    }
+
+    /// What the receiver was posted, decoded as the one file the sender archived.
+    fn extracted(upload: &[u8]) -> (String, Vec<u8>) {
+        let mut child = std::process::Command::new("/usr/bin/python3")
+            .args([
+                "-I",
+                "-c",
+                "import gzip,sys;sys.stdout.buffer.write(gzip.decompress(sys.stdin.buffer.read()))",
+            ])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn_locked()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(upload).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success(), "the upload is one gzip archive");
+        let bytes = output.stdout;
+        assert_eq!(&bytes[..6], b"070701", "a newc cpio archive");
+        let size = usize::from_str_radix(std::str::from_utf8(&bytes[54..62]).unwrap(), 16).unwrap();
+        let name_size =
+            usize::from_str_radix(std::str::from_utf8(&bytes[94..102]).unwrap(), 16).unwrap();
+        let name_end = 110_usize.checked_add(name_size).unwrap();
+        assert_eq!(&bytes[name_end - 1], &0, "the name ends its field");
+        // The archive names its one entry by the path it lands at, which the sender roots at "./".
+        let name = String::from_utf8(bytes[110..name_end - 1].to_vec()).unwrap();
+        let name = name.strip_prefix("./").unwrap_or(&name).to_owned();
+        let payload = name_end.checked_add(3).unwrap() & !3;
+        (
+            name,
+            bytes[payload..payload.checked_add(size).unwrap()].to_vec(),
+        )
+    }
+
+    /// The bytes the tests send, and the file holding them under the Files grant.
+    fn the_file(folder: &Path) -> (PathBuf, Vec<u8>) {
+        let bytes: Vec<u8> = (0..40_000_u32).map(|index| (index % 251) as u8).collect();
+        let file = folder.join(NAME);
+        std::fs::write(&file, &bytes).expect("the file Files sends");
+        (file, bytes)
+    }
+
+    #[test]
+    fn a_file_reaches_the_receiver_who_took_it_and_only_after_its_fingerprint() {
+        assert!(
+            Path::new("/usr/bin/python3").is_file(),
+            "the AirDrop wire helper needs the system's own interpreter"
+        );
+        let folder = tempfile::tempdir().expect("the person's files");
+        let (file, bytes) = the_file(folder.path());
+        let receiver = Receiver::start(Answer::Accept);
+        let (air_drop, questions) = receivers(folder.path());
+
+        send(&air_drop, &file, receiver.port);
+        let (question, verification) = asked(&questions);
+        assert_eq!(verification.name, NAME, "the sheet names the file");
+        assert_eq!(verification.bytes, 40_000, "and its size");
+        assert_eq!(
+            verification.endpoint,
+            format!("AirDrop · 127.0.0.1:{}", receiver.port),
+            "and the receiver by its endpoint"
+        );
+
+        assert_eq!(
+            verification.certificate, receiver.pin,
+            "what the sheet holds typing to"
+        );
+
+        // A fingerprint that is not the receiver's sends nothing, and the question stands again.
+        verify(&questions, &question, &"00".repeat(32));
+        assert_eq!(asked(&questions).0, question, "the attempt still waits");
+        assert_eq!(phase(&air_drop), Some(NearbyTransferPhase::AwaitingConsent));
+        assert!(receiver.paths().is_empty(), "nothing was sent");
+
+        // The fingerprint its console printed sends the staged bytes once.
+        verify(&questions, &question, &receiver.pin);
+        assert!(questions.pending().is_empty(), "the question is answered");
+        assert!(
+            until(|| phase(&air_drop) == Some(NearbyTransferPhase::Completed)),
+            "the attempt is done"
+        );
+        assert_eq!(receiver.paths(), ["/Discover", "/Ask", "/Upload"]);
+        let uploads = receiver.uploads();
+        assert_eq!(uploads.len(), 1, "one upload");
+        assert_eq!(
+            extracted(&uploads[0]),
+            (NAME.to_owned(), bytes),
+            "the receiver holds exactly the bytes the person approved"
+        );
+    }
+
+    #[test]
+    fn a_receiver_who_declines_the_ask_gets_no_bytes_and_files_says_so() {
+        let folder = tempfile::tempdir().expect("the person's files");
+        let (file, _bytes) = the_file(folder.path());
+        let receiver = Receiver::start(Answer::Refuse);
+        let (air_drop, questions) = receivers(folder.path());
+
+        send(&air_drop, &file, receiver.port);
+        let (question, _) = asked(&questions);
+        verify(&questions, &question, &receiver.pin);
+        assert!(
+            until(|| phase(&air_drop) == Some(NearbyTransferPhase::Failed)),
+            "the attempt failed"
+        );
+        assert_eq!(receiver.paths(), ["/Discover", "/Ask"]);
+        assert!(receiver.uploads().is_empty(), "the receiver took nothing");
+    }
+
+    #[test]
+    fn a_person_who_declines_the_verification_sends_nothing() {
+        let folder = tempfile::tempdir().expect("the person's files");
+        let (file, _bytes) = the_file(folder.path());
+        let receiver = Receiver::start(Answer::Accept);
+        let (air_drop, questions) = receivers(folder.path());
+
+        send(&air_drop, &file, receiver.port);
+        let (question, _) = asked(&questions);
+        assert!(
+            questions.decline(&question.handle),
+            "the person declines it"
+        );
+        assert!(
+            until(|| phase(&air_drop) == Some(NearbyTransferPhase::Cancelled)),
+            "the attempt is cancelled"
+        );
+        assert!(questions.pending().is_empty());
+        assert!(receiver.paths().is_empty(), "nothing was sent");
+    }
+
+    #[test]
+    fn a_receiver_that_is_not_there_fails_before_any_question() {
+        let folder = tempfile::tempdir().expect("the person's files");
+        let (file, _bytes) = the_file(folder.path());
+        let (air_drop, questions) = receivers(folder.path());
+
+        send(&air_drop, &file, a_port_nobody_serves());
+        assert!(
+            until(|| {
+                assert!(
+                    questions.pending().is_empty(),
+                    "nothing is asked about a receiver that never answered"
+                );
+                phase(&air_drop) == Some(NearbyTransferPhase::Failed)
+            }),
+            "the attempt failed"
+        );
+    }
+}

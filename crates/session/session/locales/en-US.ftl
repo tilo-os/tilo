@@ -592,13 +592,7 @@ airdrop-verify-detail = File: { $name }
     Enter the receiver's SHA-256 certificate fingerprint as 64 hexadecimal digits from its trusted console or another independently verified channel. This sends the staged file once, only if the fingerprint matches. Cancel if you cannot verify the receiver.
 airdrop-verify-send-once = Send once
 airdrop-verify-cancel = Cancel
-airdrop-error-unavailable = AirDrop requires file-transfer permission and current Files access.
-airdrop-error-source = AirDrop accepts one readable regular file up to 16 MiB.
-airdrop-error-busy = Another AirDrop attempt is still running. Cancel it before starting another.
-airdrop-error-failed = AirDrop transfer failed. Verify the receiver again before a new attempt.
-airdrop-error-declined = AirDrop transfer was cancelled before sending.
 airdrop-error-verification = Fingerprint differs. Check the receiver; nothing sent.
-airdrop-error-fresh-consent = Start a new AirDrop attempt to verify the receiver and approve this file again.
 
 so-tilo-session-notifications-reply = Reply in a banner that offers a reply
 session-osd = Readout

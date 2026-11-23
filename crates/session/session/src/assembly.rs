@@ -239,13 +239,6 @@ pub(crate) struct Shared {
     pub(crate) workspace_tabs: crate::workspace_settings::WorkspaceTabs,
     #[cfg(target_os = "linux")]
     pub(crate) portal: Option<tilo_sheets::portal::PortalState>,
-    /// This session's Nearby Send: what the `AirDrop` receiver's verification in front of the
-    /// person is asked of.
-    #[cfg(target_os = "linux")]
-    pub(crate) nearby: Option<std::sync::Arc<crate::nearby_transfer::NearbyTransfer>>,
-    /// The verification of an `AirDrop` receiver, on the portal sheet.
-    #[cfg(target_os = "linux")]
-    pub(crate) air_drop_consent: crate::nearby_airdrop::Consent,
     #[cfg(target_os = "linux")]
     pub(crate) file_picker: Option<tilo_sheets::file_picker::FilePickerState>,
     /// The question about a display change, which stands on every display
