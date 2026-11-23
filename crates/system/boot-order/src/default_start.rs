@@ -11,8 +11,6 @@
 //! ([`CHANGE_PATH`]) holds what was changed and when, so the same action undoes
 //! itself. It never writes a boot option, only `BootOrder`.
 
-use std::io::Write as _;
-use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -334,29 +332,29 @@ fn load(path: &Path) -> Result<Option<Change>, Refusal> {
 }
 
 fn save(path: &Path, change: &Change) -> Result<(), Refusal> {
-    let io = |error: std::io::Error, at: &Path| Refusal(format!("{}: {error}", at.display()));
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| io(error, parent))?;
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| Refusal(format!("{}: {error}", parent.display())))?;
     }
     let bytes = serde_json::to_vec_pretty(change)
         .map_err(|error| Refusal(format!("{}: {error}", path.display())))?;
-    let temporary = path.with_extension(format!("tmp.{}", std::process::id()));
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true).mode(0o600);
-    let mut file = options
-        .open(&temporary)
-        .map_err(|error| io(error, &temporary))?;
-    file.write_all(&bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(|error| io(error, &temporary))?;
-    drop(file);
-    std::fs::rename(&temporary, path).map_err(|error| io(error, path))?;
-    if let Some(parent) = path.parent()
-        && let Ok(directory) = std::fs::File::open(parent)
-    {
-        let _ = directory.sync_all();
+    match tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600) {
+        Ok(()) => Ok(()),
+        // The firmware boot order is already changed by now; once the change
+        // note is renamed into place, a refused directory sync is best effort.
+        #[cfg(any(unix, windows))]
+        Err(error)
+            if tilo_files::native::atomic::publication_state(&error)
+                == Some(
+                    tilo_files::native::atomic::PublicationState::PublishedDurabilityUnknown,
+                ) =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(Refusal(format!("{}: {error}", path.display()))),
     }
-    Ok(())
 }
 
 /// The change note path, for the command line.
@@ -406,5 +404,58 @@ pub fn main(
             let _ = writeln!(err, "tilo-default-start: {refusal}");
             1
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt as _;
+    use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
+
+    fn sample_change(current: &str, changed_at_ns: u64) -> Change {
+        Change {
+            schema: SCHEMA,
+            boot_current: current.into(),
+            original_order: vec!["0001".into(), "0002".into()],
+            changed_order: vec!["0002".into(), "0001".into()],
+            changed_at_ns,
+            restored_at_ns: None,
+        }
+    }
+
+    #[test]
+    fn save_keeps_old_note_on_failed_replace_and_succeeds_when_post_rename_dir_sync_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = dir.path().join("boot-order.json");
+        let first = sample_change("0002", 1_000);
+        let second = sample_change("0003", 2_000);
+
+        save(&path, &first).unwrap();
+        assert_eq!(load(&path).unwrap(), Some(first.clone()));
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+
+        let failed = with_failure(Checkpoint::BeforePublish, || save(&path, &second));
+        assert!(failed.is_err());
+        assert_eq!(load(&path).unwrap(), Some(first));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+
+        // Once the change note is renamed into place, a refused directory sync
+        // must not fail save (the firmware BootOrder is already updated).
+        with_failure(Checkpoint::BeforeCommit, || save(&path, &second)).unwrap();
+        assert_eq!(load(&path).unwrap(), Some(second));
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 }
