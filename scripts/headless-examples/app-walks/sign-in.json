@@ -57,7 +57,7 @@
           }
         }
       ],
-      "dark": true,
+      "shot": false,
       "budget_ms": 10000
     }
   ]
