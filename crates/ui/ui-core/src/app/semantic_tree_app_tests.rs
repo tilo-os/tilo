@@ -1771,17 +1771,23 @@ fn retained_and_virtual_trees_dispatch_through_semantic_routes() {
         let mut app = App::new(State::new(), Box::new(button));
         app.init_layout();
 
+        // The press is a published action, for every widget: a node with a name, a place and an
+        // operation, pressed through the same accessibility route a screen reader takes.
         let resource = app
             .collect_resources()
             .into_iter()
-            .find(|resource| resource.kind == "tilo.ui.control" && resource.label == "Drive me");
-        assert!(resource.is_none_or(|resource| {
-            resource
-                .actions
-                .iter()
-                .all(|action| action.id != "activate")
-        }));
-        assert_eq!(presses.get(), 0);
+            .find(|resource| resource.kind == "tilo.ui.control" && resource.label == "Drive me")
+            .expect("a plain press is published");
+        assert!(
+            resource.actions.iter().any(|action| action.id == "activate"),
+            "the press is the activate operation"
+        );
+        let address =
+            tilo_actions::ActionAddress::new(resource.id.as_str(), "activate");
+        let actor = tilo_actions::Actor::Member(app.collaboration.local_author.clone());
+        app.invoke_resource_action(ResourceInvocation::new(&address, &actor))
+            .expect("the published activate runs");
+        assert_eq!(presses.get(), 1, "the press runs the widget's own closure");
     }
 }
 

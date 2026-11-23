@@ -961,13 +961,20 @@ impl SemanticTree {
             .filter(|node| node.durable_identity)
             .filter(|node| !self.duplicate_ids.contains(&node.id))
             .filter_map(|node| {
+                // A verb is published where an agent can reach it: through the widget-local target
+                // the node names, or through the widget it belongs to and the place it stands (the
+                // route a screen reader's press takes). A press re-enters the action's own
+                // admission, so a control bound to a domain action is still decided by that
+                // action's permissions and confirmation.
+                let reachable = node.semantic_target.is_some()
+                    || (node.widget_taffy_id.is_some() && node.bounds.is_some());
                 let verbs = node
                     .actions
                     .iter()
                     .filter_map(|action| match &action.kind {
                         SemanticActionKind::Verb(verb)
                             if semantic_operation_kind(node.role, verb) == OperationKind::View
-                                || node.semantic_target.is_some() =>
+                                || reachable =>
                         {
                             Some((action, verb))
                         }
@@ -1806,15 +1813,15 @@ mod tests {
                 let mut tree = SemanticTree::new();
                 tree.refresh(&button, &node_map, None, &[]);
                 let resources = tree.action_resources();
-                let go = resources.iter().find(|resource| resource.label == "Go");
+                let go = resources
+                    .iter()
+                    .find(|resource| resource.label == "Go")
+                    .expect("a widget with a name, a place and a press is published");
                 assert!(
-                    go.is_none_or(|resource| {
-                        resource
-                            .actions
-                            .iter()
-                            .all(|action| action.id != "activate")
-                    }),
-                    "generic activation must not bypass a domain action's permission and confirmation"
+                    go.actions.iter().any(|action| action.id == "activate"),
+                    "a plain press is published as the operation a screen reader presses, \
+                     for every widget: a press re-enters the action's own admission, so a \
+                     control bound to a domain action stays decided by it"
                 );
             }
 
