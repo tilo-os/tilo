@@ -10,7 +10,7 @@
 //! See <https://docs.nextcloud.com/server/latest/developer_manual/client_apis/LoginFlow/index.html>.
 
 use std::fmt;
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use url::Url;
@@ -93,14 +93,35 @@ fn same_host(a: &Url, b: &Url) -> bool {
     a.host_str() == b.host_str() && a.port_or_known_default() == b.port_or_known_default()
 }
 
-fn client() -> Result<reqwest::blocking::Client, NextcloudError> {
-    tilo_net::http::blocking_client()
+fn client(lookup: Option<&tilo_net::Lookup>) -> Result<reqwest::blocking::Client, NextcloudError> {
+    let builder = match lookup {
+        Some(lookup) => tilo_net::http::blocking_client_looking(Arc::clone(lookup)),
+        None => tilo_net::http::blocking_client(),
+    };
+    builder
         .user_agent(USER_AGENT)
         .timeout(REQUEST_TIMEOUT)
         .connect_timeout(REQUEST_TIMEOUT)
         .redirect(reqwest::redirect::Policy::none())
         .build()
-        .map_err(|error| NextcloudError::Offline(error.without_url().to_string()))
+        .map_err(offline)
+}
+
+fn offline(error: reqwest::Error) -> NextcloudError {
+    let why = tilo_net::http::refused_by_lookup(&error)
+        .unwrap_or_else(|| error.without_url().to_string());
+    NextcloudError::Offline(why)
+}
+
+/// For a flow given its own look-up, ask it about an address written into `url`
+/// before anything is sent: a connection asks it for a name, and looks no
+/// written-out address up.
+fn check_written(lookup: Option<&tilo_net::Lookup>, url: &Url) -> Result<(), NextcloudError> {
+    if let (Some(lookup), Some(address)) = (lookup, tilo_net::address::written_out(url)) {
+        tilo_net::address::asked_as_written(lookup, address)
+            .map_err(|error| NextcloudError::Offline(error.to_string()))?;
+    }
+    Ok(())
 }
 
 fn read_json(response: reqwest::blocking::Response) -> Result<serde_json::Value, NextcloudError> {
@@ -122,6 +143,7 @@ pub fn cancellation() -> (mpsc::Sender<()>, mpsc::Receiver<()>) {
 
 pub struct LoginFlow {
     http: reqwest::blocking::Client,
+    lookup: Option<tilo_net::Lookup>,
     server: Url,
     login_url: String,
     poll_endpoint: Url,
@@ -137,16 +159,26 @@ impl fmt::Debug for LoginFlow {
 }
 
 pub fn begin(server: &str) -> Result<LoginFlow, NextcloudError> {
+    begin_with(server, None)
+}
+
+/// Begin a login flow whose every request connects only to addresses `lookup`
+/// answers at that connection: the first call and every poll of the flow it
+/// returns. Takes no proxy from the environment, and asks `lookup` before
+/// sending to an address written into a URL.
+pub fn begin_looking(server: &str, lookup: tilo_net::Lookup) -> Result<LoginFlow, NextcloudError> {
+    begin_with(server, Some(lookup))
+}
+
+fn begin_with(server: &str, lookup: Option<tilo_net::Lookup>) -> Result<LoginFlow, NextcloudError> {
     let server = server_url(server)?;
-    let http = client()?;
+    check_written(lookup.as_ref(), &server)?;
+    let http = client(lookup.as_ref())?;
     let start = format!(
         "{}/index.php/login/v2",
         server.as_str().trim_end_matches('/')
     );
-    let response = http
-        .post(start)
-        .send()
-        .map_err(|error| NextcloudError::Offline(error.without_url().to_string()))?;
+    let response = http.post(start).send().map_err(offline)?;
     if !response.status().is_success() {
         return Err(NextcloudError::NotNextcloud);
     }
@@ -178,6 +210,7 @@ pub fn begin(server: &str) -> Result<LoginFlow, NextcloudError> {
     }
     Ok(LoginFlow {
         http,
+        lookup,
         server,
         login_url,
         poll_endpoint,
@@ -220,6 +253,7 @@ impl LoginFlow {
     /// # Errors
     /// The server could not be reached or answered something a login flow does not.
     pub fn poll(&self) -> Result<Option<NextcloudLogin>, NextcloudError> {
+        check_written(self.lookup.as_ref(), &self.poll_endpoint)?;
         let mut body = url::form_urlencoded::Serializer::new(String::new());
         body.append_pair("token", &self.token);
         let response = self
@@ -228,7 +262,7 @@ impl LoginFlow {
             .header("Content-Type", "application/x-www-form-urlencoded")
             .body(body.finish())
             .send()
-            .map_err(|error| NextcloudError::Offline(error.without_url().to_string()))?;
+            .map_err(offline)?;
         match response.status().as_u16() {
             404 => return Ok(None),
             200 => {}
@@ -267,7 +301,7 @@ pub fn revoke_app_password(
     app_password: &str,
 ) -> Result<(), NextcloudError> {
     let server = server_url(server)?;
-    let response = client()?
+    let response = client(None)?
         .delete(format!(
             "{}/ocs/v2.php/core/apppassword",
             server.as_str().trim_end_matches('/')
@@ -275,7 +309,7 @@ pub fn revoke_app_password(
         .header("OCS-APIRequest", "true")
         .basic_auth(login_name, Some(app_password))
         .send()
-        .map_err(|error| NextcloudError::Offline(error.without_url().to_string()))?;
+        .map_err(offline)?;
     if response.status().is_success() || response.status().as_u16() == 401 {
         Ok(())
     } else {
@@ -420,5 +454,255 @@ mod tests {
                 "https://cloud.example.com/nc"
             );
         }
+    }
+
+    struct CountingListener {
+        port: u16,
+        accepted: Arc<AtomicUsize>,
+        stop: Arc<std::sync::atomic::AtomicBool>,
+        worker: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl CountingListener {
+        fn start() -> Self {
+            let listener =
+                std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).expect("a port");
+            let port = listener.local_addr().expect("its address").port();
+            let accepted = Arc::new(AtomicUsize::new(0));
+            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let count = Arc::clone(&accepted);
+            let stopping = Arc::clone(&stop);
+            let worker = std::thread::spawn(move || {
+                while let Ok((stream, _)) = listener.accept() {
+                    if stopping.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    count.fetch_add(1, Ordering::SeqCst);
+                    drop(stream);
+                }
+            });
+            Self {
+                port,
+                accepted,
+                stop,
+                worker: Some(worker),
+            }
+        }
+
+        fn count(&self) -> usize {
+            self.accepted.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Drop for CountingListener {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            let _ = std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, self.port));
+            if let Some(worker) = self.worker.take() {
+                let _ = worker.join();
+            }
+        }
+    }
+
+    fn fake_nextcloud_at_host(
+        host: &str,
+        pending_polls: usize,
+    ) -> (Responder, Arc<Mutex<Vec<String>>>) {
+        let tokens = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&tokens);
+        let polls = AtomicUsize::new(0);
+        let base = Arc::new(Mutex::new(String::new()));
+        let base_for_handler = Arc::clone(&base);
+        let responder = Responder::handle(move |request| {
+            let base = base_for_handler.lock().unwrap().clone();
+            match (request.method.as_str(), request.target.as_str()) {
+                ("POST", "/index.php/login/v2") => Some(
+                    Reply::status(200).body(
+                        serde_json::json!({
+                            "poll": {"token": "poll-token-1", "endpoint": format!("{base}/login/v2/poll")},
+                            "login": format!("{base}/login/v2/flow/abc"),
+                        })
+                        .to_string(),
+                    ),
+                ),
+                ("POST", "/login/v2/poll") => {
+                    seen.lock().unwrap().push(request.body_text());
+                    if polls.fetch_add(1, Ordering::SeqCst) < pending_polls {
+                        Some(Reply::status(404))
+                    } else {
+                        Some(Reply::status(200).body(
+                            serde_json::json!({
+                                "server": base,
+                                "loginName": "ada",
+                                "appPassword": "minted-app-password",
+                            })
+                            .to_string(),
+                        ))
+                    }
+                }
+                _ => Some(Reply::status(404)),
+            }
+        });
+        *base.lock().unwrap() = format!("http://{host}:{}", responder.port());
+        (responder, tokens)
+    }
+
+    fn poll_ready<T>(
+        mut future: std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>,
+    ) -> T {
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        match future.as_mut().poll(&mut context) {
+            std::task::Poll::Ready(value) => value,
+            std::task::Poll::Pending => panic!("fixture lookup returned Pending"),
+        }
+    }
+
+    fn toggle_lookup(
+        open: &Arc<std::sync::atomic::AtomicBool>,
+        asked: &Arc<AtomicUsize>,
+    ) -> tilo_net::Lookup {
+        let open = Arc::clone(open);
+        let asked = Arc::clone(asked);
+        let inner: tilo_net::Lookup = Arc::new(move |_name: String| {
+            Box::pin(async move { Ok(vec![std::net::IpAddr::from(std::net::Ipv4Addr::LOCALHOST)]) })
+        });
+        Arc::new(move |name: String| {
+            asked.fetch_add(1, Ordering::SeqCst);
+            let open = open.load(Ordering::SeqCst);
+            let inner = Arc::clone(&inner);
+            Box::pin(async move {
+                if open {
+                    inner(name).await
+                } else {
+                    tilo_net::address::public_addresses(&inner, &name).await
+                }
+            })
+        })
+    }
+
+    #[test]
+    fn begin_looking_refuses_a_name_that_turns_inside_and_written_inside_addresses() {
+        let listener = CountingListener::start();
+        let asked = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&asked);
+        let turning: tilo_net::Lookup = Arc::new(move |_name: String| {
+            let nth = counted.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                Ok(vec![if nth == 0 {
+                    std::net::IpAddr::from([93, 184, 216, 34])
+                } else {
+                    std::net::IpAddr::from(std::net::Ipv4Addr::LOCALHOST)
+                }])
+            })
+        });
+        let judged = tilo_net::address::public_only(turning);
+
+        let first = poll_ready(judged("localhost".to_owned())).unwrap();
+        assert_eq!(first, vec![std::net::IpAddr::from([93, 184, 216, 34])]);
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+
+        let named = format!("https://localhost:{}", listener.port);
+        assert_eq!(
+            begin_looking(&named, Arc::clone(&judged)).unwrap_err(),
+            NextcloudError::Offline(
+                "localhost answers with an address of this machine or its network".into()
+            )
+        );
+        assert_eq!(listener.count(), 0, "nothing is connected to");
+        assert_eq!(asked.load(Ordering::SeqCst), 2, "looked up at connection");
+
+        let literal = format!("http://127.0.0.1:{}", listener.port);
+        assert_eq!(
+            begin_looking(
+                &literal,
+                tilo_net::address::public_only(tilo_net::address::system_lookup()),
+            )
+            .unwrap_err(),
+            NextcloudError::Offline(
+                "127.0.0.1 answers with an address of this machine or its network".into()
+            )
+        );
+        assert_eq!(listener.count(), 0, "written-out inside address untouched");
+
+        // A device caller's `begin` behaves as on main and connects to loopback.
+        assert!(matches!(begin(&named), Err(NextcloudError::Offline(_))));
+        assert_eq!(listener.count(), 1, "device caller connects as on main");
+    }
+
+    #[test]
+    fn a_login_flow_asks_its_given_lookup_on_every_poll() {
+        let (server, tokens) = fake_nextcloud_at_host("localhost", 1);
+        let base = format!("http://localhost:{}", server.port());
+        let asked = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&asked);
+        let lookup: tilo_net::Lookup = Arc::new(move |_name: String| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move { Ok(vec![std::net::IpAddr::from(std::net::Ipv4Addr::LOCALHOST)]) })
+        });
+
+        let flow = begin_looking(&base, lookup).unwrap();
+        assert_eq!(flow.login_url(), format!("{base}/login/v2/flow/abc"));
+        assert_eq!(asked.load(Ordering::SeqCst), 1, "begin asks the lookup");
+        assert!(flow.poll().unwrap().is_none(), "first poll is pending");
+        assert_eq!(
+            asked.load(Ordering::SeqCst),
+            2,
+            "first poll asks the given lookup"
+        );
+        let login = flow.poll().unwrap().expect("second poll completes");
+        assert_eq!(
+            asked.load(Ordering::SeqCst),
+            3,
+            "second poll asks the given lookup"
+        );
+        assert_eq!(login.server, base);
+        assert_eq!(login.login_name, "ada");
+        assert_eq!(login.app_password.as_str(), "minted-app-password");
+        assert_eq!(tokens.lock().unwrap().len(), 2);
+
+        // Shutting off private addresses mid-flow refuses subsequent polls by name.
+        let (named_server, named_tokens) = fake_nextcloud_at_host("localhost", 0);
+        let named_base = format!("http://localhost:{}", named_server.port());
+        let open = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let named_asked = Arc::new(AtomicUsize::new(0));
+        let flow = begin_looking(&named_base, toggle_lookup(&open, &named_asked)).unwrap();
+        assert_eq!(named_asked.load(Ordering::SeqCst), 1);
+        open.store(false, Ordering::SeqCst);
+        assert_eq!(
+            flow.poll().unwrap_err(),
+            NextcloudError::Offline(
+                "localhost answers with an address of this machine or its network".into()
+            )
+        );
+        assert_eq!(named_asked.load(Ordering::SeqCst), 2);
+        assert!(named_tokens.lock().unwrap().is_empty());
+
+        // And refuses subsequent polls to a written-out IP literal as well.
+        let (literal_server, literal_tokens) = fake_nextcloud(0);
+        let literal_open = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let literal_asked = Arc::new(AtomicUsize::new(0));
+        let flow = begin_looking(
+            &literal_server.url(),
+            toggle_lookup(&literal_open, &literal_asked),
+        )
+        .unwrap();
+        literal_open.store(false, Ordering::SeqCst);
+        assert_eq!(
+            flow.poll().unwrap_err(),
+            NextcloudError::Offline(
+                "127.0.0.1 answers with an address of this machine or its network".into()
+            )
+        );
+        assert!(literal_tokens.lock().unwrap().is_empty());
+
+        // Device caller's `begin` completes a localhost flow as on main.
+        let (device_server, device_tokens) = fake_nextcloud_at_host("localhost", 0);
+        let device_base = format!("http://localhost:{}", device_server.port());
+        let flow = begin(&device_base).unwrap();
+        let login = flow.poll().unwrap().expect("device poll completes");
+        assert_eq!(login.server, device_base);
+        assert_eq!(login.login_name, "ada");
+        assert_eq!(login.app_password.as_str(), "minted-app-password");
+        assert_eq!(device_tokens.lock().unwrap().len(), 1);
     }
 }
