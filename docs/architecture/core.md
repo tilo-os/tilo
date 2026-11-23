@@ -1080,7 +1080,10 @@ everything else is visibly optional:
   by the core.
 - `crates/engines/`: PDF, media, document codecs and search, shared by apps.
 - `crates/import/`: everything that reads another product's data, behind
-  `tilo migrate`.
+  `tilo migrate`. A migration is a resource with actions (sources, review,
+  choose, start, status, undo) on a provider, and its window is a tilolang
+  view of that resource. People, agents and the CLI use the same actions;
+  there is no second import window.
 - `tools/`: the dev VM, app CLIs, examples and test fakes.
 
 A crate moves to its group in the push that removes what it duplicates, not
