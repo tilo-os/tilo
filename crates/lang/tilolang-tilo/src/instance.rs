@@ -185,7 +185,8 @@ mod platform;
 
 pub use platform::{
     GlobalLocale, Locale, Platform, PlatformBlobs, PlatformClipboard, PlatformFiles, PlatformFonts,
-    PlatformWeb, PlatformWords, SharedPdf, Zoned, sentence_at, shown_at, wall_moment, wall_now,
+    PlatformWeb, PlatformWords, SharedCanvas, SharedPdf, Zoned, sentence_at, shown_at,
+    wall_moment, wall_now,
 };
 #[cfg(all(not(target_family = "wasm"), feature = "test-support"))]
 pub mod testing;
@@ -1072,6 +1073,9 @@ impl Instance {
         self.page = Some(page);
         if let Some(pdf) = self.platform.pdf() {
             host.runtime().set_pdf(SharedPdf(pdf));
+        }
+        if let Some(canvas) = self.platform.canvas() {
+            host.runtime().set_canvas(SharedCanvas(canvas));
         }
         host.runtime()
             .set_fonts(PlatformFonts(Rc::clone(&self.platform)));

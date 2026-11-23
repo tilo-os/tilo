@@ -20,6 +20,7 @@ pub mod content;
 pub mod content_geometry;
 pub mod detail;
 pub mod document;
+pub mod host;
 pub mod fonts;
 pub mod media;
 pub mod model;

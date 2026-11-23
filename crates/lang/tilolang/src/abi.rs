@@ -473,6 +473,14 @@ imports! {
     PdfImport = "pdf_import" ([H] -> [H]);
     PdfPicture = "pdf_picture" ([H, I64, I64] -> [H]);
     PdfSave = "pdf_save" ([H, H] -> [H]);
+    CanvasLook = "canvas_look" ([H, H, H] -> [H]);
+    CanvasExport = "canvas_export" ([H, H, H] -> [H]);
+    CanvasGrade = "canvas_grade" ([H, H] -> [H]);
+    CanvasWand = "canvas_wand" ([H, H] -> [H]);
+    CanvasSvg = "canvas_svg" ([H, H] -> [H]);
+    CanvasSvgImport = "canvas_svg_import" ([H, H] -> [H]);
+    CanvasSave = "canvas_save" ([H, H] -> [H]);
+    CanvasOpen = "canvas_open" ([H] -> [H]);
 
     // The clipboard: text or an image file offered as the person's copy, and the text or the image
     // on it now (an `Option`).

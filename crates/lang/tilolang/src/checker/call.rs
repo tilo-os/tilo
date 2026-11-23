@@ -23,6 +23,8 @@ const PAGE: &str = "page";
 
 const PDF: &str = "pdf";
 
+const CANVAS: &str = "canvas";
+
 /// The device's own work, asked by name (`engine.call`, `engine.start`, `engine.status`,
 /// `engine.cancel`).
 const ENGINE: &str = "engine";
@@ -125,6 +127,12 @@ impl Checker<'_> {
                     && self.env.find_import(PDF).is_none()
                 {
                     return self.builtin_pdf(name, args, span);
+                }
+                if matches!(&base.kind, ExprKind::Ident(ns) if ns == CANVAS)
+                    && self.lookup(CANVAS).is_none()
+                    && self.env.find_import(CANVAS).is_none()
+                {
+                    return self.builtin_canvas(name, args, span);
                 }
                 // `engine.call`, `engine.start`, `engine.status`, `engine.cancel`: the device's
                 // own work, asked by name. A view never asks: it is drawn again from what it is
@@ -2686,6 +2694,104 @@ impl Checker<'_> {
             } else {
                 given.push(self.expr_as(&arg.value, &Ty::Int));
             }
+        }
+        Ex::host(imp, given, held)
+    }
+
+    /// `canvas.look`, `canvas.export`, `canvas.grade`, `canvas.wand`, `canvas.svg`,
+    /// `canvas.svg_import`, `canvas.save` and `canvas.open`: the device's drawing engine, over
+    /// the artwork's JSON and the pictures it shows. Reading only what it is handed, a call is
+    /// no effect, as `pdf` is; a picture it answers is kept as content.
+    fn builtin_canvas(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
+        let result = |held: Ty| Ty::Result(Box::new(held), Box::new(Ty::Text));
+        let what = format!("`canvas.{}`", name.name);
+        let pictures = || Ty::List(Box::new(Ty::File));
+        let (imp, held, takes, wanted): (Imp, Ty, &str, Vec<Ty>) = match name.name.as_str() {
+            "look" => (
+                Imp::CanvasLook,
+                result(Ty::File),
+                "the artwork as JSON, the look's fields as JSON, and its pictures",
+                vec![Ty::Text, Ty::Text, pictures()],
+            ),
+            "export" => (
+                Imp::CanvasExport,
+                result(Ty::File),
+                "the artwork as JSON, the export's fields as JSON, and its pictures",
+                vec![Ty::Text, Ty::Text, pictures()],
+            ),
+            "grade" => (
+                Imp::CanvasGrade,
+                result(Ty::File),
+                "the picture and the grade's fields as JSON",
+                vec![Ty::File, Ty::Text],
+            ),
+            "wand" => (
+                Imp::CanvasWand,
+                result(Ty::Text),
+                "the picture and what to find, as JSON",
+                vec![Ty::File, Ty::Text],
+            ),
+            "svg" => (
+                Imp::CanvasSvg,
+                result(Ty::Text),
+                "the artwork as JSON and what to write, as JSON",
+                vec![Ty::Text, Ty::Text],
+            ),
+            "svg_import" => (
+                Imp::CanvasSvgImport,
+                result(Ty::Text),
+                "the SVG markup and where to place it, as JSON",
+                vec![Ty::Text, Ty::Text],
+            ),
+            "save" => (
+                Imp::CanvasSave,
+                result(Ty::File),
+                "the artwork as JSON and the pictures it shows",
+                vec![Ty::Text, pictures()],
+            ),
+            "open" => (
+                Imp::CanvasOpen,
+                result(Ty::Text),
+                "the artwork's file",
+                vec![Ty::File],
+            ),
+            other => {
+                self.err(
+                    "E022",
+                    name.span,
+                    format!(
+                        "`canvas` has `look`, `export`, `grade`, `wand`, `svg`, `svg_import`, \
+                         `save` and `open`, not `{other}`: `canvas.look(artwork, request, \
+                         pictures)` is a picture of the artwork"
+                    ),
+                );
+                for a in args {
+                    let _ = self.expr(&a.value, None);
+                }
+                return Ex::error();
+            }
+        };
+        if args.len() != wanted.len() {
+            self.err(
+                "E022",
+                span,
+                format!("{what} takes {takes}: `canvas.{}(\u{2026})`", name.name),
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        }
+        let mut given = Vec::with_capacity(args.len());
+        for (arg, ty) in args.iter().zip(wanted) {
+            if let Some(named) = &arg.name {
+                self.err(
+                    "E022",
+                    named.span,
+                    format!("{what} takes {takes} by position"),
+                );
+            }
+            given.push(self.expr_as(&arg.value, &ty));
         }
         Ex::host(imp, given, held)
     }

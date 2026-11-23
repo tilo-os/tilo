@@ -1236,6 +1236,12 @@ impl Runtime {
         *self.core.pdf.borrow_mut() = Box::new(host);
     }
 
+    /// The device's drawing engine ([`crate::canvas`]): what `canvas.*` asks of an artwork's
+    /// records. Until it is set, every call says this device cannot draw.
+    pub fn set_canvas(&self, host: impl crate::canvas::CanvasHost + 'static) {
+        *self.core.canvas.borrow_mut() = Box::new(host);
+    }
+
     /// The device's own folders ([`crate::files`]): what `File.list`, `File.stat`, `File.read`,
     /// `File.watch` and `File.open` reach, within the paths the app was granted. Until it is set,
     /// an app holds no device files and each call says so.

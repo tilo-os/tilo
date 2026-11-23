@@ -83,6 +83,8 @@ tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", default-featur
 tilolang-mail = { path = "../../integrations/tilolang-mail", default-features = false }
 # The device's content store, which an app's files are kept in, and the person's own chooser.
 tilo-content = { version = "0.1.0", path = "../../core/content" }
+# The device's drawing engine: a Canvas artwork drawn, carried and brought over its file.
+tilo-canvas-engine = { version = "0.1.0", path = "../../engines/canvas-engine" }
 tilo-content-device = { version = "0.1.0", path = "../../core/content-device" }
 tilo-dialogs = { version = "0.1.0", path = "../../platform/tilo-dialogs" }
 # The person's clipboard, over the connection the session opens for each instance: what an app

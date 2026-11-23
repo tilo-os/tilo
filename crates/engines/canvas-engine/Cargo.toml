@@ -19,6 +19,8 @@ tilo-wet-media = { path = "../../engines/wet-media" }
 tilo-paint-strokes = { path = "../paint-strokes" }
 # A picture and a look are stored as content and answered by their address.
 tilo-content = { path = "../../core/content" }
+# Rendering runs a look outside a window: its content store is lent for the call.
+tilo-wake = { path = "../../platform/tilo-wake" }
 # The resource model an artwork, a layer and a mark are kept as.
 tilo-resource = { path = "../../core/tilo-resource" }
 # The drawing layer under the components: colour, geometry, pictures, text.

@@ -394,6 +394,16 @@ imports! {
     (PdfPicture, "pdf_picture", "ill", "i"),
     (PdfSave, "pdf_save", "ii", "i"),
 
+    // A Canvas artwork, drawn and carried by the device's engine.
+    (CanvasLook, "canvas_look", "iii", "i"),
+    (CanvasExport, "canvas_export", "iii", "i"),
+    (CanvasGrade, "canvas_grade", "ii", "i"),
+    (CanvasWand, "canvas_wand", "ii", "i"),
+    (CanvasSvg, "canvas_svg", "ii", "i"),
+    (CanvasSvgImport, "canvas_svg_import", "ii", "i"),
+    (CanvasSave, "canvas_save", "ii", "i"),
+    (CanvasOpen, "canvas_open", "i", "i"),
+
     // The clipboard: text or an image offered as the person's copy, and what is on it now.
     (ClipboardCopyText, "clipboard_copy_text", "i", "i"),
     (ClipboardCopyImage, "clipboard_copy_image", "i", "i"),

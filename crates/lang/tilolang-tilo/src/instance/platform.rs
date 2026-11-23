@@ -584,6 +584,13 @@ pub trait Platform {
         None
     }
 
+    /// The device's drawing engine (`Runtime::set_canvas`), when it can draw an artwork: what
+    /// a package's `canvas.*` asks. A platform with none leaves the runtime's own answer, which
+    /// says this device cannot draw.
+    fn canvas(&self) -> Option<Rc<dyn tilolang_runtime::canvas::CanvasHost>> {
+        None
+    }
+
     /// Publish what `host` holds until the returned hold is dropped.
     fn publish(&self, host: &Host) -> Option<Box<dyn Publication>> {
         let _ = host;
@@ -810,5 +817,53 @@ impl tilolang_runtime::pdf::PdfHost for SharedPdf {
 
     fn save(&self, sources: &[&[u8]], request: &str) -> Result<Vec<u8>, String> {
         self.0.save(sources, request)
+    }
+}
+
+/// The device's drawing engine, as the platform handed it over: one `Rc` per instance, so
+/// every `canvas.*` call of the instance reaches the same engine.
+pub struct SharedCanvas(pub(super) Rc<dyn tilolang_runtime::canvas::CanvasHost>);
+
+impl tilolang_runtime::canvas::CanvasHost for SharedCanvas {
+    fn look(
+        &self,
+        artwork: &str,
+        request: &str,
+        pictures: &[(String, Vec<u8>)],
+    ) -> Result<(Vec<u8>, String), String> {
+        self.0.look(artwork, request, pictures)
+    }
+
+    fn export(
+        &self,
+        artwork: &str,
+        request: &str,
+        pictures: &[(String, Vec<u8>)],
+    ) -> Result<(Vec<u8>, String), String> {
+        self.0.export(artwork, request, pictures)
+    }
+
+    fn grade(&self, picture: &[u8], adjust: &str) -> Result<Vec<u8>, String> {
+        self.0.grade(picture, adjust)
+    }
+
+    fn wand(&self, picture: &[u8], request: &str) -> Result<String, String> {
+        self.0.wand(picture, request)
+    }
+
+    fn svg(&self, artwork: &str, request: &str) -> Result<String, String> {
+        self.0.svg(artwork, request)
+    }
+
+    fn svg_import(&self, markup: &str, request: &str) -> Result<String, String> {
+        self.0.svg_import(markup, request)
+    }
+
+    fn save(&self, artwork: &str, pictures: &[(String, Vec<u8>)]) -> Result<Vec<u8>, String> {
+        self.0.save(artwork, pictures)
+    }
+
+    fn open(&self, archive: &[u8]) -> Result<(String, Vec<(String, Vec<u8>)>), String> {
+        self.0.open(archive)
     }
 }

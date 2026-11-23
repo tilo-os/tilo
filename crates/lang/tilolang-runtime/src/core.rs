@@ -156,6 +156,9 @@ pub struct Core {
     /// The device's PDF engine (`Runtime::set_pdf`): what `pdf.*` asks of a PDF's bytes. Until
     /// the host sets one, every call says this device reads no PDFs.
     pub pdf: RefCell<Box<dyn crate::pdf::PdfHost>>,
+    /// The device's drawing engine (`Runtime::set_canvas`): what `canvas.*` asks of an
+    /// artwork's records. Until the host sets one, every call says this device cannot draw.
+    pub canvas: RefCell<Box<dyn crate::canvas::CanvasHost>>,
     /// Where `web.get` and `web.post` reach (`Runtime::set_web`): the network of the device
     /// whose code makes the request. Until the host sets one, every request answers with a
     /// failure saying the host reaches no services.
@@ -373,6 +376,7 @@ impl Core {
             authority,
             models: RefCell::new(None),
             pdf: RefCell::new(Box::new(crate::pdf::NoPdf)),
+            canvas: RefCell::new(Box::new(crate::canvas::NoCanvas)),
             web: RefCell::new(None),
             blobs: RefCell::new(None),
             fonts: RefCell::new(None),
@@ -601,6 +605,8 @@ impl Core {
             }
             PdfPages | PdfOutline | PdfText | PdfLinks | PdfFields | PdfMarkup | PdfImport
             | PdfPicture | PdfSave => self.pdf_import(imp, a),
+            CanvasLook | CanvasExport | CanvasGrade | CanvasWand | CanvasSvg | CanvasSvgImport
+            | CanvasSave | CanvasOpen => self.canvas_import(imp, a),
             SheetValues => self.sheet_values(a),
             SheetEdit => self.sheet_edit(a),
             SheetRanges => self.sheet_ranges(a),

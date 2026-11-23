@@ -646,6 +646,12 @@ impl Platform for HostPlatform {
         Some(crate::pdf::Engine::host())
     }
 
+    /// The device's drawing engine: `tilo-canvas-engine` over the artwork's records, answering
+    /// every `canvas.*` call from the text and picture bytes the runtime read.
+    fn canvas(&self) -> Option<std::rc::Rc<dyn tilolang_tilo::runtime::canvas::CanvasHost>> {
+        Some(crate::canvas::Engine::host())
+    }
+
     fn choose_files(
         &self,
         request: &tilolang_tilo::runtime::blob::FileRequest,
