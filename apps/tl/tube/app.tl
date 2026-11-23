@@ -6,6 +6,8 @@ app so.tilo.tube "YouTube" (
     schemes: "tube",
 )
 
+use so.tilo.playback as playback
+
 /// A channel someone publishes videos on. The service writes what it says (its name, handle and
 /// numbers); the person's own relation to it is a `Subscription`, so subscribing never depends on
 /// what the service last answered.
@@ -180,18 +182,15 @@ type QueuedVideo {
 }
 
 /// How one member likes to watch. Each member's own record: it follows them to every device, and
-/// a view reads the record of the person looking at it.
+/// a view reads the record of the person looking at it. What a player sets for one window — the
+/// speed it plays at and the captions it shows — is the window's own state, not this record.
 type PlaybackPrefs {
     member: Actor
-    /// Play the next video when this one ends.
+    /// Play the next video the session holds when this one ends.
     autoplay: Bool = false
-    /// How fast it plays: 0.25×, 0.5×, 1×, 1.5×, 2× or 3×.
-    speed: Float = 1.0
     /// The tallest picture they want, as YouTube names it (`1080p`, `720p`, `480p`), or `auto`
     /// for the best that fits.
     quality: Text = "auto"
-    /// Show the video's captions when it has them.
-    captions: Bool = false
     /// Skip the segments SponsorBlock marks, as they play.
     sponsorblock: Bool = true
     /// Show the community's titles and pictures where DeArrow has them.
@@ -249,6 +248,11 @@ type YouTube {
     replies: Collection<Reply>
     /// Each member's own playback preferences.
     playback: Collection<PlaybackPrefs>
+    /// What plays, and where it stands: the shared session, which the player, the shell's live
+    /// card and every device read. Tube's watch page and the player's own controls act on it.
+    playing: Option<playback.Playback>
+    /// Every session this app made, kept as the resources they are; `playing` names the one.
+    sessions: Collection<playback.Playback>
     /// What the last search asks for, as it was typed.
     search_text: Text = ""
     /// Which kinds the last search shows: `all`, `video`, `channel` or `playlist`.
@@ -498,20 +502,99 @@ action watch_later(
     }
 }
 
-/// Plays the queue from its oldest video: what was put on it first plays first.
+/// Plays the queue from its oldest video: what was put on it first plays first, and the rest
+/// follow in that order, so autoplay goes on down the queue.
 action play_queue(yt: YouTube) uses time (icon: .play, label: "Play all") {
-    if let first = queue_videos(yt).first() { progress(first, 0.0) }
+    let videos = queue_videos(yt)
+    if let first = videos.first() {
+        progress(first, 0.0)
+        play_items(yt, videos, first.key)
+    }
 }
 
-/// Plays the video, whether or not it was played before.
+/// Plays the video, whether or not it was played before: the session takes it as its one item,
+/// so the player, the live card and the media keys all act on it, and it continues where the
+/// person left it.
 primary action play(v: Video) uses time (icon: .play) {
+    let yt = root YouTube
     progress(v, 0.0)
+    play_items(yt, [v], v.key)
 }
 
 /// Plays the video from where the person left off, when they did not finish it.
 action resume(v: Video) uses time (icon: .play, label: "Resume") {
     let yt = root YouTube
     progress(v, watched_before(yt, invoker, v)?.progress ?? 0.0)
+    play_items(yt, [v], v.key)
+}
+
+/// The session this app plays through: the one it has, or one made now. It is kept both in
+/// `playing`, which a view reads, and in `sessions`, so the record is a resource of its own.
+action session(yt: YouTube) -> playback.Playback {
+    if let held = yt.playing {
+        return held
+    }
+    let made = yt.sessions.insert(playback.Playback())
+    yt.playing = .some(made)
+    made
+}
+
+/// What the session shows of `v`: the app's reading of it, so the live card and another device
+/// name the video without reading this app's records.
+fn item_of(yt: YouTube, v: Video, who: Actor) -> playback.Item {
+    playback.Item(
+        ref: v.key,
+        title: shown_title(yt, v, who),
+        artist: v.channel_name,
+        cover: shown_picture(yt, v, who),
+        source: v.stream,
+        length: v.duration.to_float(),
+    )
+}
+
+/// Plays `videos` in the session, beginning with `at`'s place: what plays and what follows, so
+/// a shared next, the live card and another device move through the same list. The video at
+/// `at` continues where it was left.
+action play_items(yt: YouTube, videos: List<Video>, at: Text) {
+    let p = session(yt)
+    let mine = invoker
+    let items = videos.map(v -> item_of(yt, v, mine))
+    let index = if let chosen = videos.find(v -> v.key == at) {
+        videos.index_of(chosen) ?? 0
+    } else { 0 }
+    playback.play_list(p, items, at: index)
+    playback.resume(p, at)
+}
+
+/// Plays the video at `quality`, from where it stands: the player's own quality menu, which asks
+/// the service for a stream of that picture. The session keeps the item and the place it stood
+/// at, so the picture changes without the playhead moving; the address YouTube answers with is
+/// the one the player opens next, and `progress` writes it into the session's item.
+action play_at_quality(v: Video, quality: Text) (
+    icon: .settings,
+    label: "Playback quality",
+) {
+    let yt = root YouTube
+    set_quality(yt, quality)
+    if v.stream != "" {
+        outside("youtube.stream", (v.key, quality))
+    }
+}
+
+/// When the video reaches its end and the person asked for the next one, the session moves on to
+/// what follows it: the queue's next video is watched now, so its place in the history is kept
+/// and its bytes are asked for when the service has not answered with them yet.
+action autoplay_next(yt: YouTube, p: playback.Playback, share: Float) uses time {
+    if share < 0.99 or p.queue.len() < 2 {
+        return
+    }
+    if not (prefs_for(yt, invoker)?.autoplay ?? false) {
+        return
+    }
+    playback.next(p)
+    if let v = yt.videos.find(x -> x.key == p.track) {
+        progress(v, 0.0)
+    }
 }
 
 /// Records how far into the video the person is, and that they watched it now: it moves to the
@@ -548,6 +631,19 @@ action progress(v: Video, at: Float) uses time {
     }
     if v.stream == "" {
         outside("youtube.stream", (v.key, quality_of(yt, mine)))
+    }
+    // The address YouTube answered with is what plays: when the person picked another quality,
+    // the service writes a new one and the session's item follows it, so the live card names the
+    // stream the player opened.
+    if let p = yt.playing {
+        if p.track == v.key {
+            if let item = p.queue.find(i -> i.ref == v.key) {
+                if item.source != v.stream {
+                    item.source = v.stream
+                    p.source = v.stream
+                }
+            }
+        }
     }
 }
 
@@ -595,10 +691,14 @@ action refresh_playlist(p: Playlist) (icon: .refresh, label: "Refresh") {
     outside("youtube.playlist", p.key)
 }
 
-/// Plays the playlist from its first video.
+/// Plays the playlist from its first video, and the rest in its maker's order.
 action play_playlist(p: Playlist) uses time (icon: .play, label: "Play all") {
     let yt = root YouTube
-    if let first = playlist_videos(yt, p).first() { progress(first, 0.0) }
+    let videos = playlist_videos(yt, p)
+    if let first = videos.first() {
+        progress(first, 0.0)
+        play_items(yt, videos, first.key)
+    }
 }
 
 /// Opening a playlist asks the service what it holds, when the client does not know yet: a
@@ -662,17 +762,6 @@ action set_autoplay(yt: YouTube, on: Bool) (icon: .play, label: "Autoplay next v
     }
 }
 
-/// How fast videos play for the person: 0.25 to 3, 1 for the usual speed.
-action set_speed(yt: YouTube, speed: Float) (icon: .gauge, label: "Playback speed") {
-    let mine = invoker
-    if let held = yt.playback.find(p -> p.member == mine) {
-        held.speed = speed
-    } else {
-        let made = yt.playback.insert(PlaybackPrefs(member: mine))
-        made.speed = speed
-    }
-}
-
 /// The tallest picture the person wants, as YouTube names it; `auto` takes the best that fits.
 action set_quality(yt: YouTube, quality: Text) (icon: .settings, label: "Preferred quality") {
     let mine = invoker
@@ -681,17 +770,6 @@ action set_quality(yt: YouTube, quality: Text) (icon: .settings, label: "Preferr
     } else {
         let made = yt.playback.insert(PlaybackPrefs(member: mine))
         made.quality = quality
-    }
-}
-
-/// Whether videos show their captions for the person.
-action set_captions(yt: YouTube, on: Bool) (icon: .message_square, label: "Captions") {
-    let mine = invoker
-    if let held = yt.playback.find(p -> p.member == mine) {
-        held.captions = on
-    } else {
-        let made = yt.playback.insert(PlaybackPrefs(member: mine))
-        made.captions = on
     }
 }
 
@@ -1354,7 +1432,12 @@ view history_list(yt: YouTube, in_column: Bool) {
 
 /// Plays the video a history entry names, from where the person left off.
 action play_again(yt: YouTube, h: WatchEntry) uses time {
-    if let v = yt.videos.find(x -> x.key == h.key) { progress(v, h.progress) }
+    if let v = yt.videos.find(x -> x.key == h.key) {
+        progress(v, h.progress)
+        play_items(yt, [v], v.key)
+        let p = session(yt)
+        playback.remember_position(p, h.progress * p.length, now)
+    }
 }
 
 /// A channel's page: its banner, its avatar and name, whether the person follows it, and its
@@ -1414,16 +1497,22 @@ view channel_page(c: Channel) {
 /// A video's page: it plays at the top, then its name, who made it, what people did with it, what
 /// it says, and what YouTube plays next.
 view video_page(v: Video) {
-    state playing: Bool = false
     // Why the player could not show the video, in its own words; empty while it plays or waits.
     state failed: Text = ""
+    // How fast the player here plays, and the captions it shows: the window's own choices, which
+    // the player's gear menu sets and which outlast this page on this window.
+    state rate: Float = 1.0
+    state caption_language: Text = ""
     // The comment the person is answering, when they are, and what they typed: the reply goes to
     // the workspace, so the composer stays beside the comment until it is sent.
     state reply_to: Option<Text> = .none
     state reply_text: Text = ""
     let yt = root YouTube
+    let mine = workspace.me
+    let p = yt.playing
+    let held = if let playing = p { playing.track == v.key } else { false }
     let channel = yt.channels.find(c -> c.key == v.channel_key)
-    let left = watched_before(yt, workspace.me, v)?.progress ?? 0.0
+    let left = watched_before(yt, mine, v)?.progress ?? 0.0
     std.page(v, canvas: true) {
         header: {
             button(like(v)) as like
@@ -1445,29 +1534,57 @@ view video_page(v: Video) {
                 // that fills the cell is the picture, and a control keeps its own size.
                 row(fill, align: .center, distribute: .center) {
                     ui.Button("Play", icon: .play, role: .primary) {
-                        on press: progress(v, left)
+                        on press: resume(v)
+                    }
+                }
+            } else if held {
+                // The session is playing this video: the player is the session's own, so the
+                // live card, the media keys and another device move the same playhead.
+                if let playing = p {
+                    ui.VideoPlayer(
+                        title: shown_title(yt, v, mine),
+                        poster: shown_picture(yt, v, mine),
+                        source: v.stream,
+                        playing: playing.state == .playing,
+                        position: playing.at,
+                        duration: v.duration.to_float(),
+                        rate: rate,
+                        caption_language: caption_language,
+                        live: v.live,
+                        fill,
+                    ) {
+                        on set_playing(now_playing: Bool): playback.set_playing(
+                            playing,
+                            now_playing,
+                        )
+                        // The playhead moved where a segment SponsorBlock marks is: the same skip
+                        // as when playback reaches one on its own.
+                        on seek(place: Float): playback.seek(playing, place)
+                            .then(skip_segment(v, place))
+                        // The player reports where it got to every five seconds and once when it
+                        // stops, so a video watched without touching the playhead is remembered
+                        // where it was left. A report that lands in a segment SponsorBlock marks
+                        // moves the playhead past it, so a sponsor read is not watched.
+                        on progress(share: Float): playback.set_share(playing, share)
+                            .then(progress(v, share))
+                            .then(skip_segment(v, share))
+                            .then(autoplay_next(yt, playing, share))
+                        on length(seconds: Float): playback.set_length(playing, seconds)
+                        on set_rate(chosen: Float): set(rate, chosen)
+                        on select_captions(language: Text): set(caption_language, language)
+                        on select_quality(quality: Text): play_at_quality(v, quality)
+                        on fail(reason: Text): set(failed, reason)
                     }
                 }
             } else {
-                ui.VideoPlayer(
-                    title: shown_title(yt, v, workspace.me),
-                    poster: shown_picture(yt, v, workspace.me),
-                    source: v.stream,
-                    playing: playing,
-                    position: left * v.duration.to_float(),
-                    duration: v.duration.to_float(),
-                    fill,
-                ) {
-                    on set_playing(now_playing: Bool): set(playing, now_playing)
-                    // The playhead moved where a segment SponsorBlock marks is: the same skip as
-                    // when playback reaches one on its own.
-                    on seek(place: Float): progress(v, place).then(skip_segment(v, place))
-                    // The player reports where it got to every five seconds and once when it
-                    // stops, so a video watched without touching the playhead is remembered
-                    // where it was left. A report that lands in a segment SponsorBlock marks
-                    // moves the playhead past it, so a sponsor read is not watched.
-                    on progress(at: Float): progress(v, at).then(skip_segment(v, at))
-                    on fail(reason: Text): set(failed, reason)
+                let poster = shown_picture(yt, v, mine)
+                if poster != "" {
+                    ui.Image(poster, alt: shown_title(yt, v, mine), fit: .cover, fill)
+                }
+                row(fill, align: .center, distribute: .center) {
+                    ui.Button("Play", icon: .play, role: .primary) {
+                        on press: play(v)
+                    }
                 }
             }
         }

@@ -30,13 +30,18 @@ fn access(name: &str) -> MemberAccess {
 
 /// A replica of `doc` for `name`, running the client with its effects allowed.
 fn replica(name: &str, doc: Workspace) -> (Replica, Meta) {
-    let (replica, packages) = Replica::access(name, doc, &[(SOURCE, IDS)], Some(access(name)));
+    let (replica, packages) =
+        Replica::access(name, doc, &[(SOURCE, IDS), (PLAYBACK_SOURCE, PLAYBACK_IDS)], Some(access(name)));
     (replica, packages[0].meta.clone())
 }
 
 const TUBE: &str = "so.tilo.tube";
 const SOURCE: &str = include_str!("../../../../apps/tl/tube/app.tl");
 const IDS: &str = include_str!("../../../../apps/tl/tube/app.ids");
+/// The shared player Tube plays through: the session's own type lives there.
+const PLAYBACK: &str = "so.tilo.playback";
+const PLAYBACK_SOURCE: &str = include_str!("../../../../apps/tl/playback/app.tl");
+const PLAYBACK_IDS: &str = include_str!("../../../../apps/tl/playback/app.ids");
 
 fn person(name: &str) -> Actor {
     Actor::from(MemberId::person(name))
@@ -396,8 +401,8 @@ fn a_members_watch_history_is_their_own() {
     );
 }
 
-/// Playback preferences are each member's own: one sets a speed and autoplay, the other sets a
-/// quality, and neither reads the other's.
+/// Playback preferences are each member's own: one turns autoplay on, the other picks a quality,
+/// and neither reads the other's.
 #[test]
 fn playback_preferences_are_each_members_own() {
     let client = client();
@@ -405,12 +410,6 @@ fn playback_preferences_are_each_members_own() {
     let (bo, _) = replica("bo", ada.doc.fork());
     ada.sync_with(&bo);
 
-    call(
-        ada,
-        meta,
-        "set_speed",
-        vec![Value::resource(root), Value::Float(1.5)],
-    );
     call(
         ada,
         meta,
@@ -434,7 +433,6 @@ fn playback_preferences_are_each_members_own() {
             .find(|at| replica.read(at, &member_id) == Value::Actor(person(who)))
             .map(|at| {
                 [
-                    replica.read(&at, &field_id(meta, "PlaybackPrefs", "speed")),
                     replica.read(&at, &field_id(meta, "PlaybackPrefs", "autoplay")),
                     replica.read(&at, &field_id(meta, "PlaybackPrefs", "quality")),
                 ]
@@ -444,14 +442,149 @@ fn playback_preferences_are_each_members_own() {
     };
     assert_eq!(
         prefs(&bo, "ada"),
-        [Value::Float(1.5), Value::Bool(true), Value::text("auto")],
-        "ada's record reached bo's device, with her speed and autoplay and no quality of her own"
+        [Value::Bool(true), Value::text("auto")],
+        "ada's record reached bo's device, with her autoplay and no quality of her own"
     );
     assert_eq!(
         prefs(ada, "bo"),
-        [Value::Float(1.0), Value::Bool(false), Value::text("480p")],
-        "and bo's is his: the default speed, no autoplay, and the quality he chose"
+        [Value::Bool(false), Value::text("480p")],
+        "and bo's is his: no autoplay, and the quality he chose"
     );
+}
+
+/// The playback package's metadata, where the shared session's own type lives.
+fn playback_meta(replica: &Replica) -> Meta {
+    replica
+        .host
+        .packages()
+        .iter()
+        .find(|package| package.meta.app == PLAYBACK)
+        .expect("the shared player is loaded")
+        .meta
+        .clone()
+}
+
+/// The session the client root plays through.
+fn session_of(replica: &Replica, meta: &Meta, root: &ResourceRef) -> ResourceRef {
+    match replica.read(root, &field_id(meta, "YouTube", "playing")) {
+        Value::Opt(Some(held)) => match *held {
+            Value::Ref(at) => (*at.target).clone(),
+            other => panic!("the session is a resource: {other:?}"),
+        },
+        other => panic!("the client plays nothing: {other:?}"),
+    }
+}
+
+/// A field of the session, as the player's reports left it.
+fn played(replica: &Replica, playback: &Meta, session: &ResourceRef, field: &str) -> Value {
+    replica.read(session, &field_id(playback, "Playback", field))
+}
+
+/// Playing a video is the shared session, and the player's own reports move it: what plays,
+/// where its bytes come from and how long it runs are the session's, so the shell's live card,
+/// the media keys and another device read what the person watches here.
+#[test]
+fn playing_a_video_is_the_shared_session_and_the_player_moves_it() {
+    let (ada, meta) = replica("ada", Workspace::new());
+    let root = ada.host.root_of(TUBE).unwrap();
+    seed(&ada, &meta, "a video playing");
+    ada.commit();
+    let playback = playback_meta(&ada);
+    let magnet = video(&ada, &meta, &root, "v-magnet");
+
+    call(&ada, &meta, "play", vec![Value::resource(&magnet)]);
+    ada.commit();
+    let session = session_of(&ada, &meta, &root);
+    assert_eq!(played(&ada, &playback, &session, "track"), Value::text("v-magnet"));
+    assert_eq!(
+        played(&ada, &playback, &session, "title"),
+        Value::text("Why every magnet you own is lying to you")
+    );
+    assert_eq!(played(&ada, &playback, &session, "artist"), Value::text("Veritasium"));
+    assert_eq!(
+        played(&ada, &playback, &session, "source"),
+        Value::text("https://media.example/v-magnet.mp4"),
+        "the address the player opens is the session's, so every device plays the same bytes"
+    );
+    assert_eq!(played(&ada, &playback, &session, "length"), Value::Float(1342.0));
+    assert!(
+        format!("{:?}", played(&ada, &playback, &session, "state")).contains("playing"),
+        "the session plays the video"
+    );
+
+    // The page's player is the session's: its play state and place come from it, and what the
+    // person presses there writes back into it.
+    let mut page = ada.host.open_resource(&magnet, None).unwrap();
+    let player = drawn(&mut page, "ui.VideoPlayer");
+    assert_eq!(player.props.get("playing"), Some(&Value::Bool(true)));
+    page.fire_with(&player.key, "progress", Some(&Value::Float(0.6)))
+        .unwrap();
+    ada.commit();
+    let Value::Float(at) = played(&ada, &playback, &session, "at") else {
+        panic!("the session holds a place");
+    };
+    assert!(
+        (at - 805.2).abs() < 0.01,
+        "six tenths of the video, as the player reported it: {at}"
+    );
+    page.fire_with(&player.key, "seek", Some(&Value::Float(0.25)))
+        .unwrap();
+    ada.commit();
+    let Value::Float(at) = played(&ada, &playback, &session, "at") else {
+        panic!("the session holds a place");
+    };
+    assert!(
+        (at - 335.5).abs() < 0.01,
+        "a quarter of the way in, where the person moved the playhead: {at}"
+    );
+    page.fire_with(&player.key, "set_playing", Some(&Value::Bool(false)))
+        .unwrap();
+    ada.commit();
+    assert!(
+        format!("{:?}", played(&ada, &playback, &session, "state")).contains("paused"),
+        "pausing in the player pauses the session"
+    );
+}
+
+/// Autoplay moves the session on to the next video of its queue, and that video is what the
+/// person watched: the session plays it and the history keeps it.
+#[test]
+fn autoplay_moves_the_session_to_the_next_video() {
+    let client = client();
+    let Client { ada, meta, root } = &client;
+    let playback = playback_meta(ada);
+    call(ada, meta, "play_queue", vec![Value::resource(root)]);
+    call(
+        ada,
+        meta,
+        "set_autoplay",
+        vec![Value::resource(root), Value::Bool(true)],
+    );
+    ada.commit();
+    let session = session_of(ada, meta, root);
+    assert_eq!(
+        played(ada, &playback, &session, "track"),
+        Value::text("v-rehearsal"),
+        "the queue's oldest video plays first"
+    );
+    let queue = field_id(meta, "YouTube", "queue");
+    assert_eq!(items(ada, root, &queue).len(), 2, "two videos wait on the queue");
+
+    // The player reports the end of the video: what follows plays.
+    call(
+        ada,
+        meta,
+        "autoplay_next",
+        vec![Value::resource(root), Value::resource(&session), Value::Float(1.0)],
+    );
+    ada.commit();
+    assert_eq!(
+        played(ada, &playback, &session, "track"),
+        Value::text("v-bread"),
+        "the session moved on to the queue's next video"
+    );
+    history_entry(ada, meta, root, "v-bread", Some("ada"))
+        .expect("the next video is what the person watched now");
 }
 
 /// The watch queue keeps the order videos were added in: Play all plays the video that was put on
