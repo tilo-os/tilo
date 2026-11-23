@@ -1699,22 +1699,25 @@ impl Core {
         // A verb the resource's app publishes without a package loading here: the same action API,
         // sent as a step of the run that asked for it.
         if let Some(invocation) = self.published_invocation(&aref) {
-            let entry = match self.invoke_published(&invocation?) {
-                Ok(InvokeOutcome::Done(result)) => JournalEntry::Invoked {
-                    action: aref.action.clone(),
-                    result,
-                },
-                Ok(_) => JournalEntry::Denied {
-                    action: step.action.clone(),
-                    reason: "denied by authority".to_owned(),
-                },
-                Err(error) => JournalEntry::Failed {
-                    action: aref.action.clone(),
-                    reason: error.to_string(),
-                },
-            };
-            journal.entries.push(entry);
-            Ok(None)
+            // A verb the resource's app publishes is a call of the run like any other: the run
+            // waits on the answer the dispatch gives it.
+            match self.delegated_step(&aref.action, &invocation?)? {
+                Delegated::Ran(entry) => {
+                    journal.entries.push(*entry);
+                    Ok(None)
+                }
+                Delegated::Waits(call) => {
+                    let action = aref.action.clone();
+                    journal.pending = Some(Pending::Call {
+                        call: call.clone(),
+                        action,
+                    });
+                    Ok(Some(RunOutcome::Waits {
+                        run: run.clone(),
+                        call,
+                    }))
+                }
+            }
         // An action of an app this runtime does not run goes to that app; a host that holds
         // no records sends every invocation on to the app that does.
         } else if self.invoker.borrow().is_some()
