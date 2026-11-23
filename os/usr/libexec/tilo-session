@@ -360,6 +360,13 @@ if [ -z "${TILO_TEST_CONTROL:-}" ] && [ -r "$IMAGE_FLAVOUR" ] \
   export TILO_TEST_CONTROL_FIRST_USE=keep
 fi
 
+# A dev image measures every app it opens: each writes its startup timeline
+# and logs its APP-STARTUP line, which the installed-desktop check and the VM
+# checks hold to the apps' budgets. Release images measure nothing.
+if [ -r "$IMAGE_FLAVOUR" ] && [ "$(<"$IMAGE_FLAVOUR")" = dev ]; then
+  export TILO_STARTUP_TIMELINE=1
+fi
+
 # Rotate the record, start a recorder for one compositor run and open its
 # pipe as descriptor 4.
 start_flight_record() {
