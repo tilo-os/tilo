@@ -472,6 +472,34 @@ pub async fn test_host_holding(
     .await
 }
 
+/// [`test_host`] whose device takes part in its workspaces' key groups as a device does: through
+/// its own key service, which settles each group with the key services of the workspace's other
+/// devices. A test that says who holds which keys, or what a device can open, runs on these, not
+/// on [`TestGroupKeys`], whose devices share one set of keys.
+///
+/// # Panics
+///
+/// The key service or the host cannot open.
+#[cfg(feature = "device-keys")]
+pub async fn test_host_keyed(
+    state_root: &Path,
+    key: &SigningKey,
+    cert: &DeviceCert,
+) -> (TestHost, crate::own_device::KeyService) {
+    let signer: Arc<dyn collab_types::signer::DeviceSigner> = Arc::new(key.clone());
+    let keys = crate::own_device::KeyService::open(
+        "test-groups",
+        &state_root.join("groups"),
+        key_group::VaultKey::new([5; 32]),
+        signer,
+        Arc::new(tilo_workspace_keys::NoSealChecks),
+    )
+    .expect("the device's key service opens");
+    let host = host_on(state_root, key, cert, keys.groups(), None).await;
+    keys.attach(host.workspaces());
+    (host, keys)
+}
+
 /// `cert`'s device hosting under `state_root`, taking part in the workspaces'
 /// channels through `channels`.
 async fn host_on(
