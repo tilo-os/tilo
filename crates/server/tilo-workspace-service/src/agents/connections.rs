@@ -88,7 +88,10 @@ impl TurnConnections {
             caller,
             bound: narrowed.as_deref(),
         };
-        let value = self.workspaces.connections_for_turn(&hosted, request).await?;
+        let value = self
+            .workspaces
+            .connections_for_turn(&hosted, request)
+            .await?;
         Ok(succeeded(invocation, value))
     }
 }

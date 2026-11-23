@@ -80,7 +80,11 @@ impl TurnConnects {
         let connected = if request.target.address.action == MAIL_CONNECT {
             serde_json::to_value(workspaces.connect_mail_for_turn(&hosted, request).await?)
         } else {
-            serde_json::to_value(workspaces.connect_calendar_for_turn(&hosted, request).await?)
+            serde_json::to_value(
+                workspaces
+                    .connect_calendar_for_turn(&hosted, request)
+                    .await?,
+            )
         };
         Ok(InvocationUpdate::Succeeded {
             invocation: request.invocation,

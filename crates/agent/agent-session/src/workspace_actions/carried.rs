@@ -265,6 +265,7 @@ impl About {
                 .then(|| tilo_actions::plural(&self.descriptor.resource_label).to_lowercase())
                 .filter(|plural| !plural.is_empty()),
             conversation: caller.turn().map(|turn| turn.conversation.clone()),
+            takes: None,
         }
     }
 }

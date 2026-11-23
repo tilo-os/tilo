@@ -234,7 +234,8 @@ impl Workspaces {
     /// [`Self::reaching`], carried through: where the policy asks the
     /// caller's person first, `request` goes on only once they approved it,
     /// shown what the action is and where, never its arguments (which may
-    /// hold a secret).
+    /// hold a secret). Without a request (a listing) it reaches only what
+    /// needs nobody's yes.
     ///
     /// # Errors
     /// As [`Self::reaching`], or it waits for the person's yes.
@@ -244,8 +245,9 @@ impl Workspaces {
         store: Store,
         action: &str,
         effect: ActionKind,
-        request: &InvokeRequest,
+        request: impl Into<Option<&InvokeRequest>>,
     ) -> Result<Reach, ActionCallError> {
+        let request = request.into();
         let reach = self.reaching(asked, store, action, effect).await?;
         self.allowed(reach, asked.1, store, action, request).await
     }
@@ -262,7 +264,7 @@ impl Workspaces {
         caller: &Caller,
         store: Store,
         action: &str,
-        request: &InvokeRequest,
+        request: impl Into<Option<&InvokeRequest>>,
     ) -> Result<Reach, ActionCallError> {
         if reach.answer == Answer::Ask {
             caller
@@ -273,12 +275,16 @@ impl Workspaces {
                 .workspace_name(reach.workspace)
                 .await
                 .unwrap_or_else(|| store.app.to_owned());
-            super::asking::approved_or_asks(request, || AskedFacts {
+            let facts = AskedFacts {
                 destructive: false,
                 facts: vec![Fact::new("In", place)],
                 verb: action.replace('-', " "),
                 ..AskedFacts::by(super::asking::asked_by(caller))
-            })?;
+            };
+            match request.into() {
+                Some(request) => super::asking::approved_or_asks(request, || facts)?,
+                None => return Err(ActionCallError::asks(facts)),
+            }
             reach.answer = Answer::Allow;
         }
         Ok(reach)

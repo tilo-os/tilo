@@ -58,7 +58,7 @@ impl super::InWorkspace {
                     Store::MODELS,
                     person_models::ASK,
                     tilo_action_policy::ActionKind::Read,
- request,
+                    &request,
                 )
                 .await?;
             host.ask_model(

@@ -36,8 +36,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tilo_actions::remote::person_accounts::{self, BeginSend, SendId, SentMail};
 use tilo_actions::remote::asked::{AskedBy, AskedFacts, Fact};
+use tilo_actions::remote::person_accounts::{self, BeginSend, SendId, SentMail};
 use tilo_actions::remote::{ActionCallError, CatalogueRow, InvokeRequest, RemoteActionTarget};
 
 use super::kept_sign_ins::Signing;
@@ -259,7 +259,8 @@ impl Workspaces {
                 .send_approved(&root, &workspace, &using.person, &sending.send)
                 .await
                 .map_err(ActionCallError::refused)?;
-            return serde_json::to_value(sent).map_err(|error| ActionCallError::refused(error.to_string()));
+            return serde_json::to_value(sent)
+                .map_err(|error| ActionCallError::refused(error.to_string()));
         }
         let (dir, beginning) = begun_for(&root, &sending.send)?;
         if !kept.contains(&beginning.message.account) {
@@ -281,7 +282,9 @@ impl Workspaces {
         };
         forget_unanswered_sends(&root, &asked.workspace);
         set_apart(&root, &dir, &asked).map_err(ActionCallError::refused)?;
-        Err(ActionCallError::asks(asked.facts(super::super::asking::asked_by(turn.caller))))
+        Err(ActionCallError::asks(
+            asked.facts(super::super::asking::asked_by(turn.caller)),
+        ))
     }
 
     /// Send the message begun as `send` in `workspace` (its id), which waited set apart under
@@ -304,7 +307,9 @@ impl Workspaces {
         let waits = asked_dir(root, workspace, send)?;
         let asked: AskedSend = std::fs::read(waits.join(ASKED_FILE))
             .map_err(gone)
-            .and_then(|kept| serde_json::from_slice(&kept).map_err(|_| NO_LONGER_WAITS.to_owned()))?;
+            .and_then(|kept| {
+                serde_json::from_slice(&kept).map_err(|_| NO_LONGER_WAITS.to_owned())
+            })?;
         if asked.person != hex::encode(person) || asked.workspace != workspace {
             return Err(NO_LONGER_WAITS.to_owned());
         }
@@ -314,7 +319,9 @@ impl Workspaces {
         std::fs::rename(&waits, &taken)
             .and_then(|()| std::fs::remove_file(taken.join(ASKED_FILE)))
             .map_err(gone)?;
-        let left = self.leave_as_shown(root, &taken, &asked, (id, person)).await;
+        let left = self
+            .leave_as_shown(root, &taken, &asked, (id, person))
+            .await;
         match std::fs::remove_dir_all(&taken) {
             Ok(()) => {}
             // A message that left took its files with it.

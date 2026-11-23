@@ -62,8 +62,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tilo_account_probe::imap::Reach;
 use tilo_account_probe::{AccountTester as _, FindingAccountTester};
-use tilo_actions::remote::person_accounts;
 use tilo_actions::remote::asked::{AskedFacts, Fact};
+use tilo_actions::remote::person_accounts;
 use tilo_actions::remote::person_vault::ItemRef;
 use tilo_actions::remote::{ActionCallError as ActionError, Caller, InvokeRequest};
 use tilo_dav::{Credentials, DavClient, Depth, Limits, Precondition, Url, props};
@@ -1785,7 +1785,7 @@ impl Workspaces {
                 Store::CALENDARS,
                 ADD_WITH_ITEM,
                 tilo_action_policy::ActionKind::Undoable,
- request,
+                request,
             )
             .await?;
         let by = reach.by();
@@ -1895,7 +1895,12 @@ impl Workspaces {
                 .await
         {
             crate::workspaces::asking::approved_or_asks(request, || {
-                facts(caller, &planned.account, ("put in", "calendar entries"), rows)
+                facts(
+                    caller,
+                    &planned.account,
+                    ("put in", "calendar entries"),
+                    rows,
+                )
             })?;
         }
         let creates = matches!(planned.change, Change::Create(_));

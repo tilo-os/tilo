@@ -40,8 +40,8 @@ use std::path::Path;
 
 use accounts::vault_items::Place;
 use serde::{Deserialize, Serialize};
-use tilo_actions::remote::person_accounts;
 use tilo_actions::remote::asked::{AskedFacts, Fact};
+use tilo_actions::remote::person_accounts;
 use tilo_actions::remote::person_vault::{self, AskForItem, ItemKind};
 use tilo_actions::remote::{
     ActionCallError as ActionError, CatalogueRow, InvokeRequest, RemoteActionTarget,
@@ -76,7 +76,8 @@ const NOT_PUBLIC: &str = "That address is not on the public internet. A calendar
 const NO_SUCH_SERVER: &str = "No server was found under that name";
 const NOT_A_NAME: &str = "A calendar account has a user name, and a name of a few words";
 const ALREADY: &str = "That calendar account is connected already. Nothing was added";
-const NO_ITEM: &str = "Your vault keeps no login for that calendar server, so nothing was connected";
+const NO_ITEM: &str =
+    "Your vault keeps no login for that calendar server, so nothing was connected";
 
 /// What a turn hands over to connect a calendar: what its person said, and
 /// nothing that is a secret or that makes the account writable.

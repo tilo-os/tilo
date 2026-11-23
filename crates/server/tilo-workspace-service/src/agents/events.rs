@@ -454,8 +454,8 @@ impl WorkspaceEvents {
                 workspace_id,
                 caller,
                 authority,
-                workspace_events::LIST,
-                ActionKind::Read,
+                (workspace_events::LIST, ActionKind::Read),
+                None,
             )
             .await
         {
@@ -485,8 +485,8 @@ impl WorkspaceEvents {
             workspace_id,
             caller,
             authority,
-            workspace_events::LIST,
-            ActionKind::Read,
+            (workspace_events::LIST, ActionKind::Read),
+            None,
         )
         .await
         .ok()
@@ -516,8 +516,8 @@ impl WorkspaceEvents {
         workspace_id: WorkspaceId,
         caller: &Caller,
         authority: &Authority,
-        action: &str,
-        effect: ActionKind,
+        (action, effect): (&str, ActionKind),
+        request: Option<&InvokeRequest>,
     ) -> Result<Theirs, ActionCallError> {
         let asker = asker_of(caller).ok_or(ActionCallError::UnknownAction)?;
         if caller
@@ -535,7 +535,7 @@ impl WorkspaceEvents {
                         Store::EVENTS,
                         action,
                         effect,
- request,
+                        request,
                     )
                     .await?;
                 Ok(Theirs {
@@ -606,7 +606,13 @@ impl WorkspaceEvents {
     ) -> Result<Value, ActionCallError> {
         let action = request.target.address.action.as_str();
         let theirs = self
-            .reach(workspace_id, caller, authority, action, effect_of(action))
+            .reach(
+                workspace_id,
+                caller,
+                authority,
+                (action, effect_of(action)),
+                Some(request),
+            )
             .await?;
         let mut running = self.inner.running.lock_recover();
         let kept = running.entry(theirs.workspace.clone()).or_default();

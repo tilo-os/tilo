@@ -81,7 +81,9 @@ pub(super) async fn ended(
                 Some(Err(why)) => {
                     actions.log().abandon(&invocation);
                     Err(ActionCallError::Refused {
-                        reason: format!("it waits for its person's yes, and could not be kept for them to answer: {why}"),
+                        reason: format!(
+                            "it waits for its person's yes, and could not be kept for them to answer: {why}"
+                        ),
                     })
                 }
                 None => {

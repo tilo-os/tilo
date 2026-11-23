@@ -425,9 +425,14 @@ impl Workspaces {
             digest: &found.digest,
         };
         done(
-            connections::call((root, self.vault_at(&using.workspace)), reach, allowed, call)
-                .await
-                .map_err(refused)?,
+            connections::call(
+                (root, self.vault_at(&using.workspace)),
+                reach,
+                allowed,
+                call,
+            )
+            .await
+            .map_err(refused)?,
         )
     }
 

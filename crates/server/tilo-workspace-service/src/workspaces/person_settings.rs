@@ -388,7 +388,9 @@ impl Workspaces {
                     if request.approval().is_some() {
                         let as_shown = std::fs::read(&kept)
                             .ok()
-                            .and_then(|kept| serde_json::from_slice::<Vec<(String, String)>>(&kept).ok())
+                            .and_then(|kept| {
+                                serde_json::from_slice::<Vec<(String, String)>>(&kept).ok()
+                            })
                             .is_some_and(|rows| rows == shown.rows());
                         let _ = std::fs::remove_file(&kept);
                         if !as_shown {

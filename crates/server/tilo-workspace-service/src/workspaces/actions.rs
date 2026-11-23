@@ -56,8 +56,8 @@ use tilo_actions::remote::{
     InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, WORKSPACE_APPS,
     WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_INVITATIONS,
     WORKSPACE_MEMBER_ADDED, WORKSPACE_MEMBER_ADMIT, WORKSPACE_MEMBER_PLACED,
-    WORKSPACE_MEMBER_REMOVED, WORKSPACE_MEMBERS, WORKSPACE_SERVERS, WORKSPACE_WAITING, formats,
-    asked, mcp_server, person_accounts, person_connections, person_models, person_telling,
+    WORKSPACE_MEMBER_REMOVED, WORKSPACE_MEMBERS, WORKSPACE_SERVERS, WORKSPACE_WAITING, asked,
+    formats, mcp_server, person_accounts, person_connections, person_models, person_telling,
     person_vault, server_account, workspace_governance_address, workspace_governance_child,
     workspace_governance_operation, workspace_governance_resource, workspace_member,
     workspace_person,
@@ -1759,9 +1759,7 @@ impl Workspaces {
             }
             // The calls that wait for the person's yes, read from their asked records.
             #[cfg(not(target_arch = "wasm32"))]
-            (asked::PROVIDER, _) => {
-                self.asking_invoke(workspace_id, caller, certificate, request)
-            }
+            (asked::PROVIDER, _) => self.asking_invoke(workspace_id, caller, certificate, request),
             // The formats and zone the person reads dates in: theirs alone,
             // kept in their own workspace on their own devices.
             #[cfg(not(target_arch = "wasm32"))]
@@ -3042,12 +3040,10 @@ struct InWorkspace {
 /// workspaces at once) is answered as each finishes, never left unanswered past the caller's
 /// deadline while it still runs.
 fn caller_wait(request: &InvokeRequest) -> Option<std::time::Duration> {
-    request
-        .wait_ms
-        .map(|wait_ms| {
-            std::time::Duration::from_millis(u64::from(wait_ms))
-                .min(tilo_actions::remote::MAX_REMOTE_WAIT)
-        })
+    request.wait_ms.map(|wait_ms| {
+        std::time::Duration::from_millis(u64::from(wait_ms))
+            .min(tilo_actions::remote::MAX_REMOTE_WAIT)
+    })
 }
 
 impl ActionProvider for InWorkspace {
@@ -3139,7 +3135,7 @@ impl ActionProvider for InWorkspace {
                         Store::MAIL,
                         person_accounts::WATCH,
                         tilo_action_policy::ActionKind::Read,
- request,
+                        &request,
                     )
                     .await?;
                 host.follow_accounts(&workspaces, &caller, reach.workspace.to_string(), &request)
@@ -3154,10 +3150,10 @@ impl ActionProvider for InWorkspace {
         // Approved where it waited for its person's yes: admitted again under its id, carrying
         // their answer. The log's guard must not outlive the reservation: a retry reads it
         // again below.
-        let readmitted = self
-            .server
-            .log()
-            .readmit(caller, &request, invocation_states::waits_asked);
+        let readmitted =
+            self.server
+                .log()
+                .readmit(caller, &request, invocation_states::waits_asked);
         let reservation = if readmitted {
             Ok(tilo_actions::remote::Reservation::Reserved)
         } else {

@@ -37,13 +37,13 @@ use std::path::Path;
 use accounts::vault_items::{self, ItemFacts, NewItem, Place, UsedFor, VaultChange, VaultItems};
 use serde_json::Value;
 use tilo_action_policy::{ActionKind, Answer, Grant, Level};
+use tilo_actions::remote::asked::{AskedFacts, Fact};
 use tilo_actions::remote::person_accounts::{self, AddMailAccount, AddMailWithItem, MailAccount};
 use tilo_actions::remote::person_models::{self, ProviderView, SetKey, SetKeyFromItem};
 use tilo_actions::remote::person_vault::{
     self, AddItem, AlwaysUse, AskForItem, Entries, ForgetEntry, ItemKind, ItemRef, ItemUse,
     ItemUses, ItemView, KeepEntry, KeptItems, RemoveItem, TakeBack, UsesOf,
 };
-use tilo_actions::remote::asked::{AskedFacts, Fact};
 use tilo_actions::remote::{ActionCallError, Caller, InvokeArgument, InvokeRequest};
 use tilo_user_identity::DeviceCert;
 
@@ -83,7 +83,10 @@ impl Workspaces {
         }
         let key = &self.inner.host.key;
         let mut candidate = workspace.peer().clone();
-        if candidate.governance_mut().remove_governed_grants(ids, key, at)? {
+        if candidate
+            .governance_mut()
+            .remove_governed_grants(ids, key, at)?
+        {
             let state = workspace.collaboration().clone();
             workspace.commit(candidate, key, at, |_, _| Ok(state))?;
             self.settle(workspace).await?;
@@ -115,7 +118,7 @@ impl Workspaces {
                 Store::VAULT,
                 action,
                 effect,
- request,
+                request,
             )
             .await?;
         let workspace = reach.workspace.to_string();
@@ -388,7 +391,13 @@ impl Workspaces {
 /// asked for, which they answer by calling themselves.
 pub fn secret_asked(caller: &Caller, by: &str, asked: &AskForItem) -> AskedFacts {
     let mut facts = vec![
-        Fact::new("kind", serde_json::to_value(asked.kind).ok().and_then(|kind| kind.as_str().map(str::to_owned)).unwrap_or_default()),
+        Fact::new(
+            "kind",
+            serde_json::to_value(asked.kind)
+                .ok()
+                .and_then(|kind| kind.as_str().map(str::to_owned))
+                .unwrap_or_default(),
+        ),
         Fact::new("belongsTo", asked.belongs_to.join(" ")),
     ];
     if !asked.username.is_empty() {

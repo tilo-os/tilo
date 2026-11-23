@@ -397,9 +397,15 @@ impl Workspaces {
                 _ => None,
             })
             .collect();
-        self.admit_operation(workspace_id, caller, device, &operation, (&arguments, false))
-            .await
-            .map_err(|refused| refused.to_string())
+        self.admit_operation(
+            workspace_id,
+            caller,
+            device,
+            &operation,
+            (&arguments, false),
+        )
+        .await
+        .map_err(|refused| refused.to_string())
     }
 }
 

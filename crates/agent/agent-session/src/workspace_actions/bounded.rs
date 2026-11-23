@@ -24,14 +24,12 @@
 //! or anything a viewer's action wrote, is never saved.
 
 use super::{
-    ActionCallError, Arc, Caller, ConfinedReplica, Confirmation, DocumentMutation, DocumentRoute,
-    HashMap, Instant, InvocationId, InvokeRequest, Mounted, Mutex, Outcome, Seed, Worker,
-    WorkspaceId, WorkspaceState, reads,
+    ActionCallError, Arc, Caller, ConfinedReplica, DocumentMutation, DocumentRoute, HashMap,
+    InvocationId, InvokeRequest, Mounted, Outcome, Seed, Worker, WorkspaceId, WorkspaceState,
+    reads,
 };
-use tilo_actions::InvocationUpdate;
 use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::ActorPlace;
-use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::live::LiveAnchor;
 use ui::permissions::policy::{self, ActionKind, Answer, TreePath};
 

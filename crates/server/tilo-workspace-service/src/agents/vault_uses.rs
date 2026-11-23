@@ -110,7 +110,11 @@ impl TurnUses {
     }
 
     /// The turn as the entry knows it, for `caller`.
-    fn hosted<'a>(&self, caller: &'a Caller, narrowed: Option<&'a [tilo_action_policy::Rule]>) -> HostedTurn<'a> {
+    fn hosted<'a>(
+        &self,
+        caller: &'a Caller,
+        narrowed: Option<&'a [tilo_action_policy::Rule]>,
+    ) -> HostedTurn<'a> {
         HostedTurn {
             workspace: self.workspace_id,
             caller,
@@ -185,9 +189,8 @@ impl TurnUses {
             Arc::clone(&asks),
         );
         let releasing: Releasing = Box::new(move |origin| {
-            let decided: Pin<Box<dyn Future<Output = Release> + Send>> = Box::pin(async move {
-                this.release(&by, &asked, wanted, origin, &waits).await
-            });
+            let decided: Pin<Box<dyn Future<Output = Release> + Send>> =
+                Box::pin(async move { this.release(&by, &asked, wanted, origin, &waits).await });
             decided
         });
         let filled = browsers
@@ -339,4 +342,3 @@ impl TurnProvider for TurnUses {
         })
     }
 }
-

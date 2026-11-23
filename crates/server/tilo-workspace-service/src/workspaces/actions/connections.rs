@@ -184,7 +184,7 @@ impl Workspaces {
                 Store::CONNECTIONS,
                 action,
                 effect,
- request,
+                request,
             )
             .await?;
         let by = reach.by();

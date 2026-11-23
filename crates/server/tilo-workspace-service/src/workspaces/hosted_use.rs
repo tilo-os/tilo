@@ -61,8 +61,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tilo_action_policy::{ActionKind, Answer, Rule, TreePath};
 use tilo_actions::remote::ActionCallError::{self, InvalidRequest, NotPermitted, UnknownAction};
-use tilo_actions::remote::person_accounts::{self, AddMailWithItem};
 use tilo_actions::remote::asked::{AskedFacts, Fact};
+use tilo_actions::remote::person_accounts::{self, AddMailWithItem};
 use tilo_actions::remote::person_models::{self, SetKeyFromItem};
 use tilo_actions::remote::person_vault::{self, FillPage, ItemRef};
 use tilo_actions::remote::{
@@ -496,13 +496,19 @@ fn use_asked(
         ),
         Fact::new(
             "Goes to",
-            places.iter().map(Place::as_str).collect::<Vec<_>>().join(" "),
+            places
+                .iter()
+                .map(Place::as_str)
+                .collect::<Vec<_>>()
+                .join(" "),
         ),
     ];
     if let Some(site) = shown_site(target, arguments) {
         facts.push(Fact::new(
             "Site",
-            site.get("origin").and_then(Value::as_str).unwrap_or_default(),
+            site.get("origin")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
         ));
     }
     AskedFacts {

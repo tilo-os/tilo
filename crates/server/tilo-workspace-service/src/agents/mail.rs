@@ -81,7 +81,11 @@ impl TurnMail {
             caller,
             bound: narrowed.as_deref(),
         };
-        let value = self.agents.workspaces.mail_for_turn(&hosted, request).await?;
+        let value = self
+            .agents
+            .workspaces
+            .mail_for_turn(&hosted, request)
+            .await?;
         Ok(InvocationUpdate::Succeeded {
             invocation,
             output: ActionOutput {

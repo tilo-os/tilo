@@ -274,7 +274,7 @@ impl Worker {
             self.note_reads(request);
         }
         let arguments = withheld.given(descriptor.bind_prompt_text(arguments))?;
-        let confirmed = self.confirmed_here(workspace_id, caller, request, &descriptor);
+        let confirmed = self.confirmed_here(request, &descriptor);
         let holder = self.holder_of(&route);
         let context = caller_context(caller, request);
         let running = timing_start();
@@ -336,8 +336,6 @@ impl Worker {
     /// call, taken once.
     pub(super) fn confirmed_here(
         &self,
-        workspace_id: WorkspaceId,
-        caller: &Caller,
         request: &InvokeRequest,
         descriptor: &tilo_actions::ActionDescriptor,
     ) -> bool {

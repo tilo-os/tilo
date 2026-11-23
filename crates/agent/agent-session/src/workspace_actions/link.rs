@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
-use tilo_actions::remote::{ActionCallError, Caller, Pending};
+use tilo_actions::remote::{ActionCallError, Caller};
 use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::WorkspaceShell;
