@@ -31,6 +31,15 @@ pub(super) fn for_turn(turn: &Turn) -> String {
         name = turn.agent.name,
         conversation = turn.conversation,
     );
+    // A conversation's summary stands in for the messages it covers: the turn keeps it
+    // current where it answers in one, and the next turn there reads it first.
+    let summary = if turn.ask.message().is_some() {
+        " Before you finish, keep the conversation's summary current: call the conversation's \
+         `summarize` with a few plain paragraphs on what has been said in it, replacing what \
+         was written before."
+    } else {
+        ""
+    };
     // A sub-agent's job is its starter's, told with the ask: the workspace's skills are not
     // its to add to.
     let skills = if turn.agent.is_sub() {
@@ -44,7 +53,7 @@ pub(super) fn for_turn(turn: &Turn) -> String {
          asks you to share that guidance with the workspace."
     };
     format!(
-        "{every}{skills}{clock}{shares}{learned}{sub}{told}",
+        "{every}{summary}{skills}{clock}{shares}{learned}{sub}{told}",
         clock = clock(),
         shares = shares::told(turn),
         learned = learned::told_how(turn),

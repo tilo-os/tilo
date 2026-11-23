@@ -1560,7 +1560,39 @@ impl ServerAgents {
         let failed = matches!(&outcome, Outcome::Failed(_));
         let ended = reply.finished(&outcome).await;
         self.sub_ended(&scope, &turn, &outcome).await;
-        (ended, usage.as_invocation_keeps(cost), failed)
+        let summary = match &outcome {
+            Outcome::Answered(_) => self.summary_of(&scope, &turn).await,
+            Outcome::Stopped(_) | Outcome::Failed(_) | Outcome::Cancelled => None,
+        };
+        (
+            ended,
+            usage.as_invocation_keeps(cost, summary.as_deref()),
+            failed,
+        )
+    }
+
+    /// The summary `turn`'s conversation holds now, as its agent reads it: what the next
+    /// turn there is told in place of the messages it covers. `None` for a turn that is no
+    /// conversation's, or one whose conversation reads nothing.
+    async fn summary_of(&self, scope: &TurnScope, turn: &Turn) -> Option<String> {
+        let place = turn.ask.message()?;
+        let reads = scope.provider.resource_reads()?;
+        let caller = scope.agent.clone();
+        let address = tilo_actions::remote::ResourceAddress {
+            workspace: scope.workspace.clone(),
+            app: CHAT.to_owned(),
+            record: triggered::published(CHAT, &place.record),
+        };
+        let read = tokio::task::spawn_blocking(move || reads.read(&caller, &address)).await;
+        let copy = read.ok()?.ok()?;
+        match copy {
+            tilo_actions::remote::ResourceCopy::Read(read) => field(&read, "summary")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|summary| !summary.is_empty())
+                .map(str::to_owned),
+            _ => None,
+        }
     }
 
     /// Begin an agent session on the task `turn` works on, as Tasks allows it: the session is
@@ -1808,7 +1840,7 @@ struct TurnUsage {
 impl TurnUsage {
     /// What the `#answer` invocation keeps of the turn's model calls, by the names its record
     /// reads them under: what answered them, the tokens they took and what they cost in dollars.
-    fn as_invocation_keeps(&self, cost_micros: u64) -> Value {
+    fn as_invocation_keeps(&self, cost_micros: u64, summary: Option<&str>) -> Value {
         let mut keeps = Map::new();
         if let Some(answered) = &self.answered {
             keeps.insert("provider".into(), json!(answered.provider));
@@ -1821,6 +1853,12 @@ impl TurnUsage {
         )]
         let usd = cost_micros as f64 / 1_000_000.0;
         keeps.insert("cost_usd".into(), json!(usd));
+        // The conversation as this turn left it, where the turn kept one: the invocation that
+        // took it is what keeps the summary per conversation and agent, and the next turn in
+        // the conversation reads it in place of the messages it covers.
+        if let Some(summary) = summary.filter(|summary| !summary.trim().is_empty()) {
+            keeps.insert("summary".into(), json!(summary.trim()));
+        }
         Value::Object(keeps)
     }
 }
