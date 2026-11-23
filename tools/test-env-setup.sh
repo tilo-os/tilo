@@ -158,7 +158,10 @@ mapped_capabilities() {
 runtime() {
     local icd required
     icd="/usr/share/vulkan/icd.d/lvp_icd.$(uname -m).json"
-    if [[ -r $icd ]]; then
+    # On macOS wgpu draws with the Mac's own GPU through Metal: lavapipe is Linux's CPU driver.
+    if [[ $(uname -s) == Darwin ]]; then
+        :
+    elif [[ -r $icd ]]; then
         provide WGPU_BACKEND vulkan
         provide WGPU_ADAPTER_NAME llvmpipe
         provide VK_DRIVER_FILES "$icd"
