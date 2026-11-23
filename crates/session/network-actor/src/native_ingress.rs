@@ -432,9 +432,9 @@ impl ActorState {
     pub(super) fn native_answered(
         &self,
         ws: WorkspaceId,
-        answers: Vec<tilo_peer_state::direct::Answered>,
+        answers: &[tilo_peer_state::direct::Answered],
     ) {
-        for answered in &answers {
+        for answered in answers {
             if matches!(answered.kept, tilo_peer_state::direct::Kept::Refused) {
                 tracing::warn!(ws = %ws, write = ?answered.write, "a peer refused this device's write");
             }

@@ -142,11 +142,11 @@ async fn one_device_holds_a_workspace_through_its_first_use_and_leaving_it() {
         "the joiner holds the workspace it was admitted into"
     );
     write(&owner_b, workspace, &b_key).await;
-    assert!(
+    assert_eq!(
         owner_a.with_current(workspace, |view| Ok(view
             .peer()
-            .holds_document(APP, RECORD)))
-            == Ok(true)
+            .holds_document(APP, RECORD))),
+        Ok(true)
     );
     assert!(owner_a.release_workspace(workspace).unwrap());
     assert!(!owner_a.contains_workspace(workspace));
@@ -313,7 +313,7 @@ async fn an_effect_receipt_is_recorded_once_on_both_devices() {
     assert_eq!(receipts.len(), 1, "recorded once: {receipts:?}");
     assert_eq!(receipts[0], receipt);
     assert_eq!(read(&owner_b), receipts, "the other device reads the same");
-    let mut other = receipt.clone();
+    let mut other = receipt;
     other.status = tilo_actions::EffectReceiptStatus::Cancelled;
     assert!(
         owner_a
@@ -349,6 +349,10 @@ fn held_certified(
 /// Two devices write different role changes while offline, and the same
 /// membership is what they read once they exchange them.
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario: the grant, both devices' offline changes and their exchange"
+)]
 async fn two_devices_offline_role_changes_converge() {
     let directory = tempfile::tempdir().unwrap();
     let root = key(1);

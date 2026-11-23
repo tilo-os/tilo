@@ -1898,7 +1898,7 @@ impl ActorState {
             }
             Some(InternalEvent::NativeReady { ws }) => self.native_ready(ws).await,
             Some(InternalEvent::NativeAnswered { ws, answers }) => {
-                self.native_answered(ws, answers);
+                self.native_answered(ws, &answers);
             }
             Some(InternalEvent::NativeRetired { ws }) => self.drive_native_publication(ws),
             Some(InternalEvent::NativeLinkClosed { ws, deleted }) => {
