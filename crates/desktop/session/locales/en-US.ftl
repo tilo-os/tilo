@@ -238,6 +238,8 @@ session-time = Time
 
 session-nearby-send = Nearby Send
 session-windows = Windows
+session-windows-new-strip = Move to a new strip
+session-windows-delete-strip = Delete the strip
 session-tray = Tray
 session-invite = Invite
 session-agents = Agents

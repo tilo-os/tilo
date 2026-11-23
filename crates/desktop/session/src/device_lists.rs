@@ -50,9 +50,33 @@ pub(crate) const NOTICE_RESOURCE: &str = "session:notice";
 /// The windows as a view of another language reads them (`device.windows`).
 #[must_use]
 pub fn windows_surface() -> tilo_resource::surface::Surface {
-    tilo_resource::surface::reading_surface::<crate::windows::Windows, tilo_resource::NoEffect>(
+    tilo_resource::surface::reading_surface::<crate::windows::Windows, WindowsEffect>(
         "windows", "Windows",
     )
+}
+
+/// What the windows offer beside their reading: carrying one into a strip of its own, and taking a
+/// strip away while its windows go on in the next one.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "so.tilo.session.windows")]
+pub(crate) enum WindowsEffect {
+    /// Carry a window into a new strip below the workspace's last
+    #[effect(kind = "outside")]
+    #[effect(own_device, label = "session-windows-new-strip")]
+    MoveToNewStrip {
+        /// The window, by its tab
+        #[param(decimal, "The window, by its tab")]
+        tab: String,
+    },
+    /// Take a strip away, carrying its windows into the strip after it (or the one before, for the
+    /// last strip); the last strip a workspace holds stays.
+    #[effect(kind = "outside")]
+    #[effect(own_device, label = "session-windows-delete-strip")]
+    DeleteStrip {
+        /// The strip, by its id
+        #[param(decimal, "The strip, by its id")]
+        strip: String,
+    },
 }
 
 /// The tray as a view of another language reads it (`device.tray`).
@@ -988,6 +1012,109 @@ impl DeviceLists {
             .unwrap_or_default()
     }
 
+    /// Carry out what `effect` asks of the arrangement: a window into a strip of its own, or a
+    /// strip taken away with its windows carried into the next one.
+    fn arrange(&mut self, effect: WindowsEffect) -> Result<Started, ApiError> {
+        let refused = |reason: String| ApiError::Unavailable {
+            code: "arrange-refused".into(),
+            reason,
+        };
+        match effect {
+            WindowsEffect::MoveToNewStrip { tab } => {
+                let tab: u64 = tab
+                    .trim()
+                    .parse()
+                    .map_err(|_| refused("that is no window".into()))?;
+                let group = self
+                    .handle
+                    .read(|tree| {
+                        tree.workspaces
+                            .iter()
+                            .find(|workspace| workspace.id() == tree.active)
+                            .and_then(|workspace| {
+                                workspace
+                                    .strips
+                                    .iter()
+                                    .flat_map(|strip| &strip.window_groups)
+                                    .find(|group| group.tabs.iter().any(|held| held.id == tab))
+                            })
+                            .map(|group| group.id)
+                    })
+                    .ok_or_else(|| refused("the window is not in the workspace in front".into()))?;
+                let made = self
+                    .handle
+                    .apply_command(&DesktopCommand::CreateStrip {
+                        name: String::new(),
+                    })
+                    .map_err(refused)?
+                    .ok_or_else(|| refused("no strip was made".into()))?;
+                self.handle
+                    .apply_command(&DesktopCommand::MoveGroup {
+                        group,
+                        strip: made.0,
+                        before: None,
+                    })
+                    .map_err(refused)?;
+            }
+            WindowsEffect::DeleteStrip { strip } => {
+                let strip: u64 = strip
+                    .trim()
+                    .parse()
+                    .map_err(|_| refused("that is no strip".into()))?;
+                let (target, groups) = self
+                    .handle
+                    .read(|tree| {
+                        let workspace = tree
+                            .workspaces
+                            .iter()
+                            .find(|workspace| workspace.id() == tree.active)?;
+                        if workspace.strips.len() <= 1 {
+                            return None;
+                        }
+                        let at = workspace
+                            .strips
+                            .iter()
+                            .position(|held| held.id.0 == strip)?;
+                        let target = workspace
+                            .strips
+                            .get(at.saturating_add(1))
+                            .or_else(|| {
+                                at.checked_sub(1)
+                                    .and_then(|before| workspace.strips.get(before))
+                            })?
+                            .id
+                            .0;
+                        let groups: Vec<u64> = workspace
+                            .strips
+                            .get(at)?
+                            .window_groups
+                            .iter()
+                            .map(|group| group.id)
+                            .collect();
+                        Some((target, groups))
+                    })
+                    .ok_or_else(|| {
+                        refused(
+                            "that strip is not in the workspace in front, or is its last".into(),
+                        )
+                    })?;
+                for group in groups {
+                    self.handle
+                        .apply_command(&DesktopCommand::MoveGroup {
+                            group,
+                            strip: target,
+                            before: None,
+                        })
+                        .map_err(refused)?;
+                }
+                self.handle
+                    .apply_command(&DesktopCommand::RemoveStrip { strip })
+                    .map_err(refused)?;
+            }
+        }
+        Ok(Started::Done(tilo_actions::ActionOutput::default()))
+    }
+
     /// When the shell has something to draw that it has not drawn yet, without a frame in between:
     /// the instant the switcher's panel comes up while Alt is held on it.
     pub(crate) fn next_deadline(&self) -> Option<tilo_clock::time::Instant> {
@@ -1477,7 +1604,7 @@ impl DeviceLists {
 /// The session's own lists as it publishes them: what each is to search and read, under the
 /// session's kind.
 #[derive(tilo_resource::Row)]
-#[row(kind = "session", label = "Windows")]
+#[row(kind = "session", label = "Windows", effects = WindowsEffect)]
 pub(crate) struct WindowsList;
 
 #[derive(tilo_resource::Row)]
@@ -1513,11 +1640,13 @@ pub(crate) struct SaidRoot;
 impl Service for DeviceLists {
     fn resources(&self) -> Vec<ResourceSpec> {
         vec![
-            tilo_resource::LiveRow::typed::<WindowsList>(
-                WINDOWS_RESOURCE,
-                crate::i18n::t("session-windows"),
-            )
-            .into_resource(),
+            offer::<WindowsEffect>(
+                tilo_resource::LiveRow::typed::<WindowsList>(
+                    WINDOWS_RESOURCE,
+                    crate::i18n::t("session-windows"),
+                )
+                .into_resource(),
+            ),
             offer::<TrayEffect>(
                 tilo_resource::LiveRow::typed::<TrayRoot>(
                     TRAY_RESOURCE,
@@ -1604,6 +1733,11 @@ impl Service for DeviceLists {
         arguments: &Map<String, Value>,
     ) -> Result<Started, ApiError> {
         match resource {
+            WINDOWS_RESOURCE => {
+                let effect =
+                    decode::<WindowsEffect>(&self.resources(), resource, action, arguments)?;
+                self.arrange(effect)
+            }
             TRAY_RESOURCE => {
                 let TrayEffect::OpenTrayItem { key } =
                     decode::<TrayEffect>(&self.resources(), resource, action, arguments)?;

@@ -243,6 +243,8 @@ session-time = Uhrzeit
 
 session-nearby-send = In der Nähe senden
 session-windows = Fenster
+session-windows-new-strip = In einen neuen Streifen
+session-windows-delete-strip = Den Streifen löschen
 session-tray = Statusleiste
 session-invite = Einladen
 session-agents = Agenten

@@ -58,6 +58,7 @@ impl MenuPart {
                 group: item.group.clone(),
                 key: item.key.clone(),
                 choose: item.choose.clone(),
+                separator: item.separator,
             }),
             Self::Separator => Self::Separator,
             Self::Emoji(bar) => Self::Emoji(EmojiBarProps {

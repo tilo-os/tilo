@@ -2915,7 +2915,40 @@
       "kind": "windows",
       "label": "Windows",
       "version": 1,
-      "verbs": [],
+      "verbs": [
+        {
+          "id": "move-to-new-strip",
+          "label": "Move to a new strip",
+          "description": "Carry a window into a new strip below the workspace's last",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "tab",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "delete-strip",
+          "label": "Delete the strip",
+          "description": "Take a strip away, carrying its windows into the strip after it (or the one before, for the last strip); the last strip a workspace holds stays.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "strip",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        }
+      ],
       "fields": [
         {
           "path": "all",

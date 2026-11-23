@@ -479,6 +479,7 @@ impl Command {
             group,
             key,
             choose,
+            separator: _,
         } = props;
         Self {
             label,

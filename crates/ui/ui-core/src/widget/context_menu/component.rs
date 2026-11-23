@@ -33,6 +33,10 @@ pub struct MenuItemProps {
     /// spells it.
     #[component(data)]
     pub key: Option<String>,
+    /// A rule between groups of commands, which chooses nothing: a menu's `ui.MenuSeparator`.
+    /// Its label and the rest say nothing while it is set.
+    #[component(data)]
+    pub separator: bool,
     /// It was chosen.
     #[component(event(press))]
     pub choose: Event,
@@ -43,6 +47,9 @@ impl MenuItemProps {
     /// reports the view's own event.
     #[must_use]
     pub fn into_item(mut self) -> MenuItem {
+        if self.separator {
+            return MenuItem::separator();
+        }
         let press = Press::of(std::mem::take(&mut self.choose));
         let props = self;
         let item = MenuItem::bound(props.label, press).with_destructive(props.destructive);
@@ -74,6 +81,9 @@ impl MenuItemProps {
     /// The command as an entry of a context menu.
     #[must_use]
     pub fn into_entry(mut self) -> MenuEntry {
+        if self.separator {
+            return MenuEntry::separator();
+        }
         let press = Press::of(std::mem::take(&mut self.choose));
         let props = self;
         let entry = MenuEntry::bound(props.label, press).with_destructive(props.destructive);
@@ -112,22 +122,50 @@ impl From<OfferedAction> for MenuItemProps {
             group: None,
             key: action.key,
             choose: action.run,
+            separator: false,
         }
     }
 }
 
 /// The commands of a menu, in order.
+/// The parts a menu holds, in order: its commands and the rules between their groups.
+const MENU_ROW_PARTS: [&str; 2] = ["MenuItem", "MenuSeparator"];
+
 impl PartType for Vec<MenuItemProps> {
     const MANY: bool = true;
 
     fn accepts() -> crate::component::Accepts {
-        crate::component::Accepts::Component(MenuItemProps::NAME.into())
+        crate::component::Accepts::OneOf(
+            MENU_ROW_PARTS
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect(),
+        )
     }
 
     fn fill(&mut self, source: &mut dyn Source, part: &str) -> Result<(), String> {
-        let mut read = Vec::new();
+        let kinds = source.part_kinds(part);
+        let mut read = Vec::with_capacity(kinds.len());
+        let mut index = 0usize;
         source.components(part, &mut |child| {
-            read.push(MenuItemProps::from_source(child).map_err(|error| error.to_string())?);
+            let kind = kinds.get(index).cloned().flatten().unwrap_or_default();
+            index = index.saturating_add(1);
+            match kind.as_str() {
+                "MenuItem" => {
+                    read.push(
+                        MenuItemProps::from_source(child).map_err(|error| error.to_string())?,
+                    );
+                }
+                "MenuSeparator" => read.push(MenuItemProps {
+                    separator: true,
+                    ..MenuItemProps::default()
+                }),
+                other => {
+                    return Err(format!(
+                        "holds `{other}`; a menu holds `ui.MenuItem` and `ui.MenuSeparator`"
+                    ));
+                }
+            }
             Ok(())
         })?;
         *self = read;
@@ -242,5 +280,40 @@ impl Described for MenuButton {
         }
         self.menu.set_items(rows(items, actions));
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::component::PartType;
+
+    /// A menu button's rows take the rules between groups: a `ui.MenuSeparator` stands in the menu
+    /// as a separator, and both it and a command are accepted where the rows go.
+    #[test]
+    fn a_menu_button_takes_a_separator_between_its_commands() {
+        let accepts = Vec::<MenuItemProps>::accepts();
+        let crate::component::Accepts::OneOf(names) = accepts else {
+            panic!("a menu's rows take more than one part: {accepts:?}");
+        };
+        assert!(names.iter().any(|name| name == "MenuItem"));
+        assert!(names.iter().any(|name| name == "MenuSeparator"));
+        assert!(matches!(
+            MenuItemProps {
+                separator: true,
+                ..MenuItemProps::default()
+            }
+            .into_item(),
+            MenuItem::Separator
+        ));
+        assert!(matches!(
+            MenuItemProps {
+                separator: true,
+                ..MenuItemProps::default()
+            }
+            .into_entry()
+            .item(),
+            MenuItem::Separator
+        ));
     }
 }

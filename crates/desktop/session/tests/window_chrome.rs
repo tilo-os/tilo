@@ -26,6 +26,8 @@ use crate::common::{
 
 /// The Escape key, evdev: what closes the launcher.
 const KEY_ESCAPE: u32 = 1;
+/// The Enter key, evdev: what commits a typed name.
+const KEY_ENTER: u32 = 28;
 
 /// The session with the tilolang shell as its whole screen, on `outputs`.
 fn session_on(outputs: &[OutputConfig]) -> (Session, Vec<String>) {
@@ -157,6 +159,15 @@ fn shown_as(session: &Session, key: &str) -> String {
             || panic!("the shell holds a place {key}"),
             |place| place.name,
         )
+}
+
+/// Wait for the shell to lay the place `key` out, then open its window menu, waiting for the shell
+/// to show it. A window behind another tab of its strip comes forward first, by its tab, so its bar
+/// stands.
+fn read_land(session: &mut Session, key: &str) {
+    until(session, "the window laid out", |session| {
+        crate::common::place(session, crate::common::number(key)).is_some()
+    });
 }
 
 /// Open the window menu of the placed window `key`, waiting for the shell to show it. A window
@@ -512,6 +523,8 @@ fn the_window_bar_carries_its_tab_a_new_tab_its_search_and_history() {
             && on_screen(session, "New tab of this window").is_some()
             && on_screen(session, "Search this window").is_some()
             && on_screen(session, "History of this window").is_some()
+            && on_screen(session, "Back in this window").is_some()
+            && on_screen(session, "Forward in this window").is_some()
     });
 
     crate::common::shot(&mut session, "layout-window-bar");
@@ -589,5 +602,169 @@ fn the_tilo_menu_holds_the_layouts_history_and_the_devices_own_pages() {
     press(&mut session, "Tilo");
     until(&mut session, "the menu closed", |session| {
         on_screen(session, "Undo layout change").is_none()
+    });
+}
+
+/// The band (the row across the shell) the place `key` stands in.
+fn band_of(session: &Session, key: &str) -> Option<String> {
+    let layout = crate::common::layout(session);
+    let strip = layout
+        .places
+        .into_iter()
+        .find(|place| place.key == key)?
+        .strip;
+    layout
+        .strips
+        .into_iter()
+        .find(|strip| strip.key == strip)
+        .map(|strip| strip.row)
+}
+
+#[test]
+fn a_window_moves_to_a_strip_of_its_own_through_the_window_menu() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, notes) = session();
+    until(&mut session, "the strips", |session| {
+        on_screen(session, "Showing Strips").is_some()
+    });
+    let one = place(&mut session, &notes[0]);
+    let _two = place(&mut session, &notes[1]);
+    let key = one.to_string();
+    let before = crate::common::layout(&session).rows.len();
+    let was = band_of(&session, &key).expect("the window stands in a band");
+
+    // A window sharing its band moves into a strip of its own from its menu.
+    open_menu(&mut session, &key);
+    until(&mut session, "the strip of its own", |session| {
+        on_screen(session, "Move to a new strip").is_some()
+    });
+    press(&mut session, "Move to a new strip");
+    until(&mut session, "a strip made for it", |session| {
+        crate::common::layout(session).rows.len() == before + 1
+    });
+    assert_ne!(
+        band_of(&session, &key).as_deref(),
+        Some(was.as_str()),
+        "the window left the band it shared"
+    );
+}
+
+#[test]
+fn deleting_a_strip_carries_its_windows_into_the_next_one() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, notes) = session();
+    until(&mut session, "the strips", |session| {
+        on_screen(session, "Showing Strips").is_some()
+    });
+    let one = place(&mut session, &notes[0]);
+    let two = place(&mut session, &notes[1]);
+    let workspace = crate::common::layout(&session)
+        .workspaces
+        .into_iter()
+        .find(|workspace| workspace.current)
+        .expect("a workspace in front")
+        .key;
+    let first = crate::common::layout(&session)
+        .rows
+        .first()
+        .expect("a band")
+        .key
+        .clone();
+    session
+        .invoke("desktop:chrome", "new-strip", &Map::new())
+        .expect("a second band is made");
+    let made = crate::common::wait_for(&mut session, "two bands", |session| {
+        let rows = crate::common::layout(session).rows;
+        (rows.len() == 2).then(|| {
+            rows.iter()
+                .find(|row| row.key != first)
+                .map(|row| row.key.clone())
+        })?
+    })
+    .expect("the band made");
+
+    // Deleting the first band carries both its windows into the next; neither is lost.
+    session
+        .invoke(
+            "session:windows",
+            "delete-strip",
+            json!({"strip": first}).as_object().unwrap(),
+        )
+        .expect("the band is deleted");
+    until(&mut session, "one band left", |session| {
+        crate::common::layout(session).rows.len() == 1
+    });
+    for place_key in [one, two] {
+        let key = place_key.to_string();
+        assert!(
+            crate::common::place(&session, place_key).is_some(),
+            "the window {key} survives the band it stood in"
+        );
+        assert_eq!(
+            band_of(&session, &key).as_deref(),
+            Some(made.as_str()),
+            "the window {key} moved to the band that stayed"
+        );
+    }
+    let _ = workspace;
+}
+
+/// A session whose one window is a host (non-Tilo) window: a foreign surface the compositor holds,
+/// which the person may name and which can stop answering.
+fn host_window_session() -> Session {
+    let (mut session, _notes) = session();
+    until(&mut session, "the strips", |session| {
+        on_screen(session, "Showing Strips").is_some()
+    });
+    let mut tree = crate::common::tree::layout_tree();
+    tree.workspaces[0].strips[0].window_groups[0].tabs[0].tile =
+        tilo_desktop_model::TileContent::Foreign {
+            app_id: "org.example.Host".into(),
+            surface_id: 7,
+        };
+    session.handle().replace_tree(tree);
+    until(&mut session, "the host window's bar", |session| {
+        on_screen(session, "This window").is_some()
+    });
+    session
+}
+
+#[test]
+fn a_host_windows_name_is_changed_from_its_menu() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = host_window_session();
+    read_land(&mut session, "20");
+    open_menu(&mut session, "20");
+    until(&mut session, "the rename row", |session| {
+        on_screen(session, "Rename").is_some()
+    });
+    press(&mut session, "Rename");
+    until(&mut session, "the name field", |session| {
+        on_screen(session, "A new name").is_some()
+    });
+    crate::common::type_text(&mut session, "Renamed");
+    crate::common::window::press_key(&mut session, KEY_ENTER, true);
+    crate::common::window::press_key(&mut session, KEY_ENTER, false);
+    until(&mut session, "the window renamed", |session| {
+        crate::common::place(session, 20).is_some_and(|place| place.title == "Renamed")
+    });
+}
+
+#[test]
+fn a_window_that_stops_answering_says_so_on_the_window_itself() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = host_window_session();
+    session.handle().set_unresponsive_windows(vec![7]);
+    until(&mut session, "the hung card", |session| {
+        on_screen(session, "Not responding").is_some()
+            && on_screen(session, "Wait").is_some()
+            && on_screen(session, "Force quit").is_some()
+    });
+    crate::common::shot(&mut session, "layout-hung-card");
+    press(&mut session, "Wait");
+    // Waiting keeps the window and takes the card away until the app answers again.
+    session.handle().set_unresponsive_windows(Vec::new());
+    until(&mut session, "the card gone", |session| {
+        on_screen(session, "Not responding").is_none()
     });
 }

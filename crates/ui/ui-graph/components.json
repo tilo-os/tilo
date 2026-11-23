@@ -594,7 +594,10 @@
           "name": "items",
           "doc": "The place's menu: the commands the host filled from its target.",
           "accepts": {
-            "component": "MenuItem"
+            "one_of": [
+              "MenuItem",
+              "MenuSeparator"
+            ]
           },
           "many": true
         }
@@ -1569,7 +1572,10 @@
           "name": "items",
           "doc": "The commands, in order.",
           "accepts": {
-            "component": "MenuItem"
+            "one_of": [
+              "MenuItem",
+              "MenuSeparator"
+            ]
           },
           "many": true,
           "default": true
@@ -7918,7 +7924,10 @@
           "name": "menu",
           "doc": "The commands of its context menu: a right-click, the Menu key or a long press opens it.",
           "accepts": {
-            "component": "MenuItem"
+            "one_of": [
+              "MenuItem",
+              "MenuSeparator"
+            ]
           },
           "many": true
         },
@@ -8085,6 +8094,12 @@
           "type": {
             "option": "text"
           },
+          "data": true
+        },
+        {
+          "name": "separator",
+          "doc": "A rule between groups of commands, which chooses nothing: a menu's `ui.MenuSeparator`. Its label and the rest say nothing while it is set.",
+          "type": "bool",
           "data": true
         }
       ],
@@ -9207,7 +9222,10 @@
           "name": "menu",
           "doc": "The commands of a menu it opens instead of doing one thing: Sort, Insert, View.",
           "accepts": {
-            "component": "MenuItem"
+            "one_of": [
+              "MenuItem",
+              "MenuSeparator"
+            ]
           },
           "many": true
         }
@@ -9384,7 +9402,10 @@
           "name": "menu",
           "doc": "The commands of its context menu: a right-click, the Menu key or a long press opens it, so every action a row has stays reachable without a drag.",
           "accepts": {
-            "component": "MenuItem"
+            "one_of": [
+              "MenuItem",
+              "MenuSeparator"
+            ]
           },
           "many": true
         },

@@ -333,7 +333,9 @@ view strip_window(a: Layout, s: LayoutStrip, lists: Bool) {
                 window_controls(s, shown, lists)
             }
             tabs: {
-                if placed.len() > 1 and shell.strips_tabs {
+                // One window of one tab wears its tab too: the app's glyph and name say what the
+                // window shows, and another tab opens from the same bar.
+                if shell.strips_tabs {
                     ui.TabStrip(place_in_front(s), focused: in_front) {
                         on activate(p: session.Place): show_place(p)
                         on close(p: session.Place): session.close(place: p)
@@ -530,6 +532,14 @@ view window_bar_actions(w: device.Window) {
     }
     ui.Button("History of this window", icon: .history, icon_only: true, role: .plain) {
         on press: session.activity(workspace: w.workspace_key, view: "catch-up", author: .none)
+    }
+    // Back and forward through what the window showed: the app's own history, carried by the
+    // window, as the shell's Back and Forward always are.
+    ui.Button("Back in this window", icon: .arrow_left, icon_only: true, role: .plain) {
+        on press: session.history(tab: w.key, target: "back")
+    }
+    ui.Button("Forward in this window", icon: .arrow_right, icon_only: true, role: .plain) {
+        on press: session.history(tab: w.key, target: "forward")
     }
 }
 
@@ -769,6 +779,7 @@ view window_menu(w: device.Window, place: Option<LayoutPlace>, listed: Bool) {
                 on choose: session.float(group: w.group_key, on: true)
             }
         }
+        ui.MenuSeparator()
         // The share of its strip the window takes, and the steps between the shares. A window at
         // the widest or the narrowest says so rather than stepping past.
         ui.MenuItem("Half the strip", checked: strip_width(w) == 500) {
@@ -798,6 +809,7 @@ view window_menu(w: device.Window, place: Option<LayoutPlace>, listed: Bool) {
                 permille: narrower_than(strip_width(w)),
             )
         }
+        ui.MenuSeparator()
         // One place along its strip, where there is a place to go.
         if let b = group_before(w) {
             ui.MenuItem("Move left", icon: .arrow_left) {
@@ -849,6 +861,14 @@ view window_menu(w: device.Window, place: Option<LayoutPlace>, listed: Bool) {
                 on choose: session.move(place: the_place(w.key), row: the_row(r.key))
             }
         }
+        // A window sharing its band with another moves into a strip of its own, leaving the band
+        // it was in to the others.
+        if groups_in_band(w) > 1 {
+            ui.MenuItem("Move to a new strip", icon: .arrow_up_down) {
+                on choose: device.move_to_new_strip(device.windows, tab: w.key)
+            }
+        }
+        ui.MenuSeparator()
         // What the window shows and what it is called.
         if w.opens_tabs and w.local {
             ui.MenuItem("New tab of this app", icon: .plus) {
@@ -877,6 +897,7 @@ view window_menu(w: device.Window, place: Option<LayoutPlace>, listed: Bool) {
                 on choose: session.pin(place: the_place(w.key), pinned: true)
             }
         }
+        ui.MenuSeparator()
         if w.controls_desktop {
             ui.MenuItem("Stop controlling the desktop", icon: .ban) {
                 on choose: session.stop_desktop_control(group: w.group_key)
@@ -1031,6 +1052,11 @@ fn strip_maximized(w: device.Window) -> Bool {
         return s.maximized
     }
     return false
+}
+
+/// How many windows (groups) the band the window `w`'s strip stands in holds.
+fn groups_in_band(w: device.Window) -> Int {
+    return layout.strips.filter(s -> s.row == w.strip_key).len()
 }
 
 /// The row (the band across the shell) the window `w`'s strip stands in.
