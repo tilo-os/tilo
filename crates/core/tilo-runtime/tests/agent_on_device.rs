@@ -204,3 +204,37 @@ fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first() {
         );
     });
 }
+
+/// A key's run reads what the device is, as the person's agents do, and is refused letting
+/// another computer in: a ticket is the person's own to issue.
+#[test]
+fn a_key_reads_the_device_and_cannot_issue_a_ticket() {
+    host::run(|host| async move {
+        let workspace = host.workspace().to_owned();
+        let key = host.key("Ada's script");
+        let (answered, failed) = crate::files_support::said(
+            &key.tool(
+                "tilo_do",
+                &json!({"workspace": workspace, "path": "device#info", "args": {}}),
+            )
+            .await,
+        );
+        assert!(!failed, "the key reads the device: {answered}");
+        assert!(
+            answered.contains("\"device\"") && answered.contains("\"people\""),
+            "the device says what it is: {answered}"
+        );
+        let (issued, failed) = crate::files_support::said(
+            &key.tool(
+                "tilo_do",
+                &json!({"workspace": workspace, "path": "device#issue", "args": {}}),
+            )
+            .await,
+        );
+        assert!(failed, "a key issues no ticket: {issued}");
+        assert!(
+            !issued.contains("ticket\":"),
+            "no ticket is handed to the key: {issued}"
+        );
+    });
+}

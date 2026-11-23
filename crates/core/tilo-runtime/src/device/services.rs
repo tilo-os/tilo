@@ -1295,7 +1295,9 @@ impl Daemon {
                 admission,
                 projection: None,
             })),
-            tickets: None,
+            // A key reads what the device is, as the person's agents do; only the person lets
+            // another device in ([`RuntimeActionProvider::is_the_person`]).
+            tickets: Some(Arc::clone(&self.tickets)),
             invocations: Arc::clone(&self.invocations),
             who_is_here: Some(Arc::clone(&self.who_is_here)),
         })

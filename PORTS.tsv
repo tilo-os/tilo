@@ -456,7 +456,7 @@ gap 4: /v1 app routing misses host actions (workspace/mail-accounts)	-	one-dispa
 gap 5: a workspace the host's service made is not admitted to the person's key	-	one-dispatch	admit at creation
 gap 6: fixture has no restart, second person, mail stand-in	-	daemon-host-fixture	fixture
 gap 7: device asking its person is macOS-only	-	asks-as-records	asked records
-gap B: the daemon's own agent invokes nothing (session provider tickets: None)	-	one-dispatch	agent tickets on the daemon's provider
+gap B: the daemon's own agent invokes nothing (session provider tickets: None)	test written, waiting on its run	one-dispatch	agent_on_device::a_logged_in_computers_agents_act_with_no_tab_open (the daemon's agent runs device#info); agent_on_device::a_key_reads_the_device_and_cannot_issue_a_ticket (a key's run reads the device, a ticket stays the person's)
 gap C: the daemon serves no presence (tilo_watch presence [])	-	one-dispatch	presence on the daemon
 gap D: no workspace agent roster on the daemon	-	one-dispatch	roster from the workspace's agent members
 gap F: member_own needs the Discord app, daemon has no workspace bots	-	app-features	Discord row of the bots inventory
