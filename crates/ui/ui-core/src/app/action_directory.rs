@@ -99,7 +99,7 @@ impl App {
                 .iter()
                 .filter(|action| match explicit {
                     Some(address) => {
-                        address.resource == resource.id.as_str() && address.action == action.id
+                        address.resource == resource.domain_name() && address.action == action.id
                     }
                     None => action.kind == tilo_actions::OperationKind::View,
                 })
@@ -120,7 +120,7 @@ impl App {
         let visibility = visibility(resource, explicit.as_ref())?;
         Some(runtime_collab::ActionDirectoryRow {
             parent_resource: parent_resource.to_owned(),
-            resource: resource.id.as_str().to_owned(),
+            resource: resource.domain_name().to_owned(),
             resource_kind: resource.kind.clone(),
             resource_label: resource.label.clone(),
             presentation: resource
@@ -150,8 +150,8 @@ impl App {
         let descriptor = Self::directory_descriptor(resource, action);
         let exported = ::collaboration::action_directory::exported_directory_action(&descriptor);
         Some(runtime_collab::ActionDirectoryRow {
-            parent_resource: resource.id.as_str().to_owned(),
-            resource: resource.id.as_str().to_owned(),
+            parent_resource: resource.domain_name().to_owned(),
+            resource: resource.domain_name().to_owned(),
             resource_kind: exported.resource_kind.clone(),
             resource_label: exported.resource_label.clone(),
             presentation: None,
@@ -216,7 +216,7 @@ impl App {
                 .iter()
                 .filter(|resource| {
                     ::collaboration::action_directory::is_named(
-                        resource.id.as_str(),
+                        resource.domain_name(),
                         &resource.kind,
                         &resource.label,
                         name,
@@ -230,7 +230,7 @@ impl App {
                 id: &str,
             ) -> Option<&'a tilo_actions::ResourceSpec> {
                 resources.iter().find_map(|resource| {
-                    (resource.id.as_str() == id)
+                    (resource.domain_name() == id)
                         .then_some(resource)
                         .or_else(|| find(&resource.children, id))
                 })
@@ -247,7 +247,7 @@ impl App {
                 .iter()
                 .filter(|child| {
                     ::collaboration::action_directory::is_named(
-                        child.id.as_str(),
+                        child.domain_name(),
                         &child.kind,
                         &child.label,
                         name,
@@ -438,7 +438,7 @@ impl App {
                     let before_cursor = provider_cursor.clone();
                     if let Some(resource) = page.resources.first()
                         && !self.actions.action_directory_snapshot.as_ref().is_some_and(
-                            |snapshot| snapshot.nodes.contains_key(resource.id.as_str()),
+                            |snapshot| snapshot.nodes.contains_key(resource.domain_name()),
                         )
                         && let Some(row) = self.directory_resource_row(resource, "", max_depth > 0)
                     {
@@ -574,7 +574,7 @@ impl App {
                         .actions
                         .action_directory_snapshot
                         .as_ref()
-                        .is_some_and(|snapshot| snapshot.nodes.contains_key(resource.id.as_str()))
+                        .is_some_and(|snapshot| snapshot.nodes.contains_key(resource.domain_name()))
                     {
                         None
                     } else {

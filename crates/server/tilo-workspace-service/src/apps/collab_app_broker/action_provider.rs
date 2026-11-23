@@ -2587,20 +2587,26 @@ impl AppBrokerState {
                 .map_err(|_| ActionCallError::UnknownAction)?
         };
         // Only the one action this peer offers is copied out, not every
-        // app's published surface.
-        let (app_id, workspace, action) = self
+        // app's published surface. A caller may name the app's own id for a
+        // resource its window published under a transport alias, as a job
+        // effect's follow-up does; the action is then delivered under the
+        // alias carrying it now ([`PublishedSurface::current_resource`]).
+        let (app_id, workspace, resource, action) = self
             .publishers
             .surfaces
             .lock()
             .ok()
             .and_then(|surfaces| {
                 let surface = surfaces.get(&peer_id).filter(|surface| surface.live)?;
-                let action = surface.actions.iter().find(|action| {
-                    action.resource == address.resource && action.action == address.action
-                })?;
+                let resource = surface.current_resource(&address.resource, &address.action)?;
+                let action = surface
+                    .actions
+                    .iter()
+                    .find(|action| action.resource == resource && action.action == address.action)?;
                 Some((
                     surface.app_id.clone(),
                     surface.route.cluster_id.clone(),
+                    resource.to_owned(),
                     action.clone(),
                 ))
             })
@@ -2632,7 +2638,7 @@ impl AppBrokerState {
         )?;
         self.start_invocation_confirmed_for_origin(
             peer_id,
-            &address.resource,
+            &resource,
             &address.action,
             InvocationInputs {
                 original_request: Some(original_request),

@@ -152,6 +152,19 @@ impl ActionDescriptor {
         }
     }
 
+    /// The resource's own id, not the transport alias the window published
+    /// it under (`ResourceSpec::domain_name`): the address a directory row
+    /// carries, resolved back to its alias where the window published one.
+    #[must_use]
+    pub fn domain_resource(&self) -> &str {
+        self.semantic_identity
+            .as_ref()
+            .filter(|identity| identity.is_valid())
+            .map_or(self.address.resource.as_str(), |identity| {
+                identity.key.as_str()
+            })
+    }
+
     /// The parameter one line of typed text fills, when the action is a
     /// capture: it declares an entry (`title: Text (entry)`), what a person
     /// writes down from wherever they are and what a palette offers as "New

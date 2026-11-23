@@ -45,10 +45,14 @@ impl PublishedSurface {
     }
 
     /// The resource `action` is published on now for a caller that named it
-    /// on `resource`: `resource` itself, or, where a window's component
-    /// published the same app resource again under a new alias (it is
-    /// mounted anew as the window settles), the one alias carrying `action`
-    /// for it now. `None` when nothing here carries it.
+    /// on `resource`: `resource` itself, or the one alias carrying `action`
+    /// for the same app resource. A window's component publishes the app's
+    /// resources under transport aliases ([`tilo_actions::BOUND_RESOURCE_PREFIX`])
+    /// — it is mounted anew as the window settles, so the alias moves —
+    /// while the app, an agent and a job effect name the app's own id. Both
+    /// name the same resource, so either side resolves to the alias that
+    /// carries it now. `None` when nothing here carries it, or when more
+    /// than one could.
     #[must_use]
     pub fn current_resource<'a>(&'a self, resource: &'a str, action: &str) -> Option<&'a str> {
         let carries = |descriptor: &&PublishedAction| descriptor.action == action;
@@ -59,9 +63,6 @@ impl PublishedSurface {
             .any(|descriptor| descriptor.resource == resource)
         {
             return Some(resource);
-        }
-        if !resource.starts_with(tilo_actions::BOUND_RESOURCE_PREFIX) {
-            return None;
         }
         let logical = tilo_actions::selection::logical_resource_id(resource);
         let mut now = self.actions.iter().filter(carries).filter(|descriptor| {

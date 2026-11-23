@@ -187,6 +187,16 @@ impl PublishedAction {
         Ok(())
     }
 
+    /// The resource's own id, not the transport alias the window published
+    /// it under ([`ActionDescriptor::domain_resource`]).
+    #[must_use]
+    pub fn domain_resource(&self) -> &str {
+        self.semantic_identity
+            .as_ref()
+            .filter(|identity| identity.is_valid())
+            .map_or(self.resource.as_str(), |identity| identity.key.as_str())
+    }
+
     /// The typed descriptor this action publishes, run at `locus`: the wire
     /// carries no locus of its own.
     pub fn descriptor(&self, locus: ExecutionLocus) -> ActionDescriptor {

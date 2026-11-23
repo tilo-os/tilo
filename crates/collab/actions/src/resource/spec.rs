@@ -95,6 +95,17 @@ impl ResourceSpec {
         self.app_id.as_deref()
     }
 
+    /// The resource's own id, not the transport alias a window published it
+    /// under ([`Self::semantic_identity`]): what its app and the directory
+    /// naming it offer it at, whatever alias the broker delivers it under.
+    #[must_use]
+    pub fn domain_name(&self) -> &str {
+        self.semantic_identity
+            .as_ref()
+            .filter(|identity| identity.is_valid())
+            .map_or(self.id.as_str(), |identity| identity.key.as_str())
+    }
+
     #[must_use]
     pub fn with_presentation(mut self, presentation: ResourcePresentation) -> Self {
         self.presentation = presentation.is_valid().then_some(presentation);

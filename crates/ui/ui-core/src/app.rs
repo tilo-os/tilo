@@ -1544,20 +1544,11 @@ impl App {
             &self.state.doc,
             &wanted,
         );
+        // Keyed by the resource as this publication names it; the address is
+        // the resource's own, as the directory offers and resolves it.
         all.into_iter()
-            .zip(targets)
             .zip(found)
-            .filter_map(|((id, target), address)| {
-                let mut address = address?;
-                if let Some(target) = &target {
-                    address.resource = self
-                        .actions
-                        .bound_publication
-                        .alias(&target.binding, &address.resource)
-                        .ok()?;
-                }
-                Some((id.to_owned(), address))
-            })
+            .filter_map(|(id, address)| Some((id.to_owned(), address?)))
             .collect()
     }
 
@@ -1579,16 +1570,6 @@ impl App {
                 target.address.address.resource.as_str()
             }),
         )
-        .and_then(|mut address| {
-            if let Some(target) = &target {
-                address.resource = self
-                    .actions
-                    .bound_publication
-                    .alias(&target.binding, &address.resource)
-                    .ok()?;
-            }
-            Some(address)
-        })
     }
 
     fn directory_descriptor(
@@ -1599,7 +1580,7 @@ impl App {
             did: action.did.clone(),
             state: action.state.clone(),
             semantic_identity: resource.semantic_identity.clone(),
-            address: tilo_actions::ActionAddress::new(resource.id.as_str(), &action.id),
+            address: tilo_actions::ActionAddress::new(resource.domain_name(), &action.id),
             resource_kind: resource.kind.clone(),
             resource_label: resource.label.clone(),
             action_label: action.label.clone(),

@@ -315,6 +315,54 @@ fn the_root_offers_every_action_main_offered() {
     );
 }
 
+/// A session publishes a Rust app's resources under a transport alias,
+/// `tilo-ui-bound:v1:<host>:<instance>:<hex of the app's own id>`, while the
+/// app, its directory and the follow-ups its effects submit name them by that
+/// own id. Settings' root stays offered at `settings.root`, and its actions —
+/// `choose-language` among them, a job whose follow-up names the root — are
+/// found there and run.
+#[test]
+fn the_root_stays_offered_at_the_apps_own_id_though_the_session_aliases_it() {
+    let mut app = TestApp::<SettingsShell>::new().expect("settings opens headlessly");
+    app.settle();
+    let surface = app.agent_surface();
+    let choose = surface
+        .as_array()
+        .expect("the agent surface is a list")
+        .iter()
+        .find(|row| row["resource"] == "settings.root" && row["action"] == "choose-language")
+        .unwrap_or_else(|| panic!("Settings offers choose-language on its root: {surface}"));
+    assert!(
+        choose["params"]
+            .as_array()
+            .expect("choose-language takes params")
+            .iter()
+            .any(|param| param["name"] == "language"),
+        "choose-language names the language it takes: {choose}"
+    );
+    // The alias a session published the same root under decodes back to the
+    // app's own id, so a follow-up naming `settings.root` names the resource
+    // it published.
+    let alias = format!(
+        "{}session:window:{}",
+        ui::tilo_actions::BOUND_RESOURCE_PREFIX,
+        hex::encode("settings.root")
+    );
+    assert_eq!(
+        &*ui::tilo_actions::logical_resource_id(&alias),
+        "settings.root"
+    );
+    // The job runs when the app's own address is invoked, as the broker
+    // delivers it after resolving that alias.
+    app.call_on(
+        "settings.root",
+        "choose-language",
+        serde_json::json!({ "language": "device" }),
+    )
+    .expect("the root's job effect runs at the app's own id");
+    app.settle();
+}
+
 #[test]
 fn every_pane_publishes_a_surface_that_passes_contract_validation() {
     let mut app = TestApp::<SettingsShell>::new().expect("settings opens headlessly");

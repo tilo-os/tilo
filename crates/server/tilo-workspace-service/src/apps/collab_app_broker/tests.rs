@@ -593,6 +593,11 @@ impl LocalDirectoryFixture {
             .map(|invocation| (invocation.id, invocation.invocation))
     }
 
+    /// The invocation the broker delivered to this app's connection, whole.
+    pub fn take_invocation(&mut self) -> Option<InvocationEnvelope> {
+        self.invocation_rx.try_recv().ok()
+    }
+
     /// Drive `pending` until the broker answers it, taking the broker's
     /// turn each pass: a journal write resolves on its own writer thread
     /// and hands its answer to the turn, which nothing else takes here.

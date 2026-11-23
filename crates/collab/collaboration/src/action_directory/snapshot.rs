@@ -49,13 +49,15 @@ impl Eq for ActionDirectorySnapshot {}
 /// carried a resource view: the broker proves a view's mount and range
 /// bindings against the actions on the same page, which a bounded page
 /// cannot promise, so views reach the shell through the published
-/// surface instead.
+/// surface instead. The row names the resource by its own id, not the
+/// transport alias a window published it under, so a caller addresses what
+/// it finds as the app and the broker do.
 #[must_use]
 pub fn exported_directory_action(descriptor: &ActionDescriptor) -> runtime_collab::ExportedAction {
-    runtime_collab::ExportedAction {
-        view: None,
-        ..runtime_collab::ExportedAction::from(descriptor)
-    }
+    let mut exported = runtime_collab::ExportedAction::from(descriptor);
+    exported.resource = descriptor.domain_resource().to_owned();
+    exported.view = None;
+    exported
 }
 
 struct Builder<'a, F> {
@@ -74,11 +76,12 @@ impl<F: Fn(&ResourceSpec) -> Option<ActionAddress>> Builder<'_, F> {
         depth: usize,
     ) -> (Vec<ActionDirectoryRow>, Option<usize>) {
         self.effective.resource(resource);
+        let name = resource.domain_name();
         let start = self.offset;
         let mut actions = Vec::new();
         let mut first_view: Option<usize> = None;
         for action in &resource.actions {
-            let address = ActionAddress::new(resource.id.as_str(), &action.id);
+            let address = ActionAddress::new(name, &action.id);
             if let Some(index) = self.by_address.get(&address).copied()
                 && let Some(descriptor) = self.descriptors.get(index)
             {
@@ -93,11 +96,11 @@ impl<F: Fn(&ResourceSpec) -> Option<ActionAddress>> Builder<'_, F> {
                     // provider path does too.
                     first_view = Some(index);
                 }
-                self.effective.action(resource.id.as_str(), action);
+                self.effective.action(name, action);
                 let exported = exported_directory_action(descriptor);
                 let row = ActionDirectoryRow {
-                    parent_resource: resource.id.as_str().to_owned(),
-                    resource: descriptor.address.resource.clone(),
+                    parent_resource: name.to_owned(),
+                    resource: descriptor.domain_resource().to_owned(),
                     resource_kind: descriptor.resource_kind.clone(),
                     resource_label: descriptor.resource_label.clone(),
                     presentation: resource
@@ -121,7 +124,7 @@ impl<F: Fn(&ResourceSpec) -> Option<ActionAddress>> Builder<'_, F> {
         }
         let mut children = Vec::new();
         for child in &resource.children {
-            let (exposed, view) = self.node(child, resource.id.as_str(), depth.saturating_add(1));
+            let (exposed, view) = self.node(child, name, depth.saturating_add(1));
             first_view = first_view.or(view);
             children.extend(exposed);
         }
@@ -138,7 +141,7 @@ impl<F: Fn(&ResourceSpec) -> Option<ActionAddress>> Builder<'_, F> {
             if let Some(descriptor) = visible.and_then(|index| self.descriptors.get(index)) {
                 vec![ActionDirectoryRow {
                     parent_resource: parent.to_owned(),
-                    resource: resource.id.as_str().to_owned(),
+                    resource: name.to_owned(),
                     resource_kind: resource.kind.clone(),
                     resource_label: resource.label.clone(),
                     presentation: resource
@@ -166,7 +169,7 @@ impl<F: Fn(&ResourceSpec) -> Option<ActionAddress>> Builder<'_, F> {
             };
         actions.extend(children);
         self.snapshot.nodes.insert(
-            resource.id.as_str().to_owned(),
+            name.to_owned(),
             DirectoryNode {
                 rows: actions,
                 depth,
@@ -293,7 +296,15 @@ impl ActionDirectorySnapshot {
             by_address: descriptors
                 .iter()
                 .enumerate()
-                .map(|(index, descriptor)| (descriptor.address.clone(), index))
+                .map(|(index, descriptor)| {
+                    (
+                        ActionAddress::new(
+                            descriptor.domain_resource(),
+                            &descriptor.address.action,
+                        ),
+                        index,
+                    )
+                })
                 .collect(),
             offset: 0,
             visibility,

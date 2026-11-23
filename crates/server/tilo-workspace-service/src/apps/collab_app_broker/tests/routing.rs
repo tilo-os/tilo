@@ -83,6 +83,88 @@ async fn ordinary_person_requested_uuid_survives_actual_delivery_and_completion(
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn an_effects_follow_up_names_the_root_its_window_published_under_an_alias() {
+    use tilo_actions::remote::{
+        Caller, InvokeArgument, InvokeRequest, OWN_PROVIDER, RemoteActionTarget,
+    };
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut fixture = local_directory_fixture();
+            // A Rust app publishes its root only under the window's transport
+            // alias, while the app, its directory and the effect it runs name it
+            // by its own id. The broker resolves one to the other.
+            let logical = "workspace:atlas";
+            let alias = format!(
+                "{}fixture-host:root:{}",
+                tilo_actions::BOUND_RESOURCE_PREFIX,
+                hex::encode(logical)
+            );
+            let mut published = published_directory_action(&fixture.directory_state.borrow().row())
+                .expect("the directory's row names an action");
+            published.resource.clone_from(&alias);
+            published.semantic_identity = tilo_actions::ResourceSemanticIdentity::new(
+                published.resource_kind.clone(),
+                logical,
+            );
+            assert_eq!(published.domain_resource(), logical);
+            let surface = PublishedSurface {
+                peer_id: fixture.peer_id,
+                app_id: fixture.route.app_id.clone(),
+                route: fixture.route.clone(),
+                actions: vec![published],
+                live: true,
+            };
+            assert_eq!(
+                surface.current_resource(logical, "open"),
+                Some(alias.as_str()),
+                "the app's own id resolves to the alias carrying its action"
+            );
+            fixture
+                .state
+                .publishers
+                .surfaces
+                .lock()
+                .unwrap()
+                .insert(fixture.peer_id, surface);
+            let caller =
+                Caller::local_person("fixture-owner").in_workspace(fixture.cluster_id.clone());
+            let request = InvokeRequest {
+                invocation: tilo_actions::InvocationId::new(),
+                target: RemoteActionTarget {
+                    provider: OWN_PROVIDER.into(),
+                    address: tilo_actions::ActionAddress::new(logical, "open"),
+                },
+                argument: InvokeArgument::None,
+                context: None,
+                confirmation: None,
+                revision: None,
+                on_behalf_of: None,
+                wait_ms: None,
+                appearance: None,
+                signed: None,
+            };
+            let pending =
+                fixture
+                    .state
+                    .action_invoke(&caller, Some(fixture.peer_id), None, &request);
+            let receipt = fixture
+                .drive(pending)
+                .await
+                .expect("the action of the app's own root is admitted");
+            assert_eq!(receipt.invocation, request.invocation);
+            let delivered = fixture
+                .take_invocation()
+                .expect("the app's connection is sent the action");
+            assert_eq!(
+                delivered.resource, alias,
+                "the app receives the resource under the alias it published"
+            );
+            assert_eq!(delivered.action, "open");
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn a_connection_calls_its_own_person_what_the_member_list_calls_them() {
     struct NativeWorkspace(String);
     impl crate::apps::services::WorkspaceMemberships for NativeWorkspace {
@@ -498,11 +580,19 @@ tilo_test_env::scenario! {
             Some(now.as_str())
         );
         assert_eq!(surface.current_resource(&before, "close"), None);
-        assert_eq!(surface.current_resource("composer", "open"), None);
+        // The app, its directory and a job effect name the resource by its
+        // own id; the one alias carrying the action answers for it.
+        assert_eq!(
+            surface.current_resource("composer", "open"),
+            Some(now.as_str())
+        );
+        assert_eq!(surface.current_resource("composer", "close"), None);
+        assert_eq!(surface.current_resource("elsewhere", "open"), None);
         let mut twice = surface.actions[0].clone();
         twice.resource = alias("3");
         surface.actions.push(twice);
         assert_eq!(surface.current_resource(&before, "open"), None);
+        assert_eq!(surface.current_resource("composer", "open"), None);
     }
 
     phase exact_published_action_uses_current_live_routes_before_archived_descriptors;
