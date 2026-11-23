@@ -368,9 +368,18 @@ impl WorkspaceActions {
         let _ = self.submit(Job::Landed(workspace_id, route));
     }
 
-    /// Stop the service thread; later requests are refused as unavailable.
+    /// Stop the service's threads: each finishes the request it serves and
+    /// ends, and this returns once they have. Later requests are refused as
+    /// unavailable.
+    ///
+    /// Call it while the runtime the service works on is still running: a
+    /// thread left in a request there would finish it on a runtime that is
+    /// stopping, which has no timer or read to give it.
     pub fn shutdown(&self) {
-        self.shared.jobs.lock_recover().take();
+        let jobs = self.shared.jobs.lock_recover().take();
+        if let Some(jobs) = jobs {
+            jobs.stop();
+        }
     }
 
     /// Whether `caller` is the host's own person, or an agent one of their
@@ -2518,6 +2527,8 @@ impl joining::Holder for Worker {
     }
 }
 
+#[cfg(test)]
+mod jobs_tests;
 #[cfg(test)]
 mod tests;
 

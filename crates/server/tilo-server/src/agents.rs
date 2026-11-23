@@ -703,6 +703,10 @@ impl crate::app_serving::AppPages for ActionPages {
 }
 
 impl crate::AppActionServer for WorkspaceActionsServer {
+    fn shutdown(&self) {
+        self.actions.shutdown();
+    }
+
     fn serve(
         &self,
         workspace_id: WorkspaceId,

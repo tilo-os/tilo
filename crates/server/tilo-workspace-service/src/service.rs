@@ -399,10 +399,15 @@ impl ServiceSessions {
         .await
     }
 
-    /// End every in-process session.
+    /// End every in-process session and stop what answered for them: the app
+    /// action server the embedder brought stops here, while the runtime its
+    /// threads work on still runs.
     pub fn shutdown(&self) {
         self.closing.send_replace(true);
         self.membership_watch.stop();
+        if let Some(answers) = &self.handler.app_serving {
+            answers.shutdown();
+        }
     }
 }
 

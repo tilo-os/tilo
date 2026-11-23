@@ -3442,6 +3442,12 @@ impl GovernedServer {
 }
 
 impl AppActionServer for GovernedServer {
+    fn shutdown(&self) {
+        if let Some(apps) = &self.apps {
+            apps.shutdown();
+        }
+    }
+
     fn answers(&self, caller: &Caller, message: &RemoteActionMessage) -> bool {
         self.governs(caller, message)
             || self

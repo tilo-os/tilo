@@ -1,9 +1,10 @@
 //! Where the service's requests go: each workspace's to the one thread that
 //! serves it.
 
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::Instant;
 
+use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
 
 use super::{CatalogueFactory, Job, Shared, Worker, WorkspaceDocumentsLink};
@@ -42,7 +43,21 @@ impl Job {
 /// other workspaces' run beside them.
 #[derive(Clone)]
 pub(super) struct Jobs {
-    shards: Arc<[mpsc::Sender<(Instant, Job)>]>,
+    inner: Arc<Inner>,
+}
+
+/// A request waiting for a thread, and when it came.
+type Queued = (Instant, Job);
+
+/// One thread's queue of requests.
+type Queue = mpsc::Sender<Queued>;
+
+struct Inner {
+    /// Each thread's queue. Empty once the service stopped: every thread then
+    /// sees its queue close, serves what waits and ends.
+    shards: Mutex<Arc<[Queue]>>,
+    /// The threads the queues are served on, taken to join them once stopped.
+    threads: Mutex<Option<Vec<std::thread::JoinHandle<()>>>>,
 }
 
 impl Jobs {
@@ -59,22 +74,28 @@ impl Jobs {
         link: &Arc<dyn WorkspaceDocumentsLink>,
     ) -> Result<Self, String> {
         let mut shards = Vec::new();
+        let mut threads = Vec::new();
         for index in 0..crate::worker::pool_size() {
             let (sender, jobs) = mpsc::channel();
             let shared = Arc::clone(shared);
             let catalogue = Arc::clone(catalogue);
             let link = Arc::clone(link);
-            std::thread::Builder::new()
-                .name(format!("workspace-actions-{index}"))
-                .spawn(move || {
-                    crate::worker::set_affinity(index);
-                    Worker::new(link.as_ref(), catalogue(), shared).run(&jobs);
-                })
-                .map_err(|error| error.to_string())?;
+            threads.push(
+                std::thread::Builder::new()
+                    .name(format!("workspace-actions-{index}"))
+                    .spawn(move || {
+                        crate::worker::set_affinity(index);
+                        Worker::new(link.as_ref(), catalogue(), shared).run(&jobs);
+                    })
+                    .map_err(|error| error.to_string())?,
+            );
             shards.push(sender);
         }
         Ok(Self {
-            shards: shards.into(),
+            inner: Arc::new(Inner {
+                shards: Mutex::new(shards.into()),
+                threads: Mutex::new(Some(threads)),
+            }),
         })
     }
 
@@ -87,11 +108,48 @@ impl Jobs {
         clippy::result_large_err,
         reason = "a job the thread cannot take goes back to its sender whole"
     )]
-    pub(super) fn send(&self, job: (Instant, Job)) -> Result<(), mpsc::SendError<(Instant, Job)>> {
-        let index = shard_of(job.1.served_in(), self.shards.len());
-        match self.shards.get(index) {
+    pub(super) fn send(&self, job: Queued) -> Result<(), mpsc::SendError<Queued>> {
+        let shards = self.inner.shards.lock_recover();
+        let index = shard_of(job.1.served_in(), shards.len());
+        match shards.get(index) {
             Some(shard) => shard.send(job),
             None => Err(mpsc::SendError(job)),
+        }
+    }
+
+    /// Stop the service's threads: each serves what waits and ends, and this
+    /// returns once they have.
+    ///
+    /// Every queue is closed before the join, so a thread in the middle of a
+    /// request finishes it and the request behind it finds no queue: no
+    /// thread starts one on a runtime that is stopping. The caller must
+    /// still be on the runtime those threads work on, since a thread waiting
+    /// for it never ends for this to return.
+    pub(super) fn stop(&self) {
+        let shards = std::mem::replace(
+            &mut *self.inner.shards.lock_recover(),
+            Arc::from(Vec::<Queue>::new()),
+        );
+        // Every sender the service started goes here, and copies kept by the
+        // commands it runs find none: each thread sees its queue close.
+        drop(shards);
+        let threads = self.inner.threads.lock_recover().take();
+        let join = move || {
+            for thread in threads.into_iter().flatten() {
+                let _ = thread.join();
+            }
+        };
+        match tokio::runtime::Handle::try_current() {
+            // A thread of the runtime is handed off, so the runtime's other
+            // threads can work what the threads being joined wait on.
+            Ok(runtime)
+                if runtime.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread =>
+            {
+                tokio::task::block_in_place(join);
+            }
+            // Off any runtime this thread is the join, and a runtime of one
+            // thread has no other to keep working.
+            _ => join(),
         }
     }
 }
