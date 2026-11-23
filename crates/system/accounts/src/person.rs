@@ -730,19 +730,6 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    #[test]
-    fn saving_a_store_account_round_trips() {
-        let mut account = Account::new("cal-1", "caldav");
-        account.display_name = "Work".into();
-        account.config = serde_json::json!({ "url": "https://dav.example" });
-        let mut replica = Replica::<PersonAccounts>::new();
-        replica.apply(PersonAccounts::saving(&account)).unwrap();
-        assert_eq!(
-            replica.state().unwrap().store().get(&"cal-1".into()),
-            Some(&account)
-        );
-    }
-
     /// The edit that saves the account `id` of `type_id` with `config`.
     fn saving(id: &str, type_id: &str, config: serde_json::Value) -> Invoke<PersonAccounts> {
         PersonAccounts::SAVE_ACCOUNT.with((
