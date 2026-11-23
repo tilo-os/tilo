@@ -42,6 +42,7 @@ runtime library and libstd). tools/screenshots/build.sh builds both.
 from __future__ import annotations
 
 import argparse
+import base64
 import concurrent.futures
 import datetime
 import json
@@ -109,8 +110,9 @@ class Plan:
     app_id: str
     situations: list
     # What the person already has in their home before the app opens:
-    # files (`[[file]]`: path, text) and git repositories (`[[repository]]`:
-    # path, commits of message and files, branches, uncommitted changes).
+    # files (`[[file]]`: path, and text or base64 for what is not text) and
+    # git repositories (`[[repository]]`: path, commits of message and files,
+    # branches, uncommitted changes).
     # Steps name them under `${HOME}`.
     files: list = field(default_factory=list)
     repositories: list = field(default_factory=list)
@@ -179,6 +181,13 @@ def load_plan(entry: dict) -> Plan:
         relative = Path(item.get("path", ""))
         if not item.get("path") or relative.is_absolute() or ".." in relative.parts:
             raise ValueError(f"{path}: a home item's path is relative to the home: {item!r}")
+    for item in files:
+        if "base64" not in item:
+            continue
+        try:
+            base64.b64decode(item["base64"], validate=True)
+        except (ValueError, TypeError) as error:
+            raise ValueError(f"{path}: a seeded file's base64 does not decode: {error}") from error
     return Plan(
         entry["name"], entry["binary"], entry.get("id", entry["name"]), situations,
         files, repositories, sizes, entry["kind"] == "tilolang",
@@ -190,7 +199,10 @@ def seed_home(plan: Plan, home: Path, env: dict) -> None:
     for item in plan.files:
         target = home / item["path"]
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(item.get("text", ""))
+        if "base64" in item:
+            target.write_bytes(base64.b64decode(item["base64"]))
+        else:
+            target.write_text(item.get("text", ""))
     git_env = {**env, "GIT_AUTHOR_DATE": "2026-06-30T09:00:00", "GIT_COMMITTER_DATE": "2026-06-30T09:00:00"}
 
     def git(repo: Path, *argv: str) -> None:
