@@ -200,6 +200,8 @@ pub use crate::documents::device_keys::{
 };
 #[cfg(all(any(test, feature = "test-support"), feature = "agents"))]
 pub use sealed_documents::fixtures as sealed_fixtures;
+#[cfg(test)]
+mod copy_now_tests;
 mod desktop_document;
 #[cfg(test)]
 mod governed_grants_tests;
@@ -215,6 +217,7 @@ pub use person_resources::{Holds, PersonResources};
 // The person's region and formats and their zone: what a view rendered here for them shows
 // dates in.
 mod readings;
+pub use readings::HeldCopy;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod region;
 pub mod servers;

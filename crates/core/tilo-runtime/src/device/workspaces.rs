@@ -430,9 +430,14 @@ impl ServiceWorkspaces {
     }
 
     /// Whether this profile holds `workspace` as a member copy.
+    ///
+    /// These readers are called synchronously, from the app runtime's one thread too (a search
+    /// asks the action catalogue, which asks which workspaces are held): they read what the
+    /// service holds now and never wait on that runtime, which would then wait on itself.
     pub(crate) fn holds(&self, workspace: WorkspaceId) -> bool {
-        let copies = self.copies().clone();
-        block_on_owned(async move { copies.member_ids().await.contains(&workspace) })
+        self.copies()
+            .copy_now(workspace)
+            .is_some_and(|copy| copy.member)
     }
 
     /// Whether this device keeps `workspace`: its member copy, or the workspace founded here.
@@ -448,48 +453,29 @@ impl ServiceWorkspaces {
     ) -> impl Fn() -> Option<tilo_action_policy::WorkspacePolicy> + Send + Sync + 'static {
         let copies = self.copies().clone();
         move || {
-            let copies = copies.clone();
-            block_on_owned(async move { copy_of(&copies, workspace).await })
-                .and_then(|(_, peer)| peer.governance().governed_policy().ok())
+            copies
+                .copy_now(workspace)
+                .and_then(|copy| copy.peer.governance().governed_policy().ok())
         }
     }
 
     /// `workspace`'s replica as this device holds it: its member copy, or the
     /// workspace the service governs here.
     pub(crate) fn peer(&self, workspace: WorkspaceId) -> Option<StatePeer> {
-        let copies = self.copies().clone();
-        block_on_owned(async move { copy_of(&copies, workspace).await.map(|(_, peer)| peer) })
+        self.copies().copy_now(workspace).map(|copy| copy.peer)
     }
 
     /// The workspaces this device holds, each with the name its governance gives it and the
     /// copy it keeps: the workspaces served from here first, then the ones it takes part in.
     pub(crate) fn held(&self) -> Vec<(WorkspaceId, String, StatePeer)> {
-        let workspaces = self.copies().clone();
-        block_on_owned(async move {
-            let members = workspaces.member_ids().await;
-            let mut ids = workspaces.ids().await;
-            ids.sort_by_key(|workspace| members.contains(workspace));
-            let mut held = Vec::new();
-            for workspace in ids {
-                if let Some((name, peer)) = copy_of(&workspaces, workspace).await {
-                    held.push((workspace, name, peer));
-                }
-            }
-            // The workspaces this device keeps for its person, the one it founded and every one they
-            // made here: a workspace it keeps is this device's too, not only a member copy of
-            // another's.
-            let mut held_ids: std::collections::HashSet<WorkspaceId> =
-                held.iter().map(|(workspace, _, _)| *workspace).collect();
-            for summary in workspaces.list().await {
-                if !held_ids.insert(summary.workspace_id) {
-                    continue;
-                }
-                if let Some((name, peer)) = copy_of(&workspaces, summary.workspace_id).await {
-                    held.push((summary.workspace_id, name, peer));
-                }
-            }
-            held
-        })
+        // Read without waiting on any workspace's lock or the runtime that serves them: a
+        // workspace busy taking in a flood of changes is still listed.
+        let mut copies = self.copies().copies_now();
+        copies.sort_by_key(|(_, copy)| copy.member);
+        copies
+            .into_iter()
+            .map(|(workspace, copy)| (workspace, copy.name, copy.peer))
+            .collect()
     }
 
     /// Offer the workspaces this device's person makes here as their own, labelled and listed by
@@ -538,11 +524,8 @@ impl ServiceWorkspaces {
 
     /// One workspace as [`Self::workspaces`] describes it, built alone.
     pub(crate) fn workspace(&self, workspace: WorkspaceId) -> Option<Workspace> {
-        let copies = self.copies().clone();
-        block_on_owned(async move {
-            let (name, peer) = copy_of(&copies, workspace).await?;
-            tilo_workspace_service::workspaces::describe(workspace, &name, &peer)
-        })
+        let copy = self.copies().copy_now(workspace)?;
+        tilo_workspace_service::workspaces::describe(workspace, &copy.name, &copy.peer)
     }
 
     /// What this device is to `workspace`, for the workspace's Files endpoint:
