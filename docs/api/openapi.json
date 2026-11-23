@@ -30830,6 +30830,649 @@
         ],
         "description": "Files dropped on the notebook come in one at a time. A Markdown file becomes a note. An\narchive or a Notion page listing becomes the pages it holds, whether the notebook's own\nwritten out or another app's export. One action, so undo takes the whole drop back at once."
       },
+      "tl.so.tilo.playback.Output.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.playback.Output.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "kind",
+              "device",
+              "name"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.playback.Output.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "synced"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.playback.Item.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.playback.Item.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "ref",
+              "title",
+              "artist",
+              "cover",
+              "source"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.playback.Item.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.playback.Progress.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.playback.Progress.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "ref"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.playback.Progress.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.playback.Playback.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.playback.Playback.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "track",
+              "title",
+              "artist",
+              "cover",
+              "source",
+              "repeat"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.playback.Playback.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "shuffle"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.playback.Playback.play_list.Arguments": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "items": {
+              "pick": "resource",
+              "properties": {
+                "app": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "kind": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "record": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "app",
+                "kind",
+                "id",
+                "label"
+              ],
+              "resource_kind": "tl.so.tilo.playback.Item",
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "at": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "description": "Plays the items `items` names, in the order given, from the one at `at`: the queue is what\nfollows, and the item at `at` plays. The app that calls this fills the title, artist, cover,\nsource and length it resolves from its own record; the shared actions below move the queue\nwithout reading another app's records."
+      },
+      "tl.so.tilo.playback.Playback.set_current.Arguments": {
+        "type": "object",
+        "properties": {
+          "item": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.playback.Item",
+            "type": "object"
+          }
+        },
+        "required": [
+          "item"
+        ],
+        "description": "The session shows `item`: its fields are the item's, so a shared next or previous never\nleaves the title, cover or source of the one before it."
+      },
+      "tl.so.tilo.playback.Playback.set_playing.Arguments": {
+        "type": "object",
+        "properties": {
+          "on": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "on"
+        ],
+        "description": "Plays or pauses what plays, as a player's own control and a media key ask it."
+      },
+      "tl.so.tilo.playback.Playback.set_length.Arguments": {
+        "type": "object",
+        "properties": {
+          "seconds": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "seconds"
+        ],
+        "description": "What the player reports of its length, once the decoder knows it."
+      },
+      "tl.so.tilo.playback.Playback.remember_position.Arguments": {
+        "type": "object",
+        "properties": {
+          "seconds": {
+            "type": "number"
+          },
+          "when": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "seconds",
+          "when"
+        ],
+        "description": "Keeps the session's place and the item's as `when` records them. It has no effect of its own,\nso an app's action that plays can call it inline: an action that needs a moment is a step of\nits own, which a nested call only suggests."
+      },
+      "tl.so.tilo.playback.Playback.set_position.Arguments": {
+        "type": "object",
+        "properties": {
+          "seconds": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "seconds"
+        ],
+        "description": "Where the player stands, as it reports it, so a later opening resumes there: the session's\nplace and the item's, kept so another device or a later opening continues from it."
+      },
+      "tl.so.tilo.playback.Playback.set_share.Arguments": {
+        "type": "object",
+        "properties": {
+          "share": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "share"
+        ],
+        "description": "Where the player stands, as the share of its length a player reports (`0..=1`), kept so a\nlater opening resumes there."
+      },
+      "tl.so.tilo.playback.Playback.resume.Arguments": {
+        "type": "object",
+        "properties": {
+          "ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref"
+        ],
+        "description": "Moves what plays to where `ref` was left, so a video or a song continues where the person\nstopped instead of beginning again."
+      },
+      "tl.so.tilo.playback.Playback.play.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Plays what is chosen, or begins again where it stands."
+      },
+      "tl.so.tilo.playback.Playback.toggle.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Plays or pauses what plays."
+      },
+      "tl.so.tilo.playback.Playback.pause.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Pauses what plays and starts it again where it stood ([`toggle`]'s own job)."
+      },
+      "tl.so.tilo.playback.Playback.next.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The item after this one: the queue's next, or the first when repeat is on."
+      },
+      "tl.so.tilo.playback.Playback.previous.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The item before this one."
+      },
+      "tl.so.tilo.playback.Playback.select.Arguments": {
+        "type": "object",
+        "properties": {
+          "at": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "at"
+        ],
+        "description": "Plays the queued item at `at`, keeping the queue as it stands."
+      },
+      "tl.so.tilo.playback.Playback.seek_by.Arguments": {
+        "type": "object",
+        "properties": {
+          "seconds": {
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "description": "Moves what plays by `seconds`, for the live card's two seek controls."
+      },
+      "tl.so.tilo.playback.Playback.seek.Arguments": {
+        "type": "object",
+        "properties": {
+          "place": {
+            "type": "number"
+          }
+        },
+        "required": [],
+        "description": "Moves what plays to `place`, a fraction of its length, and keeps the place so a later\nopening continues there."
+      },
+      "tl.so.tilo.playback.Playback.set_volume.Arguments": {
+        "type": "object",
+        "properties": {
+          "level": {
+            "type": "number"
+          }
+        },
+        "required": [],
+        "description": "How loud the session is."
+      },
+      "tl.so.tilo.playback.Playback.mute.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Silences the session, or brings back the volume it had."
+      },
+      "tl.so.tilo.playback.Playback.shuffle_toggle.Arguments": {
+        "type": "object",
+        "properties": {
+          "shuffle": {
+            "type": "boolean"
+          }
+        },
+        "required": [],
+        "description": "Shuffles the queue, or puts its order back. The item that plays stays first."
+      },
+      "tl.so.tilo.playback.Playback.cycle_repeat.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Moves repeat on: off, all, one."
+      },
+      "tl.so.tilo.playback.Playback.queue_add.Arguments": {
+        "type": "object",
+        "properties": {
+          "item": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.playback.Item",
+            "type": "object"
+          }
+        },
+        "required": [
+          "item"
+        ],
+        "description": "Adds `item` after what plays."
+      },
+      "tl.so.tilo.playback.Playback.queue_play_next.Arguments": {
+        "type": "object",
+        "properties": {
+          "item": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.playback.Item",
+            "type": "object"
+          }
+        },
+        "required": [
+          "item"
+        ],
+        "description": "Adds `item` right after what plays."
+      },
+      "tl.so.tilo.playback.Playback.queue_remove.Arguments": {
+        "type": "object",
+        "properties": {
+          "index": {
+            "type": "integer"
+          },
+          "queue_at": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "index"
+        ],
+        "description": "Takes the item at `index` out of the queue."
+      },
+      "tl.so.tilo.playback.Playback.queue_move.Arguments": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "description": "Moves the item called `from` to stand where `to` stands: the queue row a person dragged,\nand the ids its reorder reports."
+      },
+      "tl.so.tilo.playback.Playback.add_output.Arguments": {
+        "type": "object",
+        "properties": {
+          "output": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.playback.Output",
+            "type": "object"
+          }
+        },
+        "required": [
+          "output"
+        ],
+        "description": "Puts the sound on one more place: a speaker in a room, or a cast target."
+      },
+      "tl.so.tilo.playback.Playback.remove_output.Arguments": {
+        "type": "object",
+        "properties": {
+          "index": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "index"
+        ],
+        "description": "Takes the place at `index` out of the session; this device is never taken out."
+      },
+      "tl.so.tilo.playback.Playback.move_to.Arguments": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "integer"
+          },
+          "to": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "description": "Moves the place at `from` to where `to` is: \"continue on the speaker\" is moving the session\nfrom this device to it."
+      },
+      "tl.so.tilo.playback.Playback.set_output_volume.Arguments": {
+        "type": "object",
+        "properties": {
+          "index": {
+            "type": "integer"
+          },
+          "level": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "index"
+        ],
+        "description": "Sets how loud the place at `index` is."
+      },
       "tl.so.tilo.shell.Shell.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -33950,6 +34593,9 @@
               "description",
               "thumbnail",
               "stream",
+              "caption_language",
+              "captions",
+              "quality",
               "found_for"
             ],
             "type": "string"
@@ -34035,11 +34681,35 @@
         ],
         "description": "Records how far into the video the person is, and that they watched it now: it moves to the\nfront of the history, and asks the service for the address its bytes play from when that is\nnot known yet. Starting a video, resuming it and moving the playhead as it plays are one\naction, so a video has one place it is played from."
       },
+      "tl.so.tilo.tube.Video.play_at_quality.Arguments": {
+        "type": "object",
+        "properties": {
+          "chosen": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "chosen"
+        ],
+        "description": "Plays the video at another of its qualities, from the place it was at: the view plays the\naddress that quality has."
+      },
+      "tl.so.tilo.tube.Video.show_captions.Arguments": {
+        "type": "object",
+        "properties": {
+          "language": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "language"
+        ],
+        "description": "Shows the video's words in `language`, or turns them off when it is empty: the service fetches\nthe track's words, which the player draws as the video reaches them."
+      },
       "tl.so.tilo.tube.Video.forget.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Takes one video out of the person's own history."
+        "description": "Takes one video out of the history."
       },
       "tl.so.tilo.tube.Video.retry_playback.Arguments": {
         "type": "object",
@@ -34377,6 +35047,18 @@
         "required": [],
         "description": "Plays the queue from its oldest video: what was put on it first plays first."
       },
+      "tl.so.tilo.tube.YouTube.set_rate.Arguments": {
+        "type": "object",
+        "properties": {
+          "speed": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "speed"
+        ],
+        "description": "Takes one video out of the person's own history.\n\nPlays videos at `speed`: a slower read for a dense talk, a quicker one for a long report."
+      },
       "tl.so.tilo.tube.YouTube.delete_history.Arguments": {
         "type": "object",
         "properties": {},
@@ -34499,6 +35181,592 @@
           "h"
         ],
         "description": "Plays the video a history entry names, from where the person left off."
+      },
+      "tl.so.tilo.video.Clip.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.video.Clip.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "title",
+              "source"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.video.Clip.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.video.Clip.toggle_playing.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Plays or pauses the session when it is showing `c`: what the P key and the window's player\ncontrol run, without needing the root passed in."
+      },
+      "tl.so.tilo.video.Playlist.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.video.Playlist.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "name"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.video.Playlist.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.video.PlaylistEntry.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.video.PlaylistEntry.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.video.PlaylistEntry.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.video.Bookmark.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.video.Bookmark.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "text"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.video.Bookmark.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.video.Library.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.video.Library.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.video.Library.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.video.Library.open_video.Arguments": {
+        "type": "object",
+        "properties": {
+          "file": {}
+        },
+        "required": [
+          "file"
+        ],
+        "description": "Opens a video file: the file a person picked, or one Files handed over, and plays it where it\nwas left. The clip it already made opens instead of a second copy, so its place in history\nstays one."
+      },
+      "tl.so.tilo.video.Library.create_playlist.Arguments": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "description": "Starts an empty playlist."
+      },
+      "tl.so.tilo.video.Library.delete_playlist.Arguments": {
+        "type": "object",
+        "properties": {
+          "pl": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.video.Playlist",
+            "type": "object"
+          }
+        },
+        "required": [
+          "pl"
+        ],
+        "description": "Deletes a playlist and the entries that name it."
+      },
+      "tl.so.tilo.video.Library.add_to_playlist.Arguments": {
+        "type": "object",
+        "properties": {
+          "pl": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.video.Playlist",
+            "type": "object"
+          },
+          "c": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.video.Clip",
+            "type": "object"
+          }
+        },
+        "required": [
+          "pl",
+          "c"
+        ],
+        "description": "Adds `c` to `pl`, once."
+      },
+      "tl.so.tilo.video.Library.add_to_watch_later.Arguments": {
+        "type": "object",
+        "properties": {
+          "c": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.video.Clip",
+            "type": "object"
+          }
+        },
+        "required": [
+          "c"
+        ],
+        "description": "Keeps `c` to watch later, once."
+      },
+      "tl.so.tilo.video.Library.add_bookmark.Arguments": {
+        "type": "object",
+        "properties": {
+          "c": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.video.Clip",
+            "type": "object"
+          },
+          "at": {
+            "type": "number"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "c",
+          "at"
+        ],
+        "description": "Bookmarks the moment `at` of `c`, with `text` when the person wrote something."
+      },
+      "tl.so.tilo.video.Library.delete_bookmark.Arguments": {
+        "type": "object",
+        "properties": {
+          "b": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.video.Bookmark",
+            "type": "object"
+          }
+        },
+        "required": [
+          "b"
+        ],
+        "description": "Deletes a bookmark or note."
+      },
+      "tl.so.tilo.video.Library.open_dropped.Arguments": {
+        "type": "object",
+        "properties": {
+          "files": {
+            "items": {},
+            "type": "array"
+          }
+        },
+        "required": [
+          "files"
+        ],
+        "description": "Opens the videos a person dropped on the window: each file becomes its clip, and the first\nplays in the shared session."
+      },
+      "tl.so.tilo.video.Library.session.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The session this app plays through: the one it has, or one made now. It is kept both in\n`playing`, which a view reads, and in `sessions`, so the record is a resource of its own."
+      },
+      "tl.so.tilo.video.Library.play_clip.Arguments": {
+        "type": "object",
+        "properties": {
+          "c": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.video.Clip",
+            "type": "object"
+          }
+        },
+        "required": [
+          "c"
+        ],
+        "description": "Plays `c` in the shared session, from where it was left (the beginning the first time):\nwhat the window's Play button, the palette and an agent's `play` run. The place is the\nshared session's own record, so the video continues on this device or another."
+      },
+      "tl.so.tilo.video.Library.restart_clip.Arguments": {
+        "type": "object",
+        "properties": {
+          "c": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.video.Clip",
+            "type": "object"
+          }
+        },
+        "required": [
+          "c"
+        ],
+        "description": "Plays `c` from its beginning, as a person who watched it before chooses."
       },
       "tl.so.tilo.lang.views.WrittenView.$create.Arguments": {
         "type": "object",
@@ -41568,6 +42836,264 @@
       "arguments": "#/components/schemas/tl.so.tilo.notes.Notebook.import_dropped.Arguments"
     },
     {
+      "app": "so.tilo.playback",
+      "resource": "tilolang.personal",
+      "action": "view-state",
+      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tilolang.personal",
+      "action": "seen",
+      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tilolang.personal",
+      "action": "seen-runs",
+      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Output",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Output.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Output",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Output.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Output",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Output.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Item",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Item.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Item",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Item.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Item",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Item.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Progress",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Progress.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Progress",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Progress.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Progress",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Progress.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Playback",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Playback.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Playback",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Playback.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Playback",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Playback.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Playback",
+      "action": "play_list",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Playback.play_list.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Playback",
+      "action": "set_current",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Playback.set_current.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Playback",
+      "action": "set_playing",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Playback.set_playing.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Playback",
+      "action": "set_length",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Playback.set_length.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Playback",
+      "action": "remember_position",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Playback.remember_position.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Playback",
+      "action": "set_position",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Playback.set_position.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Playback",
+      "action": "set_share",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Playback.set_share.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Playback",
+      "action": "resume",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Playback.resume.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Playback",
+      "action": "play",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Playback.play.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Playback",
+      "action": "toggle",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Playback.toggle.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Playback",
+      "action": "pause",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Playback.pause.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Playback",
+      "action": "next",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Playback.next.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Playback",
+      "action": "previous",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Playback.previous.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Playback",
+      "action": "select",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Playback.select.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Playback",
+      "action": "seek_by",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Playback.seek_by.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Playback",
+      "action": "seek",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Playback.seek.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Playback",
+      "action": "set_volume",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Playback.set_volume.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Playback",
+      "action": "mute",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Playback.mute.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Playback",
+      "action": "shuffle_toggle",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Playback.shuffle_toggle.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Playback",
+      "action": "cycle_repeat",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Playback.cycle_repeat.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Playback",
+      "action": "queue_add",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Playback.queue_add.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Playback",
+      "action": "queue_play_next",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Playback.queue_play_next.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Playback",
+      "action": "queue_remove",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Playback.queue_remove.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Playback",
+      "action": "queue_move",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Playback.queue_move.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Playback",
+      "action": "add_output",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Playback.add_output.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Playback",
+      "action": "remove_output",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Playback.remove_output.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Playback",
+      "action": "move_to",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Playback.move_to.Arguments"
+    },
+    {
+      "app": "so.tilo.playback",
+      "resource": "tl.so.tilo.playback.Playback",
+      "action": "set_output_volume",
+      "arguments": "#/components/schemas/tl.so.tilo.playback.Playback.set_output_volume.Arguments"
+    },
+    {
       "app": "so.tilo.shell",
       "resource": "tilolang.personal",
       "action": "view-state",
@@ -42644,6 +44170,18 @@
     {
       "app": "so.tilo.tube",
       "resource": "tl.so.tilo.tube.Video",
+      "action": "play_at_quality",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Video.play_at_quality.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Video",
+      "action": "show_captions",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Video.show_captions.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Video",
       "action": "forget",
       "arguments": "#/components/schemas/tl.so.tilo.tube.Video.forget.Arguments"
     },
@@ -42818,6 +44356,12 @@
     {
       "app": "so.tilo.tube",
       "resource": "tl.so.tilo.tube.YouTube",
+      "action": "set_rate",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.set_rate.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
       "action": "delete_history",
       "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.delete_history.Arguments"
     },
@@ -42874,6 +44418,186 @@
       "resource": "tl.so.tilo.tube.YouTube",
       "action": "play_again",
       "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.play_again.Arguments"
+    },
+    {
+      "app": "so.tilo.video",
+      "resource": "tilolang.personal",
+      "action": "view-state",
+      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
+    },
+    {
+      "app": "so.tilo.video",
+      "resource": "tilolang.personal",
+      "action": "seen",
+      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
+    },
+    {
+      "app": "so.tilo.video",
+      "resource": "tilolang.personal",
+      "action": "seen-runs",
+      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
+    },
+    {
+      "app": "so.tilo.video",
+      "resource": "tl.so.tilo.video.Clip",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.video.Clip.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.video",
+      "resource": "tl.so.tilo.video.Clip",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.video.Clip.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.video",
+      "resource": "tl.so.tilo.video.Clip",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.video.Clip.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.video",
+      "resource": "tl.so.tilo.video.Clip",
+      "action": "toggle_playing",
+      "arguments": "#/components/schemas/tl.so.tilo.video.Clip.toggle_playing.Arguments"
+    },
+    {
+      "app": "so.tilo.video",
+      "resource": "tl.so.tilo.video.Playlist",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.video.Playlist.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.video",
+      "resource": "tl.so.tilo.video.Playlist",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.video.Playlist.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.video",
+      "resource": "tl.so.tilo.video.Playlist",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.video.Playlist.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.video",
+      "resource": "tl.so.tilo.video.PlaylistEntry",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.video.PlaylistEntry.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.video",
+      "resource": "tl.so.tilo.video.PlaylistEntry",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.video.PlaylistEntry.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.video",
+      "resource": "tl.so.tilo.video.PlaylistEntry",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.video.PlaylistEntry.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.video",
+      "resource": "tl.so.tilo.video.Bookmark",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.video.Bookmark.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.video",
+      "resource": "tl.so.tilo.video.Bookmark",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.video.Bookmark.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.video",
+      "resource": "tl.so.tilo.video.Bookmark",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.video.Bookmark.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.video",
+      "resource": "tl.so.tilo.video.Library",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.video.Library.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.video",
+      "resource": "tl.so.tilo.video.Library",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.video.Library.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.video",
+      "resource": "tl.so.tilo.video.Library",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.video.Library.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.video",
+      "resource": "tl.so.tilo.video.Library",
+      "action": "open_video",
+      "arguments": "#/components/schemas/tl.so.tilo.video.Library.open_video.Arguments"
+    },
+    {
+      "app": "so.tilo.video",
+      "resource": "tl.so.tilo.video.Library",
+      "action": "create_playlist",
+      "arguments": "#/components/schemas/tl.so.tilo.video.Library.create_playlist.Arguments"
+    },
+    {
+      "app": "so.tilo.video",
+      "resource": "tl.so.tilo.video.Library",
+      "action": "delete_playlist",
+      "arguments": "#/components/schemas/tl.so.tilo.video.Library.delete_playlist.Arguments"
+    },
+    {
+      "app": "so.tilo.video",
+      "resource": "tl.so.tilo.video.Library",
+      "action": "add_to_playlist",
+      "arguments": "#/components/schemas/tl.so.tilo.video.Library.add_to_playlist.Arguments"
+    },
+    {
+      "app": "so.tilo.video",
+      "resource": "tl.so.tilo.video.Library",
+      "action": "add_to_watch_later",
+      "arguments": "#/components/schemas/tl.so.tilo.video.Library.add_to_watch_later.Arguments"
+    },
+    {
+      "app": "so.tilo.video",
+      "resource": "tl.so.tilo.video.Library",
+      "action": "add_bookmark",
+      "arguments": "#/components/schemas/tl.so.tilo.video.Library.add_bookmark.Arguments"
+    },
+    {
+      "app": "so.tilo.video",
+      "resource": "tl.so.tilo.video.Library",
+      "action": "delete_bookmark",
+      "arguments": "#/components/schemas/tl.so.tilo.video.Library.delete_bookmark.Arguments"
+    },
+    {
+      "app": "so.tilo.video",
+      "resource": "tl.so.tilo.video.Library",
+      "action": "open_dropped",
+      "arguments": "#/components/schemas/tl.so.tilo.video.Library.open_dropped.Arguments"
+    },
+    {
+      "app": "so.tilo.video",
+      "resource": "tl.so.tilo.video.Library",
+      "action": "session",
+      "arguments": "#/components/schemas/tl.so.tilo.video.Library.session.Arguments"
+    },
+    {
+      "app": "so.tilo.video",
+      "resource": "tl.so.tilo.video.Library",
+      "action": "play_clip",
+      "arguments": "#/components/schemas/tl.so.tilo.video.Library.play_clip.Arguments"
+    },
+    {
+      "app": "so.tilo.video",
+      "resource": "tl.so.tilo.video.Library",
+      "action": "restart_clip",
+      "arguments": "#/components/schemas/tl.so.tilo.video.Library.restart_clip.Arguments"
     },
     {
       "app": "so.tilo.lang.views",

@@ -33,7 +33,9 @@ __all__ = [
     "ToggleSubscriptionArgs",
     "LikeArgs",
     "WatchLaterArgs",
+    "PlayAtQualityArgs",
     "ForgetArgs",
+    "SetRateArgs",
     "DeleteHistoryArgs",
     "SetAutoplayArgs",
     "SetSpeedArgs",
@@ -61,9 +63,19 @@ WatchLaterArgs = TypedDict("WatchLaterArgs", {
 })
 """The arguments of `watch_later`."""
 
+PlayAtQualityArgs = TypedDict("PlayAtQualityArgs", {
+    "chosen": "str",
+})
+"""The arguments of `play_at_quality`."""
+
 ForgetArgs = TypedDict("ForgetArgs", {
 })
 """The arguments of `forget`."""
+
+SetRateArgs = TypedDict("SetRateArgs", {
+    "speed": "float",
+})
+"""The arguments of `set_rate`."""
 
 DeleteHistoryArgs = TypedDict("DeleteHistoryArgs", {
 })
@@ -95,7 +107,7 @@ EndSearchArgs = TypedDict("EndSearchArgs", {
 
 class Channel(Resource):
     """Channel — `tl.so.tilo.tube.Channel`."""
-    __surface__ = "so.tilo.tube@5738a7401a7c766a"
+    __surface__ = "so.tilo.tube@af7c2d208ff91d3e"
     @property
     def _26ctwf34(self) -> str:
         """key (`26ctwf34` on the wire)."""
@@ -160,7 +172,7 @@ class Channel(Resource):
 
 class Video(Resource):
     """Video — `tl.so.tilo.tube.Video`."""
-    __surface__ = "so.tilo.tube@5738a7401a7c766a"
+    __surface__ = "so.tilo.tube@af7c2d208ff91d3e"
     irzy3c7m: str  # key
     fpxk5w7b: str  # title
     mhkply6c: str  # channel_key
@@ -187,6 +199,19 @@ class Video(Resource):
     ddfiordt: int  # likes
     l25oorez: str  # thumbnail
     pkbzjs7l: str  # stream
+    pnt3r5fh: list[str]  # stream_qualities
+    upzs3qkn: dict[str, str]  # streams
+    pkrsaacd: dict[str, str]  # caption_tracks
+    mpazezbv: str  # caption_language
+    @property
+    def _3e5q2ijn(self) -> str:
+        """captions (`3e5q2ijn` on the wire)."""
+        return self.fields["3e5q2ijn"]
+
+    @_3e5q2ijn.setter
+    def _3e5q2ijn(self, value: str) -> None:
+        self.edit("3e5q2ijn", value=value)
+    kxi5h2rb: str  # quality
     jfam7tjf: bool  # live
     bifohbpv: bool  # liked
     @property
@@ -246,8 +271,20 @@ class Video(Resource):
         """Records how far into the video the person is, and that they watched it now: it moves to the front of the history, and asks the service for the address its bytes play from when that is not known yet. Starting a video, resuming it and moving the playhead as it plays are one action, so a video has one place it is played from."""
         return self.action("progress", at=at)
 
+    def play_at_quality(self, *, chosen: str) -> None:
+        """Plays the video at another of its qualities, from the place it was at: the view plays the address that quality has."""
+        return self.action("play_at_quality", chosen=chosen)
+
+    def play_at_quality_many(self, items: list[PlayAtQualityArgs]) -> list[dict[str, Any]]:
+        """Runs `play_at_quality` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("play_at_quality", items)
+
+    def show_captions(self, *, language: str) -> None:
+        """Shows the video's words in `language`, or turns them off when it is empty: the service fetches the track's words, which the player draws as the video reaches them."""
+        return self.action("show_captions", language=language)
+
     def forget(self) -> None:
-        """Takes one video out of the person's own history."""
+        """Takes one video out of the history."""
         return self.action("forget")
 
     def forget_many(self, items: list[ForgetArgs]) -> list[dict[str, Any]]:
@@ -260,12 +297,12 @@ class Video(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"like", "like_many", "watch_later", "watch_later_many", "play", "resume", "progress", "forget", "forget_many", "retry_playback"})
+    __actions__ = frozenset({"like", "like_many", "watch_later", "watch_later_many", "play", "resume", "progress", "play_at_quality", "play_at_quality_many", "show_captions", "forget", "forget_many", "retry_playback"})
 
 
 class Playlist(Resource):
     """Playlist — `tl.so.tilo.tube.Playlist`."""
-    __surface__ = "so.tilo.tube@5738a7401a7c766a"
+    __surface__ = "so.tilo.tube@af7c2d208ff91d3e"
     ow7glfos: str  # key
     ljyc7mx2: str  # title
     bzfmd6pg: str  # channel_key
@@ -304,20 +341,20 @@ class Playlist(Resource):
 
 class Subscription(Resource):
     """Subscription — `tl.so.tilo.tube.Subscription`."""
-    __surface__ = "so.tilo.tube@5738a7401a7c766a"
+    __surface__ = "so.tilo.tube@af7c2d208ff91d3e"
     slhmwv67: str  # key
     ynf67l6e: str  # name
 
 
 class QueuedVideo(Resource):
     """QueuedVideo — `tl.so.tilo.tube.QueuedVideo`."""
-    __surface__ = "so.tilo.tube@5738a7401a7c766a"
+    __surface__ = "so.tilo.tube@af7c2d208ff91d3e"
     o3xolmld: str  # key
 
 
 class PlaybackPrefs(Resource):
     """PlaybackPrefs — `tl.so.tilo.tube.PlaybackPrefs`."""
-    __surface__ = "so.tilo.tube@5738a7401a7c766a"
+    __surface__ = "so.tilo.tube@af7c2d208ff91d3e"
     @property
     def _5twttwwn(self) -> str:
         """member (`5twttwwn` on the wire)."""
@@ -341,7 +378,7 @@ class PlaybackPrefs(Resource):
 
 class WatchEntry(Resource):
     """WatchEntry — `tl.so.tilo.tube.WatchEntry`."""
-    __surface__ = "so.tilo.tube@5738a7401a7c766a"
+    __surface__ = "so.tilo.tube@af7c2d208ff91d3e"
     noppuxpb: str  # key
     stuii7l7: str  # title
     j37y2bbw: str  # channel_name
@@ -359,7 +396,7 @@ class WatchEntry(Resource):
 
 class YouTube(Resource):
     """YouTube — `tl.so.tilo.tube.YouTube`."""
-    __surface__ = "so.tilo.tube@5738a7401a7c766a"
+    __surface__ = "so.tilo.tube@af7c2d208ff91d3e"
     olrung72: str  # title
     ihhzrm3f: list[Entry[Channel]]  # channels
     qnfjkti5: list[Entry[Video]]  # videos
@@ -374,10 +411,19 @@ class YouTube(Resource):
     nnvco6w3: str  # feed_state
     r3ksw6bn: str  # trouble
     qv7t2mza: bool  # online
+    bxmkupyx: float  # rate
 
     def play_queue(self) -> None:
         """Plays the queue from its oldest video: what was put on it first plays first."""
         return self.action("play_queue")
+
+    def set_rate(self, *, speed: float) -> None:
+        """Takes one video out of the person's own history. Plays videos at `speed`: a slower read for a dense talk, a quicker one for a long report."""
+        return self.action("set_rate", speed=speed)
+
+    def set_rate_many(self, items: list[SetRateArgs]) -> list[dict[str, Any]]:
+        """Runs `set_rate` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_rate", items)
 
     def delete_history(self) -> None:
         """Deletes the person's own watch history, and the entries carried from before it recorded members, which this history shows them; nobody else's."""
@@ -451,10 +497,10 @@ class YouTube(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"play_queue", "delete_history", "delete_history_many", "set_autoplay", "set_autoplay_many", "set_speed", "set_speed_many", "set_quality", "set_quality_many", "set_captions", "set_captions_many", "search", "end_search", "end_search_many", "refresh_feed", "load_trending", "play_again"})
+    __actions__ = frozenset({"play_queue", "set_rate", "set_rate_many", "delete_history", "delete_history_many", "set_autoplay", "set_autoplay_many", "set_speed", "set_speed_many", "set_quality", "set_quality_many", "set_captions", "set_captions_many", "search", "end_search", "end_search_many", "refresh_feed", "load_trending", "play_again"})
 
 
 class Tube(Resource):
     """YouTube — `tl.so.tilo.tube`."""
-    __surface__ = "so.tilo.tube@5738a7401a7c766a"
+    __surface__ = "so.tilo.tube@af7c2d208ff91d3e"
 
