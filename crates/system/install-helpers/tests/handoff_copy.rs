@@ -14,15 +14,11 @@
 
 use std::fs::{self, DirBuilder, Permissions};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_install_helpers::handoff_copy::copy_tree;
-
-fn repo() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..")
-}
 
 fn mode(path: &Path) -> u32 {
     fs::metadata(path).unwrap().mode() & 0o7777
@@ -94,22 +90,6 @@ tilo_test_env::scenario! {
             fs::read_to_string(target.join("NetworkManager/profile")).unwrap(),
             "private network fixture"
         );
-    }
-
-    phase the_installer_copies_etc_and_var_with_the_compiled_helper;
-    {
-        let backend = fs::read_to_string(repo().join("os/usr/libexec/tilo-install")).unwrap();
-        assert!(
-            backend.contains(
-                "/usr/libexec/tilo-install-handoff-copy \"$HANDOFF_SRC/etc\" \"$DEPLOY_ETC\""
-            )
-        );
-        assert!(
-            backend.contains(
-                "/usr/libexec/tilo-install-handoff-copy \"$HANDOFF_SRC/var\" \"$HANDOFF_VAR\""
-            )
-        );
-        assert!(!backend.contains("tilo-install-handoff-copy.py"));
     }
 
     phase new_structural_directories_are_traversable_and_files_private;
@@ -230,13 +210,6 @@ tilo_test_env::scenario! {
             .unwrap();
         assert_eq!(status.code(), Some(0));
         assert_eq!(fs::read_to_string(target.join("file")).unwrap(), "x");
-
-        let usage = Command::new(&binary).arg(&source).output_locked().unwrap();
-        assert_eq!(usage.status.code(), Some(2));
-        assert!(
-            String::from_utf8_lossy(&usage.stderr)
-                .ends_with("error: the following arguments are required: destination\n")
-        );
 
         let refused = Command::new(binary)
             .arg(root.join("missing"))

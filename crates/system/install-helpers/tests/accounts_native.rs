@@ -320,6 +320,10 @@ mod tests {
         (source, frame)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the whole handoff, its guards and its retries are one fixture flow"
+    )]
     fn verify_handoff(fixture: &Fixture, source: &Path, frame: &[u8]) {
         // The source is deliberately writable by the destination UID: an ownership alias
         // regression must be caught by the guard, not by Unix permissions.
@@ -350,6 +354,19 @@ mod tests {
                 if stat.is_dir() { 0o700 } else { 0o600 }
             );
         }
+        // A truncated or overlong transport is not the frame the stage command sealed.
+        let consume = |bytes: &[u8]| {
+            fixture.run(
+                &["--accounts-consume", OPERATION, TARGET, USER, "1000"],
+                bytes,
+                1000,
+                false,
+            );
+        };
+        consume(&frame[..frame.len() - 1]);
+        consume(&[frame, &[0]].concat());
+        fixture.absent_destination();
+        assert_eq!(fs::read(&transport).unwrap(), frame);
         // Root must not be able to bypass the destination-user consumer boundary.
         fixture.run(
             &["--accounts-consume", OPERATION, TARGET, USER, "1000"],

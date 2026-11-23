@@ -13,9 +13,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use tilo_test_env::SpawnUnderEnvLock as _;
+use std::path::PathBuf;
 
 use serde_json::{Value, json};
 use tilo_install_helpers::install_proof::{Host, Request, build_proof, write};
@@ -305,36 +303,6 @@ tilo_test_env::scenario! {
         assert!(!fixture.dir.join("vm-install-proof.tmp").exists());
         assert!(write(&fixture.dir.join("missing/proof.json"), &json!({})).is_err());
     }
-
-    phase backend_emits_proof_only_after_encrypted_finish;
-    {
-        let backend = fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../os/usr/libexec/tilo-install"),
-        )
-        .unwrap();
-        let prepared = backend
-            .find("VM_INSTALL_PROOF=/run/tilo-installer/vm-install-proof.json")
-            .unwrap();
-        let finished = backend
-            .find("\"$DISK_ENCRYPT\" finish \"$ENC_LUKS\"")
-            .unwrap();
-        let emitted = backend
-            .find("proof_line=\"TILO_VM_INSTALL_PROOF_${proof_version}=")
-            .unwrap();
-        assert!(prepared < finished && finished < emitted);
-        assert!(backend.contains("VM_INSTALL_PROOF_PORT=/dev/virtio-ports/org.tilo.vm-install-proof"));
-        assert!(backend.contains("systemd-detect-virt --vm --quiet"));
-        assert!(backend.contains("printf '%s\\n' \"$proof_line\" > \"$VM_INSTALL_PROOF_PORT\""));
-        assert!(
-            backend.contains("  VM_INSTALL_PROOF_SCHEMA=\"$(/usr/libexec/tilo-vm-install-proof \\\n")
-        );
-        assert!(
-            backend.contains(
-                "elif [ \"$VM_INSTALL_PROOF_SCHEMA\" = tilo.vm-install-image-proof.v3 ]; then"
-            )
-        );
-        assert!(!backend.contains("tilo-vm-install-proof.py"));
-    }
 }
 
 tilo_test_env::scenario! {
@@ -386,32 +354,5 @@ tilo_test_env::scenario! {
         fs::write(&outside, b"x").unwrap();
         fixture.request.target_uki = outside;
         refused(&fixture, "outside the selected ESP");
-    }
-
-    phase usage_errors_exit_2;
-    {
-        let output = Command::new(tilo_test_env::package_binary!("tilo-vm-install-proof"))
-            .args(["--target-root", "/x"])
-            .output_locked()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(2));
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.starts_with("usage: tilo-vm-install-proof [-h]"),
-            "{stderr}"
-        );
-        assert!(stderr.ends_with(
-            "error: the following arguments are required: --deploy-etc, --efi-root, --target-uki, \
-         --disk, --efi-partition, --boot-partition, --root-partition, --output\n"
-        ));
-        let ambiguous = Command::new(tilo_test_env::package_binary!("tilo-vm-install-proof"))
-            .args(["--efi", "/x"])
-            .output_locked()
-            .unwrap();
-        assert_eq!(ambiguous.status.code(), Some(2));
-        assert!(
-            String::from_utf8_lossy(&ambiguous.stderr)
-                .contains("ambiguous option: --efi could match --efi-root, --efi-partition")
-        );
     }
 }

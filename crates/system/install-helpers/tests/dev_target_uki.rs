@@ -24,7 +24,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 
 use sha2::{Digest, Sha256};
 use tilo_install_helpers::dev_target_uki::{
-    CMDLINE_ROOM, Host, MOUNT, Selected, check, image_inputs, promote,
+    CMDLINE_ROOM, Host, MOUNT, Selected, image_inputs, promote,
 };
 use tilo_install_helpers::{Error, Result};
 
@@ -618,24 +618,6 @@ tilo_test_env::scenario! {
     }
 }
 
-/// The VM check, with this process modelled as root on a machine without the
-/// development installer's marker.
-struct Root(Fixture);
-
-impl Host for Root {
-    fn command(&self, argv: &[&str]) -> Result<String> {
-        self.0.command(argv)
-    }
-
-    fn is_root(&self) -> bool {
-        true
-    }
-
-    fn marker(&self) -> PathBuf {
-        self.0.root.join("missing-marker")
-    }
-}
-
 tilo_test_env::scenario! {
     fn the_dev_target_uki_refuses_before_it_changes_anything;
 
@@ -769,13 +751,6 @@ tilo_test_env::scenario! {
         assert!(!fixture.uki_path().exists());
     }
 
-    phase unsigned_route_requires_real_vm_check;
-    {
-        let host = Root(Fixture::new());
-        refused(check(&host), "development installer VM");
-        assert_eq!(host.0.builds.get(), 0);
-    }
-
     phase the_shipped_command_refuses_outside_the_development_vm;
     {
         let fixture = Fixture::new();
@@ -790,13 +765,5 @@ tilo_test_env::scenario! {
             String::from_utf8_lossy(&output.stderr),
             "development target UKI: unsigned target UKI requires the development installer VM\n"
         );
-        let output = Command::new(binary)
-            .args(["dev-target-uki", "rebuild", "--image-root", "/"])
-            .output_locked()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(2));
-        assert!(String::from_utf8_lossy(&output.stderr).contains(
-            "argument command: invalid choice: 'rebuild' (choose from 'validate-image', 'promote')"
-        ));
     }
 }

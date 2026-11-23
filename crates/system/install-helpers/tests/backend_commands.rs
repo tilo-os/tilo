@@ -400,7 +400,7 @@ tilo_test_env::scenario! {
         assert!(!dir.path().join("escape").exists());
     }
 
-    phase the_installer_scripts_ask_the_compiled_helper;
+    phase the_installed_scripts_call_the_compiled_helpers;
     {
         let guided = source("os/usr/libexec/tilo-guided-partition");
         let extract = source("os/usr/libexec/tilo-installer-profile-extract");
@@ -435,5 +435,117 @@ tilo_test_env::scenario! {
         assert!(backend.contains(
             "/usr/libexec/tilo-vm-install-proof code-refresh-check /run/tilo-installer/code-refresh"
         ));
+
+        // The backend routes every live-disk install through the helper, in order.
+        assert!(backend.contains("is the live medium's own disk — refusing to install onto it"));
+        let rest = backend
+            .split_once("INTERNAL_MODE=0\nif [ \"$TARGET_MAJ_MIN\" = \"$LIVE_MAJ_MIN\" ]; then")
+            .unwrap()
+            .1;
+        let guard = rest.split_once("\nfi\n").unwrap().0;
+        assert!(
+            guard.find("[ -n \"$INTERNAL_HANDOFF\" ]").unwrap()
+                < guard.find("check-install").unwrap()
+        );
+        assert!(guard.contains("--mode guided"));
+        assert!(guard.contains("INTERNAL_MODE=1"));
+        assert!(backend.contains("requires the disk that holds the staged installer"));
+        let check = backend
+            .find("--internal-handoff accepts only --guided-alongside")
+            .unwrap();
+        assert!(check < backend.find("validate_disk_identity\n").unwrap());
+        let finish = backend.find("\"$DISK_ENCRYPT\" finish").unwrap();
+        let record = backend.find("write-reclaim-record").unwrap();
+        let finalize = backend.find("firmware-finalize --handoff").unwrap();
+        assert!(record < finish && finish < finalize);
+        assert!(backend.contains("[ \"$INTERNAL_MODE\" -eq 0 ] || GUIDED_ARGS+=(--in-use-disk)"));
+        assert!(backend.contains("check-mounts --handoff"));
+        assert!(backend.contains("STAGING_HANDOFF=/usr/libexec/tilo-staging-handoff\n"));
+        assert!(
+            guided.contains("if [ \"$IN_USE_DISK\" -eq 0 ]; then\n  blockdev --rereadpt \"$DISK\"\nfi")
+        );
+        assert!(guided.contains(
+            "if [ \"$IN_USE_DISK\" -eq 1 ]; then\n    partx -a -n \"$new_number:$new_number\" \"$DISK\" || true\n  fi"
+        ));
+        assert!(guided.contains(
+            "kernel_partition_matches \"$new_node\" \"$new_number\" \"$new_start\" \"$new_sectors\" \"$new_uuid\""
+        ));
+        assert!(guided.contains("blkid -p -s PART_ENTRY_UUID -o value \"$node\""));
+        assert!(
+            guided.find("kernel_partition_matches() {").unwrap()
+                < guided.find("mkfs.vfat -n TILO-EFI").unwrap()
+        );
+        assert!(guided.contains("[ $((ROOT_START + ROOT_SIZE)) -eq $((FREE_START + FREE_SIZE)) ]"));
+
+        // The offline target, the handoff copy, the owner's SSH key and the install
+        // proof are all the compiled helpers, never their retired Python scripts.
+        assert!(
+            backend.contains("LOCAL_IMG=\"$(/usr/libexec/tilo-installer-offline-target import)\"")
+        );
+        assert!(backend.contains("/usr/libexec/tilo-installer-offline-target verify >/dev/null"));
+        assert!(backend.contains("\"$(/usr/libexec/tilo-installer-offline-target receipt)\""));
+        assert!(!backend.contains("tilo-installer-offline-target.py"));
+        assert!(backend.contains(
+            "/usr/libexec/tilo-install-handoff-copy \"$HANDOFF_SRC/etc\" \"$DEPLOY_ETC\""
+        ));
+        assert!(backend.contains(
+            "/usr/libexec/tilo-install-handoff-copy \"$HANDOFF_SRC/var\" \"$HANDOFF_VAR\""
+        ));
+        assert!(!backend.contains("tilo-install-handoff-copy.py"));
+        let ssh = backend.find("SSH_REQUEST=").unwrap();
+        let ssh_check = ssh + backend[ssh..].find("[ \"$OFFLINE_TARGET\" -eq 0 ]").unwrap();
+        let ssh_apply = ssh_check
+            + backend[ssh_check..]
+                .find("/usr/libexec/tilo-install-dev-ssh --etc")
+                .unwrap();
+        assert!(backend[ssh_check..ssh_apply].contains("/usr/lib/tilo/image-flavour"));
+        assert!(backend[ssh_check..ssh_apply].contains("/usr/sbin/sshd"));
+        assert!(
+            backend
+                .find("rm -f \"$DEPLOY_ETC/systemd/system/sshd.service\"")
+                .unwrap()
+                < ssh_apply
+        );
+        assert!(!backend.contains("tilo-install-dev-ssh.py"));
+        let prepared = backend
+            .find("VM_INSTALL_PROOF=/run/tilo-installer/vm-install-proof.json")
+            .unwrap();
+        let finished = backend
+            .find("\"$DISK_ENCRYPT\" finish \"$ENC_LUKS\"")
+            .unwrap();
+        let emitted = backend
+            .find("proof_line=\"TILO_VM_INSTALL_PROOF_${proof_version}=")
+            .unwrap();
+        assert!(prepared < finished && finished < emitted);
+        assert!(backend.contains("VM_INSTALL_PROOF_PORT=/dev/virtio-ports/org.tilo.vm-install-proof"));
+        assert!(backend.contains("systemd-detect-virt --vm --quiet"));
+        assert!(backend.contains("printf '%s\\n' \"$proof_line\" > \"$VM_INSTALL_PROOF_PORT\""));
+        assert!(
+            backend.contains("  VM_INSTALL_PROOF_SCHEMA=\"$(/usr/libexec/tilo-vm-install-proof \\\n")
+        );
+        assert!(backend.contains(
+            "elif [ \"$VM_INSTALL_PROOF_SCHEMA\" = tilo.vm-install-image-proof.v3 ]; then"
+        ));
+        assert!(!backend.contains("tilo-vm-install-proof.py"));
+    }
+}
+
+/// Every helper is a `/usr/libexec` command whose usage error is status 2, as the
+/// installer's own argument contract documents; the exact argparse wording is the
+/// shared parser's, and one binary checks it against the parser
+/// (`staging_handoff::usage_errors_exit_2`).
+#[test]
+fn every_helper_reports_a_usage_error_as_status_2() {
+    for binary in [
+        tilo_test_env::package_binary!("tilo-install-handoff-copy"),
+        tilo_test_env::package_binary!("tilo-install-dev-ssh"),
+        tilo_test_env::package_binary!("tilo-installer-offline-target"),
+        tilo_test_env::package_binary!("tilo-staging-handoff"),
+        tilo_test_env::package_binary!("tilo-vm-install-proof"),
+    ] {
+        let output = Command::new(&binary).output_locked().unwrap();
+        assert_eq!(output.status.code(), Some(2), "{}", binary.display());
+        assert!(!output.stderr.is_empty(), "{}", binary.display());
+        assert!(output.stdout.is_empty(), "{}", binary.display());
     }
 }

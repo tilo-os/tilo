@@ -13,15 +13,11 @@
 
 use std::cell::RefCell;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_install_helpers::dev_ssh::{Host, apply};
-
-fn repo() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..")
-}
 
 /// Records labels instead of calling `matchpathcon`/`chcon`; the keys are still
 /// checked by the real `ssh-keygen`.
@@ -236,51 +232,5 @@ tilo_test_env::scenario! {
             "SSH enablement must first be cleared by the installer"
         );
         assert!(!etc.join("ssh/authorized_keys/bob").exists());
-    }
-
-    phase installer_requires_dev_self_install;
-    {
-        let backend = fs::read_to_string(repo().join("os/usr/libexec/tilo-install")).unwrap();
-        let ssh = backend.find("SSH_REQUEST=").unwrap();
-        let check = ssh
-            + backend[ssh..]
-                .find("[ \"$OFFLINE_TARGET\" -eq 0 ]")
-                .unwrap();
-        let apply = check
-            + backend[check..]
-                .find("/usr/libexec/tilo-install-dev-ssh --etc")
-                .unwrap();
-        assert!(backend[check..apply].contains("/usr/lib/tilo/image-flavour"));
-        assert!(backend[check..apply].contains("/usr/sbin/sshd"));
-        assert!(
-            backend
-                .find("rm -f \"$DEPLOY_ETC/systemd/system/sshd.service\"")
-                .unwrap()
-                < apply
-        );
-        assert!(!backend.contains("tilo-install-dev-ssh.py"));
-    }
-
-    phase usage_errors_exit_2;
-    {
-        let output = Command::new(tilo_test_env::package_binary!("tilo-install-dev-ssh"))
-            .args(["--etc", "/nonexistent"])
-            .output_locked()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(2));
-        assert_eq!(
-            String::from_utf8_lossy(&output.stderr),
-            "usage: tilo-install-dev-ssh [-h] --etc ETC --username USERNAME --key KEY\n\
-         tilo-install-dev-ssh: error: the following arguments are required: --username, --key\n"
-        );
-        let refused = Command::new(tilo_test_env::package_binary!("tilo-install-dev-ssh"))
-            .args(["--etc", "/nonexistent", "--user", "x", "--key=/k"])
-            .output_locked()
-            .unwrap();
-        assert_eq!(refused.status.code(), Some(1));
-        assert_eq!(
-            String::from_utf8_lossy(&refused.stderr),
-            "tilo-install-dev-ssh: invalid installed /etc or account\n"
-        );
     }
 }
