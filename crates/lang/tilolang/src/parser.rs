@@ -412,9 +412,21 @@ impl<'a> Parser<'a> {
 
     fn app_id(&mut self) -> PResult<String> {
         let mut out = self.ident("an app id such as `so.tilo.counter`")?.name;
-        while self.is(&Tok::Dot) && matches!(self.peek_at(1), Tok::Ident(_)) {
+        loop {
+            // A segment may carry a hyphen, as the ids of apps that came before tilolang do
+            // (`so.tilo.file-explorer`): it writes one where a word would otherwise end.
+            let separator = if self.is(&Tok::Minus) {
+                '-'
+            } else if self.is(&Tok::Dot) {
+                '.'
+            } else {
+                break;
+            };
+            if !matches!(self.peek_at(1), Tok::Ident(_)) {
+                break;
+            }
             self.bump();
-            out.push('.');
+            out.push(separator);
             out.push_str(&self.ident("an app id segment")?.name);
         }
         Ok(out)
