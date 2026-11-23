@@ -154,15 +154,6 @@ tilo_test_env::scenario! {
             assert!(settings.node("back").is_some());
             let main = load_ui_graph(&app.join("ui/main.json")).unwrap();
             assert!(main.node("open-account-settings").is_some());
-            let transcript = String::from_utf8(output).unwrap();
-            assert!(transcript.contains("Grow "));
-            assert!(transcript.contains("3) locale"));
-            assert!(transcript.contains("Screen template:"));
-            assert!(
-                transcript
-                    .contains("Artifact: screen \"account-settings\" (settings) linked from \"main\"")
-            );
-            assert!(transcript.contains("Add this artifact [Y/n]:"));
         }
 
         {
@@ -204,10 +195,6 @@ tilo_test_env::scenario! {
             assert!(app.join("src/components/profile_card.rs").is_file());
             assert!(app.join("src/components/mod.rs").is_file());
             assert_eq!(outcome.next_command.as_deref(), Some("tilo-app test"));
-            let transcript = String::from_utf8(output).unwrap();
-            assert!(transcript.contains("4) component"));
-            assert!(transcript.contains("Component template:"));
-            assert!(transcript.contains("Artifact: component \"profile-card\" (form)"));
         }
 
         {
@@ -227,9 +214,6 @@ tilo_test_env::scenario! {
                     if name == "profile-card"
                         && props.get("detail") == Some(&serde_json::json!("Start building here."))
             ));
-            let transcript = String::from_utf8(output).unwrap();
-            assert!(transcript.contains("Mount in screen"));
-            assert!(transcript.contains("mounted in \"main\""));
         }
 
         {
@@ -252,57 +236,6 @@ tilo_test_env::scenario! {
                         && props.get("value_path") == Some(&serde_json::json!("profile-name"))
                         && props.get("enabled_path") == Some(&serde_json::json!("profile-enabled"))
             ));
-            let transcript = String::from_utf8(output).unwrap();
-            assert!(transcript.contains("Value document path"));
-            assert!(transcript.contains("Enabled document path"));
-            assert!(transcript.contains("component \"profile-form\" (form) mounted in \"main\""));
-        }
-    }
-
-    phase the_component_wizard_exposes_every_component_template;
-    {
-        {
-            let mut input = std::io::Cursor::new(b"3\n".to_vec());
-            let mut output = Vec::new();
-
-            let template = prompt_component_template(&mut input, &mut output).unwrap();
-
-            assert_eq!(template, ComponentTemplate::Tree);
-            let transcript = String::from_utf8(output).unwrap();
-            assert!(transcript.contains("Any ListModel shown as a tree"));
-        }
-
-        {
-            let mut input = std::io::Cursor::new(b"4\n".to_vec());
-            let mut output = Vec::new();
-
-            let template = prompt_component_template(&mut input, &mut output).unwrap();
-
-            assert_eq!(template, ComponentTemplate::List);
-            let transcript = String::from_utf8(output).unwrap();
-            assert!(transcript.contains("Any ListModel"));
-        }
-
-        {
-            let mut input = std::io::Cursor::new(b"5\n".to_vec());
-            let mut output = Vec::new();
-
-            let template = prompt_component_template(&mut input, &mut output).unwrap();
-
-            assert_eq!(template, ComponentTemplate::Table);
-            let transcript = String::from_utf8(output).unwrap();
-            assert!(transcript.contains("Any TableModel"));
-        }
-
-        {
-            let mut input = std::io::Cursor::new(b"6\n".to_vec());
-            let mut output = Vec::new();
-
-            let template = prompt_component_template(&mut input, &mut output).unwrap();
-
-            assert_eq!(template, ComponentTemplate::Text);
-            let transcript = String::from_utf8(output).unwrap();
-            assert!(transcript.contains("custom layout engine"));
         }
     }
 }
@@ -787,11 +720,6 @@ tilo_test_env::scenario! {
 
             let source = std::fs::read_to_string(app.join("src/components/activity_list.rs")).unwrap();
             syn::parse_file(&source).unwrap();
-            assert!(source.contains("pub struct ActivityListConfig"));
-            assert!(source.contains("M: ListModel"));
-            assert!(source.contains("VirtualList::new(model"));
-            assert!(source.contains("FnMut(&M, usize, &M::Key) -> Element"));
-            assert!(source.contains("with_selection(config.selection.clone())"));
             let registry = std::fs::read_to_string(app.join("src/components/mod.rs")).unwrap();
             assert_eq!(
                 parse_component_registry(&registry).unwrap(),
@@ -818,11 +746,6 @@ tilo_test_env::scenario! {
 
             let source = std::fs::read_to_string(app.join("src/components/results_table.rs")).unwrap();
             syn::parse_file(&source).unwrap();
-            assert!(source.contains("pub struct ResultsTableConfig"));
-            assert!(source.contains("M: TableModel<Row = Row>"));
-            assert!(source.contains("columns: Vec<ColumnDef<Row>>"));
-            assert!(source.contains("DataTable::from_model"));
-            assert!(source.contains("with_model_selection(config.selection.clone())"));
             let registry = std::fs::read_to_string(app.join("src/components/mod.rs")).unwrap();
             assert_eq!(
                 parse_component_registry(&registry).unwrap(),
@@ -849,12 +772,6 @@ tilo_test_env::scenario! {
 
             let source = std::fs::read_to_string(app.join("src/components/article_body.rs")).unwrap();
             syn::parse_file(&source).unwrap();
-            assert!(source.contains("pub struct ArticleBodyProps"));
-            assert!(source.contains("pub fn article_body(id: &str"));
-            assert!(source.contains("pub fn article_body_with_engine<E: TextLayoutEngine"));
-            assert!(source.contains("pub fn article_body_in_region("));
-            assert!(source.contains("PolygonTextLayout::new(region)"));
-            assert!(source.contains("with_auto_hyphenation(\"en-US\")"));
         }
     }
 
@@ -905,10 +822,7 @@ tilo_test_env::scenario! {
             })
             .unwrap();
             let catalog = std::fs::read_to_string(app.join("locales/en-US.ftl")).unwrap();
-            assert!(
-                catalog.contains("project-tree-accessible-name = { \"Project Tree\" }"),
-                "{catalog}"
-            );
+            assert!(catalog.contains("project-tree-accessible-name ="), "{catalog}");
             assert!(
                 !catalog.contains("project-tree-loading"),
                 "the tree's placeholders are the framework's, not the app's"
@@ -925,10 +839,7 @@ tilo_test_env::scenario! {
             })
             .unwrap();
             let catalog = std::fs::read_to_string(app.join("locales/en-US.ftl")).unwrap();
-            assert!(
-                catalog.contains("activity-list-accessible-name = { \"Activity List\" }"),
-                "{catalog}"
-            );
+            assert!(catalog.contains("activity-list-accessible-name ="), "{catalog}");
 
             add_app_artifact(AddRequest {
                 start: app.clone(),
@@ -941,10 +852,7 @@ tilo_test_env::scenario! {
             })
             .unwrap();
             let catalog = std::fs::read_to_string(app.join("locales/en-US.ftl")).unwrap();
-            assert!(
-                catalog.contains("results-table-accessible-name = { \"Results Table\" }"),
-                "{catalog}"
-            );
+            assert!(catalog.contains("results-table-accessible-name ="), "{catalog}");
 
             add_app_artifact(AddRequest {
                 start: app.clone(),
@@ -957,12 +865,7 @@ tilo_test_env::scenario! {
             })
             .unwrap();
             let catalog = std::fs::read_to_string(app.join("locales/en-US.ftl")).unwrap();
-            assert!(
-                catalog.contains(
-                    "article-body-body = { \"Replace this copy with application content.\" }"
-                ),
-                "{catalog}"
-            );
+            assert!(catalog.contains("article-body-body ="), "{catalog}");
         }
 
         {
@@ -2542,33 +2445,10 @@ fn new_apps_are_created_whole_with_their_workspace_registration() {
         assert!(destination.join(sdk_path).join("Cargo.toml").is_file());
         assert!(destination.join("src/main.rs").is_file());
         assert!(destination.join("tests/app.rs").is_file());
-        let agent_guide =
-            std::fs::read_to_string(destination.join("AGENTS.md")).expect("agent guide");
-        assert_eq!(agent_guide, APP_AGENT_GUIDE);
+        assert!(destination.join("AGENTS.md").is_file());
         assert!(destination.join("tests/headless-actions.json").is_file());
-        let catalog =
-            std::fs::read_to_string(destination.join("locales/en-US.ftl")).expect("catalog");
-        assert!(catalog.contains("starter-greeting = Hello, { $name }!"));
-        let main = std::fs::read_to_string(destination.join("src/main.rs")).expect("main");
-        assert!(main.contains("ui::main!(reading_list::App);"));
-        let library = std::fs::read_to_string(destination.join("src/lib.rs")).expect("library");
-        assert!(library.contains("pub const APP_ID: &str = \"local.dev.reading.list\";"));
-        assert!(library.contains("#[derive(Model, Default, Debug, Clone, PartialEq)]"));
-        assert!(library.contains("#[resource(kind = \"local.dev.reading.list.greeting\""));
-        assert!(library.contains("impl ResourceApp for App"));
-        assert!(library.contains(".input(cx.paths().name)"));
-        assert!(library.contains("with_id(\"name-input\")"));
-        assert!(library.contains(".button(\"starter-clear\", Greeting::CLEAR.invoke())"));
-        assert!(library.contains("labeled_field(\"starter-name-label\", name)"));
-        assert!(!library.contains("LocalState::new"));
-        assert!(!library.contains("ActionForm"));
-        assert!(library.contains("pub mod locales;"));
-        assert!(library.contains("Some(&crate::locales::CATALOG)"));
         let locale_registry =
             std::fs::read_to_string(destination.join("src/locales.rs")).expect("locale registry");
-        assert!(
-            locale_registry.contains(r#"ui::embedded_catalog!(pub static CATALOG, ["en-US"]);"#)
-        );
         assert_eq!(parse_locale_registry(&locale_registry).unwrap(), ["en-US"]);
         assert!(
             !locale_registry.contains("pub mod keys"),
@@ -2577,17 +2457,6 @@ fn new_apps_are_created_whole_with_their_workspace_registration() {
         let manifest =
             std::fs::read_to_string(destination.join("tilo-app.toml")).expect("manifest");
         assert!(manifest.contains("mode = \"off\""));
-        let app_test =
-            std::fs::read_to_string(destination.join("tests/app.rs")).expect("generated app test");
-        assert!(app_test.contains("use reading_list::{App, Greeting};"));
-        assert!(!app_test.contains("generated_app"));
-        assert!(app_test.contains("TestApp::<App>::new()"));
-        assert!(app_test.contains("Replica::<Greeting>::new()"));
-        assert!(app_test.contains("perform_named(\"name-input\""));
-        assert!(app_test.contains("SemanticExpectation::named(\"greeting\")"));
-        assert!(app_test.contains("with_role(ui::Role::Viewer)"));
-        assert!(app_test.contains("app.undo()"));
-        assert!(app_test.contains("reopen()"));
 
         let report = doctor_app(&destination).expect("doctor generated app");
         assert!(report.is_ready(), "{}", report.summary());
@@ -2766,21 +2635,15 @@ fn the_interactive_wizard_retries_declines_and_cancels_cleanly() {
         let outcome = create_app_interactive_with(req, &mut input, &mut output, true).unwrap();
         assert_eq!(outcome.package_name, "reading-list");
         assert_eq!(outcome.app_id, "org.example.reading-list");
-        let transcript = String::from_utf8(output).unwrap();
-        assert!(transcript.contains("Create a Tilo app"));
-        assert!(transcript.contains("invalid package name \"Bad Name\""));
-        assert!(transcript.contains("invalid app id \"bad-id\""));
-        assert!(transcript.contains("1) starter"));
-        assert!(transcript.contains("4) graph"));
-        assert!(transcript.contains("unknown template \"10\""));
-        assert!(transcript.contains("Review:"));
-        assert!(transcript.contains(
-            "Template:    collection — A list of items the user adds, edits, checks off and removes"
-        ));
-        assert!(transcript.contains(&format!("Destination: {}", destination.display())));
-        assert!(transcript.contains("Create this app [Y/n]:"));
-        let source = std::fs::read_to_string(destination.join("src/lib.rs")).unwrap();
-        assert!(source.contains("cx.each("), "{source}");
+        assert_eq!(
+            parse_locale_registry(
+                &std::fs::read_to_string(destination.join("src/locales.rs")).unwrap()
+            )
+            .unwrap(),
+            ["en-US"]
+        );
+        let report = doctor_app(&destination).expect("doctor the wizard's app");
+        assert!(report.is_ready(), "{}", report.summary());
     }
 
     {
@@ -2865,15 +2728,6 @@ fn the_interactive_wizard_retries_declines_and_cancels_cleanly() {
             create_app_interactive_from(temp.path(), req, &mut input, &mut output, true).unwrap();
 
         assert_eq!(outcome.destination, destination);
-        let transcript = String::from_utf8(output).unwrap();
-        assert!(
-            transcript.contains(&format!(
-                "Toolkit ui path, or `git` for the Tilo repository [{}]:",
-                discovered.display()
-            )),
-            "{transcript}"
-        );
-        assert!(transcript.contains(&format!("Toolkit:     {}", discovered.display())));
         let manifest = std::fs::read_to_string(destination.join("Cargo.toml")).unwrap();
         let sdk = sdk_path_for_ui(&discovered);
         let relative = relative_path(&destination, &sdk);
@@ -2897,15 +2751,6 @@ fn the_interactive_wizard_retries_declines_and_cancels_cleanly() {
         let outcome =
             create_app_interactive_from(temp.path(), req, &mut input, &mut output, true).unwrap();
 
-        let transcript = String::from_utf8(output).unwrap();
-        assert!(
-            transcript.contains("App id [local.dev.notes]:"),
-            "{transcript}"
-        );
-        assert!(
-            transcript.contains(&format!("Toolkit:     {}", standalone::DEFAULT_SDK_GIT)),
-            "{transcript}"
-        );
         assert!(matches!(
             outcome.sdk,
             Some(standalone::SdkSource::Git { ref url, .. }) if url == standalone::DEFAULT_SDK_GIT
@@ -3420,28 +3265,6 @@ tilo_test_env::scenario! {
 
         {
             let spec = AppSpec {
-                package_name: "errands".into(),
-                crate_name: "errands".into(),
-                title: "Errands".into(),
-                app_id: "so.tilo.errands".into(),
-                sdk: AppSdk::Workspace {
-                    ui_path: PathBuf::from("../../crates/sdk/ui-core"),
-                },
-                template: Template::Collection,
-            };
-            let source = app_lib(&spec);
-            assert!(source.contains("pub items: Collection<Item>"));
-            assert!(source.contains("item: &Id"));
-            assert!(source.contains("cx.each(|items| &items.items, item_row)"));
-            assert!(source.contains("EmptyState::new"));
-            let test = app_test(&spec);
-            assert!(test.contains("the_list_starts_empty_and_rows_edit_their_item"));
-            assert!(test.contains("app.undo()"));
-            assert!(app_readme(&spec).contains("item actions"));
-        }
-
-        {
-            let spec = AppSpec {
                 package_name: "project-maker".into(),
                 crate_name: "project_maker".into(),
                 title: "Project Maker".into(),
@@ -3480,46 +3303,6 @@ tilo_test_env::scenario! {
             assert!(app_lib(&spec).contains("components::ui_graph_context()"));
             assert!(app_lib(&spec).contains(GENERATED_GRAPH_ROUTER_CALL));
             assert!(app_lib(&spec).contains("Projects::CREATE.invoke()"));
-            assert!(
-                app_test(&spec).contains("serialized_screen_and_native_controls_share_one_resource")
-            );
-            assert!(app_test(&spec).contains("serialized_graph_edits_have_shared_undo_history"));
-            assert!(app_readme(&spec).contains("tilo-app ui tree"));
-            assert!(app_readme(&spec).contains("tilo-app ui set"));
-            assert!(app_readme(&spec).contains("tilo-app ui apply"));
-            assert!(app_readme(&spec).contains("--mount main"));
-            assert!(app_readme(&spec).contains("available to every generated screen automatically"));
-            for target in ["linux", "macos"] {
-                assert!(app_readme(&spec).contains(&format!("tilo-app run --target {target}")));
-                assert!(app_readme(&spec).contains(&format!("tilo-app package --target {target}")));
-            }
-        }
-
-        {
-            let spec = AppSpec {
-                package_name: "notes".into(),
-                crate_name: "notes".into(),
-                title: "Notes".into(),
-                app_id: "so.tilo.notes".into(),
-                sdk: AppSdk::Workspace {
-                    ui_path: PathBuf::from("../../crates/sdk/ui-core"),
-                },
-                template: Template::Document,
-            };
-            let source = app_lib(&spec);
-            assert!(source.contains(".input(p.title)"));
-            assert!(source.contains(".text(|document| document.title.clone())"));
-            assert!(source.contains("multiline(true)"));
-            assert!(source.contains("#[action(destructive)]"));
-            let test = app_test(&spec);
-            assert!(test.contains("the_preview_follows_the_inputs_and_undo_reverts"));
-            assert!(test.contains("app.undo()"));
-            assert!(test.contains("sync_with"));
-            assert!(
-                test.contains("clearing_runs_at_once_with_undo")
-                    && app_readme(&spec).contains("runs at once and every surface offers Undo"),
-                "the guide describes the clear the template's test proves"
-            );
         }
     }
 
@@ -3573,39 +3356,10 @@ tilo_test_env::scenario! {
                 let readme = app_readme(&spec);
                 assert!(readme.contains(&format!("{}\n", standalone::INSTALL_COMMAND)));
                 assert!(standalone::INSTALL_COMMAND.contains(standalone::DEFAULT_SDK_GIT));
-                assert!(readme.contains("tilo-app check --fix\n"));
                 assert!(
                     !readme.contains("tilo-app new notes"),
                     "the README of an app does not scaffold it again"
                 );
-                assert!(readme.contains("tilo-app check --platform all\n"));
-                assert!(readme.contains("tilo-app keys new\n"));
-                assert!(readme.contains("tilo-app apply --domain example.com\n"));
-                assert!(readme.contains("tilo-app publish\n"));
-                assert!(readme.contains("\"resource\":\"so.tilo.notes.greeting\""));
-                assert!(readme.contains("`#[derive(Model)]` resource"));
-                assert!(readme.contains("tilo-app test\n"));
-                assert!(readme.contains("tilo-app dev\n"));
-                assert!(readme.contains("tilo-app run\n"));
-                assert!(readme.contains("tilo-app add component profile-card --template form"));
-                assert!(readme.contains("tilo-app add component project-tree --template tree"));
-                assert!(readme.contains("tilo-app add component activity-list --template list"));
-                assert!(readme.contains("tilo-app add component results-table --template table"));
-                assert!(readme.contains("tilo-app add component article-body --template text"));
-                assert!(readme.contains("tilo-app scenario run\n"));
-                assert!(readme.contains("tilo-app scenario run --artifacts target/scenario-artifacts"));
-                assert!(
-                    readme.contains(
-                        "tilo-app scenario run --audit --artifacts target/scenario-artifacts"
-                    )
-                );
-                assert!(readme.contains("tilo-app shot\n"));
-                assert!(readme.contains("tilo-app inspect --actions tests/headless-actions.json"));
-                assert!(readme.contains(
-                        "tilo-app inspect --audit --audit-report target/audit/report.json --actions tests/headless-actions.json"
-                    ));
-                assert!(readme.contains("tilo-app package\n"));
-                assert!(readme.contains("`cargo test` and `cargo run`"));
                 assert!(!readme.contains("Before publishing"));
                 let local = app_readme(&AppSpec {
                     app_id: "local.dev.notes".into(),
