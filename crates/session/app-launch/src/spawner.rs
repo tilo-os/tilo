@@ -1795,4 +1795,59 @@ mod tests {
         drop(spawner);
         tilo_test_env::exited("the app its session no longer runs", running.pid);
     }
+
+    /// A package's launch starts without forking the session, and with none of the descriptors the
+    /// session holds. The session is the compositor: a fork copies every page table of a large
+    /// multi-threaded process on the thread that draws the desktop, and in a desktop session it was
+    /// most of the time between an app's open and its launcher running. glibc runs the
+    /// `pthread_atfork` handlers on a `fork()` and not on a `posix_spawn`, in the forking thread,
+    /// so this thread counts its own forks while other tests start what they like.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_package_launch_does_not_fork_the_session_nor_hand_it_what_the_session_holds() {
+        use std::cell::Cell;
+        use std::os::fd::AsRawFd as _;
+
+        thread_local!(static FORKS: Cell<u32> = const { Cell::new(0) });
+        extern "C" fn forking() {
+            FORKS.with(|forks| forks.set(forks.get().saturating_add(1)));
+        }
+        static COUNTED: std::sync::Once = std::sync::Once::new();
+        // SAFETY: the handler only bumps a thread-local counter, which is async-signal-safe.
+        COUNTED.call_once(|| unsafe {
+            assert_eq!(libc::pthread_atfork(Some(forking), None, None), 0);
+        });
+
+        let directory = tempfile::tempdir().expect("a directory");
+        // The session's own descriptor, left without close-on-exec as a driver's own is.
+        let held = std::fs::File::create(directory.path().join("the-sessions-own"))
+            .expect("a file the session holds");
+        // SAFETY: the descriptor is this process's, open until `held` is dropped.
+        unsafe {
+            assert_eq!(libc::fcntl(held.as_raw_fd(), libc::F_SETFD, 0), 0);
+        }
+        let listed = directory.path().join("descriptors");
+        let planned = Planned {
+            kind: Kind::Package,
+            ..shell(
+                &format!("ls -l /proc/$$/fd > {}", listed.display()),
+                BTreeMap::new(),
+            )
+        };
+        let mut spawner = Spawner::default();
+        let forked = FORKS.with(Cell::get);
+        spawner.start(&planned).expect("starts");
+        assert_eq!(
+            FORKS.with(Cell::get),
+            forked,
+            "the launch forked the session: a `pre_exec` step makes `Command::spawn` fork"
+        );
+        assert_eq!(events(&spawner, 1)[0].end, End::exited(0));
+        let descriptors = std::fs::read_to_string(&listed).expect("what the app held");
+        assert!(
+            !descriptors.contains("the-sessions-own"),
+            "the app inherited the session's descriptor:\n{descriptors}"
+        );
+        drop(held);
+    }
 }
