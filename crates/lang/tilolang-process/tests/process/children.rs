@@ -365,3 +365,233 @@ fn instance_with_store(
     let window = Window::over(ChannelTransport::new(theirs).unwrap());
     (window, sent, inbox)
 }
+
+/// An app whose answer drafts a message and sends it: the send reaches outside, so the person is
+/// asked first, and what they read is the draft the answer wrote.
+const ANSWERS: &str = r#"app test.answers "Answers"
+
+type Draft {
+    to: Text
+    subject: Text
+    body: Text
+    key: Text
+    sent: Bool = false
+}
+
+type Box {
+    drafts: Collection<Draft>
+}
+
+root Box
+
+default view box for Box
+
+view box(b: Box) {
+    text("{b.drafts.len()}")
+}
+
+action send(d: Draft) (shows: [(d.to, .addresses), d.subject, (d.body, .long), (d.key, .secret)]) {
+    d.sent = true
+    outside("post", (d.to, d.subject, d.body))
+}
+
+action answer(b: Box, to: Text, body: Text) -> Draft {
+    let d = b.drafts.insert(Draft(to: to, subject: "Re: lunch", body: body, key: "s3cret"))
+    send(d)
+    d
+}
+"#;
+
+const ANSWERS_APP: &str = "test.answers";
+
+/// The drafts the answers app holds, each by whether it went.
+fn drafts(hosted: &Hosted) -> Vec<bool> {
+    let host = hosted.instance().host().expect("the runtime");
+    let runtime = host.runtime();
+    let root = host.root_of(ANSWERS_APP).expect("the app's root");
+    let Value::List(drafts) = runtime.read(&root, "drafts").expect("the drafts read") else {
+        panic!("drafts is a list");
+    };
+    drafts
+        .into_iter()
+        .map(|draft| {
+            let Value::Ref(at) = draft else {
+                panic!("a draft is a record: {draft:?}");
+            };
+            runtime.read(&at.target, "sent").expect("sent reads") == Value::Bool(true)
+        })
+        .collect()
+}
+
+/// Deliver the broker's invocation `id` of `action` on `resource`, with `arguments`, as `ada`.
+fn deliver(
+    inbox: &Inbox,
+    id: u64,
+    invocation: InvocationId,
+    (resource, action): (String, String),
+    arguments: &serde_json::Value,
+) {
+    inbox.borrow_mut().push_back(CollabEvent::Invocation {
+        id,
+        invocation,
+        resource,
+        action,
+        argument: Some(format!(
+            "{}{arguments}",
+            tilo_actions::ARGUMENTS_JSON_PREFIX
+        )),
+        actor: tilo_actions::Actor::Member(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+        context: None,
+    });
+}
+
+/// The answers app running for `ada`, with the address it publishes `answer` at.
+fn answers() -> (TilolangProcess, Window, Sent, Inbox, (String, String)) {
+    let compiled = tilolang::compile_package(ANSWERS, &tilolang::IdsLock::new(), &[])
+        .unwrap_or_else(|diagnostics| panic!("the app compiles: {diagnostics:#?}"));
+    let route = RouteSpec::app(ANSWERS_APP, uuid::Uuid::new_v4());
+    let mut host = TilolangProcess::new(wake());
+    let attributes = spec(1, "ada", &route).showing(Shows::Nothing);
+    let (mut window, sent, inbox) = instance_on(
+        &mut host,
+        attributes,
+        Bundle::new(&compiled, &[]),
+        &route,
+        Rc::default(),
+        &Rc::default(),
+    );
+    settle(&mut host, &mut window);
+    let answer = host
+        .instances()
+        .next()
+        .expect("the instance runs")
+        .published()
+        .iter()
+        .find(|action| action.address.action == "answer")
+        .map(|action| {
+            (
+                action.address.resource.clone(),
+                action.address.action.clone(),
+            )
+        })
+        .expect("the app publishes `answer`");
+    (host, window, sent, inbox, answer)
+}
+
+tilo_test_env::scenario! {
+    fn an_asked_call_of_the_apps_own_action_shows_what_its_run_drafted;
+
+    phase allowed_the_send_runs_once_without_asking_again;
+    {
+        let (mut host, mut window, sent, inbox, answer) = answers();
+        let served = InvocationId::new();
+        deliver(
+            &inbox,
+            7,
+            served,
+            answer,
+            &serde_json::json!({ "to": "bo@example.org", "body": "Noon works" }),
+        );
+        settle(&mut host, &mut window);
+        let child = child_sent(&sent).expect("the send went through the dispatch");
+        assert!(child.on_behalf_of == Some(served), "{child:?}");
+        let facts = child.context.as_ref().map(|context| context.shows.clone());
+        assert_eq!(
+            facts,
+            Some(vec![
+                tilo_actions::remote::asked::Fact::new("To", "bo@example.org"),
+                tilo_actions::remote::asked::Fact::new("Subject", "Re: lunch"),
+                tilo_actions::remote::asked::Fact::new("Body", "Noon works"),
+                tilo_actions::remote::asked::Fact::new("Key", ""),
+            ]),
+            "the card reads the draft the answer wrote, and never the secret"
+        );
+        assert_eq!(drafts(host.instances().next().unwrap()), [false]);
+
+        // The dispatch asks the person, who allows it: it delivers the send to the app, which
+        // runs it as the answer it was given, without asking again.
+        receipt(
+            &inbox,
+            child.invocation,
+            ReceiptStatus::Rejected {
+                error: ActionCallError::ConfirmationRequired { departure: Vec::new() },
+            },
+        );
+        settle(&mut host, &mut window);
+        let tilo_actions::remote::InvokeArgument::Json(arguments) = child.argument.clone() else {
+            panic!("the send's arguments are named: {:?}", child.argument);
+        };
+        deliver(
+            &inbox,
+            8,
+            child.invocation,
+            (
+                child.target.address.resource.clone(),
+                child.target.address.action.clone(),
+            ),
+            &serde_json::Value::Object(arguments),
+        );
+        settle(&mut host, &mut window);
+        assert!(
+            matches!(answered(&sent, 8), Some(InvocationUpdate::Succeeded { .. })),
+            "the allowed send runs: {:?}",
+            answered(&sent, 8)
+        );
+        assert_eq!(
+            child_sent(&sent).map(|again| again.invocation),
+            Some(child.invocation),
+            "nobody is asked again"
+        );
+        assert_eq!(drafts(host.instances().next().unwrap()), [true]);
+        receipt(&inbox, child.invocation, completed(serde_json::Value::Null));
+        settle(&mut host, &mut window);
+        assert!(
+            matches!(answered(&sent, 7), Some(InvocationUpdate::Succeeded { .. })),
+            "the answer is answered once its send went: {:?}",
+            answered(&sent, 7)
+        );
+    }
+
+    phase declined_the_answer_ends_and_its_draft_is_taken_back;
+    {
+        let (mut host, mut window, sent, inbox, answer) = answers();
+        deliver(
+            &inbox,
+            9,
+            InvocationId::new(),
+            answer,
+            &serde_json::json!({ "to": "bo@example.org", "body": "Noon works" }),
+        );
+        settle(&mut host, &mut window);
+        let child = child_sent(&sent).expect("the send went through the dispatch");
+        assert_eq!(drafts(host.instances().next().unwrap()), [false]);
+        receipt(
+            &inbox,
+            child.invocation,
+            ReceiptStatus::Rejected {
+                error: ActionCallError::ConfirmationRequired { departure: Vec::new() },
+            },
+        );
+        settle(&mut host, &mut window);
+
+        // The person declines, and the dispatch ends the call so: the whole run is refused, and
+        // the draft it wrote is gone.
+        receipt(
+            &inbox,
+            child.invocation,
+            ReceiptStatus::Cancelled {
+                message: Some(tilo_actions::remote::asked::DECLINED.to_owned()),
+            },
+        );
+        settle(&mut host, &mut window);
+        assert!(
+            drafts(host.instances().next().unwrap()).is_empty(),
+            "declining takes the draft back"
+        );
+        assert!(
+            matches!(answered(&sent, 9), Some(InvocationUpdate::Failed { .. })),
+            "the answer is refused: {:?}",
+            answered(&sent, 9)
+        );
+    }
+}

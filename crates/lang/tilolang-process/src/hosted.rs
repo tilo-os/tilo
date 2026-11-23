@@ -3651,7 +3651,7 @@ impl Invoker for Apis {
             argument: tilo_actions::remote::InvokeArgument::Json(
                 field("arguments").as_object().cloned().unwrap_or_default(),
             ),
-            context: None,
+            context: asked_facts(invocation),
             confirmation: None,
             revision: None,
             on_behalf_of: served.as_ref().map(|served| served.invocation),
@@ -3682,6 +3682,25 @@ impl Invoker for Apis {
             .insert(call_id.clone(), invocation.clone());
         Invoked::Pending(call_id)
     }
+}
+
+/// What the person asked to allow `invocation` reads on the card: the facts the runtime read for
+/// it through the run that makes it (a draft the run just wrote), which only this app can read
+/// yet. The dispatch takes them only from the callee's own app.
+fn asked_facts(invocation: &Invocation) -> Option<ActionContext> {
+    let Invocation::Action { shows, .. } = invocation else {
+        return None;
+    };
+    if shows.is_empty() {
+        return None;
+    }
+    Some(ActionContext {
+        shows: shows
+            .iter()
+            .map(|shown| tilo_actions::remote::asked::Fact::new(&shown.label, &shown.value))
+            .collect(),
+        ..ActionContext::default()
+    })
 }
 
 /// Every package this app may call, by app, in the workspace it calls them in: what a child call

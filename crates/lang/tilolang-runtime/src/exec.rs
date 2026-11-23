@@ -1156,7 +1156,8 @@ impl Core {
     }
 
     /// [`Core::invoke_direct`] of a call the dispatch already admitted for `invoker`: it asked
-    /// whoever had to say yes before it delivered the call, so the run does not ask again. Code
+    /// whoever had to say yes before it delivered the call, so the run does not ask again for the
+    /// call itself; what the call goes on to call that asks still asks. Code
     /// an author wrote (a block, a view of someone's) still asks for what its author may not do:
     /// the dispatch decided the invoker, not that code.
     ///
@@ -1218,13 +1219,14 @@ impl Core {
                 ActionOutcome::Failed(m) => Err(RuntimeError::Trap(m)),
             },
             Decision::Deny => Ok(InvokeOutcome::Denied),
-            // The dispatch asked before it delivered the call: the yes it took is the answer.
+            // The dispatch asked before it delivered the call: the yes it took is for this call
+            // alone, so what the call goes on to call that asks still asks.
             Decision::Ask if admitted && ctx.chain.is_empty() => {
                 let ctx = ExecCtx {
                     approved_by: Some(invoker.clone()),
                     ..ctx
                 };
-                match self.run_answered(&ctx, aref)? {
+                match self.run_action(&ctx, aref)? {
                     ActionOutcome::Done(v) => Ok(InvokeOutcome::Done(v)),
                     ActionOutcome::Waits(waits) => Ok(waits.into()),
                     ActionOutcome::Failed(m) => Err(RuntimeError::Trap(m)),
@@ -1893,9 +1895,10 @@ impl Core {
     }
 
     /// What a call of `aref` shows the person asked to allow it: each entry of its action's
-    /// `shows:`, labelled as the field (or the parameter) is in the person's language, with the
-    /// value it holds now. A field is read through this run, so what the run wrote before the
-    /// call (the draft an answer made) is what the person reads.
+    /// `shows:`, in its order, labelled as the field (or the parameter) is in the person's
+    /// language, with the value it holds now. A field is read through this run, so what the run
+    /// wrote before the call (the draft an answer made) is what the person reads. A secret's
+    /// value never leaves the run: the person reads that there is one, not what it is.
     fn asked_shows(&self, aref: &ActionRef) -> Result<Vec<crate::delegate::Shown>, RuntimeError> {
         let Some((params, shows)) = self
             .registry
@@ -1910,46 +1913,20 @@ impl Core {
         };
         let mut shown = Vec::with_capacity(shows.len());
         for entry in shows {
-            let Some(arg) = params
+            let arg = params
                 .iter()
                 .position(|p| p.name == entry.param)
-                .and_then(|at| aref.args.get(at))
-            else {
-                continue;
-            };
+                .and_then(|at| aref.args.get(at));
             let (label, value) = match &entry.field {
-                None => (tilolang::messages::label(&entry.param), arg.clone()),
-                Some(name) => {
-                    let Value::Ref(at) = arg else {
-                        continue;
-                    };
-                    let target = &at.target;
-                    let field = {
-                        let registry = self.registry.borrow();
-                        registry
-                            .type_id(&target.ty)
-                            .and_then(|ty| registry.type_info(&ty))
-                            .and_then(|(_, info)| {
-                                info.fields.iter().find(|f| f.name == *name).cloned()
-                            })
-                    };
-                    let Some(field) = field else {
-                        continue;
-                    };
-                    let value = self
-                        .read_value(target, &field, None)
-                        .map_err(RuntimeError::Trap)?;
-                    let label = self.words.borrow().word(
-                        &tilolang::messages::key_of(&field.id),
-                        &[],
-                        &tilolang::messages::label(name),
-                    );
-                    (label, value)
-                }
+                None => (tilolang::messages::label(&entry.param), arg.cloned()),
+                Some(name) => self.asked_field(arg, name)?,
             };
-            let value = match crate::host_res::unboxed(value) {
-                Value::Text(text) => text,
-                other => {
+            let secret = entry.render.as_deref() == Some("secret");
+            let value = match value.map(crate::host_res::unboxed) {
+                _ if secret => String::new(),
+                None => String::new(),
+                Some(Value::Text(text)) => text,
+                Some(other) => {
                     crate::project::project(self, &other, crate::project::ProjectOptions::default())
                         .to_string()
                 }
@@ -1961,6 +1938,38 @@ impl Core {
             });
         }
         Ok(shown)
+    }
+
+    /// The field `name` of the record `arg` refers to, as this run reads it, with its label in
+    /// the person's language; no value when the argument names no record of that type.
+    fn asked_field(
+        &self,
+        arg: Option<&Value>,
+        name: &str,
+    ) -> Result<(String, Option<Value>), RuntimeError> {
+        let fallback = tilolang::messages::label(name);
+        let Some(Value::Ref(at)) = arg else {
+            return Ok((fallback, None));
+        };
+        let target = &at.target;
+        let field = {
+            let registry = self.registry.borrow();
+            registry
+                .type_id(&target.ty)
+                .and_then(|ty| registry.type_info(&ty))
+                .and_then(|(_, info)| info.fields.iter().find(|f| f.name == name).cloned())
+        };
+        let Some(field) = field else {
+            return Ok((fallback, None));
+        };
+        let value = self
+            .read_value(target, &field, None)
+            .map_err(RuntimeError::Trap)?;
+        let label =
+            self.words
+                .borrow()
+                .word(&tilolang::messages::key_of(&field.id), &[], &fallback);
+        Ok((label, Some(value)))
     }
 
     /// Run `step` as a run of its own, a change of its own, invoked by `run`: its outcome is

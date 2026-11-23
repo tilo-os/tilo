@@ -473,6 +473,9 @@ fn described(
             }
         }
     }
+    // `shows: [(d.to, .addresses), d.subject]`: what a person asked to allow it reads first,
+    // in the declaration's order.
+    spec.type_mut().contract.shows = action.shows.iter().map(shown_of).collect();
     // What it returns: the shape an invocation of it is held to, so a caller reads the value as
     // the data the declaration says it returns (`-> Note` as the resource it made).
     if let Some(schema) = result_schema(meta, action) {
@@ -480,6 +483,21 @@ fn described(
     }
     spec.type_mut().contract.settle_confirmation();
     spec
+}
+
+/// One entry of an action's `shows:` as its contract publishes it.
+fn shown_of(shown: &tilolang::meta::ShownMeta) -> tilo_actions::remote::asked::Shown {
+    use tilo_actions::remote::asked::ShownAs;
+    tilo_actions::remote::asked::Shown {
+        param: shown.param.clone(),
+        field: shown.field.clone(),
+        render: match shown.render.as_deref() {
+            Some("addresses") => ShownAs::Addresses,
+            Some("long") => ShownAs::Long,
+            Some("secret") => ShownAs::Secret,
+            _ => ShownAs::Text,
+        },
+    }
 }
 
 /// The action types a package's resources offer, built once per package and shared by every

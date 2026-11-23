@@ -237,9 +237,10 @@ action answer(d: Draft, to: Text, body: Text) {
             let app = App::compile(ANSWERS, &[]);
             app.load(&w.rt);
             let draft = w.rt.create("Draft").unwrap();
+            // The dispatch delivers the answer, admitted: the run asks only for its send.
             let out = w
                 .rt
-                .invoke_action(
+                .invoke_admitted(
                     &w.me,
                     (
                         app.action("answer"),
@@ -249,6 +250,7 @@ action answer(d: Draft, to: Text, body: Text) {
                             Value::text("Noon works"),
                         ],
                     ),
+                    None,
                 )
                 .unwrap();
             let InvokeOutcome::Waits { run, .. } = out else {
@@ -273,9 +275,9 @@ action answer(d: Draft, to: Text, body: Text) {
                     shown("To", "ada@example.org", Some("addresses")),
                     shown("Subject", "Re: lunch", None),
                     shown("Body", "Noon works", Some("long")),
-                    shown("Key", "s3cret", Some("secret")),
+                    shown("Key", "", Some("secret")),
                 ],
-                "the person reads the message the answer drafted, before it goes"
+                "the person reads the message the answer drafted, before it goes, and never the secret"
             );
             assert!(w.rt.pending_outbox().is_empty(), "nothing went before the yes");
 
@@ -314,6 +316,34 @@ action answer(d: Draft, to: Text, body: Text) {
             assert_eq!(w.dispatch.len(), calls, "nobody is asked again");
             assert_eq!(w.rt.read(&draft, "sent").unwrap(), Value::Bool(true));
             assert_eq!(w.rt.pending_outbox().len(), 1, "it goes once");
+
+            // The yes was for that call: the next call of the same action asks again.
+            let again = w
+                .rt
+                .invoke_action(&w.me, (send.as_str(), vec![Value::resource(&draft)]))
+                .unwrap();
+            assert!(
+                matches!(again, InvokeOutcome::Asked(_)),
+                "a new call asks again: {again:?}"
+            );
+            assert_eq!(w.rt.pending_outbox().len(), 1, "nothing else went");
+
+            // Nor does another device over the same records carry it: a replica running the
+            // action asks.
+            let other = tilolang_runtime::Runtime::new(
+                w.store.clone(),
+                tilolang_runtime::SimpleAuthority::new(),
+            )
+            .unwrap();
+            other.set_foreign_invoker(Dispatch::new());
+            app.load(&other);
+            let elsewhere = other
+                .invoke_action(&w.me, (send.as_str(), vec![Value::resource(&draft)]))
+                .unwrap();
+            assert!(
+                matches!(elsewhere, InvokeOutcome::Asked(_)),
+                "a replica asks: {elsewhere:?}"
+            );
         }
     }
 
