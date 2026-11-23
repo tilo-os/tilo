@@ -25315,6 +25315,7 @@ dependencies = [
  "ush-shell",
  "ush-tilo",
  "uuid",
+ "wire-frame",
  "workspace-hack",
 ]
 

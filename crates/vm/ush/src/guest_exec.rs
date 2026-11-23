@@ -30,6 +30,11 @@ pub const CONTROL_FD: RawFd = 4;
 
 pub const CONTROL_FD_ARG: &str = "--control-fd";
 
+/// Largest JSON [`Answer`] line read from the guest's `exec-serve`: matches the
+/// 4 KiB request buffer (`runtime_portal::fd_transport::recv_with_fds`) and the
+/// supervisor control socket line limit (`MAX_SERVICE_LINE`).
+const MAX_ANSWER_BYTES: usize = 4096;
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Request {
     pub argv: Vec<String>,
@@ -444,8 +449,9 @@ impl Command {
         wakes: &[BorrowedFd<'_>],
         timeout: Option<Duration>,
     ) -> std::io::Result<Woke> {
-        // An answer already read along with the one before it.
-        if self.reader.buffer().contains(&b'\n') {
+        // An answer already read along with the one before it, or a buffered
+        // prefix already over the answer bound.
+        if self.reader.buffer().contains(&b'\n') || self.reader.buffer().len() > MAX_ANSWER_BYTES {
             return Ok(Woke {
                 answer: Some(self.read_answer()?),
                 ready: vec![false; wakes.len()],
@@ -463,14 +469,13 @@ impl Command {
     }
 
     fn read_answer(&mut self) -> std::io::Result<Answer> {
-        let mut line = String::new();
-        if self.reader.read_line(&mut line)? == 0 {
+        let Some(line) = wire_frame::read_line(&mut self.reader, MAX_ANSWER_BYTES)? else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 "the guest went away before the program ended",
             ));
-        }
-        serde_json::from_str(&line).map_err(std::io::Error::other)
+        };
+        serde_json::from_slice(&line).map_err(std::io::Error::other)
     }
 }
 
@@ -573,5 +578,69 @@ mod tests {
 
         drop(control);
         serving.join().unwrap();
+    }
+
+    #[test]
+    fn guest_exec_answer_rejects_oversized_line_and_accepts_exact_bound() {
+        let make_answer_json = |target_len: usize, prefix: &str| {
+            let shell = serde_json::to_string(&Answer::Failed {
+                reason: prefix.to_owned(),
+            })
+            .unwrap();
+            let pad = target_len.checked_sub(shell.len()).unwrap();
+            let reason = format!("{prefix}{}", "a".repeat(pad));
+            let json = serde_json::to_string(&Answer::Failed {
+                reason: reason.clone(),
+            })
+            .unwrap();
+            assert_eq!(json.len(), target_len);
+            (reason, json)
+        };
+
+        let (_over_reason, over_json) =
+            make_answer_json(MAX_ANSWER_BYTES.saturating_add(1), "over:");
+        let (exact_reason, exact_json) = make_answer_json(MAX_ANSWER_BYTES, "exact:");
+
+        let (control, served) = UnixStream::pair().unwrap();
+        let served = OwnedFd::from(served);
+        let over_wire = over_json.into_bytes();
+        let mut exact_wire = exact_json.into_bytes();
+        exact_wire.push(b'\n');
+        let writer = std::thread::spawn(move || {
+            for reply in [over_wire, exact_wire] {
+                let (_, mut fds) = recv_with_fds(served.as_fd()).unwrap();
+                let cmd_sock = UnixStream::from(fds.pop().unwrap());
+                let _ = recv_with_fds(cmd_sock.as_fd()).unwrap();
+                let _ = (&cmd_sock).write_all(&reply);
+                drop(cmd_sock);
+            }
+        });
+
+        let request = Request {
+            argv: vec!["true".into()],
+            env: Vec::new(),
+            cwd: "/".into(),
+            job: None,
+        };
+
+        // Oversized line without a trailing newline, then close: accepted on main, refused after fix.
+        let mut over = Command::start(&control, &request, [null(), null(), null()]).unwrap();
+        let err = over
+            .next(&[], Some(Duration::from_secs(5)))
+            .expect_err("an answer longer than the bound must be refused");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData, "{err}");
+
+        // Exact-bound line ending in '\n': read and decoded intact.
+        let mut exact = Command::start(&control, &request, [null(), null(), null()]).unwrap();
+        let woke = exact.next(&[], Some(Duration::from_secs(5))).unwrap();
+        assert_eq!(
+            woke.answer,
+            Some(Answer::Failed {
+                reason: exact_reason
+            })
+        );
+
+        drop(control);
+        writer.join().unwrap();
     }
 }
