@@ -428,6 +428,15 @@ There are seven ways to add a device:
 - **One way to add a device**: a ticket. `tilo device add` issues one and
   `tilo login <ticket>` uses it; the root certifies the new device. There are
   no tokens, codes or a join to wait on.
+- **One endpoint per device, in the daemon.** The daemon holds the
+  device's transport and state: the link between a person's devices,
+  presence, the media relay (`tilo-live`), the nearby spool, the speaker
+  group's clock and the resources they write. What needs the seat (capture,
+  encoding, input injection, playout, drawing) stays in the session. The
+  session publishes it as a provider at `devices/<id>/session/…` over
+  `daemon.sock` and opens no endpoint of its own. With no session running,
+  those actions answer that the device can't do it now, and wake still
+  works.
 
 ### What goes
 
