@@ -23,13 +23,13 @@ use tilo_workspace_service::device_documents::{ServiceDocuments, ServiceWrites};
 
 use super::workspaces::{ServiceWorkspaces, block_on_owned};
 
-/// The workspace's layout as this device holds it.
-enum HeldLayout {
+/// The workspace's layout as this device has it.
+enum LayoutHere {
     /// The layout document.
-    Held(automerge::AutoCommit),
-    /// This device keeps the workspace and holds no layout: none was written yet.
+    Here(automerge::AutoCommit),
+    /// This device keeps the workspace and has no layout: none was written yet.
     Unwritten,
-    /// This device does not hold it (yet): another device keeps it.
+    /// This device does not have it (yet): another device keeps it.
     Elsewhere,
 }
 
@@ -48,8 +48,8 @@ impl DeviceLayouts {
         hex::encode(self.workspaces.device_cert().user_public_key)
     }
 
-    /// `workspace`'s shared layout as this device holds it now.
-    fn layout(&self, workspace: &str) -> HeldLayout {
+    /// `workspace`'s shared layout as this device has it now.
+    fn layout(&self, workspace: &str) -> LayoutHere {
         let copies = self.workspaces.copies().clone();
         let read = ServiceDocuments::of(copies.clone()).read(
             workspace,
@@ -59,25 +59,25 @@ impl DeviceLayouts {
         );
         match read {
             Ok(DocumentRead::Whole { bytes, .. }) => {
-                automerge::AutoCommit::load(&bytes).map_or(HeldLayout::Elsewhere, HeldLayout::Held)
+                automerge::AutoCommit::load(&bytes).map_or(LayoutHere::Elsewhere, LayoutHere::Here)
             }
-            // A workspace this device keeps holds every layout written in it: none here is none.
+            // A workspace this device keeps has every layout written in it: none here is none.
             Ok(DocumentRead::Absent) => {
                 let Some(id) = WorkspaceId::parse(workspace) else {
-                    return HeldLayout::Elsewhere;
+                    return LayoutHere::Elsewhere;
                 };
                 if block_on_owned(async move { copies.governed_copy(id).await.is_some() }) {
-                    HeldLayout::Unwritten
+                    LayoutHere::Unwritten
                 } else {
-                    HeldLayout::Elsewhere
+                    LayoutHere::Elsewhere
                 }
             }
-            _ => HeldLayout::Elsewhere,
+            _ => LayoutHere::Elsewhere,
         }
     }
 
     /// Write `changes` into `workspace`'s layout as this device: the whole document when
-    /// `founding`, a change of the one held otherwise.
+    /// `founding`, a change of the one here otherwise.
     fn write(&self, workspace: &str, changes: &[u8], founding: bool) -> Result<(), String> {
         let written = ServiceWrites::of(self.workspaces.copies().clone()).write(
             workspace,
@@ -112,9 +112,9 @@ impl DeviceLayouts {
         opened_by: Option<tilo_desktop_model::ownership::OpenedBy>,
     ) -> Result<(), String> {
         let person = self.person();
-        let held = match self.layout(workspace) {
-            HeldLayout::Held(held) => held,
-            HeldLayout::Unwritten => {
+        let layout = match self.layout(workspace) {
+            LayoutHere::Here(layout) => layout,
+            LayoutHere::Unwritten => {
                 let name = WorkspaceId::parse(workspace)
                     .and_then(|id| self.workspaces.workspace(id))
                     .map(|kept| kept.name)
@@ -124,7 +124,7 @@ impl DeviceLayouts {
                 self.write(workspace, &founded.clone().save(), true)?;
                 founded
             }
-            HeldLayout::Elsewhere => {
+            LayoutHere::Elsewhere => {
                 let view = tilo_desktop_model::asked::AskedView {
                     app_id: app.to_owned(),
                     title: title.to_owned(),
@@ -153,7 +153,7 @@ impl DeviceLayouts {
             person: &person,
             opened_by,
         };
-        let change = tilo_desktop_model::place::place_view(&held, &opener, &view)
+        let change = tilo_desktop_model::place::place_view(&layout, &opener, &view)
             .map_err(|why| format!("{title}'s window is not on the person's layout: {why}"))?;
         match change {
             Some(change) => self.write(workspace, &change, false),
