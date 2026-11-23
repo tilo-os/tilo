@@ -63,10 +63,21 @@ fn held(
     let b_cert = testing::certificate(&root, &b_key, "B");
     let owner_a = open_file(&directory.join("a.json")).unwrap();
     let owner_b = open_file(&directory.join("b.json")).unwrap();
-    let fixture = TestWorkspace::new();
+    let fixture = empty(&a_cert, &a_key);
     let fixture = testing::enroll_into(fixture, &owner_a, &a_key, &a_cert).unwrap();
     let fixture = testing::enroll_into(fixture, &owner_b, &b_key, &b_cert).unwrap();
     (owner_a, fixture, a_key, b_key)
+}
+
+/// An empty workspace under a new id, held by `certificate`'s device: what a
+/// person's workspace is before any app writes to it.
+fn empty(certificate: &tilo_user_identity::DeviceCert, key: &SigningKey) -> TestWorkspace {
+    TestWorkspace::empty_interactive(
+        certificate.clone(),
+        key.clone(),
+        &uuid::Uuid::new_v4().to_string(),
+    )
+    .expect("the fixture device holds its workspace")
 }
 
 /// A write is durable in this device's record before any peer holds it, and a
@@ -208,7 +219,7 @@ async fn a_joiner_gets_the_history_and_writes_right_away() {
     let a_cert = testing::certificate(&root, &a_key, "A");
     let b_cert = testing::certificate(&root, &b_key, "B");
     let owner_a = open_file(&directory.path().join("a.json")).unwrap();
-    let mut fixture = TestWorkspace::new();
+    let mut fixture = empty(&a_cert, &a_key);
     let workspace = fixture.workspace_id();
     fixture = testing::enroll_into(fixture, &owner_a, &a_key, &a_cert).unwrap();
     write(&owner_a, workspace, &a_key).await;
@@ -340,7 +351,7 @@ fn held_certified(
     let b_cert = testing::certificate(&root, &b_key, "B");
     let owner_a = open_file(&directory.join("a.json")).unwrap();
     let owner_b = open_file(&directory.join("b.json")).unwrap();
-    let fixture = TestWorkspace::new();
+    let fixture = empty(&a_cert, &a_key);
     let fixture = testing::enroll_into(fixture, &owner_a, &a_key, &a_cert).unwrap();
     let fixture = testing::enroll_into(fixture, &owner_b, &b_key, &b_cert).unwrap();
     (owner_a, fixture, a_key, b_key, a_cert)
@@ -362,7 +373,7 @@ async fn two_devices_offline_role_changes_converge() {
     let b_cert = testing::certificate(&root, &b_key, "B");
     let owner_a = open_file(&directory.path().join("a.json")).unwrap();
     let owner_b = open_file(&directory.path().join("b.json")).unwrap();
-    let fixture = TestWorkspace::new();
+    let fixture = empty(&a_cert, &a_key);
     let workspace = fixture.workspace_id();
     let fixture = testing::enroll_into(fixture, &owner_a, &a_key, &a_cert).unwrap();
     let _fixture = testing::enroll_into(fixture, &owner_b, &b_key, &b_cert).unwrap();

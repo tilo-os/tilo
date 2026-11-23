@@ -271,26 +271,6 @@ impl StatePeer {
                 .is_some_and(|cert| self.governs_history(&cert.user_public_key))
     }
 
-    /// `device`'s certificate when it is a device of a person who governs the
-    /// workspace's history ([`Self::governs_history`]), current at `now`.
-    #[expect(
-        dead_code,
-        reason = "the native publication cut it served is gone; the governor branch goes with the call path's push"
-    )]
-    pub(super) fn governor_device(
-        &self,
-        device: &[u8; 32],
-        now: SystemTime,
-    ) -> Result<&DeviceCert, crate::AdmissionError> {
-        let cert = self.certificate(device, now)?;
-        if !self.governs_history(&cert.user_public_key) {
-            return Err(crate::AdmissionError::forbidden(
-                "the publisher is not a device of the workspace's owner or an administrator's",
-            ));
-        }
-        Ok(cert)
-    }
-
     /// Verified public identity metadata; never includes signing keys.
     pub fn certificates(&self) -> Vec<DeviceCert> {
         self.core
