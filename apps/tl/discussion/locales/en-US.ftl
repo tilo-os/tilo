@@ -110,6 +110,10 @@ d-kflwfuct = Delete~present
 
 d-upy33rnt = Thread
     .w-discussion = Discussion
+    .w-edit-comment = Edit comment
+    .w-cancel = Cancel
+    .w-save = Save
+    .w-edit = Edit
     .w-add-a-comment = Add a comment
     .w-send = Send
 

@@ -411,6 +411,8 @@ impl Checker<'_> {
         let outer = std::mem::take(&mut self.st);
         self.begin(Ctx::View, params, Ty::View, id);
         self.st.owner_view = Some(owner.to_owned());
+        // A row has no message of its own: the words it shows are a message of the view it stands in.
+        self.st.words_of = Some(id.split('~').next().unwrap_or(id).to_owned());
         // The row's identity, the enclosing rows' included: what names one node among the rows.
         if let Some((key, _)) = self.lookup(ROW_KEY) {
             self.st.keys.push(key);

@@ -599,7 +599,8 @@ d-tbcsx2lp = Search found
     .w-nothing-matches = Nothing matches { $search_text }
     .w-channels = Channels
     .w-playlists = Playlists
-    .w-videos = Videos
+    .w-videos = { $video_count } videos
+    .w-videos-2 = Videos
 
 d-yf5l4ysw = Watched page
     .w-history = History

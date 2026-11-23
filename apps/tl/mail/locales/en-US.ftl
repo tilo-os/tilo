@@ -644,6 +644,7 @@ d-m5y6nl2m = All inboxes
     .w-is-inbox = is:inbox
 
 d-s7tarqlp = Accounts threads
+    .w-show-older-messages-from = Show older messages from { $address }
 
 d-tfom3oeo = Account threads
     .w-show-older-messages = Show older messages

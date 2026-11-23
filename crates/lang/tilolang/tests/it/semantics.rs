@@ -466,6 +466,33 @@ tilo_test_env::scenario! {
         assert_eq!(row.state[0].name, "typed");
     }
 
+    phase a_loop_rows_words_are_a_message_of_the_view_it_stands_in;
+    // A row is compiled as a view of its own (`<view>~row<n>`), which has no message: the words it shows
+    // are attributes of the view whose body the loop is in, or a person could not translate them.
+    {
+        let c = compile(
+            "type Item {\n    name: Text\n}\ntype Shelf {\n    items: List<Item>\n}\nroot Shelf\ndefault view shelf for Shelf\nview shelf(s: Shelf) {\n    stack {\n        for i in s.items {\n            text(\"A row of the shelf\")\n            ui.Button(\"Press the row\") { }\n        }\n    }\n}",
+        );
+        crate::common::validate(&c.wasm);
+        let view = c.ids.get("shelf").expect("the view");
+        let source = tilolang::messages::source_catalogue(&c.meta);
+        let heading = format!("{} = Shelf", tilolang::messages::key_of(view));
+        assert!(source.contains(&heading), "{heading:?} in {source}");
+        for line in [
+            "    .w-a-row-of-the-shelf = A row of the shelf".to_owned(),
+            "    .w-press-the-row = Press the row".to_owned(),
+        ] {
+            assert!(source.contains(&line), "{line:?} in {source}");
+        }
+        let under = source
+            .find(".w-a-row-of-the-shelf")
+            .expect("the row's words");
+        assert!(
+            under > source.find(&heading).expect("the view's message"),
+            "the row's words are the view's attributes: {source}"
+        );
+    }
+
     phase a_view_answers_a_request_to_show_an_item_of_a_type_it_lists;
     // A view answers a request to show an item of a type it lists (`on show(x: T): ...`): the action it makes
     // in its own state, run with the item.
