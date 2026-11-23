@@ -780,7 +780,7 @@ action open_window(resource: host.Resource) {
         phase the_faces_the_device_has_are_offered;
         {
             let books = Books::new();
-            let window = books.window("library_settings", vec![Value::resource(&books.lib)]);
+            let mut window = books.window("library_settings", vec![Value::resource(&books.lib)]);
             let picker = of_kind(window.tree(), "ui.Dropdown")
                 .into_iter()
                 .find(|node| text_prop(node, "caption") == "Face")
@@ -800,17 +800,20 @@ action open_window(resource: host.Resource) {
                 ["Our Serif", "Our Sans"],
                 "the picker offers the families this device sets text in"
             );
-            books.call(
-                "set_face",
-                books.args(
-                    "set_face",
-                    &[("lib", Value::resource(&books.lib)), ("face", Value::text("Our Serif"))],
-                ),
+            let key = picker.key.clone();
+            window
+                .fire_with(&key, "change", Some(&Value::text("Our Sans")))
+                .unwrap();
+            window.poll_patches().unwrap();
+            assert_eq!(
+                books.rt.read(&books.lib, "face").unwrap(),
+                Value::text("Our Sans"),
+                "picking a face records it through the reading settings' action"
             );
             let book = books.open();
             let page = books.book_window(&book);
             let reading = of_kind(page.tree(), "ui.Reading")[0];
-            assert_eq!(prop(reading, "face"), "Our Serif");
+            assert_eq!(prop(reading, "face"), "Our Sans");
         }
 
         phase the_page_is_set_the_way_its_reader_likes_it;

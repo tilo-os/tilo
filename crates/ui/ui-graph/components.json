@@ -2258,6 +2258,13 @@
           "type": "bool"
         }
       ],
+      "events": [
+        {
+          "name": "change",
+          "doc": "A choice was made: carries the chosen option's text.",
+          "value": "text"
+        }
+      ],
       "bindings": [
         {
           "name": "value",

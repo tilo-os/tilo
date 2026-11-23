@@ -870,7 +870,9 @@ view library_settings(lib: Library) {
                             options: fonts(),
                             caption: "Face",
                             placeholder: "The reader's serif",
-                        )
+                        ) {
+                            on change(font): set_face(lib, font)
+                        }
                         ui.Toggle(bind: lib.justified, label: "Justified paragraphs")
                     }
                 }

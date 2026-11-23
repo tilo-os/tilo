@@ -1,6 +1,6 @@
 //! [`Dropdown`] as a described component.
 
-use crate::component::{Bound, Component, Described, Value};
+use crate::component::{Bound, Component, Described, Event, Value};
 use crate::icons::Icon;
 use crate::widget::ControlSize;
 
@@ -27,6 +27,9 @@ pub struct DropdownProps {
     pub fill: bool,
     /// Whether it can be chosen from now.
     pub enabled: bool,
+    /// A choice was made: carries the chosen option's text.
+    #[component(event(value = String))]
+    pub change: Event,
 }
 
 impl Default for DropdownProps {
@@ -40,6 +43,7 @@ impl Default for DropdownProps {
             size: ControlSize::default(),
             fill: false,
             enabled: true,
+            change: Event::None,
         }
     }
 }
@@ -57,11 +61,20 @@ impl Described for Dropdown {
             size,
             fill,
             enabled,
+            change,
         } = props;
         let edits = value.clone();
         let mut dropdown = Self::from_state(options, &value.state)
             .with_id(key)
-            .on_change(move |chosen| edits.edited(Value::Text(chosen.to_owned())))
+            .on_change(move |chosen| {
+                // A view that names an action for the choice owns it: the action records the
+                // change with its words, rather than a bare edit of the bound field.
+                if change.is_none() {
+                    edits.edited(Value::Text(chosen.to_owned()));
+                } else {
+                    change.fire(Some(Value::Text(chosen.to_owned())));
+                }
+            })
             .with_enabled(enabled)
             .control_size(size);
         if let Some(placeholder) = &placeholder {
