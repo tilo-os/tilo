@@ -483,7 +483,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase a_sealed_change_made_for_a_caller_is_checked_when_a_key_holder_opens_it;
+    phase a_sealed_change_made_for_a_caller_is_checked_when_the_device_that_keeps_it_opens_it;
     {
         let mut f = fixture();
         let keys = f.keys();

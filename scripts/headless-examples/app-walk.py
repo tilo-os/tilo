@@ -755,7 +755,7 @@ def hover(session: Session, selector: str, deadline: float = 20.0) -> dict:
 # The sheet a device of the person's is added from, and what its requester prints for the person
 # to compare with what the device they already have shows.
 SHOW_PAIR_DEVICE = ("session:invite", "show-pair-device")
-PAIRING_CODE = "Pairing code: "
+ADD_DEVICE_CODE = "Pairing code: "
 
 
 def devices_of(spec: dict) -> list[dict]:
@@ -951,8 +951,8 @@ class Devices:
                 if self.joining.poll() not in (None, 0):
                     raise Failed(f"the {name} could not pair: {text.strip()[-2000:]}")
                 for line in text.splitlines():
-                    if line.startswith(PAIRING_CODE):
-                        return line[len(PAIRING_CODE):].strip()
+                    if line.startswith(ADD_DEVICE_CODE):
+                        return line[len(ADD_DEVICE_CODE):].strip()
                 return None
 
             shown = until_value(f"the {name} to show a pairing code", code, 20)

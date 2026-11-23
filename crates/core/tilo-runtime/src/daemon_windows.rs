@@ -30,7 +30,7 @@ pub fn serve(_profile: &Path, _dev: bool) -> io::Result<()> {
 /// Always [`io::ErrorKind::Unsupported`]: the daemon has no Windows body yet.
 pub fn connect(
     _profile: &Path,
-    _standalone: bool,
+    _chose_own_profile: bool,
     _forward: Option<&tilo_mcp::devices::Forward>,
     _workspace: Option<&str>,
 ) -> io::Result<()> {
