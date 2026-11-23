@@ -457,7 +457,7 @@ if [ -n "$fmt_rs" ]; then
   fi
 fi
 
-# tilolang sources are kept in canonical form (`tlc fmt`), and the compiler's
+# tilolang sources are kept in canonical form (`tilolang fmt`), and the compiler's
 # tests hold std and the example packages to it; a hand-wrapped .tl file fails
 # them on main. Format the staged ones here, as rustfmt above. The formatter
 # takes one package at a time (a package is a directory of .tl files): the
@@ -507,8 +507,7 @@ if [ -n "$tl_packages$tl_locked_packages" ]; then
     tl_fmt=""
     tl_candidates=()
     while IFS= read -r -d '' c; do built+=("$c"); done < <(
-      find "$root/target" -maxdepth 4 -type f \
-        \( -name tlc -o -name tilolangc -o -name tilolang \) -print0 2>/dev/null)
+      find "$root/target" -maxdepth 4 -type f -name tilolang -print0 2>/dev/null)
     [ "${#built[@]}" -gt 0 ] || return 0
     while IFS= read -r c; do
       if [ -n "$c" ] && [ -x "$c" ]; then
@@ -519,17 +518,6 @@ if [ -n "$tl_packages$tl_locked_packages" ]; then
         esac
       fi
     done < <(ls -td -- "${built[@]}" 2>/dev/null || true)
-    # The language's own tool resolves the packages an app imports from the
-    # tree (`so.tilo.session` and the like); the compiler alone knows tilolang
-    # packages only, so it goes last when the locks below are refreshed.
-    local cli=() rest=()
-    for c in "${tl_candidates[@]}"; do
-      case "${c##*/}" in
-        (tilolang) cli+=("$c") ;;
-        (*) rest+=("$c") ;;
-      esac
-    done
-    tl_candidates=("${cli[@]}" "${rest[@]}")
   }
   tl_find_fmt
   if [ -z "$tl_fmt" ] && [ -n "$tl_packages" ]; then
@@ -554,7 +542,7 @@ if [ -n "$tl_packages$tl_locked_packages" ]; then
       else
         tl_log="$tl_build_state.log"
         tl_why=""
-        if (cd "$root" && cargo build --quiet --locked -p tilolang --bin tlc) \
+        if (cd "$root" && cargo build --quiet --locked -p tilolang-cli --bin tilolang) \
              >"$tl_log" 2>&1; then
           tl_find_fmt
         else

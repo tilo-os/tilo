@@ -346,10 +346,10 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   written inside a declaration's head has no line of its own to keep, so it prints above the
   next statement. `///` is prose: a blank line between two `///` lines is a paragraph break,
   and the canonical form writes it as a `///` line.
-- **The command line is a library module** (`cli::main`), so the host app's binary can run the
-  same commands and add `run`, which needs the platform. The names: `tilolang` is the full build
-  tool (the host binary, with `run`); the compiler crate's own binary is `tilolangc`, also
-  built as `tlc`, from the same `main.rs`, so neither clashes with `target/<profile>/tilolang`.
+- **The commands are a library module** (`cli::main`), and `tilolang` is their one binary: a
+  `check`, `fmt` or `ids` it is given runs the compiler's own code, while `build`, `run`, `dev`
+  and the rest need the platform and live in `tilolang-cli`. One tool, so nothing clashes with
+  `target/<profile>/tilolang` and there is no second copy of the command line to keep in step.
 
 ## The standard library is a package
 

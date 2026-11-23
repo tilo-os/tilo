@@ -918,12 +918,12 @@ measures it in, read as one with `Duration(n)`.
 
 ## Commands
 
-`tilolang` is the language's tool (`crates/lang/tilolang-cli`, `cargo run -p tilolang-cli --`).
-The compiler crate has the commands that need nothing but the compiler under two names,
-`tilolangc` and the short `tlc` (`cargo run -p tilolang --bin tlc --`).
+`tilolang` is the language's one tool (`crates/lang/tilolang-cli`,
+`cargo run -p tilolang-cli --`): it runs the compiler's own commands (`check`, `fmt`, `ids`, from
+`crates/lang/tilolang/src/cli.rs`) and builds, runs and develops packages as Tilo apps.
 
 ```
-tilolang check [dir] [--json] [--watch] [--write-ids]
+tilolang check [dir] [--json] [--watch] [--write-ids] [--path DIR]...
                                           every error of the package and its imports, and an
                                           ids lock that is out of date (written with --write-ids)
 tilolang build [dir] [--out DIR]          writes a signed Tilo app per package: OUT/<name>.tapp
