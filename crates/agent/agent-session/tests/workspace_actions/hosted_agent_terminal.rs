@@ -253,7 +253,7 @@ async fn an_agents_command_asks_first_and_is_done_once_on_its_persons_answer() {
     Box::pin(command_asks_then_is_done()).await;
 }
 
-async fn command_asks_then_is_done() async fn command_asks_then_is_done() {
+async fn command_asks_then_is_done() {
     let mut hosted = OnTheirServer::start().await;
     Box::pin(hosted.turn(
         "Say hello in the shell",
@@ -274,7 +274,8 @@ async fn command_asks_then_is_done() async fn command_asks_then_is_done() {
     // The person reads the command that would run before allowing it.
     assert!(
         asked[0]
-            .facts.facts
+            .facts
+            .facts
             .iter()
             .any(|fact| fact.value.contains("first-echo")),
         "{:?}",
@@ -663,7 +664,7 @@ async fn a_commands_git_identity_is_the_agent_that_asked_as_the_workspace_names_
     Box::pin(identity_in_the_vm()).await;
 }
 
-async fn identity_in_the_vm() async fn identity_in_the_vm() {
+async fn identity_in_the_vm() {
     let mut hosted = OnTheirServer::start_with_vm().await;
     Box::pin(hosted.turn(
         "Commit in the shell",
@@ -739,7 +740,11 @@ async fn identity_in_the_vm() async fn identity_in_the_vm() {
             .await;
             assert!(!failed, "her command is taken: {text}");
             // It waits for her own yes, at another device of hers.
-            let other = enrol(&hosted.ada, "Ada's other browser", DeviceCapabilities::member());
+            let other = enrol(
+                &hosted.ada,
+                "Ada's other browser",
+                DeviceCapabilities::member(),
+            );
             let mut at = Browser::open_at(
                 &hosted.server,
                 &other,
