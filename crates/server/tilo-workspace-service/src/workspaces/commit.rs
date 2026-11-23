@@ -59,8 +59,8 @@ pub(super) fn changed_records(
     peer: &StatePeer,
     signing: (&SigningKey, SystemTime),
     generation: u64,
-) -> Result<std::collections::BTreeSet<(String, String)>, String> {
-    Ok(durable_messages(candidate, peer, signing, generation)
+) -> std::collections::BTreeSet<(String, String)> {
+    durable_messages(candidate, peer, signing, generation)
         .into_iter()
         .filter_map(|message| match message {
             neighbour_wire::NeighbourMsg::AppDocument {
@@ -70,7 +70,7 @@ pub(super) fn changed_records(
             } => Some((app_id, document_id)),
             _ => None,
         })
-        .collect())
+        .collect()
 }
 
 /// What a commit that starts the workspace over from a base publishes in

@@ -816,7 +816,7 @@ impl GovernedWorkspace {
             // Keep unchanged record checkpoints on their own channels; replacing
             // those baselines could discard member writes. A record changed by
             // this commit must still publish at the governance rollover.
-            let changed_documents = changed_records(&candidate, replica, (key, now), generation)?;
+            let changed_documents = changed_records(&candidate, replica, (key, now), generation);
             // The workspace's document starts over from a base holding its
             // state as it stands, with none of the history that led there.
             if !adopted {

@@ -584,7 +584,7 @@ impl JoinedChannel {
         let current = self
             .state
             .revalidate_admission(&self.route(), &self.verified_identity)?;
-        let Some(status) = tilo_actions::EffectReceiptStatus::from_terminal(&update) else {
+        let Some(status) = tilo_actions::EffectReceiptStatus::from_terminal(update) else {
             return Err(BrokerError::failed(
                 "only a terminal effect may enter workspace activity".into(),
             ));
