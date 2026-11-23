@@ -121,6 +121,8 @@ d-xnczt27x-filter-trash = Trash
 
 d-xnczt27x-filter-unread = Unread
 
+d-xnczt27x-filter-latest = Received
+
 d-5ynnrlxh = Label
     .doc = A workspace label for conversations.
     .noun = { $count ->
@@ -281,6 +283,22 @@ d-v7wxxiaj = Carry native mail
 d-ygbvdl5l = New message
     .doc = Starts a message from the first account.
     .w-add-a-mail-account-in-settings = Add a mail account in Settings first
+
+d-lnhvmglv = Draft a message
+    .doc = Writes a message for the person to read and send: to whom, its subject and what it says, answering `in_reply_to` (a Message-ID) when it names one.
+    .w-it-goes-to-nobody-yet = It goes to nobody yet
+
+d-lnhvmglv-to = To
+
+d-lnhvmglv-subject = Subject
+
+d-lnhvmglv-body = Body
+
+d-lnhvmglv-cc = Cc
+
+d-lnhvmglv-in_reply_to = In reply to
+
+d-lnhvmglv-from = From
 
 d-hom44or2 = Invite by mail
     .doc = Starts a message inviting `to` to an event, its invitation (`calendar_ics`, iCalendar) carried beside what it says: what Calendar hands Mail for each guest it invites.
@@ -545,6 +563,8 @@ d-2zkppx6r = Set hold~present
 
 d-gcixhwyt = New draft~present
 
+d-lehcqyhl = Draft message~present
+
 d-7jf4pn3j = Prepare calendar invitation~present
 
 d-s2qkkueu = Deliver message~present
@@ -639,6 +659,9 @@ d-jgdzx3la = Thread list
 
 d-u43u7z6w = Thread row
 
+d-d6irjool = Thread item
+    .w-preview = Preview
+
 d-77noqogh = Draft row
 
 d-bbuecgsi = Conversation
@@ -657,6 +680,12 @@ d-n2xgxnbw = Message
 
 d-llqqdcy5 = Attachment chip
     .w-not-downloaded = { $name }, not downloaded
+
+d-u5uuebo4 = Inspect
+    .w-no-subject = No subject
+    .w-unread = Unread
+    .w-it-stays-unread-until-its-conversation = It stays unread until its conversation is opened.
+    .w-to = to { $to }
 
 d-oqpazwvc = Editor
     .w-status = Status

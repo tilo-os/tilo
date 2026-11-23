@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.mail@0cbc5f7b812193d8";
+export const SURFACE = "so.tilo.mail@c979b65ba2f36fa0";
 
 /** The arguments of `set_signature`. */
 export interface SetSignatureArgs {
@@ -428,6 +428,15 @@ export interface Mail extends tilo.Resource {
   set_holdMany(items: SetHoldArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Starts a message from the first account. */
   new_draft(): Promise<Draft>;
+  /** Writes a message for the person to read and send: to whom, its subject and what it says, answering `in_reply_to` (a Message-ID) when it names one. Every call makes a draft of its own beside the others; nothing is written over and nothing is sent. Where an agent drafts a message, the person finds it in Drafts and sends it. */
+  draft_message(args: {
+    to: string;
+    subject?: string;
+    body?: string;
+    cc?: string;
+    in_reply_to?: string;
+    from?: string;
+  }): Promise<Draft>;
   /** Starts a message inviting `to` to an event, its invitation (`calendar_ics`, iCalendar) carried beside what it says: what Calendar hands Mail for each guest it invites. Nothing is sent; the person reads it, and sends it. */
   prepare_calendar_invitation(args: {
     to: string;
@@ -478,7 +487,7 @@ export interface Mail extends tilo.Resource {
 
 /** The actions `Mail` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const MAIL_ACTIONS = ["set_hold", "set_holdMany", "new_draft", "prepare_calendar_invitation", "deliver_message", "open_message_file", "rename_label", "rename_labelMany", "delete_label", "delete_labelMany", "discard", "discardMany"] as const;
+export const MAIL_ACTIONS = ["set_hold", "set_holdMany", "new_draft", "draft_message", "prepare_calendar_invitation", "deliver_message", "open_message_file", "rename_label", "rename_labelMany", "delete_label", "delete_labelMany", "discard", "discardMany"] as const;
 
 /** The `tl.so.tilo.mail.Mail` kind at `path`. */
 export function mail(ws: tilo.Workspace, path: string): Mail {

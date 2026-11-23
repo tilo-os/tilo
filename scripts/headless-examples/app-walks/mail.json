@@ -58,6 +58,26 @@
       "budget_ms": 60000
     },
     {
+      "id": "agent-drafts",
+      "said": "An agent drafts a message as a typed action, for the person to read and send",
+      "ops": [
+        {
+          "act": {
+            "do": [
+              "tl.so.tilo.mail.Mail",
+              "draft_message",
+              {
+                "to": "grace@hopper.example",
+                "subject": "A message an agent drafted",
+                "body": "The person reads this and sends it."
+              }
+            ]
+          }
+        }
+      ],
+      "budget_ms": 20000
+    },
+    {
       "id": "compose",
       "said": "Write a message",
       "ops": [

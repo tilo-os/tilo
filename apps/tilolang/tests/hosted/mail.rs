@@ -2564,3 +2564,224 @@ fn opening_a_mailbox_shows_the_conversations_filed_in_it() {
         "the conversation filed in it: {rows:#?}"
     );
 }
+
+/// A message the server kept from last winter, read already: what a date narrows conversations by.
+fn old_mail() -> String {
+    format!(
+        "From: Old Sender <old@example.org>\nTo: {ME}\nSubject: Last winter's news\n\
+Message-ID: <old@example.org>\nDate: Mon, 1 Dec 2025 09:00:00 +0000\n\nAn old note.\n"
+    )
+}
+
+// USER REQUIREMENT: search finds mail by who sent it, what it is about and when it came:
+// sender and subject as words, a date as a filter, through the same index and query the
+// system's search reads.
+#[test]
+fn search_finds_mail_by_sender_subject_and_date() {
+    let servers = servers();
+    servers.imap.append("INBOX", &old_mail(), &["\\Seen"]);
+    let (_connector, mut session) = window_of(account(&servers));
+    session.until("the old message to come in with the rest", |session| {
+        session.threads().len() == 3
+    });
+
+    // The words a person types: who sent it and what it is about are both in the message's text.
+    let host = session.instance_host();
+    let hits = tilolang_tilo::search::every_hit(&host);
+    let plan = hits
+        .iter()
+        .find(|hit| hit.type_name == "Message" && hit.title == "Launch plan")
+        .unwrap_or_else(|| panic!("the plan message is indexed: {hits:?}"));
+    assert!(
+        plan.texts.iter().any(|text| text.contains("Grace Hopper")),
+        "its sender is searchable: {:?}",
+        plan.texts
+    );
+    assert!(
+        plan.texts
+            .iter()
+            .any(|text| text.contains("Here is the draft plan.")),
+        "its words are searchable: {:?}",
+        plan.texts
+    );
+
+    // A date, as `latest:>2026-06-01` or `latest:-7d` types it: the conversations of that span, by
+    // what each one's last message came in. The account's window narrows its list in place, as a
+    // query typed in search and scoped to the window does.
+    let account = session.accounts().remove(0);
+    let mut window = session
+        .instance_host()
+        .open_resource(&account, None)
+        .expect("the account's window opens");
+    let list = window
+        .tree()
+        .of_kind("ui.VirtualList")
+        .first()
+        .map(|node| node.key.clone())
+        .expect("the window lists its conversations");
+    assert_eq!(
+        window.list_len(&list),
+        Some(3),
+        "the inbox lists every conversation"
+    );
+    let package = session
+        .instance_host()
+        .package(APP)
+        .expect("the mail package");
+    let query_state = package
+        .meta
+        .views
+        .iter()
+        .find(|view| view.name == "mailboxes")
+        .and_then(|view| view.state.iter().find(|state| state.name == "query"))
+        .expect("the account's window keeps the place it shows")
+        .id
+        .clone();
+    // The conversations that came after the oldest of them: a date, as `latest:-7d` or
+    // `latest:>2026-06-01` types it, narrows the list where it stands.
+    let mut came: Vec<String> = session
+        .threads()
+        .iter()
+        .map(|thread| session.text(thread, "latest"))
+        .collect();
+    came.sort();
+    let after = format!("latest:>{}", came[0]);
+    window.set_view_state(&query_state, RtValue::text(after.as_str()));
+    window.poll_patches().expect("the window shows the span");
+    assert_eq!(
+        window.list_len(&list),
+        Some(2),
+        "the conversations that came after {} ({after})",
+        came[0]
+    );
+}
+
+// USER REQUIREMENT: an agent drafts a message as a typed action; the person finds it in Drafts
+// and sends it, answering what it answers.
+#[test]
+fn an_agent_drafts_a_message_the_person_sends() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    let root = session.mail_root();
+    let resource = tilolang_tilo::publish::resource_id(APP, &root.id_string());
+    let (agent, ambient) = super::agent_session();
+    let arguments = json!({
+        "to": "bo@chen.example",
+        "subject": "Re: Dinner on Friday?",
+        "body": "Friday works for me.",
+        "in_reply_to": "dinner@chen.example",
+    });
+    let answered = session
+        .invoke(
+            Some(agent),
+            Some(&ambient),
+            &resource,
+            "draft_message",
+            arguments.as_object().expect("an object"),
+        )
+        .expect("an agent drafts a message");
+    let made = answered
+        .resources
+        .first()
+        .unwrap_or_else(|| panic!("it answers the draft it made: {answered:?}"));
+    let draft = ResourceRef::parse_id(
+        made.strip_prefix(&format!("tl:{APP}:"))
+            .expect("a draft of Mail"),
+        session.type_id("Draft"),
+    )
+    .expect("a draft");
+    assert_eq!(session.text(&draft, "to"), "bo@chen.example");
+    assert_eq!(session.text(&draft, "subject"), "Re: Dinner on Friday?");
+    assert_eq!(session.text(&draft, "body"), "Friday works for me.");
+    assert_eq!(session.text(&draft, "in_reply_to"), "dinner@chen.example");
+    assert!(
+        !session.flag(&draft, "sent"),
+        "it waits for the person to send it"
+    );
+    assert!(
+        session.refs(&root, "drafts").contains(&draft),
+        "the person finds it in Drafts"
+    );
+
+    // The person sends it, and it goes out answering the message it names.
+    session.hold_for(0);
+    session.call("send", &draft, &json!({}));
+    session.until("the server to take it", |_| servers.smtp.sent().len() == 1);
+    let sent = String::from_utf8_lossy(&servers.smtp.sent()[0]).into_owned();
+    assert!(sent.contains("bo@chen.example"), "{sent}");
+    assert!(sent.contains("Subject: Re: Dinner on Friday?"), "{sent}");
+    assert!(
+        sent.contains("In-Reply-To: <dinner@chen.example>"),
+        "{sent}"
+    );
+    assert!(sent.contains("Friday works for me."), "{sent}");
+}
+
+// USER REQUIREMENT: a person reads a message before opening its conversation, and that marks
+// nothing read: neither here nor on the server.
+#[test]
+fn a_message_previews_without_being_read() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    let plan = session.thread("Launch plan");
+    assert!(session.flag(&plan, "unread"));
+    // The list offers the newest message as a preview while the row is under the pointer.
+    let senders = session.text(&plan, "senders");
+    let (x, y) = session.wait_for("the conversation's row", |session| {
+        let mut found = Vec::new();
+        containing(session.window.root(), &senders, &mut found);
+        found.last().map(|rect| (rect.center().x, rect.center().y))
+    });
+    session.window.move_to(x, y);
+    session.settle();
+    let (preview_x, preview_y) = session.wait_for("its Preview to be offered", |session| {
+        let mut found = Vec::new();
+        containing(session.window.root(), "Preview", &mut found);
+        found.pop().map(|rect| (rect.center().x, rect.center().y))
+    });
+    session.window.click_at(preview_x, preview_y);
+    session.settle();
+    let tree = {
+        let window = session.hosted();
+        window
+            .view()
+            .expect("the window is connected")
+            .detail_tree()
+            .expect("the preview opens beside the list")
+    };
+    let mut texts = Vec::new();
+    super::texts(&tree, &mut texts);
+    assert!(
+        texts.iter().any(|text| text == "Ada Lovelace"),
+        "the preview says who wrote the newest message: {texts:?}"
+    );
+    assert!(
+        texts
+            .iter()
+            .any(|text| text.contains("Agreed on the twelfth.")),
+        "the preview says what it says: {texts:?}"
+    );
+    assert!(
+        texts
+            .iter()
+            .any(|text| text == "It stays unread until its conversation is opened."),
+        "it says it is still unread: {texts:?}"
+    );
+    assert!(
+        session.flag(&plan, "unread"),
+        "the preview marks nothing read"
+    );
+    session.settle();
+    assert_eq!(
+        servers
+            .imap
+            .messages("INBOX")
+            .iter()
+            .filter(|message| message.flags.iter().any(|flag| flag == "\\Seen"))
+            .count(),
+        1,
+        "nothing told the server it was read"
+    );
+}

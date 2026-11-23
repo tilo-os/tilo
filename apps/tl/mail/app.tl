@@ -73,6 +73,9 @@ type Thread (origin: imap.thread, title: subject) {
         filter "Junk" = boxes.contains("junk") (icon: .shield)
         filter "Trash" = boxes.contains("trash") (icon: .trash)
         filter unread "Unread" (icon: .mail)
+        // When the conversation last came: `latest:>2026-06-01`, `latest:-7d` narrow the mail a
+        // person looks through to a day or a span, as every other field a filter compares.
+        filter latest "Received" (icon: .clock)
         sort latest newest
         hide key
         hide account
@@ -349,6 +352,36 @@ primary action new_draft(m: Mail) -> Draft (icon: .pencil, label: "New message")
     applies not m.accounts.is_empty() "Add a mail account in Settings first"
     let from = m.accounts.first()?.key ?? ""
     m.drafts.insert(Draft(from: from, body: signature_of(m, from)))
+}
+
+/// Writes a message for the person to read and send: to whom, its subject and what it says,
+/// answering `in_reply_to` (a Message-ID) when it names one. Every call makes a draft of its own
+/// beside the others; nothing is written over and nothing is sent. Where an agent drafts a
+/// message, the person finds it in Drafts and sends it.
+action draft_message(
+    m: Mail,
+    to: Text,
+    subject: Text = "",
+    body: Text = "",
+    cc: Text = "",
+    in_reply_to: Text = "",
+    from: Text = "",
+) -> Draft (icon: .pencil, label: "Draft a message") {
+    require to != "" "It goes to nobody yet"
+    let account = if from != "" and has_account(m, from) {
+        from
+    } else { m.accounts.first()?.key ?? "" }
+    m.drafts.insert(
+        Draft(
+            from: account,
+            to: to,
+            cc: cc,
+            subject: subject,
+            body: body,
+            in_reply_to: in_reply_to,
+            references: in_reply_to,
+        ),
+    )
 }
 
 /// Starts a message inviting `to` to an event, its invitation (`calendar_ics`, iCalendar) carried
@@ -1553,7 +1586,7 @@ view thread_list(shown: List<Thread>, more: Option<Action>) {
             on activate(x: Thread): open(x)
             for x in shown {
                 ui.ListItem(item: x, presence: lenses(x).find(l -> not l.mine)?.who) {
-                    thread_row(x)
+                    thread_item(x)
                 }
             }
         }
@@ -1573,6 +1606,24 @@ view thread_row(t: Thread) {
             .mail
         } else if t.messages.any(m -> not m.attachments.is_empty()) { .paperclip },
     )
+}
+
+/// A conversation's item in the list: its row, and the preview of its newest message, which
+/// shows what it says without opening the conversation, so reading it marks nothing read.
+view thread_item(t: Thread) {
+    thread_row(t)
+    if let m = t.messages.last() {
+        ui.HoverToolbar {
+            ui.Button("Preview", icon: .eye, icon_only: true) {
+                on press: open(m, view: inspect)
+            }
+        }
+        ui.ContextMenu {
+            ui.MenuItem("Preview", icon: .eye) {
+                on choose: open(m, view: inspect)
+            }
+        }
+    }
 }
 
 /// One message being written in a list: its subject and who it goes to.
@@ -1728,6 +1779,48 @@ view attachment_chip(m: Message, f: File) {
         }
     } else {
         ui.Chip(std.say("{f.name}, not downloaded"), icon: .paperclip)
+    }
+}
+
+/// One message as it came, shown without its conversation opening: what a person reads before
+/// deciding to answer. Nothing is marked read here, and the sender is told nothing; opening the
+/// conversation is what reads it.
+view inspect(m: Message) {
+    let subject = if m.subject.trim() == "" { "No subject" } else { m.subject }
+    ui.NavShell(content_kind: .page, title: subject) {
+        content: {
+            ui.Scroll {
+                page {
+                    stack(gap: .section) {
+                        if m.unread {
+                            ui.Banner(
+                                "Unread",
+                                message: "It stays unread until its conversation is opened.",
+                                kind: .info,
+                            )
+                        }
+                        row(gap: .related, align: .center) {
+                            ui.Text(
+                                if m.from_name == "" { m.from } else { m.from_name },
+                                role: .subheading,
+                            )
+                            ui.Time(m.received, role: .caption, past: true, secondary: true)
+                        }
+                        ui.Text("to {m.to}", role: .caption, secondary: true)
+                        ui.Card {
+                            ui.Text(as_lines(m.body), role: .body)
+                            if not m.attachments.is_empty() {
+                                row(gap: .tight) {
+                                    for f in m.attachments {
+                                        attachment_chip(m, f)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

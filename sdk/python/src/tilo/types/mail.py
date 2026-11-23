@@ -159,7 +159,7 @@ DiscardArgs = TypedDict("DiscardArgs", {
 
 class Account(Resource):
     """Account — `tl.so.tilo.mail.Account`."""
-    __surface__ = "so.tilo.mail@0cbc5f7b812193d8"
+    __surface__ = "so.tilo.mail@c979b65ba2f36fa0"
     yujnud5c: str  # key
     @property
     def _4lo3ei5n(self) -> str:
@@ -216,7 +216,7 @@ class Account(Resource):
 
 class Mailbox(Resource):
     """Mailbox — `tl.so.tilo.mail.Mailbox`."""
-    __surface__ = "so.tilo.mail@0cbc5f7b812193d8"
+    __surface__ = "so.tilo.mail@c979b65ba2f36fa0"
     mh47w3p6: str  # key
     tlasysm5: str  # name
     xhiqdk3p: str  # role
@@ -235,7 +235,7 @@ class Mailbox(Resource):
 
 class Thread(Resource):
     """Thread — `tl.so.tilo.mail.Thread`."""
-    __surface__ = "so.tilo.mail@0cbc5f7b812193d8"
+    __surface__ = "so.tilo.mail@c979b65ba2f36fa0"
     ecmpoary: str  # key
     zu23m2dm: str  # account
     u732lnuk: str  # subject
@@ -414,13 +414,13 @@ class Thread(Resource):
 
 class Label(Resource):
     """Label — `tl.so.tilo.mail.Label`."""
-    __surface__ = "so.tilo.mail@0cbc5f7b812193d8"
+    __surface__ = "so.tilo.mail@c979b65ba2f36fa0"
     ammoua3h: str  # name
 
 
 class Message(Resource):
     """Message — `tl.so.tilo.mail.Message`."""
-    __surface__ = "so.tilo.mail@0cbc5f7b812193d8"
+    __surface__ = "so.tilo.mail@c979b65ba2f36fa0"
     kzjq6hvc: str  # key
     kdxoo3c6: str  # account
     ntqgnz4f: str  # subject
@@ -490,7 +490,7 @@ class Message(Resource):
 
 class Draft(Resource):
     """Draft — `tl.so.tilo.mail.Draft`."""
-    __surface__ = "so.tilo.mail@0cbc5f7b812193d8"
+    __surface__ = "so.tilo.mail@c979b65ba2f36fa0"
     m2g6zrle: str  # from
     zx2b4ax2: str  # from_address
     hd3o4gkq: str  # to
@@ -573,7 +573,7 @@ class Draft(Resource):
 
 class Mail(Resource):
     """Mail — `tl.so.tilo.mail.Mail`."""
-    __surface__ = "so.tilo.mail@0cbc5f7b812193d8"
+    __surface__ = "so.tilo.mail@c979b65ba2f36fa0"
     blig7xcq: list[Entry[Account]]  # accounts
     gkuo27e6: list[Entry[Draft]]  # drafts
     z3zcztpz: list[Entry[Label]]  # labels
@@ -598,6 +598,30 @@ class Mail(Resource):
     def new_draft(self) -> Draft:
         """Starts a message from the first account."""
         return self.action("new_draft")
+
+    def draft_message(self,
+        *,
+        to: str,
+        subject: str | None = None,
+        body: str | None = None,
+        cc: str | None = None,
+        in_reply_to: str | None = None,
+        from_: str | None = None,
+    ) -> Draft:
+        """Writes a message for the person to read and send: to whom, its subject and what it says, answering `in_reply_to` (a Message-ID) when it names one. Every call makes a draft of its own beside the others; nothing is written over and nothing is sent. Where an agent drafts a message, the person finds it in Drafts and sends it."""
+        args: dict[str, Any] = {}
+        args["to"] = to
+        if subject is not None:
+            args["subject"] = subject
+        if body is not None:
+            args["body"] = body
+        if cc is not None:
+            args["cc"] = cc
+        if in_reply_to is not None:
+            args["in_reply_to"] = in_reply_to
+        if from_ is not None:
+            args["from"] = from_
+        return self.action("draft_message", **args)
 
     def prepare_calendar_invitation(self,
         *,
@@ -688,10 +712,10 @@ class Mail(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"set_hold", "set_hold_many", "new_draft", "prepare_calendar_invitation", "deliver_message", "open_message_file", "rename_label", "rename_label_many", "delete_label", "delete_label_many", "discard", "discard_many"})
+    __actions__ = frozenset({"set_hold", "set_hold_many", "new_draft", "draft_message", "prepare_calendar_invitation", "deliver_message", "open_message_file", "rename_label", "rename_label_many", "delete_label", "delete_label_many", "discard", "discard_many"})
 
 
 class TiloMail(Resource):
     """Mail — `tl.so.tilo.mail`."""
-    __surface__ = "so.tilo.mail@0cbc5f7b812193d8"
+    __surface__ = "so.tilo.mail@c979b65ba2f36fa0"
 

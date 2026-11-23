@@ -29876,6 +29876,33 @@
         "required": [],
         "description": "Starts a message from the first account."
       },
+      "tl.so.tilo.mail.Mail.draft_message.Arguments": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "cc": {
+            "type": "string"
+          },
+          "in_reply_to": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "to"
+        ],
+        "description": "Writes a message for the person to read and send: to whom, its subject and what it says,\nanswering `in_reply_to` (a Message-ID) when it names one. Every call makes a draft of its own\nbeside the others; nothing is written over and nothing is sent. Where an agent drafts a\nmessage, the person finds it in Drafts and sends it."
+      },
       "tl.so.tilo.mail.Mail.prepare_calendar_invitation.Arguments": {
         "type": "object",
         "properties": {
@@ -41583,6 +41610,12 @@
       "resource": "tl.so.tilo.mail.Mail",
       "action": "new_draft",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Mail.new_draft.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Mail",
+      "action": "draft_message",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Mail.draft_message.Arguments"
     },
     {
       "app": "so.tilo.mail",
