@@ -283,7 +283,11 @@ fn the_tpm_wrapper_opens_with_the_secret_and_its_auth_value_is_the_contract_dige
         String::from_utf8_lossy(&loaded.stderr)
     );
     tilo_rollback::policy::flush(&f.runner);
-    let auth = format!("hex:{}", hex_encode(&*secret.auth_value()));
+    // The contract's digest, computed here rather than by the code under test.
+    let digest: [u8; 32] =
+        <sha2::Sha256 as sha2::Digest>::digest(b"tilo-signin-v1\x00123456").into();
+    assert_eq!(*secret.auth_value(), digest);
+    let auth = format!("hex:{}", hex_encode(&digest));
     let unsealed = tool(&[
         "tpm2_unseal".as_ref(),
         "-c".as_ref(),
@@ -502,6 +506,27 @@ fn the_sign_in_keyslot_and_token_join_the_header_without_touching_the_rest() {
     let tokens = luks::tokens(&f.runner, &device).unwrap();
     assert_eq!(tokens.len(), 1);
     assert_eq!(tokens[0].1, SigninToken::mirror(&record, slot));
+    // The initrd's boot sign-in reads the token as the header holds it.
+    let Some(Wrapper::Tpm { public, private }) = record.known().next() else {
+        panic!("a TPM wrapper");
+    };
+    let out = Command::new("cryptsetup")
+        .args(["luksDump", "--dump-json-metadata"])
+        .arg(&device)
+        .output_locked()
+        .unwrap();
+    let meta: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        meta["tokens"][tokens[0].0.to_string()],
+        serde_json::json!({
+            "type": "tilo-signin",
+            "keyslots": [slot.to_string()],
+            "uid": UID,
+            "name": "ada",
+            "display_name": "Ada Lovelace",
+            "wrappers": [{"kind": "tpm", "public": public, "private": private}],
+        })
+    );
 
     let mut renamed = record;
     renamed.display_name = "Ada King".into();
@@ -680,6 +705,12 @@ fn boot_unlock_cannot_try_without_a_sign_in_token_then_opens_with_the_secret_or_
     assert!(matches!(
         named(UID, recovery.formatted().as_bytes()),
         BootOutcome::Unlocked { uid: UID }
+    ));
+    // A file loses one trailing newline, not two.
+    std::fs::remove_file(keys_dir.join("root.key")).unwrap();
+    assert!(matches!(
+        named(UID, b"123456\n\n"),
+        BootOutcome::Wrong(Some(_))
     ));
 }
 

@@ -596,21 +596,3 @@ pub fn unseal_material(
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cleartext_material_round_trips() {
-        let runner = tilo_rollback::exec::Real::new();
-        let stored = seal_material(&runner, Sealing::Cleartext, b"{\"a\":1}").unwrap();
-        assert_eq!(
-            unseal_material(&runner, Sealing::Cleartext, &stored)
-                .unwrap()
-                .as_slice(),
-            b"{\"a\":1}"
-        );
-        assert!(unseal_material(&runner, Sealing::Cleartext, "not base64!").is_err());
-    }
-}

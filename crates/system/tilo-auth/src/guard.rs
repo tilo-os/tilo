@@ -79,20 +79,13 @@ mod tests {
     tilo_test_env::scenario! {
         fn the_guard_remembers_wrong_entries_for_a_while_as_digests;
 
-        phase a_wrong_entry_is_remembered_per_person_until_success_or_ten_minutes;
+        // Per person and until a success, the daemon's sign-in journey
+        // proves; ten minutes is a wait no journey takes.
+        phase a_wrong_entry_is_remembered_for_ten_minutes;
         {
             let mut guard = Guard::new().unwrap();
             let start = Instant::now();
             let typo = Secret::new("12345");
-            assert!(!guard.already_wrong(1000, &typo, start));
-            guard.remember_wrong(1000, &typo, start);
-            assert!(guard.already_wrong(1000, &typo, start + Duration::from_secs(1)));
-            assert!(!guard.already_wrong(1001, &typo, start));
-            assert!(!guard.already_wrong(1000, &Secret::new("123456"), start));
-
-            guard.succeeded(1000);
-            assert!(!guard.already_wrong(1000, &typo, start));
-
             guard.remember_wrong(1000, &typo, start);
             assert!(
                 guard.already_wrong(

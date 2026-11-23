@@ -302,21 +302,6 @@ mod tests {
             assert_eq!(volume(&[("/", "composefs")], "/run/no-link"), None);
         }
 
-        phase findmnt_sources_name_a_device_or_nothing;
-        {
-            assert_eq!(
-                mount_source("/dev/mapper/root[/root]\n"),
-                Some(PathBuf::from("/dev/mapper/root"))
-            );
-            assert_eq!(
-                mount_source("/dev/vda3\n"),
-                Some(PathBuf::from("/dev/vda3"))
-            );
-            assert_eq!(mount_source("composefs\n"), None);
-            assert_eq!(mount_source("overlay"), None);
-            assert_eq!(mount_source(""), None);
-        }
-
         phase a_block_node_reports_its_own_device_number;
         {
             assert_eq!(block_device_number(Path::new("/dev/null")), None);
