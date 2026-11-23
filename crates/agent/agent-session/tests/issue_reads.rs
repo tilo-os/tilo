@@ -345,8 +345,17 @@ fn a_tracker_listed_again_after_its_access_is_read_again_reuses_its_tree() {
     )
     .access()
     .clone()
-    .as_acting(tilo_action_policy::Acting::handed_agent("Claude Code", "ada").in_session("s1"))
-    .unwrap();
+    .as_acting(
+        tilo_action_policy::Acting::agent("Claude Code")
+            .acting_for(tilo_action_policy::Acting::person("ada"))
+            .in_session("s1"),
+    )
+    .unwrap()
+    .granted(tilo_action_policy::roles::certified_agent(
+        crate::common::WORKSPACE,
+        "Claude Code",
+        "ada",
+    ));
     let member = |unix_time| ReplicaActor::Member {
         access: access.clone(),
         sandbox: Vec::new(),
@@ -442,9 +451,16 @@ fn a_trackers_view_is_laid_out_again_only_when_its_members_own_access_moves() {
     let member = |policy: &tilo_action_policy::WorkspacePolicy, unix_time| ReplicaActor::Member {
         access: tilo_action_policy::MemberAccess::person(policy.clone(), ADA)
             .as_acting(
-                tilo_action_policy::Acting::handed_agent("Claude Code", ADA).in_session("s1"),
+                tilo_action_policy::Acting::agent("Claude Code")
+                    .acting_for(tilo_action_policy::Acting::person(ADA))
+                    .in_session("s1"),
             )
-            .unwrap(),
+            .unwrap()
+            .granted(tilo_action_policy::roles::certified_agent(
+                &policy.workspace,
+                "Claude Code",
+                ADA,
+            )),
         sandbox: Vec::new(),
         unix_time,
         agent_name: None,

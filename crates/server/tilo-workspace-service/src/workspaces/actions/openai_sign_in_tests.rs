@@ -167,7 +167,7 @@ async fn no_agent_signs_in_on_its_own(
     workspace_id: WorkspaceId,
     ada: &DeviceCert,
 ) {
-    let assistant = super::tests::caller(ada).delegated_to("assistant");
+    let assistant = super::tests::agent_caller(ada, "assistant");
     for verb in [person_models::BEGIN_SIGN_IN, person_models::CANCEL_SIGN_IN] {
         let unasked = a_sign_in_asked_by(actions, workspace_id, ada, &assistant, verb).await;
         assert!(

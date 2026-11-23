@@ -225,9 +225,9 @@ mod tests {
             );
         }
 
-        phase a_handed_agent_writes_for_its_person_within_their_role;
+        phase an_agent_its_persons_device_signs_for_writes_within_their_role;
         {
-            let agent = Acting::agent("claude").handed().in_session("s1");
+            let agent = Acting::agent("claude").in_session("s1");
             let for_editor = agent.clone().acting_for(Acting::person(EDITOR));
             assert!(admission(EDITOR, Some(policy())).admits(Some(&for_editor), None, verbs::WRITE));
             let for_viewer = agent.acting_for(Acting::person(VIEWER));
@@ -266,9 +266,7 @@ mod tests {
                 Answer::Deny,
                 tilo_action_policy::Grantee::person(OWNER),
             ));
-            let agent = Acting::agent("claude")
-                .handed()
-                .acting_for(Acting::person(OWNER));
+            let agent = Acting::agent("claude").acting_for(Acting::person(OWNER));
             let admission = admission(OWNER, Some(denied));
             assert!(!admission.admits(Some(&agent), Some("n1"), verbs::WRITE));
             assert!(admission.admits(None, Some("n1"), verbs::WRITE));

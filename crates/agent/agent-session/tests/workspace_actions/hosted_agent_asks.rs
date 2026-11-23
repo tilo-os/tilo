@@ -328,9 +328,8 @@ async fn a_cause_asks_the_agent_on_the_host_once_for_the_person_it_names() {
     // What asks here: another agent of the person's, acting for them, as a sub-agent with news
     // or the runner of their reminder does. The person is never an argument: the server says who
     // it acts for.
-    let planner = themselves(&root, &browser, &workspace)
-        .delegated_to("planner")
-        .named("Planner");
+    let planner =
+        super::their_agent(&themselves(&root, &browser, &workspace), "planner").named("Planner");
 
     // Where nobody could answer, nothing is asked: a conversation no agent takes part in, and
     // the conversation's own agent asking itself.
@@ -341,9 +340,7 @@ async fn a_cause_asks_the_agent_on_the_host_once_for_the_person_it_names() {
             .is_err(),
         "no agent takes part there"
     );
-    let scout = themselves(&root, &browser, &workspace)
-        .delegated_to(SCOUT)
-        .named("Scout");
+    let scout = super::their_agent(&themselves(&root, &browser, &workspace), SCOUT).named("Scout");
     assert!(
         ask_agent(&actions, &workspace, &scout, &thread, "run-0")
             .await
@@ -481,9 +478,8 @@ async fn what_its_person_writes_reaches_a_going_turn_and_what_a_cause_asks_waits
     .await;
 
     // While it works a reminder comes due, and then the person writes again.
-    let planner = themselves(&root, &browser, &workspace)
-        .delegated_to("planner")
-        .named("Planner");
+    let planner =
+        super::their_agent(&themselves(&root, &browser, &workspace), "planner").named("Planner");
     ask_agent(&actions, &workspace, &planner, &thread, "run-1")
         .await
         .expect("the reminder asks");

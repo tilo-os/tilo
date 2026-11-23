@@ -1,7 +1,7 @@
 //! What a workspace's agents learned, from its members' own side: a member
-//! reads the list and changes it on a device of theirs, an agent a member's
-//! session was handed to reads it and its changes ask that member, and
-//! nobody outside the workspace is answered.
+//! reads the list and changes it on a device of theirs, an agent a member
+//! certified reads it and its changes ask that member, and nobody outside the
+//! workspace is answered.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -24,7 +24,7 @@ use tilo_actions::remote::{
 use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::DeviceCert;
 
-use super::tests::{admit, caller, governed, request, settled};
+use super::tests::{admit, agent_caller, caller, governed, request, settled};
 use crate::workspaces::person_learned::{self, CORRECT, FORGET, Facts, LEARN, LIST};
 use crate::workspaces::tests::{governor, test_host};
 use crate::workspaces::{AsksPeople, PersonAnswer};
@@ -276,7 +276,7 @@ async fn what_a_member_forgets_is_gone_and_what_is_no_change_is_refused() {
     served.shutdown().await;
 }
 
-/// An agent her device handed its session to reads her facts, and its changes ask her first:
+/// An agent she certified reads her facts, and its changes ask her first:
 /// unanswered they change nothing, her no refuses them, and her yes makes the change as the
 /// agent's, about her, which `bo`, another member, does not read. `hers` is her list before.
 async fn her_agent_asks_her_first(
@@ -286,7 +286,7 @@ async fn her_agent_asks_her_first(
     bo: &DeviceCert,
     hers: &Facts,
 ) {
-    let agent = caller(ada).delegated_to(SCOUT);
+    let agent = agent_caller(ada, SCOUT);
     let seen = provider
         .ask_as(ada, &agent, (LIST, json!({})))
         .await
@@ -412,7 +412,7 @@ async fn nobody_else_reaches_it(
 /// Nobody outside the workspace reaches its list. Another member reads and
 /// changes only their own facts in it, never Ada's; a member of another workspace, a device of
 /// nobody, an agent no person stands behind and an app are
-/// answered nothing; and an agent a member's session was handed to reads,
+/// answered nothing; and an agent a member certified reads,
 /// while its changes ask that member first.
 #[tokio::test]
 async fn nobody_outside_the_workspace_reaches_what_was_learned() {

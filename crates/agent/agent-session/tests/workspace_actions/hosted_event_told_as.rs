@@ -234,7 +234,7 @@ async fn an_event_told_as_a_brief_raises_a_briefs_notice_and_one_that_says_nothi
     let (up, workspace, page) = team_on(&root, (&device, &browser), state.path()).await;
     let ada = root.verifying_key().to_bytes();
     let me = themselves(&root, &browser, &workspace);
-    let theirs = me.clone().delegated_to(SCOUT).named("Scout");
+    let theirs = super::their_agent(&me, SCOUT).named("Scout");
     // Nothing of the person's is on from here until they come back.
     page.peer.close();
 
@@ -341,7 +341,7 @@ async fn how_an_events_result_is_told_is_said_only_where_an_event_is_set_up_at_a
     page.peer.close();
     let ada = root.verifying_key().to_bytes();
     let me = themselves(&root, &browser, &workspace);
-    let theirs = me.clone().delegated_to(SCOUT).named("Scout");
+    let theirs = super::their_agent(&me, SCOUT).named("Scout");
     let far = "once at 2031-01-01T09:00:00Z";
 
     // Their assistant sets an event up that says nothing.
@@ -367,7 +367,7 @@ async fn how_an_events_result_is_told_is_said_only_where_an_event_is_set_up_at_a
         ("another person", another.clone(), "not permitted"),
         (
             "another person's agent",
-            another.delegated_to("helper").named("Helper"),
+            super::their_agent(&another, "helper").named("Helper"),
             "not permitted",
         ),
         (
@@ -480,7 +480,7 @@ async fn an_events_brief_reaches_its_own_person_and_nobody_else() {
     page.peer.close();
     let ada = root.verifying_key().to_bytes();
     let me = themselves(&root, &browser, &workspace);
-    let theirs = me.clone().delegated_to(SCOUT).named("Scout");
+    let theirs = super::their_agent(&me, SCOUT).named("Scout");
     let (bo, _) = tilo_user_identity::UserIdentity::generate("Bo", 2);
     let bo = bo.verifying_key().to_bytes();
 
@@ -505,9 +505,8 @@ async fn an_events_brief_reaches_its_own_person_and_nobody_else() {
         "{aimed:?}"
     );
     // Neither does an agent that acts for that other person set one up here.
-    let helper = Caller::authenticated(bo, [9; 32])
+    let helper = Caller::delegated_agent("helper", bo, [9; 32])
         .in_workspace(&workspace)
-        .delegated_to("helper")
         .named("Helper");
     let theirs_too = tried(
         &up,
@@ -564,7 +563,7 @@ async fn what_breaks_do_not_disturb_stays_its_persons_own_to_say_above_the_word(
     let (up, workspace, page) = team_on(&root, (&device, &browser), state.path()).await;
     page.peer.close();
     let me = themselves(&root, &browser, &workspace);
-    let theirs = me.clone().delegated_to(SCOUT).named("Scout");
+    let theirs = super::their_agent(&me, SCOUT).named("Scout");
 
     // A brief reaches its person. Nothing they said lets a brief break do-not-disturb, so
     // their devices hold it back while they are quiet: the word does not say that it may.

@@ -15,7 +15,7 @@ use tilo_actions::remote::{
 use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
-use super::super::tests::{admit, caller, governed, offered, request, settled};
+use super::super::tests::{admit, agent_caller, governed, offered, request, settled};
 use super::super::{ADD_MEMBER, ServiceWorkspaceActions};
 use crate::workspaces::tests::{governor, signed_pre_admission, test_host};
 use crate::workspaces::{AsksPeople, PersonAnswer, PreAdmitRequest, Workspaces};
@@ -49,9 +49,9 @@ impl AsksPeople for Person {
     }
 }
 
-/// The agent `claude` a device of `person`'s own was handed its session to.
+/// The agent `claude`, on a key of its own `person`'s root certified.
 fn agent_of(person: &DeviceCert) -> Caller {
-    Caller::authenticated(person.user_public_key, person.device_public_key).delegated_to("claude")
+    Caller::delegated_agent("claude", person.user_public_key, person.device_public_key)
 }
 
 /// `caller` moving `member` to Commenter: what it produced, or why not.
@@ -109,11 +109,10 @@ async fn an_agent_governs_as_its_grants_answer_and_asks_its_person_by_default() 
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let agent = agent_of(&owner);
 
-    // An agent nobody handed a session to holds no grant here.
+    // An agent no certificate names holds no grant here, whoever it acts for.
     let allowing = Person::answering(ConfirmationAnswer::AllowOnce);
     workspaces.ask_people(allowing.clone());
-    let stranger =
-        Caller::delegated_agent("stranger", owner.user_public_key, owner.device_public_key);
+    let stranger = Caller::local_agent("stranger").acting_for(hex::encode(owner.user_public_key));
     let refused = demote(&actions, here, &stranger, &ada).await;
     assert!(refused.is_err(), "{refused:?}");
     assert!(allowing.asked().is_empty());
@@ -246,14 +245,14 @@ async fn a_persons_own_key_removes_a_member_as_they_may_and_no_further() {
         settled(actions.in_workspace(workspace_id).invoke(caller, asked))
     };
     // Its session says it acts for him, as every key's does.
-    let removed = remove(&caller(&scripts).delegated_to("scripts"), &ada).await;
+    let removed = remove(&agent_caller(&scripts, "scripts"), &ada).await;
     assert!(removed.is_ok(), "{removed:?}");
 
     // An Editor's own key removes nobody: neither may they.
     let bo = SigningKey::from_bytes(&rand::random());
     let bo_key = device_of(&bo, "bo's scripts", DeviceCapabilities::server_key_grant());
     let_in(workspaces, &workspace, &owner, &bo_key, 4).await;
-    let refused = remove(&caller(&bo_key).delegated_to("scripts"), &laptop).await;
+    let refused = remove(&agent_caller(&bo_key, "scripts"), &laptop).await;
     assert!(refused.is_err(), "{refused:?}");
     server.shutdown().await;
 }

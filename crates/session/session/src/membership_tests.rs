@@ -1634,7 +1634,7 @@ fn a_person_changes_a_workspaces_people_through_the_session_this_computer_runs()
 }
 
 /// Whether asking this session's broker to re-role someone as `scribe` is refused: the person's
-/// device handed the session to an agent, and a workspace's people change at its person's
+/// device certified an agent, and a workspace's people change at its person's
 /// device only.
 #[track_caller]
 fn an_agent_is_refused_a_role(
@@ -1643,11 +1643,13 @@ fn an_agent_is_refused_a_role(
     workspace_id: WorkspaceId,
     person: &str,
 ) -> bool {
-    let agent =
-        tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key)
-            .in_workspace(workspace_id.to_string())
-            .in_new_execution()
-            .delegated_to("scribe");
+    let agent = tilo_actions::remote::Caller::delegated_agent(
+        "scribe",
+        cert.user_public_key,
+        cert.device_public_key,
+    )
+    .in_workspace(workspace_id.to_string())
+    .in_new_execution();
     let answer = broker
         .device_host()
         .invoke(

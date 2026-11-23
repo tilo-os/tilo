@@ -524,7 +524,6 @@ impl LocalDirectoryFixture {
                     display_handle: None,
                     role: CapRole::Editor,
                     agent_id: None,
-                    session_delegated: false,
                 }
             }),
             resource_type: None,

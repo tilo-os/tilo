@@ -1725,7 +1725,7 @@ impl PeerPersonal {
 
 /// Who a write to the person's own store is decided as: the device that
 /// signed it owns every node of the store, and a change naming its invoker (an
-/// agent the device handed its session to) is decided as that invoker too,
+/// agent working for the device) is decided as that invoker too,
 /// bounded by the device, through the same decision a workspace takes.
 struct OwnStoreAuthor<'a> {
     /// The signing device, as the store names its owner.
@@ -1763,8 +1763,8 @@ impl collab_types::ChangeAuthor for OwnStoreAuthor<'_> {
             .clone()
             .signed_by(&Acting::person(self.device.clone()));
         let policy = WorkspacePolicy::new(self.store, self.device.clone());
-        let preset = acting.handed_preset(self.store);
-        let as_invoker = Authority::of_acting(&acting, &policy, &preset)
+        let approved = tilo_action_policy::roles::signed_for(&acting, self.store);
+        let as_invoker = Authority::of_acting(&acting, &policy, &approved)
             .decide(node, kind, cx)
             .answer;
         owner.min(as_invoker)

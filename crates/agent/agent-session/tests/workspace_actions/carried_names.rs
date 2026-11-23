@@ -206,7 +206,7 @@ async fn a_carrier_names_no_edit_its_caller_is_then_refused() {
         guest_device.cert.device_public_key,
     )
     .in_workspace(WORKSPACE);
-    let agent = member.clone().delegated_to("Claude Code");
+    let agent = super::their_agent(&member, "Claude Code");
 
     // Chat, by calls. The typed edit is found in a moderator's listing, with the value that
     // names a new channel written as its parameter's schema takes it; an editor's listing names

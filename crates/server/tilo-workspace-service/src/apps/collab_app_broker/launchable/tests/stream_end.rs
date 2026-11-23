@@ -15,7 +15,7 @@ tilo_test_env::scenario! {
         let (state, workspace) = broker(&workspace());
         let (streams, launches) = app_comes_up_as(&state, 8);
         drop(serve(&state, surface(7, &workspace)));
-        let owner = Caller::local_person("owner").in_workspace(&workspace);
+        let owner = Caller::local_person(OWNER).in_workspace(&workspace);
         let target = tilo_actions::remote::application_action_target(
             &workspace,
             APP,
@@ -37,7 +37,7 @@ tilo_test_env::scenario! {
         let (state, workspace) = broker(&workspace());
         let _closing = serve(&state, surface(7, &workspace));
         let mut other = serve(&state, surface(8, &workspace));
-        let owner = Caller::local_person("owner").in_workspace(&workspace);
+        let owner = Caller::local_person(OWNER).in_workspace(&workspace);
         let target = tilo_actions::remote::application_action_target(
             &workspace,
             APP,

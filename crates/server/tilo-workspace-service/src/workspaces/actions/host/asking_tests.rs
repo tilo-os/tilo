@@ -15,7 +15,7 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
 use super::super::ServiceWorkspaceActions;
-use super::super::tests::{admit, caller, governed, settled};
+use super::super::tests::{admit, agent_caller, caller, governed, settled};
 use crate::workspaces::Workspaces;
 use crate::workspaces::person_asking::{Allowing, MAX_PERMISSIONS};
 use crate::workspaces::tests::{governor, test_host};
@@ -281,16 +281,15 @@ async fn nobody_but_the_person_reads_or_takes_back_what_stands_for_them() {
             Caller::delegated_agent(AGENT, ada.user_public_key, ada.device_public_key),
         ),
         (
-            "an agent her own device handed its connection to",
+            "an agent she certified, on a key of its own",
             &ada,
-            caller(&ada).delegated_to(AGENT),
+            agent_caller(&ada, AGENT),
         ),
         (
             "her agent as the server has it in that workspace",
             &ada,
-            caller(&ada)
+            agent_caller(&ada, AGENT)
                 .in_workspace(&*workspace)
-                .delegated_to(AGENT)
                 .named("Scout"),
         ),
         (
@@ -391,9 +390,8 @@ async fn no_request_lets_anything_stand() {
     });
 
     let herself = caller(&ada);
-    let her_agent = caller(&ada)
+    let her_agent = agent_caller(&ada, AGENT)
         .in_workspace(&*workspace)
-        .delegated_to(AGENT)
         .named("Scout");
     for (who, asking) in [("the person", &herself), ("her agent", &her_agent)] {
         for resource in [person_asking::PERMISSIONS, "permissions", "always", ""] {
@@ -670,7 +668,7 @@ async fn the_questions_that_wait_are_listed_to_the_person_they_ask_alone() {
     assert_eq!(his["questions"].as_array().unwrap().len(), 1);
     assert_eq!(his["questions"][0]["message"], json!("m_his"));
     for (who, device, asking) in [
-        ("her own agent", &ada, caller(&ada).delegated_to(AGENT)),
+        ("her own agent", &ada, agent_caller(&ada, AGENT)),
         ("her key on another device", &bo, caller(&ada)),
     ] {
         let refused = asked(device, asking).await;

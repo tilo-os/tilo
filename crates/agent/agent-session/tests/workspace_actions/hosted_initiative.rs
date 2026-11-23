@@ -524,11 +524,8 @@ struct HandsOver {
 impl Steps for HandsOver {
     fn instruct(&self, instruction: Instruction) -> Result<String, StepError> {
         let workspace = WorkspaceId::parse(&instruction.workspace).unwrap();
-        let event = self
-            .person
-            .clone()
-            .delegated_to(instruction.cause.installation.clone())
-            .named("Look-round");
+        let event =
+            super::their_agent(&self.person, &instruction.cause.installation).named("Look-round");
         let route = DocumentRoute {
             app_id: CHAT.into(),
             cluster_id: instruction.workspace.clone(),

@@ -1,6 +1,6 @@
 //! A workspace's model from the store's own actions to the answer: what a
 //! member keeps through Settings' actions on a device of theirs is what
-//! answers work done in the workspace, a handed agent reads it and its
+//! answers work done in the workspace, an agent a member certified reads it and its
 //! changes ask its member, nobody outside the workspace reaches it, and no
 //! log line carries a key.
 
@@ -24,7 +24,7 @@ use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::DeviceCert;
 
 use super::ServiceWorkspaceActions;
-use super::tests::{admit, ask_own, caller, governed, request, settled};
+use super::tests::{admit, agent_caller, ask_own, caller, governed, request, settled};
 use crate::workspaces::fixtures::test_host;
 use crate::workspaces::person_model::scripted::{Reply, ScriptedProvider};
 use crate::workspaces::person_model::{Interaction, ModelRefusal};
@@ -520,13 +520,13 @@ async fn nobody_else_is_answered(
     }
 }
 
-/// An agent a member's device handed its session to reads the workspace's
+/// An agent a member certified reads the workspace's
 /// providers, and never a key: what it reads back says only that one is
 /// kept. Its changes ask that member first, and are made only when they
 /// allow them. A member of another workspace, a bare agent turn with no
 /// device of a member's behind it and an app are nobody to the store.
 #[tokio::test]
-async fn a_handed_agent_reads_the_workspaces_listing_and_its_key_changes_ask() {
+async fn a_members_agent_reads_the_workspaces_listing_and_its_key_changes_ask() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
@@ -562,9 +562,9 @@ async fn a_handed_agent_reads_the_workspaces_listing_and_its_key_changes_ask() {
         ]
     };
 
-    // The agent her own computer hands its session to reads the listing,
+    // The agent she certified reads the listing,
     // which says a key is kept and carries none.
-    let agent = caller(&ada).delegated_to("helper");
+    let agent = agent_caller(&ada, "helper");
     let listed = ask_as(
         &host,
         workspace_id,
@@ -1223,12 +1223,10 @@ async fn the_member_and_their_own_computers_agent_ask_the_workspaces_model() {
     .unwrap();
 
     let laptop = caller(&ada);
-    let own_agent = laptop
-        .clone()
-        .delegated_to(tilo_actions::remote::device_agent_id(
-            &ada.user_public_key,
-            "Claude Code",
-        ));
+    let own_agent = agent_caller(
+        &ada,
+        &tilo_actions::remote::device_agent_id(&ada.user_public_key, "Claude Code"),
+    );
     let turn = serde_json::to_value(asking("Is it time?")).unwrap();
     for (who, asking) in [("the member", laptop), ("their own agent", own_agent)] {
         let answered = ask_as(

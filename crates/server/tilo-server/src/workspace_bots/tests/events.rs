@@ -146,10 +146,10 @@ fn as_person(cert: &DeviceCert, workspace: &str) -> Caller {
     Caller::authenticated(cert.user_public_key, cert.device_public_key).in_workspace(workspace)
 }
 
-/// That member's assistant, on a turn their session was handed to.
+/// That member's assistant, on a key of its own their root certified.
 fn as_their_agent(cert: &DeviceCert, workspace: &str) -> Caller {
-    as_person(cert, workspace)
-        .delegated_to("assistant")
+    Caller::delegated_agent("assistant", cert.user_public_key, cert.device_public_key)
+        .in_workspace(workspace)
         .named("Assistant")
 }
 
@@ -415,7 +415,7 @@ async fn a_bot_and_a_non_member_set_nothing_up_and_reach_no_event() {
     // set nothing up here and reach none of its events.
     for other in [
         as_another(&workspace),
-        as_another(&workspace).delegated_to("scout"),
+        Caller::delegated_agent("scout", ADA, [9; 32]).in_workspace(&workspace),
     ] {
         for action in [
             workspace_events::SET_UP,

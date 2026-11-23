@@ -770,9 +770,16 @@ fn an_agent_acting_for_a_person_hands_back_what_it_wrote_as_the_agent() {
         ReplicaActor::Member {
             access: access
                 .as_acting(
-                    tilo_action_policy::Acting::handed_agent("Claude Code", "ada").in_session("s1"),
+                    tilo_action_policy::Acting::agent("Claude Code")
+                        .acting_for(tilo_action_policy::Acting::person("ada"))
+                        .in_session("s1"),
                 )
-                .unwrap(),
+                .unwrap()
+                .granted(tilo_action_policy::roles::certified_agent(
+                    WORKSPACE,
+                    "Claude Code",
+                    "ada",
+                )),
             sandbox: Vec::new(),
             unix_time: 1_900_000_000,
             agent_name: None,
@@ -824,12 +831,10 @@ fn an_agent_acting_for_a_person_hands_back_what_it_wrote_as_the_agent() {
                         .map(tilo_action_policy::AgentSessionId::as_str)
                         == Some("s1")
                         && invoker.acting.acted_for_person() == Some("ada")
-                        // The delegation its person handed it, which the replica decided it
-                        // by: every receiver decides the change by the same.
-                        && invoker.acting.handed
+                        && invoker.acting.agent_id() == Some("Claude Code")
                 })
         }),
-        "the agent's session and delegation are on its change"
+        "the agent's session and its person are on its change"
     );
 }
 
@@ -866,11 +871,16 @@ fn two_replicas_of_one_agent_never_write_one_sequence_twice() {
             ReplicaActor::Member {
                 access: access
                     .clone()
-                    .as_acting(tilo_action_policy::Acting::handed_agent(
+                    .as_acting(
+                        tilo_action_policy::Acting::agent("Claude Code")
+                            .acting_for(tilo_action_policy::Acting::person("ada")),
+                    )
+                    .unwrap()
+                    .granted(tilo_action_policy::roles::certified_agent(
+                        WORKSPACE,
                         "Claude Code",
                         "ada",
-                    ))
-                    .unwrap(),
+                    )),
                 sandbox: Vec::new(),
                 unix_time: 1_900_000_000,
                 agent_name: None,

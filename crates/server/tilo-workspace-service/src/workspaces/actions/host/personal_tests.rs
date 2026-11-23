@@ -875,11 +875,11 @@ async fn an_agents_run_on_a_persons_own_device_reads_their_list_and_asks_before_
     )
     .unwrap();
     let laptop = key_of(&root, "Claude Code on laptop", DeviceCapabilities::member());
-    let run = tilo_actions::remote::Caller::authenticated(
+    let run = tilo_actions::remote::Caller::delegated_agent(
+        "Claude Code",
         laptop.user_public_key,
         laptop.device_public_key,
-    )
-    .delegated_to("Claude Code");
+    );
     let ask = |action: &str, argument: Value| {
         settled(
             host.as_host(&laptop)

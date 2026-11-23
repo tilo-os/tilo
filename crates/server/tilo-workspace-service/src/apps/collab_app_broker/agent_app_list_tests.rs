@@ -81,18 +81,26 @@ impl crate::apps::services::LauncherServices for Surfaced {
     }
 }
 
-/// An agent `agent` acting for `person` in `workspace`.
-fn agent_caller(agent: &str, person: &str, workspace: &str) -> Caller {
-    Caller::local_person(person.to_owned())
-        .delegated_to(agent)
-        .in_workspace(workspace.to_owned())
+/// The workspace's owner, by the root that certifies their devices.
+const OWNER: [u8; 32] = [0x11; 32];
+/// Someone who is no member of the workspace.
+const OUTSIDER: [u8; 32] = [0x21; 32];
+
+/// The person `person` keys, by their id.
+fn person(person: [u8; 32]) -> String {
+    hex::encode(person)
+}
+
+/// An agent `agent` on a key of its own that `person` certified, in `workspace`.
+fn agent_caller(agent: &str, person: [u8; 32], workspace: &str) -> Caller {
+    Caller::delegated_agent(agent, person, [0x12; 32]).in_workspace(workspace.to_owned())
 }
 
 /// A workspace owned by a person, whose agent `scribe` may not open Sheets:
 /// the bound its record keeps, as the document holds it.
 fn workspace() -> Workspace {
     let mut workspace = Workspace::new(WorkspaceId::from_u128(14), "Home");
-    workspace.set_owner("owner");
+    workspace.set_owner(person(OWNER));
     workspace.deny(
         Grantee::agent("scribe"),
         &TreePath::root().app(SHEETS),
@@ -199,7 +207,7 @@ tilo_test_env::scenario! {
         let workspace = workspace();
         let workspace_id = workspace.id().to_string();
         let state = broker_with(Arc::new(Surfaced), vec![workspace], true);
-        let agent = agent_caller("scribe", "owner", &workspace_id);
+        let agent = agent_caller("scribe", OWNER, &workspace_id);
         let page = installed(&state, &agent, &workspace_id).expect("the workspace is reachable");
         let row = page
             .rows
@@ -218,7 +226,7 @@ tilo_test_env::scenario! {
         let workspace = workspace();
         let workspace_id = workspace.id().to_string();
         let state = broker(vec![workspace], vec![NOTES, SHEETS], true);
-        let agent = agent_caller("scribe", "owner", &workspace_id);
+        let agent = agent_caller("scribe", OWNER, &workspace_id);
 
         let page = installed(&state, &agent, &workspace_id).expect("the workspace is reachable");
         let listed: Vec<(String, Option<String>)> = page
@@ -246,7 +254,7 @@ tilo_test_env::scenario! {
         );
 
         // The person is offered both to open, as before.
-        let owner = Caller::local_person("owner").in_workspace(&workspace_id);
+        let owner = Caller::local_person(person(OWNER)).in_workspace(&workspace_id);
         let page = installed(&state, &owner, &workspace_id).expect("the owner reaches it");
         drop(state);
         assert!(
@@ -261,7 +269,7 @@ tilo_test_env::scenario! {
         let workspace = workspace();
         let workspace_id = workspace.id().to_string();
         let state = broker(vec![workspace], Vec::new(), true);
-        let agent = agent_caller("scribe", "owner", &workspace_id);
+        let agent = agent_caller("scribe", OWNER, &workspace_id);
 
         let page = publishers(&state, &agent).expect("reachable, with nothing running");
         assert!(page.providers.is_empty() && page.rows.is_empty());
@@ -281,7 +289,7 @@ tilo_test_env::scenario! {
 
         // Not a member: the person removed it, or never admitted it here.
         let state = broker(vec![workspace.clone()], vec![NOTES], true);
-        let stranger = agent_caller("scribe", "outsider", &workspace_id);
+        let stranger = agent_caller("scribe", OUTSIDER, &workspace_id);
         let why = reason(publishers(&state, &stranger));
         assert!(
             why.contains("scribe") && why.contains("no longer a member of workspace Home"),
@@ -292,7 +300,7 @@ tilo_test_env::scenario! {
 
         // The workspace it was admitted to is gone from this device.
         let elsewhere = Workspace::new(WorkspaceId::from_u128(15), "Elsewhere");
-        let gone = agent_caller("scribe", "owner", &elsewhere.id().to_string());
+        let gone = agent_caller("scribe", OWNER, &elsewhere.id().to_string());
         let why = reason(publishers(&state, &gone));
         assert!(why.contains("no longer on this device"), "{why}");
 
@@ -304,7 +312,7 @@ tilo_test_env::scenario! {
 
         // The session's workspaces never reached the broker.
         let detached = broker(vec![workspace], vec![NOTES], false);
-        let agent = agent_caller("scribe", "owner", &workspace_id);
+        let agent = agent_caller("scribe", OWNER, &workspace_id);
         let why = reason(publishers(&detached, &agent));
         drop(detached);
         assert!(why.contains("not attached"), "{why}");
@@ -318,7 +326,7 @@ tilo_test_env::scenario! {
         let workspace_id = workspace.id().to_string();
         let state = broker(vec![workspace], vec![NOTES], true);
         state.replace_published_surfaces_for_test(vec![notes_running(&workspace_id, Vec::new())]);
-        let owner = Caller::local_person("owner").in_workspace(&workspace_id);
+        let owner = Caller::local_person(person(OWNER)).in_workspace(&workspace_id);
         let opens = |state: &Arc<AppBrokerState>| {
             installed(state, &owner, &workspace_id)
                 .expect("the owner reaches it")
@@ -331,7 +339,7 @@ tilo_test_env::scenario! {
                 })
         };
         assert!(opens(&state), "a window of it is up");
-        let agent = agent_caller("scribe", "owner", &workspace_id);
+        let agent = agent_caller("scribe", OWNER, &workspace_id);
         let agent_opens = installed(&state, &agent, &workspace_id)
             .expect("the agent reaches it")
             .rows
@@ -377,7 +385,7 @@ tilo_test_env::scenario! {
                 published("tilo.control:new", "tilo.control", "invoke"),
             ],
         )]);
-        let agent = agent_caller("scribe", "owner", &workspace_id);
+        let agent = agent_caller("scribe", OWNER, &workspace_id);
         let named = |action: &str| {
             state
                 .action_query(
@@ -455,7 +463,7 @@ tilo_test_env::scenario! {
         let named = |agent: &str, action: &str| {
             state
                 .action_query(
-                    &agent_caller(agent, "owner", &workspace_id),
+                    &agent_caller(agent, OWNER, &workspace_id),
                     &CatalogueQuery {
                         provider: Some("9".into()),
                         action: Some(action.into()),
@@ -476,7 +484,7 @@ tilo_test_env::scenario! {
         let listed = |agent: &str, action: &str| {
             let page = state
                 .action_query(
-                    &agent_caller(agent, "owner", &workspace_id),
+                    &agent_caller(agent, OWNER, &workspace_id),
                     &CatalogueQuery {
                         provider: Some("9".into()),
                         max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
@@ -531,7 +539,7 @@ tilo_test_env::scenario! {
             document_id: "notes".into(),
         }]);
         // `tilo_ls apps` asks who publishes, and finds Notes browsable by its directory.
-        let owner = Caller::local_person("owner").in_workspace(&workspace_id);
+        let owner = Caller::local_person(person(OWNER)).in_workspace(&workspace_id);
         let page = publishers(&state, &owner).expect("the owner reaches it");
         let listed = page
             .providers
@@ -544,7 +552,7 @@ tilo_test_env::scenario! {
         );
         // A caller who may not act in the workspace is told nothing is there, never an
         // empty list that reads as "nothing publishes".
-        let stranger = agent_caller("scribe", "outsider", &workspace_id);
+        let stranger = agent_caller("scribe", OUTSIDER, &workspace_id);
         assert!(
             matches!(publishers(&state, &stranger), Err(ActionCallError::Unavailable { .. })),
             "a denied caller sees no providers"

@@ -932,9 +932,7 @@ async fn a_tree_a_computer_founds_after_the_service_found_none_is_read_and_writt
     // for its person: two steps.
     let person = hex::encode(owner.verifying_key().to_bytes());
     let agent = tilo_actions::ActionInvoker::admitted(
-        &tilo_actions::Acting::agent("claude")
-            .handed()
-            .in_session("0f3c"),
+        &tilo_actions::Acting::agent("claude").in_session("0f3c"),
     )
     .named(Some("Claude Code".into()))
     .acting_for(person.as_str());

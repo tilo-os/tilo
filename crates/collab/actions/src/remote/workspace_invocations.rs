@@ -202,8 +202,7 @@ pub struct InvocationBy {
     /// The name it goes by: a key's, as the person named it, an agent's, or
     /// a person's.
     pub name: String,
-    /// `agent` (every key, and an agent a person's device handed its session
-    /// to), `person`, `bot` or `automation`.
+    /// `agent` (every key a person certified for an agent), `person`, `bot` or `automation`.
     pub kind: String,
     /// The member's own id inside that kind: an agent's, a bot's, a person's
     /// (the lowercase hex of their root key), as History names their changes.

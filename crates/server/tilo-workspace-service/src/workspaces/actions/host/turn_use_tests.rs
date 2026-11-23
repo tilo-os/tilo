@@ -528,9 +528,8 @@ pub(super) fn not_hosted_turns(ada: &DeviceCert, workspace: &str) -> Vec<(&'stat
     let outside_a_turn = scout()
         .in_workspace(workspace)
         .on_roster(0, ada.user_public_key);
-    let handed = session()
+    let in_session = scout()
         .in_workspace(workspace)
-        .delegated_to("scout")
         .in_agent_session("agent-session:test");
     let bot =
         Caller::bot("bot", ada.user_public_key, ada.device_public_key).in_workspace(workspace);
@@ -544,13 +543,16 @@ pub(super) fn not_hosted_turns(ada: &DeviceCert, workspace: &str) -> Vec<(&'stat
         ("an app", app),
         ("a turn confined to no workspace", unconfined),
         ("a turn confined to another workspace", confined_elsewhere),
-        ("an agent her own device hands its session to", handed),
+        (
+            "an agent on its own key, in a session of its own",
+            in_session,
+        ),
     ]
 }
 
 /// Every caller that is not a turn this server carries out is refused before the vault is
 /// opened: a person, an agent with no turn, an agent admitted as a member, a bot, an app, a turn
-/// confined elsewhere and an agent a person's own device hands its session to. Any
+/// confined elsewhere and an agent on its own key in a session of its own. Any
 /// member's ask of the workspace's agent is such a turn: Bo's ask of the agent Ada asks uses the
 /// same workspace item, and its use asks him, the person who asked.
 #[tokio::test]

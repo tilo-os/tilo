@@ -585,7 +585,7 @@ impl Device {
 
     /// The server's own operation `action` with `arguments`, asked in the workspace this
     /// device entered ([`crate::session::HOST_ITSELF`] before it entered one): no
-    /// workspace decides it, but an agent the session was handed to asks as its grants
+    /// workspace decides it, but an agent asks as its grants
     /// there let it.
     ///
     /// # Errors

@@ -66,8 +66,8 @@ pub(super) fn exact_view_query(
 }
 
 /// Whether `caller` speaks for someone a workspace may admit as a member: a
-/// person themselves, the agent a device of theirs handed its session to (an
-/// agent's grant), which every decision then holds to what an agent of
+/// person themselves, an agent on a key
+/// they certified (an agent's grant), which every decision then holds to what an agent of
 /// theirs may do, or an agent device they certified, held to what the
 /// workspace grants that agent. The workspace's governance still decides
 /// whether it admits them.

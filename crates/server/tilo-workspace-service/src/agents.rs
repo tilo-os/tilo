@@ -567,8 +567,8 @@ type Searched = Pending<Result<Vec<tilo_actions::remote::Found>, ActionCallError
 /// The workspace's action service searches what the workspace holds for every device that asks
 /// it ([`tilo_actions::remote::search::FIND`]): each resource by what its app tells search
 /// about it, and the files of the workspace's folder. A turn this server carries out asks the
-/// same service the same question, as the caller its tools act as: the person's session,
-/// handed to the agent on that turn with the rules the turn is decided by. So a turn finds what
+/// same service the same question, as the caller its tools act as: the agent for the person,
+/// on that turn with the rules the turn is decided by. So a turn finds what
 /// that caller may read and nothing else, decided where every other caller's search is decided,
 /// and nothing is searched a second way here. Narrowed to a
 /// conversation or to a stretch of time ([`tilo_actions::remote::Within`]) it is the same
@@ -2535,7 +2535,7 @@ impl Reply {
 
 /// What the agent `caller` is held to in `workspace`, as the workspace's list of its agents
 /// keeps it: the bound kept for it there, and nothing at all for one that was retired.
-/// Answered for an agent a person's own device handed its session to: one this server works for
+/// Answered for an agent on a key its person certified: one this server works for
 /// its keeper on a turn, or one a person's own computer works with under its name (`tilo
 /// login`, then `tilo mcp`, whose id is [`tilo_actions::remote::device_agent_id`]).
 ///

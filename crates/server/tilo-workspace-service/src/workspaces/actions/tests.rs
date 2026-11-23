@@ -112,6 +112,11 @@ pub(super) fn caller(device: &DeviceCert) -> Caller {
     Caller::authenticated(device.user_public_key, device.device_public_key)
 }
 
+/// The agent `agent`, on a key of its own that the root behind `device` certified.
+pub(super) fn agent_caller(device: &DeviceCert, agent: &str) -> Caller {
+    Caller::delegated_agent(agent, device.user_public_key, device.device_public_key)
+}
+
 pub(super) fn request(workspace: &str, verb: &str, argument: Value) -> InvokeRequest {
     let Value::Object(argument) = argument else {
         panic!("arguments are an object");
@@ -317,7 +322,8 @@ async fn the_catalogue_offers_what_the_workspaces_governance_lets_each_caller_do
     // An agent governs nothing, even on the server person's own key, and a
     // workspace that carries no governed workspace offers nothing.
     let agent = Caller::delegated_agent("writer", owner.user_public_key, owner.device_public_key);
-    assert!(offered(&host, workspace_id, &agent).await.is_empty());
+    let governs = offered(&host, workspace_id, &agent).await;
+    assert!(governs.is_empty(), "{governs:?}");
     assert!(
         offered(&host, WorkspaceId::from_u128(41), &caller(&owner))
             .await

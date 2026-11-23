@@ -18,8 +18,8 @@ pub struct MemberAccess {
     /// made one more member cost a copy of every member's policy. Encoded as
     /// the policy itself.
     pub policy: std::sync::Arc<WorkspacePolicy>,
-    /// The grants the host made for the acting's software nodes: an agent's
-    /// turn, an automation's steps.
+    /// The grants the host made for the acting's software nodes: what an agent's
+    /// certificate gives it ([`crate::roles::certified_agent`]), an automation's steps.
     #[serde(default)]
     pub granted: Vec<Grant>,
     /// The resource kinds the app in `acting` declares: what it may reach in
@@ -34,7 +34,7 @@ impl MemberAccess {
     pub fn new(policy: impl Into<std::sync::Arc<WorkspacePolicy>>, acting: Acting) -> Self {
         let policy: std::sync::Arc<WorkspacePolicy> = policy.into();
         Self {
-            granted: acting.handed_preset(&policy.workspace),
+            granted: Vec::new(),
             acting,
             policy,
             app_kinds: None,
@@ -83,23 +83,22 @@ impl MemberAccess {
         if !acting.people().contains(&person) {
             return None;
         }
-        self.granted
-            .extend(acting.handed_preset(&self.policy.workspace));
         self.acting = acting;
         Some(self)
     }
 
     /// This access as a change naming `invoker` (who made it) is decided,
     /// signed by the device this access is: the invoker's whole tree, bounded
-    /// by the signer, every node allowing it ([`Acting::signed_by`]).
+    /// by the signer, every node allowing it ([`Acting::signed_by`]). Signed by a person's own
+    /// device, an agent in it holds what that signature gives it ([`crate::roles::signed_for`]).
     #[must_use]
     pub fn invoked_by(&self, invoker: &Acting) -> Self {
-        let acting = invoker.clone().signed_by(&self.acting);
         let mut access = self.clone();
-        access
-            .granted
-            .extend(acting.handed_preset(&self.policy.workspace));
-        access.acting = acting;
+        access.acting = invoker.clone().signed_by(&self.acting);
+        if self.acting.direct_person().is_some() {
+            let signed = crate::roles::signed_for(&access.acting, &self.policy.workspace);
+            access.granted.extend(signed);
+        }
         access
     }
 

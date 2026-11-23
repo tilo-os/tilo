@@ -1155,14 +1155,13 @@ pub mod agent_policy {
     }
 }
 
-/// The preset of [`agent_policy::ROLE_CAP`] an agent acting for `person` in
-/// `workspace` carries, before any bound: the delegation a person hands their
-/// agent ([`crate::Acting::handed`]). Never more than the cap, never more than
-/// the person may change, and never the workspace's governance. Only
-/// [`crate::Acting::handed_preset`] makes it, so every API and every receiver
-/// gives an agent the same.
-#[must_use]
-pub(crate) fn agent_preset(workspace: &str, agent: &str, person: &str) -> Vec<Grant> {
+/// What its person's root-signed approval of `agent` in `workspace` gives it: the preset of
+/// [`agent_policy::ROLE_CAP`], given by `person`, and changing `person`'s own view of the
+/// layout. The approval is the certificate of the agent's own key there, or the delegation a
+/// hosted agent's device carries; whoever holds one decides the agent with this, so every
+/// host and every receiver of its changes gives it the same. Never more than the cap, never
+/// more than the person may change, and never the workspace's governance.
+pub fn certified_agent(workspace: &str, agent: &str, person: &str) -> Vec<Grant> {
     let grantee = Grantee::agent(agent.to_owned());
     let granted_by = Grantee::person(person.to_owned());
     let prefix = format!("turn:agent:{agent}");
@@ -1185,9 +1184,26 @@ pub(crate) fn agent_preset(workspace: &str, agent: &str, person: &str) -> Vec<Gr
     grants
 }
 
+/// What a person's own device signing a change gives the agents in `acting`: to each, what its
+/// person's certificate would ([`certified_agent`]), for the person it works for. A device able
+/// to claim that person could make the change as them, so the agent is given no more than they
+/// hold, and the signer, every person and every grant in the tree still bound it. A key's agent
+/// ([`crate::key_agent_id`]) is given nothing here: the key's own certificate, which its person
+/// revokes, alone decides it.
+#[must_use]
+pub fn signed_for(acting: &crate::Acting, workspace: &str) -> Vec<Grant> {
+    acting
+        .nodes()
+        .into_iter()
+        .filter_map(|node| Some((node.agent_id()?, node.acted_for_person()?)))
+        .filter(|(agent, _)| crate::key_of_agent(agent).is_none())
+        .flat_map(|(agent, person)| certified_agent(workspace, agent, person))
+        .collect()
+}
+
 /// The rules of `agent`'s bound (`bound`; empty follows the default, which is
 /// the cap's own) as grants, given by `person`: what narrows its preset
-/// ([`agent_preset`]) to what its resource or the workspace's list keeps.
+/// ([`certified_agent`]) to what its resource or the workspace's list keeps.
 #[must_use]
 pub fn agent_bound(agent: &str, person: &str, bound: &[Rule]) -> Vec<Grant> {
     let grantee = Grantee::agent(agent.to_owned());

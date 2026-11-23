@@ -39,7 +39,7 @@ pub(super) fn change(
         .as_deref()
         .or(earlier)
         .map_or_else(|| Ok(Replica::new()), open)?
-        .as_acting(tilo_actions::Acting::agent(agent).handed())
+        .as_acting(tilo_actions::Acting::agent(agent))
         .in_app(CHAT_OWNER, "Chat");
     let now_ms = i64::try_from(tilo_clock::unix_now_ns() / 1_000_000).unwrap_or(i64::MAX);
     record.set_now_ms(now_ms);

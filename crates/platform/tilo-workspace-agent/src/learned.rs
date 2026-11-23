@@ -433,8 +433,7 @@ mod tests {
 
         // An agent that names no person, as in a person's own record on their device, keeps
         // facts about nobody else: it changes them, and nobody named reads or changes them.
-        let mut own =
-            Replica::<Learned>::new().as_acting(tilo_actions::Acting::agent(ASSISTANT).handed());
+        let mut own = Replica::<Learned>::new().as_acting(tilo_actions::Acting::agent(ASSISTANT));
         own.apply(learn("Works from Graz.", "They said so"))
             .unwrap();
         let (graz, kept) = facts(&own).remove(0);

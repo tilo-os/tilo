@@ -8,7 +8,8 @@ mod tests {
     use crate::apps::test_support::{Workspace, WorkspaceId};
     use tilo_action_policy::{Grant, Grantee, KindSet, Lifetime, Role};
 
-    const OWNER: &str = "owner-person";
+    /// The owner, by the root key `[7; 32]` their agent's key is certified under.
+    const OWNER: &str = "0707070707070707070707070707070707070707070707070707070707070707";
     const WORKSPACE: &str = "workspace-7";
     const WRITER: &str = tilo_app_id::apps::WORD_PROCESSOR;
 
@@ -197,16 +198,16 @@ mod tests {
         }
 
         phase an_agent_is_asked_before_an_attended_action_whatever_it_is_allowed;
-        // An agent the owner's device handed the session reads where reading
+        // The owner's agent, under a key of its own, reads where reading
         // is allowed and is asked before an outside effect; an attended action
         // asks it every time, even where the owner allowed the agent
         // everything, while the owner pressing it is not asked.
         {
             let mut w = workspace();
             let agent = || {
-                BrokerActor::agent("scribe")
-                    .for_person(OWNER)
-                    .session_delegated()
+                BrokerActor::for_caller(&tilo_actions::remote::Caller::delegated_agent(
+                    "scribe", [7; 32], [8; 32],
+                ))
             };
             let mut read = action("read-text");
             read.contract.kind = tilo_actions::ActionKind::Read;

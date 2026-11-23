@@ -10,8 +10,15 @@ use crate::apps::services::ProcessServices;
 use crate::apps::test_support::{Grantee, Grants as _, KindSet, Role, WorkspaceId, WorkspaceTree};
 
 fn owner_id() -> String {
-    "a1".repeat(32)
+    hex::encode(OWNER)
 }
+
+/// The root that certifies the owner's devices and agents.
+const OWNER: [u8; 32] = [0xa1; 32];
+/// A commenter's root.
+const ADA: [u8; 32] = [0xad; 32];
+/// The root of someone outside the workspace.
+const OUTSIDER: [u8; 32] = [0x0f; 32];
 
 /// What reached the fake store.
 #[derive(Default)]
@@ -112,7 +119,7 @@ fn fixture() -> Fixture {
     workspace.allow_agent("porter", KindSet::READ);
     workspace.allow_app(Grantee::agent("porter"), CONTENT_PUT_SCOPE, KindSet::ALL);
     // A member who edits what is there but adds nothing to the workspace.
-    workspace.admit("ada", Role::Commenter);
+    workspace.admit(hex::encode(ADA), Role::Commenter);
     let mut tree = WorkspaceTree::default();
     tree.desktop.workspaces.push(workspace);
     tree.persist_path = Some(home.path().join("state.json"));
@@ -141,10 +148,9 @@ fn owner(workspace: &str) -> Caller {
         .in_new_execution()
 }
 
-/// An agent `id` acting for `person` on this device, in `workspace`.
-fn agent(id: &str, person: &str, workspace: &str) -> Caller {
-    Caller::local_person(person.to_owned())
-        .delegated_to(id)
+/// An agent `id` on a key of its own that `person`'s root certified, in `workspace`.
+fn agent(id: &str, person: [u8; 32], workspace: &str) -> Caller {
+    Caller::delegated_agent(id, person, [0x34; 32])
         .in_workspace(workspace)
         .in_new_execution()
 }
@@ -252,7 +258,7 @@ tilo_test_env::scenario! {
     // while the bytes arrived stores nothing.
     {
         let fixture = fixture();
-        let caller = agent("porter", &owner_id(), &fixture.workspace);
+        let caller = agent("porter", OWNER, &fixture.workspace);
         let mut upload = fixture.puts.begin(&caller, 3).unwrap();
         upload.append(0, b"abc").unwrap();
         caller.retire_execution();
@@ -271,7 +277,7 @@ tilo_test_env::scenario! {
         let fixture = fixture();
         let mut upload = fixture
             .puts
-            .begin(&agent("porter", &owner_id(), &fixture.workspace), 3)
+            .begin(&agent("porter", OWNER, &fixture.workspace), 3)
             .unwrap();
         upload.append(0, b"abc").unwrap();
         upload.finish().unwrap();
@@ -286,7 +292,7 @@ tilo_test_env::scenario! {
         let fixture = fixture();
         let refused = fixture
             .puts
-            .begin(&agent("scribe", "ada", &fixture.workspace), 3)
+            .begin(&agent("scribe", ADA, &fixture.workspace), 3)
             .err()
             .unwrap();
         assert_eq!(
@@ -305,7 +311,7 @@ tilo_test_env::scenario! {
         let fixture = fixture();
         let refused = fixture
             .puts
-            .begin(&agent("stranger", "outsider", &fixture.workspace), 3)
+            .begin(&agent("stranger", OUTSIDER, &fixture.workspace), 3)
             .err()
             .unwrap();
         assert_eq!(refused, ActionCallError::NotPermitted);

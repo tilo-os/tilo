@@ -163,7 +163,7 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
     fn region_of(&self, _caller: &Caller) -> Option<crate::worker::PersonRegion> {
         None
     }
-    /// The agent `caller` is, which a person's own device handed its session to, works in
+    /// The agent `caller` is, on a key its person certified, works in
     /// `workspace`: the server adds it to the workspace's list of its agents where that list
     /// does not name it yet, and answers the bound the list keeps for it, which narrows
     /// everything it does there. Empty follows the default.

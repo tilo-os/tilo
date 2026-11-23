@@ -106,10 +106,6 @@ pub(crate) struct AdmittedJoinIdentity {
     /// Delegated agent actor for this channel. The certified device still
     /// proves which person launched it, while policy uses this revocable id.
     pub(super) agent_id: Option<String>,
-    /// The agent is one this person's own device handed the session to (an
-    /// MCP client): it carries the delegation a device gives its agents,
-    /// not grants the workspace holds for it.
-    pub(super) session_delegated: bool,
 }
 
 impl AdmittedJoinIdentity {
@@ -117,7 +113,7 @@ impl AdmittedJoinIdentity {
     /// ([`VerifiedActionCaller`]): the person themselves. An admission that
     /// names an agent is no certified person's, and is refused.
     pub(super) fn certified_owner(&self) -> Result<InvocationOwner, String> {
-        if self.agent_id.is_some() || self.session_delegated {
+        if self.agent_id.is_some() {
             return Err("admitted caller carries an agent's delegation".into());
         }
         Ok(self.person_owner())
@@ -134,14 +130,7 @@ impl AdmittedJoinIdentity {
 
     pub(super) fn broker_actor(&self) -> BrokerActor {
         let actor = match &self.agent_id {
-            Some(agent) => {
-                let actor = BrokerActor::agent(agent.clone()).for_person(self.actor_key.clone());
-                if self.session_delegated {
-                    actor.session_delegated()
-                } else {
-                    actor
-                }
-            }
+            Some(agent) => BrokerActor::agent(agent.clone()).for_person(self.actor_key.clone()),
             None => BrokerActor::person(self.actor_key.clone()),
         };
         actor.capped(self.verified.capped)
@@ -213,12 +202,10 @@ impl AdmittedJoinIdentity {
         workspace_id: &str,
         decide: impl FnOnce(&tilo_action_policy::MemberAccess) -> T,
     ) -> Result<T, String> {
-        if (self.agent_id.is_none() || self.session_delegated)
-            && self.verified.owns_personal_cluster(workspace_id)
-        {
+        if self.verified.owns_personal_cluster(workspace_id) {
             // The personal cluster's devices are its owner's; a foreign one is
-            // held to the foreign-device bound there as anywhere, and an
-            // agent one of them was handed to, to that delegation too.
+            // held to the foreign-device bound there as anywhere, and an agent
+            // joined on one of them holds only what the workspace grants it.
             let policy = WorkspacePolicy::new(workspace_id, self.actor_key.clone());
             let access =
                 tilo_action_policy::MemberAccess::new(policy, self.broker_actor().acting());
@@ -292,7 +279,6 @@ pub(super) fn admit_verified_join_at(
             role,
             display_handle: None,
             agent_id: None,
-            session_delegated: false,
         });
     }
     let workspace = workspace
@@ -311,7 +297,6 @@ pub(super) fn admit_verified_join_at(
         role,
         display_handle: None,
         agent_id: None,
-        session_delegated: false,
     })
 }
 

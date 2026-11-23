@@ -27,17 +27,16 @@ pub struct BrokerActor {
     /// The person an agent acts for, when one delegated it: the agent then
     /// may do only what both may.
     pub for_person: Option<String>,
-    /// The person's own device delegated the agent for this session: it
-    /// carries the delegation a device gives its agents (read and undoable
-    /// actions, outside ones asking first, no governance).
-    session_delegated: bool,
     /// The turn the agent acts for: the person's message whose conversation it
     /// takes part in. Every op an agent makes names it, so presence and history
     /// say what caused it, and no agent acts outside one.
     turn: Option<tilo_action_policy::turn::Turn>,
-    /// The bound the agent's own record narrows it to on its turn, as grants
-    /// ([`Caller::granted`]): what every host adds to the delegation's preset.
-    bound: Vec<tilo_action_policy::Grant>,
+    /// The agent the caller's certificate names, and the person who certified it, when one
+    /// does: what that gives it in the workspace it acts in
+    /// ([`tilo_action_policy::roles::certified_agent`]), narrowed as its person's device
+    /// narrowed it (`narrowed`, [`Caller::narrowed`]).
+    certified: Option<(String, String)>,
+    narrowed: Vec<tilo_action_policy::Grant>,
     /// The app the person acts through, when their session runs one: what it
     /// may reach is bounded by the kinds it declares.
     pub app: Option<AppId>,
@@ -73,9 +72,9 @@ impl BrokerActor {
             member,
             capped: false,
             for_person: None,
-            session_delegated: false,
             turn: None,
-            bound: Vec::new(),
+            certified: None,
+            narrowed: Vec::new(),
             app: None,
             app_kinds: None,
             session: None,
@@ -98,7 +97,10 @@ impl BrokerActor {
         let mut actor = Self::actor_of(caller)
             .on_turn(caller.turn().cloned())
             .within(caller.ceiling());
-        actor.bound = caller.granted(&[]);
+        actor.certified = caller
+            .certified_agent()
+            .map(|(agent, person)| (agent.to_owned(), person));
+        actor.narrowed = caller.narrowed();
         actor.steps_unasked = caller.lets_steps_go_unasked();
         actor
     }
@@ -108,15 +110,10 @@ impl BrokerActor {
         let acting = caller.acting();
         if let Some(agent) = acting.agent_id() {
             let agent = Self::agent(agent);
-            // A person's own device handed this connection to the agent
-            // (`Caller::delegated_to`); an agent member the host admitted
-            // acts for the person who admitted it, with no more than the
-            // workspace grants it (`Caller::acting_for`); a delegated agent
-            // device acts for the person its certificate chains to.
+            // An agent member the host admitted acts for the person who admitted it, with no
+            // more than the workspace grants it (`Caller::acting_for`); an agent with a key of
+            // its own acts for the person its certificate chains to.
             let agent = match acting.acted_for_person() {
-                Some(person) if caller.is_session_delegated() => {
-                    agent.for_person(person).session_delegated()
-                }
                 Some(person) => agent.for_person(person),
                 None => agent,
             };
@@ -169,14 +166,6 @@ impl BrokerActor {
     #[must_use]
     pub fn capped(mut self, capped: bool) -> Self {
         self.capped = capped;
-        self
-    }
-
-    /// The same agent, delegated by its person's own device for this
-    /// session.
-    #[must_use]
-    pub fn session_delegated(mut self) -> Self {
-        self.session_delegated = true;
         self
     }
 
@@ -284,15 +273,7 @@ impl BrokerActor {
             (None, Some(person)) => Acting::person(person.clone()),
             (None, None) => Acting::member(self.member.clone()),
             (Some(tilo_action_policy::Actor::Member(member)), Some(person)) => {
-                let delegate = Acting::member(member);
-                // The delegation a person's own device gives the agent it
-                // handed its session to is the acting's own.
-                let delegate = if self.session_delegated {
-                    delegate.handed()
-                } else {
-                    delegate
-                };
-                delegate.acting_for(Acting::person(person.clone()))
+                Acting::member(member).acting_for(Acting::person(person.clone()))
             }
             (Some(tilo_action_policy::Actor::Member(member)), None) => Acting::member(member),
             (
@@ -320,8 +301,11 @@ impl BrokerActor {
     /// Who this actor's invocation in `workspace` is decided for.
     #[must_use]
     pub fn access_in(&self, workspace: &Workspace) -> MemberAccess {
+        let certified = self.certified.iter().flat_map(|(agent, person)| {
+            tilo_action_policy::roles::certified_agent(&workspace.policy.workspace, agent, person)
+        });
         let mut access = MemberAccess::new(workspace.policy.clone(), self.acting())
-            .granted(self.bound.iter().cloned());
+            .granted(certified.chain(self.narrowed.iter().cloned()));
         if let Some(kinds) = &self.app_kinds {
             access = access.in_app(kinds.clone());
         }

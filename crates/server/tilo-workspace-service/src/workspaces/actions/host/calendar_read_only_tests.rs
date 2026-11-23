@@ -1,7 +1,7 @@
 //! A calendar account connected for reading only: its entries are kept and
 //! read as any account's are, and nothing is ever written to its calendar
-//! server. Not by the holder that keeps it, not by an agent a member's
-//! device handed its session to, not through the person's own asking: each
+//! server. Not by the holder that keeps it, not by an agent a member
+//! certified, not through the person's own asking: each
 //! is refused in words that say the account is connected for reading only,
 //! before anybody is asked anything. Adding the account again lifts nothing.
 //! Its calendar server is asked to read and nothing else, and writes to

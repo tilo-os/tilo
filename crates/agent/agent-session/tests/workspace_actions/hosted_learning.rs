@@ -682,9 +682,8 @@ async fn a_turn_started_for_the_keeper_is_hers_and_one_started_for_another_membe
     let his = chat::Chat::direct_id([MemberId::person(bo_person.clone()), MemberId::agent(SCOUT)]);
 
     // Her reminder asks her agent, acting for her: her own turn, with no device of hers on.
-    let reminder = Caller::authenticated(ada_key, ada.1.cert.device_public_key)
+    let reminder = Caller::delegated_agent("reminder-1", ada_key, ada.1.cert.device_public_key)
         .in_workspace(&workspace)
-        .delegated_to("reminder-1")
         .named("Order milk");
     asked.lock().unwrap().clear();
     served
@@ -728,9 +727,8 @@ async fn a_turn_started_for_the_keeper_is_hers_and_one_started_for_another_membe
     );
 
     // What acts for Bo asks her agent for him: his turn. And never in her own conversation.
-    let invoices = Caller::authenticated(bo_key, bo.1.cert.device_public_key)
+    let invoices = Caller::delegated_agent("event-7", bo_key, bo.1.cert.device_public_key)
         .in_workspace(&workspace)
-        .delegated_to("event-7")
         .named("Invoices");
     let trespass = served
         .caused(

@@ -633,8 +633,8 @@ mod tests {
                     .in_workspace(workspace.clone()),
                 Caller::bot("helper", [41; 32], [45; 32]).in_workspace(workspace.clone()),
                 Caller::local_app(SETTINGS).in_workspace(workspace.clone()),
-                Caller::local_person(owner.clone())
-                    .delegated_to("assistant")
+                Caller::local_agent("assistant")
+                    .acting_for(owner.clone())
                     .in_workspace(workspace.clone()),
                 Caller::local_person(owner.clone())
                     .running_shortcut("nightly")

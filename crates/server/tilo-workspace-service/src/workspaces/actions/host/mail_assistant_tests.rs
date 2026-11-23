@@ -1,5 +1,5 @@
 //! A workspace's mail, its members and their agents: every member reads the
-//! accounts the workspace keeps; an agent a member's session was handed to
+//! accounts the workspace keeps; an agent a member certified
 //! reads, searches and drafts through the host as the workspace's policy
 //! lets it; a message it would send waits for its person; and nobody outside
 //! the workspace is anybody to that mail.
@@ -29,7 +29,7 @@ use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::DeviceCert;
 
 use super::super::ServiceWorkspaceActions;
-use super::super::tests::{admit, caller, governed, settled};
+use super::super::tests::{admit, agent_caller, caller, governed, settled};
 use super::accounts_tests::asking;
 use crate::workspaces::fixtures::TestHost;
 use crate::workspaces::mail_watch::testing::{Watched, keep};
@@ -99,10 +99,9 @@ impl Setup {
         caller(&self.device)
     }
 
-    /// The agent `name` Ada's device handed its session to, over the
-    /// connection that device certified.
+    /// The agent `name`, on a key of its own Ada's root certified.
     fn agent(&self, name: &str) -> Caller {
-        self.ada().delegated_to(name)
+        agent_caller(&self.device, name)
     }
 
     /// What `caller` is answered when it asks `action` over Ada's page.
@@ -234,8 +233,8 @@ async fn reads_the_account_kept(page: &(impl ActionProvider + Sync), caller: &Ca
 }
 
 /// Two members of one workspace read the same mail: what the workspace
-/// keeps is listed and fetched for each, with its one sign-in, and an agent
-/// a member's session was handed to is offered what it may do.
+/// keeps is listed and fetched for each, with its one sign-in, and an agent a
+/// member certified is offered what it may do.
 #[tokio::test]
 async fn two_members_read_the_one_account_the_workspace_keeps() {
     let setup = Setup::new().await;
@@ -269,7 +268,7 @@ const READS_AND_DRAFTS: [&str; 7] = [
     person_accounts::SEND,
 ];
 
-/// What changes the workspace's mail, which a handed agent's person is asked
+/// What changes the workspace's mail, which an agent a member certified's person is asked
 /// about first.
 const CHANGES: [&str; 3] = [
     person_accounts::MARK,
@@ -435,7 +434,7 @@ async fn nobody_outside_the_workspace_reads_its_mail() {
     let (elsewhere, elsewhere_id, _) = governed(&setup.workspaces).await;
     let bo = admit(&setup.workspaces, &elsewhere, &setup.owner, 2).await;
     let bos_page = setup.host.in_workspace_as(setup.workspace_id, &bo);
-    let bos_agent = caller(&bo).delegated_to(ASSISTANT);
+    let bos_agent = agent_caller(&bo, ASSISTANT);
     let bos_turn = Caller::delegated_agent(ASSISTANT, bo.user_public_key, bo.device_public_key)
         .in_workspace(setup.workspace_id.to_string())
         .on_roster(0, bo.user_public_key)
@@ -495,12 +494,10 @@ async fn the_persons_own_computer_connects_an_account_they_move_in() {
     setup
         .workspaces
         .ask_people(Asked::answering(Some(ConfirmationAnswer::AllowOnce)));
-    let own_computer = setup
-        .ada()
-        .delegated_to(tilo_actions::remote::device_agent_id(
-            &setup.device.user_public_key,
-            "Migration",
-        ));
+    let own_computer = agent_caller(
+        &setup.device,
+        &tilo_actions::remote::device_agent_id(&setup.device.user_public_key, "Migration"),
+    );
     let adding = |password: &str| {
         json!({
             "address": "ada@lab.example.test",

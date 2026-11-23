@@ -372,8 +372,8 @@ impl WorkspaceActions {
         self.shared.jobs.lock_recover().take();
     }
 
-    /// Whether `caller` is the host's own person, or an agent one of their
-    /// devices handed its session to.
+    /// Whether `caller` is the host's own person, or an agent they
+    /// certified.
     fn authorized(&self, caller: &Caller) -> bool {
         let Some(link) = self.shared.link.get() else {
             return false;
@@ -386,8 +386,7 @@ impl WorkspaceActions {
     /// ([`tilo_server_protocol::invocation::verify_agent_invocation`]): the signature, that it
     /// covers this very request, its freshness, the certificate's chain to its person's root
     /// and its revocation, that the key is an agent's grant reaching this workspace and that it
-    /// is the key the caller was admitted as. A device's own key never signs for an agent. An
-    /// agent a person's own device handed its session to is that device's to sign for, and
+    /// is the key the caller was admitted as. A device's own key never signs for an agent, and
     /// everyone else is admitted as they are.
     fn signed_by_agent(
         &self,

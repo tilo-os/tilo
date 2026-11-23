@@ -24,21 +24,6 @@ impl crate::Acting {
     pub fn asker(&self, host_reaches_person: bool) -> Asker {
         asker_of(self.delegated(), host_reaches_person)
     }
-
-    /// The preset every handed agent of the tree carries in `workspace`
-    /// ([`crate::Acting::handed`], [`crate::roles::agent_preset`]), for the
-    /// person it acts for: the one place a device's delegation to its agent
-    /// becomes grants, so the device that admitted the agent and every
-    /// receiver of its changes decide it alike.
-    #[must_use]
-    pub fn handed_preset(&self, workspace: &str) -> Vec<Grant> {
-        self.nodes()
-            .into_iter()
-            .filter(|node| node.handed)
-            .filter_map(|node| Some((node.agent_id()?, node.acted_for_person()?)))
-            .flat_map(|(agent, person)| crate::roles::agent_preset(workspace, agent, person))
-            .collect()
-    }
 }
 
 impl<'a> Authority<'a> {
@@ -48,8 +33,9 @@ impl<'a> Authority<'a> {
     /// A person is decided by their grants and their role's; from a device that
     /// is not theirs, by what such a device may do at most
     /// ([`crate::Cap::FOREIGN_DEVICE`]). An agent or bot by the grants naming
-    /// it in the workspace and the ones its person gave it (`granted`). An
-    /// automation by what the people it runs for gave it.
+    /// it in the workspace and the ones its certificate gives it (`granted`,
+    /// [`crate::roles::certified_agent`]); a sub-agent by the agent that started
+    /// it. An automation by what the people it runs for gave it.
     #[must_use]
     pub fn of_acting(
         acting: &'a crate::Acting,
@@ -84,6 +70,9 @@ impl<'a> Authority<'a> {
                             party
                         });
                     }
+                    // A sub-agent holds nothing of its own: it is decided as the chain of the
+                    // agent that started it, which its tree names, and every person in it.
+                    MemberId::Agent(_) if node.acted_for.iter().any(crate::Acting::is_agent) => {}
                     MemberId::Agent(_) | MemberId::Bot(_) => {
                         others.push(
                             software_party(member, policy, granted)

@@ -179,7 +179,9 @@ async fn keyless_certified_host_steps_require_a_verified_native_projection() {
                 Caller::local_person("other-person").in_workspace(&env.route.cluster_id),
                 Caller::local_person(&person).in_workspace("other-workspace"),
                 projected.clone().from_foreign_device(true),
-                projected.clone().delegated_to("agent"),
+                Caller::local_agent("agent")
+                    .acting_for(person.clone())
+                    .in_workspace(&env.route.cluster_id),
             ] {
                 assert!(!is_local_host_caller(
                     &caller,

@@ -120,8 +120,7 @@ tilo_test_env::scenario! {
         for answered in [None, Some(Answer::Deny), Some(Answer::Ask), Some(Answer::Allow)] {
             let policy = policy(answered);
             let live = MemberAccess::person(policy.clone(), "ada")
-                .as_acting(agent.clone().acting_for(Acting::person("ada")))
-                .unwrap()
+                .invoked_by(&agent.clone().acting_for(Acting::person("ada")))
                 .answer(&write_node(), ActionKind::Undoable, &Context::at_secs(1));
             let receipt = held_by(&op, &holding, &policy);
             assert_eq!(live == Answer::Allow, receipt == Ok(Receipt::Admit), "{answered:?}");

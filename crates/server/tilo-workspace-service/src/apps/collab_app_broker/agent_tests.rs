@@ -757,8 +757,8 @@ async fn an_agents_session_steps_are_taken_while_it_goes_and_nobody_elses_are() 
             let person = hex::encode(f.native.certificate.user_public_key);
 
             // The agent working in its session, answering for the person.
-            let agent = Caller::local_person(person.clone())
-                .delegated_to("scribe")
+            let agent = Caller::local_agent("scribe")
+                .acting_for(person.clone())
                 .in_workspace(workspace_id().to_string())
                 .in_agent_session(SESSION)
                 .in_new_execution();
@@ -794,8 +794,8 @@ async fn an_agents_session_steps_are_taken_while_it_goes_and_nobody_elses_are() 
             );
 
             // An agent whose session is over takes no step.
-            let ended = Caller::local_person(person)
-                .delegated_to("scribe")
+            let ended = Caller::local_agent("scribe")
+                .acting_for(person)
                 .in_workspace(workspace_id().to_string())
                 .in_agent_session("so.tilo.session/agent-session/over")
                 .in_new_execution();

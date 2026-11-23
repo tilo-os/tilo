@@ -127,9 +127,8 @@ async fn a_persons_stop_that_names_the_agents_reply_ends_the_turn_whatever_began
 
     // A turn a cause began for them: a reminder, asked by what acts for them.
     let thread = chat::Chat::direct_id([MemberId::person(person.clone()), scout.clone()]);
-    let planner = themselves(&root, &browser, &workspace)
-        .delegated_to("planner")
-        .named("Planner");
+    let planner =
+        super::their_agent(&themselves(&root, &browser, &workspace), "planner").named("Planner");
     ask_agent(&actions, &workspace, &planner, &thread, "call-1")
         .await
         .expect("what acts for the person asks their agent");
@@ -409,9 +408,8 @@ async fn a_turn_is_told_its_conversation_as_it_stands_when_it_begins() {
         root, browser, actions, workspaces, workspace, page, person, served
     );
     let thread = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent(SCOUT)]);
-    let planner = themselves(&root, &browser, &workspace)
-        .delegated_to("planner")
-        .named("Planner");
+    let planner =
+        super::their_agent(&themselves(&root, &browser, &workspace), "planner").named("Planner");
     ask_agent(&actions, &workspace, &planner, &thread, "due-1")
         .await
         .expect("the reminder asks");

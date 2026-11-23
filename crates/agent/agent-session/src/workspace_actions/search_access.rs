@@ -81,7 +81,7 @@ impl Reader {
             user: who.caller.user_public_key().copied(),
             device: who.caller.device_public_key().copied(),
             people: acting.people().into_iter().map(str::to_owned).collect(),
-            granted: who.caller.granted(&[]),
+            granted: who.caller.narrowed(),
         }
     }
 }

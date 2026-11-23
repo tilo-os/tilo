@@ -419,8 +419,8 @@ pub(super) fn question(
 
 /// `who`'s access as the host decides for them: the person's access as
 /// `policy` gives it now, held to the bounds the one reading of a caller
-/// gives ([`Caller::acting`]): for an agent, the grants the caller carries
-/// ([`Caller::granted`]) as the broker gives them, narrowed by the bound the
+/// gives ([`Caller::acting`]): for an agent, what its certificate gives it
+/// ([`Caller::certified`]) as the broker gives it, narrowed by the bound the
 /// workspace's list of its agents keeps for it. Refused when the policy is
 /// someone else's.
 pub(super) fn bounded_access(
@@ -442,15 +442,19 @@ pub(super) fn bounded_access(
 }
 
 fn agent_grants(policy: &super::ViewReadPolicy, who: &Bounded) -> Vec<policy::Grant> {
+    let mut granted = who.caller.certified(&policy.workspace);
     if let Some(agent) = who
         .agent
         .as_ref()
         .filter(|_| who.caller.roster_created_at().is_some())
     {
-        policy::roles::agent_bound(agent, who.person.as_str(), &policy.agent_bound)
-    } else {
-        who.caller.granted(&policy.agent_bound)
+        granted.extend(policy::roles::agent_bound(
+            agent,
+            who.person.as_str(),
+            &policy.agent_bound,
+        ));
     }
+    granted
 }
 
 /// `who`'s permissions under `policy` ([`bounded_access`]).
@@ -494,8 +498,7 @@ pub(super) fn member_actor(
 }
 
 /// `caller` as the host acts for them within bounds: a person who is not
-/// the host's own, an agent a person's own device handed its session to,
-/// or an agent device a person certified. `None` for the host's own person, and for anyone the host acts for
+/// the host's own, or an agent on a key a person certified. `None` for the host's own person, and for anyone the host acts for
 /// in no person's name.
 ///
 /// `member` is the person whose device the service is.

@@ -2,8 +2,8 @@
 //! the server's own operations: the grants naming it in the workspace decide, at
 //! the node an app's action of the same provider, kind and verb has
 //! ([`AnswerScope::action`]), as for any action of an app. Its person sets them
-//! for it as for any other action. Without one, the agent's delegation
-//! answers ([`tilo_action_policy::Acting::handed_preset`]), as it does where no
+//! for it as for any other action. Without one, what its certificate gives it
+//! answers ([`tilo_action_policy::roles::certified_agent`]), as it does where no
 //! workspace is asked about: reading is allowed,
 //! and whatever changes something asks the person first, on their approving
 //! devices ([`crate::workspaces::AsksPeople`]). The person's own checks follow,
@@ -71,10 +71,9 @@ pub(crate) fn acts_for_its_person(caller: &Caller) -> bool {
     caller.acting().is_person() || caller.acting().is_agent()
 }
 
-/// What decides an agent's calls in one workspace: the grants there naming it,
-/// the bound the workspace's list of its agents keeps for it, as its person set
-/// it under Agents, and its delegation. Asked in no workspace, or in one not
-/// governed here, its delegation alone.
+/// What decides an agent's calls in one workspace: the grants there naming it
+/// and what its certificate gives it. Asked in no workspace, or in one not
+/// governed here, its certificate alone.
 pub(crate) struct AgentGrants {
     /// The agent; `None` may do nothing here.
     agent: Option<String>,
@@ -133,7 +132,7 @@ impl Workspaces {
                 agent: Some(agent.to_owned()),
                 workspace: String::new(),
                 policy: None,
-                granted: [acting.handed_preset(""), caller.granted(&[])].concat(),
+                granted: caller.certified(""),
             };
         };
         let now = tilo_clock::unix_now_ns();
@@ -146,9 +145,7 @@ impl Workspaces {
             return AgentGrants::NONE;
         };
         let workspace = member.policy.workspace.clone();
-        let mut granted = acting.handed_preset(&workspace);
-        let kept = self.kept_bound(&workspace, agent).await;
-        granted.extend(caller.granted(&kept.unwrap_or_default()));
+        let granted = caller.certified(&workspace);
         AgentGrants {
             agent: Some(agent.to_owned()),
             workspace,

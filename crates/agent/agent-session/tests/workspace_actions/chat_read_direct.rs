@@ -40,9 +40,7 @@ async fn admit_as(served: &Served, workspace: &str, device: &crate::support::Dev
 /// conversation with it, and outside any turn.
 fn acting_for(person: &Caller, agent: &str, turn: (&Id, &Id)) -> [Caller; 2] {
     let on_turn = on_a_turn(person, agent, turn, Vec::new());
-    let outside = person
-        .clone()
-        .delegated_to(agent.to_owned())
+    let outside = super::their_agent(person, agent)
         .named(agent)
         .in_agent_session(format!("agent-session:test-outside-{agent}"));
     [on_turn, outside]

@@ -222,8 +222,8 @@ pub struct AgentSigner {
 impl AgentSigner {
     /// Agent `agent`, which its person's devices list as `name`, working for the person `person`
     /// (a person id) in `workspace`, under a key of its own from `keys`: what signs its calls, and
-    /// the caller they go as. An MCP client is such an agent: its record keeps no bound of its
-    /// own, so it acts with what its person's grant gives an agent.
+    /// the caller they go as. An MCP client is such an agent: it acts with what the key's
+    /// certificate gives it ([`Caller::certified`]).
     ///
     /// # Errors
     /// The workspace or the person is not one, or [`AgentKeys::grant`] refused the key.
@@ -241,8 +241,7 @@ impl AgentSigner {
         let key = keys.grant(id, agent, name, root)?;
         let caller = Caller::delegated_agent(agent, root, key)
             .in_workspace(workspace)
-            .named(name)
-            .held_to(Vec::new());
+            .named(name);
         Ok((
             Self {
                 keys,

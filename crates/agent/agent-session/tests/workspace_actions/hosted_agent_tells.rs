@@ -77,7 +77,7 @@ async fn a_turn_a_reminder_started_tells_its_person_how_it_ended_and_their_own_a
     // A second reminder is due while no model is linked for the assistant's work: its turn
     // cannot work, and its reply says why.
     let (when, _) = in_a_moment(1_500);
-    let theirs = me.delegated_to(SCOUT).named("Scout");
+    let theirs = super::their_agent(&me, SCOUT).named("Scout");
     let set_up = serde_json::json!({
         "name": "Stand up",
         "when": when,
@@ -101,9 +101,8 @@ async fn a_turn_a_reminder_started_tells_its_person_how_it_ended_and_their_own_a
     // and names itself a reminder.
     let person = hex::encode(root.verifying_key().to_bytes());
     let thread = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent(SCOUT)]);
-    let planner = themselves(&root, &browser, &workspace)
-        .delegated_to("planner")
-        .named("Planner");
+    let planner =
+        super::their_agent(&themselves(&root, &browser, &workspace), "planner").named("Planner");
     ask_agent(&up.actions, &workspace, &planner, &thread, "plan-1")
         .await
         .expect("what acts for the person asks their agent");

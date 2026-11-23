@@ -1286,10 +1286,9 @@ mod tests {
             (&tilo_actions::MemberId::person(person), "Ada Stack"),
             (&agent, "Local stack"),
         ]);
-        let invoker = tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::handed_agent(
-            agent.id(),
-            person,
-        ));
+        let acting = tilo_actions::Acting::agent(agent.id())
+            .acting_for(tilo_actions::Acting::person(person));
+        let invoker = tilo_actions::ActionInvoker::admitted(&acting);
         let entry = tilo_actions::ActionContext::default().with_invoker(invoker);
         let author = authors.resolve_entry(&hex::encode([9_u8; 32]), Some(&entry));
         let parts = crate::history_source::sentence::author_parts(&author);
@@ -1305,11 +1304,7 @@ mod tests {
         let mut only_people = AuthorDirectory::new();
         only_people.register_roster([(&tilo_actions::MemberId::person(person), "Ada Stack")]);
         let entry = tilo_actions::ActionContext::default().with_invoker(
-            tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::handed_agent(
-                agent.id(),
-                person,
-            ))
-            .named(Some("Local stack".into())),
+            tilo_actions::ActionInvoker::admitted(&acting).named(Some("Local stack".into())),
         );
         let author = only_people.resolve_entry(&hex::encode([9_u8; 32]), Some(&entry));
         let parts = crate::history_source::sentence::author_parts(&author);

@@ -120,7 +120,7 @@ fn fixture_owned_by(
 
 /// An agent on its person's device acts as itself, under the key its person's root certified
 /// for it: within the bound its own record keeps it runs what its person allowed it, beyond it,
-/// unsigned, signed by another key or with its bound unread it runs nothing, and cancelled
+/// unsigned or signed by another key it runs nothing, and cancelled
 /// while it runs it leaves nothing.
 #[tokio::test]
 #[expect(
@@ -220,7 +220,6 @@ async fn an_agent_on_its_persons_device_is_held_to_its_own_bound() {
         (&helper, sign(&critic, &key), "invocation_not_invoker"),
         (&free, forged, "invocation_signature_invalid"),
         (&free, request(), "invocation_unsigned"),
-        (&agent, sign(&grant, &key), "the agent's bound was not read"),
     ] {
         let refused = answered(caller, asked);
         assert!(
@@ -407,10 +406,9 @@ tilo_test_env::scenario! {
     {
         let (state, person, mut app) = fixture_tagged(vec![tilo_actions::ATTENDED_TAG.to_owned()]);
         let workspace = person.workspace().unwrap().to_owned();
-        let agent = Caller::local_person("a1".repeat(32))
+        let agent = Caller::delegated_agent("scribe", [0xa1; 32], [0x34; 32])
             .in_workspace(workspace)
-            .in_new_execution()
-            .delegated_to("scribe");
+            .in_new_execution();
         let asked = state
             .action_invoke(&agent, None, None, &request())
             .poll_ready();
@@ -477,8 +475,8 @@ tilo_test_env::scenario! {
     phase an_admitted_agent_acting_for_its_person_holds_only_its_own_grants;
     // An agent acting for the person who admitted it may do no more than the
     // workspace grants it: the owner's authority does not widen it, and it
-    // carries none of the delegation the person's own device gives the agents it
-    // hands a session to. That device-handed session, with the same member
+    // carries none of the approval a certificate gives an agent's own key. The
+    // same agent on a key its person's root certified, with the same member
     // grants, does carry it: its change is offered and asks first.
     {
         let owner = "a1".repeat(32);
@@ -501,7 +499,6 @@ tilo_test_env::scenario! {
             .in_workspace(workspace.clone())
             .in_new_execution();
         assert_eq!(member.acting_for_person(), Some(owner.as_str()));
-        assert!(!member.is_session_delegated());
         let answered = state
             .action_invoke(&member, None, None, &request())
             .poll_ready();
@@ -514,20 +511,18 @@ tilo_test_env::scenario! {
         );
         assert!(app.try_recv().is_err(), "the app never hears of it");
 
-        let handed = Caller::local_person(owner)
+        let certified = Caller::delegated_agent("scribe", [0xa1; 32], [0x34; 32])
             .in_workspace(workspace)
-            .in_new_execution()
-            .delegated_to("scribe");
-        assert!(handed.is_session_delegated());
+            .in_new_execution();
         let answered = state
-            .action_invoke(&handed, None, None, &request())
+            .action_invoke(&certified, None, None, &request())
             .poll_ready();
         assert!(
             !matches!(
                 answered,
                 PendingPoll::Ready(Err(ActionCallError::UnknownAction))
             ),
-            "the device-handed session carries the device's delegation: {answered:?}"
+            "the agent's own certified key carries its person's approval: {answered:?}"
         );
     }
 
@@ -590,10 +585,9 @@ async fn an_agents_ask_shows_its_person_the_draft_of_what_would_run() {
     );
     let (sheet, mut asked) = tokio::sync::mpsc::unbounded_channel();
     state.set_app_action_consent(Arc::new(Sheet(sheet)));
-    let agent = Caller::local_person("a1".repeat(32))
+    let agent = Caller::delegated_agent("scribe", [0xa1; 32], [0x34; 32])
         .in_workspace(person.workspace().unwrap().to_owned())
-        .in_new_execution()
-        .delegated_to("scribe");
+        .in_new_execution();
     let mut invoke = request();
     let mut arguments = serde_json::Map::new();
     arguments.insert("text".into(), "Buy milk".into());
@@ -650,10 +644,9 @@ fn ask_to_update(
 ) {
     let (sheet, asked) = tokio::sync::mpsc::unbounded_channel();
     state.set_app_action_consent(Arc::new(Sheet(sheet)));
-    let agent = Caller::local_person("a1".repeat(32))
+    let agent = Caller::delegated_agent("scribe", [0xa1; 32], [0x34; 32])
         .in_workspace(person.workspace().unwrap().to_owned())
-        .in_new_execution()
-        .delegated_to("scribe");
+        .in_new_execution();
     let mut invoke = request();
     invoke.argument = InvokeArgument::Json(
         serde_json::json!({"text": "Buy milk", "pin": false})
@@ -1796,12 +1789,11 @@ fn agent_answered(
     bool,
 ) {
     use tilo_action_policy::agent_answers::{self, AnswerScope};
-    let owner = "a1".repeat(32);
-    let person = tilo_action_policy::Grantee::person(owner.clone());
+    let person = tilo_action_policy::Grantee::person("a1".repeat(32));
     let (state, person_caller, mut app) = fixture_granting(Vec::new(), Vec::new(), |workspace| {
-        let mut grants = tilo_action_policy::Acting::handed_agent("scribe", owner.as_str())
-            .handed_preset(workspace);
-        grants.push(agent_answers::grant(
+        // What its certificate gives the agent comes with its key; the person's answer is the
+        // one grant the workspace keeps.
+        vec![agent_answers::grant(
             workspace,
             "scribe",
             (
@@ -1810,8 +1802,7 @@ fn agent_answered(
             ),
             answer,
             person.clone(),
-        ));
-        grants
+        )]
     });
     let workspace = person_caller
         .workspace()
@@ -1826,10 +1817,9 @@ fn agent_answered(
 /// The agent a person's answers bind: the one their device admitted, acting for them. An
 /// agent that no person stands behind holds nothing.
 fn mcp_server(workspace: &str) -> Caller {
-    Caller::local_person("a1".repeat(32))
+    Caller::delegated_agent("scribe", [0xa1; 32], [0x34; 32])
         .in_workspace(workspace.to_owned())
         .in_new_execution()
-        .delegated_to("scribe")
 }
 
 /// A Store disclosure whose `operation` does not decode is refused with

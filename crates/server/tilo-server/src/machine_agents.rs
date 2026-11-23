@@ -46,6 +46,7 @@ use crate::WorkspaceId;
 use crate::certification::CertificationProtocol;
 use crate::workspaces::Workspaces;
 use tilo_workspace_service::agents::WorkspaceActionProvider;
+use tilo_workspace_service::agents::agent_keys::{self, AgentSigner, Signed};
 
 /// How long the person has to answer whether a program may work in their workspace.
 const ANSWER_WAIT: Duration = Duration::from_secs(2 * 60);
@@ -81,11 +82,10 @@ struct Bound {
     runtime: tokio::runtime::Handle,
 }
 
-/// The person whose Terminal session started a shell, and the device they did it on.
+/// The person whose Terminal session started a shell.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Starter {
     person: [u8; 32],
-    device: Option<[u8; 32]>,
 }
 
 /// An agent working now.
@@ -174,10 +174,7 @@ impl MachineAgentsServer {
         };
         self.starters.lock_recover().insert(
             (workspace.to_owned(), session.to_owned()),
-            Starter {
-                person,
-                device: caller.device_public_key().copied(),
-            },
+            Starter { person },
         );
     }
 
@@ -230,7 +227,7 @@ impl MachineAgentsServer {
         from: &AgentConnection,
         stream: &UnixStream,
         (hello, connected): (&Hello, &dyn Fn() -> bool),
-    ) -> Result<McpServer<WorkspaceActionProvider>, String> {
+    ) -> Result<McpServer<Signed<WorkspaceActionProvider>>, String> {
         let starter = self
             .starters
             .lock_recover()
@@ -278,26 +275,23 @@ impl MachineAgentsServer {
                 }
             }
         }
-        let device = match starter.device {
-            Some(device) => device,
-            None => bound
-                .runtime
-                .block_on(bound.workspaces.work_device(
-                    workspace_id,
-                    starter.person,
-                    &tilo_action_policy::MemberId::agent(agent.clone()),
-                ))
-                .ok_or("the person who started the session is admitted here on no device")?,
-        };
         let session = format!("machine-{}", uuid::Uuid::new_v4().simple());
-        let caller = Caller::authenticated(starter.person, device)
-            .in_workspace(from.workspace.clone())
-            .delegated_to(agent.clone())
-            .named(&name)
-            .in_agent_session(&session);
+        // It signs every call under a key of its own, certified by its person's root for this
+        // agent in this workspace: what it may do is what that certificate gives it.
+        let (signer, caller) = agent_keys::this_device().and_then(|keys| {
+            AgentSigner::grant(
+                keys,
+                &from.workspace,
+                (&agent, &name),
+                &hex::encode(starter.person),
+            )
+        })?;
         let server = McpServer::for_delegated(
-            WorkspaceActionProvider::new(bound.actions.clone(), workspace_id),
-            caller,
+            Signed::new(
+                WorkspaceActionProvider::new(bound.actions.clone(), workspace_id),
+                Some(signer),
+            ),
+            caller.in_agent_session(&session),
         )
         .map_err(|error| error.to_string())?
         .with_agent_session(session);

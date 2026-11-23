@@ -18,7 +18,7 @@ use tilo_server_session::workspaces::{
 };
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
-use super::super::tests::{caller, settled};
+use super::super::tests::{agent_caller, caller, settled};
 use super::super::{GovernedServer, ServiceWorkspaceActions};
 use crate::app_serving::AppActionServer as _;
 use crate::workspaces::tests::{governor, guest_device, test_host};
@@ -304,33 +304,19 @@ async fn no_one_else_and_nothing_uncertified_runs_the_hosts_operations() {
     }
     assert_eq!(workspaces.list().await.len(), 1, "nothing was created");
 
-    // An agent no grant names, on the person's own key, is offered nothing
-    // and refused; one the laptop handed its session reads, and asks its
-    // person before it makes anything.
-    let agent = Caller::delegated_agent("writer", laptop.user_public_key, laptop.device_public_key);
-    assert!(offered(&host, &laptop, &agent).await.is_empty());
-    let refused = settled(
-        host.as_host(&laptop)
-            .invoke(&agent, host_request(LIST_WORKSPACES, json!({}))),
-    )
-    .await;
+    // An agent on a key of its own the person's root certified reads, and asks
+    // its person before it makes anything.
+    let agent = agent_caller(&laptop, "writer");
+    let offered_agent = offered(&host, &laptop, &agent).await;
     assert!(
-        matches!(refused, Err(ActionCallError::Refused { .. })),
-        "{refused:?}"
-    );
-    let handed = caller(&laptop).delegated_to("writer");
-    let offered_handed = offered(&host, &laptop, &handed).await;
-    assert!(
-        offered_handed
-            .iter()
-            .any(|action| action == LIST_WORKSPACES)
-            && offered_handed
+        offered_agent.iter().any(|action| action == LIST_WORKSPACES)
+            && offered_agent
                 .iter()
                 .any(|action| action == CREATE_WORKSPACE),
-        "{offered_handed:?}"
+        "{offered_agent:?}"
     );
     let unasked = settled(host.as_host(&laptop).invoke(
-        &handed,
+        &agent,
         host_request(CREATE_WORKSPACE, json!({ "name": "Its own" })),
     ))
     .await;

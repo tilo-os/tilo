@@ -126,7 +126,9 @@ fn the_persons_asks_reach_the_api_the_host_hands_the_session() {
 
     // An agent the person runs keeps no say over the API, nor does an
     // invocation the API never admitted read through it.
-    let agent = person.clone().delegated_to("claude-code");
+    let agent = Caller::local_agent("claude-code")
+        .acting_for("ada")
+        .in_workspace("workspace");
     let refused = answer(session.invoke(&agent, ask(mcp_server::STOP)));
     assert_eq!(refused.unwrap_err(), ActionCallError::UnknownAction);
     assert_eq!(api.admitted.lock().unwrap().len(), 2);
@@ -157,7 +159,9 @@ fn the_persons_vault_is_asked_by_the_person_alone() {
     assert!(answer(session.invoke(&person, adding())).is_ok());
     assert_eq!(api.admitted.lock().unwrap().len(), 1);
 
-    let agent = person.delegated_to("helper");
+    let agent = Caller::local_agent("helper")
+        .acting_for("ada")
+        .in_workspace("workspace");
     let app = Caller::local_app("so.tilo.chat")
         .acting_for("ada")
         .in_workspace("workspace");
@@ -192,7 +196,9 @@ fn what_a_person_was_told_is_asked_by_the_person_alone() {
     assert!(answer(session.invoke(&person, listing())).is_ok());
     assert_eq!(api.admitted.lock().unwrap().len(), 1);
 
-    let agent = person.delegated_to("helper");
+    let agent = Caller::local_agent("helper")
+        .acting_for("ada")
+        .in_workspace("workspace");
     let app = Caller::local_app("so.tilo.chat")
         .acting_for("ada")
         .in_workspace("workspace");
@@ -249,7 +255,9 @@ fn a_window_asks_the_shell_for_the_persons_connect_setup_or_pairing_link() {
             ..ask(mcp_server::SERVER)
         };
 
-        let agent = person.clone().delegated_to("claude-code");
+        let agent = Caller::local_agent("claude-code")
+            .acting_for("ada")
+            .in_workspace("workspace");
         assert_eq!(
             answer(session.invoke(&agent, show())).unwrap_err(),
             ActionCallError::UnknownAction,

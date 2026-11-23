@@ -172,10 +172,8 @@ impl TurnTeam {
     /// its own team and no other. Reading a team is part of steering it: it is decided as a
     /// note is.
     fn lets(&self, caller: &Caller, verb: &str, on: Option<&str>) -> bool {
-        let (Some(agent), Some(person)) = (
-            caller.acting().agent_id(),
-            caller.acting().acted_for_person(),
-        ) else {
+        // A sub-agent is decided as the agent it works under, whose key its turn goes under.
+        let Some((agent, person)) = caller.certified_agent() else {
             return false;
         };
         let list = TreePath::workspace(self.workspace.as_str()).app(OWNER);
@@ -190,11 +188,12 @@ impl TurnTeam {
                 .action(if verb == READ { NOTE } else { verb })
         };
         // Only a turn this server carries out reaches here ([`Self::asker`]): its agent works
-        // for the turn's person as one handed to them, held to what the list keeps for it.
+        // with what its certificate gives it, held to what the list keeps for it.
         let kept = self.agent.turn_rules(&self.workspace);
-        let mut grants =
-            tilo_action_policy::Acting::handed_agent(agent, person).handed_preset(&self.workspace);
-        grants.extend(tilo_action_policy::roles::agent_bound(agent, person, &kept));
+        let mut grants = caller.certified(&self.workspace);
+        grants.extend(tilo_action_policy::roles::agent_bound(
+            agent, &person, &kept,
+        ));
         // Its grants hold until they are taken back: no time decides them.
         let decided = Party::new(vec![Grantee::agent(agent.to_owned())], &grants).decide(
             &node,

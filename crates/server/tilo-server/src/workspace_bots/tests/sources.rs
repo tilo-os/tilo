@@ -82,9 +82,8 @@ impl Hers {
     /// One action on the workspace's events as a turn this server carries
     /// out for her takes it, answered as the event it is about.
     async fn take(&self, events: &WorkspaceEvents, action: &str, arguments: &Value) -> EventView {
-        let caller = Caller::authenticated(self.person(), self.cert.device_public_key)
+        let caller = Caller::delegated_agent(ASSISTANT, self.person(), self.cert.device_public_key)
             .in_workspace(self.workspace.clone())
-            .delegated_to(ASSISTANT)
             .named("Assistant");
         let request = InvokeRequest {
             invocation: tilo_actions::InvocationId::new(),

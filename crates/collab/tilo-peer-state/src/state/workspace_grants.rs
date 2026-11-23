@@ -228,7 +228,7 @@ mod tests {
         let agent = tilo_action_policy::key_agent_id(&key);
         // The key's call, carried out and signed by another device of the
         // workspace's: the change names the key's agent, for its person.
-        let invoker = Acting::handed_agent(agent, person);
+        let invoker = Acting::agent(agent).acting_for(Acting::person(person));
         let node = TreePath::workspace(peer.workspace_id()).app("test.app");
         let decided = |peer: &crate::StatePeer| {
             peer.permissions(server.device_public_key, now)

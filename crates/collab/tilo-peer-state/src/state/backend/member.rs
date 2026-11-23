@@ -95,13 +95,12 @@ fn current(
         .map(|row| match &row.delegation.delegate {
             Delegate::Agent { agent_id } => crate::state::ActingAs {
                 actor: tilo_action_policy::Actor::Member(MemberId::agent(agent_id.clone())),
-                // Its person handed it the delegation its root-signed
-                // certificate names.
-                grants: tilo_action_policy::Acting::handed_agent(
-                    agent_id.as_str(),
+                // What the delegation its person's root signed gives it.
+                grants: tilo_action_policy::roles::certified_agent(
+                    &peer.workspace,
+                    agent_id,
                     person.as_str(),
-                )
-                .handed_preset(&peer.workspace),
+                ),
             },
             Delegate::Bot { installation } => crate::state::ActingAs {
                 actor: tilo_action_policy::Actor::Member(MemberId::bot(installation.clone())),

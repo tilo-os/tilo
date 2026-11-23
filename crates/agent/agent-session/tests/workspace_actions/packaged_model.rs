@@ -351,13 +351,13 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
         .unwrap()
         .expect("the workspace holds the resource the module made");
 
-    // The agent the server's own session was handed to: its person's device,
-    // acting as the agent, as tilo-mcp does on a server.
-    let caller = Caller::authenticated(
+    // The person's agent on the server, under the key its person's root
+    // certified for it, as tilo-mcp runs it there.
+    let caller = Caller::delegated_agent(
+        "assistant",
         root.verifying_key().to_bytes(),
         server_device.cert.device_public_key,
     )
-    .delegated_to("assistant")
     .named("Claude Code")
     .in_workspace(&created.workspace)
     .in_new_execution();

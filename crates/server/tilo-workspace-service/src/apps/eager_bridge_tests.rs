@@ -56,7 +56,6 @@ mod eager_bridge_tests {
                 display_handle: None,
                 role: CapRole::Editor,
                 agent_id: None,
-                session_delegated: false,
             }),
         }
     }

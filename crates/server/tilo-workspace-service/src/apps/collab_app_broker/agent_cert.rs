@@ -43,7 +43,7 @@ impl AppBrokerState {
     }
 
     /// That an agent working for its person on this device asks for `request` under the key
-    /// its person certified for it, held to the bound its record keeps, checked as a host checks
+    /// its person certified for it, checked as a host checks
     /// one ([`tilo_server_protocol::invocation::verify_agent_invocation`]) against the
     /// revocations the workspace's document records. Everyone else is admitted as they are.
     pub(super) fn signed_by_agent(
@@ -70,22 +70,15 @@ impl AppBrokerState {
             .as_ref()
             .and_then(|membership| membership.workspace_revocations(workspace))
             .ok_or_else(|| refused("this device holds no revocations of the workspace".into()))?;
-        let cert = tilo_server_protocol::invocation::verify_agent_invocation(
+        tilo_server_protocol::invocation::verify_agent_invocation(
             workspace,
             request,
             (person, agent, key),
             &revocations,
             tilo_clock::unix_now_ns(),
         )
-        .map_err(|error| refused(format!("{}: {error}", error.code())))?;
-        // A key its person's device made acts only as far as the record it read bounds it: one
-        // whose bound nobody read is refused, never left unbounded.
-        if cert.capabilities.agent.is_some() && caller.granted(&[]).is_empty() {
-            return Err(refused(
-                "the agent's bound was not read, so it may act on nothing".into(),
-            ));
-        }
-        Ok(())
+        .map(drop)
+        .map_err(|error| refused(format!("{}: {error}", error.code())))
     }
 }
 
@@ -112,6 +105,5 @@ pub(super) fn admit_listed_agent(
     }
     admitted.role = roles::agent_policy::role(admitted.role);
     admitted.agent_id = Some(agent_id.to_string());
-    admitted.session_delegated = true;
     Ok(())
 }

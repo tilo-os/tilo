@@ -18,7 +18,7 @@
 //! Before the vault is opened a turn is refused unless it is one this server
 //! carries out ([`Workspaces::asked_turn`]):
 //!
-//! - the caller is an agent a person's session was handed to, working
+//! - the caller is an agent on a key its person certified, working
 //!   inside a turn, confined to this workspace. A bot, an app, an agent
 //!   admitted as a member and a person asking for themselves are not turns
 //!   this server carries out;
@@ -135,8 +135,8 @@ pub const NOTHING_WAITS: &str = "Nothing waits for an answer under that question
 pub struct HostedTurn<'a> {
     /// The workspace the turn works in.
     pub workspace: WorkspaceId,
-    /// The caller the turn's tools act as: the asking person's session,
-    /// handed to the agent on this turn.
+    /// The caller the turn's tools act as: the agent, on its own key, for the
+    /// asking person.
     pub caller: &'a Caller,
     /// The rules the turn is decided by, where anything narrows its agent:
     /// what its entry bounds it to and, for a sub-agent, what keeps it from
@@ -1242,19 +1242,6 @@ pub(super) fn person_device_in(
         .map(|cert| cert.device_public_key)
 }
 
-/// Whether the member delegated `person`'s work to `server`, this device, as `actor`
-/// ([`collab_types::work_delegation::WorkDelegation`]) in the workspace `peer` holds.
-fn delegated_in(
-    peer: &super::StatePeer,
-    person: &[u8; 32],
-    actor: &tilo_action_policy::MemberId,
-    server: &[u8; 32],
-) -> bool {
-    peer.workspace()
-        .work_delegation(server, person, tilo_clock::wall())
-        .is_some_and(|delegation| delegation.actor() == *actor)
-}
-
 impl Workspaces {
     /// [`person_device_in`] the workspace `workspace` governed here: `None` for
     /// a workspace not governed here, or a person it admits on no device of their own. The
@@ -1318,38 +1305,6 @@ impl Workspaces {
         })
         .await
         .unwrap_or(false)
-    }
-
-    /// The device the workspace `workspace` admits `person`'s work on for a turn
-    /// acting as `actor`: this server's own device where they delegated that work
-    /// to it as `actor`, else the newest of their own devices it admits now.
-    /// `None` for a workspace not governed here, or a person whose work no device
-    /// here is admitted on: a turn of theirs does not start. On a device of the person's own, the
-    /// turn is this device's: what it writes for the agent is this device's member write.
-    pub async fn work_device(
-        &self,
-        workspace: WorkspaceId,
-        person: [u8; 32],
-        actor: &tilo_action_policy::MemberId,
-    ) -> Option<[u8; 32]> {
-        if let Ok(device) = self.member_identity()
-            && device.cert.user_public_key == person
-        {
-            return Some(device.cert.device_public_key);
-        }
-        let placed = &self.inner.host.environments;
-        let now_ns = tilo_clock::unix_now_ns();
-        let server = self.governor().device_public_key;
-        self.governing(workspace, |governance| {
-            if delegated_in(governance.peer, &person, actor, &server) {
-                return Some(server);
-            }
-            person_device_in(governance.peer, &person, |device| {
-                placed.of(device, now_ns).is_some()
-            })
-        })
-        .await
-        .flatten()
     }
 }
 

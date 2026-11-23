@@ -201,9 +201,8 @@ async fn a_person_ends_from_any_device_the_share_their_agent_made_and_nobody_els
     .await;
     let bo = another_member(&actions, &workspaces, &workspace, &device).await;
     // What acts for the person and did not make the share.
-    let planner = themselves(&root, &browser, &workspace)
-        .delegated_to("planner")
-        .named("Planner");
+    let planner =
+        super::their_agent(&themselves(&root, &browser, &workspace), "planner").named("Planner");
     for (who, caller) in [
         ("another member", &bo),
         ("what acts for the person", &planner),

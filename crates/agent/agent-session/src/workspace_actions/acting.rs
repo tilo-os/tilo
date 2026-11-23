@@ -486,8 +486,8 @@ impl Worker {
         caller.acting().person_id() == Some(self.member.as_str())
     }
 
-    /// Whether `caller` is the host's own person or an agent one of their
-    /// devices handed its session to: who may open records, show them on the
+    /// Whether `caller` is the host's own person or an agent they
+    /// certified: who may open records, show them on the
     /// shared layout and run commands in the workspace's shell.
     pub(super) fn acts_for_owner(&self, caller: &Caller) -> bool {
         acts_for(caller, &self.member)

@@ -730,8 +730,7 @@ async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspace
     ));
     let all = grant(AgentScope::AllWorkspaces);
     // The grant asks as its session makes it: its person's agent.
-    let agent =
-        Caller::authenticated(all.user_public_key, all.device_public_key).delegated_to("grant");
+    let agent = Caller::delegated_agent("grant", all.user_public_key, all.device_public_key);
     let receipt = settled(host.as_host(&all).invoke(&agent, own_request(json!({}))))
         .await
         .unwrap();
@@ -881,8 +880,7 @@ async fn a_server_key_reads_its_persons_account_and_an_agent_or_a_narrower_key_n
         read
     };
     // A backend's key reads what its person's workspaces keep and ran.
-    let agent =
-        Caller::authenticated(all.user_public_key, all.device_public_key).delegated_to("grant");
+    let agent = Caller::delegated_agent("grant", all.user_public_key, all.device_public_key);
     let receipt = settled(host.as_host(&all).invoke(&agent, read()))
         .await
         .unwrap();
@@ -904,8 +902,11 @@ async fn a_server_key_reads_its_persons_account_and_an_agent_or_a_narrower_key_n
         ..all.clone()
     };
     sign_device_cert(&mut consented, &root).unwrap();
-    let assistant = Caller::authenticated(consented.user_public_key, consented.device_public_key)
-        .delegated_to("assistant");
+    let assistant = Caller::delegated_agent(
+        "assistant",
+        consented.user_public_key,
+        consented.device_public_key,
+    );
     let refused = settled(host.as_host(&consented).invoke(&assistant, read())).await;
     assert!(
         matches!(refused, Err(ActionCallError::UnknownAction)),
@@ -922,8 +923,8 @@ async fn a_server_key_reads_its_persons_account_and_an_agent_or_a_narrower_key_n
         now + 60_000_000_000,
     );
     sign_device_cert(&mut minted, &grant_key).unwrap();
-    let narrow = Caller::authenticated(minted.user_public_key, minted.device_public_key)
-        .delegated_to("minted");
+    let narrow =
+        Caller::delegated_agent("minted", minted.user_public_key, minted.device_public_key);
     let refused = settled(host.as_host(&minted).invoke(&narrow, read())).await;
     assert!(
         matches!(refused, Err(ActionCallError::UnknownAction)),
@@ -962,7 +963,7 @@ fn certified_as(
 
 /// The caller a key's session with the server makes it: its person's agent.
 fn as_key(cert: &DeviceCert) -> Caller {
-    Caller::authenticated(cert.user_public_key, cert.device_public_key).delegated_to("key")
+    Caller::delegated_agent("key", cert.user_public_key, cert.device_public_key)
 }
 
 /// The person's own workspace `argument` asks for, as `cert`'s key asks.

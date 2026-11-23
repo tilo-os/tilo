@@ -1545,8 +1545,8 @@ mod settings_documents_tests {
             },
         );
         let person = Caller::local_person(owner.clone()).in_workspace(workspace_id.clone());
-        let agent = Caller::local_person(owner)
-            .delegated_to("scribe")
+        let agent = Caller::local_agent("scribe")
+            .acting_for(owner)
             .in_workspace(workspace_id);
         let minutes = || *host.minutes.lock().unwrap();
 

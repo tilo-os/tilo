@@ -849,9 +849,7 @@ async fn a_team_is_answered_to_any_members_turn_of_the_agent() {
     );
 
     // Outside any turn there is no team to ask for.
-    let outside = ada
-        .clone()
-        .delegated_to(SCOUT.to_owned())
+    let outside = super::their_agent(&ada, SCOUT)
         .named("Scout")
         .in_agent_session("agent-session:test-scout");
     for (who, caller) in [

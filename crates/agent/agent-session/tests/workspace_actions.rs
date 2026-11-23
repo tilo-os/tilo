@@ -25,6 +25,24 @@
 
 use tilo_server_protocol::WorkspaceId;
 
+/// `person`'s agent `agent`, on the device `person` calls from and under the certificate their
+/// root gave it, in the workspace `person` is in.
+fn their_agent(person: &tilo_actions::remote::Caller, agent: &str) -> tilo_actions::remote::Caller {
+    let caller = tilo_actions::remote::Caller::delegated_agent(
+        agent,
+        *person
+            .user_public_key()
+            .expect("a person's caller names their key"),
+        *person
+            .device_public_key()
+            .expect("a person's caller names their device"),
+    );
+    match person.workspace() {
+        Some(workspace) => caller.in_workspace(workspace),
+        None => caller,
+    }
+}
+
 #[cfg(test)]
 #[path = "workspace_actions/agent_mcp.rs"]
 mod agent_mcp;

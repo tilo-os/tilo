@@ -9,8 +9,8 @@
 //! answers leaves it waiting, as their answer on the sheet is the invocation's
 //! own outcome.
 //!
-//! Only an agent asks, and only the person it acts for: the caller is this
-//! device's own session, handed to the agent by its person. Nothing about a
+//! Only an agent asks, and only the person it acts for: the caller is an agent
+//! this device admitted for its person. Nothing about a
 //! grant changes; the question is no action of any app or record.
 
 use std::sync::Arc;
@@ -49,7 +49,7 @@ impl AppBrokerState {
             reason: reason.to_owned(),
         };
         // A person asks nobody: the question is an agent's, to the person it
-        // works for on this device, whose session handed it to the agent.
+        // works for on this device.
         let Some(agent) = caller.acting().agent_id().map(str::to_owned) else {
             return Pending::ready(Err(ActionCallError::UnknownAction));
         };
@@ -297,9 +297,9 @@ mod tests {
     }
 
     fn caller(agent: &str) -> Caller {
-        Caller::local_person("ada")
+        Caller::local_agent(agent)
+            .acting_for("ada")
             .in_workspace(WORKSPACE)
-            .delegated_to(agent)
             .in_new_execution()
     }
 
@@ -441,10 +441,8 @@ mod tests {
                 Caller::local_app("so.tilo.example")
                     .acting_for("ada")
                     .in_workspace(WORKSPACE),
-                // An agent another device's session handed to, not this device's.
-                Caller::authenticated([7; 32], [8; 32])
-                    .in_workspace(WORKSPACE)
-                    .delegated_to("mcp-1234")
+                // An agent on a key of its own, connected from elsewhere: not this device's.
+                Caller::delegated_agent("mcp-1234", [7; 32], [8; 32]).in_workspace(WORKSPACE)
                     .in_new_execution(),
             ];
             for caller in refused {

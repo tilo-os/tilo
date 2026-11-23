@@ -219,8 +219,11 @@ impl Sessions for DeviceRuns {
             return Err(format!("no workspace {workspace} here"));
         }
         self.opened.lock().unwrap().push(key.clone());
-        let caller =
-            Caller::local_person("ada").delegated_to(tilo_mcp::devices::agent_id("agent", key));
+        let caller = Caller::delegated_agent(
+            tilo_mcp::devices::agent_id("agent", key),
+            key.user_public_key,
+            key.device_public_key,
+        );
         Ok((Arc::new(self.broker.clone()), caller))
     }
 }

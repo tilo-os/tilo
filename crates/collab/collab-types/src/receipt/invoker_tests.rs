@@ -148,9 +148,9 @@ pub(super) fn received(
     decide_op(op, &tree(), None, None, &surfaces, &allows)
 }
 
-/// The agent a person's computer handed its session to, as the mount names it.
+/// The agent a person's computer runs, as the mount names it.
 pub(super) fn mount_agent() -> Acting {
-    Acting::agent(AGENT).handed().in_session("session-1")
+    Acting::agent(AGENT).in_session("session-1")
 }
 
 pub(super) fn person(policy: &WorkspacePolicy, person: &str) -> MemberAccess {
@@ -207,7 +207,7 @@ tilo_test_env::scenario! {
         assert!(received(&op, &person(&policy, "vic")).is_err());
     }
 
-    phase whoever_signs_a_handed_agents_change_bounds_it;
+    phase whoever_signs_an_agents_change_bounds_it;
     {
         // A server carrying out Ada's agent's call signs what it changes. It
         // could claim Ada herself, so claiming her agent gets it no more: the
@@ -229,7 +229,7 @@ tilo_test_env::scenario! {
             received(&write_by(Some(&for_vic)), &person(&policy(None), "bob")).is_err(),
             "the agent's person bounds it whoever signs"
         );
-        // The agent's own key claiming it was handed one.
+        // The agent's own key, with no certificate read for it, holds nothing.
         let agent_key = MemberAccess::new(
             policy(None),
             Acting::agent(AGENT).acting_for(Acting::person("ada")),
@@ -262,14 +262,14 @@ tilo_test_env::scenario! {
     phase a_keys_agent_is_decided_by_the_grant_its_person_signed;
     {
         let key = tilo_action_policy::key_agent_id(&[9; 32]);
-        let claimed = Acting::handed_agent(key.clone(), "ada");
+        let claimed = Acting::agent(key.clone()).acting_for(Acting::person("ada"));
         let op = write_by(Some(&claimed));
         // Its claim alone counts for nothing, whoever signs.
         assert!(received(&op, &person(&policy(None), "ada")).is_err());
         assert!(received(&op, &person(&policy(None), "bob")).is_err());
         // The grant its certificate is, which the workspace reads, decides it
         // whoever signs.
-        let approved = Acting::handed_agent(key, "ada").handed_preset(WORKSPACE);
+        let approved = tilo_action_policy::roles::certified_agent(WORKSPACE, &key, "ada");
         assert_eq!(
             received(&op, &person(&policy(None), "bob").granted(approved)),
             Ok(Receipt::Admit)
@@ -280,10 +280,9 @@ tilo_test_env::scenario! {
     {
         for answered in [None, Some(Answer::Deny), Some(Answer::Ask), Some(Answer::Allow)] {
             let policy = policy(answered);
-            // The live path: Ada's device admits the agent it handed its session to.
+            // The live path: Ada's device admits the agent it runs, as its mount does.
             let live = MemberAccess::person(policy.clone(), "ada")
-                .as_acting(mount_agent().acting_for(Acting::person("ada")))
-                .unwrap()
+                .invoked_by(&mount_agent().acting_for(Acting::person("ada")))
                 .answer(&write_node(), ActionKind::Undoable, &Context::at_secs(1));
             let receipt = received(&write_by(Some(&mount_agent())), &person(&policy, "ada"));
             assert_eq!(
@@ -315,8 +314,7 @@ tilo_test_env::scenario! {
         for answered in [None, Some(Answer::Deny), Some(Answer::Ask), Some(Answer::Allow)] {
             let policy = policy(answered);
             let live = MemberAccess::person(policy.clone(), "ada")
-                .as_acting(mount_agent().acting_for(Acting::person("ada")))
-                .unwrap()
+                .invoked_by(&mount_agent().acting_for(Acting::person("ada")))
                 .answer(&write_node(), ActionKind::Undoable, &Context::at_secs(1));
             let receipt = received(&op, &person(&policy, "ada"));
             assert_eq!(live == Answer::Allow, receipt == Ok(Receipt::Admit), "{answered:?}");

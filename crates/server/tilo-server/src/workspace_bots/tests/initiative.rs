@@ -143,10 +143,10 @@ fn as_person(cert: &DeviceCert, workspace: &str) -> Caller {
     Caller::authenticated(cert.user_public_key, cert.device_public_key).in_workspace(workspace)
 }
 
-/// That person's assistant, on a turn their session was handed to.
+/// That person's assistant, on a key of its own their root certified.
 fn as_their_agent(cert: &DeviceCert, workspace: &str) -> Caller {
-    as_person(cert, workspace)
-        .delegated_to("assistant")
+    Caller::delegated_agent("assistant", cert.user_public_key, cert.device_public_key)
+        .in_workspace(workspace)
         .named("Assistant")
 }
 
@@ -527,7 +527,7 @@ async fn the_look_round_is_one_of_its_persons_events_with_their_switch_and_rhyth
         Caller::bot(GREETER.to_owned(), cert.user_public_key, [5; 32]).in_workspace(&workspace);
     for other in [
         as_another(&workspace),
-        as_another(&workspace).delegated_to("scout"),
+        Caller::delegated_agent("scout", ADA, [9; 32]).in_workspace(&workspace),
         bot,
     ] {
         for action in [workspace_initiative::READ, workspace_initiative::TURN_ON] {
@@ -1099,7 +1099,7 @@ async fn only_its_person_gives_the_nod_and_always_lets_a_kind_start_alone() {
     assert!(refused_for(&nod, "only the person"), "{nod:?}");
     for other in [
         as_another(&workspace),
-        as_another(&workspace).delegated_to("scout"),
+        Caller::delegated_agent("scout", ADA, [9; 32]).in_workspace(&workspace),
     ] {
         for action in [
             workspace_initiative::LIST,

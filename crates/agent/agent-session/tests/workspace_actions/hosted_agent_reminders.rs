@@ -418,7 +418,7 @@ async fn a_reminder_due_while_its_server_was_down_starts_its_turn_once_the_serve
     // Their assistant sets a reminder up, through the entry its turn's tools reach (the test
     // above goes through a turn).
     let (when, at_ms) = in_a_moment(5_000);
-    let theirs = me.clone().delegated_to(SCOUT).named("Scout");
+    let theirs = super::their_agent(&me, SCOUT).named("Scout");
     let set_up = serde_json::json!({
         "name": "Call home",
         "when": when,

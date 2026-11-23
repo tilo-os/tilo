@@ -700,9 +700,7 @@ async fn the_feed_of_changes_tells_an_agent_nothing_of_an_app_its_rules_refuse_i
     for (which, rules, told) in cases {
         let (workspace, page, _) = served.workspace(rules).await;
         let ada = Served::person(&served.ada, &served.devices.1, &workspace);
-        let agent = ada
-            .clone()
-            .delegated_to(SCOUT.to_owned())
+        let agent = super::their_agent(&ada, SCOUT)
             .named(SCOUT)
             .in_agent_session(format!("agent-session:test-feed-{SCOUT}"));
         let hers = feed(&served, &workspace, &ada, None).await.cursor;
@@ -762,9 +760,7 @@ async fn a_write_wakes_no_agent_whose_rules_refuse_it_the_read() {
         .workspace(|workspace| vec![reading(format!("workspace:{workspace}"), "deny")])
         .await;
     let ada = Served::person(&served.ada, &served.devices.1, &workspace);
-    let agent = ada
-        .clone()
-        .delegated_to(SCOUT.to_owned())
+    let agent = super::their_agent(&ada, SCOUT)
         .named(SCOUT)
         .in_agent_session(format!("agent-session:test-wait-{SCOUT}"));
     let id = WorkspaceId::parse(&workspace).unwrap();

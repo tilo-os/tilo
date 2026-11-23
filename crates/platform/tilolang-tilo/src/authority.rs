@@ -272,10 +272,11 @@ impl Authority for TiloAuthority {
             (None, _, _) => Party::default().owning(TreePath::root()),
         };
         let delegation = match (agent, person) {
-            (Some(_), Some(person)) => Some(
-                tilo_action_policy::Acting::handed_agent(invoker.id(), person)
-                    .handed_preset(workspace),
-            ),
+            (Some(_), Some(person)) => Some(tilo_action_policy::roles::certified_agent(
+                workspace,
+                invoker.id(),
+                person,
+            )),
             _ => None,
         };
         // Each author of the code that led here, once, with what it holds of its own. A block is

@@ -350,18 +350,24 @@ fn agent_grant(cert: &DeviceCert) -> bool {
         || *capabilities == tilo_user_identity::DeviceCapabilities::nothing()
 }
 
-/// The agent `acting` names as the one who acted with its own key: an agent no device of its
-/// person handed its session to. `None` for a person, and for an agent a person's own device
-/// signs for ([`tilo_action_policy::Acting::handed`]).
+/// The agent whose own key `acting` goes under: the actor, or for a sub-agent the agent that
+/// started it, whose key its work is signed by. `None` for a person, and for an agent of a change
+/// stored before agents had keys of their own, which its person's device signed
+/// ([`tilo_action_policy::Acting::handed`]).
 fn own_key_agent(acting: &tilo_action_policy::Acting) -> Option<&str> {
-    acting.agent_id().filter(|_| !acting.handed)
+    if acting.handed {
+        return None;
+    }
+    match acting.acted_for.iter().find(|node| node.is_agent()) {
+        Some(starter) => own_key_agent(starter),
+        None => acting.agent_id(),
+    }
 }
 
 /// That the invoker a change names and the key that signed its invocation agree: an agent
 /// acting with its own key is signed by a key of the person it acts for certified for that
 /// agent ([`certified_for`]), and an agent's grant signs only for an agent, never as its
-/// person: for itself, or for a sub-agent it started, which it hands its work as a person's
-/// device hands an agent its session.
+/// person: for itself, or for a sub-agent it started ([`own_key_agent`]).
 fn agent_signed(
     invoker: Option<&tilo_action_policy::Acting>,
     cert: &DeviceCert,
@@ -776,12 +782,16 @@ mod tests {
             // An agent only its person's device signed for, or that kept no signed call, is refused.
             assert_eq!(kept(&by_device, &scout, true), Err(InvocationError::NotAgentSigned));
             assert_eq!(kept(&by_agent, &scout, false), Err(InvocationError::NotAgentSigned));
-            // An agent the person's own device handed its session to is that device's to sign.
-            let handed = Acting::handed_agent("scout", person.as_str());
-            assert_eq!(kept(&by_device, &handed, true), Ok(Some(device)));
-            // A sub-agent the agent started works under the agent's key.
-            let helper = Acting::handed_agent("helper", person.as_str());
+            // An agent of a change stored before agents had keys of their own was signed by its
+            // person's device.
+            let mut stored = scout.clone();
+            stored.handed = true;
+            assert_eq!(kept(&by_device, &stored, true), Ok(Some(device)));
+            // A sub-agent the agent started works under the agent's key, and under no other.
+            let helper = scout.handed_on("helper");
             assert_eq!(kept(&by_agent, &helper, true), Ok(Some(agent)));
+            let under_critic = for_person(Acting::agent("critic")).handed_on("helper");
+            assert_eq!(kept(&by_agent, &under_critic, true), Err(InvocationError::NotInvoker));
         }
 
         phase one_invocation_id_names_one_request;

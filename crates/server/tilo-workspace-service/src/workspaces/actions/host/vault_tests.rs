@@ -1,8 +1,8 @@
 //! A workspace's vault on its host: what a member keeps to sign in with is
 //! shared by every member, listed only as far as it is safe to say, and
 //! reached as the workspace's policy says at Passwords' vault. A member of
-//! another workspace reaches none of it, and an agent its member's device
-//! handed its session to reads it while its changes ask its person.
+//! another workspace reaches none of it, and an agent its member certified
+//! reads it while its changes ask its person.
 
 #![allow(
     clippy::too_many_lines,
@@ -23,7 +23,7 @@ use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::DeviceCert;
 
 use super::super::ServiceWorkspaceActions;
-use super::super::tests::{admit, caller, governed, settled};
+use super::super::tests::{admit, agent_caller, caller, governed, settled};
 use crate::workspaces::fixtures::{test_host, test_host_holding};
 use crate::workspaces::tests::{governor, guest_device};
 use crate::workspaces::{AsksPeople, PersonAnswer, Workspaces};
@@ -301,7 +301,7 @@ async fn a_members_login_is_the_workspaces_and_every_member_reads_only_what_is_s
 }
 
 /// The workspace's vault is reached by its members as its policy says: an
-/// agent its member's device handed its session to reads it, and every
+/// agent its member certified reads it, and every
 /// change it would make asks its person first. A bot, an app, an agent no
 /// device stands behind and the person's key on another person's device are
 /// told what a caller asking for something that does not exist is told.
@@ -338,7 +338,7 @@ async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_perso
 
     // Her agent, over the connection her device handed it, reads the
     // items and the entries.
-    let agent = as_ada.clone().delegated_to("assistant");
+    let agent = agent_caller(&ada, "assistant");
     let listed = ask(
         &service,
         workspace_id,
@@ -1025,7 +1025,7 @@ async fn a_members_agent_uses_the_workspaces_vault_only_by_reference() {
 
     // An agent of hers hands no typed key in: keeping one by typing it asks
     // its person first, and nobody answers.
-    let helper = as_ada.clone().delegated_to("assistant");
+    let helper = agent_caller(&ada, "assistant");
     let typed = ask_at(
         &service,
         workspace_id,
@@ -1098,7 +1098,7 @@ async fn a_mail_sign_in_by_reference_goes_only_to_its_own_servers() {
         );
     }
     // A password typed in by an agent waits for its person first.
-    let helper = as_ada.clone().delegated_to("assistant");
+    let helper = agent_caller(&ada, "assistant");
     let typed = ask_at(
         &service,
         workspace_id,

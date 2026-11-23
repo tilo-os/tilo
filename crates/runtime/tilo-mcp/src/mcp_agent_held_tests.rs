@@ -9,9 +9,7 @@ const AN_HOUR: std::time::Duration = std::time::Duration::from_secs(3600);
 
 /// A turn's server over `notes`, as a workspace's server makes one for a person's ask.
 fn turn(notes: &Notes) -> McpServer<Notes> {
-    let caller = Caller::local_person("ada")
-        .in_workspace("workspace")
-        .delegated_to("assistant");
+    let caller = Caller::delegated_agent("assistant", [1; 32], [2; 32]).in_workspace("workspace");
     McpServer::for_turn(notes.clone(), caller)
         .unwrap()
         .with_agent_session("turn:test")

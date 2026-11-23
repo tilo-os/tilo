@@ -151,9 +151,7 @@ async fn an_agent_the_workspaces_list_does_not_hold_is_held_to_its_persons_acces
     let ada = Served::person(&served.ada, &served.devices.1, &workspace);
     let bo_himself = Served::person(&bo, &bo_device, &workspace);
     let bo_turn = from_elsewhere(&bo, &bo_device, &workspace, Vec::new());
-    let bo_outside = bo_himself
-        .clone()
-        .delegated_to(ASSISTANT.to_owned())
+    let bo_outside = super::their_agent(&bo_himself, ASSISTANT)
         .named(ASSISTANT)
         .in_agent_session("agent-session:test-outside".to_owned());
     let cy_turn = from_elsewhere(&cy, &cy_device, &workspace, Vec::new());

@@ -9,7 +9,7 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
 use super::super::ServiceWorkspaceActions;
-use super::super::tests::{admit, caller, governed};
+use super::super::tests::{admit, agent_caller, caller, governed};
 use super::vault_tests::ask_at;
 use crate::workspaces::region::{REGION, Region};
 use crate::workspaces::tests::{governor, test_host};
@@ -129,7 +129,7 @@ async fn a_persons_formats_are_a_resource_for_them_alone() {
     // No agent reaches them, whoever it acts for, and neither does Ada on Bo's device.
     let not_her = [
         Caller::delegated_agent("assistant", ada.user_public_key, ada.device_public_key),
-        caller(&ada).delegated_to("assistant"),
+        agent_caller(&ada, "assistant"),
     ];
     for asking in &not_her {
         let refused = ask(

@@ -2462,15 +2462,16 @@ fn replica_access(
     let permissions = match actor {
         ReplicaActor::Agent { person, name } => {
             let id = member.id();
-            // The delegation its person handed it is its acting's own, and the agent is who the
-            // changes are by, for the person it acts for, under the name its delegation gives it:
-            // its changes name that acting, so every receiver decides them as this replica does.
-            let acting = policy::Acting::handed_agent(id, person.id());
+            // The agent is who the changes are by, for the person it acts for, under the name its
+            // delegation gives it, with what the delegation its person signed gives it: every
+            // receiver holding that delegation decides its changes as this replica does.
+            let acting = policy::Acting::agent(id).acting_for(policy::Acting::person(person.id()));
             invoker = tilo_actions::ActionInvoker::admitted(&acting)
                 .named(Some(name).filter(|name| !name.trim().is_empty()));
             let permissions = PermissionContext::member_of(workspace, &person, Role::Editor);
+            let certified = policy::roles::certified_agent(workspace, id, person.id());
             match permissions.access().clone().as_acting(acting) {
-                Some(access) => permissions.with_access(access),
+                Some(access) => permissions.with_access(access.granted(certified)),
                 None => permissions.read_only(),
             }
         }

@@ -2,11 +2,11 @@
 //! server the test starts: an account is added only once its server took the
 //! sign-in, its entries are kept and read with every device off, a category is
 //! the server's own field, and an invitation is one entry. Every member of the
-//! workspace reaches them, and nobody outside it does; what an agent a
-//! member's session was handed to changes waits for that member's answer,
-//! unless their allowance says otherwise, and what it may change at all is an
-//! invitation to its person and nothing the person entered themselves. The
-//! calendar server is told to write to nobody.
+//! workspace reaches them, and nobody outside it does; what an agent a member
+//! certified changes waits for that member's answer, unless their allowance
+//! says otherwise, and what it may change at all is an invitation to its person
+//! and nothing the person entered themselves. The calendar server is told to
+//! write to nobody.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -38,7 +38,7 @@ use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 use super::super::ServiceWorkspaceActions as HolderActions;
-use super::super::tests::{admit, caller, governed, settled};
+use super::super::tests::{admit, agent_caller, caller, governed, settled};
 use crate::workspaces::fixtures::TestHost as TestHolder;
 use crate::workspaces::fixtures::test_host as test_holder;
 use crate::workspaces::person_asking::Allowing;
@@ -155,10 +155,9 @@ impl Ada {
         caller(&self.device)
     }
 
-    /// The agent `name` Ada's device handed its session to, over the
-    /// connection that device certified.
+    /// The agent `name`, on a key of its own Ada's root certified.
     fn agent(&self, name: &str) -> Caller {
-        self.herself().delegated_to(name)
+        agent_caller(&self.device, name)
     }
 
     /// What `caller` is answered when it asks `action` of the calendars.
@@ -605,7 +604,7 @@ async fn a_calendar_on_the_persons_own_server_is_kept_read_and_filed_by_their_ho
 }
 
 /// Every member of the workspace reaches the calendars it keeps, with their
-/// own device and with an agent their session was handed to; an agent's
+/// own device and with an agent they certified; an agent's
 /// change waits for its person's answer, and a refusal changes nothing. A
 /// member of another workspace, a person who is no member, a bare agent turn
 /// and an app are nobody to them.
@@ -621,7 +620,7 @@ async fn every_member_reaches_the_workspaces_calendars_and_an_agents_change_asks
     let id = ada.add().await["id"].as_str().expect("its id").to_owned();
     let assistant = ada.agent("assistant");
 
-    // She reads it, the agent her device handed its session to reads it, and
+    // She reads it, the agent she certified reads it, and
     // so does every other member of the workspace.
     let listed = ada
         .ask(&assistant, held::LIST, json!({}))
@@ -709,7 +708,7 @@ async fn every_member_reaches_the_workspaces_calendars_and_an_agents_change_asks
         "their agent on their own device",
         asked(
             &cys_page,
-            &caller(&cy).delegated_to("assistant"),
+            &agent_caller(&cy, "assistant"),
             target.clone(),
             json!({}),
         )
@@ -862,7 +861,7 @@ impl AsksPeople for Answering {
     }
 }
 
-/// An agent a member's device handed its session to writes the text it
+/// An agent a member certified writes the text it
 /// hands over itself, and reads the identity of every entry the calendar
 /// holds. So what its person entered themselves is not its to change: a
 /// cancellation under that identity removes nothing, another time under it
@@ -1440,7 +1439,7 @@ async fn the_catalogue_offers_the_workspaces_calendars_to_its_members_agents_alo
     let bo = admit(&ada.workspaces, &ada.workspace, &ada.owner, 2).await;
     let bos_page = ada.actions.in_workspace_as(ada.workspace_id, &bo);
     assert_eq!(
-        calendar_rows(offered(&bos_page, &caller(&bo).delegated_to("assistant")).await),
+        calendar_rows(offered(&bos_page, &agent_caller(&bo, "assistant")).await),
         rows,
         "another member's agent reads the same calendars"
     );
@@ -1451,19 +1450,16 @@ async fn the_catalogue_offers_the_workspaces_calendars_to_its_members_agents_alo
     let stranger = key_of(&SigningKey::from_bytes(&rand::random()), "laptop");
     let strangers_page = ada.actions.in_workspace_as(ada.workspace_id, &stranger);
     assert!(
-        offered(
-            &strangers_page,
-            &caller(&stranger).delegated_to("assistant")
-        )
-        .await
-        .is_empty(),
+        offered(&strangers_page, &agent_caller(&stranger, "assistant"))
+            .await
+            .is_empty(),
         "an agent of a person who is no member"
     );
     let (elsewhere, _, _) = governed(&ada.workspaces).await;
     let cy = admit(&ada.workspaces, &elsewhere, &ada.owner, 3).await;
     let cys_page = ada.actions.in_workspace_as(ada.workspace_id, &cy);
     assert!(
-        offered(&cys_page, &caller(&cy).delegated_to("assistant"))
+        offered(&cys_page, &agent_caller(&cy, "assistant"))
             .await
             .is_empty(),
         "an agent of a member of another workspace"

@@ -135,7 +135,7 @@ impl Workspaces {
     /// `effect` with `action` of `store` in the workspace `workspace_id`
     /// names, as the workspace's policy decides it now. A person acting as
     /// themselves is asked nothing: their invocation is their answer. An
-    /// agent its person's session was handed to is held to its delegation
+    /// agent its person certified is held to its certificate
     /// too: it reads, and a change asks its person ([`Answer::Ask`]) unless
     /// they answered that very action in advance.
     ///
@@ -173,13 +173,14 @@ impl Workspaces {
             .peer()
             .permissions(certificate.device_public_key, now)
             .map_err(|_| ActionCallError::UnknownAction)?;
-        // An agent a device of its person's runs acts as itself, with what its person's grant
+        // An agent a device of its person's runs acts as itself, with what its certificate
         // gives it, within what its person may.
         let access = if caller.is_device_agent() {
+            let certified = caller.certified(&access.policy.workspace);
             access
                 .as_acting(acting.clone())
                 .ok_or(ActionCallError::UnknownAction)?
-                .granted(caller.granted(&[]))
+                .granted(certified)
         } else {
             access
         };
@@ -348,14 +349,16 @@ impl Workspaces {
             .bound
             .map(|bound| tilo_action_policy::roles::agent_bound(agent, &person, bound))
             .unwrap_or_default();
-        // The agent works on its asker's word: it reaches what they may, as its own member.
-        let acting = tilo_action_policy::Acting::handed_agent(agent, person.as_str());
+        // The agent works on its asker's word: it reaches what they may and what its
+        // certificate gives it, as its own member.
+        let acting = turn.caller.acting().clone();
+        let certified = turn.caller.certified(&policy.workspace);
         let Some(access) =
             tilo_action_policy::MemberAccess::person(policy, person.as_str()).as_acting(acting)
         else {
             return false;
         };
-        let access = access.granted(bound);
+        let access = access.granted(certified).granted(bound);
         let node = store.node(access.workspace(), action);
         access.answer(&node, effect, &Context::at_time(tilo_clock::wall())) != Answer::Deny
     }

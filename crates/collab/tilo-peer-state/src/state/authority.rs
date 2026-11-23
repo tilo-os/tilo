@@ -1268,7 +1268,7 @@ impl StatePeer {
     /// devices they delegated, may do at
     /// `now`, as grants naming each key's agent
     /// ([`collab_types::workspace_grant::key_agent_id`]): what an agent of its
-    /// person may ([`tilo_action_policy::Acting::handed_preset`]). A key is
+    /// person may ([`tilo_action_policy::roles::certified_agent`]). A key is
     /// approved where the workspace holds its certificate, which its person's
     /// root signed, live and unrevoked, as an agent's grant reaching this
     /// workspace, and lists no revocation of its grant. That certificate is
@@ -1317,13 +1317,11 @@ impl StatePeer {
                 cert.capabilities
                     .agent
                     .filter(|scope| scope.reaches(workspace))?;
-                Some(
-                    tilo_action_policy::Acting::handed_agent(
-                        collab_types::workspace_grant::key_agent_id(device),
-                        hex::encode(cert.user_public_key),
-                    )
-                    .handed_preset(workspace),
-                )
+                Some(tilo_action_policy::roles::certified_agent(
+                    workspace,
+                    &collab_types::workspace_grant::key_agent_id(device),
+                    &hex::encode(cert.user_public_key),
+                ))
             })
             .flatten()
             .chain(delegated)

@@ -813,9 +813,8 @@ impl AppBrokerState {
             // Confinement says which workspace a connection was admitted to, not
             // that an agent still belongs to it: an agent whose membership
             // was removed must lose its catalogue and authority at once. It
-            // takes part as the unconfined branch decides: an enrolled agent
-            // through its own grant, an agent a person's device handed this
-            // session to (`Caller::delegated_to`) through that person's.
+            // takes part as the unconfined branch decides: through its own
+            // grants and what its certificate gives it, within its person's.
             Some(confined) => {
                 confined == workspace.id().to_string()
                     && if caller.acting().is_agent() {

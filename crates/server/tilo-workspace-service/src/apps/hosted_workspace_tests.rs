@@ -235,9 +235,9 @@ async fn a_hosted_workspaces_record_action_runs_on_its_host() {
 
             // So does an agent's call: it is decided here, as its own.
             publish(&fixture, &action);
-            let agent = Caller::local_person("fixture-owner")
-                .in_workspace(fixture.cluster_id.clone())
-                .delegated_to("agent:helper");
+            let agent = Caller::local_agent("agent:helper")
+                .acting_for("fixture-owner")
+                .in_workspace(fixture.cluster_id.clone());
             let mut by_agent = request(&fixture, &action);
             by_agent.revision = None;
             let _ = fixture

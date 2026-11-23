@@ -1,7 +1,7 @@
 //! A workspace's connections on its server: who is answered. A member adds a
 //! service from a device of theirs, reads it back and calls its commands;
 //! every member reaches what the workspace connected; nobody outside it
-//! reaches any of it; an agent a member's session was handed to reads, looks
+//! reaches any of it; an agent a member certified reads, looks
 //! and calls what only reads, and its changes ask its member; and a server
 //! asks no address inside its own network unless its operator lets it.
 
@@ -19,7 +19,7 @@ use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::DeviceCert;
 
 use super::super::ServiceWorkspaceActions as Served;
-use super::super::tests::{admit, caller, governed, settled};
+use super::super::tests::{admit, agent_caller, caller, governed, settled};
 use crate::connections::ASKS_FIRST;
 use crate::connections::stand_in::StandIn;
 use crate::workspaces::fixtures::test_host as start_serving;
@@ -150,7 +150,7 @@ fn refused_with(refused: &Result<Value, Refused>, why: &str) -> bool {
     matches!(refused, Err(Refused::Refused { reason }) if reason == why)
 }
 
-/// What an agent a member's session was handed to is asked about before it
+/// What an agent a member certified is asked about before it
 /// changes a connection `id` or the service at `address`: none of it is
 /// its own to do unasked.
 fn the_changes_an_agent_is_asked_about(id: &Value, address: &str) -> [(&'static str, Value); 4] {
@@ -305,7 +305,7 @@ async fn a_member_connects_a_service_the_workspace_keeps_and_nobody_outside_reac
     started.shutdown().await;
 }
 
-/// What an agent a member's session was handed to, with a device of theirs
+/// What an agent a member certified, with a device of theirs
 /// behind it, does with the connection `added`: it reads the list, looks at
 /// the service's address, reads the commands again and calls a command that
 /// only reads. A command that changes something it does not call, and every
@@ -358,12 +358,12 @@ async fn an_agent_reads_and_calls_what_only_reads(
     assert_eq!(agent.offered().await, [LIST, LOOK, REFRESH, CALL], "{who}");
 }
 
-/// An agent a member's session was handed to reads and calls what only
+/// An agent a member certified reads and calls what only
 /// reads, and that is all: every change of the connection is put to its
 /// member, and only their yes makes it. The person themselves is offered no
 /// agent's row: their own device asks the server directly.
 #[tokio::test]
-async fn a_handed_agent_reads_and_calls_and_its_changes_ask_its_member() {
+async fn a_members_agent_reads_and_calls_and_its_changes_ask_its_member() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let started = start_serving(dir.path(), &key, &owner).await;
@@ -385,7 +385,7 @@ async fn a_handed_agent_reads_and_calls_and_its_changes_ask_its_member() {
         .expect("Ada connects a service");
     let id = &added["id"];
 
-    let agent = caller(&ada).delegated_to("assistant");
+    let agent = agent_caller(&ada, "assistant");
     an_agent_reads_and_calls_what_only_reads(
         ada_asks.by(&ada, &agent),
         "her assistant",

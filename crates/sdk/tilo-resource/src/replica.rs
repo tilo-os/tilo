@@ -156,15 +156,6 @@ impl<R: Resource> Replica<R> {
         )
     }
 
-    /// Attribute later actions to the agent `agent` a device runs on `person`'s turn, handed
-    /// the delegation a device gives the agents it runs ([`tilo_actions::Acting::handed_agent`]):
-    /// whichever member it acts for, it does what their grants and its preset allow, as every
-    /// receiver decides it.
-    #[must_use]
-    pub fn as_handed_agent_for(self, agent: &str, person: &str) -> Self {
-        self.as_acting(tilo_actions::Acting::handed_agent(agent, person))
-    }
-
     /// Attribute later actions to the bot installation `installation`
     /// acting for `installer`, as a bot host does for a bot's calls.
     #[must_use]

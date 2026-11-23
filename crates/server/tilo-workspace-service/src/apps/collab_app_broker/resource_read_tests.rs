@@ -341,10 +341,6 @@ tilo_test_env::scenario! {
             .in_workspace(f.workspace.clone())
             .in_new_execution();
         assert!(f.read(&person, NOTES, "").is_ok());
-        // An agent the person's own device handed its session to carries that device's
-        // delegation, which reads no record outside its app.
-        let handed = person.delegated_to("scribe");
-        assert!(refused(&handed));
         // An agent acting for nobody, and an app.
         let alone = Caller::local_agent("scribe")
             .in_workspace(f.workspace.clone())
@@ -463,12 +459,10 @@ tilo_test_env::scenario! {
         let person = Caller::local_person(f.person.clone())
             .in_workspace(f.workspace.clone())
             .in_new_execution();
-        for caller in [person.clone(), person.delegated_to("scribe")] {
-            assert!(matches!(
-                changes.apply(&caller, &change(NOTES)),
-                Err(ActionCallError::Refused { reason }) if reason == tilo_actions::remote::RESOURCE_READS_FOR_AGENTS
-            ));
-        }
+        assert!(matches!(
+            changes.apply(&person, &change(NOTES)),
+            Err(ActionCallError::Refused { reason }) if reason == tilo_actions::remote::RESOURCE_READS_FOR_AGENTS
+        ));
         assert!(f.origin.0.lock().unwrap().is_empty());
     }
 }

@@ -2,7 +2,7 @@
 //! (`docs/designs/app-language/agents.md`, "Reading records outside their app").
 //!
 //! The caller is the agent acting for the person who admitted it ([`Caller::acting_for`]),
-//! never one a person's device handed its session to, and holds no app's route. Each read is
+//! and holds no app's route. Each read is
 //! decided at the record's node with that actor, the lesser of the agent's grants and the
 //! person's ([`BrokerActor::answer_in`]), then captured by the workspace's document owner under the
 //! person's device certificate, whose own check ([`NativeDocumentReads::authorize`]) is the
@@ -180,11 +180,10 @@ fn apply_document_change(
 /// The person an agent acts for, when `caller` is one: an agent the host admitted as a member
 /// acting for its person, confined to a workspace.
 fn agent_person(caller: &Caller) -> Option<(&str, &str)> {
-    // An agent a person's device handed its session to reads nothing here. An agent acting under
-    // a key of its own, or a roster agent answering a person's turn, reads and changes what both
-    // its grants and its person's allow, each read and change decided at the record's node like
-    // every other caller's.
-    if !caller.acting().is_agent() || caller.is_session_delegated() {
+    // An agent acting under a key of its own, or a roster agent answering a person's turn, reads
+    // and changes what both its grants and its person's allow, each read and change decided at
+    // the record's node like every other caller's.
+    if !caller.acting().is_agent() {
         return None;
     }
     Some((caller.acting_for_person()?, caller.workspace()?))
@@ -198,8 +197,8 @@ fn reader(caller: &Caller) -> Option<(&str, &str)> {
         return Some((caller.acting_for_person()?, caller.workspace()?));
     }
     match caller.acting().person_id() {
-        Some(person) if !caller.is_session_delegated() => Some((person, caller.workspace()?)),
-        _ => agent_person(caller),
+        Some(person) => Some((person, caller.workspace()?)),
+        None => agent_person(caller),
     }
 }
 

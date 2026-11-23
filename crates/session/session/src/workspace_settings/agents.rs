@@ -374,10 +374,13 @@ impl Agents {
         MemberId::parsed_person(&kept.keeper)?;
         let name = kept.name.clone();
         let status = added_by(names, workspace, record, &kept.keeper);
-        // What the turn admits it to, before the answers the person set for its apps: the cap's
-        // grants, narrowed by the bound its record keeps.
-        let mut admission = tilo_action_policy::Acting::handed_agent(agent, kept.keeper.as_str())
-            .handed_preset(&workspace.policy.workspace);
+        // What the turn admits it to, before the answers the person set for its apps: what its
+        // keeper's approval gives it, narrowed by the bound its record keeps.
+        let mut admission = tilo_action_policy::roles::certified_agent(
+            &workspace.policy.workspace,
+            agent,
+            kept.keeper.as_str(),
+        );
         admission.extend(tilo_action_policy::roles::agent_bound(
             agent,
             &kept.keeper,

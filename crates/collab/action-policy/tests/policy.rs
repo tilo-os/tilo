@@ -1790,13 +1790,15 @@ tilo_test_env::scenario! {
             Answer::Deny,
             alice(),
         ));
+        // Each turn's agent is the one its person certified: Carol's own, then Bob's.
         let decided = |acting: &Acting, node: &TreePath| {
-            let granted = acting.handed_preset("r");
+            let person = acting.people().last().copied().unwrap_or_default();
+            let granted = roles::certified_agent("r", "scout", person);
             Authority::of_acting(acting, &workspace, &granted)
                 .decide(node, ActionKind::Undoable, &cx())
                 .answer
         };
-        let for_carol = Acting::handed_agent("scout", CAROL);
+        let for_carol = Acting::agent("scout").acting_for(Acting::person(CAROL));
         let answering_carol = for_carol.clone().agent_of(BOB);
         let sub_agent = answering_carol.clone().handed_on("helper");
         assert_eq!(decided(&for_carol, &archive()), Answer::Allow);
@@ -1938,7 +1940,7 @@ tilo_test_env::scenario! {
             workspace.clone(),
             Acting::agent("scribe").acting_for(Acting::person(ALICE)),
         )
-        .granted(tilo_action_policy::Acting::handed_agent("scribe", ALICE).handed_preset("r"));
+        .granted(roles::certified_agent("r", "scribe", ALICE));
         assert_eq!(
             owner_agent.answer(&resources, ActionKind::Undoable, &cx()),
             Answer::Allow
@@ -1956,7 +1958,7 @@ tilo_test_env::scenario! {
             workspace,
             Acting::agent("scribe").acting_for(Acting::person(BOB)),
         )
-        .granted(tilo_action_policy::Acting::handed_agent("scribe", BOB).handed_preset("r"));
+        .granted(roles::certified_agent("r", "scribe", BOB));
         assert_eq!(
             viewer_agent.answer(&resources, ActionKind::Undoable, &cx()),
             Answer::Deny
