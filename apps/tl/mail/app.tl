@@ -241,11 +241,15 @@ action check_now(a: Account) (icon: .refresh, label: "Check now") {
 
 /// Asks the account's server for the messages older than the oldest this workspace holds in the
 /// mailbox, so a folder longer than one page can be read back to its first message. They come in
-/// as new mail does, and the mailbox stops offering them once its first message is here.
+/// as new mail does, and the mailbox stops offering them once its first message is here. A
+/// mailbox whose server holds nothing older answers nothing, as a list reads to its end asking
+/// whether a page is there.
 action older_messages(b: Mailbox) (icon: .arrow_down, label: "Show older messages") {
-    let m = root Mail
-    if let a = m.accounts.find(x -> x.mailboxes.any(y -> y.id() == b.id())) {
-        outside("imap.older", (a.key, b.key))
+    if b.more {
+        let m = root Mail
+        if let a = m.accounts.find(x -> x.mailboxes.any(y -> y.id() == b.id())) {
+            outside("imap.older", (a.key, b.key))
+        }
     }
 }
 
@@ -1349,7 +1353,7 @@ view unified(m: Mail) {
 }
 
 view recovered_mail(m: Mail) {
-    thread_list(m.recovered_mail.matching(""))
+    thread_list(m.recovered_mail.matching(""), more: .none)
 }
 
 /// The workspace's mail, with every account's inbox in one
@@ -1375,14 +1379,24 @@ fn everywhere(m: Mail, query: Text) -> List<Thread> {
 
 /// Every account's conversations of the place `query` as one list, newest first: what a window
 /// over all the accounts lists, so a conversation of any of them stands in it and counts with
-/// the rest. Under the list, each account whose mailbox holds more on its server says so, and the
-/// page before what is here is read from it.
+/// the rest. The list reads the page before it from the server of the first account whose
+/// mailbox holds more as the person reaches its end, and under it each such account still says
+/// so with a button.
 view accounts_threads(m: Mail, shown: List<Thread>, query: Text) {
+    // The account whose page the list reads as the person reaches its end: the first whose
+    // server holds more, or, once all of them are read, the first whose mailboxes hold the
+    // place, so the list stands as the person left it rather than being built again.
+    let held = m.accounts.find(a -> a.mailboxes.any(b -> "is:{b.key}" == query))
+    let next = m.accounts.find(a -> a.mailboxes.any(b -> "is:{b.key}" == query and b.more)) ?? held
     stack(fill, gap: .none) {
         for a in m.accounts {
             account_notice(a)
         }
-        thread_list(shown, fill)
+        if let a = next, b = mailbox_place(a, query) {
+            thread_list(shown, fill: true, more: .some(older_messages(b)))
+        } else {
+            thread_list(shown, fill: true, more: .none)
+        }
         for a in m.accounts {
             if let b = mailbox_place(a, query) {
                 if b.more {
@@ -1405,13 +1419,19 @@ fn mailbox_place(a: Account, query: Text) -> Option<Mailbox> {
 
 /// Conversations of the account `a` as a list, under what its server says of itself, and
 /// `Try again` asks the server that account reads from. The notice keeps its own gutter, so the
-/// list stands under it with none between. When the mailbox `a`'s place shows holds more on the
-/// server than here, the list's foot reads the page before what it shows.
+/// list stands under it with none between. When the place `query` is one of its mailboxes, the
+/// list reads the page before it as the person reaches its end, and the button under it does
+/// the same for a person who reaches its end with the keyboard.
 view account_threads(a: Account, shown: List<Thread>, query: Text) {
+    let place = mailbox_place(a, query)
     stack(fill, gap: .none) {
         account_notice(a)
-        thread_list(shown, fill)
-        if let b = mailbox_place(a, query) {
+        if let b = place {
+            thread_list(shown, fill: true, more: .some(older_messages(b)))
+        } else {
+            thread_list(shown, fill: true, more: .none)
+        }
+        if let b = place {
             if b.more {
                 row {
                     spacer()
@@ -1509,10 +1529,24 @@ fn in_mailbox(a: Account, b: Mailbox) -> List<Thread> {
 /// opens, its actions on its menu and the destructive one on its swipe; "Nothing here" when
 /// there are none. More than one row is chosen at a time — Ctrl+A chooses the whole list — and
 /// the window's bar runs what the chosen ones' menus offer as one command over all of them, so
-/// archiving, trashing, reading or deleting for good takes one press and one undo.
-view thread_list(shown: List<Thread>) {
+/// archiving, trashing, reading or deleting for good takes one press and one undo. A place whose
+/// server holds more reads the page before the rows as the person reaches the list's end
+/// (`more`); the button the place puts under the list asks the same, for a person who reaches
+/// the end with the keyboard or a reader.
+view thread_list(shown: List<Thread>, more: Option<Action>) {
     if shown.is_empty() {
         ui.EmptyState("Nothing here", icon: .inbox)
+    } else if let next = more {
+        ui.VirtualList(selection_follows_focus: true, multi_select: true, in_column: true) {
+            on select(x: Thread): open(x, front: false)
+            on activate(x: Thread): open(x)
+            on end: next
+            for x in shown {
+                ui.ListItem(item: x, presence: lenses(x).find(l -> not l.mine)?.who) {
+                    thread_row(x)
+                }
+            }
+        }
     } else {
         ui.VirtualList(selection_follows_focus: true, multi_select: true, in_column: true) {
             on select(x: Thread): open(x, front: false)

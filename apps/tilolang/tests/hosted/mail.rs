@@ -368,8 +368,15 @@ impl Session {
         self.settle();
         // What the action asks first — a send its code makes — is allowed, as the person allows
         // what the app's sheet asks of them, through the API.
+        self.approve_asks(on, &asked_before)?;
+        Ok(answered)
+    }
+
+    /// Answer the asks on `on` that were not there before, allowing each: what an action the
+    /// person ran asked to reach outside, as they allow it on the app's sheet.
+    fn approve_asks(&mut self, on: &ResourceRef, before: &[String]) -> Result<(), String> {
         for asked in self.asked(on) {
-            if asked_before.contains(&asked) {
+            if before.contains(&asked) {
                 continue;
             }
             let decide = action_id(self, HOST, "Decide suggestion");
@@ -385,11 +392,11 @@ impl Session {
             )?;
             let state = decided.value.as_ref().map(|value| value["state"].clone());
             if state != Some(json!("done")) {
-                return Err(format!("{name}: the ask was not carried out: {decided:?}"));
+                return Err(format!("the ask was not carried out: {decided:?}"));
             }
             self.settle();
         }
-        Ok(answered)
+        Ok(())
     }
 
     /// What waits for the person's answer on `on`: the suggestions an action asked, by id.
@@ -777,6 +784,108 @@ fn a_mailbox_longer_than_a_page_reads_the_page_before_it_when_asked() {
         !session.flag(&inbox, "more"),
         "the folder's first message is here, and it offers no more"
     );
+}
+
+// USER REQUIREMENT: a mailbox holding more than one page reads the page before it as the person
+// reads the list to its end, without pressing anything.
+#[test]
+fn a_mailbox_read_to_the_lists_end_reads_the_page_before_it() {
+    let servers = empty_servers();
+    sixty_messages(&servers);
+    let (_connector, mut session, inbox) = window_on_a_long_inbox(&servers);
+    // The window's list tells the person's reading to its end; what the list says it runs reads
+    // the page before the rows. The toolkit's own reading of a scroll to the end is the list's
+    // (`ui::widget::virtual_list`), so the event it fires is what the window sends here.
+    let composed = session
+        .hosted()
+        .view()
+        .and_then(tilo_app_window::AppWindow::composed)
+        .cloned()
+        .expect("the window composed its shell");
+    let list =
+        first_window_kind(&composed, "ui.VirtualList").expect("the window lists conversations");
+    assert!(
+        list.events.contains_key("end"),
+        "the list reads its end: {:?}",
+        list.events.keys().collect::<Vec<_>>()
+    );
+    let key = list.key.clone();
+    session
+        .hosted()
+        .view()
+        .expect("the window is connected")
+        .act(tilo_app_window::reconcile::UiEvent::Fire(
+            key,
+            "end".to_owned(),
+            None,
+            None,
+        ));
+    session.settle();
+    // The list asks for the page before the rows, or reads it at once where the person may
+    // already reach outside; what the list asks, they allow, as anything an app reaches outside
+    // for.
+    session.until("the list's end to ask for the page or read it", |session| {
+        session.threads().len() == 60 || session.ask_bar().as_deref() == Some("Show older messages")
+    });
+    if session.ask_bar().as_deref() == Some("Show older messages") {
+        session
+            .hosted()
+            .view()
+            .expect("the window is connected")
+            .answer(tilo_render_protocol::patch::Answer::Allow);
+        session.settle();
+    }
+    session.until("the page before it", |session| {
+        session.threads().len() == 60
+    });
+    assert!(
+        !session.flag(&inbox, "more"),
+        "the folder's first message is here, and it offers no more"
+    );
+}
+
+/// The first node of `kind` in the shell `node` the window composed, itself included.
+fn first_window_kind<'a>(
+    node: &'a tilo_app_window::UiNode,
+    kind: &str,
+) -> Option<&'a tilo_app_window::UiNode> {
+    if node.kind == kind {
+        return Some(node);
+    }
+    node.children
+        .iter()
+        .find_map(|child| first_window_kind(child, kind))
+}
+
+/// Sixty messages in `servers`' inbox, more than the one page an account syncs first.
+fn sixty_messages(servers: &Servers) {
+    for i in 0..60 {
+        servers.imap.append(
+            "INBOX",
+            &mail(
+                &format!("note-{i}@hopper.example"),
+                "Grace Hopper <grace@hopper.example>",
+                &format!("Note {i}"),
+                "A line.",
+                None,
+            ),
+            &[],
+        );
+    }
+}
+
+/// The window kept in step with `servers`, its account holding the newest page of sixty
+/// messages: the inbox whose server still holds the page before it.
+fn window_on_a_long_inbox(servers: &Servers) -> (MailConnector, Session, ResourceRef) {
+    let (connector, mut session) = window_of(account(servers));
+    session.until("the newest page", |session| session.threads().len() == 50);
+    let account = session.accounts().remove(0);
+    let inbox = session.refs(&account, "mailboxes")[0].clone();
+    assert!(
+        session.flag(&inbox, "more"),
+        "the mailbox says its server holds older mail"
+    );
+    (connector, session, inbox)
 }
 
 // USER REQUIREMENT: mail that another client deletes here goes, and a folder the server
