@@ -457,7 +457,8 @@ impl std::fmt::Debug for ReservedCopy {
 }
 
 /// This process's clipboard: over the connection its session or launcher opened for it on Linux
-/// and macOS ([`service::ServiceClipboard`]), and the browser's clipboard on the web.
+/// and macOS ([`service::ServiceClipboard`]), the Windows clipboard on Windows, which has no
+/// socket to carry the service, and the browser's clipboard on the web.
 pub fn system() -> std::sync::Arc<dyn ClipboardBackend> {
     static SYSTEM: OnceLock<std::sync::Arc<dyn ClipboardBackend>> = OnceLock::new();
     SYSTEM.get_or_init(backend).clone()
@@ -475,7 +476,12 @@ fn backend() -> std::sync::Arc<dyn ClipboardBackend> {
     std::sync::Arc::new(web::BrowserClipboard)
 }
 
-#[cfg(not(any(unix, all(target_arch = "wasm32", target_os = "unknown"),)))]
+#[cfg(windows)]
+fn backend() -> std::sync::Arc<dyn ClipboardBackend> {
+    os()
+}
+
+#[cfg(not(any(unix, windows, all(target_arch = "wasm32", target_os = "unknown"))))]
 fn backend() -> std::sync::Arc<dyn ClipboardBackend> {
     unavailable()
 }

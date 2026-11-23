@@ -277,7 +277,6 @@ mod system {
         handle.get_text().ok()
     }
 
-    #[cfg(target_os = "linux")]
     pub(super) fn image() -> Option<crate::ClipboardImage> {
         let image = arboard_clipboard()?.lock().ok()?.get_image().ok()?;
         let bytes = crate::images::encode_png(image.width, image.height, &image.bytes)?;
@@ -285,11 +284,6 @@ mod system {
             mime: "image/png",
             bytes,
         })
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    pub(super) fn image() -> Option<crate::ClipboardImage> {
-        None
     }
 
     /// The process's one `arboard` handle: Wayland's data-control protocol on
