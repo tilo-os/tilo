@@ -32,7 +32,7 @@ tilo_test_env::scenario! {
             &mut scene,
             Affine::IDENTITY,
             &mut renderer,
-            &theme,&PresenceCtx::default().draw_env().draw_env(),
+            &theme,&PresenceCtx::default().draw_env(),
         );
         let runs = &scene.encoding().resources.glyph_runs;
         assert!(!runs.is_empty());
@@ -395,7 +395,8 @@ pub(super) fn lay_out_and_draw_with_text(
         &mut Scene::new(),
         Affine::IDENTITY,
         text_renderer,
-        theme,&PresenceCtx::default().draw_env().draw_env(),
+        theme,
+        &PresenceCtx::default().draw_env(),
     );
 }
 
@@ -446,7 +447,8 @@ fn painted(bar: &mut TopBarChrome) -> bool {
         &mut scene,
         Affine::IDENTITY,
         &mut TextRenderer::new(),
-        &Theme::default(),&PresenceCtx::default().draw_env().draw_env(),
+        &Theme::default(),
+        &PresenceCtx::default().draw_env(),
     );
     !scene.encoding().is_empty()
 }
@@ -1325,7 +1327,8 @@ fn scene_fingerprint(bar: &mut TopBarChrome) -> (Vec<u32>, usize, usize) {
         &mut scene,
         Affine::IDENTITY,
         &mut TextRenderer::new(),
-        &Theme::default(),&PresenceCtx::default().draw_env().draw_env(),
+        &Theme::default(),
+        &PresenceCtx::default().draw_env(),
     );
     let encoding = scene.encoding();
     (
@@ -2403,7 +2406,7 @@ tilo_test_env::scenario! {
                 &mut Scene::new(),
                 Affine::IDENTITY,
                 &mut TextRenderer::new(),
-                &theme,&PresenceCtx::default().draw_env().draw_env(),
+                &theme,&PresenceCtx::default().draw_env(),
             );
         };
 
@@ -2714,7 +2717,8 @@ fn unread_activity_paints_nothing_on_the_people_control() {
             &mut scene,
             Affine::IDENTITY,
             &mut tr,
-            &theme,&PresenceCtx::default().draw_env().draw_env(),
+            &theme,
+            &PresenceCtx::default().draw_env(),
         );
         assert_eq!(bar.activity_unread, unread, "nothing else reset it");
         let rgba = renderer.render(&scene, Color::BLACK);

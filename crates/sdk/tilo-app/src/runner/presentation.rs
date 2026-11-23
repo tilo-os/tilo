@@ -185,7 +185,13 @@ impl Presentation {
                 None,
                 &rect,
             );
-            content.draw_child(&mut scene, transform, text, &theme,&PresenceCtx::empty().draw_env().draw_env());
+            content.draw_child(
+                &mut scene,
+                transform,
+                text,
+                &theme,
+                &PresenceCtx::empty().draw_env(),
+            );
             super::outline::revision(doc)
         };
         // On the GPU, only a frame that kept all of its geometry; without an

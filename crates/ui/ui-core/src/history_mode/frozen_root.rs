@@ -111,8 +111,13 @@ impl HistoryPreview for FrozenRootPreview {
     ) {
         let offset = Vec2::new(self.bounds.x0, self.bounds.y0 - self.view.scroll.1);
         let transform = transform.pre_translate(offset);
-        self.root
-            .draw_child(scene, transform, text, theme,&PresenceCtx::empty().draw_env().draw_env());
+        self.root.draw_child(
+            scene,
+            transform,
+            text,
+            theme,
+            &PresenceCtx::empty().draw_env(),
+        );
     }
 
     fn navigate(&mut self, command: PreviewNavigation) -> bool {

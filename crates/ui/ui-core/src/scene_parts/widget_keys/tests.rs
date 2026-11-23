@@ -121,7 +121,8 @@ fn a_container_that_draws_its_children_itself_keys_each_of_them() {
         &mut scene,
         Affine::IDENTITY,
         &mut text,
-        &theme,&PresenceCtx::default().draw_env().draw_env(),
+        &theme,
+        &PresenceCtx::default().draw_env(),
     );
 
     fn keys(widget: &dyn Widget, out: &mut Vec<(&'static str, Option<String>)>) {
@@ -161,7 +162,8 @@ fn a_root_drawn_into_another_scene_renumbers_no_root_of_the_frame() {
                 &mut scratch,
                 Affine::IDENTITY,
                 &mut text,
-                &theme,&PresenceCtx::default().draw_env().draw_env(),
+                &theme,
+                &PresenceCtx::default().draw_env(),
             );
         }
         let mut scene = Scene::new();
@@ -169,7 +171,8 @@ fn a_root_drawn_into_another_scene_renumbers_no_root_of_the_frame() {
             &mut scene,
             Affine::IDENTITY,
             &mut text,
-            &theme,&PresenceCtx::default().draw_env().draw_env(),
+            &theme,
+            &PresenceCtx::default().draw_env(),
         );
         begins(&scene)
     };
@@ -183,14 +186,16 @@ fn a_root_drawn_into_another_scene_renumbers_no_root_of_the_frame() {
         &mut scene,
         Affine::IDENTITY,
         &mut text,
-        &theme,&PresenceCtx::default().draw_env().draw_env(),
+        &theme,
+        &PresenceCtx::default().draw_env(),
     );
     scene.reset();
     panel.draw_child(
         &mut scene,
         Affine::IDENTITY,
         &mut text,
-        &theme,&PresenceCtx::default().draw_env().draw_env(),
+        &theme,
+        &PresenceCtx::default().draw_env(),
     );
     key_widgets(None);
     assert_eq!(begins(&scene), alone);

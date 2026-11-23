@@ -1,8 +1,8 @@
 //! The palette as the widget tree sees it.
 
 use super::{
-    ActionPalette, Affine, ConfirmState, HashMap, ModelPath, NodeId, Point, PresenceCtx, Rect,
-    Scene, Size, Style, TaffyTree, TextRenderer, Theme, Widget, WindowEvent,
+    ActionPalette, Affine, ConfirmState, HashMap, ModelPath, NodeId, Point, Rect, Scene, Size,
+    Style, TaffyTree, TextRenderer, Theme, Widget, WindowEvent,
 };
 use crate::i18n::widget_text;
 use crate::widget::SearchField;
@@ -145,13 +145,26 @@ impl Widget for ActionPalette {
         self.rect
     }
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         if self.hosts_rows() {
-            self.draw_host(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+            self.draw_host(&mut crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                text,
+                theme,
+                env.clone(),
+            ));
             return;
         }
-        ActionPalette::draw(self, &mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        ActionPalette::draw(
+            self,
+            &mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()),
+        );
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         self.dirty = true;

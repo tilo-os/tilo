@@ -1244,7 +1244,8 @@ impl<R: FloatingRow> FloatingList<R> {
                 scene,
                 content,
                 text,
-                theme,&crate::presence::PresenceCtx::default().draw_env().draw_env(),
+                theme,
+                &crate::presence::PresenceCtx::default().draw_env(),
             );
             if theme.motion().loops() {
                 crate::motion::want_frames_until(now + crate::time::Duration::from_millis(100));

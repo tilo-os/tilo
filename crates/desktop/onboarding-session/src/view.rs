@@ -818,7 +818,8 @@ impl OnboardingView {
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut text,
-            &theme,&ui::presence::PresenceCtx::empty().draw_env().draw_env(),
+            &theme,
+            &ui::presence::PresenceCtx::empty().draw_env(),
         );
         let mut lines = Vec::new();
         if let Some(app) = self.app.root_mut() {
@@ -2086,10 +2087,19 @@ impl Widget for OnboardingView {
     }
 
     fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
-        self.app
-            .draw(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        self.app.draw(&mut tilo_ui::DrawCtx::new(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            env.clone(),
+        ));
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {

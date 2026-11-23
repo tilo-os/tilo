@@ -47,7 +47,8 @@ fn frame_at(tile: &mut EmbeddedApp, text: &mut TextRenderer, (width, height): (f
         &mut scene,
         ui::kurbo::Affine::IDENTITY,
         text,
-        &theme,&ui::presence::PresenceCtx::empty().draw_env().draw_env(),
+        &theme,
+        &ui::presence::PresenceCtx::empty().draw_env(),
     );
 }
 

@@ -1186,7 +1186,11 @@ impl Widget for WidgetLayer {
     }
 
     fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         let now = ui::motion::frame_now();
         self.motion = theme.motion();
@@ -1210,7 +1214,13 @@ impl Widget for WidgetLayer {
         let members = if self.board.form(WidgetId::Team) == Form::Away {
             Vec::new()
         } else {
-            self.members(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()))
+            self.members(&mut tilo_ui::DrawCtx::new(
+                scene,
+                transform,
+                text,
+                theme,
+                env.clone(),
+            ))
         };
         let month = Month::around(today, ui::format::first_weekday());
         let content = Content {
@@ -2518,8 +2528,12 @@ mod tests {
         }
 
         fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
-        let (_scene, _transform, _text, _theme, mut env) = ctx.parts();
+            #[allow(
+                unused_variables,
+                unused_mut,
+                reason = "a draw binds only the parts it uses"
+            )]
+            let (_scene, _transform, _text, _theme, mut env) = ctx.parts();
         }
 
         fn get_rect(&self) -> Rect {
@@ -2593,7 +2607,8 @@ mod tests {
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut TextRenderer::new(),
-            &Theme::default(),&PresenceCtx::default().draw_env().draw_env(),
+            &Theme::default(),
+            &PresenceCtx::default().draw_env(),
         );
     }
 
