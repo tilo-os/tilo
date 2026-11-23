@@ -21,7 +21,8 @@ use tilo_service::{Service, Started, decode, offer, reading};
 
 use crate::windows::{reaching, windows};
 
-use tilo_action_policy::{Answer, Change, Grantee};
+use tilo_action_policy::{Answer, Grantee};
+use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand as Command;
 
 /// What the device's lists are made from ([`DeviceLists::lists_key`]), one entry per resource: the
 /// windows, the tray, the agents and the styles. An entry that moved is a reading that moved.
@@ -983,17 +984,19 @@ impl DeviceLists {
                 }
                 let mut changes = Vec::new();
                 if current.is_some() {
-                    changes.push(Change::Revoke(tilo_action_policy::device_agents::grant_id(
-                        &device,
-                    )));
+                    changes.push(Command::Revoke {
+                        grant: tilo_action_policy::device_agents::grant_id(&device),
+                    });
                 }
                 if let Some(answer) = answer {
-                    changes.push(Change::Grant(tilo_action_policy::device_agents::grant(
-                        &workspace,
-                        &device,
-                        answer,
-                        Grantee::person(person.clone()),
-                    )));
+                    changes.push(Command::Grant {
+                        grant: tilo_action_policy::device_agents::grant(
+                            &workspace,
+                            &device,
+                            answer,
+                            Grantee::person(person.clone()),
+                        ),
+                    });
                 }
                 if changes.is_empty() {
                     continue;
