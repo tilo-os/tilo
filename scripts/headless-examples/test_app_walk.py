@@ -354,6 +354,45 @@ class ReadingAnAnswer(unittest.TestCase):
         self.assertIsNone(walk.at_path("dark", "theme"))
 
 
+class HoldingAReadToWhatWasChosen(unittest.TestCase):
+    """A read's answer is the app's own: a walk holds the choices a person made
+    to the paths that carry them, or to words in a document it reads."""
+
+    class Session:
+        def windows(self):
+            return []
+
+        def invoke(self, provider, resource, action, args=None):
+            return {"Completed": {"output": {"value": {
+                "theme": "dusk", "mode": "dark", "rows": [{"title": "a"}]}}}}
+
+    def walker(self):
+        spec = {"rust": {"id": "so.tilo.settings"}}
+        return walk.Walk(spec, "rust", Path("/nonexistent-out"), Path("/nonexistent-state"),
+                         session=self.Session())
+
+    def test_the_paths_named_read_what_was_chosen(self):
+        found = self.walker().op_read({"do": ["so.tilo.settings", "settings.root",
+                                              "inspect-appearance"],
+                                       "is": {"theme": "dusk", "mode": "dark",
+                                              "rows#len": 1}})
+        self.assertEqual(found["is"], {"theme": "dusk", "mode": "dark", "rows#len": 1})
+
+    def test_an_answer_that_reads_something_else_is_the_finding(self):
+        with self.assertRaises(walk.Failed):
+            self.walker().op_read({"do": ["so.tilo.settings", "settings.root",
+                                          "inspect-appearance"],
+                                   "is": {"mode": "light"}})
+
+    def test_words_in_the_whole_answer_hold_a_document_read(self):
+        found = self.walker().op_read({"do": ["so.tilo.calendar", "calendar.calendar", "read"],
+                                       "contains": "dusk"})
+        self.assertEqual(found["contains"], "dusk")
+        with self.assertRaises(walk.Failed):
+            self.walker().op_read({"do": ["so.tilo.calendar", "calendar.calendar", "read"],
+                                   "contains": "Walks walk"})
+
+
 class CountingAnOpenWindowsFrames(unittest.TestCase):
     """A choice reaches an app that is already open on its next frame; a window
     that keeps its old frame is a person looking at what did not change."""

@@ -1450,21 +1450,102 @@ class Walk:
 
     def op_read(self, value) -> dict:
         """Call a read action and hold what it answered to the choices a person
-        made: `{"do": [provider, resource, action, args?], "is": {"theme":
-        "dark"}}` requires each dotted path into the answer's value to read the
-        value given (`#len` for how many it lists). A read that is refused, or
-        answers something else, is the step's finding."""
-        call = value["do"]
-        provider, resource, action = (pick(item, self.variant) for item in call[:3])
-        args = pick(call[3], self.variant) if len(call) > 3 else None
-        answer = value_of(self.session.invoke(provider, resource, action, args))
-        wanted = {path: pick(each, self.variant) for path, each in value["is"].items()}
+        made: `{"app": "so.tilo.settings", "operation": "inspect-appearance",
+        "args": {...}, "is": {"theme": "dark"}}` finds the action the app
+        publishes, whatever resource it is on — a bound resource's id changes
+        every run — and requires each dotted path into the answer's value to
+        read the value given (`#len` for how many it lists). `contains` holds
+        the whole answer's words to a text instead, for a read of a document.
+        `"do": [provider, resource, action, args?]` calls an exact address. A
+        read that is refused, or answers something else, is the step's finding."""
+        if "app" in value:
+            app, operation = value["app"], value["operation"]
+            args = value.get("args")
+            row = app_action(self.session, app, operation)
+            if row is None and args:
+                # Several rows of one operation (a pane's `open-pane`): the one
+                # whose parameters take the arguments named.
+                names = set(args)
+                row = next((a for a in self.session.actions("")
+                            if a.get("app_id") == app and address(a)
+                            and address(a)[1] == operation
+                            and names <= {p.get("name") for p in
+                                          (a.get("action") or {}).get("params") or []}), None)
+            if row is None:
+                raise Failed(f"{app} publishes no {operation!r}")
+            invoked = f"{app} {operation}"
+            answer = value_of(self.session.invoke_row(row, args))
+        else:
+            call = value["do"]
+            provider, resource, action = (pick(item, self.variant) for item in call[:3])
+            args = pick(call[3], self.variant) if len(call) > 3 else None
+            invoked = f"{resource}#{action}"
+            answer = value_of(self.session.invoke(provider, resource, action, args))
+        if "contains" in value:
+            text = pick(value["contains"], self.variant)
+            if text not in json.dumps(answer, ensure_ascii=False):
+                raise Failed(f"{invoked} answered no {text!r}: "
+                             f"{json.dumps(answer, ensure_ascii=False)[:2000]}")
+        wanted = {path: pick(each, self.variant) for path, each in (value.get("is") or {}).items()}
         wrong = {path: at_path(answer, path) for path, each in wanted.items()
                  if at_path(answer, path) != each}
         if wrong:
-            raise Failed(f"{resource}#{action} answered {json.dumps(wrong)} for "
+            raise Failed(f"{invoked} answered {json.dumps(wrong)} for "
                          f"{json.dumps({k: wanted[k] for k in wrong})}")
-        return {"read": f"{resource}#{action}", "is": wanted}
+        return {"read": invoked, "is": wanted,
+                **({"contains": value["contains"]} if "contains" in value else {}),
+                # What it answered, for a step recording a shape a walk is written to.
+                "answered": json.dumps(answer, ensure_ascii=False)[:4000]}
+
+    def op_do_app(self, value) -> dict:
+        """Run an action the app publishes, found by the app and the operation
+        rather than by a resource id that changes every run:
+        `{"app": "so.tilo.settings", "operation": "open-pane", "args": {"pane":
+        "power"}}`. A refusal fails the step."""
+        app, operation = value["app"], value["operation"]
+        args = value.get("args")
+        names = set(args or ())
+        rows = [a for a in self.session.actions("")
+                if a.get("app_id") == app and address(a) and address(a)[1] == operation]
+        if names:
+            rows = [a for a in rows if names <= {p.get("name") for p in
+                                                 (a.get("action") or {}).get("params") or []}]
+        if not rows:
+            raise Failed(f"{app} publishes no {operation!r} taking {sorted(names)}")
+        answer = self.session.invoke_row(rows[0], args)
+        if isinstance(answer, dict) and ("Failed" in answer or "Refused" in answer):
+            raise Failed(f"{app} {operation} answered {json.dumps(answer)[:500]}")
+        return {"did": f"{app} {operation}", "args": args}
+
+    def op_press_when_any(self, value) -> dict:
+        """Press the first of `selectors` drawn within `within` seconds (ten by
+        default), and say which; none coming is not a failure: a question an app
+        asks only the first time it opens, which it then goes on without."""
+        offered = [s for s in map(lambda o: alternative(o, self.variant), value["selectors"]) if s]
+        deadline = float(value.get("within", 10))
+
+        def shown():
+            for selector in offered:
+                target = control(self.session, selector)
+                if target is not None and drawn(target):
+                    return target
+            return None
+
+        target = until_value(f"one of {offered!r}", shown, deadline)
+        x, y, w, h = target["rect"]
+        self.session.click_at(x + w / 2, y + h / 2)
+        return {"pressed": target.get("name")}
+
+    def op_wait_window(self, value) -> dict:
+        """Wait for the window of the app `value` (a directory name or id) to be
+        the shell's, within `within` seconds (a minute by default)."""
+        ident = value if isinstance(value, str) else value["app"]
+        ident = ident if "." in ident else real_apps.app_id(ident)
+        deadline = float(value.get("within", 60)) if isinstance(value, dict) else 60.0
+        until_value(f"the window of {ident}",
+                    lambda: next((w for w in self.session.windows()
+                                  if w.get("app_id") == ident), None), deadline)
+        return {"window": ident}
 
     def op_theme(self, value) -> dict:
         self.set_dark(bool(value))

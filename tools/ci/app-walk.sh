@@ -51,6 +51,13 @@ keep() {
         [[ -f $log ]] || continue
         cp "$log" "$out/$(basename "$(dirname "$(dirname "$log")")")-$(basename "$log")"
     done
+    # A crash report says why an app stopped: it is the proof a walk that saw one needs.
+    local state report
+    for report in "$run"/states/*/cache/tilo/crashes/*; do
+        [[ -f $report ]] || continue
+        state=$(basename "$(dirname "$(dirname "$(dirname "$(dirname "$report")")")")")
+        cp "$report" "$out/crashes-$state-$(basename "$report")"
+    done
     rm -rf -- "$run"
 }
 trap keep EXIT
