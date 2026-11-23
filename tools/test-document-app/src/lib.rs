@@ -76,8 +76,8 @@ fn answer(effect: TestEffect, content: Option<&tilo_content::ContentStore>) -> E
             let bytes = store
                 .read(hash)
                 .ok_or_else(|| format!("{name} is not on this device"))?;
-            let text = String::from_utf8(bytes)
-                .map_err(|_| format!("{name} is not a text document"))?;
+            let text =
+                String::from_utf8(bytes).map_err(|_| format!("{name} is not a text document"))?;
             let text = match from.unwrap_or(0) {
                 0 => text,
                 at => text.chars().skip(at).collect(),

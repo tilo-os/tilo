@@ -2509,10 +2509,17 @@ impl Checker<'_> {
                             "{what} takes the op and its input, and nothing else: \
                              `engine.{}(\"{}\u{2026}\", input)",
                             name.name,
-                            if name.name == "start" { "paint" } else { "decode" }
+                            if name.name == "start" {
+                                "paint"
+                            } else {
+                                "decode"
+                            }
                         )
                     } else {
-                        format!("{what} takes the job, and nothing else: `engine.{}(job)", name.name)
+                        format!(
+                            "{what} takes the job, and nothing else: `engine.{}(job)",
+                            name.name
+                        )
                     },
                 );
                 let _ = self.expr(&a.value, None);
@@ -2523,7 +2530,10 @@ impl Checker<'_> {
                 "E022",
                 span,
                 if asks_input {
-                    format!("{what} takes the op it asks for: `engine.{}(op, input)", name.name)
+                    format!(
+                        "{what} takes the op it asks for: `engine.{}(op, input)",
+                        name.name
+                    )
                 } else {
                     format!("{what} takes the job: `engine.{}(job)", name.name)
                 },

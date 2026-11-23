@@ -48,8 +48,8 @@ fn written(markdown: &str, format: &str) -> Result<Vec<u8>, String> {
         format!("a document cannot be written as .{format}: {why}")
     };
     if format == "pdf" {
-        let (document, inputs) = tilo_doc_codecs::convert::import("md", markdown.as_bytes())
-            .map_err(said)?;
+        let (document, inputs) =
+            tilo_doc_codecs::convert::import("md", markdown.as_bytes()).map_err(said)?;
         return tilo_doc_pdf::render_pdf(&document.as_ref().materialize(), &inputs)
             .map_err(|why| format!("a document cannot be written as a PDF: {why:?}"));
     }
@@ -65,7 +65,12 @@ fn extension(name: &str) -> String {
 
 /// The media type a document written as `format` is: what a host keeps the file under.
 fn media_of(format: &str) -> &'static str {
-    match format.trim().trim_start_matches('.').to_ascii_lowercase().as_str() {
+    match format
+        .trim()
+        .trim_start_matches('.')
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "md" | "markdown" => "text/markdown",
         "txt" | "text" => "text/plain",
         "html" | "htm" => "text/html",

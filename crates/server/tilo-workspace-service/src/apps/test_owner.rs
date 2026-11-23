@@ -136,7 +136,10 @@ impl SessionOwner {
         seeded.push(SeedDocument {
             app_id: WRITER.0.into(),
             document_id: WRITER.1.into(),
-            kind: test_document_app::definition().resource_type.as_str().into(),
+            kind: test_document_app::definition()
+                .resource_type
+                .as_str()
+                .into(),
             bytes: writer,
         });
         peer.install_seed(
