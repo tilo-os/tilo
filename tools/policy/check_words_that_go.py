@@ -23,6 +23,7 @@ takes the word out of the code without removing the concept, so it is not a way
 to lower a row.
 
     python3 tools/policy/check_words_that_go.py            # check
+    python3 tools/policy/check_words_that_go.py --staged   # only the names this commit adds
     python3 tools/policy/check_words_that_go.py --print    # every row's names and uses
     python3 tools/policy/check_words_that_go.py --update   # drop the names that are gone
 """
@@ -37,6 +38,9 @@ import tomllib
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from judged import STAGED_FLAG, git, judged  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 WORDS = ROOT / "tools/policy/words_that_go.toml"
@@ -213,6 +217,73 @@ def count(root: Path, rows: list[dict]) -> dict[str, Row]:
     return counts
 
 
+def judged_sources(root: Path, staged) -> list[tuple[Path, str]]:
+    """The files a commit stages that this check judges, in path order."""
+    return [
+        (relative, text)
+        for relative, text in staged.sources(suffixes=tuple(LANGUAGES))
+        if relative.parts
+        and relative.parts[0] not in SKIPPED_TOPS
+        and not SKIPPED_PARTS.intersection(relative.parts)
+        and relative.as_posix() != SELF
+    ]
+
+
+def in_head(root: Path, names: set[str]) -> set[str]:
+    """Which of `names` the tree before this commit already holds."""
+    found = set()
+    for name in names:
+        if git(root, "grep", "-l", "-F", "-w", "-e", name, "HEAD", "--", empty=(1,)).strip():
+            found.add(name)
+    return found
+
+
+def staged_problems(root: Path, rows: list[dict]) -> list[str]:
+    """The row names a commit adds: ones neither its own files nor the tree held."""
+    staged = judged(root, staged=True)
+    literals = sorted({text for row in rows for text in row.get("text", [])})
+    added: Counter[str] = Counter()
+    added_texts: Counter[str] = Counter()
+    for relative, text in judged_sources(root, staged):
+        language = LANGUAGES[relative.suffix]
+        body, named = code(text, language)
+        try:
+            before = git(root, "show", f"HEAD:{relative.as_posix()}", empty=(128,)).decode(
+                "utf-8", errors="replace"
+            )
+        except (OSError, subprocess.CalledProcessError):
+            before = ""
+        if before:
+            before_body, before_named = code(before, language)
+        else:
+            before_body, before_named = "", []
+        added.update(Counter(named) - Counter(before_named))
+        for literal in literals:
+            newer = body.count(literal) - before_body.count(literal)
+            if newer > 0:
+                added_texts[literal] += newer
+    added_names = set(added) - in_head(root, set(added))
+    split = {identifier: words(identifier) for identifier in added_names}
+
+    def holding(terms: list[str]) -> set[str]:
+        runs = [tuple(term.split()) for term in terms if not term.startswith("=")]
+        whole = {tuple(term[1:].split()) for term in terms if term.startswith("=")}
+        return {
+            identifier
+            for identifier in added_names
+            if split[identifier] in whole or any(holds(split[identifier], run) for run in runs)
+        }
+
+    known = in_head(root, {literal for literal in literals if added_texts[literal]})
+    problems = []
+    for row in rows:
+        names = holding(row.get("idents", []))
+        names |= {text for text in row.get("text", []) if added_texts[text] and text not in known}
+        if names:
+            problems.append(f"'{row['row']}': new names {', '.join(sorted(names))}")
+    return problems
+
+
 def main(argv: list[str]) -> int:
     rows = load_rows()
     named = [row["row"] for row in rows]
@@ -226,6 +297,19 @@ def main(argv: list[str]) -> int:
         for row in named
         if row not in spec
     ]
+    if STAGED_FLAG in argv:
+        problems += staged_problems(ROOT, rows)
+        for problem in problems:
+            print(problem)
+        if problems:
+            print(
+                "words that go: this commit names a concept core.md's table says goes. Name it"
+                " with the word the table has instead.",
+                file=sys.stderr,
+            )
+            return 1
+        print("words that go: this commit adds no name the table rejects", file=sys.stderr)
+        return 0
     counts = count(ROOT, rows)
     baseline = json.loads(BASELINE.read_text(encoding="utf-8")) if BASELINE.exists() else {}
     if "--print" in argv:
