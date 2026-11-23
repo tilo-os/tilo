@@ -53,6 +53,7 @@ pub fn open(
         workspace: workspace.to_string(),
         mount,
         peer,
+        content: None,
         wakes,
     })
     .map_err(std::io::Error::other)

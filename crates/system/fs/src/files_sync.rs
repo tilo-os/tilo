@@ -248,6 +248,8 @@ pub struct Config {
     pub mount: MountAuthor,
     /// The workspace's store.
     pub peer: Arc<dyn Peer>,
+    /// Where this workspace's file bytes are kept; `None` for a copy that counts none as here.
+    pub content: Option<Arc<crate::ContentStore>>,
     /// The wakes the peer sends.
     pub wakes: tokio::sync::mpsc::UnboundedReceiver<Wake>,
 }
@@ -353,6 +355,7 @@ impl StoreSync {
             workspace: _,
             mount,
             peer,
+            content,
             wakes,
         } = config;
         let namespace = Arc::new(Mutex::new(Namespace::new(mount)?));
@@ -372,6 +375,7 @@ impl StoreSync {
         let passes = Arc::new(AtomicU64::new(0));
         let running = Arc::new(Running {
             namespace: Arc::clone(&namespace),
+            content,
             inner: Arc::clone(&inner),
             shown,
             paused: Arc::clone(&paused),
@@ -525,6 +529,8 @@ impl StoreSync {
 /// What the sync task holds.
 struct Running {
     namespace: Arc<Mutex<Namespace>>,
+    /// Where this workspace's file bytes are kept, for counting what this computer holds.
+    content: Option<Arc<crate::ContentStore>>,
     inner: Arc<Inner>,
     shown: Arc<Shown>,
     paused: Arc<AtomicBool>,
@@ -613,12 +619,30 @@ impl Running {
         }
         namespace.set_collecting(true);
         let (files, bytes) = namespace.live_totals();
+        // What this computer holds, by the tree's own hashes: a text document the tree holds
+        // itself is here whenever the tree is.
+        let mut local = 0_u64;
+        for id in namespace.live_node_ids() {
+            let Some(entry) = namespace.entry_for_node(&id) else {
+                continue;
+            };
+            if entry.kind != crate::namespace::NodeKind::File {
+                continue;
+            }
+            if entry
+                .hash
+                .is_none_or(|hash| self.content.as_ref().is_some_and(|store| store.holds(hash)))
+            {
+                local = local.saturating_add(entry.size);
+            }
+        }
         drop(namespace);
         {
             let mut status = self.shown.status.lock_recover();
             status.opened |= complete;
             status.files = files;
             status.bytes = bytes;
+            status.local_bytes = local;
             status.waiting_for_workspace = self.inner.peer.held() == Some(false);
             status.host_lacks = self.inner.peer.host_lacks();
         }

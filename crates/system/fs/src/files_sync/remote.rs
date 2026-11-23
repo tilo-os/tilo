@@ -144,6 +144,7 @@ pub async fn start(
         workspace,
         mount,
         peer: Arc::new(Remote(Arc::clone(&link))),
+        content: Some(Arc::clone(&content)),
         wakes: wake_events,
     })
     .map_err(std::io::Error::other)?;

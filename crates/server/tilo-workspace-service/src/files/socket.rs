@@ -165,6 +165,7 @@ async fn serve_one(
         peer,
         name: name.clone(),
         workspace,
+        workspaces: workspaces.clone(),
         source,
         keys: offers.keys,
         lender,
@@ -224,6 +225,8 @@ struct Connection {
     peer: Arc<StorePeer>,
     name: String,
     workspace: WorkspaceId,
+    /// The workspaces this service holds, for the names a person knows one by.
+    workspaces: crate::workspaces::Workspaces,
     /// The workspace as the source of the bytes the daemon lacks.
     source: Arc<WorkspaceSource>,
     keys: Keys,
@@ -299,13 +302,33 @@ impl Connection {
 
     /// Show where the daemon's folder stands, under the names a person knows its workspace by.
     fn show(&self, status: tilo_fs::files_sync::Status) {
-        let folder = super::Folder {
-            workspace: self.name.clone(),
-            name: self.name.clone(),
-            server: String::new(),
-            status,
-        };
-        self.folders.show(folder);
+        let (folders, workspaces, workspace) = (
+            self.folders.clone(),
+            self.workspaces.clone(),
+            self.name.clone(),
+        );
+        tokio::spawn(async move {
+            let (name, server) = match workspaces.state(&workspace).await {
+                Some(state) => {
+                    let governance = state.governance();
+                    let name = governance.workspace_name().unwrap_or_default();
+                    let server = governance
+                        .keeping_devices()
+                        .into_iter()
+                        .next()
+                        .map(|kept| kept.host.device_label)
+                        .unwrap_or_default();
+                    (name, server)
+                }
+                None => (String::new(), String::new()),
+            };
+            folders.show(super::Folder {
+                workspace,
+                name,
+                server,
+                status,
+            });
+        });
     }
 
     fn take(self: &Arc<Self>, ask: Ask) -> Result<(), String> {

@@ -1211,7 +1211,9 @@ impl Workspaces {
         app: &str,
         command: tilo_resource_store::wire::Command,
     ) -> Result<tilo_resource_store::wire::Reply, String> {
-        let device = self.member_identity()?;
+        // The device this service signs its own roles' writes as: a member copy's own device,
+        // else this host's, which governs the workspaces it serves (an agent's put on a server).
+        let device = self.signing_device();
         let caller = tilo_actions::remote::Caller::authenticated(
             device.cert.user_public_key,
             device.device(),
