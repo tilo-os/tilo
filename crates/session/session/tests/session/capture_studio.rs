@@ -234,6 +234,45 @@ fn a_shot_answers_after_the_studio_was_up_and_put_away() {
 }
 
 #[test]
+fn the_shots_card_and_the_markup_editor_name_the_controls_a_screen_reader_reaches() {
+    let _settled = ui::motion::testing::settled();
+    // The card's arrival and the editor's are frames the test's clock decides.
+    let _clock = held_clock();
+    let pictures = tempfile::tempdir().unwrap();
+    let mut session = studio_session(pictures.path());
+    settle(&mut session, 4);
+
+    // The studio's bar is down, so the shot it takes shows as a card on the
+    // floating layer: the card's own controls are what assistive technology and
+    // an agent reach, by name and where they stand.
+    ask_studio(
+        &mut session,
+        "screenshot",
+        &serde_json::json!({ "source": "display" }),
+    );
+    until(&mut session, "the shot's card offers to mark it up", |s| {
+        published_control(s, "Mark up").is_some()
+    });
+
+    // Mark it up: the editor draws over the desktop, and its tools and Save are
+    // controls the session publishes too.
+    ask_studio(&mut session, "annotate", &serde_json::json!({}));
+    until(&mut session, "the editor shows its tools", |s| {
+        published_control(s, "Pen").is_some() && published_control(s, "Save copy").is_some()
+    });
+}
+
+/// The control `name` the session publishes, where a screen reader or an
+/// agent finds it.
+fn published_control(session: &Session, name: &str) -> Option<ui::window_targets::WindowControl> {
+    session
+        .controls()
+        .into_iter()
+        .find(|control| control.name == name)
+        .filter(|control| control.rect.2 > 0.0 && control.rect.3 > 0.0)
+}
+
+#[test]
 fn the_studio_takes_a_screenshot_of_one_window_as_its_client_drew_it() {
     let _settled = ui::motion::testing::settled();
     let pictures = tempfile::tempdir().unwrap();
