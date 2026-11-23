@@ -862,6 +862,31 @@ impl Checker<'_> {
         matches!(ty, Ty::Record(_) | Ty::Union(_))
     }
 
+    /// Whether the items of a container field are resources the store owns (a `Collection`, a
+    /// `Set` or a `Map` of records), which a record written out here cannot hold: a collection of
+    /// them starts empty and changes by its methods. Containers of plain values (`Map<Text>`,
+    /// `Set<Text>`, a set of actors) are values and are given whole.
+    fn holds_resources(ty: &Ty) -> bool {
+        match ty {
+            Ty::Collection(_) | Ty::Union(_) => true,
+            Ty::Record(key) => !crate::host::is_value(key),
+            Ty::Set(t) | Ty::Map(t) => Self::names_resources(t),
+            _ => false,
+        }
+    }
+
+    /// Whether `ty` names a resource, here or inside a list, set, map, option or union of it.
+    fn names_resources(ty: &Ty) -> bool {
+        match ty {
+            Ty::Record(key) => !crate::host::is_value(key),
+            Ty::Union(_) => true,
+            Ty::List(t) | Ty::Set(t) | Ty::Map(t) | Ty::Option(t) | Ty::Collection(t) => {
+                Self::names_resources(t)
+            }
+            _ => false,
+        }
+    }
+
     /// Whether `e` writes a record here (`Note(title: ...)`) rather than naming one the store
     /// holds.
     fn constructs(&self, e: &ast::Expr) -> bool {
@@ -948,12 +973,15 @@ impl Checker<'_> {
                 );
             }
             given.push(&f.name);
-            if f.ty.is_container() {
+            // A field of resources is the store's: it starts empty and changes by its methods. A
+            // container of plain values (a `Map<Text>`, a `Set<Text>`) is a value the record
+            // holds, given as any other field.
+            if f.ty.is_container() && Self::holds_resources(&f.ty) {
                 self.err(
                     "E033",
                     a.value.span,
                     format!(
-                        "`{}` is a {} field; it starts empty and is changed with its methods",
+                        "`{}` is a {} field of resources; it starts empty and is changed with its methods",
                         f.name,
                         self.show(&f.ty)
                     ),

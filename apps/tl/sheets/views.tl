@@ -43,16 +43,7 @@ template view workbook_page(
     let shown = open_sheet ?? w.sheets.first()
     if let s = shown {
         // The workbook as the engine reads it, and what each of its cells shows.
-        let book = book_of(
-            w.sheets.map(x -> sheet_book(
-                x.name,
-                x.hidden,
-                x.cells.keys().map(k -> pair(k, x.cells.get(k) ?? "")),
-                x.formats.keys().map(k -> pair(k, x.formats.get(k) ?? "")),
-                x.bold.map(b -> b),
-            )),
-            currency_code(w.currency),
-        )
+        let book = book_of(w.sheets.map(x -> sheet_input(x)), currency_code(w.currency))
         let rows = shown_sheet(values_of(book), s.name)
         let cells = shown_cells(rows)
         std.page(w, canvas: true, fill: true, header: {

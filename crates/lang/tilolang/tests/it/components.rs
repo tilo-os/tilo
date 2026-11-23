@@ -372,10 +372,11 @@ tilo_test_env::scenario! {
             message.contains("Map<Text, Set<Actor>>") && message.contains("Map<Int>"),
             "{message}"
         );
-        let (code, _) = one_error(&format!(
-            "{CHAT}\nfn whole(m: Message) -> Int {{\n    let r = m.reactions\n    1\n}}"
+        // Outside a view a map reads whole too, to hand it to a call or a record.
+        let c = compile_body(&format!(
+            "{CHAT}\nfn whole(m: Message) -> Map<Text, Set<Actor>> {{\n    return m.reactions\n}}"
         ));
-        assert_eq!(code, "E080", "outside a view a map is read by key");
+        validate(&c.wasm);
     }
 
     phase the_older_reactions_form_still_compiles;

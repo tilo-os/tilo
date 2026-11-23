@@ -255,6 +255,11 @@ history, sync and removal. It is the same record on every device that makes the 
 checker refuses it where the making leaves the field out and the record cannot start on its own:
 a field of it has no default, it would hold itself again, or it belongs to another app.
 
+A `Map` field reads whole wherever code reads it, not only in a view: it is a value, which an
+action hands to a call (`json.encode`) or into a record of its own. A `Set` or a `Map` of plain
+values is given whole where a record is written (`SheetInput(cells: sheet.cells)`), while one of
+resources is the store's and starts empty, changing by `.add` and `.put`.
+
 ## Events
 
 A handler (`on activate(x: Calculation): ...`) is data the host fills with the event's value

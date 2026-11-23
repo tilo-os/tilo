@@ -487,12 +487,12 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase e080_a_map_is_not_read_as_a_whole;
+    phase a_map_field_is_read_as_a_whole;
     {
-        expect(
-            "E080",
-            "type C {\n    m: Map<Int>\n}\nfn f(c: C) -> Int {\n    let x = c.m\n    return 1\n}",
-        );
+        // A map field reads whole anywhere, to hand it to a call that writes it or a record that
+        // holds it, as a view hands one to a component.
+        let got = codes("type C {\n    m: Map<Int>\n}\nfn f(c: C) -> Map<Int> {\n    return c.m\n}");
+        assert!(got.is_empty(), "a map field reads as a whole: {got:?}");
     }
 }
 

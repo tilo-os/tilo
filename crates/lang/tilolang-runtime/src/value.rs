@@ -428,8 +428,8 @@ pub enum Value {
         key: crate::view_state::StateKey,
         scalar: bool,
     },
-    /// A map field read whole: its entries, each key once, in key order. Only a view reads
-    /// one, to hand it to a component or another view.
+    /// A map field read whole: its entries, each key once, in key order. Code reads one to hand
+    /// it to a component, a call that writes it (`json.encode`) or a record of its own.
     Map(Vec<(Value, Value)>),
     /// An action offered in a component's prop (`ui.MenuButton(actions: actions(r))`): how
     /// its control shows it, and the event of the node that runs it (host-internal).

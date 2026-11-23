@@ -117,6 +117,23 @@ type Reply {
     text: RichText
 }
 
+/// One sheet as the engine reads it: its name, whether its tab is hidden, its cells as typed, the
+/// formats they show in and the cells shown bold.
+type SheetInput {
+    name: Text
+    hidden: Bool
+    cells: Map<Text>
+    formats: Map<Text>
+    bold: List<Text>
+}
+
+/// A workbook as the engine reads it: the sheets it brings and the currency its bare money format
+/// shows in.
+type BookInput {
+    sheets: List<SheetInput>
+    currency: Text
+}
+
 root workbook: Workbook
 
 default view workbook for Workbook
@@ -136,22 +153,21 @@ fn quoted(text: Text) -> Text {
     json.encode(text)
 }
 
-/// One entry of a map, written as JSON.
-fn pair(key: Text, value: Text) -> Text {
-    "\{quoted(key)}: \{quoted(value)}"
-}
-
 /// One sheet as the engine reads it: its name, whether its tab is hidden, its cells as typed, the
 /// formats they show in and the cells shown bold.
-fn sheet_book(name: Text, hidden: Bool, cells: List<Text>, formats: List<Text>, bold: List<Text>) -> Text {
-    let flag = if hidden { "true" } else { "false" }
-    let shown_bold = bold.map(b -> quoted(b)).join(", ")
-    "\{\"name\": \{quoted(name)}, \"hidden\": \{flag}, \"cells\": \{\{{cells.join(", ")}}}, \"formats\": \{\{{formats.join(", ")}}}, \"bold\": [{shown_bold}]}"
+fn sheet_input(s: Sheet) -> SheetInput {
+    SheetInput(
+        name: s.name,
+        hidden: s.hidden,
+        cells: s.cells,
+        formats: s.formats,
+        bold: s.bold.map(b -> b),
+    )
 }
 
 /// A workbook as the engine reads it, out of the sheets the caller wrote.
-fn book_of(sheets: List<Text>, currency: Text) -> Text {
-    "\{\"sheets\": [{sheets.join(", ")}], \"currency\": \{quoted(currency)}}"
+fn book_of(sheets: List<SheetInput>, currency: Text) -> Text {
+    json.encode(BookInput(sheets: sheets, currency: currency))
 }
 
 /// The rows a JSON answer holds, or none when it refused.
@@ -220,16 +236,7 @@ action read_cells(w: Workbook, sheet: Text, range: Text = "A1:B2", formulas: Boo
 ) {
     let found = w.sheets.find(x -> x.name == sheet)
     if let s = found {
-        let book = book_of(
-            [sheet_book(
-                s.name,
-                s.hidden,
-                s.cells.keys().map(k -> pair(k, s.cells.get(k) ?? "")),
-                s.formats.keys().map(k -> pair(k, s.formats.get(k) ?? "")),
-                s.bold.map(b -> b),
-            )],
-            currency_code(w.currency),
-        )
+        let book = book_of([sheet_input(s)], currency_code(w.currency))
         let cells = shown_cells(shown_sheet(values_of(book), s.name))
         let first_column = column_index(column_of(range_start(range)))
         let last_column = column_index(column_of(range_end(range)))
@@ -516,16 +523,7 @@ fn in_range(range: Text, reference: Text) -> Bool {
 /// Writes the sum of the numbers above `at` into it, the run stopping at a blank, a word or an
 /// existing total: the AutoSum button.
 action autosum(w: Workbook, s: Sheet, at: Text) (icon: .plus, label: "AutoSum") {
-    let book = book_of(
-        [sheet_book(
-            s.name,
-            s.hidden,
-            s.cells.keys().map(k -> pair(k, s.cells.get(k) ?? "")),
-            s.formats.keys().map(k -> pair(k, s.formats.get(k) ?? "")),
-            s.bold.map(b -> b),
-        )],
-        currency_code(w.currency),
-    )
+    let book = book_of([sheet_input(s)], currency_code(w.currency))
     let cells = shown_cells(shown_sheet(values_of(book), s.name))
     let column = column_of(at)
     let row = row_of(at)
@@ -657,16 +655,7 @@ action fill(w: Workbook, s: Sheet, source: Text, target: Text) (icon: .pencil, l
 /// its cells, their formats and the cells shown bold, its name when the change renamed it, and
 /// the cells its charts and comments are about.
 action apply_edit(w: Workbook, change: Text) (label: "Change the sheet", did: "changed a sheet") {
-    let book = book_of(
-        w.sheets.map(x -> sheet_book(
-            x.name,
-            x.hidden,
-            x.cells.keys().map(k -> pair(k, x.cells.get(k) ?? "")),
-            x.formats.keys().map(k -> pair(k, x.formats.get(k) ?? "")),
-            x.bold.map(b -> b),
-        )),
-        currency_code(w.currency),
-    )
+    let book = book_of(w.sheets.map(x -> sheet_input(x)), currency_code(w.currency))
     let moved = rows_of(book.sheet_edit(change))
     for i in w.sheets.map((x, i) -> i) {
         if let target = w.sheets.at(i) {
@@ -906,30 +895,12 @@ fn export_name(w: Workbook, ending: Text) -> Text {
 
 /// The workbook as an Excel file.
 action export_workbook(w: Workbook) (icon: .download, label: "Export the workbook") -> File {
-    let book = book_of(
-        w.sheets.map(x -> sheet_book(
-            x.name,
-            x.hidden,
-            x.cells.keys().map(k -> pair(k, x.cells.get(k) ?? "")),
-            x.formats.keys().map(k -> pair(k, x.formats.get(k) ?? "")),
-            x.bold.map(b -> b),
-        )),
-        currency_code(w.currency),
-    )
+    let book = book_of(w.sheets.map(x -> sheet_input(x)), currency_code(w.currency))
     File.of_sheets(export_name(w, "xlsx"), book, "xlsx")
 }
 
 /// One sheet as a table file.
 action export_table(w: Workbook, s: Sheet) (icon: .download, label: "Export this sheet") -> File {
-    let book = book_of(
-        [sheet_book(
-            s.name,
-            s.hidden,
-            s.cells.keys().map(k -> pair(k, s.cells.get(k) ?? "")),
-            s.formats.keys().map(k -> pair(k, s.formats.get(k) ?? "")),
-            s.bold.map(b -> b),
-        )],
-        currency_code(w.currency),
-    )
+    let book = book_of([sheet_input(s)], currency_code(w.currency))
     File.of_sheets(export_name(w, "csv"), book, "csv")
 }
